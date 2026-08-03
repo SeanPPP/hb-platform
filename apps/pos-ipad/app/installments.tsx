@@ -155,8 +155,10 @@ export default function InstallmentsRoute() {
               revision: String(entry.expectedCartRevision),
             },
           } as Href);
+          return true;
         } catch {
-          // 购物车、权限和 cashier lease 由 factory 复核；失败时留在管理页。
+          // 购物车、权限和 cashier lease 由 factory 复核；由页面明确提示未跳转。
+          return false;
         }
       }
     : undefined;
@@ -172,8 +174,10 @@ export default function InstallmentsRoute() {
               installmentGuid: entry.installmentGuid,
             },
           } as Href);
+          return true;
         } catch {
           // 拒绝任何非 UUID 的详情参数，避免把不可信输入带进支付路由。
+          return false;
         }
       }
     : undefined;

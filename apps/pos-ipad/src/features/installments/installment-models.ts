@@ -4,6 +4,18 @@ import type { components } from "@/generated/hbpos/schema";
 export type InstallmentPaymentMethod = "cash" | "card" | "voucher";
 export type InstallmentCardProvider = "square" | "linkly-cloud";
 export type InstallmentPaymentStatus = "Recorded" | "Voided";
+export type InstallmentDeviceScope = "store" | "device";
+export type InstallmentDatePreset =
+  | "all"
+  | "today"
+  | "last7"
+  | "last30"
+  | "custom";
+export type InstallmentDateFilter = Readonly<{
+  preset: InstallmentDatePreset;
+  fromDate: string | null;
+  toDate: string | null;
+}>;
 
 export type InstallmentLine = Readonly<{
   installmentLineGuid: string;
@@ -59,8 +71,9 @@ export type InstallmentHistoryQuery = Readonly<{
   createdFromIso?: string | null;
   createdToIso?: string | null;
   keyword: string | null;
+  skip: number;
   status: InstallmentStatus | null;
-  take: 20 | 50 | 100 | 200;
+  take: 20 | 50 | 51 | 100 | 200;
 }>;
 
 type CardTransaction =

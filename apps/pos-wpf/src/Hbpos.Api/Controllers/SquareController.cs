@@ -258,9 +258,73 @@ public sealed class SquareController(
             return scopeResult;
         }
 
+        var scope = GetAuthenticatedDeviceScope<SquareCheckoutStatusResponse?>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
         return await ExecuteBackendAsync(
             "checkout",
-            backendService => backendService.GetCheckoutAsync(validation.Environment!, checkoutId, cancellationToken));
+            async backendService =>
+            {
+                var response = await backendService.GetCheckoutAsync(
+                    validation.Environment!,
+                    checkoutId,
+                    cancellationToken);
+                if (response is not null)
+                {
+                    if (!string.Equals(
+                            response.Environment,
+                            validation.Environment,
+                            StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(response.CheckoutId, checkoutId, StringComparison.Ordinal))
+                    {
+                        throw new SquareTerminalBackendException(
+                            "SQUARE_CHECKOUT_IDENTITY_MISMATCH",
+                            "Square checkout response does not match the requested checkout.",
+                            HttpStatusCode.BadGateway);
+                    }
+
+                    var paymentIds = (response.PaymentIds ?? [])
+                        .Append(response.Payment?.PaymentId)
+                        .Where(paymentId => !string.IsNullOrWhiteSpace(paymentId))
+                        .Select(paymentId => paymentId!.Trim())
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray();
+                    // 只允许原来源设备原子刷新公开状态/payment 绑定；不能覆盖 webhook 原始证据或转移来源。
+                    var refreshed = await checkoutSessionRepository!
+                        .RefreshCheckoutSessionFromLookupAsync(
+                            new SquareCheckoutSessionRecord
+                            {
+                                Environment = validation.Environment!,
+                                CheckoutId = checkoutId,
+                                Status = response.Status ?? string.Empty,
+                                Amount = response.AmountMoney?.Amount,
+                                Currency = response.AmountMoney?.Currency,
+                                DeviceId = response.DeviceId,
+                                LocationId = response.LocationId,
+                                PaymentId = response.Payment?.PaymentId ?? paymentIds.FirstOrDefault(),
+                                PaymentIdsJson = paymentIds.Length == 0
+                                    ? null
+                                    : JsonSerializer.Serialize(paymentIds),
+                                RawCheckoutJson = "{}",
+                                UpdatedAt = response.UpdatedAt ?? DateTimeOffset.UtcNow
+                            },
+                            scope.StoreCode!,
+                            scope.DeviceCode!,
+                            cancellationToken);
+                    if (!refreshed)
+                    {
+                        throw new SquareTerminalBackendException(
+                            "SQUARE_CHECKOUT_SCOPE_CONFLICT",
+                            "Square checkout belongs to a different POS device or has no trusted origin scope.",
+                            HttpStatusCode.Forbidden);
+                    }
+                }
+
+                return response;
+            });
     }
 
     [HttpGet("payments/{paymentId}")]

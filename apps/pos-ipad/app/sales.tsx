@@ -1,5 +1,5 @@
 import * as Crypto from "expo-crypto";
-import { Redirect, type Href, useRouter } from "expo-router";
+import { Redirect, type Href, useFocusEffect, useRouter } from "expo-router";
 import {
   useCallback,
   useEffect,
@@ -121,6 +121,12 @@ export default function SalesRoute() {
     binding?.services === runtime.services && binding.cashier === activeCashier
       ? binding.presenter
       : null;
+  useFocusEffect(
+    useCallback(() => {
+      // 支付页位于同一导航栈时销售路由不会卸载；回焦必须释放结账冻结态。
+      presenter?.releasePreparedCheckout();
+    }, [presenter]),
+  );
   const addScannedProduct = useCallback(
     (barcode: string, source: "hid" | "camera" = "hid") => {
       if (!presenter || presenter.getState().phase !== "selling") return;

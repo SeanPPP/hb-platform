@@ -191,12 +191,14 @@ function initialAuthorization(
     eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
     orderGuid: string | null;
     printerId: string;
-    source?: "last-receipt" | "remote-history";
+    source?: "last-receipt" | "remote-history" | "installment-history";
   }>,
 ): FulfilmentInitialAuthorization {
   const isReprint = input.eventType === "RECEIPT_REPRINT";
   const source = input.source ?? "last-receipt";
-  const isHistory = isReprint && source === "remote-history";
+  const isHistory =
+    isReprint &&
+    (source === "remote-history" || source === "installment-history");
   const context = {
     actionId: input.actionId,
     permissionCode: isReprint
@@ -226,7 +228,7 @@ function initialAuthorization(
           : "open-cash-drawer",
         status: "Authorized",
         reason: isReprint ? source : "MANUAL",
-        source: isHistory ? "remote-history" : "sales",
+        source: isHistory ? source : "sales",
         outcome: "Succeeded",
         printerId: input.printerId,
         errorCode: null,
@@ -248,7 +250,7 @@ function initialAuthorization(
   };
 }
 
-test("真实 SQLite：M32 原有本机履约事实无损升级 M33 外部订单身份", async () => {
+test("真实 SQLite：M32 原有本机履约事实无损升级当前外部订单身份", async () => {
   const { connection } = createHarness();
   await applyMigrations(
     connection,
@@ -281,10 +283,95 @@ test("真实 SQLite：M32 原有本机履约事实无损升级 M33 外部订单�
      FROM print_jobs WHERE job_id = 'print-before-m33'`,
   );
   assert.deepEqual({ ...row }, {
-    version: 33,
+    version: 34,
     orderGuid: "order-before-m33",
     externalOrderGuid: null,
   });
+});
+
+test("真实 SQLite：M33 升级后允许分期历史外部订单审计并恢复来源", async () => {
+  const { connection, store } = createHarness();
+  await applyMigrations(
+    connection,
+    () => "2026-07-28T03:00:00.000Z",
+    POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 33),
+  );
+  const orderGuid = "30000000-0000-4000-8000-000000000003";
+  const authorization = initialAuthorization({
+    actionId: "action-installment-history-reprint",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid,
+    printerId: "XP-INSTALLMENT",
+    source: "installment-history",
+  });
+  const input = {
+    orderGuid,
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-INSTALLMENT",
+  };
+
+  await assert.rejects(
+    store.createLastReceiptReprint(input, authorization),
+    /AUDIT_EXTERNAL_ORDER_INVALID/u,
+  );
+  assert.deepEqual(
+    { ...await connection.getFirst<{ jobs: number; audits: number }>(
+      `SELECT
+        (SELECT COUNT(*) FROM print_jobs) AS jobs,
+        (SELECT COUNT(*) FROM audit_events) AS audits`,
+    ) },
+    { jobs: 0, audits: 0 },
+  );
+
+  await applyMigrations(
+    connection,
+    () => "2026-07-28T04:00:00.000Z",
+  );
+  const created = await store.createLastReceiptReprint(input, authorization);
+  const claimed = await store.claimQueuedPrintJob(authorization.context.actionId);
+  const row = await connection.getFirst<{
+    version: number;
+    printExternalOrderGuid: string;
+    auditExternalOrderGuid: string;
+    source: string;
+  }>(
+    `SELECT
+      (SELECT MAX(version) FROM schema_migrations) AS version,
+      print.external_order_guid AS printExternalOrderGuid,
+      audit.external_order_guid AS auditExternalOrderGuid,
+      json_extract(audit.payload_json, '$.source') AS source
+     FROM print_jobs AS print
+     JOIN audit_events AS audit ON audit.correlation_id = print.job_id
+     WHERE print.job_id = ?`,
+    [authorization.context.actionId],
+  );
+
+  assert.equal(created?.reprintSource, "installment-history");
+  assert.equal(claimed?.reprintSource, "installment-history");
+  assert.deepEqual({ ...row }, {
+    version: 34,
+    printExternalOrderGuid: orderGuid,
+    auditExternalOrderGuid: orderGuid,
+    source: "installment-history",
+  });
+  await assert.rejects(
+    connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid, external_order_guid,
+        correlation_id, payload_json, uploaded_at_iso,
+        scope_store_code, scope_device_code
+      ) VALUES (
+        'audit-disallowed-external-source', 'RECEIPT_REPRINT',
+        '2026-07-28T04:01:00.000Z', NULL, ?, 'disallowed-external-source', ?, NULL,
+        'S1', 'IPAD1'
+      )`,
+      [orderGuid, JSON.stringify({
+        action: "reprint-history-receipt",
+        source: "local-history",
+      })],
+    ),
+    /AUDIT_EXTERNAL_ORDER_INVALID/u,
+  );
 });
 
 test("真实 SQLite：跨终端远程重打不伪造本机订单，重启恢复原 scope 且 Ambiguous 不重放", async () => {

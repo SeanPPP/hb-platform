@@ -1,10 +1,13 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using BlazorApp.Shared.Models.POSM;
+using Hbpos.Api.Controllers;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using Microsoft.AspNetCore.Mvc;
 using SqlSugar;
 
 namespace Hbpos.Api.Tests;
@@ -314,6 +317,115 @@ public sealed class InstallmentServiceTests
 
         Assert.Equal(alice.InstallmentGuid, Assert.Single(byName.Orders).InstallmentGuid);
         Assert.Equal(alice.InstallmentGuid, Assert.Single(byNumber.Orders).InstallmentGuid);
+    }
+
+    [Fact]
+    public void History_query_request_defaults_skip_to_zero()
+    {
+        var request = new InstallmentHistoryQueryRequest("S01");
+
+        Assert.Equal(0, request.Skip);
+    }
+
+    [Fact]
+    public async Task History_defaults_skip_to_zero_and_preserves_legacy_take_semantics()
+    {
+        var historyService = new CapturingInstallmentHistoryService();
+        var controller = new InstallmentsController(null!, historyService);
+
+        await controller.History(
+            "S01",
+            null,
+            null,
+            null,
+            null,
+            null,
+            0,
+            CancellationToken.None);
+
+        Assert.NotNull(historyService.LastQuery);
+        Assert.Equal(0, historyService.LastQuery!.Skip);
+        Assert.Equal(100, historyService.LastQuery.Take);
+    }
+
+    [Fact]
+    public async Task History_rejects_negative_skip()
+    {
+        var controller = new InstallmentsController(null!, null!);
+
+        var result = await controller.History(
+            "S01",
+            null,
+            null,
+            null,
+            null,
+            null,
+            100,
+            CancellationToken.None,
+            skip: -1);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<InstallmentHistoryQueryResponse>>(badRequest.Value);
+        Assert.Equal("INSTALLMENT_HISTORY_SKIP_INVALID", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Sql_repository_history_pages_use_stable_created_at_and_guid_order()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var createdAt = DateTimeOffset.Parse("2026-05-21T10:00:00Z");
+        var installments = new[]
+        {
+            (Guid: Guid.Parse("00000000-0000-0000-0000-000000000001"), CreatedAt: createdAt),
+            (Guid: Guid.Parse("00000000-0000-0000-0000-000000000004"), CreatedAt: createdAt.AddMinutes(-1)),
+            (Guid: Guid.Parse("00000000-0000-0000-0000-000000000002"), CreatedAt: createdAt),
+            (Guid: Guid.Parse("00000000-0000-0000-0000-000000000003"), CreatedAt: createdAt)
+        };
+        foreach (var installment in installments)
+        {
+            await service.CreateAsync(
+                CreateRequest() with
+                {
+                    InstallmentGuid = installment.Guid,
+                    CreatedAt = installment.CreatedAt
+                },
+                CancellationToken.None);
+        }
+
+        var firstPage = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Take: 2),
+            CancellationToken.None);
+        var secondPage = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Take: 2, Skip: 2),
+            CancellationToken.None);
+
+        var expected = installments
+            .OrderByDescending(installment => installment.CreatedAt)
+            .ThenByDescending(installment => installment.Guid.ToString("D"), StringComparer.Ordinal)
+            .Select(installment => installment.Guid)
+            .ToArray();
+        Assert.Equal(expected[..2], firstPage.Orders.Select(order => order.InstallmentGuid));
+        Assert.Equal(expected[2..], secondPage.Orders.Select(order => order.InstallmentGuid));
+        Assert.Empty(firstPage.Orders.Select(order => order.InstallmentGuid)
+            .Intersect(secondPage.Orders.Select(order => order.InstallmentGuid)));
+    }
+
+    [Fact]
+    public async Task Query_history_clamps_take_and_preserves_skip()
+    {
+        var repository = new InMemoryInstallmentRepository();
+        var service = new InstallmentService(repository, new FakeReservationService());
+
+        await service.QueryAsync(
+            new InstallmentHistoryQueryRequest(" S01 ", Take: 500, Skip: 7),
+            CancellationToken.None);
+
+        Assert.NotNull(repository.LastHistoryQuery);
+        Assert.Equal("S01", repository.LastHistoryQuery!.StoreCode);
+        Assert.Equal(200, repository.LastHistoryQuery.Take);
+        Assert.Equal(7, repository.LastHistoryQuery.Skip);
     }
 
     [Fact]
@@ -646,6 +758,8 @@ public sealed class InstallmentServiceTests
         private readonly Dictionary<Guid, InstallmentDetailsDto> details = [];
         private readonly Dictionary<Guid, Guid> paymentIndex = [];
 
+        public InstallmentHistoryQueryRequest? LastHistoryQuery { get; private set; }
+
         public async Task CreateAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)
         {
             if (dbContext is not null)
@@ -820,6 +934,7 @@ public sealed class InstallmentServiceTests
             InstallmentHistoryQueryRequest request,
             CancellationToken cancellationToken)
         {
+            LastHistoryQuery = request;
             var query = details.Values
                 .Where(order => string.Equals(order.StoreCode, request.StoreCode, StringComparison.OrdinalIgnoreCase));
 
@@ -855,6 +970,8 @@ public sealed class InstallmentServiceTests
 
             var orders = query
                 .OrderByDescending(order => order.CreatedAt)
+                .ThenByDescending(order => order.InstallmentGuid)
+                .Skip(request.Skip)
                 .Take(Math.Clamp(request.Take, 1, 200))
                 .Select(order => new InstallmentSummaryDto(
                     order.InstallmentGuid,
@@ -940,6 +1057,26 @@ public sealed class InstallmentServiceTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(reservations.Remove(token));
+        }
+    }
+
+    private sealed class CapturingInstallmentHistoryService : IInstallmentHistoryService
+    {
+        public InstallmentHistoryQueryRequest? LastQuery { get; private set; }
+
+        public Task<InstallmentHistoryQueryResponse> QueryAsync(
+            InstallmentHistoryQueryRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastQuery = request;
+            return Task.FromResult(new InstallmentHistoryQueryResponse([]));
+        }
+
+        public Task<InstallmentDetailsDto?> GetDetailsAsync(
+            Guid installmentGuid,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<InstallmentDetailsDto?>(null);
         }
     }
 

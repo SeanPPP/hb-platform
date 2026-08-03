@@ -13,19 +13,28 @@ import type {
 } from "@/core/contracts";
 import type { CartSnapshot } from "@/core/contracts/cart";
 import { INSTALLMENT_SENSITIVE_PAYLOAD_REVISION } from "@/core/db/sqlite-installment-snapshot-repository";
+import type {
+  FulfilmentActionResult,
+  FulfilmentAuthorizationContext,
+  FulfilmentLeaseGuard,
+} from "@/features/fulfilment";
 import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
 } from "@/features/installments/installment-authorization";
 import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
+import { resolveInstallmentDateRange } from "@/features/installments/installment-date-filter";
 import type {
   InstallmentAppendPaymentCommand,
   InstallmentCancelCommand,
   InstallmentCreateCommand,
+  InstallmentDateFilter,
   InstallmentDetails,
+  InstallmentDeviceScope,
   InstallmentLine,
   InstallmentPaymentCommand,
   InstallmentPaymentMethod,
@@ -40,6 +49,7 @@ import {
   InstallmentWorkflowError,
   type InstallmentCreateDraft,
   type InstallmentCreateDraftPort,
+  type InstallmentReprintPort,
   type InstallmentWorkflowCreateInput,
   type InstallmentWorkflowPort,
   type InstallmentWorkflowRepaymentInput,
@@ -226,6 +236,19 @@ export interface InstallmentMutationPaymentPort {
   >;
 }
 
+/**
+ * 组合根持有真实 fulfilment 服务；分期运行时只负责把同一可信 cashier lease
+ * 绑定到授权上下文和发送前复核，Presenter 不能注入打印机或票据字节。
+ */
+export type InstallmentReceiptReprintRuntimePort = Readonly<{
+  canReprint(details: InstallmentDetails): boolean;
+  execute(
+    installmentGuid: string,
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult>;
+}>;
+
 export type ProductionInstallmentRuntimeDependencies = Readonly<{
   currentCashier: CurrentCashierSession;
   terminal: TerminalScope;
@@ -235,9 +258,12 @@ export type ProductionInstallmentRuntimeDependencies = Readonly<{
   snapshotCache: InstallmentSnapshotCachePort;
   actionStore: InstallmentActionStorePort;
   payments: InstallmentMutationPaymentPort;
+  receiptReprint?: InstallmentReceiptReprintRuntimePort | null;
   voucherIntents: InstallmentVoucherIntentVaultPort;
   sha256Hex(material: string): Promise<string>;
   createId(): string;
+  businessTimeZone: string;
+  now(): Date;
   nowIso(): string;
 }>;
 
@@ -264,6 +290,8 @@ export function createProductionInstallmentRuntime(
         // 实际请求仍会调用 connectivity；这个初值仅避免 route 注入不可信状态。
         initialOnline: true,
         permissions: session.permissionCodes,
+        reprintPort: createInstallmentReprintPort(input, lease, terminal),
+        trustedDeviceCode: terminal.deviceCode,
         workflow,
       });
     },
@@ -311,6 +339,66 @@ export function createProductionInstallmentRuntime(
   });
 }
 
+function createInstallmentReprintPort(
+  input: ProductionInstallmentRuntimeDependencies,
+  lease: TrustedCashierLease,
+  terminal: TerminalScope,
+): InstallmentReprintPort | null {
+  const receiptReprint = input.receiptReprint;
+  if (!receiptReprint) return null;
+
+  const assertActive = (): TrustedCashierSession => {
+    const active = requireScopedLease(lease, terminal);
+    requirePermission(active, INSTALLMENTS_VIEW_PERMISSION);
+    requirePermission(active, INSTALLMENTS_REPRINT_PERMISSION);
+    return active;
+  };
+
+  return Object.freeze({
+    canReprint(details: InstallmentDetails): boolean {
+      try {
+        const active = assertActive();
+        return (
+          details.storeCode === active.storeCode &&
+          details.deviceCode === active.deviceCode &&
+          receiptReprint.canReprint(details)
+        );
+      } catch {
+        // capability 是渲染期只读查询；会话已失效时必须隐藏动作，不能让页面崩溃。
+        return false;
+      }
+    },
+    async reprintExistingInstallment(installmentGuid: string): Promise<void> {
+      const active = assertActive();
+      const result = await receiptReprint.execute(
+        installmentGuid,
+        {
+          actionId: input.createId(),
+          permissionCode: INSTALLMENTS_REPRINT_PERMISSION,
+          authorizationMode: "current-cashier",
+          requestingCashierId: active.cashierId,
+          requestingCashierName: active.cashierName,
+          requestingUserGuid: active.userGuid,
+          authorizingCashierId: null,
+        },
+        () => {
+          assertActive();
+        },
+      );
+      if (result.state !== "Printed") {
+        throw Object.assign(
+          new Error("Installment receipt reprint failed."),
+          {
+            code:
+              result.errorCode ??
+              `REPRINT_${result.state.toUpperCase().replaceAll("-", "_")}`,
+          },
+        );
+      }
+    },
+  });
+}
+
 class ActiveCartInstallmentDraftPort implements InstallmentCreateDraftPort {
   public constructor(private readonly activeCart: CartPort) {}
 
@@ -341,27 +429,37 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
   }
 
   public async list(input: Readonly<{
+    dateFilter: InstallmentDateFilter;
+    deviceScope: InstallmentDeviceScope;
     keyword: string | null;
     online: boolean;
+    skip: number;
     status: InstallmentStatus | null;
-    take: 100;
+    take: 51;
   }>): Promise<readonly InstallmentSummary[]> {
     const session = requireScopedLease(
       this.context.lease,
       this.context.terminal,
     );
     requirePermission(session, INSTALLMENTS_VIEW_PERMISSION);
-    const online = input.online && (await this.context.input.connectivity.isOnline());
+    let online = false;
+    try {
+      online =
+        input.online &&
+        (await this.context.input.connectivity.isOnline());
+    } catch {
+      throw workflowError(
+        "online-required",
+        "Installment history requires an online connection.",
+      );
+    }
     requireScopedLease(this.context.lease, this.context.terminal);
 
     if (!online) {
-      const cached = await this.context.input.snapshotCache.listForStore(
-        this.context.terminal.storeCode,
-        input.take,
-        0,
+      throw workflowError(
+        "online-required",
+        "Installment history requires an online connection.",
       );
-      requireScopedLease(this.context.lease, this.context.terminal);
-      return filterCached(cached, input);
     }
 
     try {
@@ -369,17 +467,29 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       if (blocking) {
         await this.recoverPersistedAction(blocking);
       }
+      const range = resolveInstallmentDateRange(
+        input.dateFilter,
+        this.context.input.now(),
+        this.context.input.businessTimeZone,
+      );
+      if (!range) {
+        throw workflowError(
+          "conflict",
+          "Installment date filter is invalid.",
+        );
+      }
       const orders = await this.context.input.api.list({
+        createdFromIso: range.createdFromIso,
+        createdToIso: range.createdToIso,
+        deviceCode: deviceCodeForScope(
+          input.deviceScope,
+          this.context.terminal,
+        ),
         keyword: input.keyword,
+        skip: input.skip,
         status: input.status,
         take: input.take,
       });
-      requireScopedLease(this.context.lease, this.context.terminal);
-      // 中文注释：筛选/分页响应不是全量快照，只能增量写入，不能删除未返回的历史。
-      await this.context.input.snapshotCache.upsertForStore(
-        this.context.terminal.storeCode,
-        orders.map(toSnapshot),
-      );
       requireScopedLease(this.context.lease, this.context.terminal);
       return Object.freeze([...orders]);
     } catch (error) {
@@ -396,9 +506,23 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       this.context.terminal,
     );
     requirePermission(session, INSTALLMENTS_VIEW_PERMISSION);
-    if (!input.online || !(await this.context.input.connectivity.isOnline())) {
+    let online = false;
+    try {
+      online =
+        input.online &&
+        (await this.context.input.connectivity.isOnline());
+    } catch {
+      throw workflowError(
+        "online-required",
+        "Installment details require an online connection.",
+      );
+    }
+    if (!online) {
       requireScopedLease(this.context.lease, this.context.terminal);
-      return null;
+      throw workflowError(
+        "online-required",
+        "Installment details require an online connection.",
+      );
     }
     try {
       const details = await this.context.input.api.getDetails(
@@ -456,6 +580,9 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (blocking) return this.executePersistedAction(blocking);
     this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
     this.requireTenderPermissions(input.method);
+    await this.assertInitialMutationScope(
+      requiredText(input.installmentGuid, "installment guid"),
+    );
     const candidate = await this.createRepaymentAction(input);
     const persisted = await this.persistCandidate(candidate);
     return this.executePersistedAction(persisted);
@@ -469,6 +596,9 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     const blocking = await this.loadBlockingAction();
     if (blocking) return this.executePersistedAction(blocking);
     this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
+    await this.assertInitialMutationScope(
+      requiredText(input.installmentGuid, "installment guid"),
+    );
     const candidate = await this.createCancelAction(input);
     const persisted = await this.persistCandidate(candidate);
     return this.executePersistedAction(persisted);
@@ -893,6 +1023,40 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     }
   }
 
+  private async assertInitialMutationScope(
+    installmentGuid: string,
+  ): Promise<void> {
+    let details: InstallmentDetails;
+    try {
+      // 中文注释：跨设备详情可只读，但首次还款/退款必须在 candidate、券材料
+      // 和 durable action 产生前复核 scope；失败不能留下不可恢复的 Created action。
+      const loaded = await this.context.input.api.getDetails(
+        installmentGuid,
+      );
+      if (!loaded) {
+        throw workflowError(
+          "conflict",
+          "Installment details are unavailable for payment scope validation.",
+        );
+      }
+      details = loaded;
+    } catch (error) {
+      throw mapRemoteError(error);
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+
+    if (
+      details.installmentGuid !== installmentGuid ||
+      details.storeCode !== this.context.terminal.storeCode ||
+      details.deviceCode !== this.context.terminal.deviceCode
+    ) {
+      throw workflowError(
+        "conflict",
+        "Installment payment scope does not match the current terminal.",
+      );
+    }
+  }
+
   private async transitionAction(
     persisted: PersistedInstallmentAction,
     nextState: InstallmentActionState,
@@ -1282,27 +1446,6 @@ function createLines(
   );
 }
 
-function filterCached(
-  snapshots: readonly InstallmentSnapshot[],
-  input: Readonly<{ keyword: string | null; status: InstallmentStatus | null; take: number }>,
-): readonly InstallmentSummary[] {
-  const keyword = input.keyword?.trim().toLowerCase() ?? "";
-  return Object.freeze(
-    snapshots
-      .filter((snapshot) => !input.status || snapshot.status === input.status)
-      .filter((snapshot) => {
-        if (!keyword) return true;
-        return [
-          snapshot.installmentNumber,
-          snapshot.customerName,
-          snapshot.customerPhone ?? "",
-        ].some((value) => value.toLowerCase().includes(keyword));
-      })
-      .slice(0, input.take)
-      .map(toSummary),
-  );
-}
-
 function toSnapshot(summary: InstallmentSummary): InstallmentSnapshot {
   return Object.freeze({
     ...toSummary(summary),
@@ -1617,17 +1760,52 @@ function validateNonPaymentMutationResult(
 function mapRemoteError(error: unknown): Error {
   if (error instanceof InstallmentWorkflowError) return error;
   if (error instanceof HbposApiError) {
+    const code = error.code?.trim().toLowerCase() ?? "";
+    if (code === "device_scope_forbidden") {
+      return workflowError(
+        "conflict",
+        "Installment device scope does not match the current terminal.",
+      );
+    }
     if (error.status === 401 || error.status === 403) {
-      return workflowError("authorization-declined", error.message);
+      return workflowError(
+        "authorization-declined",
+        "Installment permission is unavailable.",
+      );
     }
     if (error.status === 409 || error.code?.toLowerCase().includes("conflict")) {
-      return workflowError("conflict", error.message);
+      return workflowError(
+        "conflict",
+        "Installment request conflicted with current state.",
+      );
     }
     if (error.kind === "transport") {
-      return workflowError("online-required", error.message);
+      return workflowError(
+        "online-required",
+        "Installment requires an online connection.",
+      );
+    }
+    if (
+      (error.status !== undefined && error.status >= 500) ||
+      code.includes("service_unavailable") ||
+      code.includes("service-unavailable")
+    ) {
+      return workflowError(
+        "service-unavailable",
+        "Installment service is temporarily unavailable.",
+      );
     }
   }
-  return error instanceof Error ? error : new Error("Installment remote request failed.");
+  return new Error("Installment remote request failed.");
+}
+
+function deviceCodeForScope(
+  scope: InstallmentDeviceScope,
+  terminal: TerminalScope,
+): string | null {
+  if (scope === "store") return null;
+  if (scope === "device") return terminal.deviceCode;
+  throw workflowError("conflict", "Installment device scope is invalid.");
 }
 
 function workflowError(

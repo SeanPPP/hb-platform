@@ -37,6 +37,18 @@ function formatMoney(money: CustomerDisplaySnapshot["total"]): string {
   ).padStart(2, "0")}`;
 }
 
+function formatDiscount(money: CustomerDisplaySnapshot["discount"]): string {
+  const absoluteCents = Math.abs(money.cents);
+  if (absoluteCents === 0) {
+    return "$0.00";
+  }
+
+  // snapshot 保存的是折扣绝对金额；客显必须明确呈现为减项。
+  return `−$${Math.floor(absoluteCents / 100)}.${String(
+    absoluteCents % 100,
+  ).padStart(2, "0")}`;
+}
+
 function modeTitle(
   mode: CustomerDisplaySnapshot["mode"],
   translate: (key: string) => string,
@@ -75,7 +87,12 @@ export function ExternalDisplaySurface({
       (nextSnapshot) => {
         const parsed = parseSnapshot(nextSnapshot);
         if (parsed !== null) {
-          setSnapshot(parsed);
+          setSnapshot((currentSnapshot) =>
+            currentSnapshot === null ||
+            parsed.revision > currentSnapshot.revision
+              ? parsed
+              : currentSnapshot,
+          );
         }
       },
     );
@@ -90,15 +107,39 @@ export function ExternalDisplaySurface({
     () => snapshot?.items.slice(0, maximumVisibleItems) ?? [],
     [snapshot],
   );
+  const showsFullScreenAdvert =
+    snapshot !== null &&
+    snapshot.mode === "idle" &&
+    snapshot.items.length === 0 &&
+    snapshot.advert !== null;
+
+  if (showsFullScreenAdvert) {
+    return (
+      <View
+        accessible={false}
+        pointerEvents="none"
+        style={styles.surface}
+        testID="external-display-surface"
+      >
+        <View
+          style={styles.fullScreenNativeAdvertWindow}
+          testID="external-display-advert-window"
+        />
+      </View>
+    );
+  }
 
   return (
     <View
       accessible={false}
       pointerEvents="none"
-      style={styles.surface}
+      style={[styles.surface, styles.transactionLayout]}
       testID="external-display-surface"
     >
-      <View style={styles.transactionPanel}>
+      <View
+        style={styles.transactionPanel}
+        testID="external-display-transaction-panel"
+      >
         <Text style={styles.mode}>
           {snapshot === null
             ? t("customerDisplay.mode.idle")
@@ -146,7 +187,7 @@ export function ExternalDisplaySurface({
         <AmountRow
           label={t("customerDisplay.discount")}
           value={
-            snapshot === null ? "$0.00" : formatMoney(snapshot.discount)
+            snapshot === null ? "$0.00" : formatDiscount(snapshot.discount)
           }
         />
         <AmountRow
@@ -162,7 +203,10 @@ export function ExternalDisplaySurface({
       </View>
 
       {/* 右侧保持透明，由 UIKit 本地媒体层承载 image/video 广告。 */}
-      <View style={styles.nativeAdvertWindow} />
+      <View
+        style={styles.nativeAdvertWindow}
+        testID="external-display-advert-window"
+      />
     </View>
   );
 }
@@ -213,14 +257,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     backgroundColor: "transparent",
   },
-  transactionPanel: {
-    flex: 0.6,
+  transactionLayout: {
+    gap: 32,
     paddingHorizontal: 34,
     paddingVertical: 28,
+  },
+  transactionPanel: {
+    flex: 3,
     backgroundColor: "#09111f",
   },
   nativeAdvertWindow: {
-    flex: 0.4,
+    flex: 2,
+    backgroundColor: "transparent",
+  },
+  fullScreenNativeAdvertWindow: {
+    flex: 1,
     backgroundColor: "transparent",
   },
   mode: {

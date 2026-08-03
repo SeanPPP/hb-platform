@@ -163,6 +163,8 @@ test("没有历史打印作业也能从本地订单账本准备真实重打 ESC/
   assert.deepEqual([...prepared?.receiptBytes.slice(0, 3) ?? []], [0x1b, 0x40, 0x1b]);
   assert.match(encoder.decode(prepared?.receiptBytes), /\*\*\* REPRINT \*\*\*/);
   assert.match(encoder.decode(prepared?.receiptBytes), /123456\s+1\s+\$7\.62/);
+  assert.match(encoder.decode(prepared?.receiptBytes), /order-without-print-history\n.*Date:/s);
+  assert.doesNotMatch(encoder.decode(prepared?.receiptBytes), /Order: #100/);
 });
 
 test("真实重打按 WPF 使用成交时间而不是本次任务时间", async () => {

@@ -73,6 +73,7 @@ test("销售小票按 WPF 顺序加入显示元数据和完整 GUID 机读码", 
     paper: "80mm",
     orderGuid: fullOrderGuid,
     orderDisplay: "S1-100",
+    orderPresentation: "guid-only",
     storeCode: "S001",
     statusText: "*** Paid ***",
     printedAtIso: "2026-08-02T12:34:56.000Z",
@@ -86,13 +87,14 @@ test("销售小票按 WPF 顺序加入显示元数据和完整 GUID 机读码", 
 
   assert.equal(document.lines.some((line) => line.kind === "barcode"), false);
   assert.equal(qr?.value, fullOrderGuid);
-  assert.match(text, /^Order: S1-100$/m);
+  assert.match(text, new RegExp(`^${fullOrderGuid}$`, "m"));
+  assert.doesNotMatch(text, /^Order(?:#|:)/m);
+  assert.doesNotMatch(text, /^S1-100$/m);
   assert.match(text, /Store: Brisbane \(S001\)/);
   assert.match(text, new RegExp(`Print Time: ${localReceiptTime("2026-08-02T12:34:56.000Z")}`));
-  assert.doesNotMatch(text, new RegExp(fullOrderGuid));
   assert.ok(text.indexOf("TAX INVOICE") < text.indexOf("*** Paid ***"));
-  assert.ok(text.indexOf("*** Paid ***") < text.indexOf("Order: S1-100"));
-  assert.ok(text.indexOf("Order: S1-100") < text.indexOf("Date:"));
+  assert.ok(text.indexOf("*** Paid ***") < text.indexOf(fullOrderGuid));
+  assert.ok(text.indexOf(fullOrderGuid) < text.indexOf("Date:"));
   assert.ok(text.indexOf("Date:") < text.indexOf("ITEM"));
   assert.ok(text.indexOf("Payment:") < text.indexOf("Print Time:"));
   assert.ok(document.lines.every((line) => line.kind === "feed" || line.kind === "barcode" || line.kind === "qr" || displayWidth(line.text) <= 42));
@@ -108,6 +110,28 @@ test("销售小票按 WPF 顺序加入显示元数据和完整 GUID 机读码", 
   ]));
 });
 
+test("销售小票在设备与商品表之间安全渲染扩展信息行", () => {
+  const document = buildSaleReceiptDocument({
+    ...sale,
+    extraInfoLines: [
+      "Installment No: INS-100",
+      "Customer: Alice Example",
+      "Payment history:",
+    ],
+  });
+  const text = receiptText(document);
+
+  assert.ok(text.indexOf("Device: IPAD-1") < text.indexOf("Installment No: INS-100"));
+  assert.ok(text.indexOf("Installment No: INS-100") < text.indexOf("ITEM"));
+  assert.throws(
+    () => buildSaleReceiptDocument({
+      ...sale,
+      extraInfoLines: ["Customer: Alice\u001b@"],
+    }),
+    /control characters/i,
+  );
+});
+
 test("80mm 销售小票严格使用 WPF 商品列、标题和正式打印语义", () => {
   const document = buildSaleReceiptDocument({
     ...sale,
@@ -120,6 +144,7 @@ test("80mm 销售小票严格使用 WPF 商品列、标题和正式打印语义"
     },
     orderGuid: fullOrderGuid,
     orderDisplay: "#100",
+    orderPresentation: "guid-only",
     storeCode: "S001",
     isReprint: true,
     includeMachineCodes: true,
@@ -136,10 +161,12 @@ test("80mm 销售小票严格使用 WPF 商品列、标题和正式打印语义"
     .filter((line) => line.kind === "text" || line.kind === "separator")
     .map((line) => line.text);
 
-  assert.equal(lines.filter((line) => line === "Brisbane").length, 2, "分店名即使与品牌相同也必须显示");
+  assert.equal(lines.filter((line) => line === "Brisbane").length, 1, "品牌与分店同名时只显示一次");
   assert.ok(lines.includes("Shop 1 Sunnybank Shopping Centre"));
   assert.ok(lines.includes("Brisbane Queensland"));
-  assert.ok(lines.includes("Order: #100"));
+  assert.ok(lines.includes(fullOrderGuid));
+  assert.equal(lines.some((line) => /^Order(?:#|:)/.test(line)), false);
+  assert.equal(lines.includes("#100"), false);
   assert.ok(lines.includes("===== TAX INVOICE ====="));
   assert.ok(lines.includes("*** Paid ***"));
   assert.ok(lines.includes("*** REPRINT ***"));
@@ -178,6 +205,7 @@ test("58/80mm 对放不下的完整 GUID 都省略一维码并保留完整 QR", 
     ...sale,
     orderGuid: worstCaseGuid,
     orderDisplay: "#42",
+    orderPresentation: "guid-only",
     includeMachineCodes: true,
   });
   const wide = buildSaleReceiptDocument({
@@ -185,13 +213,24 @@ test("58/80mm 对放不下的完整 GUID 都省略一维码并保留完整 QR", 
     paper: "80mm",
     orderGuid: worstCaseGuid,
     orderDisplay: "#42",
+    orderPresentation: "guid-only",
     includeMachineCodes: true,
   });
 
   assert.equal(narrow.lines.some((line) => line.kind === "barcode"), false);
   assert.ok(narrow.lines.some((line) => line.kind === "qr" && line.value === worstCaseGuid));
+  assert.equal(
+    narrow.lines
+      .filter((line) => line.kind === "text")
+      .map((line) => line.text)
+      .filter((line) => worstCaseGuid.includes(line))
+      .join(""),
+    worstCaseGuid,
+  );
+  assert.equal(narrow.lines.some((line) => line.kind === "text" && /^Order(?:#|:)/.test(line.text)), false);
   assert.equal(wide.lines.some((line) => line.kind === "barcode"), false);
   assert.ok(wide.lines.some((line) => line.kind === "qr" && line.value === worstCaseGuid));
+  assert.ok(wide.lines.some((line) => line.kind === "text" && line.text === worstCaseGuid));
 });
 
 test("可装入纸宽的短 Code 128 使用标准双点模块输出", () => {

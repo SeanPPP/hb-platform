@@ -19,6 +19,7 @@ class FulfilmentConnection implements SqliteConnectionPort {
   public readonly auditEvents = new Map<string, Record<string, SqlValue>>();
   public readonly runs: { sql: string; parameters: readonly SqlValue[] }[] = [];
   public transactions = 0;
+  public localOrderReads = 0;
 
   public async exec(): Promise<void> {}
 
@@ -131,7 +132,10 @@ class FulfilmentConnection implements SqliteConnectionPort {
   }
 
   public async getFirst<T extends object>(sql: string, parameters: readonly SqlValue[] = []): Promise<T | null> {
-    if (sql.includes("FROM local_orders")) return { state: "PendingSync" } as T;
+    if (sql.includes("FROM local_orders")) {
+      this.localOrderReads += 1;
+      return { state: "PendingSync" } as T;
+    }
     if (sql.includes("FROM print_jobs") && sql.includes("job_id = ?")) return (this.printJobs.get(string(parameter(parameters, 0))) ?? null) as T | null;
     if (sql.includes("FROM drawer_events") && sql.includes("event_id = ?")) return (this.drawerEvents.get(string(parameter(parameters, 0))) ?? null) as T | null;
     if (sql.includes("FROM print_jobs") && sql.includes("state = 'Printed'")) {
@@ -218,14 +222,16 @@ function initialAuthorization(
     eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
     orderGuid: string | null;
     printerId: string;
-    source?: "sales" | "payment-success" | "local-history" | "remote-history";
+    source?: "sales" | "payment-success" | "local-history" | "remote-history" | "installment-history";
   }>,
 ): FulfilmentInitialAuthorization {
   const isReprint = input.eventType === "RECEIPT_REPRINT";
   const isPaymentSuccess = isReprint && input.source === "payment-success";
   const isHistoryReprint =
     isReprint &&
-    (input.source === "local-history" || input.source === "remote-history");
+    (input.source === "local-history" ||
+      input.source === "remote-history" ||
+      input.source === "installment-history");
   const context = {
     actionId: input.actionId,
     permissionCode: isReprint
@@ -247,6 +253,10 @@ function initialAuthorization(
       occurredAtIso: "2026-07-28T03:00:00.000Z",
       orderGuid: input.orderGuid,
       correlationId: input.actionId,
+      ...((input.source === "remote-history" ||
+        input.source === "installment-history") && input.orderGuid
+        ? { externalOrderGuid: input.orderGuid }
+        : {}),
       payload: {
         action: isReprint
           ? isPaymentSuccess
@@ -617,6 +627,39 @@ test("旧授权审计缺少可选员工字段时，payment/last/history 重打�
       scenario.expected,
     );
   }
+});
+
+test("分期历史重打作为外部订单持久化并从首份授权审计恢复来源", async () => {
+  const { connection, store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "installment-history-reprint-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "12345678-1234-1234-1234-abcdef123456",
+    printerId: "XP-INSTALLMENT",
+    source: "installment-history",
+  });
+
+  const created = await store.createLastReceiptReprint(
+    {
+      orderGuid: "12345678-1234-1234-1234-abcdef123456",
+      receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+      printerId: "XP-INSTALLMENT",
+    },
+    authorization,
+  );
+  const claimed = await store.claimQueuedPrintJob(authorization.context.actionId);
+
+  assert.equal(created?.reprintSource, "installment-history");
+  assert.equal(claimed?.reprintSource, "installment-history");
+  assert.equal(connection.localOrderReads, 0);
+  assert.equal(
+    connection.printJobs.get(authorization.context.actionId)?.external_order_guid,
+    authorization.audit.orderGuid,
+  );
+  assert.equal(
+    connection.auditEvents.get(authorization.audit.eventId)?.external_order_guid,
+    authorization.audit.orderGuid,
+  );
 });
 
 test("旧授权审计缺少可选员工字段时，Failed 手动开箱仍从原 actor 恢复", async () => {

@@ -11,6 +11,7 @@ import {
   OrderRepositoryPaymentCompletionProjection,
   OrderRepositoryPaymentReceiptRenderer,
   PersistedPaymentCompletionSettings,
+  type PaymentReceiptSettingsPort,
 } from "./payment-completion-runtime";
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import { ProductionReturnRefundAdapter } from "./production-return-refund-adapter";
@@ -121,6 +122,7 @@ export type ProductionPaymentRuntimeDependencies = Readonly<{
   createId(): string;
   connectivity: PaymentConnectivityPort;
   bootstrap?: PaymentProviderRuntimeBootstrap | undefined;
+  receiptSettings?: PaymentReceiptSettingsPort | undefined;
   drainFulfilment(): Promise<unknown>;
 }>;
 
@@ -148,6 +150,10 @@ export function createProductionPaymentRuntime(
   }
 
   const terminalScope = normalizeScope(input.terminal);
+  const receiptSettings: PaymentReceiptSettingsPort = input.receiptSettings ?? {
+    getReceiptPrinterSettings: () =>
+      input.database.settings().getReceiptPrinterSettings(),
+  };
   const voucherRelease = availableVoucherRelease(input.bootstrap);
   const drafts = input.database.paymentDraftRecovery({
     createOrderGuid: input.createId,
@@ -241,10 +247,7 @@ export function createProductionPaymentRuntime(
     );
     const finalPlanner = new PaymentFinalCompletionPlanner({
       settings: new PersistedPaymentCompletionSettings(
-        {
-          getReceiptPrinterSettings: () =>
-            input.database.settings().getReceiptPrinterSettings(),
-        },
+        receiptSettings,
         {
           canOpenCashDrawer: () =>
             requireScopedLease(cashierLease, input.terminal)
@@ -253,10 +256,7 @@ export function createProductionPaymentRuntime(
       ),
       renderer: new OrderRepositoryPaymentReceiptRenderer(
         input.repositories.orders,
-        {
-          getReceiptPrinterSettings: () =>
-            input.database.settings().getReceiptPrinterSettings(),
-        },
+        receiptSettings,
       ),
       createId: input.createId,
       nowIso: input.clock.nowIso,

@@ -104,6 +104,7 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
     if (createdTo) params.createdTo = createdTo;
     if (keyword) params.keyword = keyword;
     if (query.status) params.status = STATUS_TO_API[query.status];
+    params.skip = requestSkip(query.skip);
     params.take = requestTake(query.take);
 
     const response = await this.transport.request<
@@ -677,11 +678,24 @@ function safeDisplayText(value: unknown, maxLength: number): string | null {
   return normalized;
 }
 
-function requestTake(value: unknown): 20 | 50 | 100 | 200 {
-  if (value === 20 || value === 50 || value === 100 || value === 200) {
+function requestTake(value: unknown): 20 | 50 | 51 | 100 | 200 {
+  if (
+    value === 20 ||
+    value === 50 ||
+    value === 51 ||
+    value === 100 ||
+    value === 200
+  ) {
     return value;
   }
   throw invalidRequest("take");
+}
+
+function requestSkip(value: unknown): number {
+  if (Number.isSafeInteger(value) && Number(value) >= 0) {
+    return Number(value);
+  }
+  throw invalidRequest("skip");
 }
 
 function requestQuantity(value: unknown): number {

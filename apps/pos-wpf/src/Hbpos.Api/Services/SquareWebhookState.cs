@@ -160,6 +160,12 @@ public interface ISquareCheckoutSessionRepository
         SquareCheckoutSessionRecord session,
         CancellationToken cancellationToken);
 
+    Task<bool> RefreshCheckoutSessionFromLookupAsync(
+        SquareCheckoutSessionRecord session,
+        string originStoreCode,
+        string originDeviceCode,
+        CancellationToken cancellationToken);
+
     Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(
         string environment,
         string checkoutId,
@@ -240,6 +246,81 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
             );
         """;
 
+    private const string RefreshCheckoutSessionFromLookupSql = """
+        UPDATE target WITH (UPDLOCK, HOLDLOCK)
+        SET
+            [Status] = CASE
+                WHEN accepted.[Value] = 1
+                    THEN COALESCE(NULLIF(@Status, N''), target.[Status])
+                ELSE target.[Status]
+            END,
+            [Amount] = CASE
+                WHEN accepted.[Value] = 1 THEN COALESCE(@Amount, target.[Amount])
+                ELSE target.[Amount]
+            END,
+            [Currency] = CASE
+                WHEN accepted.[Value] = 1 THEN COALESCE(NULLIF(@Currency, N''), target.[Currency])
+                ELSE target.[Currency]
+            END,
+            [DeviceId] = CASE
+                WHEN accepted.[Value] = 1 THEN COALESCE(NULLIF(@DeviceId, N''), target.[DeviceId])
+                ELSE target.[DeviceId]
+            END,
+            [LocationId] = CASE
+                WHEN accepted.[Value] = 1 THEN COALESCE(NULLIF(@LocationId, N''), target.[LocationId])
+                ELSE target.[LocationId]
+            END,
+            [PaymentId] = COALESCE(NULLIF(target.[PaymentId], N''), NULLIF(@PaymentId, N'')),
+            [PaymentIdsJson] = COALESCE(
+                (
+                    SELECT N'[' + STRING_AGG(
+                        N'"' + STRING_ESCAPE(ids.[value], 'json') + N'"',
+                        N','
+                    ) + N']'
+                    FROM (
+                        SELECT CONVERT(nvarchar(4000), existing.[value]) AS [value]
+                        FROM OPENJSON(CASE
+                            WHEN ISJSON(target.[PaymentIdsJson]) = 1 THEN target.[PaymentIdsJson]
+                            ELSE N'[]'
+                        END) existing
+                        WHERE NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(4000), existing.[value]))), N'') IS NOT NULL
+                        UNION
+                        SELECT CONVERT(nvarchar(4000), incoming.[value]) AS [value]
+                        FROM OPENJSON(CASE
+                            WHEN ISJSON(@PaymentIdsJson) = 1 THEN @PaymentIdsJson
+                            ELSE N'[]'
+                        END) incoming
+                        WHERE NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(4000), incoming.[value]))), N'') IS NOT NULL
+                        UNION
+                        SELECT @PaymentId
+                        WHERE NULLIF(LTRIM(RTRIM(@PaymentId)), N'') IS NOT NULL
+                    ) ids
+                ),
+                target.[PaymentIdsJson]
+            ),
+            -- lookup 只能刷新公开状态；webhook 原始证据与事件游标必须原样保留。
+            [UpdatedAt] = CASE
+                WHEN accepted.[Value] = 1 THEN @UpdatedAt
+                ELSE target.[UpdatedAt]
+            END
+        FROM [dbo].[POSM_SquareCheckoutSession] target
+        CROSS APPLY (VALUES (
+            CASE
+                WHEN @UpdatedAt >= target.[UpdatedAt]
+                     AND (
+                         target.[Status] NOT IN (N'COMPLETED', N'CANCELED', N'CANCELLED', N'FAILED')
+                         OR @Status IN (N'COMPLETED', N'CANCELED', N'CANCELLED', N'FAILED')
+                     )
+                    THEN 1
+                ELSE 0
+            END
+        )) accepted([Value])
+        WHERE target.[Environment] = @Environment
+          AND target.[CheckoutId] = @CheckoutId
+          AND target.[OriginStoreCode] = @OriginStoreCode
+          AND target.[OriginDeviceCode] = @OriginDeviceCode;
+        """;
+
     public async Task<bool> TryAddWebhookEventAsync(
         SquareWebhookEventRecord webhookEvent,
         CancellationToken cancellationToken)
@@ -266,6 +347,29 @@ public sealed class SqlSugarSquareCheckoutSessionRepository(
         CancellationToken cancellationToken)
     {
         return UpsertCheckoutSessionCoreAsync(session, retryOnUniqueConflict: true);
+    }
+
+    public async Task<bool> RefreshCheckoutSessionFromLookupAsync(
+        SquareCheckoutSessionRecord session,
+        string originStoreCode,
+        string originDeviceCode,
+        CancellationToken cancellationToken)
+    {
+        var affected = await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            RefreshCheckoutSessionFromLookupSql,
+            new SugarParameter("@Environment", session.Environment),
+            new SugarParameter("@CheckoutId", session.CheckoutId),
+            new SugarParameter("@Status", session.Status),
+            new SugarParameter("@Amount", session.Amount),
+            new SugarParameter("@Currency", session.Currency),
+            new SugarParameter("@DeviceId", session.DeviceId),
+            new SugarParameter("@LocationId", session.LocationId),
+            new SugarParameter("@PaymentId", session.PaymentId),
+            new SugarParameter("@PaymentIdsJson", session.PaymentIdsJson),
+            new SugarParameter("@UpdatedAt", session.UpdatedAt.UtcDateTime),
+            new SugarParameter("@OriginStoreCode", originStoreCode),
+            new SugarParameter("@OriginDeviceCode", originDeviceCode));
+        return affected == 1;
     }
 
     public async Task<SquareCheckoutSessionRecord?> BindCheckoutOriginAsync(

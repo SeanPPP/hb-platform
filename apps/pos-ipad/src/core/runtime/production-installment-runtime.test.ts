@@ -10,6 +10,7 @@ import {
   type InstallmentApprovedRefund,
   type InstallmentPaymentAction,
   type InstallmentMutationPaymentPort,
+  type InstallmentReceiptReprintRuntimePort,
   type PersistedInstallmentAction,
   type ProductionInstallmentRuntimeDependencies,
 } from "./production-installment-runtime";
@@ -22,6 +23,7 @@ import {
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
 } from "@/features/installments/installment-authorization";
 import type {
@@ -45,6 +47,7 @@ const ALL_PERMISSIONS = Object.freeze([
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
   PAYMENT_PERMISSION.view,
   PAYMENT_PERMISSION.takeCash,
   PAYMENT_PERMISSION.takeCard,
@@ -52,7 +55,7 @@ const ALL_PERMISSIONS = Object.freeze([
   PAYMENT_PERMISSION.confirm,
 ]);
 
-test("公开服务提供管理、统一支付与恢复工厂，在线列表成功后增量写入门店快照", async () => {
+test("公开服务提供管理、统一支付与恢复工厂，在线列表不读写旧门店快照", async () => {
   const harness = createHarness();
 
   assert.deepEqual(Object.keys(harness.runtime), [
@@ -65,9 +68,64 @@ test("公开服务提供管理、统一支付与恢复工厂，在线列表成�
   await presenter.load();
 
   assert.equal(harness.api.listCalls, 1);
-  assert.equal(harness.cache.upsertCalls.length, 1);
-  assert.deepEqual(harness.cache.upsertCalls[0]?.storeCode, STORE_CODE);
+  assert.equal(harness.cache.upsertCalls.length, 0);
+  assert.equal(harness.cache.listCalls.length, 0);
   assert.equal(presenter.getState().orders[0]?.installmentGuid, "installment-1");
+});
+
+test("分期重打使用同一可信 lease、精确 History.Reprint 权限与 fulfilment 结果", async () => {
+  const calls: string[] = [];
+  const receiptReprint: InstallmentReceiptReprintRuntimePort = {
+    canReprint: () => true,
+    async execute(installmentGuid, authorization, assertActive) {
+      assertActive();
+      calls.push(installmentGuid);
+      assert.equal(
+        authorization.permissionCode,
+        INSTALLMENTS_REPRINT_PERMISSION,
+      );
+      assert.equal(authorization.requestingCashierId, "CASHIER-1");
+      return { state: "Printed", errorCode: null };
+    },
+  };
+  const harness = createHarness({ receiptReprint });
+  const presenter = harness.runtime.createPresenter();
+  await presenter.select("installment-1");
+
+  assert.equal(presenter.capabilities.reprint, true);
+  await presenter.reprintSelected();
+
+  assert.deepEqual(calls, ["installment-1"]);
+  assert.deepEqual(presenter.getState().reprint, {
+    kind: "succeeded",
+    installmentGuid: "installment-1",
+  });
+});
+
+test("分期重打缺权限或 cashier lease 失效时 fail closed", async () => {
+  const receiptReprint: InstallmentReceiptReprintRuntimePort = {
+    canReprint: () => true,
+    async execute() {
+      throw new Error("不应调用 fulfilment");
+    },
+  };
+  const missingPermission = createHarness({
+    permissions: ALL_PERMISSIONS.filter(
+      (permission) => permission !== INSTALLMENTS_REPRINT_PERMISSION,
+    ),
+    receiptReprint,
+  });
+  const denied = missingPermission.runtime.createPresenter();
+  await denied.select("installment-1");
+  assert.equal(denied.capabilities.reprint, false);
+
+  const expired = createHarness({ receiptReprint });
+  const presenter = expired.runtime.createPresenter();
+  await presenter.select("installment-1");
+  expired.currentCashier.clear();
+  assert.equal(presenter.capabilities.reprint, false);
+  await presenter.reprintSelected();
+  assert.deepEqual(presenter.getState().reprint, { kind: "unavailable" });
 });
 
 test("统一支付确认前掉线且无耐久 action 时保留可重试状态", async () => {
@@ -91,7 +149,7 @@ test("统一支付确认前掉线且无耐久 action 时保留可重试状态", 
   assert.equal(await harness.runtime.hasRecoveryRequired(), false);
 });
 
-test("远端列表失败不覆盖快照；离线只读取可信门店的 SQLCipher 缓存", async () => {
+test("transport failure 与离线都返回 online-required，且不读取旧 SQLCipher 快照", async () => {
   const harness = createHarness({
     cached: [snapshot({ installmentGuid: "cached-store-1" })],
   });
@@ -99,35 +157,87 @@ test("远端列表失败不覆盖快照；离线只读取可信门店的 SQLCiph
   const presenter = harness.runtime.createPresenter();
   await presenter.load();
   assert.equal(harness.cache.upsertCalls.length, 0);
+  assert.equal(presenter.getState().statusCode, "online-required");
+  assert.deepEqual(presenter.getState().orders, []);
 
   harness.online.value = false;
   presenter.setOnline(false);
   await presenter.load();
-  assert.deepEqual(harness.cache.listCalls, [
-    { storeCode: STORE_CODE, limit: 100, offset: 0 },
-  ]);
-  assert.equal(presenter.getState().orders[0]?.installmentGuid, "cached-store-1");
+  assert.deepEqual(harness.cache.listCalls, []);
+  assert.deepEqual(presenter.getState().orders, []);
+  assert.equal(presenter.getState().statusCode, "online-required");
 });
 
-test("在线筛选结果只增量更新命中项，不删除未命中的本机历史", async () => {
-  const harness = createHarness({
-    cached: [
-      snapshot({ installmentGuid: "cached-a" }),
-      snapshot({ installmentGuid: "cached-b" }),
-    ],
-  });
+test("设备范围只使用可信 terminal code，日期按注入时钟和门店时区转为 UTC", async () => {
+  const harness = createHarness();
   const presenter = harness.runtime.createPresenter();
-  presenter.setSearchQuery("IP-001");
 
-  await presenter.load();
+  await presenter.setDeviceScope("device");
+  await presenter.setDateFilter({
+    preset: "last7",
+    fromDate: null,
+    toDate: null,
+  });
 
   assert.deepEqual(
-    harness.cache
-      .all()
-      .map((item) => item.installmentGuid)
-      .sort(),
-    ["cached-a", "cached-b", "installment-1"],
+    harness.api.listInputs.at(-1),
+    {
+      createdFromIso: "2026-07-21T14:00:00.000Z",
+      createdToIso: "2026-07-28T13:59:59.999Z",
+      deviceCode: DEVICE_CODE,
+      keyword: null,
+      skip: 0,
+      status: null,
+      take: 51,
+    },
   );
+  assert.equal(harness.cache.upsertCalls.length, 0);
+  assert.equal(harness.cache.listCalls.length, 0);
+});
+
+test("远端 5xx、权限和未知错误映射为不同安全状态码", async () => {
+  const harness = createHarness();
+  const presenter = harness.runtime.createPresenter();
+
+  harness.api.listError = new HbposApiError(
+    "https://secret.example/internal unavailable",
+    { kind: "http", status: 503 },
+  );
+  await presenter.load();
+  assert.equal(presenter.getState().statusCode, "service-unavailable");
+
+  harness.api.listError = new HbposApiError("secret permission payload", {
+    kind: "http",
+    status: 403,
+  });
+  await presenter.load();
+  assert.equal(presenter.getState().statusCode, "authorization-declined");
+
+  harness.api.listError = new Error("https://secret.example/raw-url");
+  await presenter.load();
+  assert.equal(presenter.getState().statusCode, "history-failed");
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("secret.example"),
+    false,
+  );
+});
+
+test("详情设备范围拒绝不会伪装成收银员无权限或清空已加载列表", async () => {
+  const harness = createHarness();
+  const presenter = harness.runtime.createPresenter();
+  await presenter.load();
+  harness.api.detailsError = new HbposApiError("device scope denied", {
+    kind: "http",
+    status: 403,
+    code: "DEVICE_SCOPE_FORBIDDEN",
+  });
+
+  await presenter.select("installment-1");
+
+  assert.equal(presenter.getState().kind, "ready");
+  assert.equal(presenter.getState().statusCode, "details-failed");
+  assert.equal(presenter.getState().selectedGuid, "installment-1");
+  assert.equal(presenter.getState().orders.length, 1);
 });
 
 test("单次 mutation 更新快照时不会把第 101 条以后的本机历史截断", async () => {
@@ -525,6 +635,130 @@ test("cancel/refund 只把 durable action 交给支付 port，不从脱敏详情
   );
 });
 
+test("首次还款在 provider 前重新读取详情并精确拒绝 GUID、门店或设备 scope 不匹配", async () => {
+  const mismatches: readonly Partial<InstallmentDetails>[] = [
+    { installmentGuid: "installment-other" },
+    { storeCode: "STORE-OTHER" },
+    { deviceCode: "DEVICE-OTHER" },
+  ];
+
+  for (const mismatch of mismatches) {
+    const harness = createHarness();
+    const presenter = harness.runtime.createPresenter();
+    await presenter.select("installment-1");
+    harness.api.detailsResponse = details(mismatch);
+    presenter.setRepaymentAmount("10.00");
+
+    await presenter.addRepayment();
+
+    assert.equal(harness.api.detailsCalls.length, 2);
+    assert.equal(harness.payments.beginCalls, 0);
+    assert.equal(harness.actionStore.createdCandidates.length, 0);
+    assert.equal(await harness.runtime.hasRecoveryRequired(), false);
+    assert.equal(presenter.getState().statusCode, "conflict");
+    assert.equal(
+      harness.actionStore.transitionCalls.some(
+        (call) => call.nextState === "ProviderPending",
+      ),
+      false,
+    );
+  }
+});
+
+test("首次还款或退款的详情复核读取失败时 fail closed，provider 零调用", async () => {
+  for (const operation of ["repayment", "refund"] as const) {
+    for (const failure of ["transport", "missing"] as const) {
+      const harness = createHarness();
+      const presenter = harness.runtime.createPresenter();
+      await presenter.select("installment-1");
+      if (failure === "transport") {
+        harness.api.detailsError = new HbposApiError("scope lookup failed", {
+          kind: "transport",
+        });
+      } else {
+        harness.api.detailsResponse = null;
+      }
+
+      if (operation === "repayment") {
+        presenter.setRepaymentAmount("10.00");
+        await presenter.addRepayment();
+      } else {
+        await presenter.cancelWithRefund();
+      }
+
+      assert.equal(harness.api.detailsCalls.length, 2);
+      assert.equal(harness.payments.beginCalls, 0);
+      assert.equal(harness.api.cancelCalls.length, 0);
+      assert.equal(harness.actionStore.createdCandidates.length, 0);
+      assert.equal(await harness.runtime.hasRecoveryRequired(), false);
+      assert.equal(
+        presenter.getState().statusCode,
+        failure === "transport" ? "online-required" : "conflict",
+      );
+    }
+  }
+});
+
+test("券还款 scope 预检失败时不生成候选券材料或 durable action", async () => {
+  const harness = createHarness();
+  const presenter = harness.runtime.createPresenter();
+  await presenter.select("installment-1");
+  harness.api.detailsResponse = details({ deviceCode: "DEVICE-OTHER" });
+  fillVoucherRepayment(presenter);
+
+  await presenter.addRepayment();
+
+  assert.equal(harness.voucherIntents.calls.length, 0);
+  assert.equal(harness.actionStore.createdCandidates.length, 0);
+  assert.equal(harness.payments.beginCalls, 0);
+  assert.equal(await harness.runtime.hasRecoveryRequired(), false);
+  assert.equal(presenter.getState().statusCode, "conflict");
+});
+
+test("首次退款在 provider 前拒绝跨设备分期，但同设备正常流不受影响", async () => {
+  const denied = createHarness();
+  const deniedPresenter = denied.runtime.createPresenter();
+  await deniedPresenter.select("installment-1");
+  denied.api.detailsResponse = details({ deviceCode: "DEVICE-OTHER" });
+
+  await deniedPresenter.cancelWithRefund();
+
+  assert.equal(denied.payments.beginCalls, 0);
+  assert.equal(denied.api.cancelCalls.length, 0);
+  assert.equal(denied.actionStore.createdCandidates.length, 0);
+  assert.equal(await denied.runtime.hasRecoveryRequired(), false);
+  assert.equal(deniedPresenter.getState().statusCode, "conflict");
+
+  const allowed = createHarness();
+  const allowedPresenter = allowed.runtime.createPresenter();
+  await allowedPresenter.select("installment-1");
+  await allowedPresenter.cancelWithRefund();
+
+  assert.equal(allowed.api.detailsCalls.length, 2);
+  assert.equal(allowed.payments.beginCalls, 1);
+  assert.equal(allowed.api.cancelCalls.length, 1);
+});
+
+test("退款进入 BackendPending 后恢复同一 provider 结果，不再用详情读取阻断后端重放", async () => {
+  const harness = createHarness({
+    cancelResultMode: "active-without-refund",
+  });
+  const presenter = harness.runtime.createPresenter();
+  await presenter.select("installment-1");
+
+  await presenter.cancelWithRefund();
+  assert.equal(presenter.getState().statusCode, "payment-recovery-required");
+  assert.equal(harness.payments.beginCalls, 1);
+  assert.equal(harness.api.detailsCalls.length, 2);
+
+  harness.api.detailsError = new Error("details endpoint unavailable");
+  await presenter.recoverBlocking();
+
+  assert.equal(harness.payments.beginCalls, 2);
+  assert.equal(harness.api.detailsCalls.length, 2);
+  assert.equal(harness.api.cancelCalls.length, 2);
+});
+
 test("create 在独占 lease 内复核 revision；过期草稿不会触发支付", async () => {
   const harness = createHarness();
   const presenter = harness.runtime.createPresenter();
@@ -829,7 +1063,11 @@ class FakeCart {
 
 class ScriptedApi {
   public listCalls = 0;
+  public readonly listInputs: unknown[] = [];
   public listError: Error | null = null;
+  public detailsError: Error | null = null;
+  public detailsResponse: InstallmentDetails | null = details();
+  public readonly detailsCalls: string[] = [];
   public readonly createCalls: InstallmentCreateCommand[] = [];
   public readonly cancelCalls: InstallmentCancelCommand[] = [];
 
@@ -842,13 +1080,18 @@ class ScriptedApi {
       | "active-without-refund",
   ) {}
 
-  public async list() {
+  public async list(input: unknown) {
     this.listCalls += 1;
+    this.listInputs.push(input);
     if (this.listError) throw this.listError;
     return [summary()];
   }
 
-  public async getDetails() { return details(); }
+  public async getDetails(installmentGuid: string) {
+    this.detailsCalls.push(installmentGuid);
+    if (this.detailsError) throw this.detailsError;
+    return this.detailsResponse;
+  }
 
   public async create(command: InstallmentCreateCommand) {
     this.createCalls.push(command);
@@ -951,6 +1194,7 @@ function createHarness(options: Readonly<{
   paymentOutcome?: "approved" | "unknown";
   paymentOutcomes?: readonly ("approved" | "unknown")[];
   permissions?: readonly string[];
+  receiptReprint?: InstallmentReceiptReprintRuntimePort;
 }> = {}) {
   const currentCashier = new CurrentCashierSession();
   activateCashier(currentCashier, options.permissions ?? ALL_PERMISSIONS);
@@ -982,12 +1226,17 @@ function createHarness(options: Readonly<{
     snapshotCache: cache,
     actionStore,
     payments,
+    ...(options.receiptReprint
+      ? { receiptReprint: options.receiptReprint }
+      : {}),
     voucherIntents,
     sha256Hex: async (material: string) => {
       hashMaterials.push(material);
       return createHash("sha256").update(material, "utf8").digest("hex");
     },
     createId: () => `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
+    businessTimeZone: "Australia/Brisbane",
+    now: () => new Date("2026-07-28T08:00:00.000Z"),
     nowIso: () => "2026-07-28T08:00:00.000Z",
   };
   return {

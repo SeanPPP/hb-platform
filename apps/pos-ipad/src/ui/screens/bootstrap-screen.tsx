@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   StyleSheet,
@@ -9,7 +10,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  loadExpoBootstrapServerDiagnostics,
+  type BootstrapServerDiagnostics,
+} from "@/core/runtime/expo-bootstrap-server-diagnostics";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import { serverConnectionPanelCopy } from "@/features/device-registration/server-connection-copy";
+import { ServerConnectionPanel } from "@/features/device-registration/server-connection-panel";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
@@ -53,6 +60,9 @@ export function BootstrapScreen() {
   const { t } = useTranslation();
   const { width } = useWindowDimensions();
   const { retry, state: runtime } = usePosRuntime();
+  const [serverDiagnostics, setServerDiagnostics] =
+    useState<BootstrapServerDiagnostics | null>(null);
+  const serverProbe = useRef<AbortController | null>(null);
   const display = usePosShellStore((state) => state.display);
   const compact = width < 900;
   const backendReady = runtime.backend === "reachable";
@@ -60,6 +70,21 @@ export function BootstrapScreen() {
   const deviceReady =
     runtime.device === "authorized-local" ||
     runtime.device === "authorized-online";
+
+  useEffect(() => {
+    let active = true;
+    void loadExpoBootstrapServerDiagnostics()
+      .then((diagnostics) => {
+        if (active) setServerDiagnostics(diagnostics);
+      })
+      .catch(() => {
+        // 公开配置自身损坏时仍保留原始启动错误与重试入口。
+      });
+    return () => {
+      active = false;
+      serverProbe.current?.abort();
+    };
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -108,6 +133,27 @@ export function BootstrapScreen() {
             statusText={t(`status.peripheral.${display}`)}
           />
         </View>
+
+        {runtime.phase === "failed" && serverDiagnostics ? (
+          <View style={styles.serverDiagnostics}>
+            <ServerConnectionPanel
+              canSave={false}
+              copy={serverConnectionPanelCopy(t)}
+              currentAddress={serverDiagnostics.currentApiBaseUrl}
+              saveAddress={() =>
+                Promise.reject(
+                  new Error("BOOTSTRAP_SERVER_SWITCH_SAFETY_UNAVAILABLE"),
+                )
+              }
+              testAddress={(address) => {
+                const controller = new AbortController();
+                serverProbe.current?.abort();
+                serverProbe.current = controller;
+                return serverDiagnostics.test(address, controller.signal);
+              }}
+            />
+          </View>
+        ) : null}
 
         <View style={styles.footer}>
           <View style={styles.footerDot} />
@@ -213,6 +259,10 @@ const styles = StyleSheet.create({
   },
   cardGridCompact: {
     marginTop: 30,
+  },
+  serverDiagnostics: {
+    marginTop: 20,
+    maxWidth: 720,
   },
   card: {
     minWidth: 220,

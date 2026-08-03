@@ -19,6 +19,7 @@ import {
   RECALL_LIST_PERMISSION,
   RECALL_RESTORE_PERMISSION,
 } from "../../features/held-orders/held-orders-domain";
+import { INSTALLMENTS_VIEW_PERMISSION } from "../../features/installments/installment-authorization";
 import {
   type LocalHistoryDetails,
   type LocalHistoryPage,
@@ -968,6 +969,8 @@ test("终端启动门禁并发只执行一次，崩溃遗留 HoldClear 必须确
 
 test("分期生产服务使用独立支付账本和第二套 provider 上下文，blocking action 同时阻止安全重启", async () => {
   let boundVoucherContext = false;
+  let hasBlockingAction = true;
+  const installmentRequests: HbposTransportRequest[] = [];
   const database = databaseFor([]);
   Object.assign(database, {
     installmentSnapshots: () => ({
@@ -978,7 +981,7 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
     }),
     installmentActions: () => ({
       async loadBlocking() {
-        return { actionId: "blocking-installment" };
+        return hasBlockingAction ? { actionId: "blocking-installment" } : null;
       },
     }),
     installmentPaymentPersistence: () => ({
@@ -1029,7 +1032,17 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
     },
   } as PaymentProviderRuntimeBootstrap;
   const services = createTestComposition(database, {
+    cashierPermissions: [INSTALLMENTS_VIEW_PERMISSION],
     installmentBootstrap: bootstrap,
+    transport: {
+      async request<T>(request: HbposTransportRequest) {
+        installmentRequests.push(request);
+        return {
+          status: 200,
+          data: { success: true, data: { orders: [] } } as T,
+        };
+      },
+    },
   });
 
   await services.initialize();
@@ -1041,6 +1054,25 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
     (await services.appUpdateSafety.getSnapshot()).hasUnresolvedPayment,
     true,
   );
+
+  hasBlockingAction = false;
+  if (!("createPresenter" in services.installments)) {
+    assert.fail("installment runtime should be available");
+  }
+  const presenter = services.installments.createPresenter();
+  await presenter.setDateFilter({
+    preset: "today",
+    fromDate: null,
+    toDate: null,
+  });
+  assert.deepEqual(installmentRequests.at(-1)?.params, {
+    storeCode: "S001",
+    createdFrom: "2026-07-27T14:00:00.000Z",
+    createdTo: "2026-07-28T13:59:59.999Z",
+    skip: 0,
+    take: 51,
+  });
+  presenter.destroy();
 });
 
 test("RecallActive 启动只建立隐藏门禁，登录后仍需双权限 recover 才恢复并成交", async () => {
@@ -1489,6 +1521,7 @@ test("本机历史组合只按可信终端读取，并从选中订单账本进�
       LOCAL_HISTORY_VIEW_PERMISSION,
       LOCAL_HISTORY_REPRINT_PERMISSION,
     ],
+    settings: settingsRuntimeConfiguration(),
     onPrint(jobId) {
       printedJobIds.push(jobId);
     },
@@ -1512,7 +1545,16 @@ test("本机历史组合只按可信终端读取，并从选中订单账本进�
     throw new Error("local history receipt preview was not ready");
   }
   assert.ok(preview.document.lines.some(
-    (line) => line.kind === "text" && line.text.includes(`#${order.localSequence}`),
+    (line) => line.kind === "text" && line.text === order.orderGuid,
+  ));
+  assert.equal(preview.document.lines.some(
+    (line) => line.kind === "text" && /Order:|#\d+/.test(line.text),
+  ), false);
+  assert.ok(preview.document.lines.some(
+    (line) => line.kind === "text" && line.text === "Test Store",
+  ));
+  assert.ok(preview.document.lines.some(
+    (line) => line.kind === "text" && line.text === "Store: Test Store (S001)",
   ));
   assert.ok(preview.document.lines.some(
     (line) => line.kind === "qr" && line.value === order.orderGuid,

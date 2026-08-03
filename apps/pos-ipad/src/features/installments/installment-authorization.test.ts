@@ -6,7 +6,9 @@ import {
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
+  hasInstallmentReprintPermission,
   resolveInstallmentsAccess,
 } from "./installment-authorization";
 
@@ -26,6 +28,26 @@ test("分期权限与 WPF PosTerminal 权限码完全一致", () => {
       "Permissions.PosTerminal.Installments.Cancel",
       "Permissions.PosTerminal.Installments.ConfirmPickup",
     ],
+  );
+});
+
+test("分期重打只接受 History.Reprint 原始权限码", () => {
+  assert.equal(
+    INSTALLMENTS_REPRINT_PERMISSION,
+    "Permissions.PosTerminal.History.Reprint",
+  );
+  assert.equal(
+    hasInstallmentReprintPermission([
+      ` ${INSTALLMENTS_REPRINT_PERMISSION} `,
+    ]),
+    true,
+  );
+  assert.equal(
+    hasInstallmentReprintPermission([
+      "permissions.posterminal.history.reprint",
+      "Permissions.PosTerminal.Installments.Reprint",
+    ]),
+    false,
   );
 });
 

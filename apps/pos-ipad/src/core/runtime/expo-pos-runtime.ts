@@ -86,6 +86,7 @@ import {
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
+import { resolveExpoUpdateRuntimeVersion } from "./expo-update-runtime-version";
 import { resolveLocalDeviceState } from "./local-device-state";
 import { createPaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import {
@@ -96,6 +97,7 @@ import {
   PosRuntimeController,
   type PosRuntimeServices,
 } from "./pos-runtime";
+import { PreloginServerConnectionControl } from "./prelogin-server-connection-control";
 import {
   createProductionPosRuntimeServices,
   type PosCashierSessionRuntimeService,
@@ -144,6 +146,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     externalDisplay: ExternalCustomerDisplayPort;
     appUpdates: AppUpdateOrchestrator;
     appUpdateRecovery: AppUpdateRecoveryRuntimePort;
+    serverConnection: PreloginServerConnectionControl;
     scanner: Readonly<{ router: HidScannerRouter }>;
     applicationLog: ApplicationLogRuntime;
   }>;
@@ -535,7 +538,10 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         voucherProtectedTokens:
           installmentPaymentPersistence.voucherProtectedTokens,
       });
-    const runtimeVersion = Updates.runtimeVersion ?? appVersion;
+    const runtimeVersion = resolveExpoUpdateRuntimeVersion(
+      Updates.runtimeVersion,
+      appVersion,
+    );
     let appUpdateSafety:
       | ProductionPosRuntimeServices["appUpdateSafety"]
       | null = null;
@@ -809,6 +815,44 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         },
       },
     });
+    const serverConnection = new PreloginServerConnectionControl({
+      currentApiBaseUrl: apiBaseUrl,
+      trustedApiOrigins,
+      allowSwitchWithPendingLocalData: __DEV__,
+      runExclusive: (operation) =>
+        composition.catalogRefresh.runExclusive(operation),
+      readPendingData: async (signal) => {
+        throwIfRuntimeAborted(signal);
+        const [durable, runtimeSafety] = await Promise.all([
+          database.settingsSafety().read(),
+          composition.appUpdateSafety.getSnapshot(),
+        ]);
+        throwIfRuntimeAborted(signal);
+        return Object.freeze({
+          ...durable,
+          hasActiveCart: runtimeSafety.hasActiveCart,
+          hasFulfilmentInFlight:
+            runtimeSafety.hasFulfilmentInFlight,
+          hasSyncOrAuditInFlight:
+            runtimeSafety.hasSyncOrAuditInFlight,
+          pendingDurableWriteCount: Math.max(
+            durable.pendingDurableWriteCount,
+            runtimeSafety.hasPendingDurableWrite ? 1 : 0,
+          ),
+          pendingReturnCount: Math.max(
+            durable.pendingReturnCount,
+            runtimeSafety.hasRecoveryRequired ? 1 : 0,
+          ),
+          unresolvedPaymentCount: Math.max(
+            durable.unresolvedPaymentCount,
+            runtimeSafety.hasUnresolvedPayment ? 1 : 0,
+          ),
+        });
+      },
+      probe: probeApiHealth,
+      save: (nextApiBaseUrl) =>
+        publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
+    });
     appUpdateSafety = composition.appUpdateSafety;
     // 销售路由拿到 runtime 前必须先处理崩溃遗留的 HoldClear/RecallActive fence。
     // 初始化失败保持数据库可恢复并让启动 fail-closed，绝不开放普通收银。
@@ -844,6 +888,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       cashierSessionInvalidation: publicCashierSessionInvalidation,
       externalDisplay,
       appUpdates,
+      serverConnection,
       appUpdateRecovery: Object.freeze({
         readSnapshot: () =>
           Promise.resolve(

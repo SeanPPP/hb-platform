@@ -427,7 +427,8 @@ public sealed class InstallmentService(
             StoreCode = NormalizeRequired(request.StoreCode, "Store code is required."),
             DeviceCode = NormalizeOptional(request.DeviceCode),
             Keyword = NormalizeOptional(request.Keyword),
-            Take = Math.Clamp(request.Take, 1, 200)
+            Take = Math.Clamp(request.Take, 1, 200),
+            Skip = Math.Max(request.Skip, 0)
         };
         return repository.QueryAsync(normalized, cancellationToken);
     }
@@ -1151,6 +1152,8 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
 
         var rows = await query
             .OrderByDescending(x => x.CreatedAt)
+            .OrderByDescending(x => x.InstallmentGuid)
+            .Skip(request.Skip)
             .Take(Math.Clamp(request.Take, 1, 200))
             .ToListAsync(cancellationToken);
         return new InstallmentHistoryQueryResponse(rows.Select(MapSummary).ToList());

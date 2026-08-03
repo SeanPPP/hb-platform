@@ -117,6 +117,7 @@ export class RemoteHistoryReceiptReprintPreparationService {
         orderNumber: details.orderGuid,
         orderGuid: details.orderGuid,
         orderDisplay: shortOrderGuid(details.orderGuid),
+        orderPresentation: "guid-only",
         soldAtIso: details.soldAtIso,
         cashierName: details.cashierName,
         storeCode: details.storeCode,

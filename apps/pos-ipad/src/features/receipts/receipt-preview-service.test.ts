@@ -102,8 +102,11 @@ test("未配置打印机也能预览，并以可信 storeCode 回退空品牌", 
   assert.ok(preview?.lines.some((line) => line.kind === "text" && line.text === "Brisbane"));
   assert.ok(preview?.lines.some((line) => line.kind === "text" && line.text === "1 Queen St"));
   assert.ok(preview?.lines.some(
-    (line) => line.kind === "text" && line.text === "Order: #1084",
+    (line) => line.kind === "text" && line.text === current.orderGuid,
   ));
+  assert.equal(preview?.lines.some(
+    (line) => line.kind === "text" && /Order:|#1084/.test(line.text),
+  ), false);
   assert.ok(preview?.lines.some(
     (line) => line.kind === "text" && line.text === "*** REPRINT ***",
   ));

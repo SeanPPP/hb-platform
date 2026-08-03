@@ -1,11 +1,15 @@
 
 import {
+  hasInstallmentReprintPermission,
   resolveInstallmentsAccess,
   type InstallmentsAccess,
 } from "./installment-authorization";
+import { isValidInstallmentDateFilter } from "./installment-date-filter";
 import type {
   InstallmentCardProvider,
+  InstallmentDateFilter,
   InstallmentDetails,
+  InstallmentDeviceScope,
   InstallmentPaymentMethod,
 } from "./installment-models";
 
@@ -14,6 +18,13 @@ import type { PaymentProviderAvailability } from "@/features/payments/runtime/pa
 
 export const INSTALLMENT_MINIMUM_TOTAL_CENTS = 5_000;
 export const INSTALLMENT_MINIMUM_DOWN_PAYMENT_CENTS = 2_000;
+const INSTALLMENT_HISTORY_PAGE_SIZE = 50;
+const INSTALLMENT_HISTORY_REQUEST_SIZE = 51;
+const DEFAULT_DATE_FILTER = Object.freeze({
+  preset: "all",
+  fromDate: null,
+  toDate: null,
+} satisfies InstallmentDateFilter);
 
 export type InstallmentCreateDraftLine = Readonly<{
   lineKey: string;
@@ -31,6 +42,11 @@ export type InstallmentCreateDraft = Readonly<{
 export interface InstallmentCreateDraftPort {
   getSnapshot(): InstallmentCreateDraft | null;
   subscribe(listener: () => void): () => void;
+}
+
+export interface InstallmentReprintPort {
+  canReprint(details: InstallmentDetails): boolean;
+  reprintExistingInstallment(installmentGuid: string): Promise<void>;
 }
 
 export type InstallmentWorkflowCreateInput = Readonly<{
@@ -72,10 +88,13 @@ export interface InstallmentWorkflowPort {
     readonly PaymentProviderAvailability[]
   >;
   list(input: Readonly<{
+    dateFilter: InstallmentDateFilter;
+    deviceScope: InstallmentDeviceScope;
     keyword: string | null;
     online: boolean;
+    skip: number;
     status: InstallmentStatus | null;
-    take: 100;
+    take: 51;
   }>): Promise<readonly InstallmentSummary[]>;
   getDetails(input: Readonly<{
     installmentGuid: string;
@@ -104,7 +123,8 @@ export type InstallmentWorkflowErrorCode =
   | "authorization-declined"
   | "conflict"
   | "online-required"
-  | "payment-recovery-required";
+  | "payment-recovery-required"
+  | "service-unavailable";
 
 export class InstallmentWorkflowError extends Error {
   public constructor(
@@ -125,6 +145,7 @@ export type InstallmentStatusCode =
   | "details-failed"
   | "details-unavailable"
   | "history-failed"
+  | "invalid-date-filter"
   | "invalid-create"
   | "invalid-repayment"
   | "online-required"
@@ -133,6 +154,7 @@ export type InstallmentStatusCode =
   | "pickup-complete"
   | "repayment-complete"
   | "recovery-complete"
+  | "service-unavailable"
   | "void-complete";
 
 export type InstallmentPresenterState = Readonly<{
@@ -147,13 +169,18 @@ export type InstallmentPresenterState = Readonly<{
   customerPhone: string;
   details: InstallmentDetails | null;
   detailsLoading: boolean;
+  deviceScope: InstallmentDeviceScope;
+  dateFilter: InstallmentDateFilter;
+  hasMore: boolean;
   kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
+  loadingMore: boolean;
   online: boolean;
   orders: readonly InstallmentSummary[];
   pane: "history" | "create";
   pickupNote: string;
   query: string;
   recoveryRequired: boolean;
+  reprint: InstallmentReprintState;
   repaymentAmount: string;
   repaymentMethod: InstallmentPaymentMethod;
   repaymentVoucherReference: string;
@@ -164,10 +191,24 @@ export type InstallmentPresenterState = Readonly<{
   voidReason: string;
 }>;
 
+export type InstallmentReprintState =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "submitting"; installmentGuid: string }>
+  | Readonly<{ kind: "succeeded"; installmentGuid: string }>
+  | Readonly<{ kind: "failed"; installmentGuid: string }>
+  | Readonly<{ kind: "unavailable" }>;
+
+export type InstallmentPresenterCapabilities = Readonly<{
+  reprint: boolean;
+  selectedDetailsWritable: boolean;
+}>;
+
 export type InstallmentPresenterOptions = Readonly<{
   createDrafts: InstallmentCreateDraftPort;
   initialOnline: boolean;
   permissions: readonly string[];
+  reprintPort?: InstallmentReprintPort | null;
+  trustedDeviceCode: string;
   workflow: InstallmentWorkflowPort;
 }>;
 
@@ -179,7 +220,10 @@ export class InstallmentPresenter {
   private destroyed = false;
   private loadGeneration = 0;
   private detailGeneration = 0;
+  private reprintGeneration = 0;
+  private nextSkip = 0;
   private actionInFlight: Promise<void> | null = null;
+  private reprintInFlight: Promise<void> | null = null;
 
   public constructor(private readonly options: InstallmentPresenterOptions) {
     this.workflow = options.workflow;
@@ -196,13 +240,18 @@ export class InstallmentPresenter {
       customerPhone: "",
       details: null,
       detailsLoading: false,
+      deviceScope: "store",
+      dateFilter: DEFAULT_DATE_FILTER,
+      hasMore: false,
       kind: "idle",
+      loadingMore: false,
       online: options.initialOnline,
       orders: [],
       pane: "history",
       pickupNote: "",
       query: "",
       recoveryRequired: false,
+      reprint: { kind: "idle" },
       repaymentAmount: "",
       repaymentMethod: "cash",
       repaymentVoucherReference: "",
@@ -230,6 +279,13 @@ export class InstallmentPresenter {
 
   public readonly getState = (): InstallmentPresenterState => this.state;
 
+  public get capabilities(): InstallmentPresenterCapabilities {
+    return Object.freeze({
+      reprint: this.reprintableDetails() !== null,
+      selectedDetailsWritable: this.selectedDetailsWritable(),
+    });
+  }
+
   public readonly subscribe = (listener: () => void): (() => void) => {
     if (this.destroyed) return () => undefined;
     this.listeners.add(listener);
@@ -241,26 +297,80 @@ export class InstallmentPresenter {
     this.destroyed = true;
     this.loadGeneration += 1;
     this.detailGeneration += 1;
+    this.reprintGeneration += 1;
     this.unsubscribeDrafts();
     this.listeners.clear();
   }
 
   public setOnline(online: boolean): void {
     if (this.destroyed || this.state.online === online) return;
-    this.patch({ online });
+    if (!online) {
+      this.loadGeneration += 1;
+      this.detailGeneration += 1;
+      this.reprintGeneration += 1;
+      this.nextSkip = 0;
+      this.patch({
+        details: null,
+        detailsLoading: false,
+        hasMore: false,
+        kind: "failed",
+        loadingMore: false,
+        online,
+        orders: [],
+        reprint: { kind: "idle" },
+        selectedGuid: null,
+        statusCode: "online-required",
+      });
+      return;
+    }
+    this.patch({ online, statusCode: null });
   }
 
   public setSearchQuery(query: string): void {
     if (this.destroyed) return;
+    this.nextSkip = 0;
+    this.detailGeneration += 1;
+    this.reprintGeneration += 1;
     this.patch({
+      details: null,
+      detailsLoading: false,
+      hasMore: false,
       query: query.slice(0, 120),
+      reprint: { kind: "idle" },
+      selectedGuid: null,
       statusCode: null,
     });
   }
 
-  public setStatusFilter(status: InstallmentStatus | null): void {
+  public async setStatusFilter(
+    status: InstallmentStatus | null,
+  ): Promise<void> {
     if (this.destroyed) return;
     this.patch({ statusFilter: status, statusCode: null });
+    await this.load();
+  }
+
+  public async setDeviceScope(scope: InstallmentDeviceScope): Promise<void> {
+    if (this.destroyed) return;
+    if (scope !== "store" && scope !== "device") {
+      this.patch({ statusCode: "history-failed" });
+      return;
+    }
+    this.patch({ deviceScope: scope, statusCode: null });
+    await this.load();
+  }
+
+  public async setDateFilter(filter: InstallmentDateFilter): Promise<void> {
+    if (this.destroyed) return;
+    if (!isValidInstallmentDateFilter(filter)) {
+      this.patch({ statusCode: "invalid-date-filter" });
+      return;
+    }
+    this.patch({
+      dateFilter: Object.freeze({ ...filter }),
+      statusCode: null,
+    });
+    await this.load();
   }
 
   public showHistory(): void {
@@ -342,50 +452,88 @@ export class InstallmentPresenter {
   public async load(): Promise<void> {
     if (this.destroyed) return;
     if (!this.state.access.canView) {
+      this.reprintGeneration += 1;
       this.patch({
+        details: null,
+        detailsLoading: false,
+        hasMore: false,
         kind: "unauthorized",
+        loadingMore: false,
         orders: [],
+        reprint: { kind: "idle" },
+        selectedGuid: null,
         statusCode: "permission-required",
       });
       return;
     }
     const generation = ++this.loadGeneration;
-    const input = {
-      keyword: optionalTrimmed(this.state.query),
-      online: this.state.online,
-      status: this.state.statusFilter,
-      take: 100 as const,
-    };
-    this.patch({ kind: "loading", statusCode: null });
+    this.detailGeneration += 1;
+    this.reprintGeneration += 1;
+    this.nextSkip = 0;
+    this.patch({
+      details: null,
+      detailsLoading: false,
+      hasMore: false,
+      kind: "loading",
+      loadingMore: false,
+      orders: [],
+      reprint: { kind: "idle" },
+      selectedGuid: null,
+      statusCode: null,
+    });
     try {
-      const orders = await this.workflow.list(input);
+      const orders = await this.workflow.list(this.historyInput(0));
       if (!this.isCurrentLoad(generation)) return;
+      const page = orders.slice(0, INSTALLMENT_HISTORY_PAGE_SIZE);
+      this.nextSkip = INSTALLMENT_HISTORY_PAGE_SIZE;
       this.patch({
+        hasMore: orders.length > INSTALLMENT_HISTORY_PAGE_SIZE,
         kind: "ready",
-        orders: Object.freeze([...orders]),
+        orders: uniqueSummaries([], page),
       });
     } catch (error) {
       if (!this.isCurrentLoad(generation)) return;
-      const failureCode = workflowFailureCode(error);
-      const recoveryRequired =
-        failureCode === "payment-recovery-required";
+      this.applyHistoryFailure(error, false);
+    }
+  }
+
+  public async loadMore(): Promise<void> {
+    if (
+      this.destroyed ||
+      !this.state.access.canView ||
+      this.state.loadingMore ||
+      !this.state.hasMore ||
+      this.state.kind !== "ready"
+    ) {
+      return;
+    }
+    const generation = this.loadGeneration;
+    const skip = this.nextSkip;
+    this.patch({ loadingMore: true, statusCode: null });
+    try {
+      const orders = await this.workflow.list(this.historyInput(skip));
+      if (!this.isCurrentLoad(generation)) return;
+      const page = orders.slice(0, INSTALLMENT_HISTORY_PAGE_SIZE);
+      this.nextSkip = skip + INSTALLMENT_HISTORY_PAGE_SIZE;
       this.patch({
-        kind: this.state.orders.length > 0 ? "ready" : "failed",
-        recoveryRequired:
-          this.state.recoveryRequired || recoveryRequired,
-        statusCode: recoveryRequired
-          ? "payment-recovery-required"
-          : "history-failed",
+        hasMore: orders.length > INSTALLMENT_HISTORY_PAGE_SIZE,
+        loadingMore: false,
+        orders: uniqueSummaries(this.state.orders, page),
       });
+    } catch (error) {
+      if (!this.isCurrentLoad(generation)) return;
+      this.applyHistoryFailure(error, true);
     }
   }
 
   public async select(installmentGuid: string): Promise<void> {
     if (this.destroyed || !this.state.access.canView) return;
     const generation = ++this.detailGeneration;
+    this.reprintGeneration += 1;
     this.patch({
       details: null,
       detailsLoading: true,
+      reprint: { kind: "idle" },
       selectedGuid: installmentGuid,
       statusCode: null,
     });
@@ -400,14 +548,74 @@ export class InstallmentPresenter {
         detailsLoading: false,
         statusCode: details ? null : "details-unavailable",
       });
-    } catch {
+    } catch (error) {
       if (!this.isCurrentDetail(generation, installmentGuid)) return;
+      const statusCode = workflowFailureCode(error);
+      if (
+        statusCode === "online-required" ||
+        statusCode === "authorization-declined"
+      ) {
+        this.invalidateOnlineHistory(statusCode);
+        return;
+      }
       this.patch({
         details: null,
         detailsLoading: false,
-        statusCode: "details-failed",
+        statusCode:
+          statusCode === "service-unavailable"
+            ? "service-unavailable"
+            : "details-failed",
       });
     }
+  }
+
+  public async retryDetails(): Promise<void> {
+    const installmentGuid = this.state.selectedGuid;
+    if (this.destroyed || !installmentGuid) return;
+    await this.select(installmentGuid);
+  }
+
+  public reprintSelected(): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    if (this.reprintInFlight) return this.reprintInFlight;
+    const details = this.reprintableDetails();
+    const port = this.options.reprintPort;
+    if (!details || !port) {
+      this.patch({ reprint: { kind: "unavailable" } });
+      return Promise.resolve();
+    }
+
+    const installmentGuid = details.installmentGuid;
+    const generation = ++this.reprintGeneration;
+    this.patch({
+      busy: true,
+      reprint: { kind: "submitting", installmentGuid },
+    });
+    let running!: Promise<void>;
+    running = (async () => {
+      try {
+        await port.reprintExistingInstallment(installmentGuid);
+        if (!this.isCurrentReprint(generation, installmentGuid)) return;
+        this.patch({
+          reprint: { kind: "succeeded", installmentGuid },
+        });
+      } catch {
+        if (!this.isCurrentReprint(generation, installmentGuid)) return;
+        this.patch({
+          reprint: { kind: "failed", installmentGuid },
+        });
+      } finally {
+        if (this.reprintInFlight === running) {
+          this.reprintInFlight = null;
+          if (!this.destroyed) {
+            // 中文注释：重打与分期写动作共用 busy 门禁；打印退出后再统一开放所有写入口。
+            this.patch({ busy: false, reprint: this.state.reprint });
+          }
+        }
+      }
+    })();
+    this.reprintInFlight = running;
+    return running;
   }
 
   public create(): Promise<void> {
@@ -470,7 +678,7 @@ export class InstallmentPresenter {
   }
 
   public addRepayment(): Promise<void> {
-    const guard = this.guardWrite(
+    const guard = this.guardSelectedWrite(
       this.state.access.canAddRepayment,
     );
     if (guard) return guard;
@@ -509,7 +717,7 @@ export class InstallmentPresenter {
   }
 
   public cancelWithRefund(): Promise<void> {
-    const guard = this.guardWrite(this.state.access.canCancel);
+    const guard = this.guardSelectedWrite(this.state.access.canCancel);
     if (guard) return guard;
     const details = this.state.details;
     if (
@@ -531,7 +739,7 @@ export class InstallmentPresenter {
   }
 
   public voidSelected(): Promise<void> {
-    const guard = this.guardWrite(this.state.access.canCancel);
+    const guard = this.guardSelectedWrite(this.state.access.canCancel);
     if (guard) return guard;
     const details = this.state.details;
     if (
@@ -554,7 +762,7 @@ export class InstallmentPresenter {
   }
 
   public confirmPickup(): Promise<void> {
-    const guard = this.guardWrite(
+    const guard = this.guardSelectedWrite(
       this.state.access.canConfirmPickup,
     );
     if (guard) return guard;
@@ -575,6 +783,13 @@ export class InstallmentPresenter {
 
   private guardWrite(hasPermission: boolean): Promise<void> | null {
     if (this.destroyed) return Promise.resolve();
+    if (
+      this.reprintInFlight ||
+      this.state.reprint.kind === "submitting"
+    ) {
+      // 中文注释：重打已冻结服务端详情；完成前不得并发改变付款、余额或生命周期状态。
+      return this.reprintInFlight ?? Promise.resolve();
+    }
     if (!hasPermission) {
       this.patch({ statusCode: "permission-required" });
       return Promise.resolve();
@@ -591,6 +806,19 @@ export class InstallmentPresenter {
     return null;
   }
 
+  private guardSelectedWrite(
+    hasPermission: boolean,
+  ): Promise<void> | null {
+    const guard = this.guardWrite(hasPermission);
+    if (guard) return guard;
+    if (this.state.details && !this.selectedDetailsWritable()) {
+      // 中文注释：本店历史允许查看他机详情，但既有分期只能由创建它的可信终端修改。
+      this.patch({ statusCode: "conflict" });
+      return Promise.resolve();
+    }
+    return null;
+  }
+
   private runAction(
     operation: () => Promise<InstallmentDetails>,
     successCode: InstallmentStatusCode,
@@ -599,7 +827,12 @@ export class InstallmentPresenter {
     if (this.actionInFlight) return this.actionInFlight;
     let running!: Promise<void>;
     running = (async () => {
-      this.patch({ busy: true, statusCode: null });
+      this.reprintGeneration += 1;
+      this.patch({
+        busy: true,
+        reprint: { kind: "idle" },
+        statusCode: null,
+      });
       try {
         const details = await operation();
         if (this.destroyed) return;
@@ -658,6 +891,93 @@ export class InstallmentPresenter {
     return !this.destroyed && generation === this.loadGeneration;
   }
 
+  private reprintableDetails(): InstallmentDetails | null {
+    const details = this.state.details;
+    const port = this.options.reprintPort;
+    if (
+      this.destroyed ||
+      !hasInstallmentReprintPermission(this.options.permissions) ||
+      !this.state.online ||
+      this.state.busy ||
+      this.state.recoveryRequired ||
+      this.state.detailsLoading ||
+      !details ||
+      this.state.selectedGuid !== details.installmentGuid ||
+      !this.selectedDetailsWritable() ||
+      (this.reprintInFlight !== null &&
+        this.state.reprint.kind !== "submitting") ||
+      !port
+    ) {
+      return null;
+    }
+    try {
+      return port.canReprint(details) ? details : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private selectedDetailsWritable(): boolean {
+    const details = this.state.details;
+    return Boolean(
+      details && details.deviceCode === this.options.trustedDeviceCode,
+    );
+  }
+
+  private historyInput(skip: number): Parameters<InstallmentWorkflowPort["list"]>[0] {
+    return {
+      dateFilter: this.state.dateFilter,
+      deviceScope: this.state.deviceScope,
+      keyword: optionalTrimmed(this.state.query),
+      online: this.state.online,
+      skip,
+      status: this.state.statusFilter,
+      take: INSTALLMENT_HISTORY_REQUEST_SIZE,
+    };
+  }
+
+  private applyHistoryFailure(error: unknown, loadingMore: boolean): void {
+    const failureCode = workflowFailureCode(error);
+    const recoveryRequired = failureCode === "payment-recovery-required";
+    if (
+      failureCode === "online-required" ||
+      failureCode === "authorization-declined"
+    ) {
+      this.invalidateOnlineHistory(failureCode);
+      return;
+    }
+    this.patch({
+      hasMore: loadingMore ? this.state.hasMore : false,
+      kind: loadingMore && this.state.orders.length > 0 ? "ready" : "failed",
+      loadingMore: false,
+      recoveryRequired: this.state.recoveryRequired || recoveryRequired,
+      statusCode: recoveryRequired
+        ? "payment-recovery-required"
+        : failureCode === "service-unavailable"
+          ? "service-unavailable"
+          : "history-failed",
+    });
+  }
+
+  private invalidateOnlineHistory(
+    statusCode: "authorization-declined" | "online-required",
+  ): void {
+    this.detailGeneration += 1;
+    this.reprintGeneration += 1;
+    this.nextSkip = 0;
+    this.patch({
+      details: null,
+      detailsLoading: false,
+      hasMore: false,
+      kind: statusCode === "authorization-declined" ? "unauthorized" : "failed",
+      loadingMore: false,
+      orders: [],
+      reprint: { kind: "idle" },
+      selectedGuid: null,
+      statusCode,
+    });
+  }
+
   private isCurrentDetail(
     generation: number,
     installmentGuid: string,
@@ -666,6 +986,18 @@ export class InstallmentPresenter {
       !this.destroyed &&
       generation === this.detailGeneration &&
       this.state.selectedGuid === installmentGuid
+    );
+  }
+
+  private isCurrentReprint(
+    generation: number,
+    installmentGuid: string,
+  ): boolean {
+    return (
+      !this.destroyed &&
+      generation === this.reprintGeneration &&
+      this.state.selectedGuid === installmentGuid &&
+      this.state.details?.installmentGuid === installmentGuid
     );
   }
 
@@ -760,7 +1092,10 @@ function workflowFailureCode(error: unknown): InstallmentStatusCode {
     }
     if (error.code === "conflict") return "conflict";
     if (error.code === "online-required") return "online-required";
-    return "payment-recovery-required";
+    if (error.code === "payment-recovery-required") {
+      return "payment-recovery-required";
+    }
+    return "service-unavailable";
   }
   return "action-failed";
 }
@@ -776,6 +1111,20 @@ function upsertSummary(
   if (index < 0) return Object.freeze([summary, ...orders]);
   const next = [...orders];
   next[index] = summary;
+  return Object.freeze(next);
+}
+
+function uniqueSummaries(
+  existing: readonly InstallmentSummary[],
+  incoming: readonly InstallmentSummary[],
+): readonly InstallmentSummary[] {
+  const seen = new Set(existing.map((order) => order.installmentGuid));
+  const next = [...existing];
+  for (const order of incoming) {
+    if (seen.has(order.installmentGuid)) continue;
+    seen.add(order.installmentGuid);
+    next.push(order);
+  }
   return Object.freeze(next);
 }
 

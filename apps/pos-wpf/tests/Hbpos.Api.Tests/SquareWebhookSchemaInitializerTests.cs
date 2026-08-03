@@ -50,6 +50,25 @@ public sealed class SquareWebhookSchemaInitializerTests
         Assert.Contains("[OriginDeviceCode] = COALESCE(target.[OriginDeviceCode], @OriginDeviceCode)", sql);
     }
 
+    [Fact]
+    public void Checkout_lookup_refresh_is_scope_bound_append_only_and_preserves_webhook_evidence()
+    {
+        var sql = (string?)typeof(SqlSugarSquareCheckoutSessionRepository)
+            .GetField("RefreshCheckoutSessionFromLookupSql", BindingFlags.Static | BindingFlags.NonPublic)?
+            .GetRawConstantValue();
+
+        Assert.NotNull(sql);
+        Assert.Contains("CROSS APPLY", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(6, CountOccurrences(sql!, "WHEN accepted.[Value] = 1"));
+        Assert.Contains("target.[OriginStoreCode] = @OriginStoreCode", sql, StringComparison.Ordinal);
+        Assert.Contains("target.[OriginDeviceCode] = @OriginDeviceCode", sql, StringComparison.Ordinal);
+        Assert.Contains("OPENJSON", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("STRING_ESCAPE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("[RawCheckoutJson] =", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("[LastEventId] =", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSERT", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(2601)]
     [InlineData(2627)]
@@ -112,6 +131,19 @@ public sealed class SquareWebhookSchemaInitializerTests
                             : null)
             .ToArray();
         return (SqlException)createException.Invoke(null, args)!;
+    }
+
+    private static int CountOccurrences(string value, string fragment)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = value.IndexOf(fragment, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += fragment.Length;
+        }
+
+        return count;
     }
 
     private static SqlError CreateSqlError(int number)

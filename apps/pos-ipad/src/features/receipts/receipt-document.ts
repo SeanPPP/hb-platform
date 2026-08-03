@@ -41,14 +41,18 @@ export type SaleInput = Readonly<{
   cashChangeCents: number | null;
   isReprint?: boolean;
   title?: string;
-  /** 完整订单 GUID，仅用于机读码，绝不替代展示订单号。 */
+  /** 完整订单 GUID，用于机读码；普通销售也可选择直接作为可见订单标识。 */
   orderGuid?: string;
   /** 面向顾客的订单号；未提供时兼容旧版 orderNumber。 */
   orderDisplay?: string;
+  /** labelled 保留业务编号；guid-only 只显示完整 GUID，不增加 Order 标签。 */
+  orderPresentation?: "labelled" | "guid-only";
   storeCode?: string;
   statusText?: string;
   printedAtIso?: string;
   includeMachineCodes?: boolean;
+  /** 由票据领域生成并安全校验的业务扩展行；UI 不得注入原始支付材料。 */
+  extraInfoLines?: readonly string[];
 }>;
 type DailyInput = Readonly<{ locale: ReceiptLocale; paper: ReceiptPaper; storeName: string; businessDate: string; deviceCode: string; cashierName: string; paymentTotals: readonly Readonly<{ method: string; salesCents: number; refundCents: number; netCents: number }>[]; orderCount: number; salesCents: number; refundCents: number; netCents: number; expectedCashCents: number; countedCashCents: number; differenceCents: number }>;
 type BankInput = Readonly<{ locale: ReceiptLocale; paper: ReceiptPaper; status: string; cardType?: string; maskedCardNumber?: string; reference?: string; rawText?: string }>;
@@ -59,8 +63,9 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
   const zh = input.locale === "zh-CN";
   const b = new Builder(input.paper, width);
   const orderGuid = nonBlank(input.orderGuid);
-  const brandName = nonBlank(input.store.brandName) ?? nonBlank(input.storeCode) ?? "-";
+  const configuredBrandName = nonBlank(input.store.brandName);
   const storeName = nonBlank(input.store.storeName);
+  const brandName = configuredBrandName ?? storeName ?? nonBlank(input.storeCode) ?? "-";
   const phone = nonBlank(input.store.phone);
   const abn = nonBlank(input.store.abn);
   const title = nonBlank(input.title) ?? (zh ? "===== 税务发票 =====" : "===== TAX INVOICE =====");
@@ -70,8 +75,8 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
   const [itemWidth, quantityWidth, priceWidth] = saleColumnWidths(width);
 
   b.text(brandName, "center", true);
-  // 中文注释：分店名是顾客识别购买门店的独立信息，即使与品牌同名也必须显示。
-  if (storeName) {
+  // 中文注释：无品牌时分店名本身就是抬头；品牌与分店同名也只打印一次。
+  if (storeName && storeName.toLocaleLowerCase() !== brandName.toLocaleLowerCase()) {
     b.text(storeName, "center");
   }
   for (const addressLine of wrapByWord(input.store.address, Math.min(35, width))) {
@@ -89,13 +94,21 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
   }
   b.blank();
 
-  b.text(`${zh ? "订单" : "Order"}: ${displayOrder}`);
+  if (input.orderPresentation === "guid-only") {
+    if (!orderGuid) throw new Error("Sale receipt GUID display requires orderGuid.");
+    b.text(orderGuid);
+  } else {
+    b.text(`${zh ? "订单" : "Order"}: ${displayOrder}`);
+  }
   b.text(`${zh ? "时间" : "Date"}: ${formatDate(input.soldAtIso)}`);
   b.text(`${zh ? "收银员" : "Cashier"}: ${input.cashierName}`);
   for (const line of wrapByWord(`Store: ${formatStoreDisplay(input.store.storeName, input.storeCode ?? "")}`, width)) {
     b.text(line);
   }
   b.text(`${zh ? "设备" : "Device"}: ${input.deviceCode}`);
+  for (const infoLine of input.extraInfoLines ?? []) {
+    if (infoLine.trim()) b.text(infoLine.trim());
+  }
   b.separator();
   b.text(columns(
     [zh ? "商品" : "ITEM", zh ? "数量" : "QTY", zh ? "金额" : "PRICE"],
@@ -351,6 +364,9 @@ function assertSafeSaleText(input: SaleInput): void {
   });
   input.tenders.forEach((tender, index) => {
     assertSafeText(tender.reference ?? undefined, `tenders[${index}].reference`, false);
+  });
+  input.extraInfoLines?.forEach((line, index) => {
+    assertSafeText(line, `extraInfoLines[${index}]`, false);
   });
 }
 

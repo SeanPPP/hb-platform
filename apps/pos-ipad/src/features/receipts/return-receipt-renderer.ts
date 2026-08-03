@@ -74,6 +74,7 @@ function refundDocument(
     orderNumber: order.orderGuid,
     orderGuid: order.orderGuid,
     orderDisplay: `#${order.localSequence}`,
+    orderPresentation: "guid-only",
     soldAtIso: order.soldAtIso,
     cashierName: order.cashierName,
     storeCode: order.storeCode,

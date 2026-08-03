@@ -9,6 +9,7 @@ let mockSalesScreenProps: any;
 let mockRouteCaptureProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
+let mockSalesRouteFocusEffect: (() => void) | null;
 type MockSalesFeedbackEvent = Readonly<{ kind: string }>;
 const mockSalesFeedbackSubscription: {
   listener?: (event: MockSalesFeedbackEvent) => void;
@@ -55,6 +56,16 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
+    useFocusEffect: (effect: () => void) => {
+      React.useEffect(() => {
+        mockSalesRouteFocusEffect = effect;
+        return () => {
+          if (mockSalesRouteFocusEffect === effect) {
+            mockSalesRouteFocusEffect = null;
+          }
+        };
+      }, [effect]);
+    },
     useRouter: () => ({ push: mockRouterPush, replace: mockRouterReplace }),
   };
 });
@@ -170,6 +181,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSalesScreenProps = null;
   mockRouteCaptureProps = null;
+  mockSalesRouteFocusEffect = null;
   delete mockSalesFeedbackSubscription.listener;
   mockSubscribeSalesFeedback.mockImplementation((listener) => {
     mockSalesFeedbackSubscription.listener = listener;
@@ -479,6 +491,37 @@ test("销售页只结算一次，路由直接使用已核验快照且不重复�
       totalCents: "1875",
     },
   });
+  await screen.unmount();
+});
+
+test("从统一支付页返回收银时释放已核验 checkout，使商品录入恢复可用", async () => {
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+
+  mockSalesScreenProps.onOpenPayment({
+    revision: 9,
+    lines: [{ lineId: "line-square" }],
+    actualAmount: { currency: "AUD", cents: 1_875 },
+  });
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    pathname: "/payment",
+    params: {
+      checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
+      revision: "9",
+      totalCents: "1875",
+    },
+  });
+  expect(mockReleasePreparedCheckout).not.toHaveBeenCalled();
+  expect(mockSalesRouteFocusEffect).not.toBeNull();
+
+  await act(async () => {
+    mockSalesRouteFocusEffect?.();
+    await Promise.resolve();
+  });
+
+  expect(mockReleasePreparedCheckout).toHaveBeenCalledTimes(1);
   await screen.unmount();
 });
 

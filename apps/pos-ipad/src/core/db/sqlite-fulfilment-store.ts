@@ -29,7 +29,8 @@ type PersistedReceiptReprintSource =
   | "last-receipt"
   | "payment-success"
   | "remote-history"
-  | "local-history";
+  | "local-history"
+  | "installment-history";
 
 export type FulfilmentInitialAuthorization = Readonly<{
   context: PersistedFulfilmentAuthorization;
@@ -421,9 +422,11 @@ export class SqliteFulfilmentStore {
         authorizationExpectation,
       );
     }
+    const reprintSource = authorizationExpectation
+      ? receiptReprintSource(authorizationExpectation)
+      : null;
     const externalOrderGuid =
-      authorizationExpectation &&
-      receiptReprintSource(authorizationExpectation) === "remote-history"
+      reprintSource === "remote-history" || reprintSource === "installment-history"
         ? input.orderGuid
         : null;
     const encryptedReceipt = await this.options.encryptor.encrypt(
@@ -712,8 +715,14 @@ type InitialAuthorizationExpectation = Readonly<{
     | "payment-success"
     | "local-history"
     | "remote-history"
+    | "installment-history"
     | "MANUAL";
-  source: "sales" | "payment-success" | "local-history" | "remote-history";
+  source:
+    | "sales"
+    | "payment-success"
+    | "local-history"
+    | "remote-history"
+    | "installment-history";
   permissionCode:
     | "Permissions.PosTerminal.Receipt.PrintLast"
     | "Permissions.PosTerminal.History.Reprint"
@@ -762,7 +771,9 @@ function initialAuthorizationExpectation(
     eventType === "RECEIPT_REPRINT" &&
     context.permissionCode === "Permissions.PosTerminal.History.Reprint" &&
     action === "reprint-history-receipt" &&
-    (reason === "local-history" || reason === "remote-history") &&
+    (reason === "local-history" ||
+      reason === "remote-history" ||
+      reason === "installment-history") &&
     source === reason;
   const isManualDrawer =
     eventType === "CASH_DRAWER_OPEN" &&
@@ -1055,7 +1066,8 @@ function receiptReprintSource(
     authorization.action === "reprint-history-receipt" &&
     authorization.reason === authorization.source &&
     (authorization.source === "local-history" ||
-      authorization.source === "remote-history")
+      authorization.source === "remote-history" ||
+      authorization.source === "installment-history")
   ) {
     return authorization.source;
   }

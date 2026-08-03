@@ -188,7 +188,7 @@ test("具备权限时新建和续付都跳转统一支付路由", async () => {
   await waitFor(() => {
     expect(screen.getByTestId("installments-screen")).toBeTruthy();
   });
-  mockScreenProps.onStartCreate();
+  expect(mockScreenProps.onStartCreate()).toBe(true);
   expect(mockPrepareCreateCheckout).toHaveBeenCalledTimes(1);
   expect(mockRouterPush).toHaveBeenNthCalledWith(1, {
     pathname: "/payment",
@@ -199,9 +199,11 @@ test("具备权限时新建和续付都跳转统一支付路由", async () => {
     },
   });
 
-  mockScreenProps.onStartRepayment(
-    "223e4567-e89b-42d3-a456-426614174000",
-  );
+  expect(
+    mockScreenProps.onStartRepayment(
+      "223e4567-e89b-42d3-a456-426614174000",
+    ),
+  ).toBe(true);
   expect(mockRouterPush).toHaveBeenNthCalledWith(2, {
     pathname: "/payment",
     params: {
@@ -223,7 +225,25 @@ test("分期跳转入口继续执行权限和 UUID 门禁", async () => {
     expect(screen.getByTestId("installments-screen")).toBeTruthy();
   });
   expect(mockScreenProps.onStartCreate).toBeUndefined();
-  mockScreenProps.onStartRepayment("../../payment");
+  expect(mockScreenProps.onStartRepayment("../../payment")).toBe(false);
+  expect(mockRouterPush).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("购物车准备失败时返回 false 且不静默跳转", async () => {
+  mockActiveCashier.permissions = [
+    "Permissions.PosTerminal.Installments.View",
+    "Permissions.PosTerminal.Installments.Create",
+  ];
+  mockPrepareCreateCheckout.mockImplementation(() => {
+    throw new Error("cart unavailable");
+  });
+  const screen = await render(<InstallmentsRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("installments-screen")).toBeTruthy();
+  });
+  expect(mockScreenProps.onStartCreate()).toBe(false);
   expect(mockRouterPush).not.toHaveBeenCalled();
   await screen.unmount();
 });

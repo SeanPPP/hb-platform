@@ -77,6 +77,8 @@ test("支付小票在批准 tender 落库前以持久订单加计划 tender 渲�
 
   assert.match(text, /Cash\s+\$4\.00/);
   assert.match(text, /Card\s+\$6\.00/);
+  assert.match(text, /order-1\n.*Date:/s);
+  assert.doesNotMatch(text, /Order: #1/);
   assert.doesNotMatch(text, /attempt-sensitive-reference/);
 });
 

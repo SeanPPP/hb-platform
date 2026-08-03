@@ -1,0 +1,60 @@
+{
+  "sourceRows": 81,
+  "filteredSourceRows": 63,
+  "grossTotals": {
+    "BEAC072": 5328,
+    "EA258": 4032,
+    "BEAC130": 5040,
+    "BEAC071": 1200,
+    "EA256": 600
+  },
+  "returnTotals": {
+    "BEAC072": 1439,
+    "EA258": 803,
+    "BEAC130": 1322,
+    "BEAC071": 0,
+    "EA256": 0
+  },
+  "salesTotals": {
+    "BEAC072": 3067,
+    "EA258": 2391,
+    "BEAC130": 2354,
+    "BEAC071": 1285,
+    "EA256": 320
+  },
+  "priceBandTotals": {
+    "price1Total": 1601,
+    "price2Total": 5462,
+    "price3Total": 2354
+  },
+  "dbPurchaseTotals": {
+    "BEAC072": 1584,
+    "EA258": 1584,
+    "BEAC130": 1872,
+    "BEAC071": 300,
+    "EA256": 0
+  },
+  "dbPurchaseTotal": 5340,
+  "networkLast7": [
+    282,
+    292,
+    243,
+    201,
+    409,
+    471,
+    505
+  ],
+  "expected": {
+    "gross": 16200,
+    "returns": 3564,
+    "net": 12636,
+    "sales": 9417
+  },
+  "recommendedBySku": {
+    "BEAC072": 3312,
+    "EA258": 2592,
+    "BEAC130": 2592,
+    "BEAC071": 1500,
+    "EA256": 600
+  }
+}

@@ -164,8 +164,8 @@ test("prepare 重新读取严格订单，冻结一次设置并生成带完整机
   assert.equal(prepared?.orderGuid, orderGuid);
   assert.equal(prepared?.printerId, "printer-001");
   assert.match(receipt, /\*\*\* REPRINT \*\*\*/u);
-  assert.match(receipt, /Order: #EF47C164/u);
-  assert.match(receipt, new RegExp(orderGuid, "u"));
+  assert.match(receipt, /12345678-1234-1234-1234-abcdef47\n[\s\S]*c164\n[\s\S]*Date:/u);
+  assert.doesNotMatch(receipt, /Order:|#EF47C164/u);
   assert.match(receipt, /Ref: \*\*\*\*4321/u);
   assert.doesNotMatch(receipt, /SECRET-CARD-TYPE|\*\*\*\*9999/u);
 });

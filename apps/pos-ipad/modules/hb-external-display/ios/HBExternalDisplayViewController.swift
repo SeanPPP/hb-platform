@@ -2,6 +2,11 @@ import AVFoundation
 import UIKit
 
 final class HBExternalDisplayViewController: UIViewController {
+  private struct AdvertIdentity: Hashable {
+    let kind: String
+    let localUri: String
+  }
+
   private let modeLabel = UILabel()
   private let itemStack = UIStackView()
   private let itemCountLabel = UILabel()
@@ -9,6 +14,7 @@ final class HBExternalDisplayViewController: UIViewController {
   private let discountValueLabel = UILabel()
   private let totalValueLabel = UILabel()
   private let changeValueLabel = UILabel()
+  private let checkoutPanel = UIStackView()
   private let advertContainer = UIView()
   private let advertImageView = UIImageView()
   private let brandStack = UIStackView()
@@ -18,10 +24,41 @@ final class HBExternalDisplayViewController: UIViewController {
   private var videoPlayer: AVQueuePlayer?
   private var videoLooper: AVPlayerLooper?
   private var videoLayer: AVPlayerLayer?
+  private var videoPlayerItem: AVPlayerItem?
+  private var videoStatusObservation: NSKeyValueObservation?
+  private var videoFailureObserver: NSObjectProtocol?
+  private var videoStalledObserver: NSObjectProtocol?
+  private var videoStartupTimeoutWorkItem: DispatchWorkItem?
+  private var videoStartupTimeoutToken: UUID?
+  private var videoRetryWorkItem: DispatchWorkItem?
+  private var videoRetryToken: UUID?
   private var reactSurface: UIView?
+  private var currentAdvertIdentity: AdvertIdentity?
+  private var pendingVideoIdentity: AdvertIdentity?
+  private var lastRequestedAdvertIdentity: AdvertIdentity?
+  private var videoFailureCounts: [AdvertIdentity: Int] = [:]
+  private var isHandlingVideoFailure = false
+  private var transactionLayoutConstraints: [NSLayoutConstraint] = []
+  private var fullScreenAdvertLayoutConstraints: [NSLayoutConstraint] = []
+  private var isShowingFullScreenAdvert = false
+  private let maximumVideoFailureCount = 2
+  private let videoRetryDelay: TimeInterval = 0.75
+  private let videoStartupTimeout: TimeInterval = 5
 
   var hasReactSurface: Bool {
     reactSurface != nil
+  }
+
+  deinit {
+    videoStartupTimeoutWorkItem?.cancel()
+    videoRetryWorkItem?.cancel()
+    videoStatusObservation?.invalidate()
+    if let videoFailureObserver {
+      NotificationCenter.default.removeObserver(videoFailureObserver)
+    }
+    if let videoStalledObserver {
+      NotificationCenter.default.removeObserver(videoStalledObserver)
+    }
   }
 
   override func loadView() {
@@ -41,6 +78,8 @@ final class HBExternalDisplayViewController: UIViewController {
   }
 
   func showWaitingState() {
+    resetVideoRetryState()
+    updateFallbackLayout(fullScreenAdvert: false)
     modeLabel.text = "Welcome"
     replaceItemRows(with: [])
     itemCountLabel.text = "Ready when you are"
@@ -53,6 +92,12 @@ final class HBExternalDisplayViewController: UIViewController {
 
   @discardableResult
   func render(snapshot: HBExternalDisplaySnapshot) -> String? {
+    updateFallbackLayout(
+      fullScreenAdvert:
+        snapshot.mode == .idle
+        && snapshot.items.isEmpty
+        && snapshot.advert != nil
+    )
     modeLabel.text = title(for: snapshot.mode)
     replaceItemRows(with: Array(snapshot.items.prefix(12)))
     let hiddenCount = max(snapshot.items.count - 12, 0)
@@ -60,7 +105,7 @@ final class HBExternalDisplayViewController: UIViewController {
       ? "\(snapshot.items.count) item(s)"
       : "\(snapshot.items.count) item(s) · \(hiddenCount) more"
     gstValueLabel.text = format(snapshot.gst)
-    discountValueLabel.text = format(snapshot.discount)
+    discountValueLabel.text = formatDiscount(snapshot.discount)
     totalValueLabel.text = format(snapshot.total)
     changeValueLabel.text = format(snapshot.change)
 
@@ -68,11 +113,26 @@ final class HBExternalDisplayViewController: UIViewController {
   }
 
   func stopMedia() {
+    cancelVideoStartupTimeout()
+    cancelVideoRetry()
+    videoStatusObservation?.invalidate()
+    videoStatusObservation = nil
+    if let videoFailureObserver {
+      NotificationCenter.default.removeObserver(videoFailureObserver)
+    }
+    videoFailureObserver = nil
+    if let videoStalledObserver {
+      NotificationCenter.default.removeObserver(videoStalledObserver)
+    }
+    videoStalledObserver = nil
+    videoPlayerItem = nil
+    pendingVideoIdentity = nil
     videoPlayer?.pause()
     videoLayer?.removeFromSuperlayer()
     videoLayer = nil
     videoLooper = nil
     videoPlayer = nil
+    currentAdvertIdentity = nil
   }
 
   func installReactSurface(
@@ -127,15 +187,6 @@ final class HBExternalDisplayViewController: UIViewController {
   }
 
   private func configureLayout() {
-    let content = UIStackView()
-    content.axis = .horizontal
-    content.alignment = .fill
-    content.distribution = .fill
-    content.spacing = 32
-    content.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(content)
-
-    let checkoutPanel = UIStackView()
     checkoutPanel.axis = .vertical
     checkoutPanel.alignment = .fill
     checkoutPanel.spacing = 18
@@ -174,16 +225,53 @@ final class HBExternalDisplayViewController: UIViewController {
     brandStack.addArrangedSubview(brandSubtitleLabel)
     advertContainer.addSubview(brandStack)
 
-    content.addArrangedSubview(checkoutPanel)
-    content.addArrangedSubview(advertContainer)
+    view.addSubview(checkoutPanel)
+    view.addSubview(advertContainer)
 
+    // 扣除 32pt 栏间距后保持交易与广告区域精确为 60/40。
+    transactionLayoutConstraints = [
+      checkoutPanel.leadingAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.leadingAnchor,
+        constant: 34
+      ),
+      checkoutPanel.topAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.topAnchor,
+        constant: 28
+      ),
+      checkoutPanel.bottomAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.bottomAnchor,
+        constant: -28
+      ),
+      advertContainer.leadingAnchor.constraint(
+        equalTo: checkoutPanel.trailingAnchor,
+        constant: 32
+      ),
+      advertContainer.trailingAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.trailingAnchor,
+        constant: -34
+      ),
+      advertContainer.topAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.topAnchor,
+        constant: 28
+      ),
+      advertContainer.bottomAnchor.constraint(
+        equalTo: view.safeAreaLayoutGuide.bottomAnchor,
+        constant: -28
+      ),
+      checkoutPanel.widthAnchor.constraint(
+        equalTo: advertContainer.widthAnchor,
+        multiplier: 1.5
+      ),
+    ]
+    fullScreenAdvertLayoutConstraints = [
+      advertContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      advertContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      advertContainer.topAnchor.constraint(equalTo: view.topAnchor),
+      advertContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+    ]
+
+    NSLayoutConstraint.activate(transactionLayoutConstraints)
     NSLayoutConstraint.activate([
-      content.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 34),
-      content.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -34),
-      content.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 28),
-      content.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
-      checkoutPanel.widthAnchor.constraint(greaterThanOrEqualTo: content.widthAnchor, multiplier: 0.52),
-      advertContainer.widthAnchor.constraint(greaterThanOrEqualTo: content.widthAnchor, multiplier: 0.34),
       advertImageView.leadingAnchor.constraint(equalTo: advertContainer.leadingAnchor),
       advertImageView.trailingAnchor.constraint(equalTo: advertContainer.trailingAnchor),
       advertImageView.topAnchor.constraint(equalTo: advertContainer.topAnchor),
@@ -192,6 +280,27 @@ final class HBExternalDisplayViewController: UIViewController {
       brandStack.trailingAnchor.constraint(equalTo: advertContainer.trailingAnchor, constant: -24),
       brandStack.centerYAnchor.constraint(equalTo: advertContainer.centerYAnchor),
     ])
+  }
+
+  private func updateFallbackLayout(fullScreenAdvert: Bool) {
+    guard fullScreenAdvert != isShowingFullScreenAdvert else { return }
+    isShowingFullScreenAdvert = fullScreenAdvert
+
+    UIView.performWithoutAnimation {
+      NSLayoutConstraint.deactivate(
+        fullScreenAdvert
+          ? transactionLayoutConstraints
+          : fullScreenAdvertLayoutConstraints
+      )
+      checkoutPanel.isHidden = fullScreenAdvert
+      advertContainer.layer.cornerRadius = fullScreenAdvert ? 0 : 24
+      NSLayoutConstraint.activate(
+        fullScreenAdvert
+          ? fullScreenAdvertLayoutConstraints
+          : transactionLayoutConstraints
+      )
+      view.layoutIfNeeded()
+    }
   }
 
   private func makeTotalsPanel() -> UIView {
@@ -284,13 +393,22 @@ final class HBExternalDisplayViewController: UIViewController {
   }
 
   private func render(advert: HBExternalDisplayAdvert?) -> String? {
-    stopMedia()
-    advertImageView.image = nil
-
     guard let advert else {
+      resetVideoRetryState()
       showBrandPlaceholder()
       return nil
     }
+
+    let identity = AdvertIdentity(
+      kind: advert.kind.rawValue,
+      localUri: advert.localUri
+    )
+    prepareVideoRetryState(for: identity)
+    guard currentAdvertIdentity != identity else { return nil }
+    guard pendingVideoIdentity != identity else { return nil }
+
+    stopMedia()
+    advertImageView.image = nil
 
     let url = advert.url
     guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else {
@@ -307,23 +425,244 @@ final class HBExternalDisplayViewController: UIViewController {
       advertImageView.image = image
       advertImageView.isHidden = false
       brandStack.isHidden = true
+      currentAdvertIdentity = identity
 
     case .video:
+      guard
+        videoFailureCounts[identity, default: 0]
+          < maximumVideoFailureCount
+      else {
+        showBrandPlaceholder()
+        return "advert-video-retry-exhausted"
+      }
+      let asset = AVURLAsset(url: url)
+      guard asset.isPlayable else {
+        recordVideoFailure(for: identity)
+        showBrandPlaceholder()
+        return "advert-video-unavailable"
+      }
       advertImageView.isHidden = true
       brandStack.isHidden = true
       let player = AVQueuePlayer()
-      let item = AVPlayerItem(url: url)
-      videoLooper = AVPlayerLooper(player: player, templateItem: item)
+      let templateItem = AVPlayerItem(asset: asset)
+      videoLooper = AVPlayerLooper(player: player, templateItem: templateItem)
+      guard let playbackItem = player.currentItem else {
+        recordVideoFailure(for: identity)
+        showBrandPlaceholder()
+        return "advert-video-unavailable"
+      }
       let layer = AVPlayerLayer(player: player)
       layer.videoGravity = .resizeAspectFill
       advertContainer.layer.insertSublayer(layer, at: 0)
       videoPlayer = player
       videoLayer = layer
+      observeVideoPlayback(
+        item: playbackItem,
+        advert: advert,
+        identity: identity
+      )
       player.play()
       view.setNeedsLayout()
     }
 
     return nil
+  }
+
+  private func prepareVideoRetryState(for identity: AdvertIdentity) {
+    guard lastRequestedAdvertIdentity != identity else { return }
+    lastRequestedAdvertIdentity = identity
+    videoFailureCounts.removeAll()
+  }
+
+  private func resetVideoRetryState() {
+    lastRequestedAdvertIdentity = nil
+    videoFailureCounts.removeAll()
+  }
+
+  private func recordVideoFailure(for identity: AdvertIdentity) {
+    videoFailureCounts[identity, default: 0] += 1
+  }
+
+  private func observeVideoPlayback(
+    item: AVPlayerItem,
+    advert: HBExternalDisplayAdvert,
+    identity: AdvertIdentity
+  ) {
+    videoPlayerItem = item
+    pendingVideoIdentity = identity
+    videoStatusObservation = item.observe(
+      \.status,
+      options: [.initial, .new]
+    ) { [weak self, weak item] _, _ in
+      DispatchQueue.main.async {
+        guard let self, let item else { return }
+        self.handleVideoStatusChange(
+          item: item,
+          advert: advert,
+          identity: identity
+        )
+      }
+    }
+    videoFailureObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemFailedToPlayToEndTime,
+      object: nil,
+      queue: .main
+    ) { [weak self] notification in
+      guard let item = notification.object as? AVPlayerItem else { return }
+      self?.handleVideoPlaybackFailure(
+        item: item,
+        advert: advert,
+        identity: identity
+      )
+    }
+    videoStalledObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemPlaybackStalled,
+      object: nil,
+      queue: .main
+    ) { [weak self] notification in
+      guard let item = notification.object as? AVPlayerItem else { return }
+      self?.handleVideoPlaybackFailure(
+        item: item,
+        advert: advert,
+        identity: identity
+      )
+    }
+    scheduleVideoStartupTimeout(
+      item: item,
+      advert: advert,
+      identity: identity
+    )
+  }
+
+  private func handleVideoStatusChange(
+    item: AVPlayerItem,
+    advert: HBExternalDisplayAdvert,
+    identity: AdvertIdentity
+  ) {
+    precondition(Thread.isMainThread)
+    guard videoPlayerItem === item else { return }
+
+    switch item.status {
+    case .readyToPlay:
+      cancelVideoStartupTimeout()
+      pendingVideoIdentity = nil
+      currentAdvertIdentity = identity
+    case .failed:
+      handleVideoPlaybackFailure(
+        item: item,
+        advert: advert,
+        identity: identity
+      )
+    case .unknown:
+      break
+    @unknown default:
+      break
+    }
+  }
+
+  private func handleVideoPlaybackFailure(
+    item: AVPlayerItem,
+    advert: HBExternalDisplayAdvert,
+    identity: AdvertIdentity
+  ) {
+    precondition(Thread.isMainThread)
+    guard
+      !isHandlingVideoFailure,
+      pendingVideoIdentity == identity || currentAdvertIdentity == identity,
+      videoPlayerItem === item || videoPlayer?.currentItem === item
+    else {
+      return
+    }
+
+    isHandlingVideoFailure = true
+    defer { isHandlingVideoFailure = false }
+    recordVideoFailure(for: identity)
+    // 先撤销观察再上报，避免播放器 teardown 再次触发失败通知。
+    showBrandPlaceholder()
+    HBExternalDisplayCoordinator.shared.reportFailure("advert-video-playback-failed")
+    scheduleVideoRetry(advert: advert, identity: identity)
+  }
+
+  private func scheduleVideoStartupTimeout(
+    item: AVPlayerItem,
+    advert: HBExternalDisplayAdvert,
+    identity: AdvertIdentity
+  ) {
+    cancelVideoStartupTimeout()
+    let token = UUID()
+    videoStartupTimeoutToken = token
+    let workItem = DispatchWorkItem { [weak self, weak item] in
+      guard
+        let self,
+        let item,
+        self.videoStartupTimeoutToken == token,
+        self.pendingVideoIdentity == identity,
+        self.lastRequestedAdvertIdentity == identity
+      else {
+        return
+      }
+
+      self.videoStartupTimeoutWorkItem = nil
+      self.videoStartupTimeoutToken = nil
+      self.handleVideoPlaybackFailure(
+        item: item,
+        advert: advert,
+        identity: identity
+      )
+    }
+    videoStartupTimeoutWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + videoStartupTimeout,
+      execute: workItem
+    )
+  }
+
+  private func cancelVideoStartupTimeout() {
+    videoStartupTimeoutWorkItem?.cancel()
+    videoStartupTimeoutWorkItem = nil
+    videoStartupTimeoutToken = nil
+  }
+
+  private func scheduleVideoRetry(
+    advert: HBExternalDisplayAdvert,
+    identity: AdvertIdentity
+  ) {
+    guard
+      videoFailureCounts[identity, default: 0] < maximumVideoFailureCount,
+      lastRequestedAdvertIdentity == identity
+    else {
+      return
+    }
+
+    cancelVideoRetry()
+    let token = UUID()
+    videoRetryToken = token
+    let workItem = DispatchWorkItem { [weak self] in
+      guard
+        let self,
+        self.videoRetryToken == token,
+        self.lastRequestedAdvertIdentity == identity
+      else {
+        return
+      }
+
+      self.videoRetryWorkItem = nil
+      self.videoRetryToken = nil
+      if let failure = self.render(advert: advert) {
+        HBExternalDisplayCoordinator.shared.reportFailure(failure)
+      }
+    }
+    videoRetryWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + videoRetryDelay,
+      execute: workItem
+    )
+  }
+
+  private func cancelVideoRetry() {
+    videoRetryWorkItem?.cancel()
+    videoRetryWorkItem = nil
+    videoRetryToken = nil
   }
 
   private func showBrandPlaceholder() {
@@ -354,6 +693,18 @@ final class HBExternalDisplayViewController: UIViewController {
     return String(
       format: "%@$%d.%02d",
       sign,
+      absoluteCents / 100,
+      absoluteCents % 100
+    )
+  }
+
+  private func formatDiscount(_ money: HBExternalDisplayMoney) -> String {
+    let absoluteCents = abs(money.cents)
+    guard absoluteCents > 0 else { return "$0.00" }
+
+    // snapshot 保存的是折扣绝对金额；UIKit fallback 同样明确呈现为减项。
+    return String(
+      format: "−$%d.%02d",
       absoluteCents / 100,
       absoluteCents % 100
     )

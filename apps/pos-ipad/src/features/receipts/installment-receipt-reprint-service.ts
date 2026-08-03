@@ -1,0 +1,358 @@
+import {
+  buildSaleReceiptDocument,
+  documentToEscPosBytes,
+} from "./receipt-document";
+import type {
+  FrozenReceiptReprintSettings,
+  ReceiptReprintSettingsSource,
+} from "./receipt-reprint-service";
+
+import type { PreparedLastReceiptReprint } from "@/features/fulfilment/fulfilment-service";
+import type {
+  InstallmentDetails,
+  InstallmentPayment,
+  InstallmentsRemotePort,
+} from "@/features/installments/installment-models";
+
+export type InstallmentReceiptReprintPreparationServiceOptions = Readonly<{
+  installments: Pick<InstallmentsRemotePort, "getDetails">;
+  settings: ReceiptReprintSettingsSource;
+  trustedStoreCode: string;
+  trustedDeviceCode: string;
+  nowIso(): string;
+}>;
+
+/**
+ * 点击重打时重新读取服务端分期事实；页面缓存、外设设置和跨设备订单都不能成为打印来源。
+ */
+export class InstallmentReceiptReprintPreparationService {
+  public constructor(
+    private readonly options: InstallmentReceiptReprintPreparationServiceOptions,
+  ) {}
+
+  public async prepare(
+    installmentGuid: string,
+  ): Promise<PreparedLastReceiptReprint | null> {
+    try {
+      if (
+        !isExactText(installmentGuid) ||
+        !isExactText(this.options.trustedStoreCode) ||
+        !isExactText(this.options.trustedDeviceCode)
+      ) {
+        return null;
+      }
+
+      const details = await this.options.installments.getDetails(installmentGuid);
+      if (
+        !details ||
+        details.installmentGuid !== installmentGuid ||
+        details.storeCode !== this.options.trustedStoreCode ||
+        details.deviceCode !== this.options.trustedDeviceCode ||
+        !isInstallmentReceiptReprintEligible(details)
+      ) {
+        return null;
+      }
+
+      // 中文注释：详情核验通过后才读取并冻结本次动作的打印机、纸张、语言和门店抬头。
+      const settings = await this.options.settings.getFrozenReceiptSettings();
+      if (!isValidSettings(settings)) return null;
+
+      const recordedPayments = details.payments
+        .filter((payment) => payment.status === "Recorded")
+        .slice()
+        .sort((left, right) => left.recordedAtIso.localeCompare(right.recordedAtIso));
+      const document = buildSaleReceiptDocument({
+        locale: settings.locale,
+        paper: settings.paper,
+        store: {
+          ...settings.store,
+          brandName: settings.store.brandName.trim() || details.storeCode,
+        },
+        orderNumber: details.installmentNumber,
+        orderGuid: details.installmentGuid,
+        orderDisplay: details.installmentNumber,
+        soldAtIso: details.createdAtIso,
+        cashierName: details.cashierName,
+        storeCode: details.storeCode,
+        deviceCode: details.deviceCode,
+        lines: details.lines.map((line) => ({
+          name: line.displayName,
+          lookupCode: line.lookupCode || line.itemNumber || line.productCode,
+          quantity: line.quantity,
+          discountCents: line.discountCents,
+          totalCents: line.actualAmountCents,
+        })),
+        subtotalCents: details.totalCents,
+        discountCents: 0,
+        totalCents: details.totalCents,
+        tenders: recordedPayments.map((payment) => ({
+          method: payment.method,
+          amountCents: payment.amountCents,
+          reference: safePaymentReference(payment) ?? null,
+        })),
+        cashChangeCents: null,
+        statusText: statusText(details),
+        isReprint: true,
+        includeMachineCodes: true,
+        printedAtIso: this.options.nowIso(),
+        extraInfoLines: installmentInfoLines(details, recordedPayments),
+      });
+
+      return {
+        orderGuid: installmentGuid,
+        receiptBytes: documentToEscPosBytes(document),
+        printerId: settings.printerId,
+      };
+    } catch {
+      // 中文注释：任一远程、格式或渲染事实不可验证时都不创建耐久打印任务。
+      return null;
+    }
+  }
+}
+
+function installmentInfoLines(
+  details: InstallmentDetails,
+  recordedPayments: readonly InstallmentPayment[],
+): readonly string[] {
+  const lines = [
+    `Installment No: ${details.installmentNumber}`,
+    `Customer: ${details.customerName}`,
+    `Phone: ${details.customerPhone ?? ""}`,
+    `Deposit paid: ${money(details.downPaymentCents)}`,
+    `Balance due: ${money(details.balanceCents)}`,
+  ];
+  if (details.pickupInfo) {
+    lines.push(
+      "Pickup: Confirmed",
+      `Picked up at: ${formatLocalMinute(details.pickupInfo.pickedUpAtIso)}`,
+      `Picked up by: ${details.pickupInfo.pickedUpBy}`,
+    );
+    if (details.pickupInfo.note?.trim()) {
+      lines.push(`Pickup note: ${details.pickupInfo.note.trim()}`);
+    }
+  } else if (details.status === "PaidOff") {
+    lines.push("Pickup: Pending");
+  }
+  if (recordedPayments.length > 0) {
+    lines.push("Payment history:");
+    lines.push(...recordedPayments.map(paymentHistoryLine));
+  }
+  return Object.freeze(lines);
+}
+
+function paymentHistoryLine(payment: InstallmentPayment): string {
+  const base = `${formatLocalMinute(payment.recordedAtIso)} ${paymentLabel(payment.method)} ${money(payment.amountCents)}`;
+  const reference = safePaymentReference(payment);
+  return reference ? `${base} Ref: ${reference}` : base;
+}
+
+function paymentLabel(method: InstallmentPayment["method"]): string {
+  if (method === "cash") return "Cash";
+  if (method === "card") return "Card";
+  return "Voucher";
+}
+
+function safePaymentReference(payment: InstallmentPayment): string | undefined {
+  if (payment.method !== "card") return undefined;
+  const masked = payment.maskedCardNumber?.trim() ?? "";
+  if (!/^\*{2,}\d{1,4}$/u.test(masked)) return undefined;
+  const cardType = payment.cardType?.trim();
+  return cardType ? `${cardType} ${masked}` : masked;
+}
+
+function statusText(details: InstallmentDetails): string {
+  if (details.pickupInfo || details.status === "PickedUp") {
+    return "*** Paid - Picked Up ***";
+  }
+  if (details.status === "Cancelled") {
+    return "*** Installment Cancelled ***";
+  }
+  if (details.status === "PaidOff") {
+    return "*** Paid - Pickup Pending ***";
+  }
+  return "*** Deposit Received ***";
+}
+
+export function isInstallmentReceiptReprintEligible(
+  details: InstallmentDetails,
+): boolean {
+  if (
+    !isSafeRequiredText(details.installmentGuid) ||
+    !isSafeRequiredText(details.installmentNumber) ||
+    !isSafeRequiredText(details.storeCode) ||
+    !isSafeRequiredText(details.deviceCode) ||
+    !isSafeRequiredText(details.cashierName) ||
+    !isSafeRequiredText(details.customerName) ||
+    !isSafeOptionalText(details.customerPhone) ||
+    !Number.isFinite(new Date(details.createdAtIso).getTime()) ||
+    !Array.isArray(details.lines) ||
+    !Array.isArray(details.payments)
+  ) {
+    return false;
+  }
+  const amounts = [
+    details.totalCents,
+    details.minimumDownPaymentCents,
+    details.downPaymentCents,
+    details.paidCents,
+    details.balanceCents,
+  ];
+  if (
+    amounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0) ||
+    details.totalCents <= 0 ||
+    details.downPaymentCents > details.totalCents ||
+    details.minimumDownPaymentCents > details.totalCents ||
+    details.lines.length === 0
+  ) {
+    return false;
+  }
+  if (!hasConsistentInstallmentBalance(details)) {
+    return false;
+  }
+  if (
+    details.lines.some((line) =>
+      !isSafeRequiredText(line.displayName) ||
+      !isSafeRequiredText(line.productCode) ||
+      !isSafeOptionalText(line.lookupCode) ||
+      !isSafeOptionalText(line.itemNumber) ||
+      !isPositiveDecimal(line.quantity) ||
+      !Number.isSafeInteger(line.unitPriceCents) ||
+      line.unitPriceCents < 0 ||
+      !Number.isSafeInteger(line.discountCents) ||
+      line.discountCents < 0 ||
+      !Number.isSafeInteger(line.actualAmountCents) ||
+      line.actualAmountCents < 0)
+  ) {
+    return false;
+  }
+  if (
+    exactCentsSum(details.lines.map((line) => line.actualAmountCents)) !==
+    details.totalCents
+  ) {
+    return false;
+  }
+  const recorded = details.payments.filter((payment) => payment.status === "Recorded");
+  if (
+    recorded.some((payment) =>
+      !Number.isSafeInteger(payment.amountCents) ||
+      !Number.isFinite(new Date(payment.recordedAtIso).getTime()) ||
+      !isSafeOptionalText(payment.cardType) ||
+      !isSafeOptionalText(payment.maskedCardNumber))
+  ) {
+    return false;
+  }
+  const hasInvalidRecordedPayments =
+    details.status === "Cancelled" &&
+    details.cancellationInfo?.kind === "RefundCancel"
+      ? !hasBalancedRefundPayments(recorded)
+      : recorded.some((payment) => payment.amountCents <= 0);
+  if (hasInvalidRecordedPayments) {
+    return false;
+  }
+  if (
+    details.pickupInfo &&
+    (!Number.isFinite(new Date(details.pickupInfo.pickedUpAtIso).getTime()) ||
+      !isSafeRequiredText(details.pickupInfo.pickedUpBy) ||
+      !isSafeOptionalText(details.pickupInfo.note))
+  ) {
+    return false;
+  }
+  if (
+    details.cancellationInfo &&
+    (!Number.isFinite(new Date(details.cancellationInfo.cancelledAtIso).getTime()) ||
+      !isSafeRequiredText(details.cancellationInfo.cancelledBy) ||
+      !isSafeOptionalText(details.cancellationInfo.reason))
+  ) {
+    return false;
+  }
+  return exactCentsSum(recorded.map((payment) => payment.amountCents)) === details.paidCents;
+}
+
+function hasConsistentInstallmentBalance(details: InstallmentDetails): boolean {
+  if (details.status !== "Cancelled") {
+    return details.cancellationInfo === null &&
+      exactCentsSum([details.paidCents, details.balanceCents]) === details.totalCents;
+  }
+  const cancellation = details.cancellationInfo;
+  if (!cancellation) return false;
+  if (cancellation.kind === "RefundCancel") {
+    return details.paidCents === 0 && details.balanceCents === 0;
+  }
+  return cancellation.kind === "VoidCancel" &&
+    details.balanceCents > 0 &&
+    exactCentsSum([details.paidCents, details.balanceCents]) === details.totalCents;
+}
+
+function hasBalancedRefundPayments(
+  payments: readonly InstallmentPayment[],
+): boolean {
+  if (
+    !payments.some((payment) => payment.amountCents > 0) ||
+    !payments.some((payment) => payment.amountCents < 0)
+  ) {
+    return false;
+  }
+  return (["cash", "card", "voucher"] as const).every((method) => {
+    const amounts = payments
+      .filter((payment) => payment.method === method)
+      .map((payment) => payment.amountCents);
+    return amounts.length === 0 || exactCentsSum(amounts) === 0;
+  });
+}
+
+function exactCentsSum(values: readonly number[]): number | null {
+  let sum = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value)) return null;
+    sum += value;
+    if (!Number.isSafeInteger(sum)) return null;
+  }
+  return sum;
+}
+
+function isPositiveDecimal(value: string): boolean {
+  return /^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value) && Number(value) > 0;
+}
+
+function money(cents: number): string {
+  const sign = cents < 0 ? "-" : "";
+  const absolute = Math.abs(cents);
+  return `${sign}$${Math.trunc(absolute / 100)}.${String(absolute % 100).padStart(2, "0")}`;
+}
+
+function formatLocalMinute(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new TypeError("Installment time is invalid.");
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function isExactText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.trim() === value;
+}
+
+function isSafeRequiredText(value: unknown): value is string {
+  return isExactText(value) && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+}
+
+function isSafeOptionalText(value: unknown): value is string | null {
+  return value === null ||
+    (typeof value === "string" && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+}
+
+function isValidSettings(
+  value: FrozenReceiptReprintSettings | null,
+): value is FrozenReceiptReprintSettings {
+  if (!value || !isExactText(value.printerId)) return false;
+  if (value.paper !== "58mm" && value.paper !== "80mm") return false;
+  if (value.locale !== "en" && value.locale !== "zh-CN") return false;
+  const store = value.store;
+  return Boolean(
+    store &&
+      typeof store.brandName === "string" &&
+      typeof store.storeName === "string" &&
+      typeof store.address === "string" &&
+      typeof store.phone === "string" &&
+      typeof store.abn === "string",
+  );
+}

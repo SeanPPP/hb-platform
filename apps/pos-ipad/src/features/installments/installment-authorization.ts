@@ -8,6 +8,8 @@ export const INSTALLMENTS_CANCEL_PERMISSION =
   "Permissions.PosTerminal.Installments.Cancel";
 export const INSTALLMENTS_CONFIRM_PICKUP_PERMISSION =
   "Permissions.PosTerminal.Installments.ConfirmPickup";
+export const INSTALLMENTS_REPRINT_PERMISSION =
+  "Permissions.PosTerminal.History.Reprint";
 
 export type InstallmentsAccess = Readonly<{
   canAddRepayment: boolean;
@@ -34,4 +36,12 @@ export function resolveInstallmentsAccess(
     canCreate: granted.has(INSTALLMENTS_CREATE_PERMISSION),
     canView: granted.has(INSTALLMENTS_VIEW_PERMISSION),
   });
+}
+
+export function hasInstallmentReprintPermission(
+  permissions: readonly string[],
+): boolean {
+  return permissions.some(
+    (permission) => permission.trim() === INSTALLMENTS_REPRINT_PERMISSION,
+  );
 }

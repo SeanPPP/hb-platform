@@ -157,7 +157,8 @@ public sealed class InstallmentsController(
         [FromQuery] string? keyword,
         [FromQuery] InstallmentStatus? status,
         [FromQuery] int take,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] int skip = 0)
     {
         if (string.IsNullOrWhiteSpace(storeCode))
         {
@@ -169,8 +170,15 @@ public sealed class InstallmentsController(
             return DeviceAuthorizationExtensions.DeviceScopeForbidden<InstallmentHistoryQueryResponse>("Device is not authorized for this store.");
         }
 
+        if (skip < 0)
+        {
+            return BadRequest(ApiResult<InstallmentHistoryQueryResponse>.Fail(
+                "INSTALLMENT_HISTORY_SKIP_INVALID",
+                "skip must be zero or greater."));
+        }
+
         var response = await historyService.QueryAsync(
-            new InstallmentHistoryQueryRequest(storeCode, deviceCode, createdFrom, createdTo, keyword, status, take <= 0 ? 100 : take),
+            new InstallmentHistoryQueryRequest(storeCode, deviceCode, createdFrom, createdTo, keyword, status, take <= 0 ? 100 : take, skip),
             cancellationToken);
         return Ok(ApiResult<InstallmentHistoryQueryResponse>.Ok(response));
     }
@@ -182,7 +190,8 @@ public sealed class InstallmentsController(
         CancellationToken cancellationToken)
     {
         var details = await historyService.GetDetailsAsync(installmentGuid, cancellationToken);
-        if (details is not null && !this.IsDeviceScopeAllowed(details.StoreCode, details.DeviceCode))
+        // 分期历史支持“本店”范围，读取列表中的他机记录时也必须保持同一门店边界。
+        if (details is not null && !this.IsDeviceScopeAllowed(details.StoreCode))
         {
             return DeviceAuthorizationExtensions.DeviceScopeForbidden<InstallmentDetailsDto?>("Device is not authorized for this store.");
         }

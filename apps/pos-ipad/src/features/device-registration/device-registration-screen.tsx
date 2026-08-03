@@ -6,6 +6,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,6 +19,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { reconcileDeviceSessionRuntime } from "./device-registration-state";
+import { serverConnectionPanelCopy } from "./server-connection-copy";
+import { ServerConnectionPanel } from "./server-connection-panel";
 
 import {
   HbposApiError,
@@ -44,7 +47,9 @@ export function DeviceRegistrationScreen() {
   const [selectedStoreCode, setSelectedStoreCode] = useState("");
   const [pickerVisible, setPickerVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const serverOperation = useRef<AbortController | null>(null);
   const deviceSession = runtime.services?.deviceSession;
+  const serverConnection = runtime.services?.serverConnection;
   const selectedStore =
     stores.find((store) => store.storeCode === selectedStoreCode) ?? null;
 
@@ -111,6 +116,13 @@ export function DeviceRegistrationScreen() {
     const timer = setInterval(() => void poll(), 5_000);
     return () => clearInterval(timer);
   }, [deviceSession, poll, runtime.state.phase]);
+
+  useEffect(
+    () => () => {
+      serverOperation.current?.abort();
+    },
+    [],
+  );
 
   if (
     runtime.state.phase === "ready" ||
@@ -331,6 +343,35 @@ export function DeviceRegistrationScreen() {
               </Text>
             </PosPressable>
           )}
+
+          {serverConnection ? (
+            <View style={styles.serverConnectionPanel}>
+              <ServerConnectionPanel
+                canSave={runtime.state.phase === "registration-required"}
+                copy={serverConnectionPanelCopy(t)}
+                currentAddress={serverConnection.getCurrentApiBaseUrl()}
+                saveAddress={async (address) => {
+                  const controller = new AbortController();
+                  serverOperation.current?.abort();
+                  serverOperation.current = controller;
+                  const result = await serverConnection.change(
+                    address,
+                    controller.signal,
+                  );
+                  if (result.status !== "completed") {
+                    throw new Error(result.reason);
+                  }
+                  await runtime.retry();
+                }}
+                testAddress={(address) => {
+                  const controller = new AbortController();
+                  serverOperation.current?.abort();
+                  serverOperation.current = controller;
+                  return serverConnection.test(address, controller.signal);
+                }}
+              />
+            </View>
+          ) : null}
         </View>
       </View>
       <StorePickerOverlay
@@ -686,6 +727,9 @@ const styles = StyleSheet.create({
     color: posColors.mutedInk,
     fontSize: 13,
     fontWeight: "700",
+  },
+  serverConnectionPanel: {
+    marginTop: 22,
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,

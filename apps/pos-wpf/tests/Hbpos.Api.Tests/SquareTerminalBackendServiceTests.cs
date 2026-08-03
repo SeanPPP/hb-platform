@@ -1052,6 +1052,15 @@ public sealed class SquareTerminalBackendServiceTests
             return Task.CompletedTask;
         }
 
+        public Task<bool> RefreshCheckoutSessionFromLookupAsync(
+            SquareCheckoutSessionRecord session,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(false);
+        }
+
         private static bool IsTerminal(string? status)
         {
             return status is not null &&

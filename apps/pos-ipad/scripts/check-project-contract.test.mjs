@@ -14,6 +14,7 @@ const appProvidersSource = readFileSync(
   new URL("src/app-providers.tsx", appRoot),
   "utf8",
 );
+const appEntrySource = readFileSync(new URL("index.js", appRoot), "utf8");
 const routeFiles = readdirSync(new URL("app/", appRoot), {
   recursive: true,
   withFileTypes: true,
@@ -25,7 +26,12 @@ assert.equal(packageJson.name, "@hb/pos-ipad");
 assert.equal(packageJson.version, "0.2.0");
 assert.equal(packageLock.version, "0.2.0");
 assert.equal(packageLock.packages[""].version, "0.2.0");
-assert.equal(packageJson.main, "expo-router/entry");
+assert.equal(packageJson.main, "index.js");
+assert.match(
+  appEntrySource,
+  /^import "\.\/src\/core\/peripherals\/customer-display\/native\/external-display-native-module";\s*import "expo-router\/entry";\s*$/u,
+  "自定义入口必须先注册客显原生模块，再交给 Expo Router。",
+);
 assert.equal(packageJson.private, true);
 assert.equal(packageJson.scripts.android, undefined);
 assert.match(

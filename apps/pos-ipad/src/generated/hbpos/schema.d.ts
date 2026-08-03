@@ -1151,6 +1151,7 @@ export interface paths {
                     keyword?: string;
                     status?: components["schemas"]["InstallmentStatus"];
                     take?: number;
+                    skip?: number;
                 };
                 header?: never;
                 path?: never;

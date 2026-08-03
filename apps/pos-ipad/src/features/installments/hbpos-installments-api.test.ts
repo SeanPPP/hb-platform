@@ -56,10 +56,13 @@ test("历史查询固定可信门店并严格映射状态、时间和整数分",
   const api = new HbposInstallmentsApi(transport, " S1 ");
 
   const orders = await api.list({
+    createdFromIso: "2026-07-20T14:00:00.000Z",
+    createdToIso: "2026-07-27T13:59:59.999Z",
     deviceCode: " IPAD-1 ",
     keyword: " Bob ",
+    skip: 50,
     status: "Active",
-    take: 100,
+    take: 51,
   });
 
   assert.deepEqual(transport.requests, [
@@ -69,9 +72,12 @@ test("历史查询固定可信门店并严格映射状态、时间和整数分",
       params: {
         storeCode: "S1",
         deviceCode: "IPAD-1",
+        createdFrom: "2026-07-20T14:00:00.000Z",
+        createdTo: "2026-07-27T13:59:59.999Z",
         keyword: "Bob",
+        skip: 50,
         status: 1,
-        take: 100,
+        take: 51,
       },
     },
   ]);
@@ -429,6 +435,7 @@ test("真实 cancel 与 AlreadyCancelled 回包允许 payment history 负退款�
   await assert.rejects(
     invalidSummaryApi.list({
       keyword: null,
+      skip: 0,
       status: null,
       take: 100,
     }),
@@ -454,7 +461,7 @@ test("响应门店越权、金额精度漂移或写响应缺少详情时失败�
     "S1",
   );
   await assert.rejects(
-    () => wrongStore.list({ keyword: null, status: null, take: 100 }),
+    () => wrongStore.list({ keyword: null, skip: 0, status: null, take: 100 }),
     /storeCode/i,
   );
 
@@ -470,7 +477,7 @@ test("响应门店越权、金额精度漂移或写响应缺少详情时失败�
     "S1",
   );
   await assert.rejects(
-    () => invalidMoney.list({ keyword: null, status: null, take: 100 }),
+    () => invalidMoney.list({ keyword: null, skip: 0, status: null, take: 100 }),
     /money/i,
   );
 

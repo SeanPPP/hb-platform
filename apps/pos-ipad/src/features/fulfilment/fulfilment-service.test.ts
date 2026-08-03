@@ -1028,6 +1028,50 @@ test("本机历史重打沿用耐久打印状态机并记录本机来源", async
   );
 });
 
+test("分期历史重打沿用耐久打印状态机并记录独立外部来源", async () => {
+  const sources: string[] = [];
+  const prepared = {
+    orderGuid: "12345678-1234-1234-1234-abcdef123456",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-INSTALLMENT-HISTORY",
+  };
+  const { audit, service } = setup({
+    async prepareReceiptReprint(orderGuid, source) {
+      sources.push(source);
+      return orderGuid === prepared.orderGuid ? prepared : null;
+    },
+  });
+
+  const result = await service.reprintReceipt(
+    prepared.orderGuid,
+    "installment-history",
+    historyAuthorization,
+    activeLease,
+  );
+
+  assert.equal(result.state, "Printed");
+  assert.deepEqual(sources, ["installment-history"]);
+  assert.deepEqual(
+    audit.map((event) => ({
+      action: event.payload.action,
+      source: event.payload.source,
+      reason: event.payload.reason,
+    })),
+    [
+      {
+        action: "reprint-history-receipt",
+        source: "installment-history",
+        reason: "installment-history",
+      },
+      {
+        action: "reprint-history-receipt",
+        source: "installment-history",
+        reason: "installment-history",
+      },
+    ],
+  );
+});
+
 for (const terminal of [
   {
     driver: { status: "failed", errorCode: "PAPER_OUT" } as const,

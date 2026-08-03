@@ -30,7 +30,22 @@ const mockListRegistrationStores = jest.fn<
   () => Promise<readonly DeviceRegistrationStore[]>
 >();
 const mockUpdateOperationalState = jest.fn();
-const mockRetry = jest.fn();
+const mockRetry = jest.fn<() => Promise<void>>();
+const mockServerTest = jest.fn<
+  (address: string, signal: AbortSignal) => Promise<boolean>
+>();
+const mockServerChange = jest.fn<
+  (
+    address: string,
+    signal: AbortSignal,
+  ) => Promise<
+    | Readonly<{ status: "completed"; apiBaseUrl: string }>
+    | Readonly<{
+        status: "blocked";
+        reason: "pending-local-data" | "candidate-unreachable";
+      }>
+  >
+>();
 let mockRuntimeValue: unknown;
 
 jest.mock("@expo/vector-icons", () => ({
@@ -70,6 +85,12 @@ beforeEach(async () => {
     deviceCode: "POS_1003_1210",
     storeCode: "1003",
   });
+  mockRetry.mockResolvedValue(undefined);
+  mockServerTest.mockResolvedValue(true);
+  mockServerChange.mockResolvedValue({
+    status: "completed",
+    apiBaseUrl: "https://hotbargain.vip/pos-api",
+  });
   mockRuntimeValue = {
     retry: mockRetry,
     services: {
@@ -79,6 +100,11 @@ beforeEach(async () => {
         poll: jest.fn(),
         register: mockRegister,
         reregister: jest.fn(),
+      },
+      serverConnection: {
+        change: mockServerChange,
+        getCurrentApiBaseUrl: () => "https://hotbargain.vip/pos-api",
+        test: mockServerTest,
       },
     },
     state: {
@@ -137,4 +163,31 @@ test("中英文切换保留已经选择的申请分店", async () => {
   expect(
     screen.getByTestId("registration-submit").props.accessibilityState.disabled,
   ).toBe(false);
+});
+
+test("未注册设备测试通过后可安全切换服务器并重建 runtime", async () => {
+  const screen = await render(<DeviceRegistrationScreen />);
+  await fireEvent.press(screen.getByTestId("server-connection-edit"));
+  await fireEvent.changeText(
+    screen.getByTestId("server-connection-input"),
+    "https://hotbargain.top/pos-api",
+  );
+  await fireEvent.press(screen.getByTestId("server-connection-test"));
+
+  await waitFor(() =>
+    expect(mockServerTest).toHaveBeenCalledWith(
+      "https://hotbargain.top/pos-api",
+      expect.any(AbortSignal),
+    ),
+  );
+  await fireEvent.press(screen.getByTestId("server-connection-save"));
+  await fireEvent.press(screen.getByTestId("server-connection-confirm"));
+
+  await waitFor(() =>
+    expect(mockServerChange).toHaveBeenCalledWith(
+      "https://hotbargain.top/pos-api",
+      expect.any(AbortSignal),
+    ),
+  );
+  await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
 });

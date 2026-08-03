@@ -51,7 +51,8 @@ export type FulfilmentLeaseGuard = () => void;
 
 export type ReceiptHistoryReprintSource =
   | "remote-history"
-  | "local-history";
+  | "local-history"
+  | "installment-history";
 
 export type ReceiptReprintSource =
   | "last-receipt"
@@ -705,7 +706,9 @@ export class FulfilmentService {
             ),
           }
         : {}),
-      ...(payload.source === "remote-history" && orderGuid !== null
+      ...((payload.source === "remote-history" ||
+        payload.source === "installment-history") &&
+      orderGuid !== null
         ? { externalOrderGuid: orderGuid }
         : {}),
     };

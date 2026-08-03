@@ -502,6 +502,129 @@ public sealed class SquareControllerTests
         Assert.Equal(1, backendService.GetCheckoutCalls);
     }
 
+    [Fact]
+    public async Task GetCheckout_WhenCompletedBindsPaymentIdForSameDeviceContinuation()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        var existingSession = CreateCheckoutSession("S01", "POS-01");
+        existingSession.PaymentIdsJson = "[\"payment-existing\"]";
+        existingSession.RawCheckoutJson = "{\"trustedWebhook\":true}";
+        existingSession.LastEventId = "event-existing";
+        await repository.UpsertCheckoutSessionAsync(
+            existingSession,
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService
+        {
+            CheckoutResponse = new SquareCheckoutStatusResponse(
+                "checkout-001",
+                "Production",
+                Status: "COMPLETED",
+                PaymentIds: ["payment-001"]),
+            PaymentResponse = new SquarePaymentStatusDto(
+                "payment-001",
+                Status: "COMPLETED",
+                ApprovedMoney: new SquareMoneyDto(1299, "AUD"))
+        };
+        var controller = CreateController(repository, backendService);
+
+        var checkoutResult = await controller.GetCheckout(
+            "checkout-001",
+            "Production",
+            CancellationToken.None);
+        var paymentResult = await controller.GetPayment(
+            "payment-001",
+            "Production",
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(checkoutResult.Result);
+        Assert.IsType<OkObjectResult>(paymentResult.Result);
+        var refreshed = Assert.Single(repository.Sessions);
+        Assert.Equal("payment-001", refreshed.PaymentId);
+        Assert.Contains("payment-existing", refreshed.PaymentIdsJson, StringComparison.Ordinal);
+        Assert.Contains("payment-001", refreshed.PaymentIdsJson, StringComparison.Ordinal);
+        Assert.Equal("{\"trustedWebhook\":true}", refreshed.RawCheckoutJson);
+        Assert.Equal("event-existing", refreshed.LastEventId);
+        Assert.Equal(1, backendService.GetPaymentCalls);
+    }
+
+    [Theory]
+    [InlineData("checkout-other", "Production")]
+    [InlineData("checkout-001", "Sandbox")]
+    public async Task GetCheckout_WhenBackendIdentityDiffers_DoesNotBindForeignPayment(
+        string responseCheckoutId,
+        string responseEnvironment)
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession("S01", "POS-01"),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService
+        {
+            CheckoutResponse = new SquareCheckoutStatusResponse(
+                responseCheckoutId,
+                responseEnvironment,
+                Status: "COMPLETED",
+                PaymentIds: ["payment-foreign"])
+        };
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.GetCheckout(
+            "checkout-001",
+            "Production",
+            CancellationToken.None);
+
+        var mismatch = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status502BadGateway, mismatch.StatusCode);
+        var payload = Assert.IsType<ApiResult<SquareCheckoutStatusResponse?>>(mismatch.Value);
+        Assert.Equal("SQUARE_CHECKOUT_IDENTITY_MISMATCH", payload.ErrorCode);
+        Assert.Null(Assert.Single(repository.Sessions).PaymentId);
+        Assert.Equal(0, backendService.GetPaymentCalls);
+    }
+
+    [Fact]
+    public async Task GetCheckout_WhenNewerPendingFollowsCompleted_PreservesTerminalObservation()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        var completedAt = new DateTimeOffset(2026, 7, 14, 0, 1, 0, TimeSpan.Zero);
+        var completed = CreateCheckoutSession("S01", "POS-01");
+        completed.Status = "COMPLETED";
+        completed.Amount = 1299;
+        completed.Currency = "AUD";
+        completed.DeviceId = "device-trusted";
+        completed.LocationId = "location-trusted";
+        completed.UpdatedAt = completedAt;
+        await repository.UpsertCheckoutSessionAsync(completed, CancellationToken.None);
+        var controller = CreateController(
+            repository,
+            new CapturingSquareTerminalBackendService
+            {
+                CheckoutResponse = new SquareCheckoutStatusResponse(
+                    "checkout-001",
+                    "Production",
+                    Status: "PENDING",
+                    DeviceId: "device-stale",
+                    LocationId: "location-stale",
+                    AmountMoney: new SquareMoneyDto(9999, "USD"),
+                    PaymentIds: ["payment-late"],
+                    UpdatedAt: completedAt.AddMinutes(1))
+            });
+
+        var result = await controller.GetCheckout(
+            "checkout-001",
+            "Production",
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        var preserved = Assert.Single(repository.Sessions);
+        Assert.Equal("COMPLETED", preserved.Status);
+        Assert.Equal(1299, preserved.Amount);
+        Assert.Equal("AUD", preserved.Currency);
+        Assert.Equal("device-trusted", preserved.DeviceId);
+        Assert.Equal("location-trusted", preserved.LocationId);
+        Assert.Equal(completedAt, preserved.UpdatedAt);
+        Assert.Equal("payment-late", preserved.PaymentId);
+    }
+
     [Theory]
     [InlineData("S02", "POS-01")]
     [InlineData("S01", "POS-02")]
@@ -1011,11 +1134,17 @@ public sealed class SquareControllerTests
     {
         public SquareWebhookRequest? LastWebhookRequest { get; private set; }
 
+        public SquareCheckoutStatusResponse? CheckoutResponse { get; init; }
+
+        public SquarePaymentStatusDto? PaymentResponse { get; init; }
+
         public int CreateDeviceCodeCalls { get; private set; }
 
         public int CreateCheckoutCalls { get; private set; }
 
         public int GetCheckoutCalls { get; private set; }
+
+        public int GetPaymentCalls { get; private set; }
 
         public int CreateRefundCalls { get; private set; }
 
@@ -1065,7 +1194,7 @@ public sealed class SquareControllerTests
         public Task<SquareCheckoutStatusResponse?> GetCheckoutAsync(string environment, string checkoutId, CancellationToken cancellationToken)
         {
             GetCheckoutCalls++;
-            return Task.FromResult<SquareCheckoutStatusResponse?>(new SquareCheckoutStatusResponse(
+            return Task.FromResult<SquareCheckoutStatusResponse?>(CheckoutResponse ?? new SquareCheckoutStatusResponse(
                 checkoutId,
                 environment,
                 Status: "PENDING"));
@@ -1073,7 +1202,8 @@ public sealed class SquareControllerTests
 
         public Task<SquarePaymentStatusDto?> GetPaymentAsync(string environment, string paymentId, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            GetPaymentCalls++;
+            return Task.FromResult(PaymentResponse);
         }
 
         public Task<SquareCheckoutStatusResponse> CancelCheckoutAsync(string checkoutId, SquareCheckoutActionRequest request, CancellationToken cancellationToken)
@@ -1149,6 +1279,64 @@ public sealed class SquareControllerTests
 
             sessions[key] = session;
             return Task.CompletedTask;
+        }
+
+        public Task<bool> RefreshCheckoutSessionFromLookupAsync(
+            SquareCheckoutSessionRecord session,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            var key = $"{session.Environment}::{session.CheckoutId}";
+            if (!sessions.TryGetValue(key, out var existing) ||
+                !string.Equals(existing.OriginStoreCode, originStoreCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(existing.OriginDeviceCode, originDeviceCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(false);
+            }
+
+            var paymentIds = ReadPaymentIds(existing.PaymentIdsJson)
+                .Concat(ReadPaymentIds(session.PaymentIdsJson))
+                .Append(session.PaymentId)
+                .Where(paymentId => !string.IsNullOrWhiteSpace(paymentId))
+                .Select(paymentId => paymentId!.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (session.UpdatedAt >= existing.UpdatedAt &&
+                (!IsTerminal(existing.Status) || IsTerminal(session.Status)))
+            {
+                existing.Status = string.IsNullOrWhiteSpace(session.Status)
+                    ? existing.Status
+                    : session.Status;
+                existing.Amount = session.Amount ?? existing.Amount;
+                existing.Currency = session.Currency ?? existing.Currency;
+                existing.DeviceId = session.DeviceId ?? existing.DeviceId;
+                existing.LocationId = session.LocationId ?? existing.LocationId;
+                existing.UpdatedAt = session.UpdatedAt;
+            }
+            existing.PaymentId ??= session.PaymentId;
+            existing.PaymentIdsJson = paymentIds.Length == 0
+                ? existing.PaymentIdsJson
+                : JsonSerializer.Serialize(paymentIds);
+            return Task.FromResult(true);
+        }
+
+        private static IEnumerable<string?> ReadPaymentIds(string? payload)
+        {
+            if (string.IsNullOrWhiteSpace(payload)) return [];
+            try
+            {
+                return JsonSerializer.Deserialize<string?[]>(payload) ?? [];
+            }
+            catch (JsonException)
+            {
+                return [];
+            }
+        }
+
+        private static bool IsTerminal(string? status)
+        {
+            return status is "COMPLETED" or "CANCELED" or "CANCELLED" or "FAILED";
         }
 
         public Task<SquareCheckoutSessionRecord?> GetCheckoutSessionAsync(

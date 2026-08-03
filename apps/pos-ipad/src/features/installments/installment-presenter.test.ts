@@ -6,6 +6,7 @@ import {
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
 } from "./installment-authorization";
 import type { InstallmentDetails } from "./installment-models";
@@ -14,6 +15,7 @@ import {
   InstallmentWorkflowError,
   type InstallmentCreateDraft,
   type InstallmentCreateDraftPort,
+  type InstallmentReprintPort,
   type InstallmentWorkflowPort,
 } from "./installment-presenter";
 
@@ -26,9 +28,10 @@ const allPermissions = [
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
+  INSTALLMENTS_REPRINT_PERMISSION,
 ];
 
-test("查看权限控制历史读取；在线与离线来源由可信 workflow 区分", async () => {
+test("查看权限控制历史读取，首次加载使用 51 条探针和默认门店范围", async () => {
   const workflow = new FakeWorkflow();
   const unauthorized = presenter(workflow, {
     permissions: [INSTALLMENTS_CREATE_PERMISSION],
@@ -41,20 +44,135 @@ test("查看权限控制历史读取；在线与离线来源由可信 workflow �
 
   const authorized = presenter(workflow);
   authorized.setSearchQuery(" Bob ");
-  authorized.setStatusFilter("Active");
-  authorized.setOnline(false);
   await authorized.load();
 
   assert.deepEqual(workflow.listInputs, [
     {
+      dateFilter: { preset: "all", fromDate: null, toDate: null },
+      deviceScope: "store",
       keyword: "Bob",
-      online: false,
-      status: "Active",
-      take: 100,
+      online: true,
+      skip: 0,
+      status: null,
+      take: 51,
     },
   ]);
   assert.equal(authorized.getState().orders.length, 2);
   assert.equal(authorized.getState().kind, "ready");
+});
+
+test("分页每次显示 50 条，以 51 条探针判断 hasMore 并按 guid 去重", async () => {
+  const workflow = new FakeWorkflow();
+  workflow.listResults.push(
+    Array.from({ length: 51 }, (_, index) => summaryAt(index)),
+    [summaryAt(49), ...Array.from({ length: 5 }, (_, index) => summaryAt(index + 50))],
+  );
+  const subject = presenter(workflow);
+
+  await subject.load();
+
+  assert.equal(subject.getState().orders.length, 50);
+  assert.equal(subject.getState().hasMore, true);
+  assert.equal(subject.getState().loadingMore, false);
+
+  await subject.loadMore();
+
+  assert.equal(subject.getState().orders.length, 55);
+  assert.equal(new Set(subject.getState().orders.map((item) => item.installmentGuid)).size, 55);
+  assert.equal(subject.getState().hasMore, false);
+  assert.deepEqual(
+    workflow.listInputs.map((input) => ({ skip: input.skip, take: input.take })),
+    [
+      { skip: 0, take: 51 },
+      { skip: 50, take: 51 },
+    ],
+  );
+});
+
+test("状态、设备与日期筛选选择即刷新，并重置分页和详情选择", async () => {
+  const workflow = new FakeWorkflow();
+  const subject = presenter(workflow);
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  await subject.setStatusFilter("Active");
+  assert.equal(subject.getState().selectedGuid, null);
+  assert.equal(subject.getState().details, null);
+  assert.equal(workflow.listInputs.at(-1)?.status, "Active");
+  assert.equal(workflow.listInputs.at(-1)?.skip, 0);
+
+  await subject.setDeviceScope("device");
+  assert.equal(workflow.listInputs.at(-1)?.deviceScope, "device");
+
+  await subject.setDateFilter({
+    preset: "last7",
+    fromDate: null,
+    toDate: null,
+  });
+  assert.deepEqual(workflow.listInputs.at(-1)?.dateFilter, {
+    preset: "last7",
+    fromDate: null,
+    toDate: null,
+  });
+
+  const callsBeforeInvalid = workflow.listInputs.length;
+  await subject.setDateFilter({
+    preset: "custom",
+    fromDate: "2026-08-04",
+    toDate: "2026-08-03",
+  });
+  assert.equal(workflow.listInputs.length, callsBeforeInvalid);
+  assert.equal(subject.getState().statusCode, "invalid-date-filter");
+  assert.equal(subject.getState().dateFilter.preset, "last7");
+});
+
+test("离线或 transport failure 使列表、选择和详情立即失效", async () => {
+  const workflow = new FakeWorkflow();
+  const subject = presenter(workflow);
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  subject.setOnline(false);
+
+  assert.deepEqual(subject.getState().orders, []);
+  assert.equal(subject.getState().selectedGuid, null);
+  assert.equal(subject.getState().details, null);
+  assert.equal(subject.getState().statusCode, "online-required");
+
+  subject.setOnline(true);
+  workflow.listResults.push(
+    Array.from({ length: 51 }, (_, index) => summaryAt(index)),
+  );
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+  workflow.listError = new InstallmentWorkflowError(
+    "online-required",
+    "safe failure",
+  );
+  await subject.loadMore();
+
+  assert.deepEqual(subject.getState().orders, []);
+  assert.equal(subject.getState().selectedGuid, null);
+  assert.equal(subject.getState().details, null);
+  assert.equal(subject.getState().statusCode, "online-required");
+});
+
+test("详情重试复用当前选择，并区分服务不可用与未知失败", async () => {
+  const workflow = new FakeWorkflow();
+  const subject = presenter(workflow);
+  workflow.detailError = new InstallmentWorkflowError(
+    "service-unavailable",
+    "safe failure",
+  );
+
+  await subject.select(GUID_ACTIVE);
+  assert.equal(subject.getState().statusCode, "service-unavailable");
+  assert.equal(subject.getState().selectedGuid, GUID_ACTIVE);
+
+  workflow.detailError = null;
+  await subject.retryDetails();
+  assert.equal(subject.getState().details?.installmentGuid, GUID_ACTIVE);
+  assert.equal(workflow.detailCalls.length, 2);
 });
 
 test("选择历史行读取详情，较旧异步结果不能覆盖新选择", async () => {
@@ -75,6 +193,281 @@ test("选择历史行读取详情，较旧异步结果不能覆盖新选择", as
 
   assert.equal(subject.getState().selectedGuid, GUID_PAID);
   assert.equal(subject.getState().details?.status, "PaidOff");
+});
+
+test("重打能力严格要求原始权限、在线当前详情、非忙碌且 Port 判定可打", async () => {
+  const workflow = new FakeWorkflow();
+  const reprintPort = new FakeReprintPort();
+  const subject = presenter(workflow, { reprintPort });
+
+  assert.equal(subject.capabilities.reprint, false);
+  await subject.select(GUID_ACTIVE);
+  assert.equal(subject.capabilities.reprint, true);
+
+  reprintPort.eligible = false;
+  assert.equal(subject.capabilities.reprint, false);
+  reprintPort.eligible = true;
+
+  const repayment = deferred<InstallmentDetails>();
+  workflow.nextRepayment = repayment.promise;
+  subject.setRepaymentAmount("10.00");
+  const pendingRepayment = subject.addRepayment();
+  assert.equal(subject.capabilities.reprint, false);
+  repayment.resolve(details("Active"));
+  await pendingRepayment;
+
+  const wrongPermission = presenter(new FakeWorkflow(), {
+    permissions: [
+      INSTALLMENTS_VIEW_PERMISSION,
+      "permissions.posterminal.history.reprint",
+    ],
+    reprintPort,
+  });
+  await wrongPermission.select(GUID_ACTIVE);
+  assert.equal(wrongPermission.capabilities.reprint, false);
+
+  const recoveryWorkflow = new FakeWorkflow();
+  recoveryWorkflow.createError = new InstallmentWorkflowError(
+    "payment-recovery-required",
+    "Payment outcome is unknown.",
+  );
+  const recovery = presenter(recoveryWorkflow, { reprintPort });
+  await recovery.select(GUID_ACTIVE);
+  recovery.showCreate();
+  fillValidCreateForm(recovery);
+  await recovery.create();
+  assert.equal(recovery.getState().recoveryRequired, true);
+  assert.equal(recovery.capabilities.reprint, false);
+
+  subject.setOnline(false);
+  assert.equal(subject.capabilities.reprint, false);
+});
+
+test("重打为单飞状态机，成功与失败都不改写详情和列表", async () => {
+  const workflow = new FakeWorkflow();
+  const reprintPort = new FakeReprintPort();
+  const pending = deferred<void>();
+  reprintPort.nextResult = pending.promise;
+  const subject = presenter(workflow, { reprintPort });
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+  const detailsBefore = subject.getState().details;
+  const ordersBefore = subject.getState().orders;
+
+  const first = subject.reprintSelected();
+  const second = subject.reprintSelected();
+
+  assert.equal(first, second);
+  assert.deepEqual(reprintPort.calls, [GUID_ACTIVE]);
+  assert.deepEqual(subject.getState().reprint, {
+    kind: "submitting",
+    installmentGuid: GUID_ACTIVE,
+  });
+
+  pending.resolve();
+  await first;
+  assert.deepEqual(subject.getState().reprint, {
+    kind: "succeeded",
+    installmentGuid: GUID_ACTIVE,
+  });
+  assert.equal(subject.getState().details, detailsBefore);
+  assert.equal(subject.getState().orders, ordersBefore);
+
+  reprintPort.nextResult = Promise.reject(new Error("printer unavailable"));
+  await subject.reprintSelected();
+  assert.deepEqual(subject.getState().reprint, {
+    kind: "failed",
+    installmentGuid: GUID_ACTIVE,
+  });
+  assert.equal(subject.getState().details, detailsBefore);
+  assert.equal(subject.getState().orders, ordersBefore);
+});
+
+test("重打期间阻断全部分期写入口，写动作期间也不能开始重打", async () => {
+  const scenarios = [
+    {
+      name: "create",
+      status: "Active" as const,
+      prepare(subject: InstallmentPresenter) {
+        subject.showCreate();
+        fillValidCreateForm(subject);
+      },
+      invoke(subject: InstallmentPresenter) {
+        return subject.create();
+      },
+    },
+    {
+      name: "repayment",
+      status: "Active" as const,
+      prepare(subject: InstallmentPresenter) {
+        subject.setRepaymentAmount("10.00");
+      },
+      invoke(subject: InstallmentPresenter) {
+        return subject.addRepayment();
+      },
+    },
+    {
+      name: "cancel",
+      status: "Active" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.cancelWithRefund();
+      },
+    },
+    {
+      name: "void",
+      status: "Active" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.voidSelected();
+      },
+    },
+    {
+      name: "pickup",
+      status: "PaidOff" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.confirmPickup();
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const workflow = new FakeWorkflow();
+    const reprintPort = new FakeReprintPort();
+    const pendingReprint = deferred<void>();
+    reprintPort.nextResult = pendingReprint.promise;
+    const subject = presenter(workflow, { reprintPort });
+    await subject.select(
+      scenario.status === "PaidOff" ? GUID_PAID : GUID_ACTIVE,
+    );
+    scenario.prepare(subject);
+
+    const reprint = subject.reprintSelected();
+    const blockedWrite = scenario.invoke(subject);
+
+    assert.equal(
+      blockedWrite,
+      reprint,
+      `${scenario.name} 应复用在途重打 Promise，不能启动写动作`,
+    );
+    assert.deepEqual(workflow.writeCalls, []);
+    assert.equal(subject.getState().busy, true);
+
+    pendingReprint.resolve();
+    await reprint;
+    assert.equal(subject.getState().busy, false);
+  }
+
+  const workflow = new FakeWorkflow();
+  const pendingRepayment = deferred<InstallmentDetails>();
+  workflow.nextRepayment = pendingRepayment.promise;
+  const reprintPort = new FakeReprintPort();
+  const subject = presenter(workflow, { reprintPort });
+  await subject.select(GUID_ACTIVE);
+  subject.setRepaymentAmount("10.00");
+
+  const repayment = subject.addRepayment();
+  await subject.reprintSelected();
+
+  assert.deepEqual(reprintPort.calls, []);
+  pendingRepayment.resolve(details("Active"));
+  await repayment;
+});
+
+test("同店跨终端详情保持只读，所有既有分期写动作与重打均失败关闭", async () => {
+  const scenarios = [
+    {
+      name: "repayment",
+      status: "Active" as const,
+      prepare(subject: InstallmentPresenter) {
+        subject.setRepaymentAmount("10.00");
+      },
+      invoke(subject: InstallmentPresenter) {
+        return subject.addRepayment();
+      },
+    },
+    {
+      name: "cancel",
+      status: "Active" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.cancelWithRefund();
+      },
+    },
+    {
+      name: "void",
+      status: "Active" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.voidSelected();
+      },
+    },
+    {
+      name: "pickup",
+      status: "PaidOff" as const,
+      prepare() {},
+      invoke(subject: InstallmentPresenter) {
+        return subject.confirmPickup();
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const workflow = new FakeWorkflow();
+    const installmentGuid =
+      scenario.status === "PaidOff" ? GUID_PAID : GUID_ACTIVE;
+    workflow.detailResults.set(
+      installmentGuid,
+      Promise.resolve({
+        ...details(scenario.status),
+        deviceCode: "IPAD-2",
+      }),
+    );
+    const reprintPort = new FakeReprintPort();
+    const subject = presenter(workflow, {
+      reprintPort,
+      trustedDeviceCode: "IPAD-1",
+    });
+    await subject.select(installmentGuid);
+    scenario.prepare(subject);
+
+    assert.equal(subject.capabilities.selectedDetailsWritable, false);
+    assert.equal(subject.capabilities.reprint, false);
+    await scenario.invoke(subject);
+    await subject.reprintSelected();
+
+    assert.deepEqual(
+      workflow.writeCalls,
+      [],
+      `${scenario.name} 不得写入跨终端分期`,
+    );
+    assert.deepEqual(reprintPort.calls, []);
+    assert.equal(subject.getState().statusCode, "conflict");
+  }
+});
+
+test("无资格重打 fail-closed，切换选择后旧打印结果不得覆盖当前状态", async () => {
+  const noPort = presenter(new FakeWorkflow());
+  await noPort.select(GUID_ACTIVE);
+  await noPort.reprintSelected();
+  assert.deepEqual(noPort.getState().reprint, { kind: "unavailable" });
+
+  const workflow = new FakeWorkflow();
+  const reprintPort = new FakeReprintPort();
+  const pending = deferred<void>();
+  reprintPort.nextResult = pending.promise;
+  const subject = presenter(workflow, { reprintPort });
+  await subject.select(GUID_ACTIVE);
+  const reprint = subject.reprintSelected();
+
+  await subject.select(GUID_PAID);
+  assert.deepEqual(subject.getState().reprint, { kind: "idle" });
+  pending.resolve();
+  await reprint;
+
+  assert.equal(subject.getState().selectedGuid, GUID_PAID);
+  assert.deepEqual(subject.getState().reprint, { kind: "idle" });
 });
 
 test("所有写操作离线时失败关闭，不能调用 workflow", async () => {
@@ -379,7 +772,9 @@ test("草稿变化会同步到创建页，销毁后不再订阅", () => {
 });
 
 class FakeWorkflow implements InstallmentWorkflowPort {
-  public readonly listInputs: unknown[] = [];
+  public readonly listInputs: Parameters<InstallmentWorkflowPort["list"]>[0][] = [];
+  public readonly listResults: (readonly InstallmentSummary[])[] = [];
+  public readonly detailCalls: string[] = [];
   public readonly writeCalls: {
     kind: string;
     input: unknown;
@@ -392,9 +787,22 @@ class FakeWorkflow implements InstallmentWorkflowPort {
   public nextCreate: Promise<InstallmentDetails> | null = null;
   public createError: Error | null = null;
   public repaymentError: Error | null = null;
+  public listError: Error | null = null;
+  public detailError: Error | null = null;
 
-  public async list(input: unknown): Promise<readonly InstallmentSummary[]> {
+  public async list(
+    input: Parameters<InstallmentWorkflowPort["list"]>[0],
+  ): Promise<readonly InstallmentSummary[]> {
     this.listInputs.push(input);
+    if (this.listError) throw this.listError;
+    if (!input.online) {
+      throw new InstallmentWorkflowError(
+        "online-required",
+        "safe failure",
+      );
+    }
+    const scripted = this.listResults.shift();
+    if (scripted) return scripted;
     return [
       summary("Active"),
       { ...summary("PaidOff"), installmentGuid: GUID_PAID },
@@ -402,6 +810,8 @@ class FakeWorkflow implements InstallmentWorkflowPort {
   }
 
   public getDetails(input: Readonly<{ installmentGuid: string }>) {
+    this.detailCalls.push(input.installmentGuid);
+    if (this.detailError) return Promise.reject(this.detailError);
     return (
       this.detailResults.get(input.installmentGuid) ??
       Promise.resolve(
@@ -464,17 +874,38 @@ class MutableDraftPort implements InstallmentCreateDraftPort {
   }
 }
 
+class FakeReprintPort implements InstallmentReprintPort {
+  public eligible = true;
+  public readonly calls: string[] = [];
+  public nextResult: Promise<void> = Promise.resolve();
+
+  public canReprint(_details: InstallmentDetails): boolean {
+    return this.eligible;
+  }
+
+  public reprintExistingInstallment(installmentGuid: string): Promise<void> {
+    this.calls.push(installmentGuid);
+    return this.nextResult;
+  }
+}
+
 function presenter(
   workflow: FakeWorkflow,
   overrides: Partial<{
     drafts: InstallmentCreateDraftPort;
     permissions: readonly string[];
+    reprintPort: InstallmentReprintPort | null;
+    trustedDeviceCode: string;
   }> = {},
 ) {
   return new InstallmentPresenter({
     createDrafts: overrides.drafts ?? new MutableDraftPort(defaultDraft()),
     initialOnline: true,
     permissions: overrides.permissions ?? allPermissions,
+    trustedDeviceCode: overrides.trustedDeviceCode ?? "IPAD-1",
+    ...(overrides.reprintPort !== undefined
+      ? { reprintPort: overrides.reprintPort }
+      : {}),
     workflow,
   });
 }
@@ -522,6 +953,15 @@ function summary(status: InstallmentStatus): InstallmentSummary {
     balanceCents,
     status,
     updatedAtIso: "2026-07-27T02:03:04.000Z",
+  };
+}
+
+function summaryAt(index: number): InstallmentSummary {
+  const suffix = String(index + 1).padStart(12, "0");
+  return {
+    ...summary("Active"),
+    installmentGuid: `10000000-0000-4000-8000-${suffix}`,
+    installmentNumber: `IP-${String(index + 1).padStart(4, "0")}`,
   };
 }
 

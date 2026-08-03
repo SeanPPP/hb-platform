@@ -74,10 +74,12 @@ import type { PaymentConnectivityPort } from "../../features/payments/payment-at
 import { VoucherHbposApi } from "../../features/payments/voucher";
 import {
   CashFulfilmentPlanner,
+  InstallmentReceiptReprintPreparationService,
   LocalHistoryReceiptPreviewService,
   OrderRepositoryReceiptReprintSource,
   ReceiptReprintPreparationService,
   RemoteHistoryReceiptReprintPreparationService,
+  isInstallmentReceiptReprintEligible,
   isRemoteHistoryReceiptReprintEligible,
   type ReceiptCompletionSettlementSource,
   type ReceiptPreviewSettingsSource,
@@ -200,6 +202,7 @@ import {
   type ProductionSettingsCompositionInput,
 } from "./production-settings-composition";
 import { ReturnFulfilmentRuntime } from "./return-fulfilment-runtime";
+import { resolveTrustedReceiptPrinterSettings } from "./trusted-receipt-settings";
 
 export type { PosCashierSummary } from "./current-cashier-session";
 
@@ -741,16 +744,18 @@ export function createProductionPosRuntimeServices(
       // 已同步订单不能因旁路打印恢复失败而阻止启动、前台恢复或设置保存。
     }
   };
-  const baseReceiptSettings =
-    receiptSettingsService(settingsRepository);
+  const baseReceiptSettings = receiptSettingsService(settingsRepository, {
+    storeCode: input.auditMetadata.storeCode,
+    readDevicePresentation: input.settings?.readDevicePresentation,
+  });
   const receiptSettings: PosReceiptSettingsService = {
     get: () => baseReceiptSettings.get(),
     save: async (settings) => {
-      const saved =
-        await settingsRepository.saveReceiptPrinterSettings(settings);
-      dailyCloseReceiptSettings = saved;
+      await settingsRepository.saveReceiptPrinterSettings(settings);
+      const resolved = await baseReceiptSettings.get();
+      dailyCloseReceiptSettings = resolved;
       void recoverVoucherBalancePrints();
-      return saved;
+      return resolved;
     },
   };
   const createCashCheckout = (cashierLease: TrustedCashierLease) =>
@@ -991,7 +996,7 @@ export function createProductionPosRuntimeServices(
     repositories.orders,
   );
   const receiptSettlements = receiptCompletionSettlementSource(input.database);
-  const frozenReceiptReprintSettings = receiptReprintSettings(settingsRepository);
+  const frozenReceiptReprintSettings = receiptReprintSettings(baseReceiptSettings);
   const receiptReprint = new ReceiptReprintPreparationService({
     orders: receiptOrderSource,
     settings: frozenReceiptReprintSettings,
@@ -1013,9 +1018,21 @@ export function createProductionPosRuntimeServices(
       settings: frozenReceiptReprintSettings,
       trustedStoreCode: input.auditMetadata.storeCode,
     });
+  const installmentHistoryReceiptReprint = input.installments
+    ? new InstallmentReceiptReprintPreparationService({
+        installments: new HbposInstallmentsApi(
+          input.transport,
+          input.auditMetadata.storeCode,
+        ),
+        settings: frozenReceiptReprintSettings,
+        trustedStoreCode: input.auditMetadata.storeCode,
+        trustedDeviceCode: input.auditMetadata.deviceCode,
+        nowIso: input.clock.nowIso,
+      })
+    : null;
   const localHistoryReceiptPreview = new LocalHistoryReceiptPreviewService({
     orders: receiptOrderSource,
-    settings: receiptPreviewSettings(settingsRepository),
+    settings: receiptPreviewSettings(baseReceiptSettings),
     settlements: receiptSettlements,
   });
   const printer = input.createPrinter();
@@ -1031,10 +1048,17 @@ export function createProductionPosRuntimeServices(
       deviceCode: input.auditMetadata.deviceCode,
     },
     prepareLastReceiptReprint: () => receiptReprint.prepareLast(),
-    prepareReceiptReprint: (orderGuid, source) =>
-      source === "remote-history"
-        ? remoteHistoryReceiptReprint.prepare(orderGuid)
-        : receiptReprint.prepareCurrent(orderGuid),
+    prepareReceiptReprint: (orderGuid, source) => {
+      if (source === "remote-history") {
+        return remoteHistoryReceiptReprint.prepare(orderGuid);
+      }
+      if (source === "installment-history") {
+        return installmentHistoryReceiptReprint
+          ? installmentHistoryReceiptReprint.prepare(orderGuid)
+          : Promise.resolve(null);
+      }
+      return receiptReprint.prepareCurrent(orderGuid);
+    },
     prepareManualDrawerOpen: async () => {
       // 手动动作只能使用本次从持久设置读取并冻结的外设；配置损坏或禁用时不猜测。
       const current = await settingsRepository.getReceiptPrinterSettings();
@@ -1057,7 +1081,7 @@ export function createProductionPosRuntimeServices(
       ),
       materials: voucherBalanceMaterials,
       renderer: new VoucherBalanceReceiptRenderer(
-        returnReceiptSettings(settingsRepository),
+        returnReceiptSettings(baseReceiptSettings),
       ),
       printQueue: fulfilmentStore,
       nowIso: input.clock.nowIso,
@@ -1264,6 +1288,9 @@ export function createProductionPosRuntimeServices(
     createId: input.createId,
     connectivity: input.connectivity,
     bootstrap: input.payments?.bootstrap,
+    receiptSettings: {
+      getReceiptPrinterSettings: () => baseReceiptSettings.get(),
+    },
     drainFulfilment: postCommitWork,
   });
   const payments = paymentRuntime.service;
@@ -1327,9 +1354,23 @@ export function createProductionPosRuntimeServices(
             input.database.installmentSnapshots(input.encryptor),
           actionStore,
           payments: installmentPayments,
+          receiptReprint: {
+            canReprint: isInstallmentReceiptReprintEligible,
+            execute: (installmentGuid, authorization, assertActive) =>
+              fulfilment.reprintReceipt(
+                installmentGuid,
+                "installment-history",
+                authorization,
+                assertActive,
+              ),
+          },
           voucherIntents: persistence.voucherIntents,
           sha256Hex: input.sha256Hex,
           createId: input.createId,
+          businessTimeZone: resolveRuntimeBusinessTimeZone(
+            input.businessTimeZone,
+          ),
+          now: input.clock.now,
           nowIso: input.clock.nowIso,
         });
       })()
@@ -1342,6 +1383,7 @@ export function createProductionPosRuntimeServices(
         input,
         repositories,
         settings: settingsRepository,
+        receiptSettings: baseReceiptSettings,
         currentCashier,
         authorization: operationAuthorization,
         providerRefund: paymentRuntime.returnRefund,
@@ -1461,8 +1503,7 @@ export function createProductionPosRuntimeServices(
     heldCartInitialize,
     paymentRuntime.initializeRecovery,
     async () => {
-      dailyCloseReceiptSettings =
-        await settingsRepository.getReceiptPrinterSettings();
+      dailyCloseReceiptSettings = await baseReceiptSettings.get();
       await customerDisplayCoordinator?.initialize();
       await recoverVoucherBalancePrints();
     },
@@ -2236,6 +2277,7 @@ function createAvailableReturnRuntime(input: Readonly<{
   input: ProductionPosRuntimeCompositionDependencies;
   repositories: PosRepositoryBundle;
   settings: ReturnType<PosDatabase["settings"]>;
+  receiptSettings: Pick<PosReceiptSettingsService, "get">;
   currentCashier: CurrentCashierSession;
   authorization: OperationAuthorizationService;
   providerRefund: ReturnType<
@@ -2245,7 +2287,7 @@ function createAvailableReturnRuntime(input: Readonly<{
 }>): PosReturnsRuntimeService {
   const receiptRenderer = new OrderRepositoryReturnReceiptRenderer(
     input.repositories.orders,
-    returnReceiptSettings(input.settings),
+    returnReceiptSettings(input.receiptSettings),
   );
   const refundVoucherReceiptRenderer =
     new ProtectedRefundVoucherReceiptRenderer(
@@ -2253,7 +2295,7 @@ function createAvailableReturnRuntime(input: Readonly<{
       input.input.database.refundVoucherPrintMaterial(
         input.input.encryptor,
       ),
-      returnReceiptSettings(input.settings),
+      returnReceiptSettings(input.receiptSettings),
       input.input.clock.now,
     );
   const fulfilment = new ReturnFulfilmentRuntime({
@@ -2809,9 +2851,19 @@ async function runUpdateTransitionWithActiveCart<T>(
 
 function receiptSettingsService(
   settings: ReturnType<PosDatabase["settings"]>,
+  store: Readonly<{
+    storeCode: string;
+    readDevicePresentation:
+      | ProductionSettingsCompositionInput["readDevicePresentation"]
+      | undefined;
+  }>,
 ): PosReceiptSettingsService {
   return {
-    get: () => settings.getReceiptPrinterSettings(),
+    get: async () => resolveTrustedReceiptPrinterSettings(
+      await settings.getReceiptPrinterSettings(),
+      store.storeCode,
+      store.readDevicePresentation,
+    ),
     save: (input) => settings.saveReceiptPrinterSettings(input),
   };
 }
@@ -2821,11 +2873,11 @@ function receiptSettingsService(
  * 配置缺失时由 receipt domain 返回 not-found，不能从当前 UI 或旧打印作业猜测。
  */
 function receiptReprintSettings(
-  settings: ReturnType<PosDatabase["settings"]>,
+  settings: Pick<PosReceiptSettingsService, "get">,
 ): ReceiptReprintSettingsSource {
   return {
     async getFrozenReceiptSettings() {
-      const current = await settings.getReceiptPrinterSettings();
+      const current = await settings.get();
       if (!isValidPeripheralId(current.peripheralId)) {
         return null;
       }
@@ -2847,11 +2899,11 @@ function receiptReprintSettings(
 
 /** 预览只冻结纸宽、语言和公开抬头；未配置打印机不应阻止查看。 */
 function receiptPreviewSettings(
-  settings: ReturnType<PosDatabase["settings"]>,
+  settings: Pick<PosReceiptSettingsService, "get">,
 ): ReceiptPreviewSettingsSource {
   return {
     async getFrozenReceiptPreviewSettings() {
-      const current = await settings.getReceiptPrinterSettings();
+      const current = await settings.get();
       return {
         paper: current.paper,
         locale: current.locale,
@@ -2872,11 +2924,11 @@ function receiptPreviewSettings(
  * 损坏时保持 plan pending，由设置页修复后人工重试，不能猜测旧打印机。
  */
 function returnReceiptSettings(
-  settings: ReturnType<PosDatabase["settings"]>,
+  settings: Pick<PosReceiptSettingsService, "get">,
 ): ReturnReceiptSettingsPort {
   return {
     async getFrozenReturnReceiptSettings() {
-      const current = await settings.getReceiptPrinterSettings();
+      const current = await settings.get();
       if (!current.printEnabled || !isValidPeripheralId(current.peripheralId)) {
         return null;
       }

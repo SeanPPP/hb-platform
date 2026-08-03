@@ -734,5 +734,14 @@ public sealed class SquareTerminalBackendService(
         {
             return Task.CompletedTask;
         }
+
+        public Task<bool> RefreshCheckoutSessionFromLookupAsync(
+            SquareCheckoutSessionRecord session,
+            string originStoreCode,
+            string originDeviceCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(false);
+        }
     }
 }
