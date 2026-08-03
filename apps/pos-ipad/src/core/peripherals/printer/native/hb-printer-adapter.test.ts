@@ -27,6 +27,9 @@ class FakeBridge implements HbPrinterBridge {
   lastOperation: { id: string; kind: PrinterOperationKind; bytes?: number[] } | null = null;
   connectCalls = 0;
   connectError: Error | null = null;
+  status: BluetoothPrinterStatus = readyStatus;
+  scanCalls: { durationMs: number; includeAll: boolean }[] = [];
+  scanError: (Error & { code?: string }) | null = null;
   nextResult: PrinterOperationResult = {
     operationId: "operation-1",
     state: "completed",
@@ -34,16 +37,24 @@ class FakeBridge implements HbPrinterBridge {
   };
 
   async getStatus(): Promise<BluetoothPrinterStatus> {
-    return readyStatus;
+    return this.status;
   }
 
-  async scan() {
+  async scan(durationMs: number, includeAll: boolean) {
+    this.scanCalls.push({ durationMs, includeAll });
+    if (this.scanError) throw this.scanError;
     return [
       {
         id: readyStatus.peripheralId ?? "",
         name: "Xprinter XP-58",
         rssi: -42,
         isXprinter: true,
+      },
+      {
+        id: "D4C3B2A1-0000-1111-2222-333344445555",
+        name: "Nearby BLE Device",
+        rssi: -55,
+        isXprinter: false,
       },
     ];
   }
@@ -90,11 +101,47 @@ async function run(): Promise<void> {
   const adapter = new HbPrinterNativeAdapter(fakeBridge);
 
   const printers = await adapter.scan();
-  assert.equal(printers.length, 1);
+  assert.equal(printers.length, 2);
   assert.equal(printers[0]?.name, "Xprinter XP-58");
+  assert.equal(printers[1]?.name, "Nearby BLE Device");
+  assert.deepEqual(fakeBridge.scanCalls, [
+    { durationMs: 5_000, includeAll: true },
+  ]);
+
+  await adapter.scan({ durationMs: 6_000, includeNonXprinter: false });
+  assert.deepEqual(fakeBridge.scanCalls.at(-1), {
+    durationMs: 6_000,
+    includeAll: false,
+  });
+
+  for (const code of [
+    "PRINTER_BLUETOOTH_PERMISSION_REQUIRED",
+    "PRINTER_BLUETOOTH_POWERED_OFF",
+    "PRINTER_BLUETOOTH_UNAVAILABLE",
+  ]) {
+    fakeBridge.scanError = Object.assign(new Error(code), { code });
+    await assert.rejects(
+      () => adapter.scan(),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === code,
+    );
+  }
+  fakeBridge.scanError = null;
   assert.equal(await adapter.getStatus(), "ready");
 
+  // 已连到同一台打印机时必须复用现有连接；重复 connect 会让 N160 主动断开。
+  await adapter.connect(readyStatus.peripheralId!, 12_000);
+  assert.equal(fakeBridge.connectCalls, 0);
+
   // 原生连接被主动取消或意外中断时，Promise 必须立即向上游失败，不能让 UI 一直等待。
+  fakeBridge.status = {
+    ...readyStatus,
+    connection: "disconnected",
+    peripheralId: null,
+    writeMode: null,
+  };
   fakeBridge.connectError = new Error("蓝牙打印机连接已取消。");
   await assert.rejects(() => adapter.connect(readyStatus.peripheralId!, 12_000), /连接已取消/);
   assert.equal(fakeBridge.connectCalls, 1);

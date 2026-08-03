@@ -53,6 +53,18 @@ export type VoucherProtectedPhase =
   | "released"
   | "refund-submitted";
 
+export type VoucherLatestBalanceConfirmation =
+  | Readonly<{
+      status: "confirmed";
+      remainingCents: number;
+      confirmedAtIso: string;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      remainingCents: null;
+      confirmedAtIso: string;
+    }>;
+
 /**
  * 此结构包含敏感券码与 reservation token。
  * 实现方必须使用 Keychain/SQLCipher 等受保护存储，不得放入 AsyncStorage 或日志。
@@ -71,6 +83,8 @@ export type VoucherProtectedAttemptState = Readonly<{
   amountCents: number;
   expiresAtIso: string | null;
   reason?: string | null;
+  /** 仅在服务端订单核销成功后单调补齐；锁券时余额不得写入此字段。 */
+  latestBalanceConfirmation?: VoucherLatestBalanceConfirmation;
 }>;
 
 export type VoucherProtectedAttemptStateDraft = Omit<

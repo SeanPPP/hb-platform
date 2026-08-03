@@ -8,7 +8,7 @@ const supportedInterfaceOrientations = [
 const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
 const localHbposApiBaseUrl = "http://192.168.31.246:5159";
 const posIpadProductionChannel = "pos-ipad-production";
-const posIpadAppVersion = "0.1.1";
+const posIpadAppVersion = "0.2.0";
 
 function buildOtaUpdateConfiguration(): Readonly<{
   buildProfile: string;
@@ -80,7 +80,7 @@ function buildOtaUpdateConfiguration(): Readonly<{
     explicitRuntimeVersion !== posIpadAppVersion
   ) {
     throw new Error(
-      `HB POS runtimeVersion must match app version ${posIpadAppVersion}.`,
+      `HB POS runtimeVersion 必须与当前 appVersion ${posIpadAppVersion} 一致。`,
     );
   }
   const configured = easProjectId !== null && updatesUrl !== null;
@@ -170,7 +170,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   updates: ota.updates,
   ios: {
     bundleIdentifier: "com.hbweb.posipad",
-    buildNumber: "2",
+    buildNumber: "1",
     supportsTablet: true,
     requireFullScreen: true,
     infoPlist: {

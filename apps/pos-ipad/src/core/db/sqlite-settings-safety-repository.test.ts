@@ -39,6 +39,7 @@ test("真实 SQLite：每类待处理事实均从持久状态计数，Rejected �
       pendingReturnCount: 1,
       pendingSaleCount: 2,
       unresolvedPaymentCount: 1,
+      paymentConfigurationSensitiveOrderCount: 0,
     });
   });
 });
@@ -80,6 +81,7 @@ test("真实 SQLite：仅明确终态和已上传事实排除，Approved 完成�
         pendingReturnCount: 0,
         pendingSaleCount: 1,
         unresolvedPaymentCount: 0,
+        paymentConfigurationSensitiveOrderCount: 0,
       },
     );
   });
@@ -128,6 +130,123 @@ test("真实 SQLite：Approved 未消费或订单尚未完成均保持 unresolve
   });
 });
 
+test("真实 SQLite：仅按未同步订单去重统计 Linkly 配置敏感支付", async () => {
+  await withMigratedDatabase(async (connection) => {
+    await insertOrder(connection, "linkly-purchase", "PendingSync", "sale");
+    await insertPaymentAttempt(connection, {
+      attemptId: "linkly-purchase-first",
+      orderGuid: "linkly-purchase",
+      state: "Approved",
+      provider: "linkly-cloud",
+      amountCents: 400,
+    });
+    await insertTender(connection, {
+      tenderGuid: "linkly-purchase-first-tender",
+      orderGuid: "linkly-purchase",
+      paymentAttemptId: "linkly-purchase-first",
+      amountCents: 400,
+    });
+    await insertPaymentAttempt(connection, {
+      attemptId: "linkly-purchase-second",
+      orderGuid: "linkly-purchase",
+      state: "Approved",
+      provider: "linkly-cloud",
+      amountCents: 600,
+    });
+    await insertTender(connection, {
+      tenderGuid: "linkly-purchase-second-tender",
+      orderGuid: "linkly-purchase",
+      paymentAttemptId: "linkly-purchase-second",
+      amountCents: 600,
+    });
+
+    await insertOrder(connection, "linkly-refund", "Rejected", "return");
+    await insertPaymentAttempt(connection, {
+      attemptId: "linkly-refund-attempt",
+      orderGuid: "linkly-refund",
+      state: "Approved",
+      provider: "linkly-cloud",
+      operation: "refund",
+    });
+    await insertTender(connection, {
+      tenderGuid: "linkly-refund-tender",
+      orderGuid: "linkly-refund",
+      paymentAttemptId: "linkly-refund-attempt",
+      amountCents: -1_000,
+    });
+
+    await insertOrder(connection, "synced-linkly", "Synced", "sale");
+    await insertPaymentAttempt(connection, {
+      attemptId: "synced-linkly-attempt",
+      orderGuid: "synced-linkly",
+      state: "Approved",
+      provider: "linkly-cloud",
+    });
+    await insertTender(connection, {
+      tenderGuid: "synced-linkly-tender",
+      orderGuid: "synced-linkly",
+      paymentAttemptId: "synced-linkly-attempt",
+    });
+
+    await insertOrder(
+      connection,
+      "cancelled-linkly-history",
+      "PendingSync",
+      "sale",
+    );
+    await insertPaymentAttempt(connection, {
+      attemptId: "cancelled-linkly-history-attempt",
+      orderGuid: "cancelled-linkly-history",
+      state: "Cancelled",
+      provider: "linkly-cloud",
+    });
+    await insertPaymentAttempt(connection, {
+      attemptId: "declined-linkly-history-attempt",
+      orderGuid: "cancelled-linkly-history",
+      state: "Declined",
+      provider: "linkly-cloud",
+    });
+
+    await insertOrder(connection, "square-backlog", "PendingSync", "sale");
+    await insertPaymentAttempt(connection, {
+      attemptId: "square-backlog-attempt",
+      orderGuid: "square-backlog",
+      state: "Declined",
+      provider: "square",
+    });
+    await insertTender(connection, {
+      tenderGuid: "square-backlog-tender",
+      orderGuid: "square-backlog",
+      paymentAttemptId: "square-backlog-attempt",
+    });
+    await insertOrder(connection, "voucher-backlog", "PendingSync", "sale");
+    await insertPaymentAttempt(connection, {
+      attemptId: "voucher-backlog-attempt",
+      orderGuid: "voucher-backlog",
+      state: "Declined",
+      provider: "voucher",
+    });
+    await insertTender(connection, {
+      tenderGuid: "voucher-backlog-tender",
+      orderGuid: "voucher-backlog",
+      paymentAttemptId: "voucher-backlog-attempt",
+      method: "voucher",
+    });
+    await insertOrder(connection, "cash-backlog", "PendingSync", "sale");
+
+    assert.deepEqual(
+      await new SqliteSettingsSafetyRepository(connection).read(),
+      {
+        pendingDurableWriteCount: 0,
+        pendingReturnCount: 1,
+        pendingSaleCount: 5,
+        unresolvedPaymentCount: 0,
+        paymentConfigurationSensitiveOrderCount: 2,
+      },
+    );
+  });
+});
+
 test("真实 SQLite：所有读取只在单个独占事务内完成，损坏状态失败关闭", async () => {
   await withMigratedDatabase(async (connection) => {
     await insertOrder(connection, "atomic-order", "CompletedLocal", "sale");
@@ -138,6 +257,7 @@ test("真实 SQLite：所有读取只在单个独占事务内完成，损坏状�
       pendingReturnCount: 0,
       pendingSaleCount: 1,
       unresolvedPaymentCount: 0,
+      paymentConfigurationSensitiveOrderCount: 0,
     });
     assert.equal(tracked.transactions, 1);
 
@@ -244,6 +364,7 @@ test("PosDatabase.settingsSafety 仅暴露窄只读仓储", async () => {
       pendingReturnCount: 0,
       pendingSaleCount: 0,
       unresolvedPaymentCount: 0,
+      paymentConfigurationSensitiveOrderCount: 0,
     });
   } finally {
     await database.close();
@@ -308,18 +429,25 @@ async function insertPaymentAttempt(
     orderGuid: string;
     state: string;
     provider?: "square" | "linkly-cloud" | "voucher";
+    operation?: "purchase" | "refund";
+    amountCents?: number;
   }>,
 ): Promise<void> {
+  const operation = input.operation ?? "purchase";
+  const amountCents =
+    input.amountCents ?? (operation === "refund" ? -1_000 : 1_000);
   await connection.run(
     `INSERT INTO payment_attempts (
       attempt_id, idempotency_key, order_guid, provider, operation,
       amount_cents, state, created_at_iso, updated_at_iso
-    ) VALUES (?, ?, ?, ?, 'purchase', 1000, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.attemptId,
       `${input.attemptId}-idempotency`,
       input.orderGuid,
       input.provider ?? "square",
+      operation,
+      amountCents,
       input.state,
       NOW,
       NOW,
@@ -334,17 +462,19 @@ async function insertTender(
     orderGuid: string;
     paymentAttemptId: string;
     method?: "card" | "voucher";
+    amountCents?: number;
   }>,
 ): Promise<void> {
   await connection.run(
     `INSERT INTO order_tenders (
       tender_guid, order_guid, method, amount_cents,
       payment_attempt_id, created_at_iso
-    ) VALUES (?, ?, ?, 1000, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
     [
       input.tenderGuid,
       input.orderGuid,
       input.method ?? "card",
+      input.amountCents ?? 1_000,
       input.paymentAttemptId,
       NOW,
     ],

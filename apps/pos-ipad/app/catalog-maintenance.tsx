@@ -113,7 +113,7 @@ export default function CatalogMaintenanceRoute() {
 
   return (
     <CatalogMaintenanceScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );

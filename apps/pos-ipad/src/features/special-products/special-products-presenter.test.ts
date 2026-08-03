@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-
 import {
   SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION,
   SPECIAL_PRODUCTS_MANAGE_PERMISSION,
@@ -19,6 +18,7 @@ import type {
   SpecialProductsRepositoryPort,
 } from "@/core/contracts";
 import type { CartAddDisposition } from "@/features/sales/domain";
+
 
 const ALL_PERMISSIONS = [
   SPECIAL_PRODUCTS_VIEW_PERMISSION,
@@ -215,7 +215,7 @@ test("候选查询与加购发布结构化反馈，不由状态文本推断声�
     cart,
     repository: new MemorySpecialProductsRepository([product("A")]),
   });
-  const events: { kind: string }[] = [];
+  const events: unknown[] = [];
   presenter.subscribeFeedback((event) => events.push(event));
 
   await presenter.load();
@@ -223,13 +223,13 @@ test("候选查询与加购发布结构化反馈，不由状态文本推断声�
   await presenter.searchCandidates();
   await presenter.addToCart("A");
 
-  assert.deepEqual(events.map((event) => event.kind), [
+  assert.deepEqual(events.map((event: any) => event.kind), [
     "query-empty",
     "added",
   ]);
 });
 
-test("非空候选查询被权限拒绝时只发布 query-error，空查询不伪造结果", async () => {
+test("非空候选查询被权限前置拒绝时只发布一次 query-error，空查询不伪造结果", async () => {
   const presenter = createPresenter({
     permissions: [
       SPECIAL_PRODUCTS_VIEW_PERMISSION,

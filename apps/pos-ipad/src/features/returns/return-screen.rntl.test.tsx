@@ -30,6 +30,10 @@ test("小票退货覆盖查询、数量、容量选择、Unknown 恢复和成功
   const screen = await render(
     <ReturnScreen locale="en" presenter={presenter} />,
   );
+  const keyboardScroll = screen.getByTestId("return-editor-keyboard-scroll");
+  expect(keyboardScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(keyboardScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(keyboardScroll.props.keyboardShouldPersistTaps).toBe("handled");
 
   await fireEvent.changeText(
     screen.getByTestId("return-order-query"),

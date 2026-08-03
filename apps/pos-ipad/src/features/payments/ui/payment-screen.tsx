@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -39,6 +39,10 @@ import {
 import type {
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
@@ -46,7 +50,16 @@ import { posColors } from "@/ui/theme";
 
 export const PAYMENT_MIN_TOUCH_TARGET = 44;
 
+const SQUARE_AUTO_RECOVERY_INTERVAL_MS = 2_000;
+const SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS = 45;
+const SQUARE_AUTO_RECOVERY_WINDOW_MS = 90_000;
+const squareAutoRecoveryDeadlines = new Map<string, number>();
+
 export type PaymentInstallmentModeIssue = "unavailable";
+
+export type PaymentReceiptPrintOutcome = "completed" | "unknown" | "failed";
+
+type PaymentReceiptPrintState = "idle" | "printing" | PaymentReceiptPrintOutcome;
 
 export type PaymentInstallmentModeControl = Readonly<{
   enabled: boolean;
@@ -68,6 +81,7 @@ type PaymentScreenProps = Readonly<{
   locale?: PaymentLocale;
   onBack?(): void;
   onComplete?(orderGuid: string): void;
+  onPrintReceipt?(orderGuid: string): Promise<PaymentReceiptPrintOutcome>;
   showStatusStrip?: boolean;
 }>;
 
@@ -82,6 +96,7 @@ export function PaymentScreen({
   locale: localeOverride,
   onBack,
   onComplete,
+  onPrintReceipt,
   showStatusStrip = true,
 }: PaymentScreenProps) {
   const state = useSyncExternalStore(
@@ -101,6 +116,10 @@ export function PaymentScreen({
     fullInstallmentConfirmationOpen,
     setFullInstallmentConfirmationOpen,
   ] = useState(false);
+  const squareAutoRecovery = useRef<{
+    attemptId: string | null;
+    recoveryCount: number;
+  }>({ attemptId: null, recoveryCount: 0 });
 
   useEffect(() => {
     void presenter.initialize();
@@ -113,6 +132,64 @@ export function PaymentScreen({
     presenter,
     state.busy,
     state.checkout.fullInstallmentConfirmationRequired,
+  ]);
+
+  useEffect(() => {
+    const attemptId = state.attemptId;
+    if (squareAutoRecovery.current.attemptId !== attemptId) {
+      squareAutoRecovery.current = { attemptId, recoveryCount: 0 };
+    }
+    if (
+      attemptId &&
+      state.provider === "square" &&
+      state.runtimeStatus !== "pending"
+    ) {
+      squareAutoRecoveryDeadlines.delete(attemptId);
+    }
+    if (
+      !attemptId ||
+      state.provider !== "square" ||
+      state.phase !== "pending" ||
+      state.runtimeStatus !== "pending" ||
+      state.busy ||
+      !state.allowedActions.recover ||
+      squareAutoRecovery.current.recoveryCount >=
+        SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const existingDeadline = squareAutoRecoveryDeadlines.get(attemptId);
+    const deadlineAt =
+      existingDeadline ?? now + SQUARE_AUTO_RECOVERY_WINDOW_MS;
+    if (existingDeadline === undefined) {
+      squareAutoRecoveryDeadlines.set(attemptId, deadlineAt);
+    }
+    if (now >= deadlineAt) return;
+
+    // Square checkout 已先耐久化；这里只恢复同一 attempt，绝不创建第二笔付款。
+    const timer = setTimeout(() => {
+      const tracker = squareAutoRecovery.current;
+      if (
+        tracker.attemptId !== attemptId ||
+        tracker.recoveryCount >= SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS ||
+        Date.now() >= deadlineAt
+      ) {
+        return;
+      }
+      tracker.recoveryCount += 1;
+      void presenter.recover();
+    }, Math.min(SQUARE_AUTO_RECOVERY_INTERVAL_MS, deadlineAt - now));
+    return () => clearTimeout(timer);
+  }, [
+    presenter,
+    state.allowedActions.recover,
+    state.attemptId,
+    state.busy,
+    state.phase,
+    state.provider,
+    state.runtimeStatus,
   ]);
 
   const canLeave = canSafelyLeave(state);
@@ -142,11 +219,13 @@ export function PaymentScreen({
 
       {showStatusStrip ? <PosStatusStrip /> : null}
 
-      <ScrollView
+      <PosKeyboardAwareScrollView
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
+        testID="payment-content-scroll"
       >
-        <PaymentStatusPanel state={state} t={t} />
+        {state.phase !== "success" ? (
+          <PaymentStatusPanel state={state} t={t} />
+        ) : null}
 
         {state.runtimeErrorCode ? (
           <View
@@ -161,6 +240,7 @@ export function PaymentScreen({
               <PosPressable
                 accessibilityRole="button"
                 onPress={() => presenter.dismissError()}
+                sound="navigate"
                 style={({ pressed }) => [
                   styles.errorDismiss,
                   pressed && styles.pressed,
@@ -175,228 +255,234 @@ export function PaymentScreen({
           </View>
         ) : null}
 
-        <View
-          style={[
-            styles.workspace,
-            compact && styles.workspaceCompact,
-          ]}
-        >
-          <PaymentContextPane
-            canLeave={canLeave}
+        {state.phase === "success" && state.orderGuid ? (
+          <PaymentSuccessLayout
             compact={compact}
-            installmentModeControl={installmentModeControl}
             locale={locale}
-            onBack={onBack}
+            onComplete={onComplete}
+            onPrintReceipt={onPrintReceipt}
+            orderGuid={state.orderGuid}
             presenter={presenter}
             state={state}
             t={t}
           />
+        ) : (
           <View
             style={[
-              styles.entryPane,
-              shortLandscape && styles.entryPaneShort,
-              compact && styles.entryPaneCompact,
+              styles.workspace,
+              compact && styles.workspaceCompact,
             ]}
-            testID="payment-entry-pane"
+            testID="payment-workspace"
           >
-            {showEntry ? (
-              <View
-                style={[
-                  styles.form,
-                  shortLandscape && styles.formShort,
-                ]}
-                testID="payment-entry-form"
-              >
-                <Text style={styles.inputLabel}>{t("amount.label")}</Text>
-                <PosTextInput
-                  accessibilityLabel={t("amount.label")}
-                  editable={!state.busy}
-                  keyboardType="decimal-pad"
-                  onChangeText={(value) => presenter.setAmountText(value)}
-                  placeholder="0.00"
-                  placeholderTextColor="#7B8793"
-                  selectionColor={posColors.blue}
-                  showSoftInputOnFocus={false}
-                  style={[
-                    styles.amountInput,
-                    shortLandscape && styles.amountInputShort,
-                  ]}
-                  testID="payment-amount"
-                  value={state.amountText}
-                />
-                <Text
-                  style={[
-                    styles.inputHint,
-                    shortLandscape && styles.inputHintShort,
-                  ]}
-                >
-                  {t("amount.hint")}
-                </Text>
-                <PaymentKeypad
-                  amountText={state.amountText}
-                  dense={shortLandscape}
-                  disabled={state.busy}
-                  onChange={(value) => presenter.setAmountText(value)}
-                />
-
-                {state.selectedMethod === "cash" ? (
-                  <View
-                    style={[
-                      styles.quickCashRow,
-                      shortLandscape && styles.quickCashRowShort,
-                    ]}
-                    testID="payment-cash-quick"
-                  >
-                    {(
-                      [
-                        [5, styles.quickCashNote5],
-                        [10, styles.quickCashNote10],
-                        [20, styles.quickCashNote20],
-                        [50, styles.quickCashNote50],
-                        [100, styles.quickCashNote100],
-                      ] as const
-                    ).map(([amount, noteStyle]) => (
-                      <ActionButton
-                        key={amount}
-                        label={`$${amount}`}
-                        onPress={() =>
-                          presenter.setAmountText(amount.toFixed(2))
-                        }
-                        style={[
-                          styles.quickCashButton,
-                          noteStyle,
-                        ]}
-                        testID={`payment-cash-quick-${amount}`}
-                        tone="quiet"
-                      />
-                    ))}
-                  </View>
-                ) : null}
-
-                {state.selectedMethod === "voucher" ? (
-                  <View
-                    key={state.sensitiveInputRevision}
-                    style={styles.voucherInputGroup}
-                  >
-                    <Text style={styles.inputLabel}>
-                      {t("voucher.label")}
-                    </Text>
-                    <PosTextInput
-                      accessibilityLabel={t("voucher.label")}
-                      autoCapitalize="characters"
-                      autoCorrect={false}
-                      editable={!state.busy}
-                      onChangeText={(value) =>
-                        presenter.setVoucherCode(value)
-                      }
-                      placeholder={t("voucher.placeholder")}
-                      placeholderTextColor="#7B8793"
-                      secureTextEntry
-                      selectionColor={posColors.blue}
-                      style={styles.voucherInput}
-                      testID="payment-voucher-code"
-                    />
-                    {state.voucherCaptured ? (
-                      <Text
-                        style={styles.secureCapture}
-                        testID="payment-voucher-captured"
-                      >
-                        {t("voucher.captured")}
-                      </Text>
-                    ) : null}
-                  </View>
-                ) : null}
-
-                {state.fieldIssue ? (
-                  <Text
-                    accessibilityRole="alert"
-                    style={styles.fieldError}
-                    testID="payment-field-error"
-                  >
-                    {t(paymentFieldIssueCopyKey(state.fieldIssue))}
-                  </Text>
-                ) : null}
-
+            <PaymentContextPane
+              canLeave={canLeave}
+              compact={compact}
+              installmentModeControl={installmentModeControl}
+              locale={locale}
+              onBack={onBack}
+              presenter={presenter}
+              state={state}
+              t={t}
+            />
+            <View
+              style={[
+                styles.entryPane,
+                shortLandscape && styles.entryPaneShort,
+                compact && styles.entryPaneCompact,
+              ]}
+              testID="payment-entry-pane"
+            >
+              {showEntry ? (
                 <View
                   style={[
-                    styles.formActions,
-                    shortLandscape && styles.formActionsShort,
+                    styles.form,
+                    shortLandscape && styles.formShort,
                   ]}
+                  testID="payment-entry-form"
                 >
-                  <ActionButton
+                  <Text style={styles.inputLabel}>{t("amount.label")}</Text>
+                  <PosTextInput
+                    accessibilityLabel={t("amount.label")}
+                    editable={!state.busy}
+                    keyboardType="decimal-pad"
+                    onChangeText={(value) => presenter.setAmountText(value)}
+                    placeholder="0.00"
+                    placeholderTextColor="#7B8793"
+                    selectionColor={posColors.blue}
+                    showSoftInputOnFocus={false}
+                    style={[
+                      styles.amountInput,
+                      shortLandscape && styles.amountInputShort,
+                    ]}
+                    testID="payment-amount"
+                    value={state.amountText}
+                  />
+                  <Text
+                    style={[
+                      styles.inputHint,
+                      shortLandscape && styles.inputHintShort,
+                    ]}
+                  >
+                    {t("amount.hint")}
+                  </Text>
+                  <PaymentKeypad
+                    amountText={state.amountText}
+                    dense={shortLandscape}
                     disabled={state.busy}
-                    label={t("action.cancel")}
-                    onPress={() => {
-                      if (state.allowedActions.cancel) {
-                        void presenter.cancel();
-                      } else if (onBack && canLeave) {
-                        onBack();
-                      } else {
-                        presenter.setAmountText("");
+                    onChange={(value) => presenter.setAmountText(value)}
+                  />
+
+                  {state.selectedMethod === "cash" ? (
+                    <View
+                      style={[
+                        styles.quickCashRow,
+                        shortLandscape && styles.quickCashRowShort,
+                      ]}
+                      testID="payment-cash-quick"
+                    >
+                      {(
+                        [
+                          [5, styles.quickCashNote5],
+                          [10, styles.quickCashNote10],
+                          [20, styles.quickCashNote20],
+                          [50, styles.quickCashNote50],
+                          [100, styles.quickCashNote100],
+                        ] as const
+                      ).map(([amount, noteStyle]) => (
+                        <ActionButton
+                          key={amount}
+                          label={`$${amount}`}
+                          onPress={() =>
+                            presenter.setAmountText(amount.toFixed(2))
+                          }
+                          sound="key"
+                          style={[
+                            styles.quickCashButton,
+                            noteStyle,
+                          ]}
+                          testID={`payment-cash-quick-${amount}`}
+                          tone="quiet"
+                        />
+                      ))}
+                    </View>
+                  ) : null}
+
+                  {state.selectedMethod === "voucher" ? (
+                    <View
+                      key={state.sensitiveInputRevision}
+                      style={styles.voucherInputGroup}
+                    >
+                      <Text style={styles.inputLabel}>
+                        {t("voucher.label")}
+                      </Text>
+                      <PosKeyboardAwareTextInput
+                        accessibilityLabel={t("voucher.label")}
+                        autoCapitalize="characters"
+                        autoCorrect={false}
+                        editable={!state.busy}
+                        onChangeText={(value) =>
+                          presenter.setVoucherCode(value)
+                        }
+                        placeholder={t("voucher.placeholder")}
+                        placeholderTextColor="#7B8793"
+                        secureTextEntry
+                        selectionColor={posColors.blue}
+                        style={styles.voucherInput}
+                        testID="payment-voucher-code"
+                      />
+                      {state.voucherCaptured ? (
+                        <Text
+                          style={styles.secureCapture}
+                          testID="payment-voucher-captured"
+                        >
+                          {t("voucher.captured")}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ) : null}
+
+                  <View
+                    style={[
+                      styles.formActions,
+                      shortLandscape && styles.formActionsShort,
+                    ]}
+                  >
+            <ActionButton
+              disabled={state.busy}
+              label={t("action.cancel")}
+                      onPress={() => {
+                        if (state.allowedActions.cancel) {
+                          void presenter.cancel();
+                        } else if (onBack && canLeave) {
+                          onBack();
+                        } else {
+                          presenter.setAmountText("");
+                        }
+                      }}
+              style={styles.formAction}
+              sound="danger"
+              testID="payment-entry-cancel"
+                      tone="quiet"
+                    />
+                    <ActionButton
+                      disabled={
+                        !state.selectedMethod ||
+                        !canSubmitPaymentMethod(
+                          state,
+                          state.selectedMethod,
+                        )
                       }
-                    }}
-                    style={styles.formAction}
-                    testID="payment-entry-cancel"
-                    tone="quiet"
-                  />
-                  <ActionButton
-                    disabled={
-                      !state.selectedMethod ||
-                      !canSubmitPaymentMethod(
-                        state,
-                        state.selectedMethod,
-                      )
-                    }
-                    label={
-                      state.orderGuid
-                        ? t("action.addTender")
-                        : t("action.pay")
-                    }
-                    onPress={() => {
-                      void presenter.submitSelected();
-                    }}
-                    style={styles.formAction}
-                    testID="payment-submit"
-                  />
+                      label={
+                        state.orderGuid
+                          ? t("action.addTender")
+                          : t("action.pay")
+                      }
+                      onPress={() => {
+                        void presenter.submitSelected();
+                      }}
+                      style={styles.formAction}
+                      testID="payment-submit"
+                    />
+                  </View>
                 </View>
-              </View>
-            ) : null}
+              ) : null}
+              {state.fieldIssue ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={styles.fieldError}
+                  testID="payment-field-error"
+                >
+                  {t(paymentFieldIssueCopyKey(state.fieldIssue))}
+                </Text>
+              ) : null}
+            </View>
+
+            <PaymentSummary
+              compact={compact}
+              locale={locale}
+              onConfirm={() => {
+                const customer =
+                  state.checkout.installmentCustomer;
+                const customerComplete =
+                  customer !== null &&
+                  customer.name.trim().length > 0 &&
+                  customer.phone.trim().length > 0;
+                if (
+                  state.checkout.fullInstallmentConfirmationRequired &&
+                  customerComplete
+                ) {
+                  setFullInstallmentConfirmationOpen(true);
+                  return;
+                }
+                void presenter.confirm?.();
+              }}
+              presenter={presenter}
+              state={state}
+              t={t}
+            />
           </View>
-
-          <PaymentSummary
-            compact={compact}
-            locale={locale}
-            onConfirm={() => {
-              const customer =
-                state.checkout.installmentCustomer;
-              const customerComplete =
-                customer !== null &&
-                customer.name.trim().length > 0 &&
-                customer.phone.trim().length > 0;
-              if (
-                state.checkout.fullInstallmentConfirmationRequired &&
-                customerComplete
-              ) {
-                setFullInstallmentConfirmationOpen(true);
-                return;
-              }
-              void presenter.confirm?.();
-            }}
-            presenter={presenter}
-            state={state}
-            t={t}
-          />
-        </View>
-
-        {state.phase === "success" && state.orderGuid && onComplete ? (
-          <ActionButton
-            label={t("action.newSale")}
-            onPress={() => onComplete(state.orderGuid!)}
-            style={styles.completeAction}
-            testID="payment-complete"
-          />
-        ) : null}
-      </ScrollView>
+        )}
+      </PosKeyboardAwareScrollView>
 
       <Modal
         animationType="fade"
@@ -425,6 +511,7 @@ export function PaymentScreen({
                   setFullInstallmentConfirmationOpen(false)
                 }
                 style={styles.confirmationAction}
+                sound="navigate"
                 testID="payment-full-installment-cancel"
                 tone="quiet"
               />
@@ -437,6 +524,7 @@ export function PaymentScreen({
                   });
                 }}
                 style={styles.confirmationAction}
+                sound="danger"
                 testID="payment-full-installment-confirm"
               />
             </View>
@@ -444,6 +532,283 @@ export function PaymentScreen({
         </View>
       </Modal>
     </SafeAreaView>
+  );
+}
+
+function PaymentSuccessLayout({
+  compact,
+  locale,
+  onComplete,
+  onPrintReceipt,
+  orderGuid,
+  presenter,
+  state,
+  t,
+}: Readonly<{
+  compact: boolean;
+  locale: PaymentLocale;
+  onComplete: ((orderGuid: string) => void) | undefined;
+  onPrintReceipt:
+    | ((orderGuid: string) => Promise<PaymentReceiptPrintOutcome>)
+    | undefined;
+  orderGuid: string;
+  presenter: PaymentScreenPresenter;
+  state: PaymentPresenterState;
+  t: Translate;
+}>) {
+  const paidCents = Math.max(
+    0,
+    state.total.cents - state.remaining.cents,
+  );
+  const cash = state.checkout.cash;
+  const [printState, setPrintState] = useState<PaymentReceiptPrintState>("idle");
+  const printInFlightRef = useRef(false);
+  const printGenerationRef = useRef(0);
+
+  useEffect(() => {
+    printGenerationRef.current += 1;
+    printInFlightRef.current = false;
+    setPrintState("idle");
+    return () => {
+      // 订单切换或卸载时使在途结果失效，禁止迟到 Promise 写回旧成功页。
+      printGenerationRef.current += 1;
+      printInFlightRef.current = false;
+    };
+  }, [orderGuid]);
+
+  const handlePrintReceipt = async () => {
+    if (!onPrintReceipt || printInFlightRef.current) return;
+    printInFlightRef.current = true;
+    const generation = printGenerationRef.current;
+    setPrintState("printing");
+    try {
+      const result = await onPrintReceipt(orderGuid);
+      if (generation === printGenerationRef.current) {
+        setPrintState(result);
+      }
+    } catch {
+      if (generation === printGenerationRef.current) {
+        setPrintState("failed");
+      }
+    } finally {
+      if (generation === printGenerationRef.current) {
+        printInFlightRef.current = false;
+      }
+    }
+  };
+
+  return (
+    <View
+      style={[
+        styles.successLayout,
+        compact && styles.successLayoutCompact,
+      ]}
+      testID="payment-success-layout"
+    >
+      <View
+        style={[
+          styles.successMain,
+          compact && styles.successMainCompact,
+        ]}
+        testID="payment-success-summary"
+      >
+        <View
+          accessibilityRole="summary"
+          style={styles.successHero}
+          testID="payment-status-success"
+        >
+          <View style={styles.successIcon}>
+            <Text style={styles.successIconText}>✓</Text>
+          </View>
+          <View style={styles.successHeroCopy}>
+            <Text style={styles.successTitle}>
+              {t("status.success.title")}
+            </Text>
+            <Text style={styles.successHint}>
+              {t("status.success.hint")}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.successSummary}>
+          <View style={styles.successTotal}>
+            <Text style={styles.successLabel}>
+              {t("success.paidTotal")}
+            </Text>
+            <Text style={styles.successTotalAmount}>
+              {formatAud(paidCents, locale)}
+            </Text>
+          </View>
+          <View style={styles.successSummaryRule} />
+          <View style={styles.successTransaction}>
+            <Text style={styles.successLabel}>
+              {t("success.orderReference")}
+            </Text>
+            <Text
+              selectable
+              style={styles.successOrderReference}
+            >
+              {orderGuid}
+            </Text>
+          </View>
+        </View>
+
+        {cash.tenderedCents > 0 ? (
+          <View
+            style={styles.successSettlement}
+            testID="payment-success-settlement"
+          >
+            <View style={styles.successCashIdentity}>
+              <View style={styles.successCashIcon}>
+                <Text style={styles.successCashIconText}>$</Text>
+              </View>
+              <View>
+                <Text style={styles.successCashTitle}>
+                  {t("success.cashSettlement")}
+                </Text>
+                <View style={styles.successCashTenderedRow}>
+                  <Text style={styles.successCashTenderedLabel}>
+                    {t("success.cashTendered")}
+                  </Text>
+                  <Text style={styles.successCashTenderedAmount}>
+                    {formatAud(cash.tenderedCents, locale)}
+                  </Text>
+                </View>
+              </View>
+            </View>
+            <View style={styles.successChange}>
+              <Text style={styles.successChangeLabel}>
+                {t("success.changeDue")}
+              </Text>
+              <Text
+                style={styles.successChangeAmount}
+                testID="payment-success-change"
+              >
+                {formatAud(cash.changeCents, locale)}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.successSync}>
+          <View style={styles.successSyncDot} />
+          <Text style={styles.successSyncText}>
+            {t("success.syncQueued")}
+          </Text>
+        </View>
+
+        <LinklyControls presenter={presenter} state={state} t={t} />
+      </View>
+
+      <View
+        style={[
+          styles.successReceiptColumn,
+          compact && styles.successReceiptColumnCompact,
+        ]}
+      >
+        <View
+          style={styles.successReceipt}
+          testID="payment-success-receipt-preview"
+        >
+          <Text style={styles.successReceiptTitle}>
+            {t("success.receiptPreview")}
+          </Text>
+          <Text selectable style={styles.successReceiptOrder}>
+            {orderGuid}
+          </Text>
+          <View style={styles.successReceiptRule} />
+
+          <View style={styles.successReceiptLines}>
+            {state.checkout.lines.length ? (
+              state.checkout.lines.map((line) => (
+                <View key={line.lineKey} style={styles.successReceiptLine}>
+                  <View style={styles.successReceiptLineCopy}>
+                    <Text
+                      numberOfLines={2}
+                      style={styles.successReceiptLineName}
+                    >
+                      {line.displayName}
+                    </Text>
+                    <Text style={styles.successReceiptLineQuantity}>
+                      × {line.quantity}
+                    </Text>
+                  </View>
+                  <Text style={styles.successReceiptLineAmount}>
+                    {formatAud(line.actualAmountCents, locale)}
+                  </Text>
+                </View>
+              ))
+            ) : (
+              <Text style={styles.successReceiptEmpty}>
+                {t("success.noItems")}
+              </Text>
+            )}
+          </View>
+
+          <View style={styles.successReceiptRule} />
+          {state.tenders.map((tender) => (
+            <View
+              key={tender.tenderGuid}
+              style={styles.successReceiptTender}
+            >
+              <Text style={styles.successReceiptTenderLabel}>
+                {t(
+                  tender.method === "card"
+                    ? "method.card"
+                    : paymentMethodCopyKey(tender.method),
+                )}
+              </Text>
+              <Text style={styles.successReceiptTenderAmount}>
+                {formatAud(tender.amount.cents, locale)}
+              </Text>
+            </View>
+          ))}
+          <View style={styles.successReceiptTotal}>
+            <Text style={styles.successReceiptTotalLabel}>
+              {t("summary.total")}
+            </Text>
+            <Text style={styles.successReceiptTotalAmount}>
+              {formatAud(state.total.cents, locale)}
+            </Text>
+          </View>
+        </View>
+
+        <ActionButton
+          disabled={!onPrintReceipt || printState === "printing"}
+          label={t("action.printReceipt")}
+          onPress={() => {
+            void handlePrintReceipt();
+          }}
+          style={styles.successPrintAction}
+          testID="payment-success-print"
+          tone="quiet"
+        />
+        {printState !== "idle" ? (
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[
+              styles.successPrintStatus,
+              printState === "printing" && styles.successPrintStatusPrinting,
+              printState === "completed" && styles.successPrintStatusCompleted,
+              printState === "unknown" && styles.successPrintStatusUnknown,
+              printState === "failed" && styles.successPrintStatusFailed,
+            ]}
+            testID="payment-success-print-status"
+          >
+            {t(`success.print.${printState}`)}
+          </Text>
+        ) : null}
+        {onComplete ? (
+          <ActionButton
+            label={t("action.newSale")}
+            onPress={() => onComplete(orderGuid)}
+            sound="navigate"
+            style={styles.successCompleteAction}
+            testID="payment-complete"
+          />
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -497,6 +862,7 @@ function PaymentContextPane({
             disabled={!canLeave}
             label={locale === "zh" ? "返回收银" : "Back to sale"}
             onPress={onBack}
+            sound="navigate"
             style={styles.contextBack}
             testID="payment-back"
             tone="quiet"
@@ -525,6 +891,7 @@ function PaymentContextPane({
                 onPress={() =>
                   presenter.openInstallmentCustomerEditor?.()
                 }
+                sound="navigate"
                 style={({ pressed }) => [
                   styles.customerEdit,
                   pressed && styles.pressed,
@@ -550,7 +917,7 @@ function PaymentContextPane({
           </Text>
           {customer.editorOpen ? (
             <View style={styles.customerEditor} testID="payment-customer-editor">
-              <PosTextInput
+              <PosKeyboardAwareTextInput
                 autoCorrect={false}
                 editable={!state.busy}
                 onChangeText={(value) =>
@@ -561,7 +928,7 @@ function PaymentContextPane({
                 testID="payment-customer-name"
                 value={customer.draftName}
               />
-              <PosTextInput
+              <PosKeyboardAwareTextInput
                 autoCorrect={false}
                 editable={!state.busy}
                 keyboardType="phone-pad"
@@ -575,11 +942,12 @@ function PaymentContextPane({
               />
               <View style={styles.customerEditorActions}>
                 <ActionButton
-                  label={locale === "zh" ? "取消" : "Cancel"}
+                label={locale === "zh" ? "取消" : "Cancel"}
                   onPress={() =>
                     presenter.cancelInstallmentCustomerEditor?.()
                   }
-                  style={styles.customerEditorButton}
+                style={styles.customerEditorButton}
+                sound="navigate"
                   testID="payment-customer-cancel"
                   tone="quiet"
                 />
@@ -759,6 +1127,7 @@ function LinklyControls({
               onPress={() => {
                 void presenter.sendLinklyKey(key);
               }}
+              sound="key"
               testID={`payment-linkly-${key}`}
               tone="secondary"
             />
@@ -897,6 +1266,7 @@ function PaymentSummary({
           disabled={state.busy}
           label={locale === "zh" ? "确认分期付款" : "Confirm installment payment"}
           onPress={onConfirm}
+          sound="danger"
           style={styles.confirmAction}
           testID="payment-confirm"
         />
@@ -996,10 +1366,10 @@ function PaymentKeypad({
           accessibilityRole="button"
           disabled={disabled}
           key={key}
-          sound="key"
           onPress={() =>
             onChange(nextKeypadAmount(amountText, key))
           }
+          sound={key === "backspace" ? "danger" : "key"}
           style={({ pressed }) => [
             styles.keypadKey,
             dense && styles.keypadKeyShort,
@@ -1061,6 +1431,7 @@ function TenderRow({
           disabled={!state.allowedActions.removeTender || state.busy}
           label={t("action.remove")}
           onPress={onRemove}
+          sound="danger"
           testID={`payment-remove-${tender.tenderGuid}`}
           tone="quiet"
         />
@@ -1141,6 +1512,7 @@ function ActionButton({
   disabled = false,
   label,
   onPress,
+  sound,
   style,
   testID,
   tone = "primary",
@@ -1148,6 +1520,7 @@ function ActionButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
+  sound?: "tap" | "key" | "navigate" | "danger";
   style?: StyleProp<ViewStyle>;
   testID?: string;
   tone?: "primary" | "secondary" | "danger" | "quiet";
@@ -1158,7 +1531,7 @@ function ActionButton({
       accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
-      sound={tone === "danger" ? "danger" : "tap"}
+      sound={sound ?? (tone === "danger" ? "danger" : "tap")}
       style={({ pressed }) => [
         styles.actionButton,
         tone === "secondary" && styles.actionSecondary,
@@ -1363,6 +1736,339 @@ const styles = StyleSheet.create({
     color: posColors.red,
     fontSize: 14,
     fontWeight: "800",
+  },
+  successLayout: {
+    flex: 1,
+    minHeight: 520,
+    flexDirection: "row",
+    gap: 14,
+  },
+  successLayoutCompact: {
+    minHeight: 0,
+    flexDirection: "column",
+  },
+  successMain: {
+    flex: 68,
+    minWidth: 0,
+    gap: 14,
+  },
+  successMainCompact: {
+    flex: 0,
+  },
+  successHero: {
+    minHeight: 118,
+    paddingHorizontal: 24,
+    paddingVertical: 18,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
+  },
+  successIcon: {
+    width: 76,
+    height: 76,
+    borderWidth: 4,
+    borderColor: posColors.green,
+    borderRadius: 38,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  successIconText: {
+    color: posColors.green,
+    fontSize: 44,
+    fontWeight: "800",
+    lineHeight: 50,
+  },
+  successHeroCopy: {
+    flex: 1,
+  },
+  successTitle: {
+    color: posColors.green,
+    fontSize: 32,
+    fontWeight: "900",
+    letterSpacing: -0.5,
+  },
+  successHint: {
+    marginTop: 5,
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "700",
+    lineHeight: 21,
+  },
+  successSummary: {
+    minHeight: 154,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 24,
+  },
+  successTotal: {
+    flex: 1,
+    justifyContent: "center",
+  },
+  successLabel: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  successTotalAmount: {
+    marginTop: 7,
+    color: posColors.green,
+    fontSize: 40,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+  },
+  successSummaryRule: {
+    width: 1,
+    backgroundColor: posColors.border,
+  },
+  successTransaction: {
+    flex: 1,
+    justifyContent: "center",
+  },
+  successOrderReference: {
+    marginTop: 9,
+    color: posColors.ink,
+    fontSize: 17,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    lineHeight: 23,
+  },
+  successSettlement: {
+    minHeight: 116,
+    paddingHorizontal: 22,
+    paddingVertical: 18,
+    borderWidth: 1,
+    borderColor: "#D9A441",
+    backgroundColor: posColors.yellowSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 18,
+  },
+  successCashIdentity: {
+    minWidth: 0,
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
+  successCashIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: posColors.yellow,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  successCashIconText: {
+    color: "#FFFFFF",
+    fontSize: 29,
+    fontWeight: "900",
+  },
+  successCashTitle: {
+    color: posColors.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  successCashTenderedRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  successCashTenderedLabel: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  successCashTenderedAmount: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+  },
+  successChange: {
+    minWidth: 180,
+    paddingLeft: 22,
+    borderLeftWidth: 1,
+    borderLeftColor: "#D9A441",
+    alignItems: "flex-end",
+  },
+  successChangeLabel: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  successChangeAmount: {
+    marginTop: 5,
+    color: posColors.orange,
+    fontSize: 34,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+  },
+  successSync: {
+    minHeight: 72,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  successSyncDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: posColors.green,
+  },
+  successSyncText: {
+    flex: 1,
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  successReceiptColumn: {
+    flex: 32,
+    minWidth: 300,
+  },
+  successReceiptColumnCompact: {
+    flex: 0,
+    minWidth: 0,
+  },
+  successReceipt: {
+    flex: 1,
+    minHeight: 390,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  successReceiptTitle: {
+    color: posColors.ink,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  successReceiptOrder: {
+    marginTop: 6,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+  },
+  successReceiptRule: {
+    height: 1,
+    marginVertical: 15,
+    backgroundColor: posColors.border,
+  },
+  successReceiptLines: {
+    flex: 1,
+    minHeight: 92,
+  },
+  successReceiptLine: {
+    minHeight: 52,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: posColors.border,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  successReceiptLineCopy: {
+    flex: 1,
+  },
+  successReceiptLineName: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  successReceiptLineQuantity: {
+    marginTop: 3,
+    color: posColors.mutedInk,
+    fontSize: 12,
+  },
+  successReceiptLineAmount: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  successReceiptEmpty: {
+    paddingVertical: 16,
+    color: posColors.mutedInk,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  successReceiptTender: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  successReceiptTenderLabel: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  successReceiptTenderAmount: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  successReceiptTotal: {
+    minHeight: 48,
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: posColors.ink,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  successReceiptTotalLabel: {
+    color: posColors.ink,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  successReceiptTotalAmount: {
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+  },
+  successPrintAction: {
+    marginTop: 12,
+  },
+  successPrintStatus: {
+    marginTop: 7,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  successPrintStatusPrinting: {
+    color: posColors.blue,
+  },
+  successPrintStatusCompleted: {
+    color: posColors.green,
+  },
+  successPrintStatusUnknown: {
+    color: posColors.yellow,
+  },
+  successPrintStatusFailed: {
+    color: posColors.red,
+  },
+  successCompleteAction: {
+    marginTop: 10,
   },
   workspace: {
     flex: 1,

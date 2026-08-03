@@ -17,7 +17,7 @@ const mockGetDeviceIdentity = jest.fn<
     deviceCode: string;
   }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -26,7 +26,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -153,7 +153,7 @@ test("具备目录下载权限并复核设备身份后绑定固定门店 Port", 
   });
   expect(mockInitializeCatalogMaintenance).toHaveBeenCalledTimes(1);
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("零权限收银员直链访问时返回销售页且不创建维护 presenter", async () => {

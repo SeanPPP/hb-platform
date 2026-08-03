@@ -8,6 +8,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -22,6 +24,7 @@ import {
   INSTALLMENTS_VIEW_PERMISSION,
   resolveInstallmentsRuntimeFactory,
 } from "@/features/installments";
+import { LOCAL_HISTORY_VIEW_PERMISSION } from "@/features/local-history/local-history-presenter";
 import { REMOTE_HISTORY_VIEW_PERMISSION } from "@/features/remote-history";
 import { resolveTrustedProductImageUri } from "@/features/sales/runtime/trusted-product-image-uri";
 import {
@@ -35,6 +38,7 @@ import { reconcileSalesToolbarOrder } from "@/features/sales/ui/sales-toolbar-or
 import { SETTINGS_VIEW_PERMISSION } from "@/features/settings";
 import { SPECIAL_PRODUCTS_VIEW_PERMISSION } from "@/features/special-products";
 import { toggleAppLanguage } from "@/i18n";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import {
   readSalesToolbarOrder,
@@ -42,12 +46,19 @@ import {
 } from "@/ui/preferences/terminal-ui-preferences";
 import { RouteHidScannerCapture } from "@/ui/scanner/scanner-route-bridge";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
+import { PosStatusStrip } from "@/ui/shell/status-strip";
+import { posColors } from "@/ui/theme";
 
 type SalesPresenterBinding = Readonly<{
   services: object;
   cashier: object;
   presenter: SalesPresenter;
 }>;
+
+type SalesBootstrapFailureStage =
+  | "payment-recovery"
+  | "installment-recovery"
+  | "presenter";
 
 const UNCHECKED_UPDATE_GATE: NewTransactionGate = Object.freeze({
   state: "unchecked",
@@ -61,9 +72,6 @@ export default function SalesRoute() {
   const runtime = usePosRuntime();
   const { i18n } = useTranslation();
   const activeCashier = useCashierLoginStore((state) => state.activeCashier);
-  const clearActiveCashier = useCashierLoginStore(
-    (state) => state.clearActiveCashier,
-  );
   const gate = resolveProtectedSalesRouteGate(runtime.state, activeCashier);
   const subscribeUpdateGate = useCallback(
     (listener: () => void) =>
@@ -85,7 +93,9 @@ export default function SalesRoute() {
     readonly SalesToolbarActionId[]
   >(() => reconcileSalesToolbarOrder(readSalesToolbarOrder()));
   const hidRestoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [presenterCreationFailed, setPresenterCreationFailed] = useState(false);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [bootstrapFailure, setBootstrapFailure] =
+    useState<SalesBootstrapFailureStage | null>(null);
   const clearHidRestoreTimer = useCallback(() => {
     if (hidRestoreTimer.current !== null) {
       clearTimeout(hidRestoreTimer.current);
@@ -112,11 +122,10 @@ export default function SalesRoute() {
       ? binding.presenter
       : null;
   const addScannedProduct = useCallback(
-    (barcode: string) => {
+    (barcode: string, source: "hid" | "camera" = "hid") => {
       if (!presenter || presenter.getState().phase !== "selling") return;
-      // presenter 在同步 setQuery 后立即读取查询值，连续扫码不会把前一条码拼入下一条。
-      presenter.setQuery(barcode);
-      void presenter.addLookupCode("hid");
+      // 路由扫码不触碰触屏草稿；每次 HID/相机输入独立启动 lookup。
+      void presenter.addScannedLookupCode(barcode, source);
     },
     [presenter],
   );
@@ -161,7 +170,34 @@ export default function SalesRoute() {
     const services = runtime.services;
     const cashier = activeCashier;
     setBinding(null);
-    setPresenterCreationFailed(false);
+    setBootstrapFailure(null);
+    const failBootstrap = (
+      stage: SalesBootstrapFailureStage,
+      error: unknown,
+    ): void => {
+      if (cancelled) return;
+      // 初始化故障不等同于 401/403；会话失效只能由全局 invalidation bridge 处理。
+      (
+        services as typeof services & {
+          applicationLog?: {
+            record(entry: {
+              category: string;
+              error: unknown;
+              level: "Error";
+              message: string;
+              properties: { stage: SalesBootstrapFailureStage };
+            }): void;
+          };
+        }
+      ).applicationLog?.record({
+          level: "Error",
+          message: "Sales bootstrap failed.",
+          category: "sales.bootstrap",
+          error,
+          properties: { stage },
+        });
+      setBootstrapFailure(stage);
+    };
     const createSalesPresenter = () => {
       try {
         createdPresenter = services.sales.createPresenter();
@@ -171,25 +207,26 @@ export default function SalesRoute() {
         } else {
           setBinding({ services, cashier, presenter: createdPresenter });
         }
-      } catch {
-        if (!cancelled) {
-          clearActiveCashier();
-          setPresenterCreationFailed(true);
-        }
+      } catch (error: unknown) {
+        failBootstrap("presenter", error);
       }
     };
 
     // 两套支付账本都可能持有活动购物车或外部授权。普通支付先检查并拥有
     // 恢复优先权；只有确认其稳定后才读取分期账本，期间绝不短暂开放销售编辑。
     void (async () => {
-      try {
-        if (
-          services.payments.status === "available" &&
-          await services.payments.hasRecoveryRequired()
-        ) {
-          if (!cancelled) replace("/payment" as Href);
+      if (services.payments.status === "available") {
+        try {
+          if (await services.payments.hasRecoveryRequired()) {
+            if (!cancelled) replace("/payment" as Href);
+            return;
+          }
+        } catch (error: unknown) {
+          failBootstrap("payment-recovery", error);
           return;
         }
+      }
+      try {
         const installmentFactory =
           resolveInstallmentsRuntimeFactory(services);
         if (
@@ -199,20 +236,29 @@ export default function SalesRoute() {
           if (!cancelled) replace("/payment" as Href);
           return;
         }
-        if (!cancelled) createSalesPresenter();
-      } catch {
-        if (!cancelled) {
-          clearActiveCashier();
-          setPresenterCreationFailed(true);
-        }
+      } catch (error: unknown) {
+        failBootstrap("installment-recovery", error);
+        return;
       }
+      if (!cancelled) createSalesPresenter();
     })();
     return () => {
       cancelled = true;
       createdPresenter?.destroy();
       createdPresenter = null;
     };
-  }, [activeCashier, clearActiveCashier, gate, replace, runtime.services]);
+  }, [
+    activeCashier,
+    bootstrapAttempt,
+    gate,
+    replace,
+    runtime.services,
+  ]);
+
+  const retryBootstrap = useCallback(() => {
+    setBootstrapFailure(null);
+    setBootstrapAttempt((attempt) => attempt + 1);
+  }, []);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;
@@ -220,8 +266,14 @@ export default function SalesRoute() {
   if (gate === "redirect-login") {
     return <Redirect href={"/login" as Href} />;
   }
-  if (presenterCreationFailed) {
-    return <Redirect href={"/login" as Href} />;
+  if (bootstrapFailure) {
+    return (
+      <SalesBootstrapFailureScreen
+        language={i18n.resolvedLanguage ?? i18n.language}
+        onRetry={retryBootstrap}
+        stage={bootstrapFailure}
+      />
+    );
   }
   if (!presenter || !runtime.services) {
     return <BootstrapScreen />;
@@ -264,6 +316,11 @@ export default function SalesRoute() {
         {...(activeCashier?.permissions.includes(REMOTE_HISTORY_VIEW_PERMISSION)
           ? {
               onOpenRemoteHistory: () => push("/remote-history" as Href),
+            }
+          : {})}
+        {...(activeCashier?.permissions.includes(LOCAL_HISTORY_VIEW_PERMISSION)
+          ? {
+              onOpenLocalHistory: () => push("/local-history" as Href),
             }
           : {})}
         {...(activeCashier?.permissions.includes(
@@ -332,9 +389,64 @@ export default function SalesRoute() {
   );
 }
 
-function SalesSoundBridge({
-  presenter,
-}: Readonly<{ presenter: SalesPresenter }>) {
+function SalesBootstrapFailureScreen({
+  language,
+  onRetry,
+  stage,
+}: Readonly<{
+  language: string;
+  onRetry(): void;
+  stage: SalesBootstrapFailureStage;
+}>) {
+  const zh = language.toLowerCase().startsWith("zh");
+  const code = bootstrapFailureCode(stage);
+  return (
+    <SafeAreaView
+      accessibilityRole="alert"
+      style={bootstrapFailureStyles.page}
+      testID={`sales-bootstrap-failed-${stage}`}
+    >
+      <PosStatusStrip />
+      <View style={bootstrapFailureStyles.body}>
+        <View style={bootstrapFailureStyles.panel}>
+          <Text style={bootstrapFailureStyles.title}>
+            {zh ? "收银初始化未完成" : "Sales is not ready"}
+          </Text>
+          <Text style={bootstrapFailureStyles.message}>
+            {zh
+              ? "收银员会话仍有效。请重试；若问题持续，请联系支持人员并提供以下代码。"
+              : "Your cashier session is still active. Retry, or contact support with the code below if the problem continues."}
+          </Text>
+          <Text style={bootstrapFailureStyles.code}>{code}</Text>
+          <PosPressable
+            accessibilityLabel={zh ? "重试进入收银" : "Retry sales startup"}
+            accessibilityRole="button"
+            onPress={onRetry}
+            style={bootstrapFailureStyles.retry}
+            testID="sales-bootstrap-retry"
+          >
+            <Text style={bootstrapFailureStyles.retryLabel}>
+              {zh ? "重试" : "Retry"}
+            </Text>
+          </PosPressable>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function bootstrapFailureCode(stage: SalesBootstrapFailureStage): string {
+  switch (stage) {
+    case "payment-recovery":
+      return "PAYMENT_RECOVERY_CHECK_FAILED";
+    case "installment-recovery":
+      return "INSTALLMENT_RECOVERY_CHECK_FAILED";
+    case "presenter":
+      return "SALES_PRESENTER_INITIALIZATION_FAILED";
+  }
+}
+
+function SalesSoundBridge({ presenter }: Readonly<{ presenter: SalesPresenter }>) {
   const { play } = usePosSound();
   useEffect(
     () =>
@@ -362,6 +474,57 @@ function SalesSoundBridge({
   );
   return null;
 }
+
+const bootstrapFailureStyles = StyleSheet.create({
+  body: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+    padding: 32,
+    width: "100%",
+  },
+  code: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    marginBottom: 24,
+  },
+  message: {
+    color: posColors.mutedInk,
+    fontSize: 16,
+    lineHeight: 24,
+    marginBottom: 16,
+  },
+  page: {
+    backgroundColor: posColors.canvas,
+    flex: 1,
+  },
+  panel: {
+    backgroundColor: "#FFFFFF",
+    maxWidth: 520,
+    padding: 32,
+    width: "100%",
+  },
+  retry: {
+    alignItems: "center",
+    backgroundColor: posColors.blue,
+    justifyContent: "center",
+    minHeight: 48,
+    paddingHorizontal: 20,
+  },
+  retryLabel: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  title: {
+    color: posColors.ink,
+    fontSize: 24,
+    fontWeight: "900",
+    marginBottom: 12,
+  },
+});
 
 function mapSalesUtilityResult(
   result: PosAuthorizedFulfilmentActionResult,

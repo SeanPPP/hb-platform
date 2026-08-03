@@ -1,7 +1,11 @@
 import { Redirect, type Href, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, View } from "react-native";
+import {
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -31,7 +35,7 @@ type ReturnRouteFailure = "unavailable" | "creation";
  * provider 与恢复键全部留在 createPresenter 的生产闭包中。
  */
 export default function ReturnsRoute() {
-  const { replace } = useRouter();
+  const { dismissTo } = useRouter();
   const runtime = usePosRuntime();
   const { i18n } = useTranslation();
   const activeCashier = useCashierLoginStore((state) => state.activeCashier);
@@ -87,7 +91,7 @@ export default function ReturnsRoute() {
         if (cancelled) return;
         if (isViewPermissionDenied(error)) {
           // View 拒绝不是登录失效：保留 cashier，只退出退货工作区。
-          replace("/sales" as Href);
+          dismissTo("/sales" as Href);
           return;
         }
         setFailure("creation");
@@ -103,7 +107,7 @@ export default function ReturnsRoute() {
     activeCashier,
     gate,
     retryEpoch,
-    replace,
+    dismissTo,
     runtime.services,
   ]);
 
@@ -118,7 +122,7 @@ export default function ReturnsRoute() {
       <ReturnRouteError
         failure={failure}
         language={i18n.resolvedLanguage ?? i18n.language}
-        onBack={() => replace("/sales" as Href)}
+        onBack={() => dismissTo("/sales" as Href)}
         {...(failure === "creation"
           ? {
               onRetry: () => {
@@ -136,7 +140,7 @@ export default function ReturnsRoute() {
 
   return (
     <ReturnScreen
-      onBack={() => replace("/sales" as Href)}
+      onBack={() => dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );
@@ -210,7 +214,7 @@ function RouteButton({
   label: string;
   onPress(): void;
   secondary?: boolean;
-  sound?: "navigate" | "tap";
+  sound?: "tap" | "navigate";
   testID: string;
 }>) {
   return (

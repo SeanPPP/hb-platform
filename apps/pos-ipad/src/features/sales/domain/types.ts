@@ -44,7 +44,9 @@ export type AddCartItemInput = Readonly<{
   originalOrderDetailGuid?: string | null;
 }>;
 
-/** 领域层确认的加购结果；上层不得由 lineId 或布尔值反推是否发生了合并。 */
+/**
+ * 领域层唯一确认的加购结果。上层不得由 lineId 或布尔值反推是否发生了合并。
+ */
 export type CartAddDisposition = Readonly<{
   lineId: string;
   kind: "added" | "incremented";
@@ -87,6 +89,14 @@ export type PricingCartOptions = Readonly<{
 export type PricingCartResult = Readonly<{
   state: PricingCartStateSnapshot;
   cart: CartSnapshot;
+}>;
+
+export type MergeCompatibleCartLinesResult = Readonly<{
+  groups: readonly Readonly<{
+    keptLineId: string;
+    removedLineIds: readonly string[];
+  }>[];
+  removedLineCount: number;
 }>;
 
 export type CashSettlement = Readonly<{

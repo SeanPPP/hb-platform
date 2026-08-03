@@ -87,6 +87,11 @@ export interface PaymentAttemptRepositoryPort {
 export interface OutboxRepositoryPort {
   enqueue(message: OutboxMessageDraft): Promise<void>;
   leaseReady(limit: number, leaseSeconds: number): Promise<readonly OutboxLease[]>;
+  /**
+   * 返回 pending 重试或崩溃 lease 下一次可被租用的最早时间。
+   * 旧适配器可不实现；协调器仍保留启动、前台和联网恢复触发。
+   */
+  nextReadyAtIso?(): Promise<string | null>;
   markSucceeded(lease: OutboxLease): Promise<void>;
   releaseRetry(lease: OutboxLease, nextAttemptAtIso: string, errorCode: string): Promise<void>;
   markBlocked403(lease: OutboxLease, errorCode: string): Promise<void>;

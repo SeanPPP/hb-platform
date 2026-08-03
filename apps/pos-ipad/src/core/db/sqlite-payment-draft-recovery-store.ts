@@ -121,6 +121,7 @@ export type PaymentDraftRecovery =
 
 export type PaymentDraftPersistenceIds = Readonly<{
   createOrderGuid(): string;
+  createOrderLineGuid(): string;
   createAuditEventId(): string;
 }>;
 
@@ -335,7 +336,10 @@ implements PersistedOrderDraftPort {
         ],
       );
       for (const [index, line] of draft.cart.lines.entries()) {
-        const orderLineId = paymentOrderLineId(orderGuid, index + 1);
+        const orderLineId = strictUuid(
+          this.ids.createOrderLineGuid(),
+          "payment order line guid",
+        );
         const syncProvenance = normalizeLineSyncProvenance(
           line.syncProvenance,
         );
@@ -1808,16 +1812,6 @@ async function allocateLocalSequence(
   return positiveInteger(row?.next_sequence, "payment local sequence");
 }
 
-function paymentOrderLineId(
-  orderGuid: string,
-  lineSequence: number,
-): string {
-  return `payment:${orderGuid}:${positiveInteger(
-    lineSequence,
-    "payment line sequence",
-  )}`;
-}
-
 function normalizeIdentity(input: PaymentDraftIdentity): PaymentDraftIdentity {
   return Object.freeze({
     storeCode: strictText(input.storeCode, "payment store code", 64),
@@ -1950,6 +1944,18 @@ function safeAdd(left: number, right: number): number {
 
 function strictId(value: string, label: string): string {
   return strictText(value, label, 128);
+}
+
+function strictUuid(value: string, label: string): string {
+  const normalized = strictId(value, label);
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      normalized,
+    )
+  ) {
+    throw new TypeError(`${label} must be a UUID.`);
+  }
+  return normalized;
 }
 
 function strictText(value: string, label: string, max: number): string {

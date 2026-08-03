@@ -86,6 +86,94 @@ test("manual discount excludes a line until it is reset", () => {
   );
 });
 
+test("兼容行合并会重新计算系统促销且保持交易金额不变", () => {
+  const cart = new PricingCart({
+    asOfIso,
+    promotions: [promotion("PROMO-MERGE")],
+  });
+  const sameProduct = {
+    productCode: "SKU-001",
+    lookupCode: "SKU-001",
+  };
+  cart.addScannedItem(item("line-a", sameProduct));
+  cart.addScannedItem(
+    item("separator", {
+      productCode: "SKU-OTHER",
+      lookupCode: "SKU-OTHER",
+    }),
+  );
+  cart.addScannedItem(item("line-b", sameProduct));
+  const before = cart.snapshot();
+
+  assert.equal(before.discount.cents, 500);
+  assert.deepEqual(cart.mergeCompatibleLines(), {
+    groups: [
+      {
+        keptLineId: "line-a",
+        removedLineIds: ["line-b"],
+      },
+    ],
+    removedLineCount: 1,
+  });
+
+  const after = cart.snapshot();
+  assert.equal(after.lines[0]?.priceSource, "promotion");
+  assert.equal(after.lines[0]?.quantity, "2");
+  assert.equal(after.subtotal.cents, before.subtotal.cents);
+  assert.equal(after.discount.cents, before.discount.cents);
+  assert.equal(after.actualAmount.cents, before.actualAmount.cents);
+});
+
+test("非连续同商品若会改变受上限促销的分组则保持分离", () => {
+  const cart = new PricingCart({
+    asOfIso,
+    promotions: [
+      promotion("PROMO-CAPPED", {
+        maxApplicationsPerOrder: 1,
+        products: [
+          { productCode: "SKU-A", unitWeight: 1 },
+          { productCode: "SKU-B", unitWeight: 1 },
+        ],
+      }),
+    ],
+  });
+  const source = {
+    syncProvenance: { referenceCode: null, priceSource: 0 as const },
+  };
+  cart.addScannedItem(
+    item("line-a-1", {
+      ...source,
+      productCode: "SKU-A",
+      lookupCode: "SKU-A",
+      unitPrice: createAud(1_000),
+    }),
+  );
+  cart.addScannedItem(
+    item("line-b", {
+      ...source,
+      productCode: "SKU-B",
+      lookupCode: "SKU-B",
+      unitPrice: createAud(2_000),
+    }),
+  );
+  cart.addScannedItem(
+    item("line-a-2", {
+      ...source,
+      productCode: "SKU-A",
+      lookupCode: "SKU-A",
+      unitPrice: createAud(1_000),
+    }),
+  );
+  const before = cart.snapshot();
+
+  assert.equal(cart.hasMergeCompatibleLines(), false);
+  assert.deepEqual(cart.mergeCompatibleLines(), {
+    groups: [],
+    removedLineCount: 0,
+  });
+  assert.deepEqual(cart.snapshot(), before);
+});
+
 test("exclusive priority and ID tie-break are deterministic and respect effective time", () => {
   const rules = [
     promotion("PROMO-NORMAL", {

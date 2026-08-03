@@ -25,8 +25,11 @@ import {
 import { useCashierLoginStore } from "./cashier-login-store";
 
 import { HbposApiError } from "@/core/api/hbpos-api";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
@@ -275,7 +278,12 @@ export function CashierLoginScreen({
           </View>
         </View>
 
-        <View style={styles.formPanel}>
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.formPanelContent}
+          showsVerticalScrollIndicator={false}
+          style={styles.formPanel}
+          testID="cashier-login-keyboard-scroll"
+        >
           <View style={styles.formHeader}>
             <MaterialCommunityIcons
               color={posColors.orange}
@@ -288,7 +296,7 @@ export function CashierLoginScreen({
             </View>
           </View>
           <View style={styles.inputRow}>
-            <PosTextInput
+            <PosKeyboardAwareTextInput
               ref={barcodeRef}
               accessibilityLabel={text.inputLabel}
               autoFocus
@@ -369,7 +377,7 @@ export function CashierLoginScreen({
             />
             <Text style={styles.offlineText}>{text.offline}</Text>
           </View>
-        </View>
+        </PosKeyboardAwareScrollView>
       </View>
     </SafeAreaView>
   );
@@ -482,9 +490,9 @@ const styles = StyleSheet.create({
     flex: 0.88,
     maxWidth: 560,
     minHeight: 430,
-    padding: 48,
     width: "100%",
   },
+  formPanelContent: { flexGrow: 1, padding: 48 },
   formHeader: {
     alignItems: "center",
     flexDirection: "row",

@@ -17,6 +17,7 @@ const registeredPageCopySurfaces = {
   "app/held-orders.tsx": "src/features/held-orders/held-orders-copy.ts",
   "app/index.tsx": "src/ui/screens/bootstrap-screen.tsx",
   "app/installments.tsx": "src/features/installments/installment-copy.ts",
+  "app/local-history.tsx": "src/features/local-history/local-history-copy.ts",
   "app/login.tsx": "src/features/cashier-login/cashier-login-screen.tsx",
   "app/payment.tsx": "src/features/payments/ui/payment-copy.ts",
   "app/registration.tsx": "src/features/device-registration/device-registration-screen.tsx",

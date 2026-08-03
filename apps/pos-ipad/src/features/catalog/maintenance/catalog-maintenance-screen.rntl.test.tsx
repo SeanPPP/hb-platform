@@ -261,7 +261,7 @@ describe("CatalogMaintenanceScreen", () => {
     expect(screen.getByText("2026.07.29.1")).toBeTruthy();
     expect(
       screen.getByText(
-        "The new catalog is activated, but the runtime catalog reload did not complete. Do not continue checkout; retry refresh or contact support.",
+        "The new catalog product data is active and checkout can continue. The last verified promotion rules remain in use; retry refresh later or contact support.",
       ),
     ).toBeTruthy();
     expect(

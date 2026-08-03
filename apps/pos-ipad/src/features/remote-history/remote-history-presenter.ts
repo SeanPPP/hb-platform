@@ -117,7 +117,8 @@ export class RemoteHistoryPresenter {
     const filters = toFilters(
       {
         ...day,
-        deviceCode: this.currentDeviceCode,
+        // 默认查看同分店全部终端；可信门店仍由 presenter 和 API 适配器固定。
+        deviceCode: null,
         keyword: null,
       },
       this.trustedStoreCode,

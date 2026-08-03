@@ -587,6 +587,21 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
 class SqliteOutboxRepository implements OutboxRepositoryPort {
   public constructor(private readonly db: SqliteConnectionPort, private readonly nowIso: () => string, private readonly createLeaseId: () => string) {}
   public enqueue(message: OutboxMessageDraft): Promise<void> { const now = this.nowIso(); return this.db.run("INSERT INTO outbox_messages (message_id,aggregate_id,kind,payload_json,state,attempt_count,next_attempt_at_iso,lease_id,lease_expires_at_iso,last_error_code,created_at_iso,updated_at_iso) VALUES (?,?,?,?,'pending',0,?,NULL,NULL,NULL,?,?)", [message.messageId, message.aggregateId, message.kind, message.payloadJson, message.nextAttemptAtIso, now, now]).then(() => undefined); }
+  public async nextReadyAtIso(): Promise<string | null> {
+    const row = await this.db.getFirst<{ ready_at_iso: unknown }>(
+      `SELECT MIN(
+         CASE
+           WHEN state = 'leased'
+             AND lease_expires_at_iso > next_attempt_at_iso
+             THEN lease_expires_at_iso
+           ELSE next_attempt_at_iso
+         END
+       ) AS ready_at_iso
+       FROM outbox_messages
+       WHERE state IN ('pending', 'leased')`,
+    );
+    return nullable(row?.ready_at_iso);
+  }
   public async leaseReady(limit: number, leaseSeconds: number): Promise<readonly OutboxLease[]> {
     const now = this.nowIso();
     const expiry = new Date(Date.parse(now) + leaseSeconds * 1000).toISOString();

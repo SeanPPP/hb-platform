@@ -10,6 +10,7 @@ import {
   type AddCartItemInput,
   type AddOpenItemInput,
   type CartAddDisposition,
+  type MergeCompatibleCartLinesResult,
   type RefreshCatalogItemInput,
 } from "@/features/sales/domain";
 
@@ -148,6 +149,36 @@ export class ActivePricingCartSession {
     const disposition = this.cart.addItemWithDisposition(input);
     this.commitCurrentCartMutation();
     return disposition;
+  }
+
+  public addScannedItem(input: AddCartItemInput): string {
+    return this.addScannedItemWithDisposition(input).lineId;
+  }
+
+  public addScannedItemWithDisposition(
+    input: AddCartItemInput,
+  ): CartAddDisposition {
+    this.assertIdle();
+    this.assertTerminalRecoveryResolved();
+    this.assertCanAdvance();
+    const disposition = this.cart.addScannedItemWithDisposition(input);
+    this.commitCurrentCartMutation();
+    return disposition;
+  }
+
+  public hasMergeCompatibleLines(): boolean {
+    return this.cart.hasMergeCompatibleLines();
+  }
+
+  public mergeCompatibleLines(): MergeCompatibleCartLinesResult {
+    this.assertIdle();
+    this.assertTerminalRecoveryResolved();
+    this.assertCanAdvance();
+    const result = this.cart.mergeCompatibleLines();
+    if (result.removedLineCount > 0) {
+      this.commitCurrentCartMutation();
+    }
+    return result;
   }
 
   public addOpenItem(input: AddOpenItemInput): string {

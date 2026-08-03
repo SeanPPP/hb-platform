@@ -11,15 +11,21 @@ import type {
 } from "@/core/db/pos-settings-repository";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import type { ActivePricingCartSession } from "@/features/sales/runtime";
-import type {
-  SettingsAppUpdateSnapshot,
-  SettingsCatalogSnapshot,
-  SettingsPaymentSettingsInput,
-  SettingsPendingDataSnapshot,
-  SettingsScannerTestResult,
-  SettingsSnapshot,
+import {
+  SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN,
+  type SettingsAppUpdateSnapshot,
+  type SettingsCatalogSnapshot,
+  type SettingsCashDrawerTestResult,
+  type SettingsClearSavedPrinterResult,
+  type SettingsControlPort,
+  type SettingsPaymentSettingsInput,
+  type SettingsPendingDataSnapshot,
+  type SettingsScannerTestResult,
+  type SettingsSquareSetupControlPort,
+  type SettingsSnapshot,
 } from "@/features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "@/features/settings/settings-runtime";
+import type { SettingsSquareSetupPort } from "@/features/settings/settings-square-setup";
 
 type TerminalScope = Readonly<{
   storeCode: string;
@@ -38,6 +44,25 @@ type PaymentAvailability = Readonly<{
   blockerCode: string | null;
 }>;
 
+type ControlledCashDrawerActionResult = Readonly<{
+  state:
+    | "Printed"
+    | "Failed"
+    | "Ambiguous"
+    | "Completed"
+    | "Unknown"
+    | "recovery-required"
+    | "not-retryable"
+    | "not-found"
+    | "denied";
+  errorCode: string | null;
+}>;
+
+type LeaseAwareClearSavedPrinter = (
+  signal: AbortSignal,
+  assertActive?: () => void,
+) => Promise<SettingsClearSavedPrinterResult>;
+
 export type ProductionSettingsCompositionInput = Readonly<{
   currentCashier: CurrentCashierSession;
   terminal: TerminalScope;
@@ -49,6 +74,7 @@ export type ProductionSettingsCompositionInput = Readonly<{
   appVersion: string;
   updateChannel: string;
   createId(): string;
+  squareSetup?: SettingsSquareSetupPort | undefined;
   readDevicePresentation(): Promise<SettingsDevicePresentation>;
   catalog: Readonly<{
     getActiveMetadata(): Promise<SettingsCatalogSnapshot | null>;
@@ -75,6 +101,9 @@ export type ProductionSettingsCompositionInput = Readonly<{
     ): Promise<void>;
     save(input: SettingsPaymentSettingsInput): Promise<void>;
   }>;
+  paymentConfigurationTransition: Readonly<{
+    run<T>(operation: () => Promise<T>): Promise<T>;
+  }>;
   pendingData: Readonly<{
     read(): Promise<Omit<SettingsPendingDataSnapshot, "hasActiveCart">>;
   }>;
@@ -99,6 +128,13 @@ export type ProductionSettingsCompositionInput = Readonly<{
     ): Promise<void>;
   }>;
   printer: RuntimePrinterAdapter;
+  /**
+   * 必须注入正式 fulfilment 手动开箱动作；该动作负责 CashDrawer.Open 权限、
+   * cashier lease、持久事件和审计，设置组合禁止直接调用 printer.open。
+   */
+  cashDrawerTest: Readonly<{
+    execute(): Promise<ControlledCashDrawerActionResult>;
+  }>;
   scanner: Readonly<{
     status: "ready" | "unavailable";
     test(signal: AbortSignal): Promise<SettingsScannerTestResult>;
@@ -120,10 +156,11 @@ export function createProductionSettingsComposition(
   input: ProductionSettingsCompositionInput,
 ): SettingsRuntimeFactory {
   const terminal = normalizeTerminal(input.terminal);
+  const squareSetup = input.squareSetup;
   let externalDisplayEnabled = input.externalDisplay !== undefined;
   let displayRevision = 0;
 
-  const control = new ProductionSettingsControl({
+  const productionControl = new ProductionSettingsControl({
     readSnapshot: async (signal) => {
       throwIfAborted(signal);
       const [device, catalog, printer, printerStatus, displayStatus] =
@@ -215,6 +252,7 @@ export function createProductionSettingsComposition(
       save: (configuration) =>
         input.paymentConfiguration.save(configuration),
     },
+    paymentConfigurationTransition: input.paymentConfigurationTransition,
     runtimeReload: input.runtimeReload,
     printer: {
       saveSettings: async (settings, signal) => {
@@ -232,6 +270,9 @@ export function createProductionSettingsComposition(
               id: device.id,
               name: device.name,
               transport: "bluetooth-le",
+              preferred:
+                device.name.trim().toLowerCase() ===
+                "printer001",
             }),
           ),
         );
@@ -244,7 +285,7 @@ export function createProductionSettingsComposition(
       test: async (signal) => {
         throwIfAborted(signal);
         const settings = await input.receiptSettings.get();
-        if (!settings.printEnabled || !settings.peripheralId) {
+        if (!settings.peripheralId) {
           throw new Error("SETTINGS_PRINTER_NOT_CONFIGURED");
         }
         await input.printer.connect(settings.peripheralId);
@@ -254,6 +295,12 @@ export function createProductionSettingsComposition(
           printerTestDocument(),
         );
         throwIfAborted(signal);
+        if (result.status === "ambiguous") {
+          throw Object.assign(
+            new Error(SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN),
+            { code: SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN },
+          );
+        }
         if (result.status !== "printed") {
           throw Object.assign(
             new Error("SETTINGS_PRINTER_TEST_NOT_CONFIRMED"),
@@ -312,6 +359,66 @@ export function createProductionSettingsComposition(
     apiConfiguration: input.apiConfiguration,
     device: input.device,
   });
+  const control: SettingsControlPort = Object.assign(productionControl, {
+    ...(squareSetup
+      ? {
+          squareSetup: Object.freeze({
+            getSquareTokenStatus:
+              squareSetup.getSquareTokenStatus.bind(squareSetup),
+            listSquareLocations:
+              squareSetup.listSquareLocations.bind(squareSetup),
+            listSquareDevices:
+              squareSetup.listSquareDevices.bind(squareSetup),
+            listSquareDeviceCodes:
+              squareSetup.listSquareDeviceCodes.bind(squareSetup),
+            createSquareDeviceCode: async (
+              environment,
+              locationId,
+              name,
+              signal,
+            ) => {
+              throwIfAborted(signal);
+              const idempotencyKey = requiredId(input.createId());
+              return squareSetup.createSquareDeviceCode(
+                {
+                  environment,
+                  idempotencyKey,
+                  locationId,
+                  name,
+                },
+                signal,
+              );
+            },
+            getSquareDeviceCode:
+              squareSetup.getSquareDeviceCode.bind(squareSetup),
+          } satisfies SettingsSquareSetupControlPort),
+        }
+      : {}),
+    testCashDrawer: async (
+      signal: AbortSignal,
+    ): Promise<SettingsCashDrawerTestResult> => {
+      throwIfAborted(signal);
+      // 正式动作自行连接持久设置中的 peripheralId，并负责权限、lease 与审计。
+      const result = await input.cashDrawerTest.execute();
+      // 硬件动作可能已完成；此处不因随后 abort 改写终态或诱导用户重试。
+      return mapCashDrawerTestResult(result);
+    },
+    clearSavedPrinter: (async (
+      signal: AbortSignal,
+      assertActive?: () => void,
+    ): Promise<SettingsClearSavedPrinterResult> => {
+      throwIfAborted(signal);
+      const settings = await input.receiptSettings.get();
+      throwIfAborted(signal);
+      assertActive?.();
+      await input.receiptSettings.save({
+        ...settings,
+        peripheralId: null,
+      });
+      // 只清除后续连接目标；现有连接由 fulfilment hardware tail 串行管理。
+      return { status: "completed", errorCode: null };
+    }) satisfies LeaseAwareClearSavedPrinter,
+  });
 
   return createProductionSettingsRuntime({
     createSessionLease: () => input.currentCashier.createLease(),
@@ -356,6 +463,26 @@ function printerTestDocument(): Uint8Array {
     ...new TextEncoder().encode("PRINT / CUT / DRAWER SAFE TEST\n\n"),
     0x1d, 0x56, 0x00,
   ]);
+}
+
+function mapCashDrawerTestResult(
+  result: ControlledCashDrawerActionResult,
+): SettingsCashDrawerTestResult {
+  switch (result.state) {
+    case "Completed":
+      return { status: "completed", errorCode: result.errorCode };
+    case "Unknown":
+    case "Ambiguous":
+    case "recovery-required":
+      // 脉冲可能已经发出或终态未能耐久化，禁止把它降级成可重试失败。
+      return { status: "unknown", errorCode: result.errorCode };
+    case "Printed":
+    case "Failed":
+    case "not-retryable":
+    case "not-found":
+    case "denied":
+      return { status: "failed", errorCode: result.errorCode };
+  }
 }
 
 function requiredText(value: string, label: string): string {

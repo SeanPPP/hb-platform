@@ -1580,6 +1580,54 @@
         }
       }
     },
+    "/api/v1/linkly/cloud-backend/settlements": {
+      "post": {
+        "tags": [
+          "Linkly"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendSettlementRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendSettlementRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendSettlementRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/linkly/cloud-backend/terminal": {
       "put": {
         "tags": [
@@ -1667,6 +1715,44 @@
       }
     },
     "/api/v1/linkly/cloud-backend/transactions/resumable": {
+      "get": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "environment",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/cloud-backend/settlements/resumable": {
       "get": {
         "tags": [
           "Linkly"
@@ -1864,6 +1950,52 @@
         }
       }
     },
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/status": {
+      "get": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/linkly/cloud-backend/transactions/{sessionId}/acknowledge": {
       "post": {
         "tags": [
@@ -1881,6 +2013,64 @@
           {
             "name": "environment",
             "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendAcknowledgeRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendAcknowledgeRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendAcknowledgeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/acknowledge": {
+      "post": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -2103,6 +2293,64 @@
         }
       }
     },
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/receipt/printed": {
+      "post": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendMarkReceiptPrintedRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendMarkReceiptPrintedRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendMarkReceiptPrintedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendSessionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/linkly/cloud-notifications/{environment}/{sessionId}/{type}": {
       "post": {
         "tags": [
@@ -2164,6 +2412,54 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StringApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/settlements/sync": {
+      "post": {
+        "tags": [
+          "LinklySettlements"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklySettlementSyncRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklySettlementSyncRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklySettlementSyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklySettlementSyncResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklySettlementSyncResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklySettlementSyncResponse"
                 }
               }
             }
@@ -6261,6 +6557,25 @@
             "type": "boolean",
             "nullable": true
           },
+          "operationType": {
+            "type": "string",
+            "nullable": true
+          },
+          "operationSuccess": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "settlementData": {
+            "type": "string",
+            "nullable": true
+          },
+          "settlementReceiptTexts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
           "cardTransaction": {
             "$ref": "#/components/schemas/LinklyCloudBackendCardTransactionDto"
           }
@@ -6281,6 +6596,16 @@
             "nullable": true
           },
           "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudBackendSettlementRequest": {
+        "type": "object",
+        "properties": {
+          "environment": {
             "type": "string",
             "nullable": true
           }
@@ -6566,6 +6891,117 @@
           "message": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklySettlementSyncRequest": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "settlementGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "deviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "businessDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "connectionMode": {
+            "type": "string",
+            "nullable": true
+          },
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerSessionId": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "responseCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "responseText": {
+            "type": "string",
+            "nullable": true
+          },
+          "settlementData": {
+            "type": "string",
+            "nullable": true
+          },
+          "receiptTexts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "firstPrintedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastPrintedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "printCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lastPrintError": {
+            "type": "string",
+            "nullable": true
+          },
+          "clientRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "providerSubmissionState": {
+            "$ref": "#/components/schemas/ProviderSubmissionState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklySettlementSyncResponse": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "alreadySynced": {
+            "type": "boolean"
+          },
+          "acceptedRevision": {
+            "type": "integer",
+            "format": "int64"
           }
         },
         "additionalProperties": false
@@ -7949,6 +8385,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProviderSubmissionState": {
+        "enum": [
+          "NotSubmitted",
+          "Submitted",
+          "Unknown"
+        ],
+        "type": "string"
       },
       "SellableItemDto": {
         "type": "object",

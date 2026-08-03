@@ -11,7 +11,6 @@ import {
 } from "react-native";
 
 import { posColors } from "../theme";
-
 import { PosPressable } from "./pos-pressable";
 
 export type PosDatePickerLocale = "en" | "zh";
@@ -128,12 +127,12 @@ export function PosDatePickerField({
         accessibilityState={{ disabled }}
         disabled={disabled}
         onPress={openPicker}
-        sound="navigate"
         style={({ pressed }) => [
           styles.trigger,
           disabled && styles.triggerDisabled,
           pressed && !disabled && styles.pressed,
         ]}
+        sound="navigate"
         testID={testID}
       >
         <Text
@@ -184,12 +183,12 @@ export function PosDatePickerField({
                     accessibilityLabel={text.clear}
                     accessibilityRole="button"
                     onPress={clear}
-                    sound="danger"
                     style={({ pressed }) => [
                       styles.button,
                       styles.clearButton,
                       pressed && styles.pressed,
                     ]}
+                    sound="danger"
                     testID={`${testID}-clear`}
                   >
                     <Text style={styles.clearLabel}>{text.clear}</Text>
@@ -199,12 +198,12 @@ export function PosDatePickerField({
                   accessibilityLabel={text.cancel}
                   accessibilityRole="button"
                   onPress={closePicker}
-                  sound="tap"
                   style={({ pressed }) => [
                     styles.button,
                     styles.cancelButton,
                     pressed && styles.pressed,
                   ]}
+                  sound="tap"
                   testID={`${testID}-cancel`}
                 >
                   <Text style={styles.cancelLabel}>{text.cancel}</Text>
@@ -213,12 +212,12 @@ export function PosDatePickerField({
                   accessibilityLabel={text.confirm}
                   accessibilityRole="button"
                   onPress={confirm}
-                  sound="navigate"
                   style={({ pressed }) => [
                     styles.button,
                     styles.confirmButton,
                     pressed && styles.pressed,
                   ]}
+                  sound="navigate"
                   testID={`${testID}-confirm`}
                 >
                   <Text style={styles.confirmLabel}>{text.confirm}</Text>

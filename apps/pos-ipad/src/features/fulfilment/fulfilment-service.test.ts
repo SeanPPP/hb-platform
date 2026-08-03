@@ -6,6 +6,7 @@ import {
   type FulfilmentAuthorizationContext,
   type FulfilmentAuditEvent,
   type FulfilmentInitialAuthorization,
+  type FulfilmentPrintJob,
   type FulfilmentStore,
   type PreparedManualDrawerOpen,
   type PreparedLastReceiptReprint,
@@ -21,9 +22,22 @@ type PreparedReprintHasRequiredOrderGuid =
   PreparedLastReceiptReprint extends Readonly<{ orderGuid: string }> ? true : false;
 const preparedReprintHasRequiredOrderGuid: PreparedReprintHasRequiredOrderGuid = true;
 
+type MemoryReprintSource = NonNullable<FulfilmentPrintJob["reprintSource"]>;
+type MemoryPrintJob = {
+  jobId: string;
+  orderGuid: string;
+  printerId: string;
+  isReprint: boolean;
+  bytes: Uint8Array;
+  state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous";
+  retryCount: number;
+  authorization?: FulfilmentAuthorizationContext;
+  reprintSource?: MemoryReprintSource;
+};
+
 class MemoryStore implements FulfilmentStore {
-  public readonly printJobs = new Map<string, { jobId: string; orderGuid: string; printerId: string; isReprint: boolean; bytes: Uint8Array; state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous"; retryCount: number; authorization?: FulfilmentAuthorizationContext }>();
-  public readonly drawerEvents = new Map<string, { eventId: string; orderGuid: string | null; printerId: string; state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown"; reason: string; retryCount: number }>();
+  public readonly printJobs = new Map<string, MemoryPrintJob>();
+  public readonly drawerEvents = new Map<string, { eventId: string; orderGuid: string | null; printerId: string; state: "Required" | "Requested" | "Completed" | "Failed" | "Unknown"; reason: string; retryCount: number; authorization?: FulfilmentAuthorizationContext }>();
   public readonly reprintInputs: PreparedLastReceiptReprint[] = [];
   public readonly audits: FulfilmentAuditEvent[] = [];
   public readonly printFinishCalls: {
@@ -42,10 +56,15 @@ class MemoryStore implements FulfilmentStore {
   public drawerFinishSucceeds = true;
   public printFinishThrows = false;
   public drawerFinishThrows = false;
+  public claimPrintHold: Promise<void> | null = null;
 
   public async listQueuedPrintJobs() { return [...this.printJobs.values()].filter((job) => job.state === "Queued"); }
   public async listRequiredDrawerEvents() { return [...this.drawerEvents.values()].filter((event) => event.state === "Required"); }
-  public async claimQueuedPrintJob(jobId: string) { return this.claimPrint(jobId, "Queued", false); }
+  public async claimQueuedPrintJob(jobId: string) {
+    const claimed = await this.claimPrint(jobId, "Queued", false);
+    await this.claimPrintHold;
+    return claimed;
+  }
   public async beginManualPrintRetry(jobId: string) { return this.claimPrint(jobId, "Failed", true); }
   public async finishPrintJob(
     jobId: string,
@@ -88,6 +107,7 @@ class MemoryStore implements FulfilmentStore {
       state: "Requested" as const,
       reason: "MANUAL",
       retryCount: 0,
+      authorization: authorization.context,
     };
     this.drawerEvents.set(input.eventId, event);
     this.audits.push(authorization.audit);
@@ -113,7 +133,8 @@ class MemoryStore implements FulfilmentStore {
     authorization?: FulfilmentInitialAuthorization,
   ) {
     this.reprintInputs.push(input);
-    const copy = {
+    const reprintSource = memoryReprintSource(authorization);
+    const copy: MemoryPrintJob = {
       jobId: authorization?.context.actionId ?? `reprint-${input.orderGuid}`,
       orderGuid: input.orderGuid,
       printerId: input.printerId,
@@ -124,6 +145,7 @@ class MemoryStore implements FulfilmentStore {
       ...(authorization
         ? { authorization: authorization.context }
         : {}),
+      ...(reprintSource ? { reprintSource } : {}),
     };
     this.printJobs.set(copy.jobId, copy);
     if (authorization) this.audits.push(authorization.audit);
@@ -146,6 +168,21 @@ class MemoryStore implements FulfilmentStore {
   }
 }
 
+function memoryReprintSource(
+  authorization: FulfilmentInitialAuthorization | undefined,
+): MemoryReprintSource | undefined {
+  if (!authorization) return undefined;
+  const source = authorization.audit.payload.source;
+  if (
+    source === "payment-success" ||
+    source === "local-history" ||
+    source === "remote-history"
+  ) {
+    return source;
+  }
+  return "last-receipt";
+}
+
 class FakePrinter {
   public calls: string[] = [];
   public connectCalls: string[] = [];
@@ -153,11 +190,12 @@ class FakePrinter {
   public active = 0;
   public maxActive = 0;
   public hold: Promise<void> | null = null;
+  public connectHold: Promise<void> | null = null;
   public connectError: Error | null = null;
   public printError: Error | null = null;
   public result: { status: "printed" | "failed" | "ambiguous"; errorCode: string | null } = { status: "printed", errorCode: null };
   public constructor(private readonly trace: string[]) {}
-  public async connect(printerId: string) { this.connectCalls.push(printerId); this.trace.push(`connect:${printerId}`); if (this.connectError) throw this.connectError; }
+  public async connect(printerId: string) { this.connectCalls.push(printerId); this.trace.push(`connect:${printerId}`); await this.connectHold; if (this.connectError) throw this.connectError; }
   public async print(jobId: string, bytes: Uint8Array) { this.calls.push(jobId); this.trace.push(`print:${jobId}`); this.byteCalls.push(bytes); this.active += 1; this.maxActive = Math.max(this.maxActive, this.active); try { await this.hold; if (this.printError) throw this.printError; return this.result; } finally { this.active -= 1; } }
 }
 class FakeDrawer {
@@ -224,6 +262,16 @@ const drawerAuthorization: FulfilmentAuthorizationContext = {
   requestingCashierName: "Cashier One",
   requestingUserGuid: "user-1",
   authorizingCashierId: "supervisor-1",
+};
+
+const historyAuthorization: FulfilmentAuthorizationContext = {
+  actionId: "action-history-reprint",
+  permissionCode: "Permissions.PosTerminal.History.Reprint",
+  authorizationMode: "current-cashier",
+  requestingCashierId: "cashier-1",
+  requestingCashierName: "Cashier One",
+  requestingUserGuid: "user-1",
+  authorizingCashierId: null,
 };
 
 const activeLease = () => undefined;
@@ -376,6 +424,7 @@ test("最后小票重打把授权审计与首个任务原子创建，并让终�
     audit.map((event) => ({
       status: event.payload.status,
       outcome: event.payload.outcome,
+      reason: event.payload.reason,
       correlationId: event.correlationId,
       requestingCashierId: event.payload.requestingCashierId,
       requestingCashierName: event.payload.requestingCashierName,
@@ -388,6 +437,7 @@ test("最后小票重打把授权审计与首个任务原子创建，并让终�
       {
         status: "Authorized",
         outcome: "Succeeded",
+        reason: "last-receipt",
         correlationId: reprintAuthorization.actionId,
         requestingCashierId: "cashier-1",
         requestingCashierName: "Cashier One",
@@ -399,6 +449,7 @@ test("最后小票重打把授权审计与首个任务原子创建，并让终�
       {
         status: "Printed",
         outcome: "Succeeded",
+        reason: "last-receipt",
         correlationId: reprintAuthorization.actionId,
         requestingCashierId: "cashier-1",
         requestingCashierName: "Cashier One",
@@ -431,6 +482,7 @@ test("手动开箱把授权审计与 Requested 事件原子创建，并与终态
     state: "Completed",
     reason: "MANUAL",
     retryCount: 0,
+    authorization: drawerAuthorization,
   });
   assert.deepEqual(
     audit.map((event) => ({
@@ -551,6 +603,42 @@ test("手动开箱同 actionId 幂等；Completed、Unknown 和未收口 Request
     "recovery-required",
   );
   assert.deepEqual(requested.drawer.calls, ["action-open-drawer"]);
+});
+
+test("首次手动开箱连接后租约失效时保留 Requested，禁止发钱箱脉冲或自动重放", async () => {
+  const { store, printer, drawer, audit, service } = setup({
+    prepareManualDrawerOpen: async () => ({ printerId: "XP-MANUAL-LEASE" }),
+  });
+  let releaseConnect!: () => void;
+  printer.connectHold = new Promise<void>((resolve) => {
+    releaseConnect = resolve;
+  });
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error("CURRENT_CASHIER_REQUIRED");
+  };
+
+  const opening = service.openDrawerManually(
+    drawerAuthorization,
+    assertActive,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(printer.connectCalls, ["XP-MANUAL-LEASE"]);
+  active = false;
+  releaseConnect();
+
+  assert.deepEqual(await opening, {
+    state: "recovery-required",
+    errorCode: "DURABILITY_CONFLICT",
+  });
+  assert.deepEqual(drawer.calls, []);
+  assert.equal(
+    store.drawerEvents.get(drawerAuthorization.actionId)?.state,
+    "Requested",
+  );
+  assert.equal(audit.length, 1, "不能为未发出的脉冲伪造终态审计");
+  await service.drainAutomaticQueue();
+  assert.deepEqual(drawer.calls, []);
 });
 
 test("手动开箱同 actionId 改绑打印机必须 fail-closed，不能向第二台外设发脉冲", async () => {
@@ -705,7 +793,132 @@ test("没有任何历史 Printed job 时仍可为调用方指定订单创建重�
   assert.deepEqual(printer.connectCalls, ["XP-CASH"]);
 });
 
-test("历史页重打只把所选 orderGuid 交给账本准备器，并沿用耐久打印状态机", async () => {
+test("支付成功页手动重打只使用精确 orderGuid，并以 PrintLast 授权写入耐久审计", async () => {
+  const requestedOrderGuids: string[] = [];
+  const prepared = {
+    orderGuid: "ORDER-PAYMENT-SUCCESS-1",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-PAYMENT-SUCCESS",
+  };
+  const { store, printer, audit, service } = setup({
+    async prepareReceiptReprint(orderGuid) {
+      requestedOrderGuids.push(orderGuid);
+      return orderGuid === prepared.orderGuid ? prepared : null;
+    },
+  });
+
+  const missing = await service.reprintCurrentReceipt(
+    "ORDER-PAYMENT-SUCCESS-UNKNOWN",
+    reprintAuthorization,
+    activeLease,
+  );
+  const result = await service.reprintCurrentReceipt(
+    prepared.orderGuid,
+    reprintAuthorization,
+    activeLease,
+  );
+
+  assert.deepEqual(missing, { state: "not-found", errorCode: null });
+  assert.deepEqual(requestedOrderGuids, [
+    "ORDER-PAYMENT-SUCCESS-UNKNOWN",
+    prepared.orderGuid,
+  ]);
+  assert.deepEqual(result, { state: "Printed", errorCode: null });
+  assert.equal(
+    store.printJobs.get(reprintAuthorization.actionId)?.orderGuid,
+    prepared.orderGuid,
+  );
+  assert.deepEqual(printer.calls, [reprintAuthorization.actionId]);
+  assert.deepEqual(
+    audit.map((event) => ({
+      action: event.payload.action,
+      source: event.payload.source,
+      reason: event.payload.reason,
+      permissionCode: event.payload.permissionCode,
+    })),
+    [
+      {
+        action: "reprint-current-receipt",
+        source: "payment-success",
+        reason: "payment-success",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+      },
+      {
+        action: "reprint-current-receipt",
+        source: "payment-success",
+        reason: "payment-success",
+        permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+      },
+    ],
+  );
+});
+
+test("支付成功页重打结果不确定时停在 Ambiguous，自动队列绝不重放", async () => {
+  const prepared = {
+    orderGuid: "ORDER-PAYMENT-AMBIGUOUS",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-PAYMENT-AMBIGUOUS",
+  };
+  const { store, printer, service } = setup({
+    async prepareReceiptReprint() {
+      return prepared;
+    },
+  });
+  printer.result = {
+    status: "ambiguous",
+    errorCode: "BLE_WRITE_UNKNOWN",
+  };
+
+  const result = await service.reprintCurrentReceipt(
+    prepared.orderGuid,
+    reprintAuthorization,
+    activeLease,
+  );
+  await service.drainAutomaticQueue();
+
+  assert.deepEqual(result, {
+    state: "Ambiguous",
+    errorCode: "BLE_WRITE_UNKNOWN",
+  });
+  assert.equal(
+    store.printJobs.get(reprintAuthorization.actionId)?.state,
+    "Ambiguous",
+  );
+  assert.deepEqual(printer.calls, [reprintAuthorization.actionId]);
+});
+
+test("支付成功页 Failed 人工重试沿用 payment-success 语义记录终态审计", async () => {
+  const { store, audit, service } = setup();
+  store.printJobs.set("payment-success-failed-retry", {
+    jobId: "payment-success-failed-retry",
+    orderGuid: "ORDER-PAYMENT-FAILED-RETRY",
+    printerId: "XP-PAYMENT-FAILED-RETRY",
+    isReprint: true,
+    bytes: Uint8Array.of(29, 33, 82),
+    state: "Failed",
+    retryCount: 0,
+    authorization: reprintAuthorization,
+    reprintSource: "payment-success",
+  });
+
+  const result = await service.retryFailedPrint("payment-success-failed-retry");
+
+  assert.deepEqual(result, { state: "Printed", errorCode: null });
+  assert.deepEqual(
+    audit.map((event) => ({
+      action: event.payload.action,
+      source: event.payload.source,
+      reason: event.payload.reason,
+    })),
+    [{
+      action: "reprint-current-receipt",
+      source: "payment-success",
+      reason: "payment-success",
+    }],
+  );
+});
+
+test("远程历史重打只把所选 orderGuid 交给账本准备器，并记录准确来源", async () => {
   const requestedOrderGuids: string[] = [];
   const prepared = {
     orderGuid: "ORDER-HISTORY-1",
@@ -719,22 +932,265 @@ test("历史页重打只把所选 orderGuid 交给账本准备器，并沿用耐
     },
   });
 
-  const result = await service.reprintReceipt("ORDER-HISTORY-1");
+  const result = await service.reprintReceipt(
+    "ORDER-HISTORY-1",
+    "remote-history",
+    historyAuthorization,
+    activeLease,
+  );
 
   assert.deepEqual(requestedOrderGuids, ["ORDER-HISTORY-1"]);
   assert.equal(result.state, "Printed");
   assert.equal(
-    store.printJobs.get("reprint-ORDER-HISTORY-1")?.orderGuid,
+    store.printJobs.get(historyAuthorization.actionId)?.orderGuid,
     "ORDER-HISTORY-1",
   );
   assert.deepEqual(printer.connectCalls, ["XP-HISTORY"]);
   assert.deepEqual(
     audit.map((event) => ({
+      status: event.payload.status,
       action: event.payload.action,
       source: event.payload.source,
+      reason: event.payload.reason,
+      requestingCashierId: event.payload.requestingCashierId,
+      requestingCashierName: event.payload.requestingCashierName,
+      requestingUserGuid: event.payload.requestingUserGuid,
     })),
-    [{ action: "reprint-history-receipt", source: "remote-history" }],
+    [
+      {
+        status: "Authorized",
+        action: "reprint-history-receipt",
+        source: "remote-history",
+        reason: "remote-history",
+        requestingCashierId: "cashier-1",
+        requestingCashierName: "Cashier One",
+        requestingUserGuid: "user-1",
+      },
+      {
+        status: "Printed",
+        action: "reprint-history-receipt",
+        source: "remote-history",
+        reason: "remote-history",
+        requestingCashierId: "cashier-1",
+        requestingCashierName: "Cashier One",
+        requestingUserGuid: "user-1",
+      },
+    ],
   );
+});
+
+test("本机历史重打沿用耐久打印状态机并记录本机来源", async () => {
+  const prepared = {
+    orderGuid: "ORDER-LOCAL-HISTORY-1",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-LOCAL-HISTORY",
+  };
+  const { audit, service } = setup({
+    async prepareReceiptReprint(orderGuid) {
+      return orderGuid === prepared.orderGuid ? prepared : null;
+    },
+  });
+
+  const result = await service.reprintReceipt(
+    prepared.orderGuid,
+    "local-history",
+    historyAuthorization,
+    activeLease,
+  );
+
+  assert.equal(result.state, "Printed");
+  assert.deepEqual(
+    audit.map((event) => ({
+      action: event.payload.action,
+      source: event.payload.source,
+      reason: event.payload.reason,
+    })),
+    [
+      {
+        action: "reprint-history-receipt",
+        source: "local-history",
+        reason: "local-history",
+      },
+      {
+        action: "reprint-history-receipt",
+        source: "local-history",
+        reason: "local-history",
+      },
+    ],
+  );
+});
+
+for (const terminal of [
+  {
+    driver: { status: "failed", errorCode: "PAPER_OUT" } as const,
+    state: "Failed" as const,
+  },
+  {
+    driver: { status: "ambiguous", errorCode: "BLE_TIMEOUT" } as const,
+    state: "Ambiguous" as const,
+  },
+]) {
+  test(`本机历史重打 ${terminal.state} 时记录真实终态且自动队列不重放`, async () => {
+    const prepared = {
+      orderGuid: `ORDER-LOCAL-${terminal.state}`,
+      receiptBytes: Uint8Array.of(29, 33, 82),
+      printerId: "XP-LOCAL-FAILURE",
+    };
+    const { audit, printer, service } = setup({
+      async prepareReceiptReprint() {
+        return prepared;
+      },
+    });
+    printer.result = terminal.driver;
+
+    const result = await service.reprintReceipt(
+      prepared.orderGuid,
+      "local-history",
+      historyAuthorization,
+      activeLease,
+    );
+    await service.drainAutomaticQueue();
+
+    assert.deepEqual(result, {
+      state: terminal.state,
+      errorCode: terminal.driver.errorCode,
+    });
+    assert.deepEqual(printer.calls, [historyAuthorization.actionId]);
+    assert.deepEqual(
+      audit.map((event) => ({
+        status: event.payload.status,
+        source: event.payload.source,
+      })),
+      [
+        { status: "Authorized", source: "local-history" },
+        { status: terminal.state, source: "local-history" },
+      ],
+    );
+  });
+}
+
+test("历史重打领取任务后租约失效时返回恢复态，且 Sending 不自动重放", async () => {
+  const prepared = {
+    orderGuid: "ORDER-HISTORY-LEASE",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-HISTORY-LEASE",
+  };
+  const { store, printer, service } = setup({
+    async prepareReceiptReprint(orderGuid) {
+      return orderGuid === prepared.orderGuid ? prepared : null;
+    },
+  });
+  const claimed = deferred<void>();
+  store.claimPrintHold = claimed.promise;
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error("CURRENT_CASHIER_REQUIRED");
+  };
+
+  const reprint = service.reprintReceipt(
+    prepared.orderGuid,
+    "local-history",
+    historyAuthorization,
+    assertActive,
+  );
+  while (
+    store.printJobs.get(historyAuthorization.actionId)?.state !== "Sending"
+  ) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  active = false;
+  claimed.resolve(undefined);
+
+  assert.deepEqual(await reprint, {
+    state: "recovery-required",
+    errorCode: "DURABILITY_CONFLICT",
+  });
+  assert.deepEqual(store.reprintInputs, [prepared]);
+  assert.equal(
+    store.printJobs.get(historyAuthorization.actionId)?.state,
+    "Sending",
+  );
+  assert.deepEqual(printer.connectCalls, []);
+  assert.deepEqual(printer.calls, []);
+  assert.deepEqual(printer.byteCalls, []);
+  await service.drainAutomaticQueue();
+  assert.deepEqual(printer.calls, []);
+});
+
+test("历史重打账本准备期间租约失效时，不创建耐久任务", async () => {
+  const prepared = {
+    orderGuid: "ORDER-HISTORY-PREPARE-LEASE",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-HISTORY-PREPARE-LEASE",
+  };
+  const pendingPrepare = deferred<PreparedLastReceiptReprint | null>();
+  const { store, printer, service } = setup({
+    prepareReceiptReprint: async () => pendingPrepare.promise,
+  });
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error("CURRENT_CASHIER_REQUIRED");
+  };
+
+  const reprint = service.reprintReceipt(
+    prepared.orderGuid,
+    "local-history",
+    historyAuthorization,
+    assertActive,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  active = false;
+  pendingPrepare.resolve(prepared);
+
+  await assert.rejects(reprint, /CURRENT_CASHIER_REQUIRED/u);
+  assert.deepEqual(store.reprintInputs, []);
+  assert.deepEqual(printer.connectCalls, []);
+  assert.deepEqual(printer.calls, []);
+});
+
+test("历史重打连接打印机期间租约失效时，任务停在不可自动重放的恢复态", async () => {
+  const prepared = {
+    orderGuid: "ORDER-HISTORY-CONNECT-LEASE",
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-HISTORY-CONNECT-LEASE",
+  };
+  const { store, printer, service } = setup({
+    async prepareReceiptReprint() {
+      return prepared;
+    },
+  });
+  let releaseConnect!: () => void;
+  printer.connectHold = new Promise<void>((resolve) => {
+    releaseConnect = resolve;
+  });
+  let active = true;
+  const assertActive = () => {
+    if (!active) throw new Error("CURRENT_CASHIER_REQUIRED");
+  };
+
+  const reprint = service.reprintReceipt(
+    prepared.orderGuid,
+    "local-history",
+    historyAuthorization,
+    assertActive,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(printer.connectCalls, [prepared.printerId]);
+  active = false;
+  releaseConnect();
+
+  assert.deepEqual(await reprint, {
+    state: "recovery-required",
+    errorCode: "DURABILITY_CONFLICT",
+  });
+  assert.equal(
+    store.printJobs.get(historyAuthorization.actionId)?.state,
+    "Sending",
+  );
+  assert.deepEqual(printer.calls, []);
+  assert.deepEqual(printer.byteCalls, []);
+  await service.drainAutomaticQueue();
+  assert.deepEqual(printer.calls, []);
 });
 
 test("硬件动作后 CAS 持久化冲突必须要求恢复，不能宣称打印或开箱成功", async () => {

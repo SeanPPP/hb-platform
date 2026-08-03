@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import type { CatalogPromotion } from "./catalog-snapshot-service";
@@ -19,6 +21,16 @@ import {
 
 const digest: CatalogPageDigest = async (payload) =>
   createHash("sha256").update(payload, "utf8").digest("hex");
+
+test("目录摘要依赖进入主 bundle，刷新时不请求 Metro 懒加载分包", () => {
+  const source = readFileSync(
+    resolve(__dirname, "hbpos-catalog-remote.ts"),
+    "utf8",
+  );
+
+  assert.match(source, /require\(["']expo-crypto["']\)/);
+  assert.doesNotMatch(source, /await\s+import\(["']expo-crypto["']\)/);
+});
 
 const canonicalItem: CatalogLookupItem = {
   storeCode: "S01",

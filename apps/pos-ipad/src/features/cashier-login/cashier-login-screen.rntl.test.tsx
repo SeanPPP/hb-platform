@@ -1,6 +1,6 @@
 import { expect, jest, test } from "@jest/globals";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { StyleSheet, TextInput } from "react-native";
+import { ScrollView, StyleSheet, TextInput } from "react-native";
 
 import {
   CashierLoginController,
@@ -152,6 +152,46 @@ test("扫码默认不弹软键盘，常驻键盘按钮可手动开启且失焦�
   expect(
     screen.getByTestId("cashier-login-barcode").props.showSoftInputOnFocus,
   ).toBe(false);
+});
+
+test("手动软键盘聚焦时滚动表单揭示条码输入，HID 聚焦保持静默", async () => {
+  const revealInput = jest
+    .spyOn(
+      ScrollView.prototype,
+      "scrollResponderScrollNativeHandleToKeyboard",
+    )
+    .mockImplementation(() => undefined);
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="zh"
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  try {
+    expect(screen.getByTestId("cashier-login-keyboard-scroll").props).toMatchObject(
+      {
+        automaticallyAdjustKeyboardInsets: true,
+        keyboardDismissMode: "interactive",
+        keyboardShouldPersistTaps: "handled",
+      },
+    );
+    await fireEvent(screen.getByTestId("cashier-login-barcode"), "focus", {
+      target: 201,
+    });
+    expect(revealInput).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByTestId("cashier-login-show-keyboard"));
+    await waitFor(() => {
+      expect(revealInput).toHaveBeenCalledTimes(1);
+      expect(revealInput).toHaveBeenCalledWith(201, 16, true);
+    });
+  } finally {
+    revealInput.mockRestore();
+    await screen.unmount();
+  }
 });
 
 test("可见条码输入接管 HID 焦点，失焦和卸载都会释放", async () => {

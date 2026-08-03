@@ -89,7 +89,7 @@ export default function HeldOrdersRoute() {
 
   return (
     <HeldOrdersScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );

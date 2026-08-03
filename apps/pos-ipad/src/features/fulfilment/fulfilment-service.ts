@@ -16,8 +16,10 @@ export type FulfilmentPrintJob = Readonly<{
   bytes: Uint8Array;
   state: "Queued" | "Sending" | "Printed" | "Failed" | "Ambiguous";
   retryCount: number;
-  /** 最后小票重打从首份耐久授权审计恢复；普通打印与历史页重打没有该字段。 */
+  /** 授权重打从首份耐久授权审计恢复；普通打印没有该字段。 */
   authorization?: FulfilmentAuthorizationContext;
+  /** 重打来源必须随作业恢复，避免支付成功页重试错写为最后一单。 */
+  reprintSource?: ReceiptReprintSource;
 }>;
 
 export type FulfilmentDrawerEvent = Readonly<{
@@ -44,6 +46,15 @@ export type FulfilmentAuthorizationContext = Readonly<{
 }>;
 
 export type FulfilmentLeaseGuard = () => void;
+
+export type ReceiptHistoryReprintSource =
+  | "remote-history"
+  | "local-history";
+
+export type ReceiptReprintSource =
+  | "last-receipt"
+  | "payment-success"
+  | ReceiptHistoryReprintSource;
 
 export type PreparedManualDrawerOpen = Readonly<{
   /** 组合根从持久设置读取并冻结，UI 不得选择或覆盖。 */
@@ -186,13 +197,52 @@ export class FulfilmentService {
     );
   }
 
+  /** 支付成功页只能重打调用方给出的已完成订单，绝不回退到本地最后一单。 */
+  public async reprintCurrentReceipt(
+    orderGuid: string,
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
+    const exactOrderGuid = orderGuid.trim();
+    if (!exactOrderGuid || exactOrderGuid !== orderGuid) {
+      return { state: "not-found", errorCode: null };
+    }
+    const trustedAuthorization = normalizeAuthorization(
+      authorization,
+      "Permissions.PosTerminal.Receipt.PrintLast",
+    );
+    return this.serializeHardware(
+      () =>
+        this.reprintCurrentReceiptUnsafe(
+          exactOrderGuid,
+          trustedAuthorization,
+          assertActive,
+        ),
+      assertActive,
+    );
+  }
+
   public async reprintReceipt(
     orderGuid: string,
+    source: ReceiptHistoryReprintSource,
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
     const normalized = orderGuid.trim();
     if (!normalized) return { state: "not-found", errorCode: null };
-    return this.serializeHardware(() =>
-      this.reprintReceiptUnsafe(normalized),
+    const trustedAuthorization = normalizeAuthorization(
+      authorization,
+      "Permissions.PosTerminal.History.Reprint",
+    );
+    return this.serializeHardware(
+      () =>
+        this.reprintReceiptUnsafe(
+          normalized,
+          source,
+          trustedAuthorization,
+          assertActive,
+        ),
+      assertActive,
     );
   }
 
@@ -237,7 +287,7 @@ export class FulfilmentService {
     const job = await this.options.store.beginManualPrintRetry(jobId);
     if (!job) return { state: "not-retryable", errorCode: null };
 
-    return this.sendClaimedPrint(job, true);
+    return this.sendClaimedPrint(job, true, job.reprintSource);
   }
 
   private async retryFailedDrawerUnsafe(eventId: string): Promise<FulfilmentActionResult> {
@@ -279,26 +329,96 @@ export class FulfilmentService {
       prepared,
       "last-receipt",
       initialAuthorization,
+      assertActive,
+    );
+  }
+
+  private async reprintCurrentReceiptUnsafe(
+    orderGuid: string,
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
+  ): Promise<FulfilmentActionResult> {
+    const prepare = this.options.prepareReceiptReprint;
+    if (!prepare) return { state: "not-found", errorCode: null };
+    const prepared = await prepare(orderGuid);
+    // 账本与冻结设置读取结束后再复核 lease；失效页面不能留下可执行打印任务。
+    assertActive();
+    // 中文注释：支付成功页的 orderGuid 是唯一来源；准备器若返回别单必须 fail-closed。
+    if (!prepared || prepared.orderGuid !== orderGuid) {
+      return { state: "not-found", errorCode: null };
+    }
+    const initialAuthorization = {
+      context: authorization,
+      audit: this.createAuditEvent(
+        "RECEIPT_REPRINT",
+        prepared.orderGuid,
+        authorization.actionId,
+        {
+          action: "reprint-current-receipt",
+          status: "Authorized",
+          reason: "payment-success",
+          source: "payment-success",
+          outcome: "Succeeded",
+          printerId: safeAuditText(prepared.printerId),
+          errorCode: null,
+          ...authorizationAuditPayload(authorization),
+        },
+      ),
+    } satisfies FulfilmentInitialAuthorization;
+    return this.createAndSendReprint(
+      prepared,
+      "payment-success",
+      initialAuthorization,
+      assertActive,
     );
   }
 
   private async reprintReceiptUnsafe(
     orderGuid: string,
+    source: ReceiptHistoryReprintSource,
+    authorization: FulfilmentAuthorizationContext,
+    assertActive: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
     const prepare = this.options.prepareReceiptReprint;
     if (!prepare) return { state: "not-found", errorCode: null };
     const prepared = await prepare(orderGuid);
+    // 账本与设置准备跨越异步边界；创建耐久任务前再次确认原收银员仍绑定当前终端。
+    assertActive();
     // 账本准备器不得把历史页选择静默改绑到另一订单。
     if (!prepared || prepared.orderGuid !== orderGuid) {
       return { state: "not-found", errorCode: null };
     }
-    return this.createAndSendReprint(prepared, "remote-history");
+    const initialAuthorization = {
+      context: authorization,
+      audit: this.createAuditEvent(
+        "RECEIPT_REPRINT",
+        prepared.orderGuid,
+        authorization.actionId,
+        {
+          action: "reprint-history-receipt",
+          status: "Authorized",
+          reason: source,
+          source,
+          outcome: "Succeeded",
+          printerId: safeAuditText(prepared.printerId),
+          errorCode: null,
+          ...authorizationAuditPayload(authorization),
+        },
+      ),
+    } satisfies FulfilmentInitialAuthorization;
+    return this.createAndSendReprint(
+      prepared,
+      source,
+      initialAuthorization,
+      assertActive,
+    );
   }
 
   private async createAndSendReprint(
     prepared: PreparedLastReceiptReprint,
-    source: "last-receipt" | "remote-history",
+    source: ReceiptReprintSource,
     authorization?: FulfilmentInitialAuthorization,
+    assertActive?: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
     const job = await this.options.store.createLastReceiptReprint(
       prepared,
@@ -311,6 +431,7 @@ export class FulfilmentService {
         job.jobId,
         true,
         source,
+        assertActive,
       );
     }
     if (job.state === "Sending") return recoveryRequired();
@@ -320,21 +441,30 @@ export class FulfilmentService {
   private async sendQueuedPrint(
     jobId: string,
     manual: boolean,
-    reprintSource?: "last-receipt" | "remote-history",
+    reprintSource?: ReceiptReprintSource,
+    assertActive?: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
     const job = await this.options.store.claimQueuedPrintJob(jobId);
     if (!job) return { state: "not-retryable", errorCode: null };
+    // 已进入 Sending 后再复核；若会话在任务创建/领取期间失效，保留恢复态且绝不自动重放。
+    try {
+      assertActive?.();
+    } catch {
+      return recoveryRequired();
+    }
     return this.sendClaimedPrint(
       job,
       manual,
-      reprintSource,
+      reprintSource ?? job.reprintSource,
+      assertActive,
     );
   }
 
   private async sendClaimedPrint(
     job: FulfilmentPrintJob,
     manual: boolean,
-    reprintSource?: "last-receipt" | "remote-history",
+    reprintSource?: ReceiptReprintSource,
+    assertActive?: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
     let result: PrintResult;
     const connectionErrorCode = await this.connectPersistedPrinter(job.printerId);
@@ -342,6 +472,12 @@ export class FulfilmentService {
       // 中文注释：连接阶段尚未发送任何小票字节，可以安全标记 Failed，等待人工重试原外设。
       result = { status: "failed", errorCode: connectionErrorCode };
     } else {
+      // 连接外设是异步边界；真正发送小票字节前最后一次复核原收银员和终端绑定。
+      try {
+        assertActive?.();
+      } catch {
+        return recoveryRequired();
+      }
       try {
         result = await this.options.printer.print(job.jobId, job.bytes);
       } catch (error) {
@@ -352,8 +488,9 @@ export class FulfilmentService {
 
     const state = printState(result);
     const shouldAuditAsReprint = manual || job.isReprint;
+    // 中文注释：首份授权审计恢复的来源优先于旧版回退，确保崩溃/人工重试保留原动作语义。
     const source = job.isReprint
-      ? (reprintSource ?? "last-receipt")
+      ? (reprintSource ?? job.reprintSource ?? "last-receipt")
       : "manual-retry";
     let audit: FulfilmentAuditEvent | null = null;
     if (shouldAuditAsReprint) {
@@ -365,12 +502,14 @@ export class FulfilmentService {
           job.jobId,
           {
             action: job.isReprint
-              ? source === "remote-history"
-                ? "reprint-history-receipt"
-                : "reprint-last-receipt"
+              ? source === "last-receipt"
+                ? "reprint-last-receipt"
+                : source === "payment-success"
+                  ? "reprint-current-receipt"
+                  : "reprint-history-receipt"
               : "retry-failed-print",
             status: state,
-            reason: safeAuditText(result.errorCode) ?? (job.isReprint ? "last-receipt" : "manual-retry"),
+            reason: safeAuditText(result.errorCode) ?? source,
             source,
             outcome: state === "Printed" ? "Succeeded" : "Failed",
             printerId: safeAuditText(job.printerId),
@@ -449,6 +588,7 @@ export class FulfilmentService {
       begun.event,
       false,
       authorization,
+      assertActive,
     );
   }
 
@@ -456,8 +596,9 @@ export class FulfilmentService {
     event: FulfilmentDrawerEvent,
     manual: boolean,
     authorization?: FulfilmentAuthorizationContext,
+    assertActive?: FulfilmentLeaseGuard,
   ): Promise<FulfilmentActionResult> {
-    // 重试/崩溃恢复必须使用首份审计冻结的员工，禁止回读当前登录收银员。
+    // 中文注释：重试/崩溃恢复必须使用首份审计冻结的员工，禁止回读当前登录收银员。
     const durableAuthorization = authorization ?? event.authorization;
     let result: DrawerResult;
     const connectionErrorCode = await this.connectPersistedPrinter(event.printerId);
@@ -465,6 +606,12 @@ export class FulfilmentService {
       // 中文注释：连接失败时没有发出 RJ11 脉冲，安全落为 Failed；人工重试仍只能连接原 printerId。
       result = { status: "failed", errorCode: connectionErrorCode };
     } else {
+      try {
+        // 中文注释：首次人工开箱在 BLE 连接完成后仍需复核原 lease；失效只保留 Requested，绝不发脉冲。
+        assertActive?.();
+      } catch {
+        return recoveryRequired();
+      }
       try {
         result = await this.options.drawer.open(event.eventId);
       } catch (error) {

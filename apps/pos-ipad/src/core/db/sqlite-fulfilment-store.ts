@@ -22,6 +22,12 @@ export type PersistedFulfilmentAuthorization = Readonly<{
   authorizingCashierId: string | null;
 }>;
 
+type PersistedReceiptReprintSource =
+  | "last-receipt"
+  | "payment-success"
+  | "remote-history"
+  | "local-history";
+
 export type FulfilmentInitialAuthorization = Readonly<{
   context: PersistedFulfilmentAuthorization;
   audit: FulfilmentAuditEvent;
@@ -53,6 +59,8 @@ export type StoredFulfilmentPrintJob = Readonly<{
   state: PrintJobState;
   retryCount: number;
   authorization?: PersistedFulfilmentAuthorization;
+  /** 由首份授权审计恢复，崩溃/人工重试时不得退化为最后一单。 */
+  reprintSource?: PersistedReceiptReprintSource;
 }>;
 
 export type StoredFulfilmentDrawerEvent = Readonly<{
@@ -121,6 +129,76 @@ export class SqliteFulfilmentStore {
     await this.db.withExclusiveTransaction((tx) => insertPrintJob(tx, input, encryptedReceipt, this.options.nowIso()));
   }
 
+  public async hasPrintJob(jobId: string): Promise<boolean> {
+    assertFulfilmentId(jobId, "Print job id");
+    return Boolean(
+      await this.db.getFirst<{ job_id: unknown }>(
+        "SELECT job_id FROM print_jobs WHERE job_id = ?",
+        [jobId],
+      ),
+    );
+  }
+
+  /**
+   * post-sync 礼券余额联使用 attempt 派生的稳定 jobId。崩溃重放只接受
+   * 完全相同的订单、打印机和冻结字节，不能把主键冲突静默当作成功。
+   */
+  public async enqueuePrintJobOnce(
+    input: PersistedPrintJobInput & Readonly<{ isReprint: false }>,
+  ): Promise<"created" | "existing"> {
+    assertFulfilmentId(input.jobId, "Print job id");
+    assertFulfilmentId(input.orderGuid, "Print order id");
+    assertPrinterId(input.printerId);
+    if (
+      !(input.receiptBytes instanceof Uint8Array) ||
+      input.receiptBytes.length === 0
+    ) {
+      throw new Error("Idempotent print receipt bytes are invalid.");
+    }
+    const encryptedReceipt = await this.options.encryptor.encrypt(
+      encodeReceipt(input.receiptBytes),
+    );
+    return this.db.withExclusiveTransaction(async (tx) => {
+      const existing = await tx.getFirst<PrintRow>(
+        "SELECT * FROM print_jobs WHERE job_id = ?",
+        [input.jobId],
+      );
+      if (existing) {
+        const persisted = mapPrintJobMetadata(existing);
+        let persistedBytes: Uint8Array;
+        try {
+          persistedBytes = decodeReceipt(
+            await this.options.encryptor.decrypt(
+              ciphertext(existing.receipt_ciphertext),
+            ),
+          );
+        } catch {
+          throw new Error(
+            "Idempotent print job conflict: frozen bytes cannot be verified.",
+          );
+        }
+        if (
+          persisted.orderGuid !== input.orderGuid ||
+          persisted.printerId !== input.printerId ||
+          persisted.isReprint ||
+          !sameBytes(persistedBytes, input.receiptBytes)
+        ) {
+          throw new Error(
+            "Idempotent print job does not match frozen material.",
+          );
+        }
+        return "existing";
+      }
+      await insertPrintJob(
+        tx,
+        input,
+        encryptedReceipt,
+        this.options.nowIso(),
+      );
+      return "created";
+    });
+  }
+
   public enqueueDrawerEvent(input: PersistedDrawerEventInput): Promise<void> {
     return this.db.withExclusiveTransaction((tx) => insertDrawerEvent(tx, input, this.options.nowIso()));
   }
@@ -140,15 +218,14 @@ export class SqliteFulfilmentStore {
     }
     assertInitialAuthorization(
       authorization,
-      {
-        eventType: "CASH_DRAWER_OPEN",
-        orderGuid: null,
-        taskId: input.eventId,
-        printerId: input.printerId,
-        action: "open-cash-drawer",
-        reason: "MANUAL",
-        permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
-      },
+      initialAuthorizationExpectation(
+        "CASH_DRAWER_OPEN",
+        null,
+        input.eventId,
+        input.printerId,
+        authorization.context,
+        authorization.audit.payload,
+      ),
     );
     const now = this.options.nowIso();
     return this.db.withExclusiveTransaction(async (tx) => {
@@ -169,21 +246,20 @@ export class SqliteFulfilmentStore {
               orderGuid: null,
               taskId: input.eventId,
               printerId: input.printerId,
-              action: "open-cash-drawer",
-              reason: "MANUAL",
-              permissionCode:
-                "Permissions.PosTerminal.CashDrawer.Open",
             },
           );
+        if (!persistedAuthorization) {
+          throw new Error("Fulfilment authorization audit is missing.");
+        }
         assertSameAuthorization(
-          persistedAuthorization,
+          persistedAuthorization.context,
           authorization.context,
         );
         return {
           kind: "existing",
           event: {
             ...event,
-            authorization: persistedAuthorization,
+            authorization: persistedAuthorization.context,
           },
         };
       }
@@ -324,19 +400,20 @@ export class SqliteFulfilmentStore {
     printerId: string;
   }>, authorization?: FulfilmentInitialAuthorization): Promise<StoredFulfilmentPrintJob | null> {
     assertPrinterId(input.printerId);
-    if (authorization) {
+    const authorizationExpectation = authorization
+      ? initialAuthorizationExpectation(
+          "RECEIPT_REPRINT",
+          input.orderGuid,
+          authorization.context.actionId,
+          input.printerId,
+          authorization.context,
+          authorization.audit.payload,
+        )
+      : null;
+    if (authorization && authorizationExpectation) {
       assertInitialAuthorization(
         authorization,
-        {
-          eventType: "RECEIPT_REPRINT",
-          orderGuid: input.orderGuid,
-          taskId: authorization.context.actionId,
-          printerId: input.printerId,
-          action: "reprint-last-receipt",
-          reason: "last-receipt",
-          permissionCode:
-            "Permissions.PosTerminal.Receipt.PrintLast",
-        },
+        authorizationExpectation,
       );
     }
     const encryptedReceipt = await this.options.encryptor.encrypt(
@@ -360,6 +437,9 @@ export class SqliteFulfilmentStore {
         isReprint: true,
       };
       if (authorization) {
+        if (!authorizationExpectation) {
+          throw new Error("Fulfilment authorization expectation is missing.");
+        }
         const existing = await tx.getFirst<PrintRow>(
           "SELECT * FROM print_jobs WHERE job_id = ?",
           [job.jobId],
@@ -379,19 +459,25 @@ export class SqliteFulfilmentStore {
                 orderGuid: job.orderGuid,
                 taskId: job.jobId,
                 printerId: job.printerId,
-                action: "reprint-last-receipt",
-                reason: "last-receipt",
-                permissionCode:
-                  "Permissions.PosTerminal.Receipt.PrintLast",
               },
             );
+          if (!persistedAuthorization) {
+            throw new Error("Fulfilment authorization audit is missing.");
+          }
           assertSameAuthorization(
-            persistedAuthorization,
+            persistedAuthorization.context,
             authorization.context,
+          );
+          assertSameAuthorizationExpectation(
+            persistedAuthorization?.expectation ?? null,
+            authorizationExpectation,
           );
           return {
             ...persisted,
-            authorization: persistedAuthorization,
+            authorization: persistedAuthorization.context,
+            reprintSource: receiptReprintSource(
+              persistedAuthorization.expectation,
+            ),
           };
         }
       }
@@ -409,6 +495,9 @@ export class SqliteFulfilmentStore {
         retryCount: 0,
         ...(authorization
           ? { authorization: authorization.context }
+          : {}),
+        ...(authorizationExpectation
+          ? { reprintSource: receiptReprintSource(authorizationExpectation) }
           : {}),
       };
     });
@@ -440,10 +529,6 @@ export class SqliteFulfilmentStore {
               orderGuid: text(row.order_guid),
               taskId: text(row.job_id),
               printerId: text(row.printer_id),
-              action: "reprint-last-receipt",
-              reason: "last-receipt",
-              permissionCode:
-                "Permissions.PosTerminal.Receipt.PrintLast",
             },
             true,
           )
@@ -453,7 +538,10 @@ export class SqliteFulfilmentStore {
         bytes,
         state: "Sending",
         retryCount: retryCount + (manual ? 1 : 0),
-        ...(authorization ? { authorization } : {}),
+        ...(authorization ? { authorization: authorization.context } : {}),
+        ...(authorization
+          ? { reprintSource: receiptReprintSource(authorization.expectation) }
+          : {}),
       };
     });
   }
@@ -477,10 +565,6 @@ export class SqliteFulfilmentStore {
               orderGuid: null,
               taskId: event.eventId,
               printerId: event.printerId,
-              action: "open-cash-drawer",
-              reason: "MANUAL",
-              permissionCode:
-                "Permissions.PosTerminal.CashDrawer.Open",
             },
           )
         : null;
@@ -488,7 +572,7 @@ export class SqliteFulfilmentStore {
         ...event,
         state: "Requested",
         retryCount: retryCount + (manual ? 1 : 0),
-        ...(authorization ? { authorization } : {}),
+        ...(authorization ? { authorization: authorization.context } : {}),
       };
     });
   }
@@ -559,12 +643,92 @@ type InitialAuthorizationExpectation = Readonly<{
   orderGuid: string | null;
   taskId: string;
   printerId: string;
-  action: "reprint-last-receipt" | "open-cash-drawer";
-  reason: "last-receipt" | "MANUAL";
+  action:
+    | "reprint-last-receipt"
+    | "reprint-current-receipt"
+    | "reprint-history-receipt"
+    | "open-cash-drawer";
+  reason:
+    | "last-receipt"
+    | "payment-success"
+    | "local-history"
+    | "remote-history"
+    | "MANUAL";
+  source: "sales" | "payment-success" | "local-history" | "remote-history";
   permissionCode:
     | "Permissions.PosTerminal.Receipt.PrintLast"
+    | "Permissions.PosTerminal.History.Reprint"
     | "Permissions.PosTerminal.CashDrawer.Open";
 }>;
+
+type InitialAuthorizationTask = Pick<
+  InitialAuthorizationExpectation,
+  "eventType" | "orderGuid" | "taskId" | "printerId"
+>;
+
+type LoadedInitialAuthorization = Readonly<{
+  context: PersistedFulfilmentAuthorization;
+  expectation: InitialAuthorizationExpectation;
+}>;
+
+/**
+ * 首份授权审计是重试时唯一可信 actor 来源。最后一单、支付成功页和历史重打
+ * 都必须按持久 payload 重建精确来源，再严格验证所有字段，不能把当前会话混入。
+ */
+function initialAuthorizationExpectation(
+  eventType: FulfilmentAuditEventType,
+  orderGuid: string | null,
+  taskId: string,
+  printerId: string,
+  context: PersistedFulfilmentAuthorization,
+  payload: Readonly<Record<string, string | number | null>>,
+): InitialAuthorizationExpectation {
+  const action = auditText(payload.action, "Fulfilment authorization action");
+  const reason = auditText(payload.reason, "Fulfilment authorization reason");
+  const source = auditText(payload.source, "Fulfilment authorization source");
+  const isLastReceipt =
+    eventType === "RECEIPT_REPRINT" &&
+    context.permissionCode === "Permissions.PosTerminal.Receipt.PrintLast" &&
+    action === "reprint-last-receipt" &&
+    reason === "last-receipt" &&
+    source === "sales";
+  const isCurrentReceipt =
+    eventType === "RECEIPT_REPRINT" &&
+    context.permissionCode === "Permissions.PosTerminal.Receipt.PrintLast" &&
+    action === "reprint-current-receipt" &&
+    reason === "payment-success" &&
+    source === "payment-success";
+  const isHistoryReceipt =
+    eventType === "RECEIPT_REPRINT" &&
+    context.permissionCode === "Permissions.PosTerminal.History.Reprint" &&
+    action === "reprint-history-receipt" &&
+    (reason === "local-history" || reason === "remote-history") &&
+    source === reason;
+  const isManualDrawer =
+    eventType === "CASH_DRAWER_OPEN" &&
+    context.permissionCode === "Permissions.PosTerminal.CashDrawer.Open" &&
+    action === "open-cash-drawer" &&
+    reason === "MANUAL" &&
+    source === "sales";
+  if (
+    !isLastReceipt &&
+    !isCurrentReceipt &&
+    !isHistoryReceipt &&
+    !isManualDrawer
+  ) {
+    throw new Error("Fulfilment authorization audit action is invalid.");
+  }
+  return {
+    eventType,
+    orderGuid,
+    taskId,
+    printerId,
+    action: action as InitialAuthorizationExpectation["action"],
+    reason: reason as InitialAuthorizationExpectation["reason"],
+    source: source as InitialAuthorizationExpectation["source"],
+    permissionCode: context.permissionCode as InitialAuthorizationExpectation["permissionCode"],
+  };
+}
 
 function assertFulfilmentAudit(
   audit: FulfilmentAuditEvent,
@@ -650,7 +814,7 @@ function assertInitialAuthorization(
     payload.action !== expected.action ||
     payload.status !== "Authorized" ||
     payload.reason !== expected.reason ||
-    payload.source !== "sales" ||
+    payload.source !== expected.source ||
     payload.outcome !== "Succeeded" ||
     payload.printerId !== expected.printerId ||
     payload.errorCode !== null ||
@@ -675,9 +839,9 @@ function assertInitialAuthorization(
 
 async function loadInitialAuthorization(
   db: SqliteConnectionPort,
-  expected: InitialAuthorizationExpectation,
+  expected: InitialAuthorizationTask,
   allowMissing = false,
-): Promise<PersistedFulfilmentAuthorization | null> {
+): Promise<LoadedInitialAuthorization | null> {
   const rows = await db.getAll<Record<string, unknown>>(
     `SELECT event_id, event_type, occurred_at_iso, order_guid,
       correlation_id, payload_json
@@ -701,8 +865,16 @@ async function loadInitialAuthorization(
       expected.taskId,
       payload,
     );
-    assertInitialAuthorization({ context, audit }, expected);
-    return context;
+    const expectation = initialAuthorizationExpectation(
+      expected.eventType,
+      expected.orderGuid,
+      expected.taskId,
+      expected.printerId,
+      context,
+      payload,
+    );
+    assertInitialAuthorization({ context, audit }, expectation);
+    return { context, expectation };
   }
   if (allowMissing) return null;
   throw new Error("Fulfilment authorization audit is missing.");
@@ -775,6 +947,54 @@ function assertSameAuthorization(
   ) {
     throw new Error("Fulfilment authorization identity is inconsistent.");
   }
+}
+
+/** 同 actionId 只能重放同一授权语义，不能让“最后一单”吞掉支付成功页。 */
+function assertSameAuthorizationExpectation(
+  actual: InitialAuthorizationExpectation | null,
+  expected: InitialAuthorizationExpectation,
+): asserts actual is InitialAuthorizationExpectation {
+  if (
+    !actual ||
+    actual.eventType !== expected.eventType ||
+    actual.orderGuid !== expected.orderGuid ||
+    actual.taskId !== expected.taskId ||
+    actual.printerId !== expected.printerId ||
+    actual.action !== expected.action ||
+    actual.reason !== expected.reason ||
+    actual.source !== expected.source ||
+    actual.permissionCode !== expected.permissionCode
+  ) {
+    throw new Error("Authorized receipt reprint action conflict.");
+  }
+}
+
+function receiptReprintSource(
+  authorization: InitialAuthorizationExpectation,
+): PersistedReceiptReprintSource {
+  if (
+    authorization.action === "reprint-last-receipt" &&
+    authorization.reason === "last-receipt" &&
+    authorization.source === "sales"
+  ) {
+    return "last-receipt";
+  }
+  if (
+    authorization.action === "reprint-current-receipt" &&
+    authorization.reason === "payment-success" &&
+    authorization.source === "payment-success"
+  ) {
+    return "payment-success";
+  }
+  if (
+    authorization.action === "reprint-history-receipt" &&
+    authorization.reason === authorization.source &&
+    (authorization.source === "local-history" ||
+      authorization.source === "remote-history")
+  ) {
+    return authorization.source;
+  }
+  throw new Error("Fulfilment receipt reprint source is invalid.");
 }
 
 function isValidOptionalAuditText(value: unknown): value is string | null {

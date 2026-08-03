@@ -10,6 +10,8 @@ export const posColors = {
   orangeSoft: "#FCEBE4",
   green: "#277C63",
   greenSoft: "#E5F3ED",
+  yellow: "#B98516",
+  yellowSoft: "#FFF5CF",
   red: "#B73932",
   redSoft: "#F9E7E5",
   blue: "#235C8C",

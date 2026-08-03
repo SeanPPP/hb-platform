@@ -129,7 +129,7 @@ export default function SettingsRoute() {
   if (runtimeUnavailable) {
     return (
       <SettingsUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -139,7 +139,7 @@ export default function SettingsRoute() {
 
   return (
     <SettingsScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
       {...(runtime.services?.scanner?.router
         ? { scanner: runtime.services.scanner.router }

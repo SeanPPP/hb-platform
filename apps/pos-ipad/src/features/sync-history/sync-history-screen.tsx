@@ -57,7 +57,7 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
-  sound?: "navigate" | "tap";
+  sound?: "tap" | "navigate";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
   style?: StyleProp<ViewStyle>;
@@ -333,7 +333,10 @@ export function SyncHistoryScreen({
               keyExtractor={(row) => row.orderGuid}
               renderItem={({ item }) => (
                 <SyncHistoryOrderRow
-                  canSelect={canManualRetransmit}
+                  canSelect={
+                    canManualRetransmit &&
+                    item.retransmit.kind === "allowed"
+                  }
                   locale={locale}
                   onSelected={(selected) =>
                     presenter.setSelected(item.orderGuid, selected)
@@ -386,7 +389,10 @@ function SyncHistoryOrderRow({
     <PosPressable
       accessibilityLabel={`${t("list.order", { orderGuid: row.orderGuid })}, ${t(`status.${row.state}`)}`}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: row.isSelected }}
+      accessibilityState={{
+        checked: row.isSelected,
+        disabled: !canSelect,
+      }}
       {...(!canSelect ? { disabled: true } : {})}
       onPress={() => onSelected(!row.isSelected)}
       style={({ pressed }) => [

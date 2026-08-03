@@ -13,7 +13,7 @@ const mockDestroyPresenter = jest.fn();
 const mockGetDeviceIdentity = jest.fn<
   () => Promise<Readonly<{ deviceCode: string; storeCode: string }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -22,7 +22,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -129,7 +129,7 @@ test("复核设备绑定后只以零参数工厂创建 presenter，卸载时销�
   expect(mockCreatePresenter).toHaveBeenCalledWith();
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
@@ -168,7 +168,7 @@ test("设备不匹配清除活动收银员；runtime 未接线显示安全不可
     expect(unavailable.getByTestId("daily-close-unavailable")).toBeTruthy();
   });
   mockUnavailableProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("活动收银员不存在时返回登录页", async () => {

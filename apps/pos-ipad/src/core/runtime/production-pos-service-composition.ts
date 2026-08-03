@@ -53,6 +53,17 @@ import { HeldOrdersOrchestrator } from "../../features/held-orders/held-orders-o
 import { HeldOrdersPresenter } from "../../features/held-orders/held-orders-presenter";
 import { HbposInstallmentsApi } from "../../features/installments/hbpos-installments-api";
 import type { InstallmentsRuntimeFactory } from "../../features/installments/installment-runtime";
+import type {
+  LocalHistoryPort,
+  LocalHistoryReceiptPreviewPort,
+  LocalHistoryReprintPort,
+} from "../../features/local-history/local-history-domain";
+import {
+  LOCAL_HISTORY_REPRINT_PERMISSION,
+  LOCAL_HISTORY_VIEW_PERMISSION,
+  LocalHistoryPresenter,
+} from "../../features/local-history/local-history-presenter";
+import type { LocalHistoryPresenterFactory } from "../../features/local-history/local-history-runtime";
 import {
   OperationAuthorizationService,
   type OperationAuthorizationPublicState,
@@ -60,11 +71,14 @@ import {
   type SupervisorBarcodeScanResult,
 } from "../../features/operation-authorization";
 import type { PaymentConnectivityPort } from "../../features/payments/payment-attempt-service";
+import { VoucherHbposApi } from "../../features/payments/voucher";
 import {
   CashFulfilmentPlanner,
+  LocalHistoryReceiptPreviewService,
   OrderRepositoryReceiptReprintSource,
   ReceiptReprintPreparationService,
   type ReceiptCompletionSettlementSource,
+  type ReceiptPreviewSettingsSource,
   type ReceiptReprintSettingsSource,
 } from "../../features/receipts";
 import {
@@ -76,6 +90,12 @@ import {
   OrderRepositoryReturnReceiptRenderer,
   type ReturnReceiptSettingsPort,
 } from "../../features/receipts/return-receipt-renderer";
+import {
+  PostSyncVoucherLatestBalanceApi,
+  VoucherBalancePostSyncService,
+  VoucherBalanceReceiptRenderer,
+} from "../../features/receipts/voucher-balance-receipt";
+import { REMOTE_HISTORY_REPRINT_PERMISSION } from "../../features/remote-history/remote-history-presenter";
 import {
   createHbposRemoteHistoryPresenterFactory,
   type RemoteHistoryPresenterFactory,
@@ -243,6 +263,9 @@ export type PosFulfilmentRuntimeService = Readonly<{
   drainAutomaticQueue(): Promise<Readonly<{ printed: number; drawersOpened: number }>>;
   retryFailedPrint(jobId: string): Promise<FulfilmentActionResult>;
   retryFailedDrawer(eventId: string): Promise<FulfilmentActionResult>;
+  reprintCurrentReceipt(
+    orderGuid: string,
+  ): Promise<PosAuthorizedFulfilmentActionResult>;
   reprint: PosAuthorizedFulfilmentAction;
   openCashDrawer: PosAuthorizedFulfilmentAction;
 }>;
@@ -363,6 +386,7 @@ export type ProductionPosRuntimeServices = Readonly<{
   payments: PosPaymentRuntimeService;
   operationAuthorization: PosOperationAuthorizationRuntimeService;
   cashierSession: PosCashierSessionRuntimeService;
+  localHistory: LocalHistoryPresenterFactory;
   remoteHistory: RemoteHistoryPresenterFactory;
   specialProducts: SpecialProductsRuntimeFactory;
   customerDisplay: PosCustomerDisplayRuntimeService;
@@ -422,6 +446,7 @@ export type ProductionSettingsRuntimeConfiguration = Pick<
   | "apiBaseUrl"
   | "appVersion"
   | "updateChannel"
+  | "squareSetup"
   | "readDevicePresentation"
   | "paymentConfiguration"
   | "apiConfiguration"
@@ -703,6 +728,16 @@ export function createProductionPosRuntimeServices(
     input.encryptor,
     input.createId,
   );
+  const voucherBalanceMaterials =
+    input.database.voucherBalanceMaterials?.(input.encryptor) ?? null;
+  let voucherBalancePostSync: VoucherBalancePostSyncService | null = null;
+  const recoverVoucherBalancePrints = async (): Promise<void> => {
+    try {
+      await voucherBalancePostSync?.recoverPendingPrints();
+    } catch {
+      // 已同步订单不能因旁路打印恢复失败而阻止启动、前台恢复或设置保存。
+    }
+  };
   const baseReceiptSettings =
     receiptSettingsService(settingsRepository);
   const receiptSettings: PosReceiptSettingsService = {
@@ -711,6 +746,7 @@ export function createProductionPosRuntimeServices(
       const saved =
         await settingsRepository.saveReceiptPrinterSettings(settings);
       dailyCloseReceiptSettings = saved;
+      void recoverVoucherBalancePrints();
       return saved;
     },
   };
@@ -948,10 +984,20 @@ export function createProductionPosRuntimeServices(
       });
     },
   };
+  const receiptOrderSource = new OrderRepositoryReceiptReprintSource(
+    repositories.orders,
+  );
+  const receiptSettlements = receiptCompletionSettlementSource(input.database);
   const receiptReprint = new ReceiptReprintPreparationService({
-    orders: new OrderRepositoryReceiptReprintSource(repositories.orders),
+    orders: receiptOrderSource,
     settings: receiptReprintSettings(settingsRepository),
-    settlements: receiptCompletionSettlementSource(input.database),
+    settlements: receiptSettlements,
+    nowIso: input.clock.nowIso,
+  });
+  const localHistoryReceiptPreview = new LocalHistoryReceiptPreviewService({
+    orders: receiptOrderSource,
+    settings: receiptPreviewSettings(settingsRepository),
+    settlements: receiptSettlements,
   });
   const printer = input.createPrinter();
   const fulfilment = new FulfilmentService({
@@ -979,17 +1025,56 @@ export function createProductionPosRuntimeServices(
       ? { operationLease: input.appUpdateTransition }
       : {}),
   });
+  if (voucherBalanceMaterials) {
+    voucherBalancePostSync = new VoucherBalancePostSyncService({
+      api: new PostSyncVoucherLatestBalanceApi(
+        new VoucherHbposApi(input.transport),
+      ),
+      materials: voucherBalanceMaterials,
+      renderer: new VoucherBalanceReceiptRenderer(
+        returnReceiptSettings(settingsRepository),
+      ),
+      printQueue: fulfilmentStore,
+      nowIso: input.clock.nowIso,
+      requestPrintDrain: () => fulfilment.drainAutomaticQueue(),
+    });
+  }
   const remoteHistory = createHbposRemoteHistoryPresenterFactory(
     input.transport,
     resolveRemoteHistoryTrustedSession,
     () => {
       const cashierLease = currentCashier.createLease();
-      trustedSalesSession(cashierLease, input.auditMetadata);
+      const assertActive = () => {
+        const active = trustedSalesSession(
+          cashierLease,
+          input.auditMetadata,
+        );
+        if (
+          !active.permissionCodes.includes(
+            REMOTE_HISTORY_REPRINT_PERMISSION,
+          )
+        ) {
+          throw new Error("REMOTE_HISTORY_REPRINT_PERMISSION_REQUIRED");
+        }
+        return active;
+      };
       return {
         async reprintExistingOrder(orderGuid) {
-          trustedSalesSession(cashierLease, input.auditMetadata);
-          const result = await fulfilment.reprintReceipt(orderGuid);
-          trustedSalesSession(cashierLease, input.auditMetadata);
+          const session = assertActive();
+          const result = await fulfilment.reprintReceipt(
+            orderGuid,
+            "remote-history",
+            {
+              actionId: input.createId(),
+              permissionCode: REMOTE_HISTORY_REPRINT_PERMISSION,
+              authorizationMode: "current-cashier",
+              requestingCashierId: session.cashierId,
+              requestingCashierName: session.cashierName,
+              requestingUserGuid: session.userGuid,
+              authorizingCashierId: null,
+            },
+            assertActive,
+          );
           if (result.state !== "Printed") {
             throw Object.assign(
               new Error("Remote history receipt reprint failed."),
@@ -1003,6 +1088,12 @@ export function createProductionPosRuntimeServices(
         },
       };
     },
+  );
+  const localHistory = createLocalHistoryRuntime(
+    input,
+    currentCashier,
+    fulfilment,
+    localHistoryReceiptPreview,
   );
   const coordinator = new PosSyncCoordinator({
     outbox: repositories.outbox,
@@ -1018,6 +1109,7 @@ export function createProductionPosRuntimeServices(
         ),
         linklyEnvironment: input.payments?.linklyEnvironment ?? null,
       },
+      voucherBalancePostSync,
     ),
     auditUploader: new HbposAuditBatchAdapter(
       input.transport,
@@ -1031,6 +1123,10 @@ export function createProductionPosRuntimeServices(
       ? { operationLease: input.appUpdateTransition }
       : {}),
   });
+  const postCommitWork = createPostCommitWorkDrain(
+    () => fulfilment.drainAutomaticQueue(),
+    () => coordinator.requestDrain(),
+  );
   const lifecycle = new SyncLifecycleController(coordinator);
   const syncHistory = createSyncHistoryRuntime(
     input,
@@ -1040,7 +1136,7 @@ export function createProductionPosRuntimeServices(
   const createSalesCashCheckout = (cashierLease: TrustedCashierLease) =>
     createPostCommitFulfilmentCashCheckout(
       createCashCheckout(cashierLease),
-      () => fulfilment.drainAutomaticQueue(),
+      postCommitWork,
     );
   const createTerminalActionAuthorization = () => {
     const cashierLease = currentCashier.createLease();
@@ -1107,6 +1203,21 @@ export function createProductionPosRuntimeServices(
     execute: (authorization, assertActive) =>
       fulfilment.reprintLastReceipt(authorization, assertActive),
   });
+  const currentReceiptReprint = createAuthorizedFulfilmentAction<
+    [orderGuid: string]
+  >({
+    permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
+    action: "reprint-current-receipt",
+    createActionId: input.createId,
+    createAuthorization: createTerminalActionAuthorization,
+    operationKey: (orderGuid) => orderGuid,
+    execute: (authorization, assertActive, orderGuid) =>
+      fulfilment.reprintCurrentReceipt(
+        orderGuid,
+        authorization,
+        assertActive,
+      ),
+  });
   const openCashDrawer = createAuthorizedFulfilmentAction({
     permissionCode: "Permissions.PosTerminal.CashDrawer.Open",
     action: "open-cash-drawer",
@@ -1127,7 +1238,7 @@ export function createProductionPosRuntimeServices(
     createId: input.createId,
     connectivity: input.connectivity,
     bootstrap: input.payments?.bootstrap,
-    drainFulfilment: () => fulfilment.drainAutomaticQueue(),
+    drainFulfilment: postCommitWork,
   });
   const payments = paymentRuntime.service;
   const installmentConfiguration = input.installments;
@@ -1208,6 +1319,7 @@ export function createProductionPosRuntimeServices(
         currentCashier,
         authorization: operationAuthorization,
         providerRefund: paymentRuntime.returnRefund,
+        requestOrderSyncDrain: () => coordinator.requestDrain(),
       })
     : {
         status: "unavailable",
@@ -1240,6 +1352,20 @@ export function createProductionPosRuntimeServices(
             (await startCatalogReset(signal)).summary,
         },
         receiptSettings,
+        paymentConfigurationTransition: {
+          run: (operation) => {
+            // 支付配置保存会整应用 reload，必须复用同步、履约与目录共享的全局封门。
+            if (!input.appUpdateTransition) {
+              return Promise.reject(
+                Object.assign(
+                  new Error("Payment configuration transition is unavailable."),
+                  { code: "PAYMENT_CONFIGURATION_TRANSITION_UNAVAILABLE" },
+                ),
+              );
+            }
+            return input.appUpdateTransition.runTransition(operation);
+          },
+        },
         pendingData: {
           read: async () => {
             const durable =
@@ -1263,10 +1389,15 @@ export function createProductionPosRuntimeServices(
             ]);
             return Object.freeze({
               ...durable,
+              hasFulfilmentInFlight: fulfilment.isHardwareBusy(),
+              hasSyncOrAuditInFlight: coordinator.isDraining(),
+              // 支付配置允许普通已耐久业务继续排队，但任何支付、分期或退货恢复
+              // 都可能依赖旧通道，必须统一进入支付配置专用阻断信号。
               unresolvedPaymentCount: Math.max(
                 durable.unresolvedPaymentCount,
                 paymentRecoveryRequired ||
-                  installmentRecoveryRequired
+                  installmentRecoveryRequired ||
+                  returnRecoveryRequired
                   ? 1
                   : 0,
               ),
@@ -1276,6 +1407,9 @@ export function createProductionPosRuntimeServices(
               ),
             });
           },
+        },
+        cashDrawerTest: {
+          execute: () => openCashDrawer.execute(),
         },
         printer: input.settings.printer,
         ...(input.externalDisplay
@@ -1304,6 +1438,7 @@ export function createProductionPosRuntimeServices(
       dailyCloseReceiptSettings =
         await settingsRepository.getReceiptPrinterSettings();
       await customerDisplayCoordinator?.initialize();
+      await recoverVoucherBalancePrints();
     },
   );
   const createHeldOrdersOrchestrator = (
@@ -1449,13 +1584,18 @@ export function createProductionPosRuntimeServices(
       drainAutomaticQueue: () => fulfilment.drainAutomaticQueue(),
       retryFailedPrint: (jobId) => fulfilment.retryFailedPrint(jobId),
       retryFailedDrawer: (eventId) => fulfilment.retryFailedDrawer(eventId),
+      reprintCurrentReceipt: (orderGuid) =>
+        currentReceiptReprint.execute(orderGuid),
       reprint,
       openCashDrawer,
     },
     sync: {
       requestDrain: () => coordinator.requestDrain(),
       onApplicationStarted: () => lifecycle.onApplicationStarted(),
-      onForeground: () => lifecycle.onForeground(),
+      onForeground: async () => {
+        await recoverVoucherBalancePrints();
+        return lifecycle.onForeground();
+      },
       onNetworkChanged: (isOnline) => lifecycle.onNetworkChanged(isOnline),
       shutdown: () => lifecycle.shutdown(),
     },
@@ -1474,6 +1614,7 @@ export function createProductionPosRuntimeServices(
           reason: "SUPERVISOR_AUTHENTICATION_MISSING",
         },
     cashierSession,
+    localHistory,
     remoteHistory,
     specialProducts,
     customerDisplay:
@@ -1777,10 +1918,13 @@ function createCurrentCashierSalesAuthorization(
   });
 }
 
-function createAuthorizedFulfilmentAction(input: Readonly<{
+function createAuthorizedFulfilmentAction<
+  TArguments extends readonly unknown[] = [],
+>(input: Readonly<{
   permissionCode: string;
   action: string;
   createActionId(): string;
+  operationKey?(...args: TArguments): string;
   createAuthorization(): Readonly<{
     authorization: SalesOperationAuthorizationPort;
     assertActive(): void;
@@ -1793,14 +1937,25 @@ function createAuthorizedFulfilmentAction(input: Readonly<{
   execute(
     authorization: FulfilmentAuthorizationContext,
     assertActive: () => void,
+    ...args: TArguments
   ): Promise<FulfilmentActionResult>;
-}>): PosAuthorizedFulfilmentAction {
-  let inFlight: Promise<PosAuthorizedFulfilmentActionResult> | null = null;
+}>): Readonly<{
+  status: "available";
+  execute(
+    ...args: TArguments
+  ): Promise<PosAuthorizedFulfilmentActionResult>;
+}> {
+  const inFlightByOperation = new Map<
+    string,
+    Promise<PosAuthorizedFulfilmentActionResult>
+  >();
 
   return Object.freeze({
     status: "available" as const,
-    execute(): Promise<PosAuthorizedFulfilmentActionResult> {
+    execute(...args: TArguments): Promise<PosAuthorizedFulfilmentActionResult> {
       // 同一 UI 动作在完成前复用同一 Promise 和 actionId，避免双击绕过履约幂等。
+      const operationKey = input.operationKey?.(...args) ?? "singleton";
+      const inFlight = inFlightByOperation.get(operationKey);
       if (inFlight) return inFlight;
 
       let started: Promise<PosAuthorizedFulfilmentActionResult>;
@@ -1832,6 +1987,7 @@ function createAuthorizedFulfilmentAction(input: Readonly<{
                   authorizingCashierId: context.authorizingCashierId,
                 },
                 authorization.assertActive,
+                ...args,
               );
               // 履约终态已与审计原子落库后必须返回真实结果；此处再查旧 lease
               // 只会把不可撤销的成功伪装成失败，并诱发新 actionId 重复硬件动作。
@@ -1856,9 +2012,9 @@ function createAuthorizedFulfilmentAction(input: Readonly<{
       }
 
       const tracked = started.finally(() => {
-        if (inFlight === tracked) inFlight = null;
+        inFlightByOperation.delete(operationKey);
       });
-      inFlight = tracked;
+      inFlightByOperation.set(operationKey, tracked);
       return tracked;
     },
   });
@@ -2059,6 +2215,7 @@ function createAvailableReturnRuntime(input: Readonly<{
   providerRefund: ReturnType<
     typeof createProductionPaymentRuntime
   >["returnRefund"];
+  requestOrderSyncDrain: () => Promise<unknown>;
 }>): PosReturnsRuntimeService {
   const receiptRenderer = new OrderRepositoryReturnReceiptRenderer(
     input.repositories.orders,
@@ -2103,7 +2260,14 @@ function createAvailableReturnRuntime(input: Readonly<{
     onlineRefund: new ProductionReturnOnlineRefundRouter({
       providerRefund: input.providerRefund,
     }),
-    fulfilment,
+    fulfilment: {
+      materializeAction: (actionId) =>
+        fulfilment.materializeAction(actionId),
+      drainPending: createPostCommitWorkDrain(
+        () => fulfilment.drainPending(),
+        input.requestOrderSyncDrain,
+      ),
+    },
     sha256Hex: input.input.sha256Hex,
     createId: input.input.createId,
     nowIso: input.input.clock.nowIso,
@@ -2589,6 +2753,24 @@ export function createPostCommitFulfilmentCashCheckout(
   };
 }
 
+/**
+ * 三类订单都在耐久事务成功后共用该入口：上传与履约彼此独立，
+ * 任一侧暂时失败都不能改写已完成的交易事实。
+ */
+export function createPostCommitWorkDrain<T>(
+  drainFulfilment: () => Promise<T>,
+  requestOrderSyncDrain: () => Promise<unknown>,
+): () => Promise<T> {
+  return () => {
+    try {
+      void requestOrderSyncDrain().catch(() => undefined);
+    } catch {
+      // 同步唤醒异常只保留耐久 outbox，后续定时或生命周期触发会继续处理。
+    }
+    return drainFulfilment();
+  };
+}
+
 async function runUpdateTransitionWithActiveCart<T>(
   activeCart: ActivePricingCartSession,
   operation: () => Promise<T>,
@@ -2618,11 +2800,33 @@ function receiptReprintSettings(
   return {
     async getFrozenReceiptSettings() {
       const current = await settings.getReceiptPrinterSettings();
-      if (!current.printEnabled || !isValidPeripheralId(current.peripheralId)) {
+      if (!isValidPeripheralId(current.peripheralId)) {
         return null;
       }
       return {
         printerId: current.peripheralId,
+        paper: current.paper,
+        locale: current.locale,
+        store: {
+          brandName: current.brandName,
+          storeName: current.storeName,
+          address: current.address,
+          phone: current.phone,
+          abn: current.abn,
+        },
+      };
+    },
+  };
+}
+
+/** 预览只冻结纸宽、语言和公开抬头；未配置打印机不应阻止查看。 */
+function receiptPreviewSettings(
+  settings: ReturnType<PosDatabase["settings"]>,
+): ReceiptPreviewSettingsSource {
+  return {
+    async getFrozenReceiptPreviewSettings() {
+      const current = await settings.getReceiptPrinterSettings();
+      return {
         paper: current.paper,
         locale: current.locale,
         store: {
@@ -2810,6 +3014,112 @@ function createSyncHistoryRuntime(
       return new SyncHistoryPresenter({
         permissionCodes: session.permissionCodes,
         port,
+      });
+    },
+  };
+}
+
+function createLocalHistoryRuntime(
+  input: ProductionPosRuntimeCompositionDependencies,
+  currentCashier: CurrentCashierSession,
+  fulfilment: FulfilmentService,
+  receiptPreview: LocalHistoryReceiptPreviewPort,
+): LocalHistoryPresenterFactory {
+  return {
+    createPresenter: () => {
+      const cashierLease = currentCashier.createLease();
+      const session = trustedSalesSession(
+        cashierLease,
+        input.auditMetadata,
+      );
+      const store = input.database.localHistory({
+        storeCode: session.storeCode,
+        deviceCode: session.deviceCode,
+      });
+      const requirePermission = (permissionCode: string) => {
+        const active = trustedSalesSession(
+          cashierLease,
+          input.auditMetadata,
+        );
+        if (!active.permissionCodes.includes(permissionCode)) {
+          throw new Error("LOCAL_HISTORY_PERMISSION_REQUIRED");
+        }
+        return active;
+      };
+      const port: LocalHistoryPort = {
+        async list(query) {
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          const page = await store.list(query);
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          return page;
+        },
+        async getDetails(orderGuid) {
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          const details = await store.getDetails(orderGuid);
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          return details;
+        },
+      };
+      const receiptPreviewPort: LocalHistoryReceiptPreviewPort = {
+        async getPreview(orderGuid) {
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          // 中文注释：先以可信本机门店/设备 scope 验证订单，再读取原始账本渲染。
+          const details = await store.getDetails(orderGuid);
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          if (!details || details.orderGuid !== orderGuid) return null;
+          const document = await receiptPreview.getPreview(details.orderGuid);
+          requirePermission(LOCAL_HISTORY_VIEW_PERMISSION);
+          return document;
+        },
+      };
+      const reprintPort: LocalHistoryReprintPort = {
+        async reprintExistingOrder(orderGuid) {
+          const session = requirePermission(LOCAL_HISTORY_REPRINT_PERMISSION);
+          // 中文注释：重打前重新按可信 scope 读取，不能只相信页面曾加载过的订单号。
+          const details = await store.getDetails(orderGuid);
+          requirePermission(LOCAL_HISTORY_REPRINT_PERMISSION);
+          if (!details) {
+            throw new Error("LOCAL_HISTORY_ORDER_NOT_PRINTABLE");
+          }
+          const result = await fulfilment.reprintReceipt(
+            details.orderGuid,
+            "local-history",
+            {
+              actionId: input.createId(),
+              permissionCode: LOCAL_HISTORY_REPRINT_PERMISSION,
+              authorizationMode: "current-cashier",
+              requestingCashierId: session.cashierId,
+              requestingCashierName: session.cashierName,
+              requestingUserGuid: session.userGuid,
+              authorizingCashierId: null,
+            },
+            () => {
+              requirePermission(LOCAL_HISTORY_REPRINT_PERMISSION);
+            },
+          );
+          if (result.state !== "Printed") {
+            throw Object.assign(
+              new Error("Local history receipt reprint failed."),
+              {
+                code:
+                  result.errorCode ??
+                  `REPRINT_${result.state
+                    .toUpperCase()
+                    .replaceAll("-", "_")}`,
+              },
+            );
+          }
+        },
+      };
+      return new LocalHistoryPresenter({
+        businessTimeZone: resolveRuntimeBusinessTimeZone(
+          input.businessTimeZone,
+        ),
+        now: input.clock.now,
+        permissionCodes: session.permissionCodes,
+        port,
+        receiptPreviewPort,
+        reprintPort,
       });
     },
   };

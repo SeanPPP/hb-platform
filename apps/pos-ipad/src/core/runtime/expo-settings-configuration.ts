@@ -71,6 +71,17 @@ export function createSettingsApiHealthProbe(
   };
 }
 
+/**
+ * Expo 不保证 reloadAsync resolve 后旧 JS 会立即停止。成功后保持 Promise pending，
+ * 让支付配置 transition 一直封门直到新 runtime 接管；reload 失败仍原样抛出。
+ */
+export async function reloadSettingsRuntimeTerminally(
+  reload: () => Promise<void>,
+): Promise<never> {
+  await reload();
+  return new Promise<never>(() => undefined);
+}
+
 function validSquare(
   input: PosPaymentPublicExtra["square"] | undefined,
 ): Readonly<{

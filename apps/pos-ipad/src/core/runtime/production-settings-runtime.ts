@@ -1,8 +1,10 @@
 import {
   SettingsPresenter,
+  type SettingsClearSavedPrinterResult,
   type SettingsControlPort,
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
+  type SettingsSquareSetupControlPort,
 } from "../../features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
 
@@ -26,9 +28,25 @@ export type ProductionSettingsRuntimeDependencies = Readonly<{
   runDangerousExclusive<T>(operation: () => Promise<T>): Promise<T>;
 }>;
 
+type LeaseAwareSettingsControlPort = SettingsControlPort &
+  Readonly<{
+    executeDangerousAction(
+      action: SettingsDangerousConfirmation,
+      signal: AbortSignal,
+      assertActive?: () => void,
+    ): Promise<SettingsDangerousActionResult>;
+    clearSavedPrinter?:
+      | ((
+          signal: AbortSignal,
+          assertActive?: () => void,
+        ) => Promise<SettingsClearSavedPrinterResult>)
+      | undefined;
+  }>;
+
 /**
  * route 只能取得零参数 presenter 工厂。可信门店、设备和权限由 cashier lease
- * 冻结，并在每次异步边界前后复核，旧页面无法在换班后继续操作设置或硬件。
+ * 冻结。普通动作在异步边界前后复核；不可撤销动作只在提交点前复核，避免把
+ * 已完成的硬件脉冲或持久化写入伪装成失败。
  */
 export function createProductionSettingsRuntime(
   input: ProductionSettingsRuntimeDependencies,
@@ -60,6 +78,16 @@ function securedSettingsPort(
     return result;
   };
 
+  const runIrreversibleMutation = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    assertSameSession(lease.get(), identity);
+    // 外部 POST 成功后不可因换班改写为失败，否则新幂等键重试会重复创建。
+    return operation();
+  };
+
+  const leaseAwareControl = input.control as LeaseAwareSettingsControlPort;
+
   const runDangerous = async (
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
@@ -67,18 +95,77 @@ function securedSettingsPort(
     assertSameSession(lease.get(), identity);
     const execute = async () => {
       const result =
-        await input.control.executeDangerousAction(action, signal);
+        await leaseAwareControl.executeDangerousAction(
+          action,
+          signal,
+          () => assertSameSession(lease.get(), identity),
+        );
       assertSameSession(lease.get(), identity);
       return result;
     };
-    // restart-app 的最终互斥由 update transition 按目录→购物车顺序取得；
+    // restart/payment 的最终互斥由 transition 按目录→购物车顺序取得；
     // 若这里先持有普通购物车 lease，transition 会等待当前动作自身而永久自锁。
-    return action.kind === "restart-app"
+    return action.kind === "restart-app" ||
+      action.kind === "change-payment-settings"
       ? execute()
       : input.runDangerousExclusive(execute);
   };
 
+  const squareSetup = input.control.squareSetup;
+
   const secured: SettingsControlPort = {
+    ...(squareSetup
+      ? {
+          squareSetup: Object.freeze({
+            getSquareTokenStatus: (environment, signal) =>
+              run(() =>
+                squareSetup.getSquareTokenStatus(environment, signal),
+              ),
+            listSquareLocations: (environment, signal) =>
+              run(() =>
+                squareSetup.listSquareLocations(environment, signal),
+              ),
+            listSquareDevices: (environment, locationId, signal) =>
+              run(() =>
+                squareSetup.listSquareDevices(
+                  environment,
+                  locationId,
+                  signal,
+                ),
+              ),
+            listSquareDeviceCodes: (environment, locationId, signal) =>
+              run(() =>
+                squareSetup.listSquareDeviceCodes(
+                  environment,
+                  locationId,
+                  signal,
+                ),
+              ),
+            createSquareDeviceCode: (
+              environment,
+              locationId,
+              name,
+              signal,
+            ) =>
+              runIrreversibleMutation(() =>
+                squareSetup.createSquareDeviceCode(
+                  environment,
+                  locationId,
+                  name,
+                  signal,
+                ),
+              ),
+            getSquareDeviceCode: (environment, deviceCodeId, signal) =>
+              run(() =>
+                squareSetup.getSquareDeviceCode(
+                  environment,
+                  deviceCodeId,
+                  signal,
+                ),
+              ),
+          } satisfies SettingsSquareSetupControlPort),
+        }
+      : {}),
     getCatalogRefreshState: () => {
       assertSameSession(lease.get(), identity);
       return input.control.getCatalogRefreshState();
@@ -119,6 +206,26 @@ function securedSettingsPort(
       run(() => input.control.connectPrinter(peripheralId, signal)),
     testPrinter: (signal) =>
       run(() => input.control.testPrinter(signal)),
+    ...(input.control.testCashDrawer
+      ? {
+          testCashDrawer: async (signal: AbortSignal) => {
+            assertSameSession(lease.get(), identity);
+            // 正式开箱动作在发出脉冲前自行复核 lease；脉冲后不得改写终态。
+            return input.control.testCashDrawer!(signal);
+          },
+        }
+      : {}),
+    ...(leaseAwareControl.clearSavedPrinter
+      ? {
+          clearSavedPrinter: async (signal: AbortSignal) => {
+            assertSameSession(lease.get(), identity);
+            return leaseAwareControl.clearSavedPrinter!(
+              signal,
+              () => assertSameSession(lease.get(), identity),
+            );
+          },
+        }
+      : {}),
     testScanner: (signal) =>
       run(() => input.control.testScanner(signal)),
     setExternalDisplayEnabled: (enabled, signal) =>

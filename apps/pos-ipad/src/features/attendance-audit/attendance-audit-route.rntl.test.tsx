@@ -17,7 +17,7 @@ const mockGetDeviceIdentity = jest.fn<
     storeCode: string;
   }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -26,7 +26,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -130,7 +130,7 @@ test("复核设备绑定后零参数创建 presenter，并同步后端在线状�
   expect(mockSetOnline).toHaveBeenCalledWith(true);
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
@@ -188,7 +188,7 @@ test("安全 runtime 未接线时失败关闭并提供返回销售", async () =>
   });
   expect(mockCreatePresenter).not.toHaveBeenCalled();
   mockUnavailableProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
 });
 

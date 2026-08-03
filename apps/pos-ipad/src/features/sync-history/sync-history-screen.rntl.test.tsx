@@ -30,6 +30,16 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@/ui/feedback", () => ({
+  usePosSound: () => ({
+    buttonSoundEnabled: false,
+    play: jest.fn(),
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: false,
+  }),
+}));
+
 jest.mock("@react-native-community/datetimepicker");
 
 function order(
@@ -428,7 +438,7 @@ describe("SyncHistoryScreen", () => {
     expect(
       screen.getByTestId("sync-history-row-eligible").props
         .accessibilityState,
-    ).toEqual({ checked: true });
+    ).toMatchObject({ checked: true, disabled: false });
     await fireEvent.press(
       screen.getByTestId("sync-history-retransmit-selected"),
     );
@@ -441,7 +451,7 @@ describe("SyncHistoryScreen", () => {
     });
   });
 
-  it("Blocked403 和 Rejected 明确显示重新认证与主管门禁，且没有退款 action", async () => {
+  it("Blocked403 和 Rejected 显示真实处置门禁，且不可选择或发起无效补传", async () => {
     const port = new ScreenHistoryPort([
       order({
         localSequence: 102,
@@ -476,21 +486,22 @@ describe("SyncHistoryScreen", () => {
     await screen.findByTestId("sync-history-row-blocked");
 
     expect(screen.getByText("Re-authenticate before retransmitting")).toBeTruthy();
-    expect(screen.getByText("Supervisor review required")).toBeTruthy();
+    expect(screen.getByText("Back-office handling required")).toBeTruthy();
+    expect(
+      screen.getByTestId("sync-history-row-blocked").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("sync-history-row-rejected").props
+        .accessibilityState.disabled,
+    ).toBe(true);
     await fireEvent.press(screen.getByTestId("sync-history-row-blocked"));
     await fireEvent.press(screen.getByTestId("sync-history-row-rejected"));
-    await fireEvent.press(
-      screen.getByTestId("sync-history-retransmit-selected"),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("sync-history-reauthentication-required"),
-      ).toBeTruthy();
-      expect(
-        screen.getByTestId("sync-history-supervisor-required"),
-      ).toBeTruthy();
-    });
+    expect(presenter.getState().selectedOrderGuids).toEqual([]);
+    expect(
+      screen.getByTestId("sync-history-retransmit-selected").props
+        .accessibilityState.disabled,
+    ).toBe(true);
     expect(port.restoreCalls).toEqual([]);
     expect(screen.queryByText(/refund/i)).toBeNull();
     expect("requestRefund" in presenter).toBe(false);

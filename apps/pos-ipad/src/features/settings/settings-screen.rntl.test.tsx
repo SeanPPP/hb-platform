@@ -1,13 +1,8 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  jest,
-} from "@jest/globals";
+import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { Linking, StyleSheet } from "react-native";
+
+import type { SettingsSquareLocation } from "./settings-square-setup";
 
 import {
   SETTINGS_APP_UPDATE_PERMISSION,
@@ -26,7 +21,9 @@ import {
   type SettingsDangerousConfirmation,
   type SettingsDangerousActionResult,
   type SettingsPaymentSettingsInput,
+  type SettingsPrinterDevice,
   type SettingsSnapshot,
+  type SettingsSquareSetupControlPort,
 } from "./index";
 
 import {
@@ -42,23 +39,22 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
-jest.mock("@/ui/feedback/pos-sound-context", () => ({
-  usePosSound: jest.fn(),
-}));
+jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
 
-const mockPlay = jest.fn();
-const mockSetButtonSoundEnabled = jest.fn();
-const mockSetSpecialNodeSoundEnabled = jest.fn();
+const mockUsePosSound = jest.mocked(usePosSound);
+const playSound = jest.fn();
+const setButtonSoundEnabled = jest.fn();
+const setSpecialNodeSoundEnabled = jest.fn();
 
 const presenters: SettingsPresenter[] = [];
 
 beforeEach(() => {
   jest.clearAllMocks();
-  jest.mocked(usePosSound).mockReturnValue({
+  mockUsePosSound.mockReturnValue({
     buttonSoundEnabled: true,
-    play: mockPlay,
-    setButtonSoundEnabled: mockSetButtonSoundEnabled,
-    setSpecialNodeSoundEnabled: mockSetSpecialNodeSoundEnabled,
+    play: playSound,
+    setButtonSoundEnabled,
+    setSpecialNodeSoundEnabled,
     specialNodeSoundEnabled: false,
   });
 });
@@ -69,6 +65,97 @@ afterEach(() => {
 });
 
 describe("SettingsScreen", () => {
+  it("设置内容滚动区采用系统键盘避让合同", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+
+    expect(screen.getByTestId("settings-content-scroll").props).toMatchObject({
+      automaticallyAdjustKeyboardInsets: true,
+      keyboardDismissMode: "interactive",
+      keyboardShouldPersistTaps: "handled",
+    });
+  });
+
+  it("常规分区提供双语、独立且符合 44pt 合同的两组音效开关", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    const buttonToggle = screen.getByTestId("settings-button-sound");
+    const specialNodeToggle = screen.getByTestId(
+      "settings-special-node-sound",
+    );
+    expect(screen.getByText("Sound feedback")).toBeTruthy();
+    expect(screen.getByText("Button sounds")).toBeTruthy();
+    expect(screen.getByText("Special event sounds")).toBeTruthy();
+    expect(buttonToggle.props.accessibilityLabel).toBe("Button sounds");
+    expect(buttonToggle.props.accessibilityRole).toBe("switch");
+    expect(buttonToggle.props.accessibilityState).toEqual(
+      expect.objectContaining({ checked: true }),
+    );
+    expect(specialNodeToggle.props.accessibilityLabel).toBe(
+      "Special event sounds",
+    );
+    expect(specialNodeToggle.props.accessibilityRole).toBe("switch");
+    expect(specialNodeToggle.props.accessibilityState).toEqual(
+      expect.objectContaining({ checked: false }),
+    );
+    for (const toggle of [buttonToggle, specialNodeToggle]) {
+      expect(
+        StyleSheet.flatten(toggle.props.style).minHeight,
+      ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    }
+
+    await fireEvent(buttonToggle, "valueChange", false);
+    expect(setButtonSoundEnabled).toHaveBeenCalledWith(false);
+    expect(setSpecialNodeSoundEnabled).not.toHaveBeenCalled();
+
+    await fireEvent(specialNodeToggle, "valueChange", true);
+    expect(setSpecialNodeSoundEnabled).toHaveBeenCalledWith(true);
+    expect(setButtonSoundEnabled).toHaveBeenCalledTimes(1);
+    expect(playSound).not.toHaveBeenCalled();
+
+    await screen.rerender(<SettingsScreen locale="zh" presenter={presenter} />);
+    expect(screen.getByText("音效反馈")).toBeTruthy();
+    expect(screen.getByText("普通按钮音效")).toBeTruthy();
+    expect(screen.getByText("特殊节点音效")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "覆盖按钮、按键、页面导航和危险操作；开启时播放一次示例，关闭后保持静音。",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "覆盖商品查询、加购/累加、未找到和受阻结果；开启时播放一次示例，关闭后保持静音。",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("设置导航与危险操作分别使用 navigate/danger 音", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(playSound).toHaveBeenCalledWith("navigate");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-general"));
+    await fireEvent.press(screen.getByTestId("settings-catalog-reset"));
+    expect(playSound).toHaveBeenLastCalledWith("danger");
+  });
+
   it("运行时不可用页按当前语言显示", async () => {
     const onBack = jest.fn();
     const screen = await render(
@@ -113,76 +200,6 @@ describe("SettingsScreen", () => {
 
     await fireEvent.press(screen.getByTestId("settings-back"));
     expect(onBack).toHaveBeenCalledTimes(1);
-  });
-
-  it("普通按钮与特殊节点音效以两个独立开关呈现，并提供中英文说明", async () => {
-    const presenter = createPresenter(new ScreenSettingsPort());
-    await presenter.load();
-    const screen = await render(
-      <SettingsScreen locale="en" presenter={presenter} />,
-    );
-    await screen.findByTestId("settings-pane-content-general");
-
-    expect(screen.getByText("Sound feedback")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Covers buttons, keys, page navigation and dangerous actions. Turn it on to hear a sample; turn it off to keep them silent.",
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Covers product lookup, cart add/increment, not-found and blocked results. Turn it on to hear a sample; turn it off to keep them silent.",
-      ),
-    ).toBeTruthy();
-
-    const buttonSound = screen.getByTestId("settings-button-sound");
-    const specialNodeSound = screen.getByTestId(
-      "settings-special-node-sound",
-    );
-    expect(buttonSound.props).toEqual(
-      expect.objectContaining({
-        accessibilityLabel: "Button sounds",
-        accessibilityRole: "switch",
-        accessibilityState: { checked: true },
-        value: true,
-      }),
-    );
-    expect(specialNodeSound.props).toEqual(
-      expect.objectContaining({
-        accessibilityLabel: "Special event sounds",
-        accessibilityRole: "switch",
-        accessibilityState: { checked: false },
-        value: false,
-      }),
-    );
-    for (const control of [buttonSound, specialNodeSound]) {
-      expect(StyleSheet.flatten(control.props.style).minHeight).toBeGreaterThanOrEqual(
-        SETTINGS_MIN_TOUCH_TARGET,
-      );
-    }
-
-    await fireEvent(buttonSound, "valueChange", false);
-    await fireEvent(specialNodeSound, "valueChange", true);
-    expect(mockSetButtonSoundEnabled).toHaveBeenCalledWith(false);
-    expect(mockSetSpecialNodeSoundEnabled).toHaveBeenCalledWith(true);
-    expect(mockPlay).not.toHaveBeenCalled();
-
-    await screen.rerender(
-      <SettingsScreen locale="zh" presenter={presenter} />,
-    );
-    expect(screen.getByText("音效反馈")).toBeTruthy();
-    expect(screen.getByLabelText("普通按钮音效")).toBeTruthy();
-    expect(screen.getByLabelText("特殊节点音效")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "覆盖按钮、按键、页面导航和危险操作；开启时播放一次示例，关闭后保持静音。",
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "覆盖商品查询、加购/累加、未找到和受阻结果；开启时播放一次示例，关闭后保持静音。",
-      ),
-    ).toBeTruthy();
   });
 
   it("当前终端卡片按分店名称、设备代码、分店代码展示完整身份", async () => {
@@ -524,6 +541,224 @@ describe("SettingsScreen", () => {
     expect(screen.queryByText(/Bearer|https?:\/\//)).toBeNull();
   });
 
+  it("Production Square 使用只读加载选择链，Sandbox 明确禁用 Device Code", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await screen.findByTestId("settings-pane-content-payments");
+
+    expect(screen.getByTestId("settings-square-token-status")).toBeTruthy();
+    expect(
+      screen.getByTestId("settings-square-location-load").props
+        .accessibilityRole,
+    ).toBe("button");
+    expect(
+      screen.getByTestId("settings-square-location-select").props
+        .accessibilityRole,
+    ).toBe("button");
+    expect(
+      screen.getByTestId("settings-square-device-load").props
+        .accessibilityRole,
+    ).toBe("button");
+    expect(
+      screen.getByTestId("settings-square-device-select").props
+        .accessibilityRole,
+    ).toBe("button");
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-square-location-row").props.style,
+      ).flexWrap,
+    ).toBe("wrap");
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-square-location-select").props.style,
+      ).minWidth,
+    ).toBeLessThanOrEqual(140);
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-square-location-select").props.style,
+      ).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    expect(screen.queryByLabelText("Square 门店位置 ID")).toBeNull();
+    expect(screen.queryByLabelText("Square 终端设备 ID")).toBeNull();
+    expect(
+      screen.getByTestId("settings-square-device-code-create").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+    expect(
+      screen.getByTestId("settings-square-device-code-refresh").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+
+    await fireEvent.press(
+      screen.getByTestId("settings-square-location-load"),
+    );
+    await screen.findByTestId(
+      "settings-square-location-picker-option-location-1",
+    );
+    expect(screen.getByText("已配置且已启用")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId(
+        "settings-square-location-picker-option-location-1",
+      ),
+    );
+    expect(screen.getByText("location-1 · ACTIVE")).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId("settings-square-device-load"));
+    await screen.findByTestId(
+      "settings-square-device-picker-option-device-1",
+    );
+    await fireEvent.press(
+      screen.getByTestId("settings-square-device-picker-option-device-1"),
+    );
+    expect(screen.getByText("device-1 · SQ-01 · ENABLED")).toBeTruthy();
+
+    await fireEvent.press(
+      screen.getByTestId("settings-square-device-code-load"),
+    );
+    const currentCode = await screen.findByTestId(
+      "settings-square-device-code-device-code-1",
+    );
+    expect(screen.getByText("PAIR-01 · PAIRED")).toBeTruthy();
+    await fireEvent.press(currentCode);
+    expect(
+      screen.getByTestId("settings-square-device-code-device-code-1").props
+        .accessibilityState.selected,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-square-device-code-refresh").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+
+    await fireEvent.press(screen.getByTestId("settings-square-sandbox"));
+
+    expect(
+      screen.getByText(
+        "Sandbox 使用 Square 官方测试终端，无需创建或配对 Device Code。",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("settings-square-device-code-create").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-square-device-code-refresh").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+  });
+
+  it("Square runtime 未就绪时仍允许首次配置，但阻止测试", async () => {
+    const port = new ScreenSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      paymentProvider: null,
+      square: {
+        ...current.square,
+        available: false,
+        blockerCode: "SQUARE_CONFIGURATION_MISSING",
+        deviceId: "",
+        locationId: "",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(
+      screen.getByTestId("settings-payment-provider-square").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+    await fireEvent.press(
+      screen.getByTestId("settings-payment-provider-square"),
+    );
+    expect(screen.queryByText(/运行时未配置/)).toBeNull();
+    expect(
+      screen.getByTestId("settings-square-location-load").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+    expect(
+      screen.getByTestId("settings-square-test").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+  });
+
+  it.each([
+    "SQUARE_CONFIGURATION_INVALID",
+    "SQUARE_CONFIGURATION_LOAD_FAILED",
+  ])("Square setup 可用时仍显示真实 runtime 故障 %s", async (blockerCode) => {
+    const port = new ScreenSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      square: {
+        ...current.square,
+        available: false,
+        blockerCode,
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(screen.getByText(new RegExp(blockerCode))).toBeTruthy();
+  });
+
+  it("Square 加载位置为空或失败时在选择框内显示明确状态", async () => {
+    const emptyPort = new ScreenSettingsPort();
+    emptyPort.squareLocations = Object.freeze([]);
+    const emptyPresenter = createPresenter(emptyPort);
+    await emptyPresenter.load();
+    const emptyScreen = await render(
+      <SettingsScreen locale="zh" presenter={emptyPresenter} />,
+    );
+    await fireEvent.press(emptyScreen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(
+      emptyScreen.getByTestId("settings-square-location-load"),
+    );
+    expect(
+      await emptyScreen.findAllByText("服务端未返回 Square 门店位置。"),
+    ).not.toHaveLength(0);
+    expect(
+      emptyScreen.getByTestId("settings-square-location-select").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+
+    emptyScreen.unmount();
+    const failedPort = new ScreenSettingsPort();
+    failedPort.squareLocationLoadFailure = true;
+    const failedPresenter = createPresenter(failedPort);
+    await failedPresenter.load();
+    const failedScreen = await render(
+      <SettingsScreen locale="zh" presenter={failedPresenter} />,
+    );
+    await fireEvent.press(failedScreen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(
+      failedScreen.getByTestId("settings-square-location-load"),
+    );
+    expect(
+      await failedScreen.findAllByText("无法加载 Square 设置，请重试。"),
+    ).not.toHaveLength(0);
+    expect(
+      failedScreen.getByTestId("settings-square-location-select").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+  });
+
   it("支付页只编辑公开 Square/Linkly 选择，不出现 token、secret 或密码输入", async () => {
     const port = new ScreenSettingsPort();
     port.snapshotValue = { ...snapshot(), paymentProvider: null };
@@ -566,13 +801,23 @@ describe("SettingsScreen", () => {
       screen.getByTestId("settings-payment-provider-square"),
     );
     await fireEvent.press(screen.getByTestId("settings-square-sandbox"));
-    await fireEvent.changeText(
-      screen.getByTestId("settings-square-location"),
-      "location-2",
+    await fireEvent.press(
+      screen.getByTestId("settings-square-location-load"),
     );
-    await fireEvent.changeText(
-      screen.getByTestId("settings-square-device"),
-      "device-2",
+    await screen.findByTestId(
+      "settings-square-location-picker-option-location-2",
+    );
+    await fireEvent.press(
+      screen.getByTestId(
+        "settings-square-location-picker-option-location-2",
+      ),
+    );
+    await fireEvent.press(screen.getByTestId("settings-square-device-load"));
+    await screen.findByTestId(
+      "settings-square-device-picker-option-device-2",
+    );
+    await fireEvent.press(
+      screen.getByTestId("settings-square-device-picker-option-device-2"),
     );
     await fireEvent.press(screen.getByTestId("settings-linkly-sandbox"));
     await fireEvent.press(screen.getByTestId("settings-payment-save"));
@@ -595,8 +840,10 @@ describe("SettingsScreen", () => {
     await screen.findByText(/\[payment-settings-saved\]/);
     expect(screen.getByText("Payment settings saved")).toBeTruthy();
     expect(screen.queryByText("支付终端设置已保存")).toBeNull();
-    expect(screen.getByLabelText("Square location ID")).toBeTruthy();
-    expect(screen.getByLabelText("Square device ID")).toBeTruthy();
+    expect(screen.getByText("Gold Coast")).toBeTruthy();
+    expect(screen.getByText("Backup Terminal")).toBeTruthy();
+    expect(screen.queryByLabelText("Square location ID")).toBeNull();
+    expect(screen.queryByLabelText("Square device ID")).toBeNull();
   });
 
   it("中文危险操作显示明确确认，确认后才调用端口", async () => {
@@ -655,12 +902,16 @@ describe("SettingsScreen", () => {
     await screen.findByTestId("settings-pane-content-peripherals");
     await fireEvent.press(screen.getByTestId("settings-printer-scan"));
     await screen.findByText(/\[printer-scan-finished\]/);
+    expect(
+      screen.getByTestId("settings-printer-picker-modal").props.visible,
+    ).toBe(true);
     await screen.findByTestId("settings-printer-device-printer-2");
     await fireEvent.press(
       screen.getByTestId("settings-printer-connect-printer-2"),
     );
     await screen.findByText(/\[printer-connected\]/);
     expect(port.connectedPrinters).toEqual(["printer-2"]);
+    expect(screen.getByText("Printer connected and saved")).toBeTruthy();
 
     await fireEvent.press(screen.getByTestId("settings-nav-hardware"));
     await screen.findByTestId("settings-pane-content-hardware");
@@ -676,6 +927,352 @@ describe("SettingsScreen", () => {
     expect(port.displayTests).toBe(1);
     expect(screen.getByText("••••0001 · 12 chars")).toBeTruthy();
     expect(screen.queryByText("930000000001")).toBeNull();
+  });
+
+  it("已保存打印机可独立测试钱箱并清除，按钮按设备与钱箱设置启用", async () => {
+    const port = new ScreenSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      printer: {
+        ...current.printer,
+        drawerEnabled: true,
+        peripheralId: "printer-1",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+
+    const drawerTest = screen.getByTestId("settings-drawer-test");
+    const clearSavedPrinter = screen.getByTestId(
+      "settings-printer-clear-saved",
+    );
+    expect(screen.getByText("测试钱箱")).toBeTruthy();
+    expect(screen.getByText("清除已保存打印机")).toBeTruthy();
+    expect(drawerTest.props.accessibilityState.disabled).toBe(false);
+    expect(clearSavedPrinter.props.accessibilityState.disabled).toBe(false);
+    expect(StyleSheet.flatten(drawerTest.props.style).minHeight).toBeGreaterThanOrEqual(
+      SETTINGS_MIN_TOUCH_TARGET,
+    );
+
+    await fireEvent.press(drawerTest);
+    await waitFor(() => expect(port.cashDrawerTests).toBe(1));
+    await screen.findByText(/\[cash-drawer-test-passed\]/);
+    expect(screen.getByText("钱箱测试指令已发送")).toBeTruthy();
+    await fireEvent.press(clearSavedPrinter);
+    await waitFor(() => expect(port.clearedPrinterSettings).toBe(1));
+    await screen.findByText(/\[printer-cleared\]/);
+    expect(screen.getByText("已清除保存的打印机")).toBeTruthy();
+    expect(presenter.getState().printer.peripheralId).toBeNull();
+    expect(presenter.getState().hardware.printerStatus).toBe("connected");
+  });
+
+  it("钱箱未启用时阻止测试，但仍允许清除已有打印机", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+
+    expect(
+      screen.getByTestId("settings-drawer-test").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-printer-clear-saved").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+  });
+
+  it("没有已保存打印机时同时阻止钱箱测试与清除", async () => {
+    const port = new ScreenSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      printer: {
+        ...current.printer,
+        drawerEnabled: false,
+        peripheralId: null,
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+
+    expect(
+      screen.getByTestId("settings-drawer-test").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId("settings-printer-clear-saved").props
+        .accessibilityState.disabled,
+    ).toBe(true);
+  });
+
+  it("扫描框显示附近全部 BLE 设备、固定操作区并保留 printer001 双语推荐目标", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+    await screen.findByTestId("settings-printer-device-printer001");
+
+    expect(screen.getByText("Choose a nearby Bluetooth device")).toBeTruthy();
+    expect(
+      screen.getByText(
+        /shows every nearby Bluetooth Low Energy device.*printer001 is the recommended target/,
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Name")).toHaveLength(3);
+    expect(screen.getAllByText("Device address (iOS UUID)")).toHaveLength(3);
+    expect(
+      screen.getByTestId("settings-printer-device-name-printer001").props
+        .children,
+    ).toBe("Xprinter N160");
+    expect(
+      screen.getByTestId("settings-printer-device-address-printer001").props
+        .children,
+    ).toBe("printer001");
+    expect(screen.getByText("Recommended target · printer001")).toBeTruthy();
+    expect(screen.getByText("Backup Xprinter")).toBeTruthy();
+    expect(screen.getByText("Stockroom temperature sensor")).toBeTruthy();
+
+    const deviceList = screen.getByTestId("settings-printer-device-list");
+    expect(deviceList.props.scrollEnabled).not.toBe(false);
+    expect(StyleSheet.flatten(deviceList.props.style).flexShrink).toBe(1);
+    expect(screen.getByTestId("settings-printer-picker-header")).toBeTruthy();
+    expect(screen.getByTestId("settings-printer-picker-actions")).toBeTruthy();
+
+    const preferredTag = screen.getByTestId(
+      "settings-printer-preferred-printer001",
+    );
+    expect(
+      StyleSheet.flatten(preferredTag.props.style).fontSize,
+    ).toBeLessThanOrEqual(12);
+
+    const otherPrinterAction = screen.getByTestId(
+      "settings-printer-connect-printer-2",
+    );
+    expect(otherPrinterAction.props.accessibilityState.disabled).toBe(false);
+    expect(
+      StyleSheet.flatten(otherPrinterAction.props.style).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    expect(screen.getAllByText("Connect & Save")).toHaveLength(3);
+
+    screen.unmount();
+    const chinesePresenter = createPresenter(new ScreenSettingsPort());
+    await chinesePresenter.load();
+    const chineseScreen = await render(
+      <SettingsScreen locale="zh" presenter={chinesePresenter} />,
+    );
+    await chineseScreen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(
+      chineseScreen.getByTestId("settings-nav-peripherals"),
+    );
+    await fireEvent.press(chineseScreen.getByTestId("settings-printer-scan"));
+    await chineseScreen.findByText("推荐目标");
+    expect(chineseScreen.getByText("选择附近的蓝牙设备")).toBeTruthy();
+    expect(chineseScreen.getAllByText("名称")).toHaveLength(3);
+    expect(chineseScreen.getAllByText("设备地址（iOS UUID）")).toHaveLength(3);
+    expect(
+      chineseScreen.getByText(
+        /显示附近所有低功耗蓝牙设备.*printer001 是推荐目标/,
+      ),
+    ).toBeTruthy();
+    expect(chineseScreen.getAllByText("连接并保存")).toHaveLength(3);
+  });
+
+  it("蓝牙扫描没有发现附近设备时仍弹出结果框并提供重扫提示", async () => {
+    const port = new ScreenSettingsPort();
+    port.printerDevices = [];
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+
+    expect(
+      screen.getByTestId("settings-printer-picker-modal").props.visible,
+    ).toBe(true);
+    expect(
+      await screen.findByText(/未发现附近的蓝牙设备.*蓝牙已开启/),
+    ).toBeTruthy();
+    expect(screen.getByTestId("settings-printer-picker-rescan")).toBeTruthy();
+    expect(screen.queryByText("连接并保存")).toBeNull();
+  });
+
+  it("通用扫描失败只显示错误，不同时显示成功空结果", async () => {
+    const port = new ScreenSettingsPort();
+    port.printerScanError = new Error("generic scan failure");
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+
+    await screen.findByText(/\[printer-scan-failed\]/);
+    expect(screen.getAllByText("Printer scan failed")).toHaveLength(2);
+    expect(
+      screen.queryByText(
+        /No (?:compatible printer|nearby Bluetooth devices) found/,
+      ),
+    ).toBeNull();
+    expect(screen.queryByTestId("settings-printer-device-list")).toBeNull();
+  });
+
+  it("蓝牙权限缺失时显示明确引导并可直接前往系统设置", async () => {
+    const openSettings = jest
+      .spyOn(Linking, "openSettings")
+      .mockResolvedValue(undefined);
+    const port = new ScreenSettingsPort();
+    port.printerScanError = Object.assign(
+      new Error("Bluetooth permission required"),
+      { code: "PRINTER_BLUETOOTH_PERMISSION_REQUIRED" },
+    );
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+
+    await screen.findByText(/\[printer-bluetooth-permission-required\]/);
+    expect(
+      screen.getByText(
+        "请在 iPad 系统设置中允许 HB POS 使用蓝牙，然后返回应用重新扫描。",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/未发现(?:兼容打印机|附近的蓝牙设备)/),
+    ).toBeNull();
+
+    await fireEvent.press(
+      screen.getByTestId("settings-printer-open-system-settings"),
+    );
+    expect(openSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("蓝牙关闭时提示开启蓝牙且不会误导用户修改应用权限", async () => {
+    const port = new ScreenSettingsPort();
+    port.printerScanError = Object.assign(new Error("Bluetooth powered off"), {
+      code: "PRINTER_BLUETOOTH_POWERED_OFF",
+    });
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+
+    await screen.findByText(/\[printer-bluetooth-powered-off\]/);
+    expect(screen.getAllByText("蓝牙已关闭，请开启后重新扫描")).toHaveLength(2);
+    expect(
+      screen.queryByTestId("settings-printer-open-system-settings"),
+    ).toBeNull();
+  });
+
+  it("连接失败与已连接但保存失败显示不同的本地化状态", async () => {
+    const connectionFailurePort = new ScreenSettingsPort();
+    connectionFailurePort.printerConnectionFailure = true;
+    const connectionFailurePresenter = createPresenter(connectionFailurePort);
+    await connectionFailurePresenter.load();
+    const chineseScreen = await render(
+      <SettingsScreen
+        locale="zh"
+        presenter={connectionFailurePresenter}
+      />,
+    );
+    await chineseScreen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(
+      chineseScreen.getByTestId("settings-nav-peripherals"),
+    );
+    await fireEvent.press(chineseScreen.getByTestId("settings-printer-scan"));
+    await chineseScreen.findByTestId("settings-printer-device-printer001");
+    await fireEvent.press(
+      chineseScreen.getByTestId("settings-printer-connect-printer001"),
+    );
+    await chineseScreen.findByText(/\[printer-connect-failed\]/);
+    expect(
+      chineseScreen.getAllByText("打印机连接失败，设置未保存"),
+    ).toHaveLength(2);
+
+    chineseScreen.unmount();
+    const saveFailurePort = new ScreenSettingsPort();
+    saveFailurePort.printerSettingsSaveFailure = true;
+    const saveFailurePresenter = createPresenter(saveFailurePort);
+    await saveFailurePresenter.load();
+    const englishScreen = await render(
+      <SettingsScreen locale="en" presenter={saveFailurePresenter} />,
+    );
+    await englishScreen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(englishScreen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(englishScreen.getByTestId("settings-printer-scan"));
+    await englishScreen.findByTestId("settings-printer-device-printer001");
+    await fireEvent.press(
+      englishScreen.getByTestId("settings-printer-connect-printer001"),
+    );
+    await englishScreen.findByText(/\[printer-connected-save-failed\]/);
+    expect(
+      englishScreen.getAllByText(
+        "Printer connected, but settings could not be saved",
+      ),
+    ).toHaveLength(2);
+    expect(saveFailurePort.connectedPrinters).toEqual(["printer001"]);
+  });
+
+  it("打印测试结果 unknown 使用稳定状态文案且不自动重试", async () => {
+    const port = new ScreenSettingsPort();
+    port.printerTestError = Object.assign(
+      new Error("ambiguous native print result"),
+      { code: "SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN" },
+    );
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-test"));
+
+    await screen.findByText(/\[printer-test-unknown\]/);
+    expect(
+      screen.getByText(
+        "测试命令已发送，但打印机未确认结果；请人工检查是否出纸，应用不会自动重试。",
+      ),
+    ).toBeTruthy();
+    expect(port.printerTests).toBe(1);
   });
 
   it("不可用硬件不显示绿色健康状态，关键配置输入使用中文标签", async () => {
@@ -739,6 +1336,106 @@ class ScreenSettingsPort implements SettingsControlPort {
   public readonly apiAddressTests: string[] = [];
   public readonly connectedPrinters: string[] = [];
   public readonly savedPayments: SettingsPaymentSettingsInput[] = [];
+  public readonly savedPrinterSettings: ReceiptPrinterSettings[] = [];
+  public readonly squareSetup: SettingsSquareSetupControlPort = {
+    createSquareDeviceCode: async (environment, locationId, name) => ({
+      code: "PAIR-02",
+      deviceId: null,
+      id: "device-code-2",
+      locationId,
+      name,
+      status: environment === "Production" ? "UNPAIRED" : "SANDBOX_TEST",
+    }),
+    getSquareDeviceCode: async (_environment, deviceCodeId) =>
+      this.squareDeviceCodes.find((item) => item.id === deviceCodeId) ??
+      this.squareDeviceCodes[0]!,
+    getSquareTokenStatus: async (environment) => ({
+      configured: true,
+      enabled: true,
+      environment,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    }),
+    listSquareDeviceCodes: async () => this.squareDeviceCodes,
+    listSquareDevices: async (_environment, locationId) =>
+      this.squareDevices.map((device) => ({ ...device, locationId })),
+    listSquareLocations: async () => {
+      if (this.squareLocationLoadFailure) {
+        throw new Error("square locations unavailable");
+      }
+      return this.squareLocations;
+    },
+  };
+  public readonly squareDeviceCodes = [
+    {
+      code: "PAIR-01",
+      deviceId: "device-1",
+      id: "device-code-1",
+      locationId: "location-1",
+      name: "Front Terminal",
+      status: "PAIRED",
+    },
+  ] as const;
+  public readonly squareDevices = [
+    {
+      code: "SQ-01",
+      id: "device-1",
+      locationId: "location-1",
+      name: "Front Terminal",
+      sandboxTest: false,
+      status: "ENABLED",
+    },
+    {
+      code: "SQ-02",
+      id: "device-2",
+      locationId: "location-1",
+      name: "Backup Terminal",
+      sandboxTest: false,
+      status: "ENABLED",
+    },
+  ] as const;
+  public squareLocations: readonly SettingsSquareLocation[] = [
+    {
+      country: "AU",
+      currency: "AUD",
+      id: "location-1",
+      name: "Brisbane",
+      status: "ACTIVE",
+    },
+    {
+      country: "AU",
+      currency: "AUD",
+      id: "location-2",
+      name: "Gold Coast",
+      status: "ACTIVE",
+    },
+  ] as const;
+  public squareLocationLoadFailure = false;
+  public cashDrawerTests = 0;
+  public clearedPrinterSettings = 0;
+  public printerConnectionFailure = false;
+  public printerDevices: readonly SettingsPrinterDevice[] = [
+    {
+      id: "printer001",
+      name: "Xprinter N160",
+      preferred: true,
+      transport: "bluetooth",
+    },
+    {
+      id: "printer-2",
+      name: "Backup Xprinter",
+      preferred: false,
+      transport: "bluetooth",
+    },
+    {
+      id: "sensor-1",
+      name: "Stockroom temperature sensor",
+      preferred: false,
+      transport: "bluetooth-le",
+    },
+  ];
+  public printerScanError: Error | null = null;
+  public printerSettingsSaveFailure = false;
+  public printerTestError: Error | null = null;
   public printerTests = 0;
   public scannerTests = 0;
   public displayTests = 0;
@@ -805,19 +1502,39 @@ class ScreenSettingsPort implements SettingsControlPort {
   public async testPaymentProvider(): Promise<void> {}
 
   public async savePrinterSettings(
-    _settings: ReceiptPrinterSettings,
-  ): Promise<void> {}
+    settings: ReceiptPrinterSettings,
+  ): Promise<void> {
+    if (this.printerSettingsSaveFailure) {
+      throw new Error("printer settings save failed");
+    }
+    this.savedPrinterSettings.push(settings);
+  }
 
   public async scanPrinters() {
-    return [{ id: "printer-2", name: "Counter printer", transport: "usb" }];
+    if (this.printerScanError) throw this.printerScanError;
+    return this.printerDevices;
   }
 
   public async connectPrinter(peripheralId: string): Promise<void> {
+    if (this.printerConnectionFailure) {
+      throw new Error("printer connection failed");
+    }
     this.connectedPrinters.push(peripheralId);
   }
 
   public async testPrinter(): Promise<void> {
     this.printerTests += 1;
+    if (this.printerTestError) throw this.printerTestError;
+  }
+
+  public async testCashDrawer() {
+    this.cashDrawerTests += 1;
+    return { status: "completed" as const, errorCode: null };
+  }
+
+  public async clearSavedPrinter() {
+    this.clearedPrinterSettings += 1;
+    return { status: "completed" as const, errorCode: null };
   }
 
   public async testScanner() {

@@ -27,8 +27,11 @@ import type {
   RemoteOrderPaymentPreview,
 } from "@/core/contracts/remote-history";
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const REMOTE_HISTORY_MIN_TOUCH_TARGET = 44;
@@ -94,7 +97,6 @@ export function RemoteHistoryScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
-            sound="navigate"
             testID="remote-history-back"
             tone="quiet"
           />
@@ -113,7 +115,11 @@ export function RemoteHistoryScreen({
         />
       </View>
 
-      <View style={styles.filters}>
+      <PosKeyboardAwareScrollView
+        contentContainerStyle={styles.filters}
+        style={styles.filtersScroll}
+        testID="remote-history-filters-keyboard-scroll"
+      >
         <DateFilterField
           label={t("filters.from")}
           locale={locale}
@@ -158,7 +164,7 @@ export function RemoteHistoryScreen({
           testID="remote-history-apply-filters"
           tone="secondary"
         />
-      </View>
+      </PosKeyboardAwareScrollView>
       {dateInvalid ? (
         <Text style={styles.validation} testID="remote-history-date-invalid">
           {t("filters.invalidDate")}
@@ -544,7 +550,7 @@ function FilterField({
   return (
     <View style={[styles.filterField, grow && styles.filterFieldGrow]}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <PosTextInput
+      <PosKeyboardAwareTextInput
         autoCapitalize="none"
         autoCorrect={false}
         onChangeText={onChangeText}
@@ -596,7 +602,7 @@ function ActionButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
-  sound?: "navigate" | "tap";
+  sound?: "tap" | "navigate";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
 }>) {
@@ -796,6 +802,9 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 10,
     backgroundColor: posColors.surface,
+  },
+  filtersScroll: {
+    flexGrow: 0,
   },
   filterField: {
     width: 150,

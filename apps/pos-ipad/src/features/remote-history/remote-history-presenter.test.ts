@@ -32,6 +32,7 @@ const firstRow: RemoteOrderHistorySummary = {
 const secondRow: RemoteOrderHistorySummary = {
   ...firstRow,
   orderGuid: "10000000-0000-4000-8000-000000000002",
+  deviceCode: "IPAD-2",
   cashierName: "Bob",
 };
 
@@ -97,7 +98,7 @@ function presenter(
   });
 }
 
-test("refresh 固定可信门店、当前终端和 take=100，并自动读取首单详情", async () => {
+test("refresh 固定可信门店、默认查询全部终端和 take=100，并自动读取首单详情", async () => {
   const port = new MemoryPort();
   port.listImpl = async () => [firstRow];
   port.detailsImpl = async () => firstDetails;
@@ -111,7 +112,7 @@ test("refresh 固定可信门店、当前终端和 take=100，并自动读取首
   assert.deepEqual(port.queries, [
     {
       storeCode: "S1",
-      deviceCode: "IPAD-1",
+      deviceCode: null,
       soldFromIso: "2026-07-26T14:00:00.000Z",
       soldToIso: "2026-07-27T13:59:59.999Z",
       keyword: null,
@@ -189,6 +190,8 @@ test("重打拒绝跨终端、未加载详情、缺权限或缺 port，且失败
     reprintPort,
   });
   await outsideDevice.refresh();
+  assert.equal(outsideDevice.state.details.kind, "ready");
+  assert.equal(outsideDevice.capabilities.reprint, false);
   await outsideDevice.reprintSelected();
   assert.deepEqual(reprintPort.orderGuids, []);
 

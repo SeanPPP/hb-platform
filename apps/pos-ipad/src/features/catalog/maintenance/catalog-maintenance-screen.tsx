@@ -424,7 +424,7 @@ function CatalogMaintenanceButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
-  sound?: "navigate" | "tap";
+  sound?: "tap" | "navigate";
   testID: string;
   tone?: "primary" | "secondary";
 }>) {

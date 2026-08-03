@@ -1327,6 +1327,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/linkly/cloud-backend/settlements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudBackendSettlementRequest"];
+                    "text/json": components["schemas"]["LinklyCloudBackendSettlementRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudBackendSettlementRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/linkly/cloud-backend/terminal": {
         parameters: {
             query?: never;
@@ -1410,6 +1453,45 @@ export interface paths {
         trace?: never;
     };
     "/api/v1/linkly/cloud-backend/transactions/resumable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    environment?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/linkly/cloud-backend/settlements/resumable": {
         parameters: {
             query?: never;
             header?: never;
@@ -1606,6 +1688,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    environment?: string;
+                };
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/linkly/cloud-backend/transactions/{sessionId}/acknowledge": {
         parameters: {
             query?: never;
@@ -1620,6 +1743,51 @@ export interface paths {
                 query?: {
                     environment?: string;
                 };
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudBackendAcknowledgeRequest"];
+                    "text/json": components["schemas"]["LinklyCloudBackendAcknowledgeRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudBackendAcknowledgeRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
                 header?: never;
                 path: {
                     sessionId: string;
@@ -1788,6 +1956,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/linkly/cloud-backend/settlements/{sessionId}/receipt/printed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudBackendMarkReceiptPrintedRequest"];
+                    "text/json": components["schemas"]["LinklyCloudBackendMarkReceiptPrintedRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudBackendMarkReceiptPrintedRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendSessionResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/linkly/cloud-notifications/{environment}/{sessionId}/{type}": {
         parameters: {
             query?: never;
@@ -1825,6 +2038,49 @@ export interface paths {
                         "text/plain": components["schemas"]["StringApiResult"];
                         "application/json": components["schemas"]["StringApiResult"];
                         "text/json": components["schemas"]["StringApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/linkly/settlements/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklySettlementSyncRequest"];
+                    "text/json": components["schemas"]["LinklySettlementSyncRequest"];
+                    "application/*+json": components["schemas"]["LinklySettlementSyncRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklySettlementSyncResponse"];
+                        "application/json": components["schemas"]["LinklySettlementSyncResponse"];
+                        "text/json": components["schemas"]["LinklySettlementSyncResponse"];
                     };
                 };
             };
@@ -3868,6 +4124,10 @@ export interface components {
             lastHttpStatus?: number | null;
             notifications?: components["schemas"]["LinklyCloudBackendNotificationDto"][] | null;
             transactionSuccess?: boolean | null;
+            operationType?: string | null;
+            operationSuccess?: boolean | null;
+            settlementData?: string | null;
+            settlementReceiptTexts?: string[] | null;
             cardTransaction?: components["schemas"]["LinklyCloudBackendCardTransactionDto"];
         };
         LinklyCloudBackendSessionResponseApiResult: {
@@ -3875,6 +4135,9 @@ export interface components {
             data?: components["schemas"]["LinklyCloudBackendSessionResponse"];
             errorCode?: string | null;
             message?: string | null;
+        };
+        LinklyCloudBackendSettlementRequest: {
+            environment?: string | null;
         };
         LinklyCloudBackendStatusTestResponse: {
             environment?: string | null;
@@ -3961,6 +4224,44 @@ export interface components {
             data?: components["schemas"]["LinklyCloudCredentialUpsertResponse"];
             errorCode?: string | null;
             message?: string | null;
+        };
+        LinklySettlementSyncRequest: {
+            /** Format: int32 */
+            schemaVersion?: number;
+            /** Format: uuid */
+            settlementGuid?: string;
+            storeCode?: string | null;
+            deviceCode?: string | null;
+            /** Format: date */
+            businessDate?: string;
+            connectionMode?: string | null;
+            environment?: string | null;
+            providerSessionId?: string | null;
+            status?: string | null;
+            responseCode?: string | null;
+            responseText?: string | null;
+            settlementData?: string | null;
+            receiptTexts?: string[] | null;
+            /** Format: date-time */
+            requestedAt?: string;
+            /** Format: date-time */
+            completedAt?: string | null;
+            /** Format: date-time */
+            firstPrintedAt?: string | null;
+            /** Format: date-time */
+            lastPrintedAt?: string | null;
+            /** Format: int32 */
+            printCount?: number;
+            lastPrintError?: string | null;
+            /** Format: int64 */
+            clientRevision?: number;
+            providerSubmissionState?: components["schemas"]["ProviderSubmissionState"];
+        };
+        LinklySettlementSyncResponse: {
+            accepted?: boolean;
+            alreadySynced?: boolean;
+            /** Format: int64 */
+            acceptedRevision?: number;
         };
         ObjectApiResult: {
             success?: boolean;
@@ -4418,6 +4719,8 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        /** @enum {string} */
+        ProviderSubmissionState: "NotSubmitted" | "Submitted" | "Unknown";
         SellableItemDto: {
             storeCode?: string | null;
             productCode?: string | null;

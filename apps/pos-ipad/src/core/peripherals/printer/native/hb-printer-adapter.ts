@@ -70,7 +70,7 @@ export class HbPrinterNativeAdapter implements PrinterPort, CashDrawerPort {
     try {
       return await this.bridge.scan(
         boundedTimeout(options.durationMs ?? 5_000),
-        options.includeNonXprinter ?? false,
+        options.includeNonXprinter ?? true,
       );
     } finally {
       this.transientStatus = null;
@@ -78,10 +78,17 @@ export class HbPrinterNativeAdapter implements PrinterPort, CashDrawerPort {
   }
 
   async connect(peripheralId: string, timeoutMs?: number): Promise<void> {
-    await this.bridge.connect(
-      requiredText(peripheralId, "peripheralId"),
-      boundedTimeout(timeoutMs ?? 12_000),
-    );
+    const normalizedPeripheralId = requiredText(peripheralId, "peripheralId");
+    const timeout = boundedTimeout(timeoutMs ?? 12_000);
+    const status = await this.bridge.getStatus();
+    // N160 已 ready 时重复连接会中断现有 BLE 会话；同一 UUID 必须直接复用。
+    if (
+      status.connection === "ready" &&
+      status.peripheralId === normalizedPeripheralId
+    ) {
+      return;
+    }
+    await this.bridge.connect(normalizedPeripheralId, timeout);
   }
 
   async disconnect(): Promise<void> {

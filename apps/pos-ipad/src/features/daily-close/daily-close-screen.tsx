@@ -435,7 +435,6 @@ export function DailyCloseUnavailableScreen({
         <ActionButton
           label={dailyCloseText(locale, "unavailable.back")}
           onPress={onBack}
-          sound="navigate"
           testID="daily-close-unavailable-back"
           wide
         />
@@ -636,7 +635,7 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
-  sound?: "navigate" | "tap";
+  sound?: "tap" | "navigate";
   style?: StyleProp<ViewStyle>;
   testID: string;
   tone?: "primary" | "secondary" | "quiet";

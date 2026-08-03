@@ -557,11 +557,10 @@ test("耐久关闭在提交前被 store 拒绝时不得释放购物车 lease", a
   harness.drafts.abandonError = new Error("sqlite compare-and-swap rejected");
 
   await assert.rejects(
-    () =>
-      harness.runtime().abandonPrepared({
-        orderGuid: "order-1",
-        actionId: "abandon-rejected",
-      }),
+    () => harness.runtime().abandonPrepared({
+      orderGuid: "order-1",
+      actionId: "abandon-rejected",
+    }),
     /sqlite compare-and-swap rejected/,
   );
   assert.equal(harness.drafts.abandonCalls, 1);
@@ -946,6 +945,8 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
   public closeCalls = 0;
   public closeReplayed = false;
   public closeError: unknown = null;
+  public abandonError: unknown = null;
+  public onAbandonCommitted: (() => void) | null = null;
   public closeDraft: PaymentCheckoutDraft | null = null;
   public readonly closeInputs: Readonly<{
     orderGuid: string;
@@ -963,8 +964,6 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
   } | null = null;
   public afterCash: PaymentCheckoutDraft | null = null;
   public afterRemove: PaymentCheckoutDraft | null = null;
-  public abandonError: unknown = null;
-  public onAbandonCommitted: (() => void) | null = null;
 
   public constructor(
     public current: PaymentCheckoutDraft,

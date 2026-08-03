@@ -22,8 +22,11 @@ import {
 } from "./special-products-presenter";
 
 import type { SpecialProductItem } from "@/core/contracts";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 export const SPECIAL_PRODUCTS_MIN_TOUCH_TARGET = 44;
 
@@ -195,33 +198,38 @@ export function SpecialProductsScreen({
               style={styles.managementPane}
               testID="special-products-management"
             >
-              <Text style={styles.panelTitle}>{t("management.title")}</Text>
-              <Text style={styles.managementHint}>{t("management.hint")}</Text>
-              <PosTextInput
-                accessibilityLabel={t("management.searchLabel")}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!state.busy}
-                onChangeText={(query) => presenter.setSearchQuery(query)}
-                onSubmitEditing={() => void presenter.searchCandidates()}
-                placeholder={t("management.searchPlaceholder")}
-                placeholderTextColor="#7B8793"
-                selectionColor={posColors.orange}
-                style={styles.searchInput}
-                testID="special-products-search-input"
-                value={state.searchQuery}
-              />
-              <ActionButton
-                disabled={state.busy || state.searching}
-                label={
-                  state.searching
-                    ? t("management.searching")
-                    : t("management.search")
-                }
-                onPress={() => void presenter.searchCandidates()}
-                testID="special-products-search"
-                tone="secondary"
-              />
+              <PosKeyboardAwareScrollView
+                style={styles.managementFormScroll}
+                testID="special-products-management-keyboard-scroll"
+              >
+                <Text style={styles.panelTitle}>{t("management.title")}</Text>
+                <Text style={styles.managementHint}>{t("management.hint")}</Text>
+                <PosKeyboardAwareTextInput
+                  accessibilityLabel={t("management.searchLabel")}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!state.busy}
+                  onChangeText={(query) => presenter.setSearchQuery(query)}
+                  onSubmitEditing={() => void presenter.searchCandidates()}
+                  placeholder={t("management.searchPlaceholder")}
+                  placeholderTextColor="#7B8793"
+                  selectionColor={posColors.orange}
+                  style={styles.searchInput}
+                  testID="special-products-search-input"
+                  value={state.searchQuery}
+                />
+                <ActionButton
+                  disabled={state.busy || state.searching}
+                  label={
+                    state.searching
+                      ? t("management.searching")
+                      : t("management.search")
+                  }
+                  onPress={() => void presenter.searchCandidates()}
+                  testID="special-products-search"
+                  tone="secondary"
+                />
+              </PosKeyboardAwareScrollView>
 
               {state.candidates.length === 0 ? (
                 <Text style={styles.candidateEmpty}>{t("management.empty")}</Text>
@@ -399,7 +407,7 @@ function ActionButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
-  sound?: "danger" | "navigate" | "tap";
+  sound?: "tap" | "navigate" | "danger";
   testID: string;
   tone?: "primary" | "quiet" | "secondary";
 }>) {
@@ -583,6 +591,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flex: 0.85,
     padding: 18,
+  },
+  managementFormScroll: {
+    flexGrow: 0,
   },
   panelHeader: {
     alignItems: "center",

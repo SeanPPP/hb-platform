@@ -2,23 +2,24 @@
 
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const { getConfig } = require("expo/config");
 
 export const POS_IPAD_PRODUCTION_CHANNEL = "pos-ipad-production";
 export const POS_IPAD_RELEASE_CHANNEL_PREFIX = "pos-ipad-release-";
 export const EAS_CLI_VERSION = "21.3.0";
-export const POS_IPAD_APP_VERSION = JSON.parse(
-  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-).version;
 
 const PLATFORM = "ios";
 const REGISTRATION_PATH = "/api/pos-ipad/ota-releases";
 const PREFLIGHT_PATH = `${REGISTRATION_PATH}/preflight`;
 const READ_ONLY_SERVICE_TOKEN_PREFIX = "hbsvc_";
 const RUNTIME_VERSION_MAX_LENGTH = 120;
+const APP_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const EMPTY_EAS_RESULT = Object.freeze({
   updateGroupId: "",
   iosUpdateId: "",
@@ -34,7 +35,7 @@ const HELP_TEXT = `
   node scripts/publish-ota-release.mjs --runtime-version <version> --release-channel <channel> --message <message>
 
 参数：
-  --runtime-version <version>   OTA 目标 runtimeVersion。
+  --runtime-version <version>   OTA 目标 runtimeVersion；必须等于当前 resolved appVersion。
   --release-channel <channel>   本次 release 独立 channel，必须以 ${POS_IPAD_RELEASE_CHANNEL_PREFIX} 开头。
   --message <message>           EAS Update 发布说明。
   --project-id <uuid>           专用 EAS projectId；默认读取 EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID。
@@ -152,9 +153,18 @@ function buildEasEnvironment(options, environment) {
       environment.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID,
     "EAS projectId",
   );
-  const runtimeVersion = requiredCurrentRuntimeVersion(
+  const runtimeVersion = requiredToken(
     options.runtimeVersion,
+    "--runtime-version",
+    RUNTIME_VERSION_MAX_LENGTH,
   );
+  const currentRuntimeVersion = resolveCurrentRuntimeVersion();
+  if (runtimeVersion !== currentRuntimeVersion) {
+    throw new Error(
+      `--runtime-version ${runtimeVersion} 与当前 resolved appVersion ` +
+        `${currentRuntimeVersion} 不一致`,
+    );
+  }
   // 管理员凭据绝不能进入 EAS；旧 service token 环境变量也只剔除、不兼容读取。
   const {
     HBPOS_OTA_CENTER_ACCESS_TOKEN: _accessToken,
@@ -168,6 +178,41 @@ function buildEasEnvironment(options, environment) {
     EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
     EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: runtimeVersion,
   };
+}
+
+export function resolveCurrentRuntimeVersion() {
+  let resolvedConfig;
+  try {
+    resolvedConfig = getConfig(APP_ROOT, {
+      skipSDKVersionRequirement: true,
+    }).exp;
+  } catch (error) {
+    throw new Error(
+      `无法解析当前 Expo config：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
+  const appVersion = requiredToken(
+    resolvedConfig.version,
+    "当前 Expo appVersion",
+    RUNTIME_VERSION_MAX_LENGTH,
+  );
+  const runtimeVersion = resolvedConfig.runtimeVersion;
+  if (
+    runtimeVersion &&
+    typeof runtimeVersion === "object" &&
+    runtimeVersion.policy === "appVersion"
+  ) {
+    return appVersion;
+  }
+  if (typeof runtimeVersion === "string" && runtimeVersion === appVersion) {
+    return appVersion;
+  }
+  throw new Error(
+    `当前 resolved runtimeVersion 必须使用 appVersion ${appVersion}`,
+  );
 }
 
 export function buildEasChannelCreateCommand(
@@ -487,7 +532,11 @@ export function parsePublishOtaArgs(argv) {
 }
 
 function validateOptions(options) {
-  requiredCurrentRuntimeVersion(options.runtimeVersion);
+  requiredToken(
+    options.runtimeVersion,
+    "--runtime-version",
+    RUNTIME_VERSION_MAX_LENGTH,
+  );
   requiredReleaseChannel(options.releaseChannel);
   requiredText(options.message, "--message", 1_000);
   if (options.accessToken !== undefined) {
@@ -498,20 +547,6 @@ function validateOptions(options) {
   if (options.mockOutputFile && options.dryRun !== true) {
     throw new Error("--mock-output-file 只能与 --dry-run 一起使用");
   }
-}
-
-function requiredCurrentRuntimeVersion(value) {
-  const runtimeVersion = requiredToken(
-    value,
-    "--runtime-version",
-    RUNTIME_VERSION_MAX_LENGTH,
-  );
-  if (runtimeVersion !== POS_IPAD_APP_VERSION) {
-    throw new Error(
-      `--runtime-version 必须与当前应用版本 ${POS_IPAD_APP_VERSION} 完全一致`,
-    );
-  }
-  return runtimeVersion;
 }
 
 async function resolveConfiguration(

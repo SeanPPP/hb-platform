@@ -44,6 +44,10 @@ import {
 import { SqliteInstallmentActionStore } from "./sqlite-installment-action-store";
 import { SqliteInstallmentPaymentPersistenceFacade } from "./sqlite-installment-payment-persistence";
 import { SqliteInstallmentSnapshotRepository } from "./sqlite-installment-snapshot-repository";
+import {
+  SqliteLocalHistoryStore,
+  type LocalHistoryStoreScope,
+} from "./sqlite-local-history-store";
 import { SqliteLocalSyncHistoryStore } from "./sqlite-local-sync-history-store";
 import { SqliteMixedPaymentOrderTruthStore } from "./sqlite-mixed-payment-order-truth-store";
 import {
@@ -81,6 +85,7 @@ import {
 import { SqliteReturnFulfilmentPlanStore } from "./sqlite-return-fulfilment-plan-store";
 import { SqliteSettingsSafetyRepository } from "./sqlite-settings-safety-repository";
 import { SqliteSpecialProductsRepository } from "./sqlite-special-products-repository";
+import { SqliteVoucherBalanceMaterialStore } from "./sqlite-voucher-balance-material";
 import { SqliteVoucherPreparationStore } from "./sqlite-voucher-preparation-store";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
 import {
@@ -499,6 +504,29 @@ export class PosDatabase implements DatabasePort {
   }
 
   /**
+   * 订单服务端核销后的礼券余额确认只可更新已存在的受保护 state；
+   * 此只读构造入口禁止意外创建新的 protected reference。
+   */
+  public voucherBalanceMaterials(
+    encryptor: SensitivePayloadEncryptor,
+  ): SqliteVoucherBalanceMaterialStore {
+    const protectedTokens = new SqliteVoucherProtectedTokenStore(
+      this.connection,
+      encryptor,
+      () => {
+        throw new Error(
+          "Voucher balance material cannot create protected references.",
+        );
+      },
+      this.nowIso,
+    );
+    return new SqliteVoucherBalanceMaterialStore(
+      this.connection,
+      protectedTokens,
+    );
+  }
+
+  /**
    * Voucher tender 只有在受保护 release 事实可验证时，才可由此 facade 原子追加
    * 负 tender、reversal link 与成功审计；feature 永远不能取得裸连接。
    */
@@ -523,6 +551,11 @@ export class PosDatabase implements DatabasePort {
       this.nowIso,
       supportContext,
     );
+  }
+
+  /** 本机历史在 facade 构造时冻结可信门店/设备，feature 无法扩大读取范围。 */
+  public localHistory(scope: LocalHistoryStoreScope): SqliteLocalHistoryStore {
+    return new SqliteLocalHistoryStore(this.connection, scope);
   }
 }
 

@@ -21,7 +21,7 @@ export type PosPressableProps = PressableProps &
 export const PosPressable = forwardRef<View, PosPressableProps>(
   function PosPressable(
     {
-      disabled,
+      disabled = false,
       longPressSound,
       onLongPress,
       onPress,
@@ -32,7 +32,6 @@ export const PosPressable = forwardRef<View, PosPressableProps>(
     ref,
   ) {
     const { play } = usePosSound();
-    const isDisabled = disabled === true;
     const longPressTriggered = useRef(false);
     const handlesLongPress =
       typeof onLongPress === "function" || Boolean(longPressSound);
@@ -48,27 +47,27 @@ export const PosPressable = forwardRef<View, PosPressableProps>(
     const handleLongPress = useCallback(
       (event: GestureResponderEvent) => {
         longPressTriggered.current = true;
-        if (!isDisabled && longPressSound) play(longPressSound);
+        if (!disabled && longPressSound) play(longPressSound);
         onLongPress?.(event);
       },
-      [isDisabled, longPressSound, onLongPress, play],
+      [disabled, longPressSound, onLongPress, play],
     );
 
     const handlePress = useCallback(
       (event: GestureResponderEvent) => {
-        const shouldPlay = !isDisabled && !longPressTriggered.current && sound;
+        const shouldPlay = !disabled && !longPressTriggered.current && sound;
         longPressTriggered.current = false;
         if (shouldPlay) play(shouldPlay);
-        // 不等待音频，确保导航与业务提交维持原有时序。
+        // 不等待音频，确保任何业务导航或提交都有原有的响应时序。
         onPress?.(event);
       },
-      [isDisabled, onPress, play, sound],
+      [disabled, onPress, play, sound],
     );
 
     return (
       <Pressable
         {...props}
-        {...(disabled === undefined ? {} : { disabled })}
+        disabled={disabled}
         onLongPress={handlesLongPress ? handleLongPress : undefined}
         onPress={handlePress}
         onPressIn={handlePressIn}

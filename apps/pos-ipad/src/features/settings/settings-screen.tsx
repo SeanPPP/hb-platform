@@ -1,7 +1,8 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Linking,
   Modal,
   ScrollView,
   StyleSheet,
@@ -26,6 +27,11 @@ import {
   type SettingsState,
   type SettingsStatusCode,
 } from "./settings-presenter";
+import type {
+  SettingsSquareDevice,
+  SettingsSquareDeviceCode,
+  SettingsSquareLocation,
+} from "./settings-square-setup";
 
 import {
   HidScannerCapture,
@@ -36,9 +42,12 @@ import {
   DEFAULT_REMOTE_HBPOS_API_BASE_URL,
 } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { PosSwitch } from "@/ui/controls/pos-switch";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { posColors } from "@/ui/theme";
@@ -49,15 +58,21 @@ export type SettingsScreenPresenter = Pick<
   SettingsPresenter,
   | "cancelConfirmation"
   | "checkForAppUpdate"
+  | "clearSavedPrinter"
   | "confirmDangerousAction"
   | "connectPrinter"
+  | "createSquareDeviceCode"
   | "downloadCatalog"
   | "getState"
   | "load"
+  | "loadSquareDeviceCodes"
+  | "loadSquareDevices"
+  | "loadSquareLocations"
   | "requestApiAddressChange"
   | "requestAppRestart"
   | "requestCatalogReset"
   | "requestDeviceReregistration"
+  | "refreshSquareDeviceCode"
   | "savePaymentSettings"
   | "savePrinterSettings"
   | "scanPrinters"
@@ -73,11 +88,14 @@ export type SettingsScreenPresenter = Pick<
   | "setPrinterPeripheralId"
   | "setReregisterStoreCode"
   | "setSquareDeviceId"
+  | "setSquareDeviceCodeId"
+  | "setSquareDeviceCodeNameDraft"
   | "setSquareEnvironment"
   | "setSquareLocationId"
   | "setTerminalName"
   | "subscribe"
   | "testApiAddress"
+  | "testCashDrawer"
   | "testExternalDisplay"
   | "testPaymentProvider"
   | "testPrinter"
@@ -220,11 +238,11 @@ export function SettingsScreen({
             </View>
           </View>
 
-          <ScrollView
+          <PosKeyboardAwareScrollView
             contentContainerStyle={styles.content}
-            keyboardShouldPersistTaps="handled"
             pointerEvents={state.confirmation ? "none" : "auto"}
             style={styles.contentScroll}
+            testID="settings-content-scroll"
           >
             {state.kind === "loading" || state.kind === "idle" ? (
               <EmptyPanel
@@ -251,7 +269,7 @@ export function SettingsScreen({
                 state={state}
               />
             ) : null}
-          </ScrollView>
+          </PosKeyboardAwareScrollView>
         </View>
 
         <Modal
@@ -381,13 +399,12 @@ function GeneralPane({
             accessibilityLabel={t("general.buttonSound")}
             accessibilityRole="switch"
             accessibilityState={{ checked: buttonSoundEnabled }}
-            ios_backgroundColor={posColors.border}
             onValueChange={setButtonSoundEnabled}
             sound={false}
             style={styles.soundSwitch}
             testID="settings-button-sound"
-            thumbColor={buttonSoundEnabled ? posColors.blue : "#FFFFFF"}
-            trackColor={{ false: posColors.border, true: posColors.blueSoft }}
+            thumbColor={buttonSoundEnabled ? posColors.blue : undefined}
+            trackColor={{ false: "#A8B2BC", true: posColors.blueSoft }}
             value={buttonSoundEnabled}
           />
         </View>
@@ -404,13 +421,12 @@ function GeneralPane({
             accessibilityLabel={t("general.specialNodeSound")}
             accessibilityRole="switch"
             accessibilityState={{ checked: specialNodeSoundEnabled }}
-            ios_backgroundColor={posColors.border}
             onValueChange={setSpecialNodeSoundEnabled}
             sound={false}
             style={styles.soundSwitch}
             testID="settings-special-node-sound"
-            thumbColor={specialNodeSoundEnabled ? posColors.blue : "#FFFFFF"}
-            trackColor={{ false: posColors.border, true: posColors.blueSoft }}
+            thumbColor={specialNodeSoundEnabled ? posColors.blue : undefined}
+            trackColor={{ false: "#A8B2BC", true: posColors.blueSoft }}
             value={specialNodeSoundEnabled}
           />
         </View>
@@ -419,7 +435,7 @@ function GeneralPane({
         eyebrow={t("eyebrow.network")}
         title={t("general.apiAddress")}
       >
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={t("general.apiAddress")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -715,7 +731,13 @@ function PaymentsPane({
   presenter: SettingsScreenPresenter;
   state: SettingsState;
 }>) {
-  const t = (key: SettingsCopyKey) => settingsText(locale, key);
+  const [squarePicker, setSquarePicker] = useState<
+    "device" | "location" | null
+  >(null);
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
   const disabled =
     state.busy ||
     state.confirmation !== null ||
@@ -723,12 +745,61 @@ function PaymentsPane({
   const catalogRefreshRunning = state.catalogRefresh.kind === "running";
   const squareAvailable =
     state.square.available && state.square.blockerCode === null;
+  const squareNeedsInitialSetup =
+    state.squareSetup.available &&
+    state.square.blockerCode === "SQUARE_CONFIGURATION_MISSING";
   const linklyAvailable =
     state.linkly.available && state.linkly.blockerCode === null;
-  const squareDisabled =
+  const squareRuntimeDisabled =
     disabled || !squareAvailable || state.paymentProviderDraft !== "square";
   const linklyDisabled =
     disabled || !linklyAvailable || state.paymentProviderDraft !== "linkly";
+  const squareSetupDisabled =
+    disabled ||
+    !state.squareSetup.available ||
+    state.paymentProviderDraft !== "square";
+  const selectedLocation = state.squareSetup.locations.items.find(
+    (location) => location.id === state.squareSetup.selectedLocationId,
+  );
+  const selectedDevice = state.squareSetup.devices.items.find(
+    (device) => device.id === state.squareSetup.selectedDeviceId,
+  );
+  const squareLocationMeta = state.squareSetup.selectedLocationId
+    ? squareSelectionMeta(
+        state.squareSetup.selectedLocationId,
+        selectedLocation?.status,
+        t("square.statusUnknown"),
+      )
+    : t("square.notSelected");
+  const squareDeviceMeta = state.squareSetup.selectedDeviceId
+    ? squareSelectionMeta(
+        state.squareSetup.selectedDeviceId,
+        selectedDevice?.status,
+        t("square.statusUnknown"),
+        selectedDevice?.code,
+      )
+    : t("square.notSelected");
+  const squareProduction = state.squareDraft.environment === "Production";
+  const squareDeviceCodeDisabled =
+    squareSetupDisabled ||
+    !squareProduction ||
+    !state.squareSetup.selectedLocationId;
+  const squareDeviceCodesMatchLocation =
+    state.squareSetup.deviceCodesLoadedForLocationId ===
+    state.squareSetup.selectedLocationId;
+  const squareDeviceCodeResourceKind: SquareSetupResourceKind =
+    state.squareSetup.deviceCodes.kind === "ready" &&
+    !squareDeviceCodesMatchLocation
+      ? "idle"
+      : state.squareSetup.deviceCodes.kind;
+  const pickerResource =
+    squarePicker === "device"
+      ? state.squareSetup.devices
+      : state.squareSetup.locations;
+  const pickerOptions: readonly SquarePickerOption[] =
+    squarePicker === "device"
+      ? state.squareSetup.devices.items.map(squareDevicePickerOption)
+      : state.squareSetup.locations.items.map(squareLocationPickerOption);
   return (
     <View testID="settings-pane-content-payments">
       <PaneHeading
@@ -742,7 +813,10 @@ function PaymentsPane({
         <Text style={styles.sectionCopy}>{t("payments.providerHint")}</Text>
         <View style={styles.actionRow}>
           <ToggleButton
-            disabled={disabled || !squareAvailable}
+            disabled={
+              disabled ||
+              (!squareAvailable && !state.squareSetup.available)
+            }
             label="Square"
             onPress={() => presenter.setPaymentProvider("square")}
             selected={state.paymentProviderDraft === "square"}
@@ -773,13 +847,15 @@ function PaymentsPane({
           style={styles.columnCard}
           title="Square"
         >
-          <Availability
-            available={squareAvailable}
-            blockerCode={state.square.blockerCode}
-            locale={locale}
-          />
+          {!squareNeedsInitialSetup ? (
+            <Availability
+              available={squareAvailable}
+              blockerCode={state.square.blockerCode}
+              locale={locale}
+            />
+          ) : null}
           <EnvironmentSelector
-            disabled={squareDisabled}
+            disabled={squareSetupDisabled}
             environment={state.squareDraft.environment}
             locale={locale}
             onSelect={(environment) =>
@@ -787,30 +863,158 @@ function PaymentsPane({
             }
             prefix="settings-square"
           />
-          <FieldLabel label={t("field.locationId")} />
-          <PosTextInput
-            accessibilityLabel={t("field.squareLocationId")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!squareDisabled}
-            onChangeText={(value) => presenter.setSquareLocationId(value)}
-            style={styles.textInput}
+          <View style={styles.squareSummaryRow}>
+            <SquareSummaryMetric
+              label={t("square.serverToken")}
+              testID="settings-square-token-status"
+              value={squareTokenStatusText(locale, state.squareSetup.token)}
+            />
+            <SquareSummaryMetric
+              label={t("square.currentBinding")}
+              testID="settings-square-current-binding"
+              value={`${state.square.environment} · ${
+                state.square.locationId || t("square.notSelected")
+              }\n${state.square.deviceId || t("square.notSelected")}`}
+            />
+          </View>
+          <SquareSelectionField
+            disabled={squareSetupDisabled}
+            disabledText={t("square.setupUnavailable")}
+            emptyText={t("square.locationsEmpty")}
+            failedText={t("square.loadFailed")}
+            idleText={t("square.notLoaded")}
+            label={t("square.location")}
+            loadLabel={t("square.loadLocations")}
+            loadingText={t("square.loadingLocations")}
+            onLoad={() => {
+              setSquarePicker("location");
+              void presenter.loadSquareLocations();
+            }}
+            onSelect={() => setSquarePicker("location")}
+            primaryText={selectedLocation?.name ?? t("square.notSelected")}
+            resourceKind={state.squareSetup.locations.kind}
+            secondaryText={squareLocationMeta}
+            selectLabel={t("square.selectLocation")}
+            selectReady={state.squareSetup.locations.kind === "ready"}
             testID="settings-square-location"
-            value={state.squareDraft.locationId}
           />
-          <FieldLabel label={t("field.deviceId")} />
-          <PosTextInput
-            accessibilityLabel={t("field.squareDeviceId")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!squareDisabled}
-            onChangeText={(value) => presenter.setSquareDeviceId(value)}
-            style={styles.textInput}
+          <SquareSelectionField
+            disabled={
+              squareSetupDisabled || !state.squareSetup.selectedLocationId
+            }
+            disabledText={t("square.setupUnavailable")}
+            emptyText={t("square.devicesEmpty")}
+            failedText={t("square.loadFailed")}
+            idleText={t("square.notLoaded")}
+            label={t("square.device")}
+            loadLabel={t("square.loadDevices")}
+            loadingText={t("square.loadingDevices")}
+            onLoad={() => {
+              setSquarePicker("device");
+              void presenter.loadSquareDevices();
+            }}
+            onSelect={() => setSquarePicker("device")}
+            primaryText={selectedDevice?.name ?? t("square.notSelected")}
+            resourceKind={state.squareSetup.devices.kind}
+            secondaryText={squareDeviceMeta}
+            selectLabel={t("square.selectDevice")}
+            selectReady={
+              state.squareSetup.devices.kind === "ready" &&
+              state.squareSetup.devicesLoadedForLocationId ===
+                state.squareSetup.selectedLocationId
+            }
             testID="settings-square-device"
-            value={state.squareDraft.deviceId}
           />
+
+          <View style={styles.squareDeviceCodeSection}>
+            <FieldLabel label={t("square.deviceCode")} />
+            <PosKeyboardAwareTextInput
+              accessibilityLabel={t("square.deviceCodeName")}
+              autoCapitalize="words"
+              autoCorrect={false}
+              editable={!squareDeviceCodeDisabled}
+              onChangeText={(value) =>
+                presenter.setSquareDeviceCodeNameDraft(value)
+              }
+              placeholder={t("square.deviceCodeName")}
+              style={styles.textInput}
+              testID="settings-square-device-code-name"
+              value={state.squareDeviceCodeNameDraft}
+            />
+            <Text style={styles.squareFieldHint}>
+              {t("square.deviceCodeNameHint")}
+            </Text>
+            <View style={styles.actionRow}>
+              <ActionButton
+                compact
+                disabled={
+                  squareDeviceCodeDisabled ||
+                  state.squareSetup.deviceCodes.kind === "loading"
+                }
+                label={t("square.loadDeviceCodes")}
+                onPress={() => void presenter.loadSquareDeviceCodes()}
+                testID="settings-square-device-code-load"
+                tone="secondary"
+              />
+              <ActionButton
+                compact
+                disabled={
+                  squareDeviceCodeDisabled ||
+                  state.squareDeviceCodeNameDraft.trim().length === 0 ||
+                  state.squareSetup.deviceCodes.kind === "loading"
+                }
+                label={t("square.createDeviceCode")}
+                onPress={() => void presenter.createSquareDeviceCode()}
+                testID="settings-square-device-code-create"
+              />
+              <ActionButton
+                compact
+                disabled={
+                  squareDeviceCodeDisabled ||
+                  !state.squareSetup.selectedDeviceCodeId ||
+                  !squareDeviceCodesMatchLocation ||
+                  state.squareSetup.deviceCodes.kind === "loading"
+                }
+                label={t("square.refreshDeviceCode")}
+                onPress={() => void presenter.refreshSquareDeviceCode()}
+                testID="settings-square-device-code-refresh"
+                tone="secondary"
+              />
+            </View>
+            {!squareProduction ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={styles.squareSandboxNote}
+                testID="settings-square-device-code-disabled"
+              >
+                {t("square.deviceCodeSandboxDisabled")}
+              </Text>
+            ) : (
+              <>
+                <SquareDeviceCodeList
+                  disabled={squareDeviceCodeDisabled}
+                  emptyText={t("square.deviceCodesEmpty")}
+                  failedText={t("square.loadFailed")}
+                  idleText={t("square.deviceCodesIdle")}
+                  items={state.squareSetup.deviceCodes.items}
+                  loadingText={t("square.deviceCodesLoading")}
+                  onSelect={(deviceCodeId) =>
+                    presenter.setSquareDeviceCodeId(deviceCodeId)
+                  }
+                  resourceKind={squareDeviceCodeResourceKind}
+                  selectedId={state.squareSetup.selectedDeviceCodeId}
+                  selectedLabel={t("square.currentDeviceCode")}
+                  statusUnknown={t("square.statusUnknown")}
+                  codePending={t("square.codePending")}
+                />
+                <Text style={styles.squarePairingNote}>
+                  {t("square.deviceCodePairing")}
+                </Text>
+              </>
+            )}
+          </View>
           <ActionButton
-            disabled={squareDisabled}
+            disabled={squareRuntimeDisabled}
             label={t("action.test")}
             onPress={() => void presenter.testPaymentProvider("square")}
             testID="settings-square-test"
@@ -847,6 +1051,67 @@ function PaymentsPane({
           />
         </SectionCard>
       </View>
+      <SquarePickerModal
+        closeLabel={t("square.closePicker")}
+        disabled={squareSetupDisabled}
+        disabledText={t("square.setupUnavailable")}
+        emptyText={
+          squarePicker === "device"
+            ? t("square.devicesEmpty")
+            : t("square.locationsEmpty")
+        }
+        failedText={t("square.loadFailed")}
+        hint={
+          squarePicker === "device"
+            ? t("square.devicePickerHint")
+            : t("square.locationPickerHint")
+        }
+        idleText={t("square.notLoaded")}
+        loadingText={
+          squarePicker === "device"
+            ? t("square.loadingDevices")
+            : t("square.loadingLocations")
+        }
+        onClose={() => setSquarePicker(null)}
+        onReload={() => {
+          if (squarePicker === "device") {
+            void presenter.loadSquareDevices();
+          } else {
+            void presenter.loadSquareLocations();
+          }
+        }}
+        onSelect={(id) => {
+          if (squarePicker === "device") {
+            presenter.setSquareDeviceId(id);
+          } else {
+            presenter.setSquareLocationId(id);
+          }
+          setSquarePicker(null);
+        }}
+        options={pickerOptions}
+        reloadLabel={
+          squarePicker === "device"
+            ? t("square.loadDevices")
+            : t("square.loadLocations")
+        }
+        resourceKind={pickerResource.kind}
+        selectedId={
+          squarePicker === "device"
+            ? state.squareSetup.selectedDeviceId
+            : state.squareSetup.selectedLocationId
+        }
+        testID={
+          squarePicker === "device"
+            ? "settings-square-device-picker"
+            : "settings-square-location-picker"
+        }
+        title={
+          squarePicker === "device"
+            ? t("square.devicePickerTitle")
+            : t("square.locationPickerTitle")
+        }
+        visible={squarePicker !== null}
+      />
       <ActionButton
         disabled={disabled || catalogRefreshRunning}
         label={t("payments.save")}
@@ -855,6 +1120,427 @@ function PaymentsPane({
       />
     </View>
   );
+}
+
+type SquareSetupResourceKind =
+  SettingsState["squareSetup"]["locations"]["kind"];
+
+type SquarePickerOption = Readonly<{
+  disabled: boolean;
+  id: string;
+  meta: string;
+  name: string;
+}>;
+
+function SquareSummaryMetric({
+  label,
+  testID,
+  value,
+}: Readonly<{ label: string; testID: string; value: string }>) {
+  return (
+    <View style={styles.squareSummaryMetric} testID={testID}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text numberOfLines={2} style={styles.squareSummaryValue}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function SquareSelectionField({
+  disabled,
+  disabledText,
+  emptyText,
+  failedText,
+  idleText,
+  label,
+  loadLabel,
+  loadingText,
+  onLoad,
+  onSelect,
+  primaryText,
+  resourceKind,
+  secondaryText,
+  selectLabel,
+  selectReady,
+  testID,
+}: Readonly<{
+  disabled: boolean;
+  disabledText: string;
+  emptyText: string;
+  failedText: string;
+  idleText: string;
+  label: string;
+  loadLabel: string;
+  loadingText: string;
+  onLoad(): void;
+  onSelect(): void;
+  primaryText: string;
+  resourceKind: SquareSetupResourceKind;
+  secondaryText: string;
+  selectLabel: string;
+  selectReady: boolean;
+  testID: string;
+}>) {
+  const loading = resourceKind === "loading";
+  const selectDisabled = disabled || loading || !selectReady;
+  const resourceText =
+    resourceKind === "disabled"
+      ? disabledText
+      : resourceKind === "loading"
+        ? loadingText
+        : resourceKind === "failed"
+          ? failedText
+          : resourceKind === "empty"
+            ? emptyText
+            : resourceKind === "idle"
+              ? idleText
+              : secondaryText;
+  return (
+    <View style={styles.squareFieldGroup}>
+      <FieldLabel label={label} />
+      <View style={styles.squareSelectionRow} testID={`${testID}-row`}>
+        <PosPressable
+          accessibilityLabel={`${selectLabel}: ${primaryText}. ${resourceText}`}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: selectDisabled }}
+          disabled={selectDisabled}
+          onPress={onSelect}
+          sound="tap"
+          style={({ pressed }) => [
+            styles.squareSelectionValue,
+            selectDisabled && styles.squareSelectionDisabled,
+            pressed && !selectDisabled && styles.pressedButton,
+          ]}
+          testID={`${testID}-select`}
+        >
+          <Text numberOfLines={1} style={styles.squareSelectionPrimary}>
+            {primaryText}
+          </Text>
+          <View style={styles.squareSelectionMetaRow}>
+            {loading ? (
+              <ActivityIndicator color={posColors.blue} size="small" />
+            ) : null}
+            <Text
+              accessibilityLiveRegion="polite"
+              numberOfLines={2}
+              style={[
+                styles.squareSelectionSecondary,
+                resourceKind === "failed" && styles.squareSelectionError,
+              ]}
+            >
+              {resourceText}
+            </Text>
+          </View>
+        </PosPressable>
+        <ActionButton
+          compact
+          disabled={disabled || loading}
+          label={loadLabel}
+          onPress={onLoad}
+          style={styles.squareLoadButton}
+          testID={`${testID}-load`}
+          tone="secondary"
+        />
+      </View>
+    </View>
+  );
+}
+
+function SquareDeviceCodeList({
+  codePending,
+  disabled,
+  emptyText,
+  failedText,
+  idleText,
+  items,
+  loadingText,
+  onSelect,
+  resourceKind,
+  selectedId,
+  selectedLabel,
+  statusUnknown,
+}: Readonly<{
+  codePending: string;
+  disabled: boolean;
+  emptyText: string;
+  failedText: string;
+  idleText: string;
+  items: readonly SettingsSquareDeviceCode[];
+  loadingText: string;
+  onSelect(id: string): void;
+  resourceKind: SquareSetupResourceKind;
+  selectedId: string;
+  selectedLabel: string;
+  statusUnknown: string;
+}>) {
+  if (resourceKind !== "ready") {
+    const message =
+      resourceKind === "loading"
+        ? loadingText
+        : resourceKind === "failed"
+          ? failedText
+          : resourceKind === "empty"
+            ? emptyText
+            : idleText;
+    return (
+      <View
+        accessibilityLiveRegion="polite"
+        style={styles.squareResourceState}
+        testID="settings-square-device-code-state"
+      >
+        {resourceKind === "loading" ? (
+          <ActivityIndicator color={posColors.blue} size="small" />
+        ) : null}
+        <Text
+          style={[
+            styles.squareResourceText,
+            resourceKind === "failed" && styles.squareSelectionError,
+          ]}
+        >
+          {message}
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.squareDeviceCodeList}>
+      {items.map((deviceCode) => {
+        const selected = deviceCode.id === selectedId;
+        return (
+          <PosPressable
+            accessibilityLabel={`${deviceCode.name}. ${
+              deviceCode.code ?? codePending
+            }. ${deviceCode.status ?? statusUnknown}`}
+            accessibilityRole="button"
+            accessibilityState={{ disabled, selected }}
+            disabled={disabled}
+            key={deviceCode.id}
+            onPress={() => onSelect(deviceCode.id)}
+            sound="tap"
+            style={({ pressed }) => [
+              styles.squareDeviceCodeRow,
+              selected && styles.squareDeviceCodeSelected,
+              disabled && styles.squareSelectionDisabled,
+              pressed && !disabled && styles.pressedButton,
+            ]}
+            testID={`settings-square-device-code-${deviceCode.id}`}
+          >
+            <View style={styles.squareDeviceCodeIdentity}>
+              <Text numberOfLines={1} style={styles.squareSelectionPrimary}>
+                {deviceCode.name}
+              </Text>
+              <Text numberOfLines={2} style={styles.squareSelectionSecondary}>
+                {deviceCode.code ?? codePending} · {deviceCode.status ?? statusUnknown}
+              </Text>
+            </View>
+            {selected ? (
+              <Text style={styles.squareCurrentTag}>{selectedLabel}</Text>
+            ) : null}
+          </PosPressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function SquarePickerModal({
+  closeLabel,
+  disabled,
+  disabledText,
+  emptyText,
+  failedText,
+  hint,
+  idleText,
+  loadingText,
+  onClose,
+  onReload,
+  onSelect,
+  options,
+  reloadLabel,
+  resourceKind,
+  selectedId,
+  testID,
+  title,
+  visible,
+}: Readonly<{
+  closeLabel: string;
+  disabled: boolean;
+  disabledText: string;
+  emptyText: string;
+  failedText: string;
+  hint: string;
+  idleText: string;
+  loadingText: string;
+  onClose(): void;
+  onReload(): void;
+  onSelect(id: string): void;
+  options: readonly SquarePickerOption[];
+  reloadLabel: string;
+  resourceKind: SquareSetupResourceKind;
+  selectedId: string;
+  testID: string;
+  title: string;
+  visible: boolean;
+}>) {
+  const loading = resourceKind === "loading";
+  const resourceMessage =
+    resourceKind === "disabled"
+      ? disabledText
+      : resourceKind === "failed"
+        ? failedText
+        : resourceKind === "empty"
+          ? emptyText
+          : idleText;
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onClose}
+      supportedOrientations={["landscape-left", "landscape-right"]}
+      testID={`${testID}-modal`}
+      transparent
+      visible={visible}
+    >
+      <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+        <View style={styles.squarePicker} testID={testID}>
+          <View style={styles.printerPickerHeader}>
+            <Text style={styles.printerPickerTitle}>{title}</Text>
+            <Text style={styles.printerPickerHint}>{hint}</Text>
+          </View>
+          {loading ? (
+            <View
+              accessibilityLiveRegion="polite"
+              style={styles.printerPickerProgress}
+            >
+              <ActivityIndicator color={posColors.blue} size="large" />
+              <Text style={styles.printerPickerProgressText}>{loadingText}</Text>
+            </View>
+          ) : resourceKind === "ready" ? (
+            <ScrollView
+              contentContainerStyle={styles.squarePickerBody}
+              style={styles.printerPickerScroll}
+              testID={`${testID}-list`}
+            >
+              {options.map((option) => {
+                const optionDisabled = disabled || option.disabled;
+                const selected = option.id === selectedId;
+                return (
+                  <PosPressable
+                    accessibilityLabel={`${option.name}. ${option.meta}`}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: optionDisabled, selected }}
+                    disabled={optionDisabled}
+                    key={option.id}
+                    onPress={() => onSelect(option.id)}
+                    sound="tap"
+                    style={({ pressed }) => [
+                      styles.squarePickerOption,
+                      selected && styles.squareDeviceCodeSelected,
+                      optionDisabled && styles.squareSelectionDisabled,
+                      pressed && !optionDisabled && styles.pressedButton,
+                    ]}
+                    testID={`${testID}-option-${option.id}`}
+                  >
+                    <Text numberOfLines={1} style={styles.squareSelectionPrimary}>
+                      {selected ? `✓ ${option.name}` : option.name}
+                    </Text>
+                    <Text numberOfLines={2} style={styles.squareSelectionSecondary}>
+                      {option.meta}
+                    </Text>
+                  </PosPressable>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={[
+                styles.printerPickerEmpty,
+                resourceKind === "failed" && styles.squareSelectionError,
+              ]}
+            >
+              {resourceMessage}
+            </Text>
+          )}
+          <View style={styles.printerPickerActions}>
+            <ActionButton
+              label={closeLabel}
+              onPress={onClose}
+              testID={`${testID}-close`}
+              tone="quiet"
+            />
+            <ActionButton
+              disabled={disabled || loading}
+              label={reloadLabel}
+              onPress={onReload}
+              testID={`${testID}-reload`}
+              tone="secondary"
+            />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function squareSelectionMeta(
+  id: string,
+  status: string | null | undefined,
+  statusUnknown: string,
+  code?: string | null,
+): string {
+  return [id, code, status ?? statusUnknown].filter(Boolean).join(" · ");
+}
+
+function squareTokenStatusText(
+  locale: SettingsLocale,
+  token: SettingsState["squareSetup"]["token"],
+): string {
+  if (token.kind === "loading") {
+    return settingsText(locale, "square.tokenLoading");
+  }
+  if (token.kind === "failed") {
+    return settingsText(locale, "square.tokenFailed");
+  }
+  if (token.kind === "disabled") {
+    return settingsText(locale, "square.setupUnavailable");
+  }
+  if (token.kind !== "ready" || !token.value) {
+    return settingsText(locale, "square.tokenIdle");
+  }
+  if (!token.value.configured) {
+    return settingsText(locale, "square.tokenMissing");
+  }
+  return settingsText(
+    locale,
+    token.value.enabled ? "square.tokenReady" : "square.tokenDisabled",
+  );
+}
+
+function squareLocationPickerOption(
+  location: SettingsSquareLocation,
+): SquarePickerOption {
+  return Object.freeze({
+    disabled: false,
+    id: location.id,
+    meta: [location.id, location.status, location.currency, location.country]
+      .filter(Boolean)
+      .join(" · "),
+    name: location.name,
+  });
+}
+
+function squareDevicePickerOption(
+  device: SettingsSquareDevice,
+): SquarePickerOption {
+  const normalizedStatus = device.status?.trim().toUpperCase() ?? "";
+  return Object.freeze({
+    // 明确标记后端禁用项；其余状态的最终选择约束仍由 Presenter 统一执行。
+    disabled: normalizedStatus === "DISABLED",
+    id: device.id,
+    meta: [device.id, device.code, device.status].filter(Boolean).join(" · "),
+    name: device.name,
+  });
 }
 
 function PeripheralsPane({
@@ -878,6 +1564,50 @@ function PeripheralsPane({
     state.busy ||
     state.confirmation !== null ||
     !state.access.canManageCustomerDisplay;
+  const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
+  const [printerPickerStatus, setPrinterPickerStatus] = useState<
+    "connecting" | "ready" | "scanning"
+  >("ready");
+  const [printerPickerDevices, setPrinterPickerDevices] = useState<
+    SettingsState["printerDevices"]
+  >(Object.freeze([]));
+  const [printerPickerError, setPrinterPickerError] =
+    useState<SettingsStatusCode | null>(null);
+  const printerPickerBusy = printerPickerStatus !== "ready";
+  const printerPickerPermissionRequired =
+    printerPickerError === "printer-bluetooth-permission-required";
+
+  const scanPrinterDevices = async () => {
+    setPrinterPickerVisible(true);
+    setPrinterPickerStatus("scanning");
+    setPrinterPickerDevices(Object.freeze([]));
+    setPrinterPickerError(null);
+    await presenter.scanPrinters();
+    const nextState = presenter.getState();
+    if (nextState.statusCode === "printer-scan-finished") {
+      setPrinterPickerDevices(nextState.printerDevices);
+    } else {
+      setPrinterPickerError(nextState.statusCode);
+    }
+    setPrinterPickerStatus("ready");
+  };
+
+  const connectPrinterDevice = async (peripheralId: string) => {
+    setPrinterPickerStatus("connecting");
+    setPrinterPickerError(null);
+    await presenter.connectPrinter(peripheralId);
+    const nextStatus = presenter.getState().statusCode;
+    setPrinterPickerStatus("ready");
+    if (nextStatus === "printer-connected") {
+      setPrinterPickerVisible(false);
+      return;
+    }
+    setPrinterPickerError(nextStatus);
+  };
+
+  const closePrinterPicker = () => {
+    if (!printerPickerBusy) setPrinterPickerVisible(false);
+  };
   return (
     <View testID="settings-pane-content-peripherals">
       <PaneHeading
@@ -935,7 +1665,7 @@ function PeripheralsPane({
           />
         </View>
         <FieldLabel label={t("field.peripheralId")} />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={t("field.printerPeripheralId")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -949,7 +1679,7 @@ function PeripheralsPane({
           <ActionButton
             disabled={printerDisabled}
             label={t("peripherals.scanPrinters")}
-            onPress={() => void presenter.scanPrinters()}
+            onPress={() => void scanPrinterDevices()}
             testID="settings-printer-scan"
             tone="secondary"
           />
@@ -966,28 +1696,25 @@ function PeripheralsPane({
             testID="settings-printer-test"
             tone="secondary"
           />
+          <ActionButton
+            disabled={
+              printerDisabled ||
+              !state.printer.peripheralId ||
+              !state.printer.drawerEnabled
+            }
+            label={t("peripherals.testDrawer")}
+            onPress={() => void presenter.testCashDrawer()}
+            testID="settings-drawer-test"
+            tone="secondary"
+          />
+          <ActionButton
+            disabled={printerDisabled || !state.printer.peripheralId}
+            label={t("peripherals.clearSavedPrinter")}
+            onPress={() => void presenter.clearSavedPrinter()}
+            testID="settings-printer-clear-saved"
+            tone="danger"
+          />
         </View>
-        {state.printerDevices.map((device) => (
-          <View
-            key={device.id}
-            style={styles.deviceRow}
-            testID={`settings-printer-device-${device.id}`}
-          >
-            <View style={styles.deviceIdentity}>
-              <Text style={styles.deviceName}>{device.name}</Text>
-              <Text style={styles.deviceMeta}>
-                {device.transport} · {device.id}
-              </Text>
-            </View>
-            <ActionButton
-              compact
-              disabled={printerDisabled}
-              label={t("action.connect")}
-              onPress={() => void presenter.connectPrinter(device.id)}
-              testID={`settings-printer-connect-${device.id}`}
-            />
-          </View>
-        ))}
       </SectionCard>
 
       <View style={styles.twoColumn}>
@@ -1045,6 +1772,150 @@ function PeripheralsPane({
           </View>
         </SectionCard>
       </View>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={closePrinterPicker}
+        supportedOrientations={["landscape-left", "landscape-right"]}
+        testID="settings-printer-picker-modal"
+        transparent
+        visible={printerPickerVisible}
+      >
+        <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+          <View style={styles.printerPicker} testID="settings-printer-picker">
+            <View
+              style={styles.printerPickerHeader}
+              testID="settings-printer-picker-header"
+            >
+              <Text style={styles.printerPickerTitle}>
+                {t("printer.pickerTitle")}
+              </Text>
+              <Text style={styles.printerPickerHint}>
+                {t("printer.pickerHint")}
+              </Text>
+            </View>
+
+            {printerPickerBusy ? (
+              <View style={styles.printerPickerProgress}>
+                <ActivityIndicator color={posColors.blue} size="large" />
+                <Text style={styles.printerPickerProgressText}>
+                  {t(
+                    printerPickerStatus === "scanning"
+                      ? "printer.scanning"
+                      : "printer.connecting",
+                  )}
+                </Text>
+              </View>
+            ) : printerPickerError ? (
+              <View style={styles.printerPickerErrorBody}>
+                <Text style={styles.printerPickerError}>
+                  {statusCopy(locale, printerPickerError)}
+                </Text>
+                {printerPickerPermissionRequired ? (
+                  <>
+                    <Text style={styles.printerPickerPermissionHint}>
+                      {t("printer.bluetoothPermissionHint")}
+                    </Text>
+                    <View style={styles.printerPickerPermissionAction}>
+                      <ActionButton
+                        label={t("action.openSystemSettings")}
+                        onPress={() => void Linking.openSettings()}
+                        testID="settings-printer-open-system-settings"
+                        tone="secondary"
+                      />
+                    </View>
+                  </>
+                ) : null}
+              </View>
+            ) : (
+              <ScrollView
+                contentContainerStyle={styles.printerPickerBody}
+                style={styles.printerPickerScroll}
+                testID="settings-printer-device-list"
+              >
+                {printerPickerDevices.length === 0 ? (
+                  <Text style={styles.printerPickerEmpty}>
+                    {t("printer.noneFound")}
+                  </Text>
+                ) : (
+                  printerPickerDevices.map((device) => (
+                    <View
+                      key={device.id}
+                      style={styles.deviceRow}
+                      testID={`settings-printer-device-${device.id}`}
+                    >
+                      <View style={styles.deviceIdentity}>
+                        <View style={styles.deviceDetailRow}>
+                          <Text style={styles.deviceFieldLabel}>
+                            {t("printer.deviceName")}
+                          </Text>
+                          <View style={styles.deviceNameRow}>
+                            <Text
+                              style={styles.deviceName}
+                              testID={`settings-printer-device-name-${device.id}`}
+                            >
+                              {device.name}
+                            </Text>
+                            {device.preferred ? (
+                              <Text
+                                style={styles.preferredPrinterTag}
+                                testID={`settings-printer-preferred-${device.id}`}
+                              >
+                                {t("printer.preferredN160")}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={styles.deviceDetailRow}>
+                          <Text style={styles.deviceFieldLabel}>
+                            {t("printer.deviceAddress")}
+                          </Text>
+                          <Text
+                            style={styles.deviceMeta}
+                            testID={`settings-printer-device-address-${device.id}`}
+                          >
+                            {device.id}
+                          </Text>
+                        </View>
+                        <Text style={styles.deviceTransport}>
+                          {device.transport}
+                        </Text>
+                      </View>
+                      <ActionButton
+                        compact
+                        disabled={printerPickerBusy}
+                        label={t("action.connect")}
+                        onPress={() => void connectPrinterDevice(device.id)}
+                        testID={`settings-printer-connect-${device.id}`}
+                      />
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )}
+
+            <View
+              style={styles.printerPickerActions}
+              testID="settings-printer-picker-actions"
+            >
+              <ActionButton
+                disabled={printerPickerBusy}
+                label={t("action.cancel")}
+                onPress={closePrinterPicker}
+                testID="settings-printer-picker-close"
+                tone="quiet"
+              />
+              <ActionButton
+                disabled={printerPickerBusy}
+                label={t("peripherals.scanPrinters")}
+                onPress={() => void scanPrinterDevices()}
+                testID="settings-printer-picker-rescan"
+                tone="secondary"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1091,7 +1962,7 @@ function DevicePane({
         title={t("device.reregister")}
       >
         <FieldLabel label={t("field.targetStoreCode")} />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={t("field.targetStoreCode")}
           autoCapitalize="characters"
           autoCorrect={false}
@@ -1102,7 +1973,7 @@ function DevicePane({
           value={state.reregisterStoreCode}
         />
         <FieldLabel label={t("field.terminalName")} />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={t("field.terminalName")}
           editable={!disabled}
           onChangeText={(value) => presenter.setTerminalName(value)}
@@ -1553,6 +2424,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "api-health-check-passed",
     "app-restart-requested",
     "app-update-checked",
+    "cash-drawer-test-passed",
     "catalog-downloaded",
     "catalog-reset",
     "device-reregister-started",
@@ -1561,6 +2433,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "payment-settings-saved",
     "payment-test-passed",
     "printer-connected",
+    "printer-cleared",
     "printer-scan-finished",
     "printer-settings-saved",
     "printer-test-passed",
@@ -1760,6 +2633,135 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 4,
   },
+  squareSummaryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 12,
+  },
+  squareSummaryMetric: {
+    backgroundColor: posColors.blueSoft,
+    borderRadius: 8,
+    flex: 1,
+    minWidth: 130,
+    padding: 12,
+  },
+  squareSummaryValue: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  squareFieldGroup: { marginTop: 3 },
+  squareSelectionRow: {
+    alignItems: "stretch",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  squareSelectionValue: {
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 56,
+    minWidth: 140,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+  },
+  squareSelectionDisabled: { opacity: 0.54 },
+  squareSelectionPrimary: {
+    color: posColors.ink,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  squareSelectionMetaRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 3,
+  },
+  squareSelectionSecondary: {
+    color: posColors.mutedInk,
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+  squareSelectionError: { color: posColors.red },
+  squareLoadButton: { marginTop: 0 },
+  squareFieldHint: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  squareDeviceCodeSection: {
+    borderTopColor: posColors.border,
+    borderTopWidth: 1,
+    marginTop: 16,
+    paddingTop: 4,
+  },
+  squareSandboxNote: {
+    backgroundColor: posColors.blueSoft,
+    borderRadius: 8,
+    color: posColors.blue,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
+    marginTop: 12,
+    padding: 10,
+  },
+  squarePairingNote: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 10,
+  },
+  squareResourceState: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+    minHeight: SETTINGS_MIN_TOUCH_TARGET,
+  },
+  squareResourceText: {
+    color: posColors.mutedInk,
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  squareDeviceCodeList: { gap: 8, marginTop: 12 },
+  squareDeviceCodeRow: {
+    alignItems: "center",
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 54,
+    padding: 10,
+  },
+  squareDeviceCodeSelected: {
+    backgroundColor: posColors.blueSoft,
+    borderColor: posColors.blue,
+  },
+  squareDeviceCodeIdentity: { flex: 1, minWidth: 0 },
+  squareCurrentTag: {
+    backgroundColor: posColors.blue,
+    borderRadius: 999,
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
   fieldLabel: {
     color: posColors.mutedInk,
     fontSize: 13,
@@ -1909,11 +2911,141 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   deviceIdentity: { flex: 1 },
-  deviceName: { color: posColors.ink, fontSize: 15, fontWeight: "800" },
-  deviceMeta: {
+  deviceDetailRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    minHeight: 20,
+  },
+  deviceFieldLabel: {
     color: posColors.mutedInk,
     fontSize: 12,
-    marginTop: 3,
+    fontWeight: "700",
+    width: 172,
+  },
+  deviceNameRow: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  deviceName: { color: posColors.ink, fontSize: 15, fontWeight: "800" },
+  preferredPrinterTag: {
+    alignSelf: "flex-start",
+    backgroundColor: posColors.blueSoft,
+    borderRadius: 999,
+    color: posColors.blue,
+    fontSize: 11,
+    fontWeight: "800",
+    lineHeight: 15,
+    overflow: "hidden",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  deviceMeta: {
+    color: posColors.mutedInk,
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  deviceTransport: {
+    color: posColors.mutedInk,
+    fontSize: 11,
+    marginLeft: 180,
+    marginTop: 2,
+  },
+  printerPicker: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    maxHeight: "82%",
+    maxWidth: 760,
+    padding: 20,
+    shadowColor: "#000000",
+    shadowOffset: { height: 5, width: 0 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    width: "86%",
+  },
+  squarePicker: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    maxHeight: "82%",
+    maxWidth: 760,
+    padding: 20,
+    shadowColor: "#000000",
+    shadowOffset: { height: 5, width: 0 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    width: "86%",
+  },
+  squarePickerBody: { gap: 8, paddingBottom: 2 },
+  squarePickerOption: {
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    minHeight: 58,
+    padding: 11,
+  },
+  printerPickerHeader: { marginBottom: 12 },
+  printerPickerTitle: {
+    color: posColors.ink,
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  printerPickerHint: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  printerPickerBody: { flexGrow: 1, minHeight: 92 },
+  printerPickerScroll: { flexShrink: 1, minHeight: 92 },
+  printerPickerProgress: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 150,
+  },
+  printerPickerProgressText: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 12,
+  },
+  printerPickerEmpty: {
+    color: posColors.mutedInk,
+    fontSize: 14,
+    lineHeight: 21,
+    paddingVertical: 24,
+    textAlign: "center",
+  },
+  printerPickerError: {
+    backgroundColor: posColors.redSoft,
+    borderRadius: 8,
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "700",
+    padding: 10,
+  },
+  printerPickerErrorBody: { minHeight: 92 },
+  printerPickerPermissionHint: {
+    color: posColors.mutedInk,
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 10,
+  },
+  printerPickerPermissionAction: { alignSelf: "flex-start", marginTop: 12 },
+  printerPickerActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "flex-end",
+    marginTop: 16,
   },
   hardwareGrid: { flexDirection: "row", gap: 14, marginBottom: 14 },
   hardwareCard: {

@@ -6,9 +6,15 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
 import type {
+  HbposTransport,
+  HbposTransportRequest,
+  HbposTransportResponse,
+} from "../api/hbpos-api";
+import type {
   CartSnapshot,
   PricingCartStateSnapshot,
 } from "../contracts";
+import { HbposOrderSyncAdapter } from "../sync/hbpos-sync-adapters";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
@@ -732,6 +738,243 @@ test("真实 SQLite：打印加钱箱计划保持同一 print link，非法 rece
   });
 });
 
+test("真实 SQLite：M27 只恢复旧 payment 行号触发的同步 Guid 拒绝", async () => {
+  await withDatabase("legacy-payment-line-recovery", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 26),
+    );
+    const eligibleOrderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d31";
+    const unrelatedOrderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d32";
+    const returnOrderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d33";
+    const legacyOrderLineId = `payment:${eligibleOrderGuid}:1`;
+    for (const [index, orderGuid] of [
+      eligibleOrderGuid,
+      unrelatedOrderGuid,
+    ].entries()) {
+      await connection.run(
+        `INSERT INTO local_orders (
+          order_guid, local_sequence, store_code, device_code,
+          cashier_id, cashier_name, sold_at_iso, state,
+          total_cents, discount_cents, actual_amount_cents,
+          original_order_guid, created_at_iso, updated_at_iso
+        ) VALUES (?, ?, '1003', 'IPAD_1', 'cashier-1', 'Alice', ?,
+          'Rejected', 100, 0, 100, NULL, ?, ?)`,
+        [orderGuid, index + 1, T0, T0, T1],
+      );
+      const lineId =
+        orderGuid === eligibleOrderGuid
+          ? legacyOrderLineId
+          : `corrupt:${orderGuid}:1`;
+      await connection.run(
+        `INSERT INTO local_order_lines (
+          line_id, order_guid, line_sequence, product_code, item_number,
+          lookup_code, display_name, quantity, unit_price_cents,
+          discount_cents, actual_amount_cents, price_source, line_kind,
+          return_source_key, original_order_guid, original_order_detail_guid,
+          reference_code, sync_price_source
+        ) VALUES (?, ?, 1, 'P1', NULL, 'P1', 'Product', '1', 100, 0, 100,
+          'catalog', 'sale', NULL, NULL, NULL, NULL, 0)`,
+        [lineId, orderGuid],
+      );
+      await connection.run(
+        `INSERT INTO payment_order_draft_line_bindings (
+          order_guid, cart_line_id, order_line_id, line_sequence
+        ) VALUES (?, ?, ?, 1)`,
+        [orderGuid, `cart-line-${index + 1}`, lineId],
+      );
+      await insertTender(
+        connection,
+        `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        orderGuid,
+        "cash",
+        100,
+      );
+      await connection.run(
+        `INSERT INTO outbox_messages (
+          message_id, aggregate_id, kind, payload_json, state,
+          attempt_count, next_attempt_at_iso, lease_id, lease_expires_at_iso,
+          last_error_code, created_at_iso, updated_at_iso
+        ) VALUES (?, ?, 'order-sync', ?, 'rejected', 1, ?, NULL, NULL,
+          'ORDER_LINE_INVALID', ?, ?)`,
+        [
+          `outbox-${index + 1}`,
+          orderGuid,
+          JSON.stringify({ orderGuid }),
+          T1,
+          T0,
+          T1,
+        ],
+      );
+    }
+    await connection.run(
+      `INSERT INTO local_orders (
+        order_guid, local_sequence, store_code, device_code,
+        cashier_id, cashier_name, sold_at_iso, state,
+        total_cents, discount_cents, actual_amount_cents,
+        original_order_guid, created_at_iso, updated_at_iso
+      ) VALUES (?, 3, '1003', 'IPAD_1', 'cashier-1', 'Alice', ?,
+        'Rejected', -100, 0, -100, ?, ?, ?)`,
+      [returnOrderGuid, T0, eligibleOrderGuid, T0, T1],
+    );
+    await connection.run(
+      `INSERT INTO local_order_lines (
+        line_id, order_guid, line_sequence, product_code, item_number,
+        lookup_code, display_name, quantity, unit_price_cents,
+        discount_cents, actual_amount_cents, price_source, line_kind,
+        return_source_key, original_order_guid, original_order_detail_guid,
+        reference_code, sync_price_source
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000099', ?, 1, 'P1', NULL,
+        'P1', 'Product return', '1', 100, 0, -100, 'catalog', 'return',
+        'return-source-1', ?, ?, NULL, 0
+      )`,
+      [returnOrderGuid, eligibleOrderGuid, legacyOrderLineId],
+    );
+    await insertTender(
+      connection,
+      "00000000-0000-4000-8000-000000000098",
+      returnOrderGuid,
+      "cash",
+      -100,
+    );
+    await connection.run(
+      `INSERT INTO outbox_messages (
+        message_id, aggregate_id, kind, payload_json, state,
+        attempt_count, next_attempt_at_iso, lease_id, lease_expires_at_iso,
+        last_error_code, created_at_iso, updated_at_iso
+      ) VALUES ('outbox-return', ?, 'order-sync', ?, 'rejected', 1, ?,
+        NULL, NULL, 'ORDER_RETURN_REFERENCE_INVALID', ?, ?)`,
+      [
+        returnOrderGuid,
+        JSON.stringify({ orderGuid: returnOrderGuid }),
+        T1,
+        T0,
+        T1,
+      ],
+    );
+
+    await applyMigrations(
+      connection,
+      () => T2,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version > 26),
+    );
+
+    assert.deepEqual(
+      (
+        await connection.getAll<{
+          order_guid: unknown;
+          order_state: unknown;
+          outbox_state: unknown;
+          last_error_code: unknown;
+          attempt_count: unknown;
+        }>(
+          `SELECT o.order_guid, o.state AS order_state,
+            ob.state AS outbox_state, ob.last_error_code, ob.attempt_count
+           FROM local_orders o
+           INNER JOIN outbox_messages ob
+             ON ob.aggregate_id = o.order_guid
+            AND ob.kind = 'order-sync'
+           ORDER BY o.local_sequence`,
+        )
+      ).map((row) => ({ ...row })),
+      [
+        {
+          order_guid: eligibleOrderGuid,
+          order_state: "PendingSync",
+          outbox_state: "pending",
+          last_error_code: null,
+          attempt_count: 1,
+        },
+        {
+          order_guid: unrelatedOrderGuid,
+          order_state: "Rejected",
+          outbox_state: "rejected",
+          last_error_code: "ORDER_LINE_INVALID",
+          attempt_count: 1,
+        },
+        {
+          order_guid: returnOrderGuid,
+          order_state: "PendingSync",
+          outbox_state: "pending",
+          last_error_code: null,
+          attempt_count: 1,
+        },
+      ],
+    );
+
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => T2,
+      createLeaseId: () => "legacy-payment-sync-lease",
+      encryptor,
+    });
+    const calls: HbposTransportRequest[] = [];
+    const adapter = new HbposOrderSyncAdapter(
+      {
+        async request<T>(
+          request: HbposTransportRequest,
+        ): Promise<HbposTransportResponse<T>> {
+          calls.push(request);
+          const requestOrderGuid = (request.data as { orderGuid: string })
+            .orderGuid;
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: {
+                orderGuid: requestOrderGuid,
+                accepted: true,
+                alreadySynced: false,
+              },
+            } as T,
+          };
+        },
+      },
+      repositories.orders,
+    );
+    assert.deepEqual(
+      await adapter.sync(
+        eligibleOrderGuid,
+        JSON.stringify({ orderGuid: eligibleOrderGuid }),
+      ),
+      { kind: "synced", alreadySynced: false },
+    );
+    const request = calls[0]?.data as {
+      lines: readonly { orderLineGuid: string }[];
+    };
+    assert.match(
+      request.lines[0]?.orderLineGuid ?? "",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    assert.equal(
+      request.lines[0]?.orderLineGuid,
+      "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d30",
+    );
+    assert.deepEqual(
+      await adapter.sync(
+        returnOrderGuid,
+        JSON.stringify({ orderGuid: returnOrderGuid }),
+      ),
+      { kind: "synced", alreadySynced: false },
+    );
+    const returnRequest = calls[1]?.data as {
+      lines: readonly {
+        originalOrderGuid: string | null;
+        originalOrderDetailGuid: string | null;
+      }[];
+    };
+    assert.equal(
+      returnRequest.lines[0]?.originalOrderGuid,
+      eligibleOrderGuid,
+    );
+    assert.equal(
+      returnRequest.lines[0]?.originalOrderDetailGuid,
+      request.lines[0]?.orderLineGuid,
+    );
+  });
+});
+
 test("真实 SQLite：payment draft 同事务创建并按完整 cart/身份重放，soldAt 变化不换单", async () => {
   await withDatabase("draft-replay", async (connection) => {
     await migrateFresh(connection);
@@ -796,6 +1039,87 @@ test("真实 SQLite：payment draft 同事务创建并按完整 cart/身份重�
       recovery?.pricingState.lines[1]?.discountState.kind,
       "manual-percent",
     );
+  });
+});
+
+test("真实 SQLite：payment draft 完成现金支付后可通过 Hbpos 同步适配器上传 UUID 行标识", async () => {
+  await withDatabase("payment-draft-sync-line-guid", async (connection) => {
+    await migrateFresh(connection);
+    let nextId = 0;
+    const createId = () =>
+      `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`;
+    const ids = {
+      createOrderGuid: createId,
+      createOrderLineGuid: createId,
+      createAuditEventId: createId,
+    };
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      ids,
+      () => T2,
+    );
+    const input = draftInput({ draftId: "draft-sync-line-guid" });
+    const created = await store.createOrReuseDraft(input);
+    await insertTender(
+      connection,
+      createId(),
+      created.orderGuid,
+      "cash",
+      input.cart.actualAmount.cents,
+    );
+    await connection.run(
+      `UPDATE local_orders
+       SET state = 'PendingSync', updated_at_iso = ?
+       WHERE order_guid = ? AND state = 'Draft'`,
+      [T2, created.orderGuid],
+    );
+    const repositories = createSqliteRepositories(connection, {
+      nowIso: () => T2,
+      createLeaseId: createId,
+      encryptor,
+    });
+    const calls: HbposTransportRequest[] = [];
+    const transport: HbposTransport = {
+      async request<T>(
+        request: HbposTransportRequest,
+      ): Promise<HbposTransportResponse<T>> {
+        calls.push(request);
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              orderGuid: created.orderGuid,
+              accepted: true,
+              alreadySynced: false,
+            },
+          } as T,
+        };
+      },
+    };
+    const adapter = new HbposOrderSyncAdapter(
+      transport,
+      repositories.orders,
+    );
+
+    assert.deepEqual(
+      await adapter.sync(
+        created.orderGuid,
+        JSON.stringify({ orderGuid: created.orderGuid }),
+      ),
+      { kind: "synced", alreadySynced: false },
+    );
+    assert.equal(calls.length, 1);
+    const request = calls[0]?.data as {
+      lines: readonly { orderLineGuid: string }[];
+    };
+    assert.equal(request.lines.length, input.cart.lines.length);
+    for (const line of request.lines) {
+      assert.match(
+        line.orderLineGuid,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+    }
   });
 });
 
@@ -2946,11 +3270,7 @@ test("真实 SQLite：全反冲关闭拒绝不完整或不安全的历史 paymen
         );
         const recovery = await store.findBlockingRecovery(input.identity);
         assert.equal(recovery?.orderGuid, created.orderGuid, scenario.name);
-        assert.equal(
-          recovery?.kind,
-          scenario.expectedRecoveryKind,
-          scenario.name,
-        );
+        assert.equal(recovery?.kind, scenario.expectedRecoveryKind, scenario.name);
       },
     );
   }
@@ -4400,11 +4720,17 @@ function durableReturnCompletion(
   };
 }
 
+let paymentLineGuidNamespace = 0;
+
 function sequenceIds(orderPrefix: string, auditPrefix: string) {
   let order = 0;
+  let orderLine = 0;
   let audit = 0;
+  const lineNamespace = String(++paymentLineGuidNamespace).padStart(8, "0");
   return {
     createOrderGuid: () => `${orderPrefix}-${++order}`,
+    createOrderLineGuid: () =>
+      `${lineNamespace}-0000-4000-8000-${String(++orderLine).padStart(12, "0")}`,
     createAuditEventId: () => `${auditPrefix}-${++audit}`,
   };
 }

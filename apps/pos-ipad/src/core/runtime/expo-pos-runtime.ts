@@ -5,18 +5,20 @@ import * as ExpoNetwork from "expo-network";
 import * as Updates from "expo-updates";
 import { Linking } from "react-native";
 
+import { AppUpdateCoordinator } from "../../features/app-updates/app-update-coordinator";
+import { AppUpdateOrchestrator } from "../../features/app-updates/app-update-orchestrator";
 import {
-  AppUpdateCoordinator,
-  AppUpdateOrchestrator,
   type AppUpdateRecoveryRuntimePort,
   createAppUpdateRecoveryRuntimeSnapshot,
-  ExpoOtaUpdatePort,
-  HbposPosIpadOtaUpdateApi,
-  HbposPosIpadUpdateApi,
+} from "../../features/app-updates/app-update-recovery-contract";
+import { ExpoOtaUpdatePort } from "../../features/app-updates/expo-ota-update-port";
+import { HbposPosIpadOtaUpdateApi } from "../../features/app-updates/hbpos-pos-ipad-ota-update-api";
+import { HbposPosIpadUpdateApi } from "../../features/app-updates/hbpos-pos-ipad-update-api";
+import {
   OtaUpdateCoordinator,
   shouldCheckOtaPolicy,
-  UpdateTransitionLeaseCoordinator,
-} from "../../features/app-updates";
+} from "../../features/app-updates/ota-update-coordinator";
+import { UpdateTransitionLeaseCoordinator } from "../../features/app-updates/update-transition-lease-coordinator";
 import {
   HbposAttendanceSecurityApi,
   HbposOperationAuditReadApi,
@@ -80,6 +82,7 @@ import { createExpoAttendanceRuntimeConfiguration } from "./expo-attendance-runt
 import { createLazyExpoPrinterAdapter } from "./expo-printer-adapter";
 import {
   createSettingsApiHealthProbe,
+  reloadSettingsRuntimeTerminally,
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
@@ -109,6 +112,7 @@ import {
 import { resolveHbposApiUrl } from "./runtime-config";
 import { HbposSettingsPaymentTestApi } from "./settings-payment-test-api";
 import { SettingsScannerTestCoordinator } from "./settings-scanner-test";
+import { HbposSettingsSquareSetupApi } from "./settings-square-setup-api";
 import { resolveStartupDeviceGate } from "./startup-device-gate";
 
 const POS_DATABASE_NAME = "hb-pos-ipad.db";
@@ -605,6 +609,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       new SettingsScannerTestCoordinator(scannerRouter);
     const paymentTestApi =
       new HbposSettingsPaymentTestApi(transport);
+    const squareSetupApi =
+      new HbposSettingsSquareSetupApi(transport);
     const currentPaymentSettings =
       settingsPaymentConfiguration(paymentPublicConfiguration);
     const updateChannel = Updates.channel?.trim() || "embedded";
@@ -726,6 +732,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         apiBaseUrl,
         appVersion,
         updateChannel,
+        squareSetup: squareSetupApi,
         printer,
         readDevicePresentation: () =>
           readSettingsDevicePresentation(publicDeviceSession),
@@ -749,7 +756,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
             signal: AbortSignal,
           ) => {
             throwIfRuntimeAborted(signal);
-            await paymentTestApi.test(provider, configuration);
+            await paymentTestApi.test(provider, configuration, signal);
             throwIfRuntimeAborted(signal);
           },
           save: (configuration) =>
@@ -764,7 +771,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         runtimeReload: {
           reload: async (signal) => {
             throwIfRuntimeAborted(signal);
-            await Updates.reloadAsync();
+            return reloadSettingsRuntimeTerminally(() =>
+              Updates.reloadAsync(),
+            );
           },
         },
         device: {

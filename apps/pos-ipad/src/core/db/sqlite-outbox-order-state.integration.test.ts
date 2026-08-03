@@ -237,6 +237,136 @@ test("真实 SQLite：完成时订单 CAS 失败或租约失效不会留下 outb
   }
 });
 
+test("真实 SQLite：下一可租时间同时覆盖 pending 重试与崩溃租约，忽略终态消息", async () => {
+  const connection = await openConnection();
+  try {
+    await seedOutbox(
+      connection,
+      "message-pending",
+      "order-pending",
+      "audit-batch",
+      { nextAttemptAtIso: "2026-07-28T06:02:00.000Z" },
+    );
+    await seedOutbox(
+      connection,
+      "message-leased",
+      "order-leased",
+      "audit-batch",
+      {
+        state: "leased",
+        leaseId: "crashed-owner",
+        leaseExpiresAtIso: "2026-07-28T06:01:00.000Z",
+        nextAttemptAtIso: "2026-07-28T05:59:00.000Z",
+      },
+    );
+    await seedOutbox(
+      connection,
+      "message-terminal",
+      "order-terminal",
+      "audit-batch",
+    );
+    await connection.run(
+      "UPDATE outbox_messages SET state = 'rejected' WHERE message_id = ?",
+      ["message-terminal"],
+    );
+    const repositories = repositoriesFor(connection);
+
+    assert.equal(
+      await repositories.outbox.nextReadyAtIso?.(),
+      "2026-07-28T06:01:00.000Z",
+    );
+  } finally {
+    await connection.close();
+  }
+});
+
+test("设备重注册后，旧订单与非订单员工审计保持 pending 且不进入新作用域批次", async () => {
+  const connection = await openConnection();
+  try {
+    await seedOrder(connection, "order-old-terminal", 1, "PendingSync");
+    const oldScope = { storeCode: "S1", deviceCode: "IPAD1" } as const;
+    const newScope = { storeCode: "S1", deviceCode: "IPAD2" } as const;
+    const oldRepositories = repositoriesForScope(connection, oldScope);
+    await oldRepositories.audit.append([
+      {
+        eventId: "audit-old-non-order",
+        eventType: "CASHIER_LOGIN",
+        occurredAtIso: nowIso,
+        orderGuid: null,
+        correlationId: "audit-old-non-order",
+        payload: {},
+      },
+      {
+        eventId: "audit-old-order",
+        eventType: "SALE_COMPLETE",
+        occurredAtIso: nowIso,
+        orderGuid: "order-old-terminal",
+        correlationId: "audit-old-order",
+        payload: {},
+      },
+    ]);
+    // M30 之前的行没有可信 scope；即使时间已到也必须保留 pending 而非猜归属。
+    await connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid, correlation_id,
+        payload_json, uploaded_at_iso, delivery_state, attempt_count,
+        next_attempt_at_iso, last_error_code
+      ) VALUES (?, 'CASHIER_LOGIN', ?, NULL, ?, '{}', NULL, 'pending', 0, ?, NULL)`,
+      ["audit-legacy-unscoped", nowIso, "audit-legacy-unscoped", nowIso],
+    );
+
+    const newRepositories = repositoriesForScope(connection, newScope);
+    assert.deepEqual(await newRepositories.auditDelivery.listReady(8), []);
+    // 旧 scope 的 pending 不得被当前 runtime 视为下一次 ready，避免 0ms timer 自旋。
+    assert.equal(await newRepositories.auditDelivery.nextReadyAtIso(), null);
+    assert.deepEqual(
+      (await oldRepositories.auditDelivery.listReady(8)).map((event) => event.eventId),
+      ["audit-old-non-order", "audit-old-order"],
+    );
+    const states = await connection.getAll<{
+      event_id: string;
+      delivery_state: string;
+      scope_store_code: string | null;
+      scope_device_code: string | null;
+    }>(
+      `SELECT event_id, delivery_state, scope_store_code, scope_device_code
+       FROM audit_events
+       WHERE scope_store_code IS NOT NULL
+       ORDER BY event_id`,
+    );
+    assert.deepEqual(states.map((state) => ({ ...state })), [
+      {
+        event_id: "audit-old-non-order",
+        delivery_state: "pending",
+        scope_store_code: oldScope.storeCode,
+        scope_device_code: oldScope.deviceCode,
+      },
+      {
+        event_id: "audit-old-order",
+        delivery_state: "pending",
+        scope_store_code: oldScope.storeCode,
+        scope_device_code: oldScope.deviceCode,
+      },
+    ]);
+    const legacy = await connection.getFirst<{
+      delivery_state: string;
+      scope_store_code: string | null;
+      scope_device_code: string | null;
+    }>(
+      `SELECT delivery_state, scope_store_code, scope_device_code
+       FROM audit_events
+       WHERE event_id = 'audit-legacy-unscoped'`,
+    );
+    assert.deepEqual({ ...legacy }, {
+      delivery_state: "pending",
+      scope_store_code: null,
+      scope_device_code: null,
+    });
+  } finally {
+    await connection.close();
+  }
+});
+
 async function openConnection(): Promise<NodeSqliteConnection> {
   const connection = new NodeSqliteConnection(
     new DatabaseSync(":memory:", { enableForeignKeyConstraints: true }),
@@ -253,6 +383,21 @@ function repositoriesFor(connection: SqliteConnectionPort) {
       async encrypt(value) { return new TextEncoder().encode(value); },
       async decrypt(value) { return new TextDecoder().decode(value); },
     },
+  });
+}
+
+function repositoriesForScope(
+  connection: SqliteConnectionPort,
+  auditScope: Readonly<{ storeCode: string; deviceCode: string }>,
+) {
+  return createSqliteRepositories(connection, {
+    nowIso: () => nowIso,
+    createLeaseId: () => "lease-audit-scope",
+    encryptor: {
+      async encrypt(value) { return new TextEncoder().encode(value); },
+      async decrypt(value) { return new TextDecoder().decode(value); },
+    },
+    auditScope,
   });
 }
 
@@ -289,6 +434,7 @@ async function seedOutbox(
     leaseId?: string | null;
     leaseExpiresAtIso?: string | null;
     attemptCount?: number;
+    nextAttemptAtIso?: string;
   }> = {},
 ): Promise<void> {
   await connection.run(
@@ -304,7 +450,7 @@ async function seedOutbox(
       JSON.stringify({ orderGuid: aggregateId }),
       overrides.state ?? "pending",
       overrides.attemptCount ?? 0,
-      "2026-07-28T05:00:00.000Z",
+      overrides.nextAttemptAtIso ?? "2026-07-28T05:00:00.000Z",
       overrides.leaseId ?? null,
       overrides.leaseExpiresAtIso ?? null,
       `2026-07-28T05:${String(overrides.attemptCount ?? 0).padStart(2, "0")}:00.000Z`,

@@ -71,11 +71,62 @@ export type HbposOrderSyncMaterialOptions = Readonly<{
   linklyEnvironment: string | null;
 }>;
 
+export type OrderSyncPostAcceptPort = Readonly<{
+  /**
+   * 只在 Hbpos.Api 已接受订单（包括 AlreadySynced）后调用。
+   * 抛错会让现有 order outbox 保留并退避重试。
+   */
+  afterOrderAccepted(orderGuid: string): Promise<void>;
+}>;
+
 /**
  * Hbpos 订单接口只接受 UUID。这里在网络请求前失败关闭，防止错误 outbox 把另一笔订单上传。
  */
 function validUuid(value: string | null | undefined): value is string {
   return typeof value === "string" && uuidPattern.test(value);
+}
+
+function legacyPaymentOrderLineGuid(
+  orderGuid: string,
+  lineId: string,
+  expectedLineSequence: number | null = null,
+): string | null {
+  if (!validUuid(orderGuid)) return null;
+  const parts = lineId.split(":");
+  if (
+    parts.length !== 3 ||
+    parts[0] !== "payment" ||
+    parts[1]?.toLowerCase() !== orderGuid.toLowerCase() ||
+    !/^[1-9]\d*$/u.test(parts[2] ?? "")
+  ) {
+    return null;
+  }
+  const lineSequence = Number(parts[2]);
+  if (
+    !Number.isSafeInteger(lineSequence) ||
+    lineSequence <= 0 ||
+    lineSequence > 0xffff_ffff ||
+    (expectedLineSequence !== null && lineSequence !== expectedLineSequence)
+  ) {
+    return null;
+  }
+
+  // 旧支付草稿没有单独持久化 UUID。以随机 OrderGuid 为基底、把行序号
+  // 混入末 32 位，既保持跨重试稳定，也保证同单各行得到不同的合法 Guid。
+  const compactOrderGuid = orderGuid.replaceAll("-", "").toLowerCase();
+  const suffix =
+    BigInt(`0x${compactOrderGuid.slice(-8)}`) ^ BigInt(lineSequence);
+  const compactLineGuid =
+    compactOrderGuid.slice(0, -8) +
+    suffix.toString(16).padStart(8, "0");
+  const lineGuid = [
+    compactLineGuid.slice(0, 8),
+    compactLineGuid.slice(8, 12),
+    compactLineGuid.slice(12, 16),
+    compactLineGuid.slice(16, 20),
+    compactLineGuid.slice(20),
+  ].join("-");
+  return validUuid(lineGuid) ? lineGuid : null;
 }
 
 function money(cents: number): number | null {
@@ -114,6 +165,24 @@ function mapFailure(error: unknown): AdapterFailure {
 
   // 传输层把网络异常封装为 HbposApiError；未封装异常也只能保留为可重试，绝不伪造成功。
   return { kind: "retry", failure: "network" };
+}
+
+function mapPostAcceptFailure(
+  error: unknown,
+): Extract<AdapterFailure, { kind: "retry" }> {
+  const failure = mapFailure(error);
+  if (failure.kind === "retry") return failure;
+  // 服务端已接受订单后，余额联旁路故障绝不能再把同一订单改写为 Rejected/Blocked。
+  return {
+    kind: "retry",
+    failure:
+      error instanceof HbposApiError &&
+      error.kind === "http" &&
+      (error.status === 401 || error.status === 403)
+        ? "unauthorized"
+        : "server",
+    code: failure.code,
+  };
 }
 
 function reject(code: string): AdapterFailure {
@@ -227,16 +296,36 @@ function mapOrder(
   if (order.originalOrderGuid !== null && !validUuid(order.originalOrderGuid)) return reject("ORDER_RETURN_REFERENCE_INVALID");
 
   const lines: components["schemas"]["OrderLineSyncDto"][] = [];
-  for (const line of order.lines) {
+  for (const [index, line] of order.lines.entries()) {
+    const orderLineGuid = validUuid(line.lineId)
+      ? line.lineId
+      : legacyPaymentOrderLineGuid(order.orderGuid, line.lineId, index + 1);
+    const originalOrderDetailGuid =
+      line.originalOrderDetailGuid === null
+        ? null
+        : validUuid(line.originalOrderDetailGuid)
+          ? line.originalOrderDetailGuid
+          : line.originalOrderGuid === null
+            ? null
+            : legacyPaymentOrderLineGuid(
+                line.originalOrderGuid,
+                line.originalOrderDetailGuid,
+              );
     const lineQuantity = quantity(line.quantity);
     const unitPrice = money(line.unitPrice.cents);
     const lineDiscount = money(line.discount.cents);
     const lineActual = money(line.actualAmount.cents);
-    if (!validUuid(line.lineId) || lineQuantity === null || unitPrice === null || lineDiscount === null || lineActual === null) {
+    if (orderLineGuid === null || lineQuantity === null || unitPrice === null || lineDiscount === null || lineActual === null) {
       return reject("ORDER_LINE_INVALID");
     }
-    if ((line.originalOrderGuid !== null && !validUuid(line.originalOrderGuid)) ||
-      (line.originalOrderDetailGuid !== null && !validUuid(line.originalOrderDetailGuid))) return reject("ORDER_RETURN_REFERENCE_INVALID");
+    if (
+      (line.originalOrderGuid !== null &&
+        !validUuid(line.originalOrderGuid)) ||
+      (line.originalOrderDetailGuid !== null &&
+        originalOrderDetailGuid === null)
+    ) {
+      return reject("ORDER_RETURN_REFERENCE_INVALID");
+    }
     if (line.syncProvenance === undefined) {
       return reject("ORDER_SYNC_LINE_PROVENANCE_MISSING");
     }
@@ -247,7 +336,7 @@ function mapOrder(
       return reject("ORDER_SYNC_LINE_PROVENANCE_INVALID");
     }
     lines.push({
-      orderLineGuid: line.lineId,
+      orderLineGuid,
       productCode: line.productCode,
       referenceCode: syncProvenance.referenceCode,
       displayName: line.displayName,
@@ -262,7 +351,7 @@ function mapOrder(
       kind: line.kind === "return" ? 2 : 1,
       returnSourceKey: line.returnSourceKey,
       originalOrderGuid: line.originalOrderGuid,
-      originalOrderDetailGuid: line.originalOrderDetailGuid,
+      originalOrderDetailGuid,
     });
   }
   const payments: components["schemas"]["PaymentSyncDto"][] = [];
@@ -288,6 +377,7 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
     private readonly transport: HbposTransport,
     private readonly orders: OrderRepositoryPort,
     private readonly material: HbposOrderSyncMaterialOptions | null = null,
+    private readonly postAccept: OrderSyncPostAcceptPort | null = null,
   ) {}
 
   public async sync(orderGuid: string, payloadJson: string): Promise<SyncOrderResult> {
@@ -324,6 +414,7 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
     }
     const request = mapOrder(requestOrder, cardSyncEvidenceByTenderGuid);
     if ("kind" in request) return { kind: "rejected", failure: "business-rejection", code: request.code ?? "ORDER_MAPPING_FAILED" };
+    let alreadySynced = false;
     try {
       const response = await this.transport.request<HbposEnvelope<OrderSyncResponse>>({ method: "POST", url: "/api/v1/orders/sync", data: request });
       if (response.status < 200 || response.status >= 300) throw new HbposApiError("Order sync HTTP failure.", { kind: "http", status: response.status });
@@ -331,13 +422,19 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
       if (body.orderGuid !== orderGuid || body.accepted !== true || typeof body.alreadySynced !== "boolean") {
         return { kind: "rejected", failure: "business-rejection", code: "ORDER_SYNC_RESPONSE_INVALID" };
       }
-      return { kind: "synced", alreadySynced: body.alreadySynced === true };
+      alreadySynced = body.alreadySynced === true;
     } catch (error) {
       const failure = mapFailure(error);
       return failure.kind === "retry" ? failure : failure.kind === "blocked"
         ? { kind: "blocked", failure: "forbidden", code: failure.code }
         : { kind: "rejected", failure: "business-rejection", code: failure.code };
     }
+    try {
+      await this.postAccept?.afterOrderAccepted(orderGuid);
+    } catch (error) {
+      return mapPostAcceptFailure(error);
+    }
+    return { kind: "synced", alreadySynced };
   }
 }
 

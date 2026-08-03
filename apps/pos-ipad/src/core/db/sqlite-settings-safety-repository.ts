@@ -9,6 +9,7 @@ export type SettingsSafetySnapshot = Readonly<{
   pendingReturnCount: number;
   pendingSaleCount: number;
   unresolvedPaymentCount: number;
+  paymentConfigurationSensitiveOrderCount: number;
 }>;
 
 /**
@@ -48,6 +49,7 @@ export class SqliteSettingsSafetyRepository {
       const paymentRows = await transaction.getAll<PaymentSafetyRow>(
         `SELECT
            attempts.attempt_id,
+           attempts.order_guid,
            attempts.state,
            attempts.provider,
            attempts.operation,
@@ -88,6 +90,7 @@ export class SqliteSettingsSafetyRepository {
            ON tenders.payment_attempt_id = attempts.attempt_id
          GROUP BY
            attempts.attempt_id,
+           attempts.order_guid,
            attempts.state,
            attempts.provider,
            attempts.operation,
@@ -96,6 +99,8 @@ export class SqliteSettingsSafetyRepository {
          ORDER BY attempts.attempt_id`,
       );
       const unresolvedPaymentCount = countUnresolvedPayments(paymentRows);
+      const paymentConfigurationSensitiveOrderCount =
+        countPaymentConfigurationSensitiveOrders(paymentRows);
 
       const outboxRows = await transaction.getAll<OutboxSafetyRow>(
         `SELECT message_id, kind, state
@@ -129,6 +134,7 @@ export class SqliteSettingsSafetyRepository {
         pendingReturnCount: orderCounts.pendingReturnCount,
         pendingSaleCount: orderCounts.pendingSaleCount,
         unresolvedPaymentCount,
+        paymentConfigurationSensitiveOrderCount,
       };
     });
   }
@@ -145,6 +151,7 @@ type OrderSafetyRow = Readonly<{
 
 type PaymentSafetyRow = Readonly<{
   attempt_id: unknown;
+  order_guid: unknown;
   state: unknown;
   provider: unknown;
   operation: unknown;
@@ -286,6 +293,30 @@ function countUnresolvedPayments(rows: readonly PaymentSafetyRow[]): number {
 
   }
   return unresolvedPaymentCount;
+}
+
+function countPaymentConfigurationSensitiveOrders(
+  rows: readonly PaymentSafetyRow[],
+): number {
+  const orderGuids = new Set<string>();
+  for (const row of rows) {
+    const orderGuid = requiredIdentifier(row.order_guid, "payment order guid");
+    const provider = paymentProvider(row.provider);
+    const persistedOrderState = orderState(row.order_state);
+    const matchingTenderCount = nonNegativeInteger(
+      row.matching_tender_count,
+      "matching payment tender count",
+    );
+    // 订单同步仍会读取当前 Linkly 环境，因此只保护已精确落成 card tender 的订单。
+    if (
+      provider === "linkly-cloud" &&
+      persistedOrderState !== "Synced" &&
+      matchingTenderCount === 1
+    ) {
+      orderGuids.add(orderGuid);
+    }
+  }
+  return orderGuids.size;
 }
 
 function countPendingDurableWrites(input: Readonly<{

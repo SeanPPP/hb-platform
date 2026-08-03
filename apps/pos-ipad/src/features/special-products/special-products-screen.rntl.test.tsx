@@ -15,6 +15,10 @@ import {
 
 import type { SpecialProductItem } from "@/core/contracts";
 
+jest.mock("@/ui/feedback", () => ({
+  usePosSound: () => ({ play: jest.fn() }),
+}));
+
 let mockLanguage: "en" | "zh" = "zh";
 
 jest.mock("react-i18next", () => ({
@@ -98,6 +102,12 @@ describe("SpecialProductsScreen", () => {
     const screen = await render(
       <SpecialProductsScreen presenter={presenter} />,
     );
+    const keyboardScroll = screen.getByTestId(
+      "special-products-management-keyboard-scroll",
+    );
+    expect(keyboardScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+    expect(keyboardScroll.props.keyboardDismissMode).toBe("interactive");
+    expect(keyboardScroll.props.keyboardShouldPersistTaps).toBe("handled");
 
     await fireEvent.changeText(
       screen.getByTestId("special-products-search-input"),

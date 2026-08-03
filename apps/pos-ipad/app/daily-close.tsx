@@ -130,7 +130,7 @@ export default function DailyCloseRoute() {
   if (runtimeUnavailable) {
     return (
       <DailyCloseUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -140,7 +140,7 @@ export default function DailyCloseRoute() {
 
   return (
     <DailyCloseScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );

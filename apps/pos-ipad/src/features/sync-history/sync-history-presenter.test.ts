@@ -384,7 +384,7 @@ test("选择订单与日期范围重传都只提交允许的 pending outbox", as
   assert.deepEqual(selected, {
     kind: "requested",
     requestedCount: 1,
-    skippedCount: 1,
+    skippedCount: 0,
     reauthenticationRequiredCount: 0,
     supervisorRequiredCount: 0,
     errorCode: null,
@@ -410,17 +410,42 @@ test("Synced、Syncing、Blocked403 与 Rejected 不会重传，并返回相应�
 
   await presenter.refresh();
   for (const row of presenter.state.rows) presenter.setSelected(row.orderGuid, true);
+  assert.deepEqual(presenter.state.selectedOrderGuids, []);
   const result = await presenter.requestRetransmitSelected();
 
   assert.deepEqual(port.restoreCalls, []);
   assert.deepEqual(result, {
     kind: "nothing-eligible",
     requestedCount: 0,
-    skippedCount: 4,
-    reauthenticationRequiredCount: 1,
-    supervisorRequiredCount: 1,
+    skippedCount: 0,
+    reauthenticationRequiredCount: 0,
+    supervisorRequiredCount: 0,
     errorCode: null,
   });
+});
+
+test("日期范围补传 501 笔时交给仓储单事务恢复，避免部分成功被误报为全失败", async () => {
+  const orders = Array.from({ length: 501 }, (_, index) =>
+    order({
+      orderGuid: `order-${index + 1}`,
+      localSequence: 501 - index,
+      soldAtIso: "2026-07-27T12:00:00.000Z",
+    }),
+  );
+  const port = new MemoryPort(orders);
+  const presenter = createPresenter(port, 100);
+  presenter.setFilters({
+    dateFromIso: "2026-07-27T00:00:00.000Z",
+    dateToIso: "2026-07-27T23:59:59.999Z",
+    states: [],
+  });
+
+  const result = await presenter.requestRetransmitDateRange();
+
+  assert.deepEqual(port.restoreCalls.map((batch) => batch.length), [501]);
+  assert.equal(result.kind, "requested");
+  assert.equal(result.requestedCount, 501);
+  assert.equal(result.skippedCount, 0);
 });
 
 test("重复点击重传单飞，只向耐久 Port 发出一次请求", async () => {

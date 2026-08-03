@@ -41,6 +41,12 @@ describe("AttendanceAuditScreen", () => {
     ).toBe("data:image/png;base64,QQ==");
     expect(screen.getByText("15 秒")).toBeTruthy();
     expect(screen.queryByText(/HBATE1/)).toBeNull();
+    const keyboardScroll = screen.getByTestId(
+      "attendance-audit-filters-keyboard-scroll",
+    );
+    expect(keyboardScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+    expect(keyboardScroll.props.keyboardDismissMode).toBe("interactive");
+    expect(keyboardScroll.props.keyboardShouldPersistTaps).toBe("handled");
 
     for (const testID of [
       "attendance-audit-back",

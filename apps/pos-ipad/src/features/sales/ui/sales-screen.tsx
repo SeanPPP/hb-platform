@@ -1,15 +1,22 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   FlatList,
   Image,
   Modal,
-  ScrollView,
   StyleSheet,
   Text,
   View,
+  type ListRenderItemInfo,
   type StyleProp,
-  type TextInput,
   type ViewStyle,
+  type TextInput as NativeTextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -41,16 +48,20 @@ import {
   type SalesToolbarActionId,
 } from "./sales-toolbar-order";
 
-import type { CartSnapshot } from "@/core/contracts";
+import type { CartLine, CartSnapshot } from "@/core/contracts";
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
 const QUICK_DISCOUNTS = [0, 1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const QUICK_ORDER_DISCOUNTS = [1_000, 2_000, 3_000, 4_000, 5_000] as const;
+const AVERAGE_CART_LINE_HEIGHT = 128;
 
 type LineEditMode =
   "quantity" | "price" | "discount-amount" | "discount-percent";
@@ -88,6 +99,7 @@ export type SalesScreenProps = Readonly<{
   onOpenDailyClose?: () => void;
   onOpenHeldOrders?: () => void;
   onOpenInstallments?: () => void;
+  onOpenLocalHistory?: () => void;
   onOpenPayment?: (cart: CartSnapshot) => void;
   onOpenRequiredUpdate?: () => void;
   onReprintReceipt?: () => Promise<SalesUtilityActionResult>;
@@ -107,8 +119,8 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
-  sound?: "danger" | "navigate" | "tap";
   tone?: "primary" | "secondary" | "danger" | "quiet";
+  sound?: "tap" | "key" | "navigate" | "danger";
   testID?: string;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
@@ -133,6 +145,7 @@ export function SalesScreen({
   onOpenDailyClose,
   onOpenHeldOrders,
   onOpenInstallments,
+  onOpenLocalHistory,
   onOpenPayment,
   onOpenRequiredUpdate,
   onReprintReceipt,
@@ -154,10 +167,13 @@ export function SalesScreen({
   );
   const connectivity = usePosShellStore((current) => current.connectivity);
   const locale = localeOverride ?? resolveSalesLocale();
-  const t = (
-    key: SalesCopyKey,
-    values?: Readonly<Record<string, string | number>>,
-  ) => salesText(locale, key, values);
+  const t = useCallback(
+    (
+      key: SalesCopyKey,
+      values?: Readonly<Record<string, string | number>>,
+    ) => salesText(locale, key, values),
+    [locale],
+  );
   const keypadLabels = {
     backspace: t("keypad.backspace"),
     clear: t("keypad.clear"),
@@ -177,9 +193,6 @@ export function SalesScreen({
   const [searchResultsQuery, setSearchResultsQuery] = useState<string | null>(
     null,
   );
-  const [cartProductImages, setCartProductImages] = useState<
-    Readonly<Record<string, string | null>>
-  >({});
   const [utilityActionPending, setUtilityActionPending] =
     useState<SalesUtilityAction | null>(null);
   const [utilityActionResult, setUtilityActionResult] = useState<Readonly<{
@@ -187,7 +200,15 @@ export function SalesScreen({
     result: SalesUtilityActionResult;
   }> | null>(null);
   const [searchSoftInputOnFocus, setSearchSoftInputOnFocus] = useState(false);
-  const searchInputRef = useRef<TextInput>(null);
+  const searchInputRef = useRef<NativeTextInput>(null);
+  const cartListRef = useRef<FlatList<CartLine>>(null);
+  const cartLinesRef = useRef(state.cart.lines);
+  cartLinesRef.current = state.cart.lines;
+  const cartRevealRetryTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const cartRevealGenerationRef = useRef(0);
+  const cartRevealIndexRef = useRef<number | null>(null);
   const searchKeyboardRequestPhaseRef = useRef<
     "idle" | "awaiting-blur" | "enabling" | "awaiting-focus"
   >("idle");
@@ -202,14 +223,8 @@ export function SalesScreen({
     null,
   );
   const searchRequestGenerationRef = useRef(0);
-  const productImageRequestsRef = useRef(new Map<string, symbol>());
-  const currentCartProductImageKeysRef = useRef<ReadonlySet<string>>(new Set());
-  const productImageResolverGenerationRef = useRef(0);
   const beginNumericInputRef = useRef<() => void>(() => undefined);
   manualInputFocusChangeRef.current = onManualInputFocusChange;
-  currentCartProductImageKeysRef.current = new Set(
-    state.cart.lines.map(cartProductImageKey),
-  );
   const successDrawerWarning = state.success
     ? drawerWarningCopyKey(state.success.drawerDisposition)
     : null;
@@ -226,6 +241,8 @@ export function SalesScreen({
     cartEmpty && newTransactionGate?.canStartNewTransaction === false;
   const checkoutVerifying = state.phase === "verifying-checkout";
   const transactionActionsDisabled = state.phase !== "selling";
+  const mergeCartDisabled =
+    transactionActionsDisabled || !presenter.canMergeCompatibleLines();
   const catalogActionsDisabled =
     !state.capabilities.catalog ||
     newTransactionBlocked ||
@@ -235,6 +252,72 @@ export function SalesScreen({
     state.phase === "locked" ||
     checkoutVerifying ||
     newTransactionBlocked;
+
+  const retryCartReveal = useCallback(
+    (info: Readonly<{ averageItemLength: number; index: number }>): void => {
+      if (cartRevealIndexRef.current !== info.index) return;
+      const revealGeneration = cartRevealGenerationRef.current;
+      const averageItemLength =
+        info.averageItemLength > 0
+          ? info.averageItemLength
+          : AVERAGE_CART_LINE_HEIGHT;
+      cartListRef.current?.scrollToOffset({
+        animated: false,
+        offset: Math.max(0, averageItemLength * info.index),
+      });
+      if (cartRevealRetryTimerRef.current !== null) {
+        clearTimeout(cartRevealRetryTimerRef.current);
+      }
+      cartRevealRetryTimerRef.current = setTimeout(() => {
+        cartRevealRetryTimerRef.current = null;
+        if (
+          cartRevealGenerationRef.current !== revealGeneration ||
+          cartRevealIndexRef.current !== info.index
+        ) {
+          return;
+        }
+        cartListRef.current?.scrollToIndex({
+          animated: true,
+          index: info.index,
+          viewPosition: 1,
+        });
+      }, 32);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    cartRevealGenerationRef.current += 1;
+    if (cartRevealRetryTimerRef.current !== null) {
+      clearTimeout(cartRevealRetryTimerRef.current);
+      cartRevealRetryTimerRef.current = null;
+    }
+    const lineId = state.revealLineId;
+    if (!lineId) {
+      cartRevealIndexRef.current = null;
+      return;
+    }
+    const index = state.cart.lines.findIndex((line) => line.lineId === lineId);
+    if (index < 0) {
+      cartRevealIndexRef.current = null;
+      return;
+    }
+    cartRevealIndexRef.current = index;
+    cartListRef.current?.scrollToIndex({
+      animated: true,
+      index,
+      viewPosition: 1,
+    });
+  }, [state.cart.lines, state.revealLineId, state.revealRevision]);
+
+  useEffect(
+    () => () => {
+      if (cartRevealRetryTimerRef.current !== null) {
+        clearTimeout(cartRevealRetryTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const clearManualInputBlurTimer = (): void => {
     if (manualInputBlurTimerRef.current === null) return;
@@ -487,87 +570,6 @@ export function SalesScreen({
     beginNumericInputRef.current();
   }, [state.phase]);
 
-  useEffect(() => {
-    productImageResolverGenerationRef.current += 1;
-    productImageRequestsRef.current.clear();
-    setCartProductImages({});
-    return () => {
-      productImageResolverGenerationRef.current += 1;
-    };
-  }, [resolveCartProductImage]);
-
-  useEffect(() => {
-    const currentKeys = new Set(state.cart.lines.map(cartProductImageKey));
-    for (const key of productImageRequestsRef.current.keys()) {
-      if (!currentKeys.has(key)) {
-        productImageRequestsRef.current.delete(key);
-      }
-    }
-    setCartProductImages((current) => {
-      const retainedEntries = Object.entries(current).filter(([key]) =>
-        currentKeys.has(key),
-      );
-      return retainedEntries.length === Object.keys(current).length
-        ? current
-        : Object.fromEntries(retainedEntries);
-    });
-  }, [state.cart.lines]);
-
-  useEffect(() => {
-    if (!resolveCartProductImage) return;
-    const generation = productImageResolverGenerationRef.current;
-    for (const line of state.cart.lines) {
-      const imageKey = cartProductImageKey(line);
-      if (
-        Object.prototype.hasOwnProperty.call(cartProductImages, imageKey) ||
-        productImageRequestsRef.current.has(imageKey)
-      ) {
-        continue;
-      }
-      const requestToken = Symbol(imageKey);
-      productImageRequestsRef.current.set(imageKey, requestToken);
-      void resolveCartProductImage({
-        productCode: line.productCode,
-        lookupCode: line.lookupCode,
-      })
-        .then((imageUri) => {
-          if (
-            productImageResolverGenerationRef.current !== generation ||
-            productImageRequestsRef.current.get(imageKey) !== requestToken ||
-            !currentCartProductImageKeysRef.current.has(imageKey)
-          ) {
-            return;
-          }
-          const normalizedUri = imageUri?.trim() || null;
-          setCartProductImages((current) => ({
-            ...current,
-            [imageKey]: normalizedUri,
-          }));
-        })
-        .catch(() => {
-          if (
-            productImageResolverGenerationRef.current !== generation ||
-            productImageRequestsRef.current.get(imageKey) !== requestToken ||
-            !currentCartProductImageKeysRef.current.has(imageKey)
-          ) {
-            return;
-          }
-          setCartProductImages((current) => ({
-            ...current,
-            [imageKey]: null,
-          }));
-        })
-        .finally(() => {
-          if (
-            productImageResolverGenerationRef.current === generation &&
-            productImageRequestsRef.current.get(imageKey) === requestToken
-          ) {
-            productImageRequestsRef.current.delete(imageKey);
-          }
-        });
-    }
-  }, [cartProductImages, resolveCartProductImage, state.cart.lines]);
-
   const openProductSearchDrawer = (): void => {
     const query = state.query.trim();
     const generation = ++searchRequestGenerationRef.current;
@@ -600,19 +602,22 @@ export function SalesScreen({
       });
   };
 
-  const openLineEditor = (lineId: string): void => {
-    const line = state.cart.lines.find(
-      (candidate) => candidate.lineId === lineId,
-    );
-    if (!line) return;
-    setLineEdit({
-      lineId,
-      mode: "quantity",
-      replaceOnNextDigit: true,
-      value: line.quantity,
-    });
-    beginNumericInput();
-  };
+  const openLineEditor = useCallback(
+    (lineId: string): void => {
+      const line = cartLinesRef.current.find(
+        (candidate) => candidate.lineId === lineId,
+      );
+      if (!line) return;
+      setLineEdit({
+        lineId,
+        mode: "quantity",
+        replaceOnNextDigit: true,
+        value: line.quantity,
+      });
+      beginNumericInputRef.current();
+    },
+    [],
+  );
 
   const selectLineEditMode = (mode: LineEditMode): void => {
     setLineEdit((current) => {
@@ -680,6 +685,66 @@ export function SalesScreen({
       if (applied) closeOrderEditInput();
     });
   };
+
+  const handleSelectCartLine = useCallback(
+    (lineId: string) => presenter.selectLine(lineId),
+    [presenter],
+  );
+  const handleDecreaseCartLine = useCallback(
+    (lineId: string) => {
+      void presenter.decreaseLine(lineId);
+    },
+    [presenter],
+  );
+  const handleIncreaseCartLine = useCallback(
+    (lineId: string) => {
+      void presenter.increaseLine(lineId);
+    },
+    [presenter],
+  );
+  const handleRemoveCartLine = useCallback(
+    (lineId: string) => {
+      void presenter.removeLine(lineId);
+    },
+    [presenter],
+  );
+
+  const renderCartLine = useCallback(
+    ({ item, index }: ListRenderItemInfo<CartLine>) => (
+      <CartLineRow
+        disabled={
+          !state.capabilities.cartEditing || transactionActionsDisabled
+        }
+        index={index}
+        isSelected={state.selectedLineId === item.lineId}
+        item={item}
+        locale={locale}
+        onDecrease={handleDecreaseCartLine}
+        onDiscount={setDiscountLineId}
+        onEdit={openLineEditor}
+        onIncrease={handleIncreaseCartLine}
+        onRemove={handleRemoveCartLine}
+        onSelect={handleSelectCartLine}
+        {...(resolveCartProductImage
+          ? { resolveProductImage: resolveCartProductImage }
+          : {})}
+        t={t}
+      />
+    ),
+    [
+      locale,
+      handleDecreaseCartLine,
+      handleIncreaseCartLine,
+      handleRemoveCartLine,
+      handleSelectCartLine,
+      openLineEditor,
+      resolveCartProductImage,
+      state.capabilities.cartEditing,
+      state.selectedLineId,
+      t,
+      transactionActionsDisabled,
+    ],
+  );
 
   if (state.phase === "success" && state.success) {
     return (
@@ -785,6 +850,17 @@ export function SalesScreen({
             label: t("header.remoteHistory"),
             onPress: onOpenRemoteHistory,
             testID: "sales-open-remote-history",
+            tone: "quiet" as const,
+          },
+        ]
+      : []),
+    ...(onOpenInstallments
+      ? [
+          {
+            id: "installments" as const,
+            label: t("header.installments"),
+            onPress: onOpenInstallments,
+            testID: "sales-open-installments",
             tone: "quiet" as const,
           },
         ]
@@ -911,6 +987,7 @@ export function SalesScreen({
             <ActionButton
               label={t("updateGate.openStore")}
               onPress={onOpenRequiredUpdate}
+              sound="navigate"
               testID="sales-open-required-update"
               tone="secondary"
             />
@@ -939,127 +1016,17 @@ export function SalesScreen({
               <FlatList
                 contentContainerStyle={styles.cartList}
                 data={state.cart.lines}
-                keyExtractor={(line) => line.lineId}
+                initialNumToRender={10}
+                keyExtractor={cartLineKeyExtractor}
+                maxToRenderPerBatch={8}
+                onScrollToIndexFailed={retryCartReveal}
+                ref={cartListRef}
+                removeClippedSubviews
+                renderItem={renderCartLine}
                 style={styles.cartListViewport}
-                renderItem={({ item, index }) => {
-                  const imageKey = cartProductImageKey(item);
-                  return (
-                    <View
-                      style={styles.cartLine}
-                      testID={`sales-line-${item.lineId}`}
-                    >
-                      <View style={styles.cartLineTop}>
-                        <Text
-                          accessibilityLabel={t("cart.lineNumber", {
-                            number: index + 1,
-                          })}
-                          style={styles.cartLineNumber}
-                          testID={`sales-line-${item.lineId}-line-number`}
-                        >
-                          {index + 1}
-                        </Text>
-                        <CartProductThumbnail
-                          accessibilityLabel={t("cart.productImage", {
-                            product: item.displayName,
-                          })}
-                          imageUri={cartProductImages[imageKey]}
-                          placeholderLabel={t("cart.imagePlaceholder")}
-                          testID={`sales-line-${item.lineId}-image`}
-                        />
-                        <View style={styles.cartLineIdentity}>
-                          <Text numberOfLines={2} style={styles.cartLineName}>
-                            {item.displayName}
-                          </Text>
-                          <Text numberOfLines={1} style={styles.cartLineCode}>
-                            {item.lookupCode || item.productCode}
-                          </Text>
-                          <Text style={styles.cartLineUnitPrice}>
-                            {formatAud(item.unitPrice.cents, locale)}
-                            {item.discount.cents > 0 ? (
-                              <Text
-                                style={styles.discountAmountText}
-                                testID={`sales-line-${item.lineId}-discount-amount`}
-                              >
-                                {`  −${formatAud(item.discount.cents, locale)}`}
-                              </Text>
-                            ) : null}
-                          </Text>
-                        </View>
-                        <Text style={styles.cartLineTotal}>
-                          {formatAud(item.actualAmount.cents, locale)}
-                        </Text>
-                      </View>
-                      <View style={styles.lineControls}>
-                        <ActionButton
-                          accessibilityLabel={t("cart.decrease")}
-                          disabled={
-                            !state.capabilities.cartEditing ||
-                            transactionActionsDisabled
-                          }
-                          label="−"
-                          onPress={() => {
-                            void presenter.decreaseLine(item.lineId);
-                          }}
-                          testID={`sales-line-${item.lineId}-decrease`}
-                          tone="quiet"
-                        />
-                        <View
-                          accessibilityLabel={`${t("cart.quantity")}: ${item.quantity}`}
-                          style={styles.quantityValue}
-                        >
-                          <Text style={styles.quantityText}>
-                            {item.quantity}
-                          </Text>
-                        </View>
-                        <ActionButton
-                          accessibilityLabel={t("cart.increase")}
-                          disabled={
-                            !state.capabilities.cartEditing ||
-                            transactionActionsDisabled
-                          }
-                          label="+"
-                          onPress={() => {
-                            void presenter.increaseLine(item.lineId);
-                          }}
-                          testID={`sales-line-${item.lineId}-increase`}
-                          tone="quiet"
-                        />
-                        <ActionButton
-                          disabled={
-                            !state.capabilities.cartEditing ||
-                            transactionActionsDisabled
-                          }
-                          label={t("cart.edit")}
-                          onPress={() => openLineEditor(item.lineId)}
-                          testID={`sales-line-${item.lineId}-edit`}
-                          tone="quiet"
-                        />
-                        <ActionButton
-                          disabled={
-                            !state.capabilities.cartEditing ||
-                            transactionActionsDisabled
-                          }
-                          label={t("cart.discount")}
-                          onPress={() => setDiscountLineId(item.lineId)}
-                          testID={`sales-line-${item.lineId}-discount`}
-                          tone="secondary"
-                        />
-                        <ActionButton
-                          disabled={
-                            !state.capabilities.cartEditing ||
-                            transactionActionsDisabled
-                          }
-                          label={t("cart.remove")}
-                          onPress={() => {
-                            void presenter.removeLine(item.lineId);
-                          }}
-                          testID={`sales-line-${item.lineId}-remove`}
-                          tone="danger"
-                        />
-                      </View>
-                    </View>
-                  );
-                }}
+                testID="sales-cart-list"
+                updateCellsBatchingPeriod={32}
+                windowSize={7}
               />
             )}
           </View>
@@ -1099,6 +1066,7 @@ export function SalesScreen({
                 }
                 label={t("summary.orderDiscount")}
                 onPress={() => setOrderDiscountVisible(true)}
+                sound="navigate"
                 style={styles.summaryEditAction}
                 testID="sales-order-discount"
                 tone="secondary"
@@ -1120,18 +1088,18 @@ export function SalesScreen({
         </View>
 
         <View style={styles.functionPane} testID="sales-function-pane">
-          <ScrollView
+          <PosKeyboardAwareScrollView
             contentContainerStyle={styles.functionScrollContent}
-            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             style={styles.functionScroll}
+            testID="sales-function-scroll"
           >
             <Text style={styles.paneTitle}>{t("functions.title")}</Text>
             <Text style={styles.functionSectionTitle}>
               {t("functions.productEntry")}
             </Text>
             <View style={styles.searchInputRow}>
-              <PosTextInput
+              <PosKeyboardAwareTextInput
                 ref={searchInputRef}
                 accessibilityLabel={t("catalog.searchPlaceholder")}
                 autoCapitalize="none"
@@ -1158,6 +1126,7 @@ export function SalesScreen({
                 disabled={catalogActionsDisabled}
                 label={t("catalog.keyboard")}
                 onPress={requestSearchKeyboard}
+                sound="navigate"
                 style={styles.searchKeyboardAction}
                 testID="sales-show-keyboard"
                 tone="secondary"
@@ -1168,6 +1137,7 @@ export function SalesScreen({
                 disabled={catalogActionsDisabled}
                 label={t("catalog.search")}
                 onPress={openProductSearchDrawer}
+                sound="navigate"
                 style={styles.searchAction}
                 testID="sales-search-button"
                 tone="secondary"
@@ -1189,6 +1159,7 @@ export function SalesScreen({
                   setOpenItemVisible(true);
                   beginNumericInput();
                 }}
+                sound="navigate"
                 style={styles.searchAction}
                 testID="sales-open-item-button"
                 tone="secondary"
@@ -1198,6 +1169,7 @@ export function SalesScreen({
                   disabled={catalogActionsDisabled}
                   label={t("catalog.specialProducts")}
                   onPress={onOpenSpecialProducts}
+                  sound="navigate"
                   style={styles.searchAction}
                   testID="sales-open-special-products"
                   tone="secondary"
@@ -1219,7 +1191,10 @@ export function SalesScreen({
             <Text style={styles.functionSectionTitle}>
               {t("functions.saleActions")}
             </Text>
-            <View style={styles.functionGrid}>
+            <View
+              style={styles.functionGrid}
+              testID="sales-transaction-functions"
+            >
               <ActionButton
                 disabled={
                   !state.capabilities.hold ||
@@ -1234,21 +1209,33 @@ export function SalesScreen({
                 testID="sales-hold"
                 tone="secondary"
               />
+              <ActionButton
+                disabled={mergeCartDisabled}
+                label={t("functions.mergeCart")}
+                onPress={() => {
+                  void presenter.mergeCompatibleLines();
+                }}
+                style={styles.functionAction}
+                testID="sales-merge-cart"
+                tone="secondary"
+              />
               {onOpenReturns ? (
                 <ActionButton
                   label={t("functions.returns")}
                   onPress={onOpenReturns}
+                  sound="navigate"
                   style={styles.functionAction}
                   testID="sales-open-returns"
                   tone="secondary"
                 />
               ) : null}
-              {onOpenInstallments ? (
+              {onOpenLocalHistory ? (
                 <ActionButton
-                  label={t("functions.installmentManagement")}
-                  onPress={onOpenInstallments}
+                  label={t("functions.localHistory")}
+                  onPress={onOpenLocalHistory}
+                  sound="navigate"
                   style={styles.functionAction}
-                  testID="sales-open-installments"
+                  testID="sales-open-local-history"
                   tone="secondary"
                 />
               ) : null}
@@ -1256,6 +1243,7 @@ export function SalesScreen({
                 <ActionButton
                   label={t("functions.heldSales")}
                   onPress={onOpenHeldOrders}
+                  sound="navigate"
                   style={styles.functionAction}
                   testID="sales-open-held-orders"
                   tone="secondary"
@@ -1304,7 +1292,7 @@ export function SalesScreen({
                 )}
               </Text>
             ) : null}
-          </ScrollView>
+          </PosKeyboardAwareScrollView>
 
           {connectivity === "offline" ? (
             <View
@@ -1336,6 +1324,7 @@ export function SalesScreen({
                 if (preparedCart) onOpenPayment(preparedCart);
               });
             }}
+            sound="navigate"
             style={styles.checkoutButton}
             testID="sales-open-payment"
           />
@@ -1384,6 +1373,7 @@ export function SalesScreen({
               <ActionButton
                 label={t("catalog.closeResults")}
                 onPress={() => setSearchDrawerVisible(false)}
+                sound="navigate"
                 testID="sales-search-results-close"
                 tone="quiet"
               />
@@ -1409,6 +1399,7 @@ export function SalesScreen({
             {state.errorCode === "search-required" ||
             state.errorCode === "search-failed" ||
             state.errorCode === "product-add-failed" ||
+            state.errorCode === "terminal-recovery-required" ||
             state.errorCode === "authorization-denied" ? (
               <Text accessibilityRole="alert" style={styles.searchDrawerError}>
                 {t(errorCopyKey(state.errorCode))}
@@ -1507,6 +1498,7 @@ export function SalesScreen({
                 disabled={state.phase === "submitting-cash"}
                 label={t("cash.cancel")}
                 onPress={closeCashInput}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-cash-cancel"
                 tone="secondary"
@@ -1554,6 +1546,15 @@ export function SalesScreen({
                   testID="sales-open-item-price"
                   value={openItemPrice}
                 />
+                {state.errorCode === "terminal-recovery-required" ? (
+                  <Text
+                    accessibilityRole="alert"
+                    style={styles.cashError}
+                    testID="sales-open-item-recovery-error"
+                  >
+                    {t(errorCopyKey(state.errorCode))}
+                  </Text>
+                ) : null}
               </View>
               <View style={styles.numericKeypadColumn}>
                 <SalesNumberKeypad
@@ -1568,21 +1569,37 @@ export function SalesScreen({
               <ActionButton
                 label={t("discount.cancel")}
                 onPress={closeOpenItemInput}
+                sound="navigate"
                 style={styles.modalAction}
                 tone="secondary"
               />
-              <ActionButton
-                label={t("openItem.confirm")}
-                onPress={() => {
-                  void presenter
-                    .addOpenItem(parseCashInput(openItemPrice) ?? 0)
-                    .then((added) => {
-                      if (added) closeOpenItemInput();
-                    });
-                }}
-                style={styles.modalAction}
-                testID="sales-open-item-confirm"
-              />
+              {state.errorCode === "terminal-recovery-required" ? (
+                onOpenHeldOrders ? (
+                  <ActionButton
+                    label={t("openItem.resolveRecovery")}
+                    onPress={() => {
+                      closeOpenItemInput();
+                      onOpenHeldOrders();
+                    }}
+                    sound="navigate"
+                    style={styles.modalAction}
+                    testID="sales-open-item-recovery-action"
+                  />
+                ) : null
+              ) : (
+                <ActionButton
+                  label={t("openItem.confirm")}
+                  onPress={() => {
+                    void presenter
+                      .addOpenItem(parseCashInput(openItemPrice) ?? 0)
+                      .then((added) => {
+                        if (added) closeOpenItemInput();
+                      });
+                  }}
+                  style={styles.modalAction}
+                  testID="sales-open-item-confirm"
+                />
+              )}
             </View>
           </View>
         </View>
@@ -1642,6 +1659,7 @@ export function SalesScreen({
                     beginNumericInput();
                   }
                 }}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-line-discount-amount"
                 tone="secondary"
@@ -1661,6 +1679,7 @@ export function SalesScreen({
                     beginNumericInput();
                   }
                 }}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-line-discount-percent"
                 tone="secondary"
@@ -1669,6 +1688,7 @@ export function SalesScreen({
             <ActionButton
               label={t("discount.cancel")}
               onPress={() => setDiscountLineId(null)}
+              sound="navigate"
               style={styles.modalCancelAction}
               testID="sales-discount-cancel"
               tone="quiet"
@@ -1751,6 +1771,7 @@ export function SalesScreen({
               <ActionButton
                 label={t("discount.cancel")}
                 onPress={closeLineEditInput}
+                sound="navigate"
                 style={styles.modalAction}
                 tone="secondary"
               />
@@ -1807,6 +1828,7 @@ export function SalesScreen({
                   setOrderEdit({ mode: "amount", value: "" });
                   beginNumericInput();
                 }}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-order-discount-amount"
                 tone="secondary"
@@ -1818,6 +1840,7 @@ export function SalesScreen({
                   setOrderEdit({ mode: "percent", value: "" });
                   beginNumericInput();
                 }}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-order-discount-percent"
                 tone="secondary"
@@ -1826,6 +1849,7 @@ export function SalesScreen({
             <ActionButton
               label={t("discount.cancel")}
               onPress={() => setOrderDiscountVisible(false)}
+              sound="navigate"
               style={styles.modalCancelAction}
               tone="quiet"
             />
@@ -1877,6 +1901,7 @@ export function SalesScreen({
               <ActionButton
                 label={t("discount.cancel")}
                 onPress={closeOrderEditInput}
+                sound="navigate"
                 style={styles.modalAction}
                 tone="secondary"
               />
@@ -1911,6 +1936,7 @@ export function SalesScreen({
               <ActionButton
                 label={t("clearCart.cancel")}
                 onPress={() => setClearCartVisible(false)}
+                sound="navigate"
                 style={styles.modalAction}
                 testID="sales-clear-cart-cancel"
                 tone="secondary"
@@ -1974,6 +2000,198 @@ function ProductSearchRow({
   );
 }
 
+type CartLineRowProps = Readonly<{
+  disabled: boolean;
+  index: number;
+  isSelected: boolean;
+  item: CartLine;
+  locale: SalesLocale;
+  onDecrease(lineId: string): void;
+  onDiscount(lineId: string): void;
+  onEdit(lineId: string): void;
+  onIncrease(lineId: string): void;
+  onRemove(lineId: string): void;
+  onSelect(lineId: string): void;
+  resolveProductImage?: (input: {
+    productCode: string;
+    lookupCode: string;
+  }) => Promise<string | null>;
+  t(
+    key: SalesCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ): string;
+}>;
+
+const CartLineRow = memo(function CartLineRow({
+  disabled,
+  index,
+  isSelected,
+  item,
+  locale,
+  onDecrease,
+  onDiscount,
+  onEdit,
+  onIncrease,
+  onRemove,
+  onSelect,
+  resolveProductImage,
+  t,
+}: CartLineRowProps) {
+  const [imageUri, setImageUri] = useState<string | null | undefined>();
+  useEffect(() => {
+    setImageUri(undefined);
+    if (!resolveProductImage) return;
+    let active = true;
+    void resolveProductImage({
+      productCode: item.productCode,
+      lookupCode: item.lookupCode,
+    })
+      .then((resolved) => {
+        if (active) setImageUri(resolved?.trim() || null);
+      })
+      .catch(() => {
+        if (active) setImageUri(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [item.lookupCode, item.productCode, resolveProductImage]);
+
+  return (
+    <PosPressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: isSelected }}
+      onPress={() => onSelect(item.lineId)}
+      style={({ pressed }) => [
+        styles.cartLine,
+        item.actualAmount.cents < 0 && styles.cartLineNegative,
+        item.actualAmount.cents === 0 && styles.cartLineZero,
+        isSelected && styles.cartLineSelected,
+        pressed && styles.cartLinePressed,
+      ]}
+      testID={`sales-line-${item.lineId}`}
+    >
+      <View style={styles.cartLineTop}>
+        <Text
+          accessibilityLabel={t("cart.lineNumber", {
+            number: index + 1,
+          })}
+          style={styles.cartLineNumber}
+          testID={`sales-line-${item.lineId}-line-number`}
+        >
+          {index + 1}
+        </Text>
+        <CartProductThumbnail
+          accessibilityLabel={t("cart.productImage", {
+            product: item.displayName,
+          })}
+          imageUri={imageUri}
+          placeholderLabel={t("cart.imagePlaceholder")}
+          testID={`sales-line-${item.lineId}-image`}
+        />
+        <View style={styles.cartLineIdentity}>
+          <Text numberOfLines={2} style={styles.cartLineName}>
+            {item.displayName}
+          </Text>
+          <Text numberOfLines={1} style={styles.cartLineCode}>
+            {item.lookupCode || item.productCode}
+          </Text>
+          <Text style={styles.cartLineUnitPrice}>
+            {formatAud(item.unitPrice.cents, locale)}
+            {item.discount.cents > 0 ? (
+              <Text
+                style={styles.discountAmountText}
+                testID={`sales-line-${item.lineId}-discount-amount`}
+              >
+                {`  −${formatAud(item.discount.cents, locale)}`}
+              </Text>
+            ) : null}
+          </Text>
+        </View>
+        <Text style={styles.cartLineTotal}>
+          {formatAud(item.actualAmount.cents, locale)}
+        </Text>
+      </View>
+      <View style={styles.lineControls}>
+        <ActionButton
+          accessibilityLabel={t("cart.decrease")}
+          disabled={disabled}
+          label="−"
+          onPress={() => onDecrease(item.lineId)}
+          testID={`sales-line-${item.lineId}-decrease`}
+          tone="quiet"
+        />
+        <View
+          accessibilityLabel={`${t("cart.quantity")}: ${item.quantity}`}
+          style={styles.quantityValue}
+        >
+          <Text style={styles.quantityText}>{item.quantity}</Text>
+        </View>
+        <ActionButton
+          accessibilityLabel={t("cart.increase")}
+          disabled={disabled}
+          label="+"
+          onPress={() => onIncrease(item.lineId)}
+          testID={`sales-line-${item.lineId}-increase`}
+          tone="quiet"
+        />
+        <ActionButton
+          disabled={disabled}
+          label={t("cart.edit")}
+          onPress={() => onEdit(item.lineId)}
+          testID={`sales-line-${item.lineId}-edit`}
+          tone="quiet"
+        />
+        <ActionButton
+          disabled={disabled}
+          label={t("cart.discount")}
+          onPress={() => onDiscount(item.lineId)}
+          testID={`sales-line-${item.lineId}-discount`}
+          tone="secondary"
+        />
+        <ActionButton
+          disabled={disabled}
+          label={t("cart.remove")}
+          onPress={() => onRemove(item.lineId)}
+          testID={`sales-line-${item.lineId}-remove`}
+          tone="danger"
+        />
+      </View>
+    </PosPressable>
+  );
+}, cartLineRowPropsEqual);
+
+function cartLineRowPropsEqual(
+  previous: CartLineRowProps,
+  next: CartLineRowProps,
+): boolean {
+  const before = previous.item;
+  const after = next.item;
+  return (
+    previous.disabled === next.disabled &&
+    previous.index === next.index &&
+    previous.isSelected === next.isSelected &&
+    previous.locale === next.locale &&
+    previous.onDecrease === next.onDecrease &&
+    previous.onDiscount === next.onDiscount &&
+    previous.onEdit === next.onEdit &&
+    previous.onIncrease === next.onIncrease &&
+    previous.onRemove === next.onRemove &&
+    previous.onSelect === next.onSelect &&
+    previous.resolveProductImage === next.resolveProductImage &&
+    previous.t === next.t &&
+    before.lineId === after.lineId &&
+    before.productCode === after.productCode &&
+    before.lookupCode === after.lookupCode &&
+    before.displayName === after.displayName &&
+    before.quantity === after.quantity &&
+    before.unitPrice.cents === after.unitPrice.cents &&
+    before.discount.cents === after.discount.cents &&
+    before.actualAmount.cents === after.actualAmount.cents &&
+    before.priceSource === after.priceSource
+  );
+}
+
 function CartProductThumbnail({
   accessibilityLabel,
   imageUri,
@@ -1985,11 +2203,8 @@ function CartProductThumbnail({
   placeholderLabel: string;
   testID: string;
 }>) {
-  const [imageFailed, setImageFailed] = useState(false);
-  useEffect(() => {
-    setImageFailed(false);
-  }, [imageUri]);
-  const showImage = Boolean(imageUri) && !imageFailed;
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const showImage = Boolean(imageUri) && failedUri !== imageUri;
   return (
     <View
       accessible
@@ -2000,7 +2215,7 @@ function CartProductThumbnail({
       {showImage ? (
         <Image
           accessible={false}
-          onError={() => setImageFailed(true)}
+          onError={() => setFailedUri(imageUri ?? null)}
           resizeMode="contain"
           source={{ uri: imageUri as string }}
           style={styles.cartProductImage}
@@ -2103,6 +2318,7 @@ function ErrorBanner({
         accessibilityRole="button"
         hitSlop={8}
         onPress={onDismiss}
+        sound="navigate"
         style={styles.errorDismiss}
       >
         <Text style={styles.errorDismissText}>×</Text>
@@ -2152,10 +2368,8 @@ function ActionButton({
   );
 }
 
-function cartProductImageKey(
-  input: Readonly<{ productCode: string; lookupCode: string }>,
-): string {
-  return `${input.productCode}\u0000${input.lookupCode}`;
+function cartLineKeyExtractor(line: CartLine): string {
+  return line.lineId;
 }
 
 function errorCopyKey(errorCode: string): SalesCopyKey {
@@ -2166,6 +2380,8 @@ function errorCopyKey(errorCode: string): SalesCopyKey {
       return "error.searchFailed";
     case "product-add-failed":
       return "error.productAddFailed";
+    case "terminal-recovery-required":
+      return "error.terminalRecoveryRequired";
     case "authorization-denied":
       return "error.authorizationDenied";
     case "cart-update-failed":
@@ -2322,6 +2538,21 @@ const styles = StyleSheet.create({
     minHeight: 120,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  cartLineNegative: {
+    backgroundColor: posColors.redSoft,
+    borderColor: posColors.red,
+  },
+  cartLinePressed: {
+    opacity: 0.82,
+  },
+  cartLineSelected: {
+    backgroundColor: posColors.greenSoft,
+    borderColor: posColors.green,
+  },
+  cartLineZero: {
+    backgroundColor: posColors.yellowSoft,
+    borderColor: posColors.yellow,
   },
   cartLineCode: {
     color: posColors.mutedInk,

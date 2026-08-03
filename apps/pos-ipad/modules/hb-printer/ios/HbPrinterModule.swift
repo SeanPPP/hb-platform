@@ -278,9 +278,10 @@ public final class HbPrinterModule: Module {
   fileprivate func handleCentralManagerStateChange(_ central: CBCentralManager) {
     bluetoothQueue.async {
       if central.state != .poweredOn {
+        let failure = self.bluetoothReadinessFailure(central)
         self.emitStatus(reason: "bluetooth-state-changed")
-        self.failScan(code: "PRINTER_BLUETOOTH_UNAVAILABLE", message: "蓝牙不可用或未授权。")
-        self.failConnect(code: "PRINTER_BLUETOOTH_UNAVAILABLE", message: "蓝牙不可用或未授权。")
+        self.failScan(code: failure.code, message: failure.message)
+        self.failConnect(code: failure.code, message: failure.message)
         self.finishPendingOperation(state: "unknown", message: "蓝牙状态改变，无法确认操作结果。")
       }
     }
@@ -293,15 +294,18 @@ public final class HbPrinterModule: Module {
   ) {
     bluetoothQueue.async {
       let id = peripheral.identifier.uuidString
-      let name = peripheral.name
-        ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
-        ?? "Bluetooth Printer"
+      let advertisementName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+      let peripheralName = peripheral.name
+      let candidateNames = [advertisementName, peripheralName]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      let name = candidateNames.first ?? "Bluetooth Printer"
       self.discoveredPeripherals[id] = peripheral
       self.discoveredDevices[id] = [
         "id": id,
         "name": name,
         "rssi": RSSI,
-        "isXprinter": self.isXprinter(name),
+        "isXprinter": candidateNames.contains(where: self.isXprinter),
       ]
     }
   }
@@ -542,19 +546,68 @@ public final class HbPrinterModule: Module {
 
   private func ensureBluetoothReady(_ promise: Promise) -> Bool {
     guard let centralManager = bluetoothDelegate.centralManager else {
-      promise.reject(PrinterException("PRINTER_BLUETOOTH_INITIALIZING", "蓝牙模块正在初始化。"))
+      let failure = bluetoothReadinessFailure(nil)
+      promise.reject(PrinterException(failure.code, failure.message))
       return false
     }
-    guard centralManager.state == .poweredOn else {
-      promise.reject(PrinterException("PRINTER_BLUETOOTH_UNAVAILABLE", "蓝牙未开启、未授权或设备不支持。"))
+    guard centralManager.state == .poweredOn,
+          CBCentralManager.authorization == .allowedAlways else {
+      let failure = bluetoothReadinessFailure(centralManager)
+      promise.reject(PrinterException(failure.code, failure.message))
       return false
     }
     return true
   }
 
+  private func bluetoothReadinessFailure(
+    _ centralManager: CBCentralManager?
+  ) -> (code: String, message: String) {
+    // 关机是当前最直接可修复的状态，应优先于授权状态提示用户开启蓝牙。
+    if centralManager?.state == .poweredOff {
+      return ("PRINTER_BLUETOOTH_POWERED_OFF", "蓝牙已关闭；请开启蓝牙后重试。")
+    }
+
+    switch CBCentralManager.authorization {
+    case .denied:
+      return (
+        "PRINTER_BLUETOOTH_PERMISSION_REQUIRED",
+        "蓝牙权限已被拒绝；请在系统设置中允许此应用使用蓝牙。"
+      )
+    case .restricted:
+      return (
+        "PRINTER_BLUETOOTH_RESTRICTED",
+        "蓝牙访问受到系统限制，无法在设置中解除；请联系设备管理员。"
+      )
+    case .notDetermined:
+      return (
+        "PRINTER_BLUETOOTH_AUTHORIZATION_PENDING",
+        "蓝牙授权尚未完成；请完成系统授权弹窗后重试。"
+      )
+    case .allowedAlways:
+      break
+    @unknown default:
+      return ("PRINTER_BLUETOOTH_UNAVAILABLE", "无法确认蓝牙权限状态。")
+    }
+
+    guard let centralManager else {
+      return ("PRINTER_BLUETOOTH_UNAVAILABLE", "蓝牙模块正在初始化，请稍后重试。")
+    }
+    switch centralManager.state {
+    case .poweredOff:
+      return ("PRINTER_BLUETOOTH_POWERED_OFF", "蓝牙已关闭；请开启蓝牙后重试。")
+    case .unknown, .resetting, .unsupported, .unauthorized, .poweredOn:
+      return ("PRINTER_BLUETOOTH_UNAVAILABLE", "蓝牙当前不可用，请稍后重试。")
+    @unknown default:
+      return ("PRINTER_BLUETOOTH_UNAVAILABLE", "无法确认蓝牙状态。")
+    }
+  }
+
   private func isXprinter(_ name: String) -> Bool {
-    let normalized = name.lowercased()
-    return normalized.contains("xprinter") || normalized.contains("x-printer") || normalized.contains("芯烨")
+    let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return normalized == "printer001"
+      || normalized.contains("xprinter")
+      || normalized.contains("x-printer")
+      || normalized.contains("芯烨")
   }
 
   private func encode(text: String, encoding: String) throws -> Data {

@@ -20,7 +20,7 @@ const mockGetDeviceIdentity = jest.fn<
     storeCode: string;
   }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 const mockRouterPush = jest.fn();
 
 jest.mock("expo-router", () => {
@@ -31,8 +31,8 @@ jest.mock("expo-router", () => {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
     useRouter: () => ({
+      dismissTo: mockRouterDismissTo,
       push: mockRouterPush,
-      replace: mockRouterReplace,
     }),
   };
 });
@@ -172,7 +172,7 @@ test("复核设备身份后零参数创建 code-only presenter，路由不注入
   expect(mockScreenProps.onStartRepayment).toBeUndefined();
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
@@ -281,7 +281,7 @@ test("runtime 未接线时显示安全不可用页", async () => {
   });
   expect(mockCreatePresenter).not.toHaveBeenCalled();
   mockUnavailableProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
 });
 

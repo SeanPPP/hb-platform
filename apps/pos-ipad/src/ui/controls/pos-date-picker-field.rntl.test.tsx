@@ -14,11 +14,24 @@ jest.doMock("@react-native-community/datetimepicker", () => {
   };
 });
 
+const playTouchSound = jest.fn();
+
+jest.doMock("@/ui/feedback/pos-sound-context", () => ({
+  usePosSound: () => ({
+    buttonSoundEnabled: true,
+    play: playTouchSound,
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: true,
+  }),
+}));
+
 const { PosDatePickerField } =
   require("./pos-date-picker-field") as typeof import("./pos-date-picker-field");
 
 afterEach(() => {
   jest.restoreAllMocks();
+  playTouchSound.mockReset();
 });
 
 function renderedTypes(node: unknown): string[] {
@@ -62,6 +75,62 @@ test("触发器不是输入框，打开时关闭键盘并使用横屏 inline 日
     display: "inline",
     mode: "date",
   });
+});
+
+test("日期触发器使用 navigate 音，禁用时保持静默", async () => {
+  const screen = await render(
+    <>
+      <PosDatePickerField
+        accessibilityLabel="Start date"
+        locale="en"
+        onChange={jest.fn()}
+        testID="date-from"
+        value="2026-07-29"
+      />
+      <PosDatePickerField
+        accessibilityLabel="End date"
+        disabled
+        locale="en"
+        onChange={jest.fn()}
+        testID="date-to"
+        value="2026-07-29"
+      />
+    </>,
+  );
+
+  await fireEvent.press(screen.getByTestId("date-from"));
+  await fireEvent.press(screen.getByTestId("date-to"));
+
+  expect(playTouchSound).toHaveBeenCalledTimes(1);
+  expect(playTouchSound).toHaveBeenCalledWith("navigate");
+});
+
+test("日期弹层的清除、取消与确认分别使用 danger、tap 与 navigate 音", async () => {
+  const screen = await render(
+    <PosDatePickerField
+      accessibilityLabel="End date"
+      allowClear
+      locale="en"
+      onChange={jest.fn()}
+      testID="date-to"
+      value="2026-07-29"
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("date-to"));
+  playTouchSound.mockClear();
+  await fireEvent.press(screen.getByTestId("date-to-clear"));
+  expect(playTouchSound).toHaveBeenCalledWith("danger");
+
+  await fireEvent.press(screen.getByTestId("date-to"));
+  playTouchSound.mockClear();
+  await fireEvent.press(screen.getByTestId("date-to-cancel"));
+  expect(playTouchSound).toHaveBeenCalledWith("tap");
+
+  await fireEvent.press(screen.getByTestId("date-to"));
+  playTouchSound.mockClear();
+  await fireEvent.press(screen.getByTestId("date-to-confirm"));
+  expect(playTouchSound).toHaveBeenCalledWith("navigate");
 });
 
 test("取消只关闭弹层，不提交草稿日期", async () => {

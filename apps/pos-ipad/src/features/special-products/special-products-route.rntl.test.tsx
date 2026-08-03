@@ -28,7 +28,7 @@ const mockGetDeviceIdentity = jest.fn<
     storeCode: string;
   }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({
   usePosSound: () => ({ play: mockPlaySound }),
@@ -41,7 +41,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -162,7 +162,7 @@ test("复核设备身份后零参数创建受限 presenter，并同步在线状�
   expect(mockSetOnline).toHaveBeenCalledWith(true);
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
@@ -243,7 +243,7 @@ test("runtime 尚未接线时显示安全不可用页并可返回销售", async 
   });
   expect(mockCreatePresenter).not.toHaveBeenCalled();
   mockUnavailableProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("身份请求在页面销毁后返回时不得创建 presenter", async () => {

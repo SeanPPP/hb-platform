@@ -75,8 +75,8 @@ test("支付小票在批准 tender 落库前以持久订单加计划 tender 渲�
     }),
   );
 
-  assert.match(text, /CASH\s+\$4\.00/);
-  assert.match(text, /CARD\s+\$6\.00/);
+  assert.match(text, /Cash\s+\$4\.00/);
+  assert.match(text, /Card\s+\$6\.00/);
   assert.doesNotMatch(text, /attempt-sensitive-reference/);
 });
 
@@ -105,6 +105,27 @@ test("支付小票拒绝与订单总额不一致的计划 tender", async () => {
         attemptId: "attempt-1",
       }),
     /TENDER_TOTAL_MISMATCH/,
+  );
+});
+
+test("支付完成票据拒绝账本中的 ESC/POS 控制字符", async () => {
+  const unsafe = order({
+    tenders: [tender("cash-1", "cash", 400)],
+    lines: [{ ...order().lines[0]!, lookupCode: "9300\u001bpulse" }],
+  });
+  const renderer = new OrderRepositoryPaymentReceiptRenderer(
+    { async getByGuid() { return unsafe; } },
+    { async getReceiptPrinterSettings() { return receiptSettings(); } },
+  );
+
+  await assert.rejects(
+    () => renderer.render({
+      orderGuid: "order-1",
+      method: "card",
+      amount: { currency: "AUD", cents: 600 },
+      attemptId: "attempt-unsafe",
+    }),
+    /control characters/i,
   );
 });
 

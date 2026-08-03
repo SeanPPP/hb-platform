@@ -100,17 +100,55 @@ async function insertAudit(
   eventId: string,
   payload: unknown,
   eventType = "SALE_COMPLETE",
+  correlationId = "order-1",
 ): Promise<void> {
   await connection.run(
     `INSERT INTO audit_events (
       event_id, event_type, occurred_at_iso, order_guid, correlation_id,
       payload_json, uploaded_at_iso
-    ) VALUES (?, ?, ?, 'order-1', 'order-1', ?, NULL)`,
+    ) VALUES (?, ?, ?, 'order-1', ?, ?, NULL)`,
     [
       eventId,
       eventType,
       "2026-07-28T00:00:00.000Z",
+      correlationId,
       typeof payload === "string" ? payload : JSON.stringify(payload),
+    ],
+  );
+}
+
+async function insertCashTender(
+  connection: SqliteConnectionPort,
+  tenderGuid: string,
+  amountCents: number,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO order_tenders (
+      tender_guid, order_guid, method, amount_cents,
+      payment_attempt_id, created_at_iso
+    ) VALUES (?, 'order-1', 'cash', ?, NULL, ?)`,
+    [tenderGuid, amountCents, "2026-07-28T00:00:00.000Z"],
+  );
+}
+
+async function insertApprovedTender(
+  connection: SqliteConnectionPort,
+  tenderGuid: string,
+  method: "card" | "voucher",
+  amountCents: number,
+  attemptId: string,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO order_tenders (
+      tender_guid, order_guid, method, amount_cents,
+      payment_attempt_id, created_at_iso
+    ) VALUES (?, 'order-1', ?, ?, ?, ?)`,
+    [
+      tenderGuid,
+      method,
+      amountCents,
+      attemptId,
+      "2026-07-28T00:00:00.000Z",
     ],
   );
 }
@@ -129,6 +167,269 @@ test("真实 SQLite：只从唯一现金完成审计读取整数找零", async (
     assert.equal(await repository.getByOrderGuid("unknown-order"), null);
   } finally {
     await connection.close();
+  }
+});
+
+test("真实 SQLite：只兼容同一 action 的最终完成、现金入账和当前 tender", async () => {
+  const { connection, repository } = await harness();
+  try {
+    await insertCashTender(connection, "tender-final", 100);
+    await insertAudit(
+      connection,
+      "audit-mixed-cash",
+      {
+        appliedCents: 100,
+        changeCents: 400,
+        tenderedCents: 500,
+        tenderGuid: "tender-final",
+      },
+      "MIXED_CASH_TENDER_APPENDED",
+      "action-final",
+    );
+    await insertAudit(
+      connection,
+      "audit-mixed-complete",
+      { method: "cash", amountCents: 100 },
+      "PAYMENT_MIXED_CASH_COMPLETE",
+      "action-final",
+    );
+
+    assert.deepEqual(await repository.getByOrderGuid("order-1"), {
+      cashChangeCents: 400,
+    });
+  } finally {
+    await connection.close();
+  }
+});
+
+test("真实 SQLite：部分现金后由卡完成时核对全部有效 tender 并返回现金找零", async () => {
+  const { connection, repository } = await harness();
+  try {
+    await insertCashTender(connection, "tender-cash-partial", 100);
+    await insertAudit(
+      connection,
+      "audit-cash-partial",
+      {
+        appliedCents: 100,
+        changeCents: 400,
+        tenderedCents: 500,
+        tenderGuid: "tender-cash-partial",
+      },
+      "MIXED_CASH_TENDER_APPENDED",
+      "action-cash-partial",
+    );
+    await insertApprovedTender(
+      connection,
+      "tender-card-final",
+      "card",
+      400,
+      "attempt-card-final",
+    );
+    await insertAudit(
+      connection,
+      "audit-card-complete",
+      {
+        attemptId: "attempt-card-final",
+        provider: "terminal_api",
+        method: "card",
+        amountCents: 400,
+      },
+      "PAYMENT_APPROVED_COMPLETE",
+      "attempt-card-final",
+    );
+
+    assert.deepEqual(await repository.getByOrderGuid("order-1"), {
+      cashChangeCents: 400,
+    });
+  } finally {
+    await connection.close();
+  }
+});
+
+test("真实 SQLite：卡完成缺现金 append 或最终 tender 不一致时 fail closed", async () => {
+  for (const mismatch of ["cash-append", "final-tender"] as const) {
+    const { connection, repository } = await harness();
+    try {
+      await insertCashTender(connection, "tender-cash-partial", 100);
+      if (mismatch !== "cash-append") {
+        await insertAudit(
+          connection,
+          "audit-cash-partial",
+          {
+            appliedCents: 100,
+            changeCents: 0,
+            tenderedCents: 100,
+            tenderGuid: "tender-cash-partial",
+          },
+          "MIXED_CASH_TENDER_APPENDED",
+          "action-cash-partial",
+        );
+      }
+      await insertApprovedTender(
+        connection,
+        "tender-card-final",
+        "card",
+        mismatch === "final-tender" ? 399 : 400,
+        "attempt-card-final",
+      );
+      await insertAudit(
+        connection,
+        "audit-card-complete",
+        {
+          attemptId: "attempt-card-final",
+          provider: "terminal_api",
+          method: "card",
+          amountCents: 400,
+        },
+        "PAYMENT_APPROVED_COMPLETE",
+        "attempt-card-final",
+      );
+
+      assert.equal(await repository.getByOrderGuid("order-1"), null, mismatch);
+    } finally {
+      await connection.close();
+    }
+  }
+});
+
+test("真实 SQLite：混合现金审计缺字段、金额不自洽或不唯一时 fail closed", async () => {
+  for (const payload of [
+    { appliedCents: 100, changeCents: 399, tenderedCents: 500 },
+    { appliedCents: 100, changeCents: 400 },
+    { appliedCents: -1, changeCents: 0, tenderedCents: -1 },
+    { appliedCents: 100.5, changeCents: 399.5, tenderedCents: 500 },
+  ]) {
+    const { connection, repository } = await harness();
+    try {
+      await insertAudit(
+        connection,
+        "audit-mixed-invalid",
+        { ...payload, tenderGuid: "tender-final" },
+        "MIXED_CASH_TENDER_APPENDED",
+        "action-final",
+      );
+      await insertCashTender(connection, "tender-final", 100);
+      await insertAudit(
+        connection,
+        "audit-mixed-complete",
+        { method: "cash", amountCents: 100 },
+        "PAYMENT_MIXED_CASH_COMPLETE",
+        "action-final",
+      );
+      assert.equal(await repository.getByOrderGuid("order-1"), null);
+    } finally {
+      await connection.close();
+    }
+  }
+
+  const { connection, repository } = await harness();
+  try {
+    const payload = {
+      appliedCents: 100,
+      changeCents: 400,
+      tenderedCents: 500,
+      tenderGuid: "tender-final",
+    };
+    await insertCashTender(connection, "tender-final", 100);
+    await insertAudit(
+      connection,
+      "audit-mixed-1",
+      payload,
+      "MIXED_CASH_TENDER_APPENDED",
+      "action-final",
+    );
+    await insertAudit(
+      connection,
+      "audit-mixed-2",
+      payload,
+      "MIXED_CASH_TENDER_APPENDED",
+      "action-final",
+    );
+    await insertAudit(
+      connection,
+      "audit-mixed-complete",
+      { method: "cash", amountCents: 100 },
+      "PAYMENT_MIXED_CASH_COMPLETE",
+      "action-final",
+    );
+    assert.equal(await repository.getByOrderGuid("order-1"), null);
+  } finally {
+    await connection.close();
+  }
+});
+
+test("真实 SQLite：缺最终完成、action 不同、tender 不一致或已撤销时 fail closed", async () => {
+  {
+    const { connection, repository } = await harness();
+    try {
+      await insertCashTender(connection, "tender-final", 100);
+      await insertAudit(
+        connection,
+        "audit-append-only",
+        { appliedCents: 100, changeCents: 400, tenderedCents: 500, tenderGuid: "tender-final" },
+        "MIXED_CASH_TENDER_APPENDED",
+        "action-final",
+      );
+      assert.equal(await repository.getByOrderGuid("order-1"), null);
+    } finally {
+      await connection.close();
+    }
+  }
+
+  for (const mismatch of ["action", "amount", "tender"] as const) {
+    const { connection, repository } = await harness();
+    try {
+      await insertCashTender(connection, "tender-final", mismatch === "tender" ? 99 : 100);
+      await insertAudit(
+        connection,
+        "audit-append",
+        { appliedCents: 100, changeCents: 400, tenderedCents: 500, tenderGuid: "tender-final" },
+        "MIXED_CASH_TENDER_APPENDED",
+        mismatch === "action" ? "action-append" : "action-final",
+      );
+      await insertAudit(
+        connection,
+        "audit-complete",
+        { method: "cash", amountCents: mismatch === "amount" ? 99 : 100 },
+        "PAYMENT_MIXED_CASH_COMPLETE",
+        "action-final",
+      );
+      assert.equal(await repository.getByOrderGuid("order-1"), null, mismatch);
+    } finally {
+      await connection.close();
+    }
+  }
+
+  {
+    const { connection, repository } = await harness();
+    try {
+      await insertCashTender(connection, "tender-final", 100);
+      await insertCashTender(connection, "tender-reversal", -100);
+      await connection.run(
+        `INSERT INTO payment_tender_reversal_links (
+          order_guid, action_id, source_tender_guid,
+          reversal_tender_guid, created_at_iso
+        ) VALUES ('order-1', 'reverse-action', 'tender-final', 'tender-reversal', ?)`,
+        ["2026-07-28T00:01:00.000Z"],
+      );
+      await insertAudit(
+        connection,
+        "audit-append",
+        { appliedCents: 100, changeCents: 400, tenderedCents: 500, tenderGuid: "tender-final" },
+        "MIXED_CASH_TENDER_APPENDED",
+        "action-final",
+      );
+      await insertAudit(
+        connection,
+        "audit-complete",
+        { method: "cash", amountCents: 100 },
+        "PAYMENT_MIXED_CASH_COMPLETE",
+        "action-final",
+      );
+      assert.equal(await repository.getByOrderGuid("order-1"), null);
+    } finally {
+      await connection.close();
+    }
   }
 });
 

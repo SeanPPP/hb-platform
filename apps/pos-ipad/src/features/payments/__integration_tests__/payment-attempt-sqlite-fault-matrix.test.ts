@@ -302,10 +302,10 @@ class FakeProvider {
   public submitImpl: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () => approved();
   public recoverImpl: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () => approved();
   public constructor(public readonly provider: PaymentProvider) {}
-  public async submit(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.submitCalls += 1; return this.submitImpl(attempt); }
-  public async recover(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.recoverCalls += 1; return this.recoverImpl(attempt); }
+  public async submit(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.submitCalls += 1; return withApprovedCardEvidence(await this.submitImpl(attempt), attempt); }
+  public async recover(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.recoverCalls += 1; return withApprovedCardEvidence(await this.recoverImpl(attempt), attempt); }
   public async cancel(): Promise<PaymentProviderResult> { return { state: "Cancelled", references: references(), receiptText: null, responseCode: null }; }
-  public async refund(): Promise<PaymentProviderResult> { return approved(); }
+  public async refund(attempt: PaymentAttempt): Promise<PaymentProviderResult> { return withApprovedCardEvidence(approved(), attempt); }
 }
 
 const testEncryptor = {
@@ -316,6 +316,36 @@ const testEncryptor = {
     return new TextDecoder().decode(value);
   },
 };
+
+function withApprovedCardEvidence(
+  result: PaymentProviderResult,
+  attempt: PaymentAttempt,
+): PaymentProviderResult {
+  if (result.state !== "Approved" || attempt.provider === "voucher") {
+    return result;
+  }
+  return {
+    ...result,
+    protectedSyncEvidence: {
+      version: 1,
+      provider: attempt.provider,
+      operation: attempt.operation,
+      processor: attempt.provider === "square" ? "Square" : "ANZ",
+      txnRef: null,
+      authCode: null,
+      cardType: null,
+      cardBin: null,
+      maskedCardNumber: null,
+      merchantId: null,
+      responseCode: result.responseCode,
+      responseText: null,
+      stan: null,
+      bankDateTimeIso: null,
+      amountCents: Math.abs(attempt.amount.cents),
+      refundReference: null,
+    },
+  };
+}
 
 class NodeSqliteConnection implements SqliteConnectionPort {
   private readonly database: DatabaseSync;

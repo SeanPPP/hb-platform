@@ -16,7 +16,7 @@ const mockGetDeviceIdentity = jest.fn<
     deviceCode: string;
   }> | null>
 >();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -25,7 +25,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -131,7 +131,7 @@ test("复核设备身份后只调用零参数 Settings 工厂", async () => {
   expect(mockCreatePresenter).toHaveBeenCalledTimes(1);
   expect(mockCreatePresenter).toHaveBeenCalledWith();
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("没有 View 权限时直链返回销售页且不读取设备身份", async () => {
@@ -154,7 +154,7 @@ test("运行时未接线时显示受控不可用页且不伪造 presenter", asyn
   );
   expect(mockCreatePresenter).not.toHaveBeenCalled();
   mockUnavailableProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("设备绑定不一致时清除活动收银员并保持 bootstrap", async () => {

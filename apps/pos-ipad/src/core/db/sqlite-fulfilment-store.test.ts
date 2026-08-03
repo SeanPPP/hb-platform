@@ -215,13 +215,20 @@ function initialAuthorization(
     eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
     orderGuid: string | null;
     printerId: string;
+    source?: "sales" | "payment-success" | "local-history" | "remote-history";
   }>,
 ): FulfilmentInitialAuthorization {
   const isReprint = input.eventType === "RECEIPT_REPRINT";
+  const isPaymentSuccess = isReprint && input.source === "payment-success";
+  const isHistoryReprint =
+    isReprint &&
+    (input.source === "local-history" || input.source === "remote-history");
   const context = {
     actionId: input.actionId,
     permissionCode: isReprint
-      ? "Permissions.PosTerminal.Receipt.PrintLast"
+      ? isHistoryReprint
+        ? "Permissions.PosTerminal.History.Reprint"
+        : "Permissions.PosTerminal.Receipt.PrintLast"
       : "Permissions.PosTerminal.CashDrawer.Open",
     authorizationMode: "online" as const,
     requestingCashierId: "cashier-1",
@@ -239,11 +246,21 @@ function initialAuthorization(
       correlationId: input.actionId,
       payload: {
         action: isReprint
-          ? "reprint-last-receipt"
+          ? isPaymentSuccess
+            ? "reprint-current-receipt"
+            : isHistoryReprint
+              ? "reprint-history-receipt"
+            : "reprint-last-receipt"
           : "open-cash-drawer",
         status: "Authorized",
-        reason: isReprint ? "last-receipt" : "MANUAL",
-        source: "sales",
+        reason: isReprint
+          ? isPaymentSuccess
+            ? "payment-success"
+            : isHistoryReprint
+              ? input.source!
+            : "last-receipt"
+          : "MANUAL",
+        source: input.source ?? "sales",
         outcome: "Succeeded",
         printerId: input.printerId,
         errorCode: null,
@@ -256,6 +273,18 @@ function initialAuthorization(
       },
     },
   };
+}
+
+function eraseLegacyRequestingActor(
+  connection: FulfilmentConnection,
+  eventId: string,
+): void {
+  const row = connection.auditEvents.get(eventId);
+  assert.ok(row);
+  const payload = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
+  delete payload.requestingCashierName;
+  delete payload.requestingUserGuid;
+  row.payload_json = JSON.stringify(payload);
 }
 
 test("履约任务在一个独占事务内写入加密小票、is_reprint 与钱箱 retry_count 初始状态", async () => {
@@ -469,6 +498,148 @@ test("重打必须传入已带重打标记的预渲染字节，源作业不被�
   assert.equal(reprint?.printerId, "XP-1");
   assert.equal(connection.printJobs.get("print-1")?.state, "Printed");
   assert.deepEqual(reprint?.bytes, Uint8Array.of(29, 33));
+});
+
+test("支付成功页精确订单重打接受 PrintLast 授权并原子创建 Queued 作业", async () => {
+  const { connection, store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "payment-success-reprint-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "order-payment-success-1",
+    printerId: "XP-PAYMENT-SUCCESS",
+    source: "payment-success",
+  });
+
+  const reprint = await store.createLastReceiptReprint(
+    {
+      orderGuid: "order-payment-success-1",
+      receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+      printerId: "XP-PAYMENT-SUCCESS",
+    },
+    authorization,
+  );
+
+  assert.equal(reprint?.jobId, authorization.context.actionId);
+  assert.equal(reprint?.orderGuid, "order-payment-success-1");
+  assert.equal(reprint?.state, "Queued");
+  assert.equal(reprint?.isReprint, true);
+  assert.equal(connection.auditEvents.size, 1);
+});
+
+test("支付成功页重打崩溃后重新领取，仍恢复 payment-success 来源", async () => {
+  const { store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "payment-success-recover-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "order-payment-success-recover-1",
+    printerId: "XP-PAYMENT-RECOVER",
+    source: "payment-success",
+  });
+  await store.createLastReceiptReprint(
+    {
+      orderGuid: "order-payment-success-recover-1",
+      receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+      printerId: "XP-PAYMENT-RECOVER",
+    },
+    authorization,
+  );
+
+  const claimed = await store.claimQueuedPrintJob(authorization.context.actionId);
+
+  assert.equal(claimed?.state, "Sending");
+  assert.equal(
+    (claimed as unknown as { reprintSource?: string } | null)?.reprintSource,
+    "payment-success",
+  );
+});
+
+test("相同 actionId 的最后一单与支付成功页重打不能跨语义幂等", async () => {
+  const { store } = createStore();
+  const paymentAuthorization = initialAuthorization({
+    actionId: "payment-success-semantic-conflict-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "order-payment-success-semantic-conflict-1",
+    printerId: "XP-PAYMENT-CONFLICT",
+    source: "payment-success",
+  });
+  const lastReceiptAuthorization = initialAuthorization({
+    actionId: paymentAuthorization.context.actionId,
+    eventType: "RECEIPT_REPRINT",
+    orderGuid: "order-payment-success-semantic-conflict-1",
+    printerId: "XP-PAYMENT-CONFLICT",
+  });
+  const input = {
+    orderGuid: "order-payment-success-semantic-conflict-1",
+    receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+    printerId: "XP-PAYMENT-CONFLICT",
+  };
+  await store.createLastReceiptReprint(input, paymentAuthorization);
+
+  await assert.rejects(
+    store.createLastReceiptReprint(input, lastReceiptAuthorization),
+    /authorization|conflict/i,
+  );
+});
+
+test("旧授权审计缺少可选员工字段时，payment/last/history 重打仍能安全领取", async () => {
+  const { connection, store } = createStore();
+  for (const scenario of [
+    { suffix: "payment", source: "payment-success", expected: "payment-success" },
+    { suffix: "last", source: "sales", expected: "last-receipt" },
+    { suffix: "history", source: "local-history", expected: "local-history" },
+  ] as const) {
+    const authorization = initialAuthorization({
+      actionId: `legacy-reprint-${scenario.suffix}`,
+      eventType: "RECEIPT_REPRINT",
+      orderGuid: `order-legacy-reprint-${scenario.suffix}`,
+      printerId: `XP-LEGACY-${scenario.suffix}`,
+      source: scenario.source,
+    });
+    await store.createLastReceiptReprint(
+      {
+        orderGuid: `order-legacy-reprint-${scenario.suffix}`,
+        receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+        printerId: `XP-LEGACY-${scenario.suffix}`,
+      },
+      authorization,
+    );
+    eraseLegacyRequestingActor(connection, authorization.audit.eventId);
+
+    const claimed = await store.claimQueuedPrintJob(authorization.context.actionId);
+
+    assert.equal(claimed?.authorization?.requestingCashierName, null);
+    assert.equal(claimed?.authorization?.requestingUserGuid, null);
+    assert.equal(
+      (claimed as unknown as { reprintSource?: string } | null)?.reprintSource,
+      scenario.expected,
+    );
+  }
+});
+
+test("旧授权审计缺少可选员工字段时，Failed 手动开箱仍从原 actor 恢复", async () => {
+  const { connection, store } = createStore();
+  const authorization = initialAuthorization({
+    actionId: "legacy-manual-drawer-retry-1",
+    eventType: "CASH_DRAWER_OPEN",
+    orderGuid: null,
+    printerId: "XP-LEGACY-DRAWER",
+  });
+  await store.beginManualDrawerOpen(
+    {
+      eventId: authorization.context.actionId,
+      printerId: "XP-LEGACY-DRAWER",
+      reason: "MANUAL",
+    },
+    authorization,
+  );
+  eraseLegacyRequestingActor(connection, authorization.audit.eventId);
+  connection.drawerEvents.get(authorization.context.actionId)!.state = "Failed";
+
+  const retried = await store.beginManualDrawerRetry(authorization.context.actionId);
+
+  assert.equal(retried?.authorization?.requestingCashierName, null);
+  assert.equal(retried?.authorization?.requestingUserGuid, null);
+  assert.equal(retried?.state, "Requested");
 });
 
 test("新履约任务拒绝空 printerId，并拒绝钱箱绑定到另一打印任务的外设", async () => {

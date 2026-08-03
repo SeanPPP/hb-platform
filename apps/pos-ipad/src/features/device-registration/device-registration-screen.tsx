@@ -9,7 +9,12 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { reconcileDeviceSessionRuntime } from "./device-registration-state";
@@ -154,7 +159,6 @@ export function DeviceRegistrationScreen() {
           accessibilityRole="button"
           hitSlop={8}
           onPress={() => void toggleAppLanguage()}
-          sound="navigate"
           style={({ pressed }) => [
             styles.languageButton,
             pressed && styles.languageButtonPressed,

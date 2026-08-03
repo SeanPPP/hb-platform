@@ -14,6 +14,12 @@ import { createAud, type LocalOrder, type OrderRepositoryPort } from "@/core/con
 
 const encoder = new TextDecoder();
 
+function localReceiptTime(value: string): string {
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function order(overrides: Partial<LocalOrder> = {}): LocalOrder {
   return {
     orderGuid: "order-100",
@@ -92,6 +98,7 @@ function service(
   orders: ReceiptReprintOrderSource,
   settingValue: FrozenReceiptReprintSettings | null = settings,
   settlementValue: number | null = 238,
+  nowIso?: () => string,
 ) {
   const settingSource: ReceiptReprintSettingsSource = {
     getFrozenReceiptSettings: async () => settingValue,
@@ -105,6 +112,7 @@ function service(
     orders,
     settings: settingSource,
     settlements: settlementSource,
+    ...(nowIso ? { nowIso } : {}),
   });
 }
 
@@ -154,6 +162,24 @@ test("没有历史打印作业也能从本地订单账本准备真实重打 ESC/
   assert.equal(prepared?.printerId, settings.printerId);
   assert.deepEqual([...prepared?.receiptBytes.slice(0, 3) ?? []], [0x1b, 0x40, 0x1b]);
   assert.match(encoder.decode(prepared?.receiptBytes), /\*\*\* REPRINT \*\*\*/);
+  assert.match(encoder.decode(prepared?.receiptBytes), /123456\s+1\s+\$7\.62/);
+});
+
+test("真实重打按 WPF 使用成交时间而不是本次任务时间", async () => {
+  const current = order({ orderGuid: "order-frozen-print-time" });
+  let now = "2026-08-02T04:05:06.000Z";
+  const prepared = await service(
+    new MemoryOrderSource(new Map([[current.orderGuid, current]]), current),
+    settings,
+    238,
+    () => now,
+  ).prepareCurrent(current.orderGuid);
+
+  now = "2026-08-02T05:06:07.000Z";
+  const bytes = encoder.decode(prepared?.receiptBytes);
+  assert.match(bytes, new RegExp(`Print Time: ${localReceiptTime(current.soldAtIso)}`));
+  assert.doesNotMatch(bytes, new RegExp(localReceiptTime("2026-08-02T04:05:06.000Z")));
+  assert.doesNotMatch(bytes, new RegExp(localReceiptTime("2026-08-02T05:06:07.000Z")));
 });
 
 test("缺少现金完成审计、打印设置或无订单时 fail closed", async () => {
@@ -183,7 +209,7 @@ test("零金额订单只接受审计中的零找零", async () => {
   const prepared = await service(source, settings, 0).prepareCurrent(zero.orderGuid);
   const missingAudit = await service(source, settings, null).prepareCurrent(zero.orderGuid);
 
-  assert.match(encoder.decode(prepared?.receiptBytes), /Change\s+\$0\.00/);
+  assert.doesNotMatch(encoder.decode(prepared?.receiptBytes), /Change|找零/);
   assert.equal(missingAudit, null);
 });
 
@@ -203,4 +229,16 @@ test("卡券引用只输出掩码，PAN、授权码与 reservation token 不能�
 
   assert.match(bytes, /\*\*\*\*1234/);
   assert.doesNotMatch(bytes, /4111111111111234|voucher-token-must-never-print/);
+});
+
+test("历史重打遇到可注入 ESC/POS 的账本文本时 fail closed", async () => {
+  const unsafe = order({
+    orderGuid: "order-unsafe-receipt",
+    lines: [{ ...order().lines[0]!, lookupCode: "9300\u001bpulse" }],
+  });
+  const prepared = await service(
+    new MemoryOrderSource(new Map([[unsafe.orderGuid, unsafe]]), unsafe),
+  ).prepareCurrent(unsafe.orderGuid);
+
+  assert.equal(prepared, null);
 });

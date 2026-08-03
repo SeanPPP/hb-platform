@@ -23,8 +23,11 @@ import type {
 } from "./installment-presenter";
 
 import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const INSTALLMENTS_MIN_TOUCH_TARGET = 44;
@@ -260,8 +263,12 @@ function HistoryPane({
           <ActivityIndicator color={posColors.orange} />
         ) : null}
       </View>
-      <View style={styles.searchRow}>
-        <PosTextInput
+      <PosKeyboardAwareScrollView
+        contentContainerStyle={styles.searchRow}
+        style={styles.searchKeyboardScroll}
+        testID="installment-history-search-keyboard-scroll"
+      >
+        <PosKeyboardAwareTextInput
           accessibilityLabel={installmentText(locale, "search.accessibility")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -279,7 +286,7 @@ function HistoryPane({
           onPress={() => void presenter.load()}
           testID="installments-search-submit"
         />
-      </View>
+      </PosKeyboardAwareScrollView>
       <ScrollView
         horizontal
         contentContainerStyle={styles.filterRow}
@@ -405,7 +412,7 @@ function DetailsPane({
   const details = state.details;
   const writeDisabled = state.busy || !state.online || state.recoveryRequired;
   return (
-    <ScrollView
+    <PosKeyboardAwareScrollView
       contentContainerStyle={styles.detailsContent}
       style={[styles.pane, styles.detailsPane]}
       testID="installment-details"
@@ -561,7 +568,7 @@ function DetailsPane({
           </Text>
         </View>
       ) : null}
-    </ScrollView>
+    </PosKeyboardAwareScrollView>
   );
 }
 
@@ -581,7 +588,7 @@ function RepaymentPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "repayment.title")}
       </Text>
-      <PosTextInput
+      <PosKeyboardAwareTextInput
         accessibilityLabel={installmentText(
           locale,
           "repayment.amountAccessibility",
@@ -603,7 +610,7 @@ function RepaymentPanel({
       />
       {state.repaymentMethod === "voucher" ? (
         <>
-          <PosTextInput
+          <PosKeyboardAwareTextInput
             accessibilityLabel={installmentText(
               locale,
               "repayment.voucherAccessibility",
@@ -658,7 +665,7 @@ function CancellationPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "cancel.title")}
       </Text>
-      <PosTextInput
+      <PosKeyboardAwareTextInput
         accessibilityLabel={installmentText(
           locale,
           "cancel.reasonAccessibility",
@@ -678,7 +685,7 @@ function CancellationPanel({
           testID="installment-cancel-refund"
           tone="danger"
         />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={installmentText(
             locale,
             "void.reasonAccessibility",
@@ -737,7 +744,7 @@ function PickupPanel({
       <Text style={styles.sectionTitle}>
         {installmentText(locale, "pickup.title")}
       </Text>
-      <PosTextInput
+      <PosKeyboardAwareTextInput
         accessibilityLabel={installmentText(locale, "pickup.noteAccessibility")}
         editable={!disabled}
         onChangeText={presenter.setPickupNote}
@@ -840,14 +847,15 @@ function CreateWorkspace({
           </View>
         )}
       </ScrollView>
-      <ScrollView
+      <PosKeyboardAwareScrollView
         contentContainerStyle={styles.detailsContent}
         style={[styles.pane, styles.detailsPane]}
+        testID="installment-create-form-scroll"
       >
         <Text style={styles.panelTitle}>
           {installmentText(locale, "create.title")}
         </Text>
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.customerNameAccessibility",
@@ -862,7 +870,7 @@ function CreateWorkspace({
           testID="installment-create-customer-name"
           value={state.customerName}
         />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.customerPhoneAccessibility",
@@ -878,7 +886,7 @@ function CreateWorkspace({
           testID="installment-create-customer-phone"
           value={state.customerPhone}
         />
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={installmentText(
             locale,
             "create.noteAccessibility",
@@ -895,7 +903,7 @@ function CreateWorkspace({
           <Text style={styles.fieldLabel}>
             {installmentText(locale, "create.downPayment")}
           </Text>
-          <PosTextInput
+          <PosKeyboardAwareTextInput
             accessibilityLabel={installmentText(
               locale,
               "create.downPaymentAccessibility",
@@ -924,7 +932,7 @@ function CreateWorkspace({
         />
         {state.createPaymentMethod === "voucher" ? (
           <>
-            <PosTextInput
+            <PosKeyboardAwareTextInput
               accessibilityLabel={installmentText(
                 locale,
                 "create.voucherAccessibility",
@@ -955,7 +963,7 @@ function CreateWorkspace({
           testID="installment-create-submit"
           wide
         />
-      </ScrollView>
+      </PosKeyboardAwareScrollView>
     </View>
   );
 }
@@ -1166,7 +1174,7 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
-  sound?: "danger" | "navigate" | "tap";
+  sound?: "tap" | "navigate" | "danger";
   testID: string;
   tone?: "primary" | "secondary" | "quiet" | "danger";
   wide?: boolean;
@@ -1374,6 +1382,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     alignItems: "center",
+  },
+  searchKeyboardScroll: {
+    flexGrow: 0,
   },
   searchInput: {
     flex: 1,

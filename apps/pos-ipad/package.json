@@ -1,6 +1,6 @@
 {
   "name": "@hb/pos-ipad",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -30,16 +30,18 @@
     "test:bootstrap-ui": "jest src/ui/screens/bootstrap-screen.rntl.test.tsx --runInBand",
     "test:ui-preferences": "jest src/ui/preferences/*.test.ts src/i18n/index.test.ts --runInBand",
     "test:ui-controls": "node --test scripts/check-touch-sound-coverage.test.mjs scripts/generate-pos-sounds.test.mjs && jest src/ui/controls/*.rntl.test.tsx src/ui/feedback/*.rntl.test.tsx src/ui/screens/bootstrap-screen.rntl.test.tsx --runInBand",
+    "test:keyboard-avoidance": "node --test scripts/check-keyboard-avoidance-coverage.test.mjs && jest src/ui/controls/pos-keyboard-aware-scroll-view.rntl.test.tsx src/features/attendance-audit/attendance-audit-screen.rntl.test.tsx src/features/cashier-login/cashier-login-screen.rntl.test.tsx src/features/installments/installment-screen.rntl.test.tsx src/features/local-history/local-history-screen.rntl.test.tsx src/features/operation-authorization/operation-authorization-modal.rntl.test.tsx src/features/payments/ui/payment-screen.rntl.test.tsx src/features/remote-history/remote-history-screen.rntl.test.tsx src/features/returns/return-screen.rntl.test.tsx src/features/sales/ui/sales-screen.rntl.test.tsx src/features/settings/settings-screen.rntl.test.tsx src/features/special-products/special-products-screen.rntl.test.tsx src/features/daily-close/daily-close-screen.rntl.test.tsx src/tests/routes/scanner-route-bridge.rntl.test.tsx --runInBand",
     "test:sounds": "node --test scripts/generate-pos-sounds.test.mjs",
     "test:runtime": "tsx --test src/core/runtime/*.test.ts",
     "test:sync": "tsx --test src/core/sync/*.test.ts",
     "test:catalog": "tsx --test src/features/catalog/*.test.ts",
     "test:catalog-maintenance": "tsx --test src/features/catalog/maintenance/*.test.ts && jest src/features/catalog/maintenance/*.rntl.test.tsx --runInBand",
     "test:catalog-route": "jest src/tests/routes/catalog-maintenance-route.rntl.test.tsx --runInBand",
-    "test:routes": "npm run test:catalog-route && npm run test:sales-route && npm run test:payment-route && npm run test:returns-route && npm run test:sync-history-route && npm run test:held-orders-route",
+    "test:routes": "npm run test:index-route && npm run test:catalog-route && npm run test:sales-route && npm run test:payment-route && npm run test:returns-route && npm run test:sync-history-route && npm run test:held-orders-route && npm run test:local-history-route",
     "test:pricing": "tsx --test src/features/sales/domain/*.test.ts",
     "test:sales-ui": "tsx --test src/features/sales/ui/sales-presenter.test.ts src/features/sales/ui/sales-toolbar-order.test.ts && jest src/features/sales/ui/sales-number-keypad.rntl.test.tsx src/features/sales/ui/sales-screen.rntl.test.tsx src/features/sales/ui/sales-toolbar.rntl.test.tsx --runInBand",
     "test:sales-route": "jest src/tests/routes/sales-route.rntl.test.tsx --runInBand",
+    "test:index-route": "jest src/tests/routes/index-route.rntl.test.tsx --runInBand",
     "test:payment-route": "jest src/tests/routes/payment-route.rntl.test.tsx --runInBand",
     "test:returns-route": "jest src/tests/routes/returns-route.rntl.test.tsx --runInBand",
     "test:held-orders-route": "jest src/tests/routes/held-orders-route.rntl.test.tsx --runInBand",
@@ -62,6 +64,8 @@
     "test:voucher": "tsx --test src/features/payments/voucher/*.test.ts",
     "test:returns": "tsx --test src/features/returns/*.test.ts && jest src/features/returns/*.rntl.test.tsx --runInBand",
     "test:remote-history": "tsx --test src/features/remote-history/*.test.ts && jest src/features/remote-history/*.rntl.test.tsx --runInBand",
+    "test:local-history": "tsx --test src/features/local-history/*.test.ts && jest src/features/local-history/*.rntl.test.tsx --runInBand",
+    "test:local-history-route": "jest src/tests/routes/local-history-route.rntl.test.tsx --runInBand",
     "test:special-products": "tsx --test src/features/special-products/*.test.ts && jest src/features/special-products/*.rntl.test.tsx --runInBand",
     "test:daily-close": "tsx --test src/features/daily-close/*.test.ts && jest src/features/daily-close/*.rntl.test.tsx --runInBand",
     "test:installments": "tsx --test src/features/installments/*.test.ts && jest src/features/installments/*.rntl.test.tsx --runInBand",
@@ -74,7 +78,7 @@
     "test:codegen": "node scripts/generate-hbpos-client.test.mjs && npm run check:hbpos-client",
     "test:e2e": "node --test e2e/payment/payment-fault-matrix.fixture.test.mjs && tsx --test e2e/payment/*.e2e.test.ts",
     "test:project": "node scripts/check-project-contract.test.mjs && node scripts/check-parity-matrix.test.mjs && node scripts/check-payment-recovery-contract.test.mjs",
-    "test": "npm run test:project && npm run test:app-update-config && npm run test:ota-release-script && npm run test:e2e && npm run test:contracts && npm run test:printer && npm run test:scanner && npm run test:camera-scanner && npm run test:display && npm run test:customer-display && npm run test:app-updates && npm run test:app-update-ui && npm run test:attendance-security && npm run test:attendance-audit && npm run test:ui-shell && npm run test:ui-preferences && npm run test:ui-controls && npm run test:runtime && npm run test:sync && npm run test:sync-history && npm run test:catalog && npm run test:catalog-maintenance && npm run test:routes && npm run test:pricing && npm run test:sales-ui && npm run test:sales-runtime && npm run test:receipts && npm run test:registration && npm run test:cashier-login && npm run test:cashier-lock && npm run test:operation-authorization && npm run test:held-orders && npm run test:cash && npm run test:fulfilment && npm run test:payments && npm run test:payment-runtime && npm run test:payment-ui && npm run test:mixed-payments && npm run test:square && npm run test:linkly && npm run test:voucher && npm run test:returns && npm run test:remote-history && npm run test:special-products && npm run test:daily-close && npm run test:installments && npm run test:settings && npm run test:locale-parity && npm run test:core-api-security && npm run test:db && npm run test:codegen && npm run typecheck && npm run lint"
+    "test": "npm run test:project && npm run test:app-update-config && npm run test:ota-release-script && npm run test:e2e && npm run test:contracts && npm run test:printer && npm run test:scanner && npm run test:camera-scanner && npm run test:display && npm run test:customer-display && npm run test:app-updates && npm run test:app-update-ui && npm run test:attendance-security && npm run test:attendance-audit && npm run test:logging && npm run test:ui-shell && npm run test:ui-preferences && npm run test:ui-controls && npm run test:keyboard-avoidance && npm run test:runtime && npm run test:sync && npm run test:sync-history && npm run test:catalog && npm run test:catalog-maintenance && npm run test:routes && npm run test:pricing && npm run test:sales-ui && npm run test:sales-runtime && npm run test:receipts && npm run test:registration && npm run test:cashier-login && npm run test:cashier-lock && npm run test:operation-authorization && npm run test:held-orders && npm run test:cash && npm run test:fulfilment && npm run test:payments && npm run test:payment-runtime && npm run test:payment-ui && npm run test:mixed-payments && npm run test:square && npm run test:linkly && npm run test:voucher && npm run test:returns && npm run test:remote-history && npm run test:local-history && npm run test:special-products && npm run test:daily-close && npm run test:installments && npm run test:settings && npm run test:locale-parity && npm run test:core-api-security && npm run test:db && npm run test:codegen && npm run typecheck && npm run lint"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
@@ -106,6 +110,7 @@
     "expo-status-bar": "~3.0.9",
     "expo-updates": "~29.0.19",
     "i18next": "^26.2.0",
+    "qrcode-generator": "^2.0.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-hook-form": "^7.75.0",

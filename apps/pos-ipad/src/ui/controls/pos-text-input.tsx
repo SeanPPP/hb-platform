@@ -13,7 +13,7 @@ import {
 export type PosTextInputProps = TextInputProps &
   Readonly<{ sound?: TouchSoundKind | false }>;
 
-/** 仅手指轻触输入框时播放；程序焦点、受控 value 与 HID 输入保持静默。 */
+/** 仅确认由手指轻触输入框时播放；焦点、受控 value 和 HID 文本均保持静默。 */
 export const PosTextInput = forwardRef<TextInput, PosTextInputProps>(
   function PosTextInput(
     {
@@ -37,6 +37,7 @@ export const PosTextInput = forwardRef<TextInput, PosTextInputProps>(
       },
       [onTouchStart],
     );
+
     const handleTouchMove = useCallback(
       (event: GestureResponderEvent) => {
         touch.current.moved = true;
@@ -44,6 +45,7 @@ export const PosTextInput = forwardRef<TextInput, PosTextInputProps>(
       },
       [onTouchMove],
     );
+
     const handleTouchCancel = useCallback(
       (event: GestureResponderEvent) => {
         touch.current.active = false;
@@ -51,6 +53,7 @@ export const PosTextInput = forwardRef<TextInput, PosTextInputProps>(
       },
       [onTouchCancel],
     );
+
     const handleTouchEnd = useCallback(
       (event: GestureResponderEvent) => {
         const shouldPlay =
@@ -65,12 +68,12 @@ export const PosTextInput = forwardRef<TextInput, PosTextInputProps>(
     return (
       <TextInput
         {...props}
+        ref={ref}
         editable={editable}
         onTouchCancel={handleTouchCancel}
         onTouchEnd={handleTouchEnd}
         onTouchMove={handleTouchMove}
         onTouchStart={handleTouchStart}
-        ref={ref}
       />
     );
   },

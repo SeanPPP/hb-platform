@@ -492,11 +492,11 @@ export function SalesToolbar({
                   suppressBusinessPressRef.current = false;
                   if (!suppress && !action.disabled) action.onPress();
                 }}
-                longPressSound="navigate"
-                sound="navigate"
                 onPressIn={(event) => beginPointer(action.id, event)}
                 onTouchCancel={cancelDrag}
                 onTouchEnd={finishDrag}
+                longPressSound="navigate"
+                sound="navigate"
                 style={({ pressed }) => [
                   styles.actionButton,
                   actionToneStyles[action.tone ?? "primary"],

@@ -298,6 +298,11 @@ function validateDraft(
       ? null
       : canonicalIso(input.expiresAtIso, "voucher expiry");
   const reason = optionalSecret(input.reason ?? null, "voucher reason", 1024);
+  const latestBalanceConfirmation = normalizeLatestBalanceConfirmation(
+    input.latestBalanceConfirmation,
+    operation,
+    phase,
+  );
   validatePhaseShape(
     operation,
     phase,
@@ -322,6 +327,9 @@ function validateDraft(
     amountCents,
     expiresAtIso,
     reason,
+    ...(latestBalanceConfirmation
+      ? { latestBalanceConfirmation }
+      : {}),
   });
 }
 
@@ -414,6 +422,16 @@ function assertVoucherPhaseTransition(
   next: VoucherProtectedAttemptStateDraft,
 ): void {
   if (sameVoucherState(previous, next)) return;
+  if (
+    previous.operation === "purchase" &&
+    previous.phase === "approved" &&
+    next.phase === "approved" &&
+    previous.latestBalanceConfirmation === undefined &&
+    next.latestBalanceConfirmation !== undefined &&
+    sameVoucherStateWithoutLatestBalance(previous, next)
+  ) {
+    return;
+  }
   const transition = `${previous.phase}->${next.phase}`;
   if (
     transition !== "purchase-prepared->lock-submitted" &&
@@ -430,6 +448,12 @@ function assertVoucherPhaseTransition(
   ) {
     throw new Error("Voucher code cannot change during purchase.");
   }
+  if (
+    JSON.stringify(previous.latestBalanceConfirmation ?? null) !==
+    JSON.stringify(next.latestBalanceConfirmation ?? null)
+  ) {
+    throw new Error("Voucher latest balance confirmation cannot be changed.");
+  }
 }
 
 function sameVoucherState(
@@ -437,6 +461,59 @@ function sameVoucherState(
   right: VoucherProtectedAttemptStateDraft,
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameVoucherStateWithoutLatestBalance(
+  left: VoucherProtectedAttemptStateDraft,
+  right: VoucherProtectedAttemptStateDraft,
+): boolean {
+  const { latestBalanceConfirmation: _left, ...leftBase } = left;
+  const { latestBalanceConfirmation: _right, ...rightBase } = right;
+  return JSON.stringify(leftBase) === JSON.stringify(rightBase);
+}
+
+function normalizeLatestBalanceConfirmation(
+  value: VoucherProtectedAttemptStateDraft["latestBalanceConfirmation"],
+  operation: "purchase" | "refund",
+  phase: VoucherProtectedPhase,
+): VoucherProtectedAttemptStateDraft["latestBalanceConfirmation"] {
+  if (value === undefined) return undefined;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    operation !== "purchase" ||
+    (phase !== "approved" &&
+      phase !== "release-submitted" &&
+      phase !== "released")
+  ) {
+    throw new TypeError("Voucher latest balance confirmation is invalid.");
+  }
+  const confirmedAtIso = canonicalIso(
+    value.confirmedAtIso,
+    "voucher latest balance confirmation time",
+  );
+  if (value.status === "unavailable") {
+    if (value.remainingCents !== null) {
+      throw new TypeError("Voucher unavailable balance must be null.");
+    }
+    return Object.freeze({
+      status: "unavailable",
+      remainingCents: null,
+      confirmedAtIso,
+    });
+  }
+  if (
+    value.status !== "confirmed" ||
+    !Number.isSafeInteger(value.remainingCents) ||
+    value.remainingCents < 0
+  ) {
+    throw new TypeError("Voucher confirmed balance is invalid.");
+  }
+  return Object.freeze({
+    status: "confirmed",
+    remainingCents: value.remainingCents,
+    confirmedAtIso,
+  });
 }
 
 function nextIso(previous: string, candidateInput: string): string {

@@ -3,8 +3,6 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const posIpadAppVersion = "0.1.1";
-
 test("resolved Expo config 永久关闭启动自动检查，development/test 禁止 OTA 自动策略检查", () => {
   const config = resolveConfig({
     EAS_BUILD_PROFILE: "development-simulator",
@@ -47,13 +45,25 @@ test("production 只接受显式 HTTPS updates URL 与 EAS projectId 注入", ()
     EAS_BUILD_PROFILE: "production",
     EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
     EXPO_PUBLIC_HBPOS_UPDATES_URL: updatesUrl,
-    EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: posIpadAppVersion,
+    EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: "0.2.0",
   });
   assert.equal(config.updates?.url, updatesUrl);
   assert.equal(config.updates?.checkAutomatically, "NEVER");
-  assert.equal(config.runtimeVersion, posIpadAppVersion);
+  assert.equal(config.runtimeVersion, "0.2.0");
   assert.equal(config.extra?.eas?.projectId, projectId);
   assert.equal(config.extra?.hbpos?.automaticOtaChecks, true);
+});
+
+test("显式 runtimeVersion 必须与当前 appVersion 一致", () => {
+  const projectId = "123e4567-e89b-42d3-a456-426614174000";
+  const result = runConfig({
+    EAS_BUILD_PROFILE: "production",
+    EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
+    EXPO_PUBLIC_HBPOS_UPDATES_URL: `https://u.expo.dev/${projectId}`,
+    EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: "0.1.0",
+  });
+
+  assert.notEqual(result.status, 0);
 });
 
 test("production updates URL 必须精确绑定同一 EAS project，拒绝任意 HTTPS 主机或其他 projectId", () => {
@@ -77,24 +87,24 @@ test("production updates URL 必须精确绑定同一 EAS project，拒绝任意
   );
 });
 
-test("publish 注入的 runtimeVersion 必须与当前应用版本一致，旧版与非法值 fail-fast", () => {
+test("publish 注入的 runtimeVersion 仅接受当前 appVersion，非法值 fail-fast", () => {
   const projectId = "123e4567-e89b-42d3-a456-426614174000";
   const commonEnvironment = {
     EAS_BUILD_PROFILE: "production",
     EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
     EXPO_PUBLIC_HBPOS_UPDATES_URL: `https://u.expo.dev/${projectId}`,
   };
-  assert.equal(
+  assert.notEqual(
     runConfig({
       ...commonEnvironment,
-      EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: posIpadAppVersion,
+      EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: `r/${"a".repeat(118)}`,
     }).status,
     0,
   );
   assert.notEqual(
     runConfig({
       ...commonEnvironment,
-      EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: "0.1.0",
+      EXPO_PUBLIC_HBPOS_RUNTIME_VERSION: `r/${"a".repeat(119)}`,
     }).status,
     0,
   );

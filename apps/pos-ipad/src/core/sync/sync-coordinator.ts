@@ -34,6 +34,11 @@ export interface AuditBatchUploadPort {
   uploadOutbox?(payloadJson: string): Promise<AuditUploadResult>;
 }
 
+export interface SyncRetryTimerPort {
+  set(delayMs: number, callback: () => void): unknown;
+  clear(handle: unknown): void;
+}
+
 export type SyncDrainReport = Readonly<{
   leased: number;
   orderSucceeded: number;
@@ -68,9 +73,28 @@ export type PosSyncCoordinatorOptions = Readonly<{
   retryMaxMs?: number;
   retryJitterRatio?: number;
   operationLease?: UpdateOperationLeasePort;
+  timer?: SyncRetryTimerPort;
 }>;
 
 const auditBatchSize = 8;
+const maxTimerDelayMs = 2_147_483_647;
+const defaultTimer: SyncRetryTimerPort = {
+  set: (delayMs, callback) => {
+    const handle = setTimeout(callback, delayMs);
+    // Node 测试环境的长退避不应仅因计时器而挂住进程；React Native 返回 number，不受影响。
+    if (
+      typeof handle === "object" &&
+      handle !== null &&
+      "unref" in handle &&
+      typeof (handle as { unref?: unknown }).unref === "function"
+    ) {
+      (handle as { unref(): void }).unref();
+    }
+    return handle;
+  },
+  clear: (handle) =>
+    clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
 const emptyReport = (): MutableSyncDrainReport => ({
   leased: 0,
   orderSucceeded: 0,
@@ -88,7 +112,10 @@ export class PosSyncCoordinator {
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
   private readonly retryJitterRatio: number;
+  private readonly timer: SyncRetryTimerPort;
   private inFlight: Promise<SyncDrainReport> | undefined;
+  private rerunRequested = false;
+  private scheduledDrain: unknown | undefined;
   private stopped = false;
   private shutdownPromise: Promise<void> | undefined;
 
@@ -99,6 +126,7 @@ export class PosSyncCoordinator {
     this.retryBaseMs = options.retryBaseMs ?? 1_000;
     this.retryMaxMs = options.retryMaxMs ?? 5 * 60_000;
     this.retryJitterRatio = options.retryJitterRatio ?? 0.2;
+    this.timer = options.timer ?? defaultTimer;
   }
 
   /** 仅暴露当前单飞 drain 是否仍在执行，不泄漏队列内容或改变重试状态。 */
@@ -106,9 +134,15 @@ export class PosSyncCoordinator {
     return this.inFlight !== undefined;
   }
 
+  /** runtime 关闭前释放延迟重试，避免旧数据库连接被 timer 在关闭后再次访问。 */
   public shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.stopped = true;
+    this.rerunRequested = false;
+    if (this.scheduledDrain !== undefined) {
+      this.timer.clear(this.scheduledDrain);
+      this.scheduledDrain = undefined;
+    }
     // 停止后不再租用新项目；已在网络中的当前项目仍要完成对应终态写入，
     // 否则 database.close 会把订单/审计留在半处理状态。
     this.shutdownPromise = (this.inFlight ?? Promise.resolve())
@@ -120,9 +154,12 @@ export class PosSyncCoordinator {
   public requestDrain(): Promise<SyncDrainReport> {
     if (this.stopped) return Promise.resolve(emptyReport());
     if (this.inFlight) {
+      // 中文注释：提交可能刚好发生在旧 drain 读到空队列之后；锁存第二轮，
+      // 避免新 outbox 只“加入旧 Promise”却没有真正再扫描。
+      this.rerunRequested = true;
       return this.inFlight;
     }
-    const drain = () => this.drainInternal();
+    const drain = () => this.drainUntilQuiescent();
     this.inFlight = (
       this.options.operationLease
         ? this.options.operationLease.runOperation(drain)
@@ -133,16 +170,39 @@ export class PosSyncCoordinator {
     return this.inFlight;
   }
 
-  private async drainInternal(): Promise<SyncDrainReport> {
+  private async drainUntilQuiescent(): Promise<SyncDrainReport> {
     const report = emptyReport();
-    const leases = await this.options.outbox.leaseReady(this.outboxBatchSize, this.leaseSeconds);
-    report.leased = leases.length;
-
-    for (const item of leases) {
-      await this.syncOutboxItem(item, report);
-    }
-    await this.syncPendingAudits(report);
+    do {
+      this.rerunRequested = false;
+      await this.drainInternal(report);
+      // 中文注释：计算下一次定时唤醒本身也会跨越异步数据库读取；
+      // 该窗口内的新提交必须参与同一重跑判断，不能在返回前被吞掉。
+      await this.scheduleNextReadyDrain();
+    } while (!this.stopped && this.rerunRequested);
     return report;
+  }
+
+  private async drainInternal(report: MutableSyncDrainReport): Promise<void> {
+    while (true) {
+      if (this.stopped) return;
+      const leases = await this.options.outbox.leaseReady(
+        this.outboxBatchSize,
+        this.leaseSeconds,
+      );
+      if (!leases.length) break;
+      report.leased += leases.length;
+      for (let index = 0; index < leases.length; index += 1) {
+        const item = leases[index]!;
+        // 已取到的后续租约由下次 runtime 恢复处理；只让正在执行的一项完成终态。
+        if (this.stopped) {
+          await this.releaseUnstartedLeases(leases.slice(index));
+          return;
+        }
+        await this.syncOutboxItem(item, report);
+      }
+    }
+    if (this.stopped) return;
+    await this.syncPendingAudits(report);
   }
 
   private async syncOutboxItem(item: OutboxLease, report: {
@@ -330,12 +390,54 @@ export class PosSyncCoordinator {
     await this.options.outbox.releaseRetry(item, this.nextRetryAt(item.attemptCount), errorCode);
   }
 
+  private async releaseUnstartedLeases(
+    leases: readonly OutboxLease[],
+  ): Promise<void> {
+    for (const lease of leases) {
+      // 关闭期间未开始的 lease 必须立即归还；否则订单保持 Syncing 直到原 lease 超时。
+      await this.options.outbox.releaseRetry(
+        lease,
+        this.options.now().toISOString(),
+        "SYNC_RUNTIME_SHUTDOWN",
+      );
+    }
+  }
+
   private nextRetryAt(attemptCount: number): string {
     const exponent = Math.min(Math.max(attemptCount, 0), 12);
     const baseDelay = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** exponent);
     const jitter = (this.random() * 2 - 1) * this.retryJitterRatio;
     const delay = Math.max(0, Math.round(baseDelay * (1 + jitter)));
     return new Date(this.options.now().getTime() + delay).toISOString();
+  }
+
+  private async scheduleNextReadyDrain(): Promise<void> {
+    if (this.stopped) return;
+    const candidates = await Promise.all([
+      this.options.outbox.nextReadyAtIso?.(),
+      this.options.auditDelivery?.nextReadyAtIso(),
+    ]);
+    if (this.stopped) return;
+    const nextReadyAt = candidates
+      .filter((value): value is string =>
+        typeof value === "string" && Number.isFinite(Date.parse(value)))
+      .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+    if (this.scheduledDrain !== undefined) {
+      this.timer.clear(this.scheduledDrain);
+      this.scheduledDrain = undefined;
+    }
+    if (!nextReadyAt) return;
+    const readyAtMs = Date.parse(nextReadyAt);
+    if (!Number.isFinite(readyAtMs)) return;
+    const delayMs = Math.min(
+      maxTimerDelayMs,
+      Math.max(0, readyAtMs - this.options.now().getTime()),
+    );
+    this.scheduledDrain = this.timer.set(delayMs, () => {
+      this.scheduledDrain = undefined;
+      if (this.stopped) return;
+      void this.requestDrain().catch(() => undefined);
+    });
   }
 }
 

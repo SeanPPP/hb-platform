@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, test } from "@jest/globals";
+import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import {
   cleanup,
   fireEvent,
@@ -8,6 +8,13 @@ import { StyleSheet } from "react-native";
 
 import { usePosShellStore } from "./pos-shell-store";
 import { PosStatusStrip } from "./status-strip";
+
+import { usePosSound } from "@/ui/feedback/pos-sound-context";
+
+jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
+
+const mockUsePosSound = jest.mocked(usePosSound);
+const play = jest.fn();
 
 let mockLanguage = "zh";
 
@@ -44,6 +51,16 @@ afterEach(() => {
   cleanup();
   mockLanguage = "zh";
   usePosShellStore.getState().reset();
+});
+
+beforeEach(() => {
+  mockUsePosSound.mockReturnValue({
+    buttonSoundEnabled: true,
+    play,
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: true,
+  });
 });
 
 test("没有切换回调时不显示语言入口", async () => {
@@ -149,6 +166,7 @@ test("中文界面显示目标 EN 图标，并保留完整无障碍文案和 44p
   expect(screen.queryByText("English")).toBeNull();
 
   fireEvent.press(button);
+  expect(play).toHaveBeenCalledWith("navigate");
   expect(onSwitchLanguage).toHaveBeenCalledTimes(1);
 });
 

@@ -1,6 +1,6 @@
 import { expect, jest, test } from "@jest/globals";
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { ScrollView, StyleSheet } from "react-native";
 
 import {
   OPERATION_AUTHORIZATION_MIN_TOUCH_TARGET,
@@ -207,6 +207,54 @@ test("扫码输入默认静默软键盘，仅按钮手动开启，失焦与重�
     authorized: false,
     reason: "CANCELLED",
   });
+});
+
+test("主管手动键盘聚焦时由弹窗内滚动容器揭示输入，HID 聚焦保持静默", async () => {
+  const revealInput = jest
+    .spyOn(
+      ScrollView.prototype,
+      "scrollResponderScrollNativeHandleToKeyboard",
+    )
+    .mockImplementation(() => undefined);
+  const { service } = createHarness();
+  const authorization = startAuthorization(service);
+  const screen = await render(
+    <OperationAuthorizationModal locale="zh" service={service} />,
+  );
+
+  try {
+    expect(
+      screen.getByTestId("operation-authorization-keyboard-scroll").props,
+    ).toMatchObject({
+      automaticallyAdjustKeyboardInsets: true,
+      keyboardDismissMode: "interactive",
+      keyboardShouldPersistTaps: "handled",
+    });
+    await fireEvent(
+      screen.getByTestId("operation-authorization-barcode"),
+      "focus",
+      { target: 301 },
+    );
+    expect(revealInput).not.toHaveBeenCalled();
+
+    await fireEvent.press(
+      screen.getByTestId("operation-authorization-show-keyboard"),
+    );
+    await waitFor(() => {
+      expect(revealInput).toHaveBeenCalledTimes(1);
+      expect(revealInput).toHaveBeenCalledWith(301, 16, true);
+    });
+  } finally {
+    await fireEvent.press(
+      screen.getByTestId("operation-authorization-cancel"),
+    );
+    await expect(authorization).resolves.toEqual({
+      authorized: false,
+      reason: "CANCELLED",
+    });
+    revealInput.mockRestore();
+    await screen.unmount();
+  }
 });
 
 test("HID CR/LF 只提交一次、立即清空遮罩输入，核验期间仍可取消", async () => {

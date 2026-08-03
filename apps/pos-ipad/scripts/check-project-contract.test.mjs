@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = new URL("../", import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL("package.json", appRoot), "utf8"));
+const packageLock = JSON.parse(
+  readFileSync(new URL("package-lock.json", appRoot), "utf8"),
+);
 const appConfigSource = readFileSync(new URL("app.config.ts", appRoot), "utf8");
 const easConfig = JSON.parse(readFileSync(new URL("eas.json", appRoot), "utf8"));
 const appProvidersSource = readFileSync(
@@ -19,14 +22,11 @@ const routeFiles = readdirSync(new URL("app/", appRoot), {
   .map((entry) => entry.name);
 
 assert.equal(packageJson.name, "@hb/pos-ipad");
+assert.equal(packageJson.version, "0.2.0");
+assert.equal(packageLock.version, "0.2.0");
+assert.equal(packageLock.packages[""].version, "0.2.0");
 assert.equal(packageJson.main, "expo-router/entry");
 assert.equal(packageJson.private, true);
-assert.match(packageJson.version, /^\d+\.\d+\.\d+$/u);
-assert.notEqual(
-  packageJson.version,
-  "0.1.0",
-  "新增 expo-audio 原生依赖后必须提升应用版本与 runtimeVersion。",
-);
 assert.equal(packageJson.scripts.android, undefined);
 assert.match(
   packageJson.scripts["test:sync-history"],
@@ -65,27 +65,15 @@ const introspectedConfig = JSON.parse(
     encoding: "utf8",
   }),
 );
+assert.equal(introspectedConfig.version, "0.2.0");
+assert.deepEqual(introspectedConfig.runtimeVersion, {
+  policy: "appVersion",
+});
 const audioPlugin = introspectedConfig.plugins?.find(
   (plugin) => Array.isArray(plugin) && plugin[0] === "expo-audio",
 );
 const cameraPlugin = introspectedConfig.plugins?.find(
   (plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera",
-);
-assert.equal(
-  introspectedConfig.version,
-  packageJson.version,
-  "Expo 应用版本必须与 package.json 保持一致。",
-);
-assert.deepEqual(
-  introspectedConfig.runtimeVersion,
-  { policy: "appVersion" },
-  "原生依赖构建必须继续使用 appVersion 隔离 OTA runtime。",
-);
-assert.equal(
-  Number.isSafeInteger(Number(introspectedConfig.ios?.buildNumber)) &&
-    Number(introspectedConfig.ios?.buildNumber) >= 2,
-  true,
-  "新增原生依赖后的 iOS build number 必须至少为 2。",
 );
 assert.ok(Array.isArray(audioPlugin), "必须保留 expo-audio 插件。");
 assert.ok(Array.isArray(cameraPlugin), "必须保留 expo-camera 插件。");

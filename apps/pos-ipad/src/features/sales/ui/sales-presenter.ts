@@ -6,6 +6,7 @@ import type { CashDrawerDisposition } from "@/features/checkout/cash/cash-checko
 import {
   calculateCashSettlement,
   roundCashAmount,
+  type MergeCompatibleCartLinesResult,
 } from "@/features/sales/domain";
 
 export const MIN_TOUCH_TARGET = 44;
@@ -24,6 +25,7 @@ export type SalesErrorCode =
   | "search-required"
   | "search-failed"
   | "product-add-failed"
+  | "terminal-recovery-required"
   | "authorization-denied"
   | "cart-update-failed"
   | "invalid-quantity"
@@ -47,7 +49,7 @@ export type SalesProductSearchItem = Readonly<{
   unitPriceCents: number;
 }>;
 
-/** 业务反馈与声音解耦；路由层只负责把结构化终态映射为本机提示音。 */
+/** 业务反馈与声音解耦；路由层仅将其映射为本地提示音。 */
 export type SalesFeedbackEvent = Readonly<{
   kind:
     | "query-found"
@@ -92,6 +94,9 @@ export type SalesSuccessState = Readonly<{
 export type SalesPresenterState = Readonly<{
   phase: SalesUiPhase;
   cart: CartSnapshot;
+  selectedLineId: string | null;
+  revealLineId: string | null;
+  revealRevision: number;
   query: string;
   searchStatus: SalesSearchStatus;
   searchResults: readonly SalesProductSearchItem[];
@@ -105,6 +110,8 @@ export type SalesPresenterState = Readonly<{
 export interface SalesCartPort {
   getSnapshot(): CartSnapshot;
   subscribe(listener: () => void): () => void;
+  hasMergeCompatibleLines(): boolean;
+  mergeCompatibleLines(): Promise<MergeCompatibleCartLinesResult>;
   increaseLine(lineId: string): Promise<void>;
   decreaseLine(lineId: string): Promise<void>;
   removeLine(lineId: string): Promise<void>;
@@ -146,10 +153,11 @@ export interface SalesWorkflowPort {
   addByLookupCode(
     lookupCode: string,
     options?: Readonly<{ source?: "manual" | "hid" | "camera" }>,
-  ): Promise<void>;
+  ): Promise<string | null>;
   subscribeLookupOutcome?(
     listener: (outcome: SalesFeedbackEvent) => void,
   ): () => void;
+  subscribeScanTarget(listener: (lineId: string) => void): () => void;
   addOpenItem(unitPriceCents: number): Promise<void>;
   getPendingCatalogWorkCount(): number;
   subscribePendingCatalogWork(listener: () => void): () => void;
@@ -214,18 +222,28 @@ export class SalesPresenter {
   >();
   private readonly unsubscribeCart: () => void;
   private readonly unsubscribePendingCatalogWork: () => void;
+  private readonly unsubscribeScanTarget: () => void;
   private readonly unsubscribeLookupOutcome: () => void;
   private cashIntentId: string | null = null;
   private cashSubmission: Promise<boolean> | null = null;
   private checkoutPreparation: Promise<CartSnapshot | null> | null = null;
+  private mergeCompatibilityCart: CartSnapshot | null = null;
+  private mergeCompatibilityValue = false;
   private searchGeneration = 0;
   private nextPresenterAttemptId = 0;
+  private mergeSelectionInProgress = false;
   private destroyed = false;
 
   public constructor(private readonly dependencies: SalesPresenterDependencies) {
+    const initialCart = dependencies.cart.getSnapshot();
+    const initialLineId =
+      initialCart.lines[initialCart.lines.length - 1]?.lineId ?? null;
     this.state = {
       phase: "selling",
-      cart: dependencies.cart.getSnapshot(),
+      cart: initialCart,
+      selectedLineId: initialLineId,
+      revealLineId: initialLineId,
+      revealRevision: 0,
       query: "",
       searchStatus: "idle",
       searchResults: [],
@@ -236,7 +254,7 @@ export class SalesPresenter {
       capabilities: dependencies.capabilities,
     };
     this.unsubscribeCart = dependencies.cart.subscribe(() => {
-      this.patchState({ cart: dependencies.cart.getSnapshot() });
+      this.applyCartSnapshot(dependencies.cart.getSnapshot());
     });
     this.unsubscribePendingCatalogWork =
       dependencies.workflow.subscribePendingCatalogWork(() => {
@@ -244,6 +262,15 @@ export class SalesPresenter {
           pendingLookupCount:
             dependencies.workflow.getPendingCatalogWorkCount(),
         });
+      });
+    this.unsubscribeScanTarget =
+      dependencies.workflow.subscribeScanTarget((lineId) => {
+        if (
+          this.state.phase === "selling" &&
+          this.state.cart.lines.some((line) => line.lineId === lineId)
+        ) {
+          this.revealLine(lineId);
+        }
       });
     this.unsubscribeLookupOutcome =
       dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
@@ -275,6 +302,7 @@ export class SalesPresenter {
     } finally {
       this.unsubscribeCart();
       this.unsubscribePendingCatalogWork();
+      this.unsubscribeScanTarget();
       this.unsubscribeLookupOutcome();
       this.listeners.clear();
       this.feedbackListeners.clear();
@@ -282,10 +310,11 @@ export class SalesPresenter {
   }
 
   public setQuery(query: string): void {
-    // 查询文本变化即令上一轮结果失效，避免迟到响应播放错误反馈。
     this.searchGeneration += 1;
     this.patchState({
       query,
+      searchStatus: "idle",
+      searchResults: [],
       errorCode:
         this.state.errorCode === "search-required" ? null : this.state.errorCode,
     });
@@ -295,14 +324,37 @@ export class SalesPresenter {
     this.patchState({ errorCode: null });
   }
 
+  public selectLine(lineId: string): void {
+    if (!this.state.cart.lines.some((line) => line.lineId === lineId)) {
+      return;
+    }
+    this.patchState({ selectedLineId: lineId });
+  }
+
+  public canMergeCompatibleLines(): boolean {
+    if (
+      this.state.phase !== "selling" ||
+      !this.dependencies.capabilities.cartEditing
+    ) {
+      return false;
+    }
+    if (this.mergeCompatibilityCart !== this.state.cart) {
+      this.mergeCompatibilityCart = this.state.cart;
+      this.mergeCompatibilityValue =
+        this.dependencies.cart.hasMergeCompatibleLines();
+    }
+    return this.mergeCompatibilityValue;
+  }
+
   public searchProducts(): Promise<boolean> {
     const query = this.state.query.trim();
-    if (!this.dependencies.capabilities.catalog) {
-      this.patchState({ errorCode: "runtime-unavailable" });
-      return Promise.resolve(false);
-    }
     if (!query) {
       this.patchState({ errorCode: "search-required" });
+      return Promise.resolve(false);
+    }
+    if (!this.dependencies.capabilities.catalog) {
+      this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishFeedback({ kind: "query-error" });
       return Promise.resolve(false);
     }
 
@@ -343,22 +395,20 @@ export class SalesPresenter {
       });
   }
 
-  public addLookupCode(
-    source: "manual" | "hid" | "camera" = "manual",
-  ): Promise<boolean> {
+  public addLookupCode(): Promise<boolean> {
     const lookupCode = this.state.query.trim();
     if (!this.dependencies.capabilities.catalog) {
       this.patchState({ errorCode: "runtime-unavailable" });
-      this.publishBlockedAddAttempt(source);
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     if (!lookupCode) {
       this.patchState({ errorCode: "search-required" });
-      this.publishBlockedAddAttempt(source);
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
     if (!this.canMutateNewTransaction()) {
-      this.publishBlockedAddAttempt(source);
+      this.publishBlockedAddAttempt("manual");
       return Promise.resolve(false);
     }
 
@@ -370,14 +420,21 @@ export class SalesPresenter {
       searchResults: [],
       errorCode: null,
     });
-    // 手输沿用既有 Port 调用形状；工作流会把省略的来源默认成 manual。
-    const lookup =
-      source === "manual"
-        ? this.dependencies.workflow.addByLookupCode(lookupCode)
-        : this.dependencies.workflow.addByLookupCode(lookupCode, { source });
-    return lookup
-      .then(() => {
-        this.patchState({ cart: this.dependencies.cart.getSnapshot() });
+    const revealRevision = this.state.revealRevision;
+    return this.dependencies.workflow
+      .addByLookupCode(lookupCode)
+      .then((lineId) => {
+        const cart = this.dependencies.cart.getSnapshot();
+        this.applyCartSnapshot(cart);
+        if (
+          lineId &&
+          !(
+            this.state.revealRevision > revealRevision &&
+            this.state.revealLineId === lineId
+          )
+        ) {
+          this.revealLine(lineId);
+        }
         return true;
       })
       .catch((error: unknown) => {
@@ -404,6 +461,30 @@ export class SalesPresenter {
     return this.runProductMutation(() =>
       this.dependencies.workflow.addProduct(product),
     );
+  }
+
+  /** HID/相机不接管触屏草稿，直接走参数化查码入口。 */
+  public addScannedLookupCode(
+    lookupCode: string,
+    source: "hid" | "camera",
+  ): Promise<boolean> {
+    if (!this.dependencies.capabilities.catalog) {
+      this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishBlockedAddAttempt(source);
+      return Promise.resolve(false);
+    }
+    if (!lookupCode.trim()) {
+      this.publishBlockedAddAttempt(source);
+      return Promise.resolve(false);
+    }
+    if (!this.canMutateNewTransaction()) {
+      this.publishBlockedAddAttempt(source);
+      return Promise.resolve(false);
+    }
+    return this.dependencies.workflow
+      .addByLookupCode(lookupCode, { source })
+      .then(() => true)
+      .catch(() => false);
   }
 
   public addOpenItem(unitPriceCents: number): Promise<boolean> {
@@ -442,6 +523,50 @@ export class SalesPresenter {
     return this.runCartMutation(() =>
       this.dependencies.cart.removeLine(lineId),
     );
+  }
+
+  public mergeCompatibleLines(): Promise<boolean> {
+    if (!this.canMergeCompatibleLines()) {
+      return Promise.resolve(false);
+    }
+    const selectedLineId = this.state.selectedLineId;
+    this.mergeSelectionInProgress = true;
+    return this.dependencies.cart
+      .mergeCompatibleLines()
+      .then((result) => {
+        const cart = this.dependencies.cart.getSnapshot();
+        this.applyCartSnapshot(cart);
+        const mappedSelection = selectedLineId
+          ? result.groups.find((group) =>
+              group.removedLineIds.includes(selectedLineId),
+            )?.keptLineId
+          : null;
+        const nextSelectedLineId =
+          mappedSelection ??
+          (selectedLineId &&
+          cart.lines.some((line) => line.lineId === selectedLineId)
+            ? selectedLineId
+            : cart.lines[cart.lines.length - 1]?.lineId ?? null);
+        if (nextSelectedLineId !== this.state.selectedLineId) {
+          this.revealLine(nextSelectedLineId);
+        }
+        this.patchState({ errorCode: null });
+        return result.removedLineCount > 0;
+      })
+      .catch((error: unknown) => {
+        this.patchState({
+          errorCode: hasErrorCode(
+            error,
+            "SALES_OPERATION_NOT_AUTHORIZED",
+          )
+            ? "authorization-denied"
+            : "cart-update-failed",
+        });
+        return false;
+      })
+      .finally(() => {
+        this.mergeSelectionInProgress = false;
+      });
   }
 
   public applyLineDiscount(
@@ -829,15 +954,29 @@ export class SalesPresenter {
   }
 
   private runProductMutation(operation: () => Promise<void>): Promise<boolean> {
+    const cartBefore = this.state.cart;
+    const revealRevision = this.state.revealRevision;
     return operation()
       .then(() => {
+        const cart = this.dependencies.cart.getSnapshot();
+        this.applyCartSnapshot(cart);
+        const targetLineId = findProductMutationTarget(cartBefore, cart);
+        this.searchGeneration += 1;
         this.patchState({
-          cart: this.dependencies.cart.getSnapshot(),
           query: "",
           searchStatus: "idle",
           searchResults: [],
           errorCode: null,
         });
+        if (
+          targetLineId &&
+          !(
+            this.state.revealRevision > revealRevision &&
+            this.state.revealLineId === targetLineId
+          )
+        ) {
+          this.revealLine(targetLineId);
+        }
         return true;
       })
       .catch((error: unknown) => {
@@ -847,6 +986,11 @@ export class SalesPresenter {
             "NEW_TRANSACTIONS_DISABLED",
           )
             ? "new-transactions-disabled"
+            : hasErrorCode(
+                  error,
+                  "ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED",
+                )
+              ? "terminal-recovery-required"
             : hasErrorCode(error, "SALES_OPERATION_NOT_AUTHORIZED")
               ? "authorization-denied"
               : "product-add-failed",
@@ -942,10 +1086,8 @@ export class SalesPresenter {
     }
     return operation()
       .then(() => {
-        this.patchState({
-          cart: this.dependencies.cart.getSnapshot(),
-          errorCode: null,
-        });
+        this.applyCartSnapshot(this.dependencies.cart.getSnapshot());
+        this.patchState({ errorCode: null });
         return true;
       })
       .catch((error: unknown) => {
@@ -959,6 +1101,49 @@ export class SalesPresenter {
         });
         return false;
       });
+  }
+
+  private applyCartSnapshot(cart: CartSnapshot): void {
+    const previousCart = this.state.cart;
+    const previousLineIds = new Set(
+      previousCart.lines.map((line) => line.lineId),
+    );
+    const latestAddedLine = [...cart.lines]
+      .reverse()
+      .find((line) => !previousLineIds.has(line.lineId));
+    if (latestAddedLine) {
+      this.patchState({ cart });
+      this.revealLine(latestAddedLine.lineId);
+      return;
+    }
+    if (cart.lines.length === 0) {
+      this.patchState({
+        cart,
+        selectedLineId: null,
+        revealLineId: null,
+      });
+      return;
+    }
+    if (
+      !this.mergeSelectionInProgress &&
+      (!this.state.selectedLineId ||
+        !cart.lines.some(
+          (line) => line.lineId === this.state.selectedLineId,
+        ))
+    ) {
+      this.patchState({ cart });
+      this.revealLine(cart.lines[cart.lines.length - 1]!.lineId);
+      return;
+    }
+    this.patchState({ cart });
+  }
+
+  private revealLine(lineId: string | null): void {
+    this.patchState({
+      selectedLineId: lineId,
+      revealLineId: lineId,
+      revealRevision: this.state.revealRevision + 1,
+    });
   }
 
   private publishFeedback(event: SalesFeedbackEvent): void {
@@ -997,6 +1182,36 @@ export class SalesPresenter {
       }
     }
   }
+}
+
+function findProductMutationTarget(
+  before: CartSnapshot,
+  after: CartSnapshot,
+): string | null {
+  const previousById = new Map(
+    before.lines.map((line) => [line.lineId, line] as const),
+  );
+  for (let index = after.lines.length - 1; index >= 0; index -= 1) {
+    const line = after.lines[index]!;
+    const previous = previousById.get(line.lineId);
+    if (!previous || cartLineDisplayChanged(previous, line)) {
+      return line.lineId;
+    }
+  }
+  return null;
+}
+
+function cartLineDisplayChanged(
+  before: CartSnapshot["lines"][number],
+  after: CartSnapshot["lines"][number],
+): boolean {
+  return (
+    before.quantity !== after.quantity ||
+    before.unitPrice.cents !== after.unitPrice.cents ||
+    before.discount.cents !== after.discount.cents ||
+    before.actualAmount.cents !== after.actualAmount.cents ||
+    before.priceSource !== after.priceSource
+  );
 }
 
 export function getCashDueCents(cart: CartSnapshot): number {
@@ -1091,6 +1306,8 @@ export function createDisconnectedSalesPresenter(): SalesPresenter {
   const cart: SalesCartPort = {
     getSnapshot: () => EMPTY_SALE_CART,
     subscribe: () => () => undefined,
+    hasMergeCompatibleLines: () => false,
+    mergeCompatibleLines: unavailable,
     increaseLine: unavailable,
     decreaseLine: unavailable,
     removeLine: unavailable,
@@ -1109,6 +1326,7 @@ export function createDisconnectedSalesPresenter(): SalesPresenter {
     searchProducts: unavailable,
     addProduct: unavailable,
     addByLookupCode: unavailable,
+    subscribeScanTarget: () => () => undefined,
     addOpenItem: unavailable,
     getPendingCatalogWorkCount: () => 0,
     subscribePendingCatalogWork: () => () => undefined,

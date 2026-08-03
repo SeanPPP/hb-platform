@@ -1,5 +1,6 @@
 import { expect, jest, test } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   waitFor,
@@ -17,6 +18,7 @@ import {
   PAYMENT_MIN_TOUCH_TARGET,
   PaymentScreen,
   formatAud,
+  type PaymentReceiptPrintOutcome,
 } from "./payment-screen";
 
 import type {
@@ -43,15 +45,78 @@ import type {
 } from "@/features/payments/runtime/payment-provider-registry";
 import { installmentCreatePaymentEntry } from "@/features/payments/ui/unified-payment-entry";
 
+let mockPrintStateWrite: ((value: unknown) => void) | null = null;
+
+jest.mock("react", () => {
+  const actual = jest.requireActual<typeof import("react")>("react");
+  return {
+    ...actual,
+    useState: ((initialState: unknown) => {
+      const [value, setValue] = actual.useState<unknown>(initialState);
+      if (initialState !== "idle" || !mockPrintStateWrite) {
+        return [value, setValue];
+      }
+      return [
+        value,
+        (nextValue: unknown) => {
+          mockPrintStateWrite?.(nextValue);
+          setValue(nextValue);
+        },
+      ];
+    }) as typeof actual.useState,
+  };
+});
+
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     i18n: { language: "en", resolvedLanguage: "en" },
   }),
 }));
 
+jest.mock("@/ui/feedback", () => ({
+  usePosSound: () => ({
+    buttonSoundEnabled: false,
+    play: jest.fn(),
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: false,
+  }),
+}));
+
 jest.mock("@/ui/shell/status-strip", () => ({
   PosStatusStrip: () => null,
 }));
+
+test("付款内容滚动区采用系统键盘避让且金额输入仍禁用软键盘", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "ready",
+    providers: [
+      providerAvailability("square"),
+      providerAvailability("linkly-cloud"),
+      providerAvailability("voucher"),
+    ],
+    selectedMethod: "cash",
+    orderGuid: "order-ui-1",
+    total: aud(1_000),
+    remaining: aud(1_000),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByTestId("payment-content-scroll").props).toMatchObject({
+    automaticallyAdjustKeyboardInsets: true,
+    keyboardDismissMode: "interactive",
+    keyboardShouldPersistTaps: "handled",
+  });
+  expect(screen.getByTestId("payment-amount").props.showSoftInputOnFocus).toBe(
+    false,
+  );
+});
 
 test("横屏付款台保持 44pt 触控，礼券输入只安全遮罩且成功后不回显", async () => {
   const runtime = new ScreenPaymentRuntime();
@@ -109,6 +174,292 @@ test("横屏付款台保持 44pt 触控，礼券输入只安全遮罩且成功�
   expect(screen.queryByTestId("payment-voucher-code")).toBeNull();
   await fireEvent.press(screen.getByTestId("payment-complete"));
   expect(onComplete).toHaveBeenCalledWith("order-ui-1");
+});
+
+test("支付成功切换为独立结算页，显示现金找零与小票动作并隐藏付款控件", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "success",
+    providers: [
+      {
+        provider: "square",
+        available: false,
+        blocker: "SQUARE_CONFIGURATION_MISSING",
+      },
+      providerAvailability("linkly-cloud"),
+      providerAvailability("voucher"),
+    ],
+    selectedMethod: "cash",
+    orderGuid: "order-ui-1",
+    total: aud(1_000),
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "cash-success",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: true,
+      },
+    ],
+    allowedActions: actions(),
+    checkout: {
+      flow: "regular",
+      lines: [
+        {
+          lineKey: "open-item-success",
+          displayName: "OPEN ITEM",
+          quantity: "1",
+          actualAmountCents: 1_000,
+        },
+      ],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_500,
+        appliedCents: 1_000,
+        changeCents: 500,
+      },
+      canConfirm: false,
+      fullInstallmentConfirmationRequired: false,
+    },
+  });
+  const onComplete = jest.fn();
+  const onPrintReceipt = jest.fn<
+    (orderGuid: string) => Promise<PaymentReceiptPrintOutcome>
+  >(async () => "completed");
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onComplete={onComplete}
+      onPrintReceipt={onPrintReceipt}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByTestId("payment-success-layout")).toBeTruthy();
+  expect(screen.getByText("支付完成")).toBeTruthy();
+  expect(screen.getAllByText("order-ui-1")).toHaveLength(2);
+  expect(screen.getByText(formatAud(1_500, "zh"))).toBeTruthy();
+  expect(screen.getByText(formatAud(500, "zh"))).toBeTruthy();
+  expect(screen.getByText("订单已安全保存，并进入同步队列。")).toBeTruthy();
+  expect(screen.getByTestId("payment-success-receipt-preview")).toBeTruthy();
+  expect(screen.getByText("OPEN ITEM")).toBeTruthy();
+  expect(screen.getByText("× 1")).toBeTruthy();
+  expect(screen.getByText("打印小票")).toBeTruthy();
+  expect(screen.getByText("开始下一单")).toBeTruthy();
+
+  expect(screen.queryByTestId("payment-entry-pane")).toBeNull();
+  expect(screen.queryByTestId("payment-summary")).toBeNull();
+  expect(screen.queryByTestId("payment-method-cash")).toBeNull();
+  expect(screen.queryByTestId("payment-method-square")).toBeNull();
+  expect(screen.queryByTestId("payment-method-linkly-cloud")).toBeNull();
+  expect(screen.queryByTestId("payment-method-voucher")).toBeNull();
+  expect(screen.queryByTestId("payment-provider-blockers")).toBeNull();
+  expect(screen.queryByTestId("payment-remove-cash-success")).toBeNull();
+
+  await fireEvent.press(screen.getByTestId("payment-success-print"));
+  expect(onPrintReceipt).toHaveBeenCalledWith("order-ui-1");
+  await fireEvent.press(screen.getByTestId("payment-complete"));
+  expect(onComplete).toHaveBeenCalledWith("order-ui-1");
+  await screen.unmount();
+});
+
+test("手动打印在结果返回前防重复，并依次显示完成、未知和失败结果", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "success",
+    orderGuid: "order-print-state",
+    total: aud(1_000),
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "cash-print-state",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: true,
+      },
+    ],
+    allowedActions: actions(),
+  });
+  const pending = createDeferred<"completed">();
+  const onPrintReceipt = jest.fn<
+    (orderGuid: string) => Promise<PaymentReceiptPrintOutcome>
+  >(() => pending.promise);
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onPrintReceipt={onPrintReceipt}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const print = screen.getByTestId("payment-success-print");
+  await fireEvent.press(print);
+  await fireEvent.press(print);
+  expect(onPrintReceipt).toHaveBeenCalledTimes(1);
+  expect(onPrintReceipt).toHaveBeenCalledWith("order-print-state");
+  expect(print.props.accessibilityState).toEqual({ disabled: true });
+  expect(screen.getByText("正在打印小票…")).toBeTruthy();
+
+  pending.resolve("completed");
+  await waitFor(() =>
+    expect(screen.getByText("小票打印完成。")).toBeTruthy(),
+  );
+  expect(
+    screen.getByTestId("payment-success-print").props.accessibilityState,
+  ).toEqual({ disabled: false });
+
+  onPrintReceipt.mockResolvedValueOnce("unknown");
+  await fireEvent.press(screen.getByTestId("payment-success-print"));
+  await waitFor(() =>
+    expect(
+      screen.getByText("打印结果未知，请先检查打印机再决定是否重试。"),
+    ).toBeTruthy(),
+  );
+
+  onPrintReceipt.mockResolvedValueOnce("failed");
+  await fireEvent.press(screen.getByTestId("payment-success-print"));
+  await waitFor(() =>
+    expect(
+      screen.getByText("小票打印失败，请检查打印机后重试。"),
+    ).toBeTruthy(),
+  );
+  expect(onPrintReceipt).toHaveBeenCalledTimes(3);
+  await screen.unmount();
+});
+
+test("pending 打印在成功页卸载后不得再写 React 状态", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "success",
+    orderGuid: "order-print-unmount",
+    total: aud(1_000),
+    remaining: aud(0),
+    allowedActions: actions(),
+  });
+  const pending = createDeferred<PaymentReceiptPrintOutcome>();
+  const onPrintReceipt = jest.fn(() => pending.promise);
+  const printStateWrites = jest.fn<(value: unknown) => void>();
+  mockPrintStateWrite = printStateWrites;
+
+  try {
+    const screen = await render(
+      <PaymentScreen
+        locale="zh"
+        onPrintReceipt={onPrintReceipt}
+        presenter={presenter}
+        showStatusStrip={false}
+      />,
+    );
+    await fireEvent.press(screen.getByTestId("payment-success-print"));
+    expect(printStateWrites).toHaveBeenCalledWith("printing");
+    printStateWrites.mockClear();
+
+    await screen.unmount();
+    await act(async () => {
+      pending.resolve("completed");
+      await pending.promise;
+    });
+    expect(printStateWrites).not.toHaveBeenCalled();
+  } finally {
+    mockPrintStateWrite = null;
+  }
+});
+
+test("pending 打印切换订单时清空状态并忽略旧订单迟到结果", async () => {
+  const first = createUiPresenter({
+    phase: "success",
+    orderGuid: "order-print-first",
+    total: aud(1_000),
+    remaining: aud(0),
+    allowedActions: actions(),
+  });
+  const second = createUiPresenter({
+    phase: "success",
+    orderGuid: "order-print-second",
+    total: aud(2_000),
+    remaining: aud(0),
+    allowedActions: actions(),
+  });
+  const pending = createDeferred<PaymentReceiptPrintOutcome>();
+  const onPrintReceipt = jest.fn(() => pending.promise);
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onPrintReceipt={onPrintReceipt}
+      presenter={first.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("payment-success-print"));
+  expect(screen.getByText("正在打印小票…")).toBeTruthy();
+  await screen.rerender(
+    <PaymentScreen
+      locale="zh"
+      onPrintReceipt={onPrintReceipt}
+      presenter={second.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  await waitFor(() => {
+    expect(screen.getAllByText("order-print-second")).toHaveLength(2);
+    expect(screen.queryByTestId("payment-success-print-status")).toBeNull();
+  });
+
+  await act(async () => {
+    pending.resolve("completed");
+    await pending.promise;
+  });
+  expect(screen.queryByText("小票打印完成。")).toBeNull();
+  expect(
+    screen.getByTestId("payment-success-print").props.accessibilityState,
+  ).toEqual({ disabled: false });
+  await screen.unmount();
+});
+
+test("Linkly 支付成功仍保留回执确认与终端确认入口", async () => {
+  const { presenter, spies } = createUiPresenter({
+    phase: "success",
+    selectedMethod: "linkly-cloud",
+    orderGuid: "order-linkly-success",
+    total: aud(1_000),
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "card-linkly-success",
+        method: "card",
+        amount: aud(1_000),
+        reversible: true,
+      },
+    ],
+    attemptId: "attempt-linkly-success",
+    provider: "linkly-cloud",
+    runtimeStatus: "completed",
+    allowedActions: actions(),
+    linkly: {
+      status: "completed",
+      errorCode: null,
+      allowedKeys: [],
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByTestId("payment-linkly-controls")).toBeTruthy();
+  expect(
+    screen.getByTestId("payment-success-print").props.accessibilityState,
+  ).toEqual({ disabled: true });
+  await fireEvent.press(
+    screen.getByTestId("payment-linkly-receipt-printed"),
+  );
+  expect(spies.markLinklyReceiptPrinted).toHaveBeenCalledTimes(1);
+  await fireEvent.press(screen.getByTestId("payment-linkly-acknowledge"));
+  expect(spies.acknowledgeLinkly).toHaveBeenCalledTimes(1);
+  await screen.unmount();
 });
 
 test("Unknown 隐藏新付款和 Linkly 按键，只允许恢复同一 attempt", async () => {
@@ -268,6 +619,157 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
   ).toEqual({ disabled: true });
 });
 
+test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async () => {
+  jest.useFakeTimers();
+  const { presenter, spies } = createUiPresenter({
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: "order-square-auto-recovery",
+    attemptId: "attempt-square-auto-recovery",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1_999);
+    });
+    expect(spies.recover).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(spies.recover).toHaveBeenCalledTimes(1);
+
+    await screen.unmount();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(spies.recover).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
+  jest.useFakeTimers();
+  const square = createUiPresenter({
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: "order-square-bounded-recovery",
+    attemptId: "attempt-square-bounded-recovery",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  square.spies.recover.mockImplementation(async () => {
+    square.publish({
+      ...square.presenter.getState(),
+      phase: "submitting",
+      busy: true,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+    square.publish({
+      ...square.presenter.getState(),
+      phase: "pending",
+      busy: false,
+    });
+    return false;
+  });
+  const squareScreen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={square.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(100_000);
+    });
+    const callsAtDeadline = square.spies.recover.mock.calls.length;
+    expect(callsAtDeadline).toBeGreaterThan(1);
+    expect(callsAtDeadline).toBeLessThan(45);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(100_000);
+    });
+    expect(square.spies.recover).toHaveBeenCalledTimes(callsAtDeadline);
+    await squareScreen.unmount();
+
+    const linkly = createUiPresenter({
+      phase: "pending",
+      provider: "linkly-cloud",
+      runtimeStatus: "pending",
+      orderGuid: "order-linkly-no-auto-recovery",
+      attemptId: "attempt-linkly-no-auto-recovery",
+      allowedActions: actions({ recover: true, cancel: true }),
+    });
+    const linklyScreen = await render(
+      <PaymentScreen
+        locale="zh"
+        presenter={linkly.presenter}
+        showStatusStrip={false}
+      />,
+    );
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10_000);
+    });
+    expect(linkly.spies.recover).not.toHaveBeenCalled();
+    await linklyScreen.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("同一 Square attempt 重挂载不会重置 90 秒恢复窗口", async () => {
+  jest.useFakeTimers();
+  const pendingState: Partial<PaymentPresenterState> = {
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: "order-square-remount-deadline",
+    attemptId: "attempt-square-remount-deadline",
+    allowedActions: actions({ recover: true, cancel: true }),
+  };
+  const first = createUiPresenter(pendingState);
+  const firstScreen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={first.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(89_000);
+    });
+    expect(first.spies.recover).toHaveBeenCalledTimes(1);
+    await firstScreen.unmount();
+
+    const remounted = createUiPresenter(pendingState);
+    const remountedScreen = await render(
+      <PaymentScreen
+        locale="zh"
+        presenter={remounted.presenter}
+        showStatusStrip={false}
+      />,
+    );
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2_000);
+    });
+    expect(remounted.spies.recover).not.toHaveBeenCalled();
+    await remountedScreen.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额", async () => {
   setPaymentWindowSize(1366, 1024);
   const { presenter, spies } = createUiPresenter({
@@ -292,6 +794,14 @@ test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额"
   expect(
     StyleSheet.flatten(screen.getByTestId("payment-summary").props.style).flex,
   ).toBe(28);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style)
+      .flexDirection,
+  ).toBe("row");
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-entry-pane").props.style)
+      .padding,
+  ).toBe(20);
   expect(screen.getByTestId("payment-keypad")).toBeTruthy();
   for (const key of [
     "1",
@@ -343,6 +853,159 @@ test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额"
   expect(spies.setAmountText).toHaveBeenCalledWith("1");
   await fireEvent.press(screen.getByTestId("payment-cash-quick-50"));
   expect(spies.setAmountText).toHaveBeenCalledWith("50.00");
+  await screen.unmount();
+  setPaymentWindowSize(750, 1334);
+});
+
+test("11 英寸横屏现金支付使用紧凑高度，数字键盘和支付动作保持首屏可达", async () => {
+  setPaymentWindowSize(1194, 834);
+  const { presenter } = createUiPresenter({
+    selectedMethod: "cash",
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-entry-pane").props.style)
+      .padding,
+  ).toBeLessThanOrEqual(14);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-key-1").props.style)
+      .minHeight,
+  ).toBe(PAYMENT_MIN_TOUCH_TARGET);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-cash-quick").props.style)
+      .flexWrap,
+  ).toBe("nowrap");
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("payment-cash-quick-5").props.style,
+    ).minWidth,
+  ).toBe(PAYMENT_MIN_TOUCH_TARGET);
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("payment-cash-quick-5").props.style,
+    ).flexBasis,
+  ).toBe(0);
+  expect(screen.getByTestId("payment-submit")).toBeTruthy();
+
+  await screen.unmount();
+  setPaymentWindowSize(750, 1334);
+});
+
+test("窄屏支付页改为单列且分期开关保持可达", async () => {
+  setPaymentWindowSize(750, 1334);
+  const { presenter } = createUiPresenter();
+  const screen = await render(
+    <PaymentScreen
+      installmentModeControl={{
+        enabled: false,
+        locked: false,
+        issue: null,
+        onToggle: jest.fn(),
+      }}
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style)
+      .flexDirection,
+  ).toBe("column");
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("payment-context-pane").props.style,
+    ).maxHeight,
+  ).toBe(420);
+  expect(screen.getByTestId("payment-installment-toggle")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("无耐久支付事实的初始化失败仍允许返回收银", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "recovery-required",
+    runtimeErrorCode: "ONLINE_REQUIRED",
+    allowedActions: actions(),
+  });
+  const onBack = jest.fn();
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const back = screen.getByTestId("payment-back");
+  expect(back.props.accessibilityState).toEqual({ disabled: false });
+  await fireEvent.press(back);
+  expect(onBack).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("分期开关保持 44pt、switch 语义和稳定失败提示", async () => {
+  const { presenter } = createUiPresenter();
+  const onToggle = jest.fn();
+  const screen = await render(
+    <PaymentScreen
+      installmentModeControl={{
+        enabled: false,
+        locked: false,
+        issue: "unavailable",
+        onToggle,
+      }}
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const toggle = screen.getByTestId("payment-installment-toggle");
+  expect(toggle.props.accessibilityRole).toBe("switch");
+  expect(toggle.props.accessibilityState).toEqual({
+    checked: false,
+    disabled: false,
+  });
+  expect(
+    StyleSheet.flatten(toggle.props.style).minHeight,
+  ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  expect(
+    screen.getByText(
+      "Installment mode is unavailable. Return to sale and try again.",
+    ),
+  ).toBeTruthy();
+
+  await fireEvent.press(toggle);
+  expect(onToggle).toHaveBeenCalledWith(true);
+
+  await screen.rerender(
+    <PaymentScreen
+      installmentModeControl={{
+        enabled: true,
+        locked: true,
+        issue: null,
+        onToggle,
+      }}
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+  const lockedToggle = screen.getByTestId("payment-installment-toggle");
+  expect(lockedToggle.props.accessibilityState).toEqual({
+    checked: true,
+    disabled: true,
+  });
+  await fireEvent.press(lockedToggle);
+  expect(onToggle).toHaveBeenCalledTimes(1);
   await screen.unmount();
 });
 
@@ -616,6 +1279,19 @@ test("真实分期 presenter 点击客户编辑仍保留实例上下文", async 
   await waitFor(() =>
     expect(screen.getByTestId("payment-customer-edit")).toBeTruthy(),
   );
+  await fireEvent.changeText(
+    screen.getByTestId("payment-amount"),
+    "50.00",
+  );
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+  await fireEvent.press(screen.getByTestId("payment-confirm"));
+  expect(
+    screen.getByText("请填写分期顾客姓名和联系电话。"),
+  ).toBeTruthy();
+  expect(
+    screen.queryByTestId("payment-full-installment-confirmation"),
+  ).toBeNull();
+
   await fireEvent.press(screen.getByTestId("payment-customer-edit"));
   expect(screen.getByTestId("payment-customer-editor")).toBeTruthy();
   await fireEvent.changeText(
@@ -765,7 +1441,7 @@ function createUiPresenter(
     destroy: () => listeners.clear(),
     ...spies,
   };
-  return { presenter, spies };
+  return { presenter, publish, spies };
 }
 
 class ScreenPaymentRuntime implements PaymentCheckoutRuntimePort {
@@ -954,4 +1630,14 @@ function setPaymentWindowSize(width: number, height: number): void {
     fontScale: 1,
   };
   Dimensions.set({ window: metrics, screen: metrics });
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }

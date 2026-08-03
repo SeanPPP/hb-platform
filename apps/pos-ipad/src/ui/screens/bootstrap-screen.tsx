@@ -1,7 +1,12 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import {
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -116,11 +121,11 @@ export function BootstrapScreen() {
                 onPress={() => {
                   void retry().catch(() => undefined);
                 }}
+                sound="tap"
                 style={({ pressed }) => [
                   styles.retryButton,
                   pressed && styles.retryButtonPressed,
                 ]}
-                testID="bootstrap-retry"
               >
                 <Text style={styles.retryLabel}>{t("bootstrap.retry")}</Text>
               </PosPressable>

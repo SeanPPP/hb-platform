@@ -21,8 +21,11 @@ import {
   type ReturnPresenterLine,
 } from "./return-presenter";
 
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const RETURN_MIN_TOUCH_TARGET = 44;
@@ -153,107 +156,112 @@ export function ReturnScreen({
 
       <View style={styles.workspace}>
         <View style={styles.mainColumn}>
-          {state.mode === "receipt" ? (
-            <View style={styles.lookupCard}>
-              <LabeledInput
-                editable={!state.busy}
-                label={t("search.orderLabel")}
-                onChangeText={setOrderQuery}
-                onSubmitEditing={() => {
-                  void presenter.loadReceipt(orderQuery).then((ok) => {
-                    if (ok) setOrderQuery("");
-                  });
-                }}
-                placeholder={t("search.orderPlaceholder")}
-                testID="return-order-query"
-                value={orderQuery}
-              />
-              <ActionButton
-                disabled={state.busy}
-                label={t("action.search")}
-                onPress={() => {
-                  void presenter.loadReceipt(orderQuery).then((ok) => {
-                    if (ok) setOrderQuery("");
-                  });
-                }}
-                testID="return-order-search"
-              />
-            </View>
-          ) : (
-            <View style={styles.noReceiptPanel}>
+          <PosKeyboardAwareScrollView
+            style={styles.editorScroll}
+            testID="return-editor-keyboard-scroll"
+          >
+            {state.mode === "receipt" ? (
               <View style={styles.lookupCard}>
                 <LabeledInput
                   editable={!state.busy}
-                  label={t("search.productLabel")}
-                  onChangeText={setProductQuery}
+                  label={t("search.orderLabel")}
+                  onChangeText={setOrderQuery}
                   onSubmitEditing={() => {
-                    void presenter
-                      .addNoReceiptProduct(productQuery)
-                      .then((ok) => {
-                        if (ok) setProductQuery("");
-                      });
+                    void presenter.loadReceipt(orderQuery).then((ok) => {
+                      if (ok) setOrderQuery("");
+                    });
                   }}
-                  placeholder={t("search.productPlaceholder")}
-                  testID="return-product-query"
-                  value={productQuery}
+                  placeholder={t("search.orderPlaceholder")}
+                  testID="return-order-query"
+                  value={orderQuery}
                 />
                 <ActionButton
                   disabled={state.busy}
-                  label={t("action.addProduct")}
+                  label={t("action.search")}
                   onPress={() => {
-                    void presenter
-                      .addNoReceiptProduct(productQuery)
-                      .then((ok) => {
-                        if (ok) setProductQuery("");
-                      });
+                    void presenter.loadReceipt(orderQuery).then((ok) => {
+                      if (ok) setOrderQuery("");
+                    });
                   }}
-                  testID="return-product-add"
-                  tone="secondary"
+                  testID="return-order-search"
                 />
               </View>
-              <View style={styles.openItemRow}>
-                <LabeledInput
-                  editable={!state.busy}
-                  label={t("openItem.nameLabel")}
-                  onChangeText={setOpenItemName}
-                  placeholder={t("openItem.namePlaceholder")}
-                  testID="return-open-item-name"
-                  value={openItemName}
-                />
-                <View style={styles.amountInput}>
+            ) : (
+              <View style={styles.noReceiptPanel}>
+                <View style={styles.lookupCard}>
                   <LabeledInput
                     editable={!state.busy}
-                    keyboardType="decimal-pad"
-                    label={t("openItem.amountLabel")}
-                    onChangeText={setOpenItemAmount}
-                    placeholder={t("openItem.amountPlaceholder")}
-                    testID="return-open-item-amount"
-                    value={openItemAmount}
+                    label={t("search.productLabel")}
+                    onChangeText={setProductQuery}
+                    onSubmitEditing={() => {
+                      void presenter
+                        .addNoReceiptProduct(productQuery)
+                        .then((ok) => {
+                          if (ok) setProductQuery("");
+                        });
+                    }}
+                    placeholder={t("search.productPlaceholder")}
+                    testID="return-product-query"
+                    value={productQuery}
+                  />
+                  <ActionButton
+                    disabled={state.busy}
+                    label={t("action.addProduct")}
+                    onPress={() => {
+                      void presenter
+                        .addNoReceiptProduct(productQuery)
+                        .then((ok) => {
+                          if (ok) setProductQuery("");
+                        });
+                    }}
+                    testID="return-product-add"
+                    tone="secondary"
                   />
                 </View>
-                <ActionButton
-                  disabled={state.busy}
-                  label={t("action.addOpenItem")}
-                  onPress={() => {
-                    const cents = parsePositiveAudCents(openItemAmount);
-                    void presenter
-                      .addNoReceiptOpenItem(
-                        openItemName,
-                        cents ?? Number.NaN,
-                      )
-                      .then((ok) => {
-                        if (ok) {
-                          setOpenItemName("");
-                          setOpenItemAmount("");
-                        }
-                      });
-                  }}
-                  testID="return-open-item-add"
-                  tone="secondary"
-                />
+                <View style={styles.openItemRow}>
+                  <LabeledInput
+                    editable={!state.busy}
+                    label={t("openItem.nameLabel")}
+                    onChangeText={setOpenItemName}
+                    placeholder={t("openItem.namePlaceholder")}
+                    testID="return-open-item-name"
+                    value={openItemName}
+                  />
+                  <View style={styles.amountInput}>
+                    <LabeledInput
+                      editable={!state.busy}
+                      keyboardType="decimal-pad"
+                      label={t("openItem.amountLabel")}
+                      onChangeText={setOpenItemAmount}
+                      placeholder={t("openItem.amountPlaceholder")}
+                      testID="return-open-item-amount"
+                      value={openItemAmount}
+                    />
+                  </View>
+                  <ActionButton
+                    disabled={state.busy}
+                    label={t("action.addOpenItem")}
+                    onPress={() => {
+                      const cents = parsePositiveAudCents(openItemAmount);
+                      void presenter
+                        .addNoReceiptOpenItem(
+                          openItemName,
+                          cents ?? Number.NaN,
+                        )
+                        .then((ok) => {
+                          if (ok) {
+                            setOpenItemName("");
+                            setOpenItemAmount("");
+                          }
+                        });
+                    }}
+                    testID="return-open-item-add"
+                    tone="secondary"
+                  />
+                </View>
               </View>
-            </View>
-          )}
+            )}
+          </PosKeyboardAwareScrollView>
 
           {state.orderSummary ? (
             <View style={styles.orderBanner} testID="return-order-summary">
@@ -511,7 +519,7 @@ function LabeledInput({
   return (
     <View style={styles.inputGroup}>
       <Text style={styles.inputLabel}>{label}</Text>
-      <PosTextInput
+      <PosKeyboardAwareTextInput
         autoCapitalize="none"
         autoCorrect={false}
         editable={editable}
@@ -548,7 +556,6 @@ function ModeTab({
       accessibilityState={{ disabled, selected: active }}
       disabled={disabled}
       onPress={onPress}
-      sound="navigate"
       style={[styles.modeTab, active && styles.modeTabActive]}
       testID={testID}
     >
@@ -626,7 +633,7 @@ function ActionButton({
   disabled?: boolean;
   label: string;
   onPress(): void;
-  sound?: "danger" | "navigate" | "tap";
+  sound?: "tap" | "navigate" | "danger";
   testID: string;
   tone?: "primary" | "secondary" | "quiet";
 }>) {
@@ -753,6 +760,9 @@ const styles = StyleSheet.create({
   mainColumn: {
     flex: 1.7,
     minWidth: 0,
+  },
+  editorScroll: {
+    flexGrow: 0,
   },
   summaryColumn: {
     flex: 1,

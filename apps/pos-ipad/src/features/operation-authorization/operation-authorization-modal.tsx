@@ -26,8 +26,11 @@ import type {
   OperationAuthorizationService,
 } from "./operation-authorization-service";
 
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const OPERATION_AUTHORIZATION_MIN_TOUCH_TARGET = 44;
@@ -282,7 +285,12 @@ export function OperationAuthorizationModal({
         style={styles.overlay}
         testID="operation-authorization-modal"
       >
-        <View style={styles.panel}>
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.panelContent}
+          showsVerticalScrollIndicator={false}
+          style={styles.panel}
+          testID="operation-authorization-keyboard-scroll"
+        >
           <View style={styles.accent} />
           <Text style={styles.eyebrow}>{t("eyebrow")}</Text>
           <Text style={styles.title}>{t("title")}</Text>
@@ -293,7 +301,7 @@ export function OperationAuthorizationModal({
 
           <Text style={styles.inputLabel}>{t("inputLabel")}</Text>
           <View style={styles.inputRow}>
-            <PosTextInput
+            <PosKeyboardAwareTextInput
               ref={inputRef}
               accessibilityLabel={t("inputLabel")}
               autoCapitalize="none"
@@ -380,7 +388,7 @@ export function OperationAuthorizationModal({
               </Text>
             </PosPressable>
           </View>
-        </View>
+        </PosKeyboardAwareScrollView>
       </View>
     </Modal>
   );
@@ -425,8 +433,10 @@ const styles = StyleSheet.create({
     borderColor: posColors.border,
     borderWidth: 1,
     maxWidth: 640,
-    padding: 36,
     width: "100%",
+  },
+  panelContent: {
+    padding: 36,
   },
   accent: {
     backgroundColor: posColors.orange,

@@ -1124,6 +1124,49 @@ test("真实 SQLite：手动补传只推进 eligible pending order-sync，blocke
   );
 });
 
+test("真实 SQLite：501 笔手动补传在同一事务内全部恢复", async () => {
+  const { connection, database } = await openDatabase();
+  const orderGuids = Array.from(
+    { length: 501 },
+    (_, index) => `bulk-order-${index + 1}`,
+  );
+  await connection.withExclusiveTransaction(async (transaction) => {
+    for (const [index, orderGuid] of orderGuids.entries()) {
+      await seedOrder(transaction, {
+        orderGuid,
+        localSequence: 10_000 + index,
+        state: "PendingSync",
+        soldAtIso: "2026-07-28T05:00:00.000Z",
+        actualAmountCents: 1_000,
+      });
+      await seedOutbox(transaction, {
+        messageId: `bulk-outbox-${index + 1}`,
+        orderGuid,
+        state: "pending",
+        attemptCount: 1,
+        lastErrorCode: "NETWORK_TIMEOUT",
+      });
+    }
+  });
+  const port = database.localSyncHistory(supportContext);
+
+  const restored =
+    await port.restoreExistingOrderOutboxToPending(orderGuids);
+
+  assert.equal(restored.restoredOrderGuids.length, 501);
+  assert.deepEqual(restored.skippedOrderGuids, []);
+  const row = await connection.getFirst<{ restored_count: number }>(
+    `SELECT COUNT(*) AS restored_count
+     FROM outbox_messages
+     WHERE aggregate_id LIKE 'bulk-order-%'
+       AND state = 'pending'
+       AND next_attempt_at_iso = ?
+       AND last_error_code IS NULL`,
+    [nowIso],
+  );
+  assert.equal(row?.restored_count, 501);
+});
+
 test("真实 SQLite：support context 只由构造参数注入且 PosDatabase 不暴露裸连接", async () => {
   const { database } = await openDatabase();
   const mixed: MixedPaymentOrderTruthPort =

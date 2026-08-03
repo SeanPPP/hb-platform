@@ -92,34 +92,6 @@ test("两个 Presenter 委托同一 session；销毁一个只取消自身订阅"
   second.destroy();
 });
 
-test("active session 原样返回领域加购 disposition，并继续发布单次快照", () => {
-  const activeCart = session();
-  let notifications = 0;
-  activeCart.subscribe(() => {
-    notifications += 1;
-  });
-  const input = {
-    lineId: "line-1",
-    productCode: "P1",
-    itemNumber: null,
-    lookupCode: "930000000001",
-    displayName: "Tea",
-    unitPrice: { currency: "AUD" as const, cents: 500 },
-    syncProvenance: { referenceCode: null, priceSource: 0 as const },
-  };
-
-  assert.deepEqual(activeCart.addItemWithDisposition(input), {
-    lineId: "line-1",
-    kind: "added",
-  });
-  assert.deepEqual(
-    activeCart.addItemWithDisposition({ ...input, lineId: "ignored" }),
-    { lineId: "line-1", kind: "incremented" },
-  );
-  assert.equal(activeCart.addItem({ ...input, lineId: "legacy", lookupCode: "other" }), "legacy");
-  assert.equal(notifications, 3);
-});
-
 test("整体清车后旧 adapter 只会访问新车，不能继续修改旧 PricingCart", async () => {
   const original = cartWithLine();
   const activeCart = session(original);
@@ -333,6 +305,58 @@ test("监听器异常被隔离，且 committed OrderGuid tombstone 令重复 cle
   assert.equal(duplicate, beforeDuplicate);
   assert.equal(activeCart.getSnapshot().lines[0]?.productCode, "P2");
   assert.equal(healthyNotifications, 2);
+});
+
+test("连续扫码返回实际目标行，兼容行合并只发布一次 session 变更", () => {
+  const source = new PricingCart();
+  const tea = {
+    productCode: "P-TEA",
+    itemNumber: "100",
+    lookupCode: "TEA",
+    displayName: "Tea",
+    unitPrice: { currency: "AUD" as const, cents: 500 },
+    syncProvenance: {
+      referenceCode: "REF-TEA",
+      priceSource: 1 as const,
+    },
+  };
+  source.addScannedItem({ ...tea, lineId: "tea-1" });
+  source.addScannedItem({
+    ...tea,
+    lineId: "coffee",
+    productCode: "P-COFFEE",
+    lookupCode: "COFFEE",
+  });
+  source.addScannedItem({ ...tea, lineId: "tea-2" });
+  const activeCart = session(source);
+  let notifications = 0;
+  activeCart.subscribe(() => {
+    notifications += 1;
+  });
+
+  assert.equal(activeCart.hasMergeCompatibleLines(), true);
+  assert.deepEqual(activeCart.mergeCompatibleLines(), {
+    groups: [
+      {
+        keptLineId: "tea-1",
+        removedLineIds: ["tea-2"],
+      },
+    ],
+    removedLineCount: 1,
+  });
+  assert.equal(notifications, 1);
+  assert.equal(activeCart.read().sessionRevision, 1);
+
+  assert.equal(
+    activeCart.addScannedItem({
+      ...tea,
+      lineId: "unused-id",
+      productCode: "P-COFFEE",
+      lookupCode: "COFFEE",
+    }),
+    "coffee",
+  );
+  assert.equal(notifications, 2);
 });
 
 test("启动 RecallActive 只安装隐藏恢复围栏，不向快照泄漏 binding 或冻结购物车", () => {

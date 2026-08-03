@@ -18,6 +18,56 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+test("详情与创建表单滚动区采用系统键盘避让合同", async () => {
+  const detailsScreen = await render(
+    <InstallmentScreen
+      presenter={
+        createPresenter({
+          details: details("Active"),
+          selectedGuid: GUID,
+        }).presenter
+      }
+    />,
+  );
+
+  const historySearchScroll = detailsScreen.getByTestId(
+    "installment-history-search-keyboard-scroll",
+  );
+  expect(historySearchScroll.props.automaticallyAdjustKeyboardInsets).toBe(
+    true,
+  );
+  expect(historySearchScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(historySearchScroll.props.keyboardShouldPersistTaps).toBe("handled");
+
+  const detailsScroll = detailsScreen.getByTestId("installment-details");
+  expect(detailsScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(detailsScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(detailsScroll.props.keyboardShouldPersistTaps).toBe("handled");
+  await detailsScreen.unmount();
+
+  const createScreen = await render(
+    <InstallmentScreen
+      presenter={
+        createPresenter({
+          pane: "create",
+          createDraft: {
+            revision: 1,
+            totalCents: 10_000,
+            lines: [],
+          },
+        }).presenter
+      }
+    />,
+  );
+  const createFormScroll = createScreen.getByTestId(
+    "installment-create-form-scroll",
+  );
+  expect(createFormScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(createFormScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(createFormScroll.props.keyboardShouldPersistTaps).toBe("handled");
+  await createScreen.unmount();
+});
+
 test("英文界面只显示英文分期文案", async () => {
   mockLanguage = "en";
   const { presenter } = createPresenter({ orders: [summary()] });

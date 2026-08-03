@@ -13,6 +13,9 @@ import {
 
 const CLEAR: SettingsPendingDataSnapshot = {
   hasActiveCart: false,
+  hasFulfilmentInFlight: false,
+  hasSyncOrAuditInFlight: false,
+  paymentConfigurationSensitiveOrderCount: 0,
   pendingDurableWriteCount: 0,
   pendingReturnCount: 0,
   pendingSaleCount: 0,
@@ -428,8 +431,9 @@ test("开发豁免只允许 API 切换跨过待处理门禁，其他危险动作
   assert.equal(events.includes("catalog:reset"), false);
 });
 
-test("除 App 更新与目录重置外，会重绑运行时的危险动作仍持有目录独占门闩", async () => {
+test("普通危险动作持有目录独占门，支付配置单独进入全局 transition", async () => {
   let exclusiveCalls = 0;
+  let paymentTransitionCalls = 0;
   const subject = new ProductionSettingsControl(
     deps({
       pendingData: { read: async () => CLEAR },
@@ -455,6 +459,12 @@ test("除 App 更新与目录重置外，会重绑运行时的危险动作仍持
       },
       paymentConfiguration: {
         save: async () => undefined,
+      },
+      paymentConfigurationTransition: {
+        run: async (operation) => {
+          paymentTransitionCalls += 1;
+          return operation();
+        },
       },
       device: {
         reregister: async () => undefined,
@@ -494,7 +504,8 @@ test("除 App 更新与目录重置外，会重绑运行时的危险动作仍持
   await subject.executeDangerousAction({ kind: "restart-app" }, signal);
   await subject.executeDangerousAction({ kind: "reset-catalog" }, signal);
 
-  assert.equal(exclusiveCalls, 3);
+  assert.equal(exclusiveCalls, 2);
+  assert.equal(paymentTransitionCalls, 1);
 });
 
 test("App 重启不预拿普通目录门，避免 transition 等待自身 operation 自锁", async () => {
@@ -537,6 +548,121 @@ test("App 重启不预拿普通目录门，避免 transition 等待自身 operat
   assert.equal(restartCalls, 1);
 });
 
+test("支付配置由 transition 直接进入 guarded 路径，不嵌套普通目录门", async () => {
+  const events: string[] = [];
+  const dependencies = deps({
+    pendingData: {
+      read: async () => {
+        events.push("pending");
+        return CLEAR;
+      },
+    },
+    catalog: {
+      getRefreshState: () => ({ kind: "idle" }),
+      subscribeRefresh: () => () => undefined,
+      runExclusive: async () => {
+        throw new Error("payment transition must not nest catalog lease");
+      },
+      download: async () => {
+        throw new Error("not implemented");
+      },
+      reset: async () => {
+        throw new Error("not implemented");
+      },
+    },
+    paymentConfiguration: {
+      save: async () => {
+        events.push("save");
+      },
+    },
+    runtimeReload: {
+      reload: async () => {
+        events.push("reload");
+      },
+    },
+  }) as ProductionSettingsControlDependencies & {
+    paymentConfigurationTransition: Readonly<{
+      run<T>(operation: () => Promise<T>): Promise<T>;
+    }>;
+  };
+  dependencies.paymentConfigurationTransition = {
+    run: async (operation) => {
+      events.push("transition:start");
+      const result = await operation();
+      events.push("transition:end");
+      return result;
+    },
+  };
+  const subject = new ProductionSettingsControl(dependencies);
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      paymentSettingsAction(),
+      new AbortController().signal,
+    ),
+    { status: "completed", kind: "change-payment-settings" },
+  );
+  assert.deepEqual(events, [
+    "transition:start",
+    "pending",
+    "save",
+    "reload",
+    "transition:end",
+  ]);
+});
+
+test("transition 等待后 cashier 已替换时，支付配置在保存前 fail closed", async () => {
+  const events: string[] = [];
+  let sessionActive = true;
+  const dependencies = deps({
+    pendingData: {
+      read: async () => {
+        events.push("pending");
+        sessionActive = false;
+        return CLEAR;
+      },
+    },
+    paymentConfiguration: {
+      save: async () => {
+        events.push("save");
+      },
+    },
+    runtimeReload: {
+      reload: async () => {
+        events.push("reload");
+      },
+    },
+  }) as ProductionSettingsControlDependencies & {
+    paymentConfigurationTransition: Readonly<{
+      run<T>(operation: () => Promise<T>): Promise<T>;
+    }>;
+  };
+  dependencies.paymentConfigurationTransition = {
+    run: (operation) => operation(),
+  };
+  const subject = new ProductionSettingsControl(dependencies);
+  const executeWithLeaseCheck = subject.executeDangerousAction.bind(
+    subject,
+  ) as (
+    action: SettingsDangerousConfirmation,
+    signal: AbortSignal,
+    assertActive: () => void,
+  ) => Promise<unknown>;
+
+  await assert.rejects(
+    () =>
+      executeWithLeaseCheck(
+        paymentSettingsAction(),
+        new AbortController().signal,
+        () => {
+          if (!sessionActive) throw new Error("SESSION_REPLACED");
+        },
+      ),
+    /SESSION_REPLACED/u,
+  );
+  assert.deepEqual(events, ["pending"]);
+});
+
 test("支付配置只把公开白名单传给保存端，Abort 后不执行", async () => {
   const saved: unknown[] = [];
   const subject = new ProductionSettingsControl(
@@ -575,6 +701,201 @@ test("支付配置只把公开白名单传给保存端，Abort 后不执行", as
     new AbortController().signal,
   );
   assert.deepEqual(saved, [action.input]);
+});
+
+test("支付配置变更允许与通道无关的销售、退货或耐久写入待处理", async (t) => {
+  const cases = [
+    {
+      name: "待同步销售",
+      pending: { ...CLEAR, pendingSaleCount: 1 },
+    },
+    {
+      name: "待同步退货",
+      pending: { ...CLEAR, pendingReturnCount: 1 },
+    },
+    {
+      name: "待完成耐久写入",
+      pending: { ...CLEAR, pendingDurableWriteCount: 1 },
+    },
+  ] as const;
+
+  for (const { name, pending } of cases) {
+    await t.test(name, async () => {
+      const events: string[] = [];
+      const subject = new ProductionSettingsControl(
+        deps({
+          pendingData: { read: async () => pending },
+          paymentConfiguration: {
+            save: async () => {
+              events.push("save");
+            },
+          },
+          runtimeReload: {
+            reload: async () => {
+              events.push("reload");
+            },
+          },
+        }),
+      );
+
+      assert.deepEqual(
+        await subject.executeDangerousAction(
+          {
+            kind: "change-payment-settings",
+            input: {
+              provider: "square",
+              square: {
+                environment: "Sandbox",
+                deviceId: "SQ-1",
+                locationId: "LOC-1",
+              },
+              linkly: null,
+            },
+          },
+          new AbortController().signal,
+        ),
+        { status: "completed", kind: "change-payment-settings" },
+      );
+      assert.deepEqual(events, ["save", "reload"]);
+    });
+  }
+});
+
+test("支付配置变更仍被内存交易、通道敏感订单或在途外部动作阻断", async (t) => {
+  const cases = [
+    {
+      name: "活动购物车",
+      pending: { ...CLEAR, hasActiveCart: true },
+    },
+    {
+      name: "未决支付",
+      pending: { ...CLEAR, unresolvedPaymentCount: 1 },
+    },
+    {
+      name: "依赖当前支付环境的待同步订单",
+      pending: {
+        ...CLEAR,
+        paymentConfigurationSensitiveOrderCount: 1,
+      },
+    },
+    {
+      name: "同步或审计正在执行",
+      pending: { ...CLEAR, hasSyncOrAuditInFlight: true },
+    },
+    {
+      name: "履约硬件正在执行",
+      pending: { ...CLEAR, hasFulfilmentInFlight: true },
+    },
+  ] as const;
+
+  for (const { name, pending } of cases) {
+    await t.test(name, async () => {
+      const events: string[] = [];
+      const subject = new ProductionSettingsControl(
+        deps({
+          pendingData: { read: async () => pending },
+          paymentConfiguration: {
+            save: async () => {
+              events.push("save");
+            },
+          },
+          runtimeReload: {
+            reload: async () => {
+              events.push("reload");
+            },
+          },
+        }),
+      );
+
+      assert.deepEqual(
+        await subject.executeDangerousAction(
+          {
+            kind: "change-payment-settings",
+            input: {
+              provider: "square",
+              square: {
+                environment: "Sandbox",
+                deviceId: "SQ-1",
+                locationId: "LOC-1",
+              },
+              linkly: null,
+            },
+          },
+          new AbortController().signal,
+        ),
+        { status: "blocked", reason: "pending-local-data" },
+      );
+      assert.deepEqual(events, []);
+    });
+  }
+});
+
+test("支付配置之外的危险动作仍由完整待处理数据门禁阻断", async () => {
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => ({ ...CLEAR, pendingSaleCount: 1 }),
+      },
+      apiConfiguration: {
+        probe: async () => {
+          events.push("api:probe");
+          return true;
+        },
+        save: async () => {
+          events.push("api:save");
+        },
+      },
+      catalog: {
+        getRefreshState: () => ({ kind: "idle" }),
+        subscribeRefresh: () => () => undefined,
+        runExclusive: (operation) => operation(),
+        download: async () => {
+          throw new Error("not implemented");
+        },
+        reset: async () => {
+          events.push("catalog:reset");
+          return {
+            snapshotId: null,
+            itemCount: 0,
+            activatedAt: null,
+          };
+        },
+      },
+      device: {
+        reregister: async () => {
+          events.push("device:reregister");
+        },
+      },
+      appUpdate: {
+        check: async () => {
+          throw new Error("not implemented");
+        },
+        restart: async () => {
+          events.push("app:restart");
+          return true;
+        },
+      },
+    }),
+  );
+  const signal = new AbortController().signal;
+  const actions = [
+    {
+      kind: "change-api-address",
+      apiBaseUrl: "https://next.example.test/pos",
+    },
+    { kind: "reset-catalog" },
+    { kind: "reregister-device", targetStoreCode: "S2" },
+    { kind: "restart-app" },
+  ] satisfies readonly SettingsDangerousConfirmation[];
+
+  for (const action of actions) {
+    assert.deepEqual(
+      await subject.executeDangerousAction(action, signal),
+      { status: "blocked", reason: "pending-local-data" },
+    );
+  }
+  assert.deepEqual(events, []);
 });
 
 test("重启安全决策失败时映射 safety-check-failed", async () => {
@@ -622,6 +943,9 @@ function deps(
     paymentConfiguration: {
       save: unavailable,
     },
+    paymentConfigurationTransition: {
+      run: (operation) => operation(),
+    },
     runtimeReload: {
       reload: async () => undefined,
     },
@@ -653,5 +977,20 @@ function deps(
       reregister: unavailable,
     },
     ...overrides,
+  };
+}
+
+function paymentSettingsAction(): SettingsDangerousConfirmation {
+  return {
+    kind: "change-payment-settings",
+    input: {
+      provider: "square",
+      square: {
+        environment: "Sandbox",
+        deviceId: "SQ-1",
+        locationId: "LOC-1",
+      },
+      linkly: null,
+    },
   };
 }

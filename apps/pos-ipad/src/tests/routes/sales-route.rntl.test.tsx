@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
-import { act, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 
 import SalesRoute from "../../../app/sales";
 
@@ -27,9 +27,9 @@ const mockHasRecoveryRequired = jest.fn<() => Promise<boolean>>();
 const mockInstallmentHasRecoveryRequired =
   jest.fn<() => Promise<boolean>>();
 const mockRandomUUID = jest.fn();
-const mockAddLookupCode = jest.fn<
-  (source?: "manual" | "hid" | "camera") => Promise<boolean>
->();
+const mockAddLookupCode = jest.fn<() => Promise<boolean>>();
+const mockAddScannedLookupCode =
+  jest.fn<(barcode: string, source: "hid" | "camera") => Promise<boolean>>();
 const mockPrepareOnlineCheckout = jest.fn<() => Promise<any>>();
 const mockReleasePreparedCheckout = jest.fn();
 const mockCatalogFindExact =
@@ -37,6 +37,7 @@ const mockCatalogFindExact =
 const mockReprintReceipt = jest.fn<() => Promise<any>>();
 const mockOpenCashDrawer = jest.fn<() => Promise<any>>();
 const mockPerformSelectedUpdate = jest.fn<() => Promise<any>>();
+const mockRecordApplicationLog = jest.fn();
 const mockSetQuery = jest.fn();
 const mockToggleAppLanguage = jest.fn<() => Promise<"en" | "zh">>();
 const mockReadSalesToolbarOrder = jest.fn<() => string[] | null>();
@@ -155,6 +156,16 @@ jest.mock("@/ui/screens/bootstrap-screen", () => {
   };
 });
 
+jest.mock("@/ui/shell/status-strip", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { Text } =
+    jest.requireActual<typeof import("react-native")>("react-native");
+  return {
+    PosStatusStrip: () =>
+      React.createElement(Text, { testID: "status-strip" }, "status"),
+  };
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockSalesScreenProps = null;
@@ -210,6 +221,7 @@ beforeEach(() => {
   };
   mockCreatePresenter.mockReturnValue({
     addLookupCode: mockAddLookupCode,
+    addScannedLookupCode: mockAddScannedLookupCode,
     destroy: mockDestroyPresenter,
     getState: () => ({
       phase: "selling",
@@ -262,6 +274,8 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
   expect(mockRouterPush).toHaveBeenCalledWith("/returns");
   mockSalesScreenProps.onOpenRemoteHistory();
   expect(mockRouterPush).toHaveBeenCalledWith("/remote-history");
+  mockSalesScreenProps.onOpenLocalHistory();
+  expect(mockRouterPush).toHaveBeenCalledWith("/local-history");
   mockSalesScreenProps.onOpenSpecialProducts();
   expect(mockRouterPush).toHaveBeenCalledWith("/special-products");
   mockSalesScreenProps.onOpenInstallments();
@@ -318,6 +332,34 @@ test("销售反馈逐项映射声音 cue，并在路由卸载时解除订阅", a
   );
   await screen.unmount();
   expect(mockUnsubscribeSalesFeedback).toHaveBeenCalledTimes(1);
+});
+
+test("本机历史与分期入口分别使用 History.View 和 Installments.View", async () => {
+  mockActiveCashier = {
+    ...mockActiveCashier,
+    permissions: ["Permissions.PosTerminal.History.View"],
+  };
+  const historyOnly = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(historyOnly.getByTestId("sales-screen")).toBeTruthy();
+  });
+  expect(mockSalesScreenProps.onOpenRemoteHistory).toBeInstanceOf(Function);
+  expect(mockSalesScreenProps.onOpenLocalHistory).toBeInstanceOf(Function);
+  expect(mockSalesScreenProps.onOpenInstallments).toBeUndefined();
+  await historyOnly.unmount();
+
+  mockActiveCashier = {
+    ...mockActiveCashier,
+    permissions: ["Permissions.PosTerminal.Installments.View"],
+  };
+  const installmentsOnly = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(installmentsOnly.getByTestId("sales-screen")).toBeTruthy();
+  });
+  expect(mockSalesScreenProps.onOpenRemoteHistory).toBeUndefined();
+  expect(mockSalesScreenProps.onOpenLocalHistory).toBeUndefined();
+  expect(mockSalesScreenProps.onOpenInstallments).toBeInstanceOf(Function);
+  await installmentsOnly.unmount();
 });
 
 test("销售功能按钮只调用受保护履约 facade，并完整映射终态", async () => {
@@ -457,8 +499,8 @@ test("已核验快照失效时释放结账租约且不进入支付页", async ()
   await screen.unmount();
 });
 
-test("HID 扫码回调不等待后台在线查询，连续扫码可立即进入 Presenter", async () => {
-  mockAddLookupCode.mockImplementation(
+test("扫码回调不等待后台在线查询，并把实际 HID/相机来源传给 Presenter", async () => {
+  mockAddScannedLookupCode.mockImplementation(
     () => new Promise<boolean>(() => undefined),
   );
   const screen = await render(<SalesRoute />);
@@ -467,15 +509,18 @@ test("HID 扫码回调不等待后台在线查询，连续扫码可立即进入 
   });
 
   const firstResult = mockRouteCaptureProps.onScan("930000000001");
-  const secondResult = mockRouteCaptureProps.onScan("930000000002");
+  const secondResult = mockRouteCaptureProps.onScan(
+    "930000000002",
+    "camera",
+  );
 
   expect(firstResult).toBeUndefined();
   expect(secondResult).toBeUndefined();
-  expect(mockSetQuery.mock.calls).toEqual([
-    ["930000000001"],
-    ["930000000002"],
+  expect(mockSetQuery).not.toHaveBeenCalled();
+  expect(mockAddScannedLookupCode.mock.calls).toEqual([
+    ["930000000001", "hid"],
+    ["930000000002", "camera"],
   ]);
-  expect(mockAddLookupCode.mock.calls).toEqual([["hid"], ["hid"]]);
   await screen.unmount();
 });
 
@@ -595,22 +640,113 @@ test("只有冻结权限摘要包含目录下载权限时才暴露维护入口",
   mockSalesScreenProps.onOpenCatalogMaintenance();
   expect(mockRouterPush).toHaveBeenCalledWith("/catalog-maintenance");
   expect(mockSalesScreenProps.onOpenRemoteHistory).toBeUndefined();
+  expect(mockSalesScreenProps.onOpenLocalHistory).toBeUndefined();
   expect(mockSalesScreenProps.onOpenSpecialProducts).toBeUndefined();
   expect(mockSalesScreenProps.onOpenInstallments).toBeUndefined();
   expect(mockSalesScreenProps.onOpenSettings).toBeUndefined();
 });
 
-test("presenter 创建失败时清除活动收银员并安全返回登录", async () => {
+test("presenter 初始化失败保留活动收银员，展示可重试诊断并在重试后进入销售", async () => {
   mockCreatePresenter.mockImplementationOnce(() => {
     throw new Error("current cashier is invalid");
   });
   const screen = await render(<SalesRoute />);
 
   await waitFor(() => {
-    expect(mockClearActiveCashier).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("redirect").props.children).toBe("/login");
+    expect(
+      screen.getByTestId("sales-bootstrap-failed-presenter"),
+    ).toBeTruthy();
   });
+  expect(mockClearActiveCashier).not.toHaveBeenCalled();
+  expect(mockRecordApplicationLog).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "sales.bootstrap",
+      error: expect.any(Error),
+      properties: { stage: "presenter" },
+    }),
+  );
+  expect(screen.getByTestId("status-strip")).toBeTruthy();
+  expect(screen.queryByTestId("redirect")).toBeNull();
   expect(mockCreatePresenter).toHaveBeenCalledWith();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("sales-bootstrap-retry"));
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+  expect(mockCreatePresenter).toHaveBeenCalledTimes(2);
+});
+
+test("普通支付恢复检查异常保留会话并显示对应的可重试诊断", async () => {
+  mockHasRecoveryRequired.mockRejectedValueOnce(
+    new Error("payment recovery storage unavailable"),
+  );
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(
+      screen.getByTestId("sales-bootstrap-failed-payment-recovery"),
+    ).toBeTruthy();
+  });
+  expect(mockClearActiveCashier).not.toHaveBeenCalled();
+  expect(mockRecordApplicationLog).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "sales.bootstrap",
+      error: expect.any(Error),
+      properties: { stage: "payment-recovery" },
+    }),
+  );
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("redirect")).toBeNull();
+});
+
+test("分期恢复检查异常保留会话并显示对应的可重试诊断", async () => {
+  mockInstallmentHasRecoveryRequired.mockRejectedValueOnce(
+    new Error("installment recovery storage unavailable"),
+  );
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(
+      screen.getByTestId("sales-bootstrap-failed-installment-recovery"),
+    ).toBeTruthy();
+  });
+  expect(mockClearActiveCashier).not.toHaveBeenCalled();
+  expect(mockRecordApplicationLog).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "sales.bootstrap",
+      error: expect.any(Error),
+      properties: { stage: "installment-recovery" },
+    }),
+  );
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("redirect")).toBeNull();
+});
+
+test("恢复检查等待期间会话失效时立即回登录，迟到异常不再覆盖路由状态", async () => {
+  let rejectRecovery!: (reason: unknown) => void;
+  mockHasRecoveryRequired.mockImplementationOnce(
+    () =>
+      new Promise<boolean>((_resolve, reject) => {
+        rejectRecovery = reject;
+      }),
+  );
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(mockHasRecoveryRequired).toHaveBeenCalledTimes(1);
+  });
+
+  mockActiveCashier = null;
+  await screen.rerender(<SalesRoute />);
+  expect(screen.getByTestId("redirect").props.children).toBe("/login");
+
+  await act(async () => {
+    rejectRecovery(new Error("late recovery failure"));
+    await Promise.resolve();
+  });
+  expect(mockRecordApplicationLog).not.toHaveBeenCalled();
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
 });
 
 test("销售直链没有收银员会话时返回登录页", async () => {
@@ -712,6 +848,9 @@ function readyRuntime() {
           startCamera: jest.fn(),
           stopCamera: jest.fn(),
         },
+      },
+      applicationLog: {
+        record: mockRecordApplicationLog,
       },
       appUpdates: {
         getGate: () => mockUpdateGate,

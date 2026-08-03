@@ -9,7 +9,7 @@ let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -18,7 +18,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -100,7 +100,7 @@ test("挂单路由零参数创建 presenter，返回销售且卸载时销毁", a
   expect(mockCreatePresenter).toHaveBeenCalledWith();
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);

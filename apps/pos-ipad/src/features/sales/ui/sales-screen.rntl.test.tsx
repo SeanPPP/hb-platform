@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import { act, fireEvent, render } from "@testing-library/react-native";
-import { StyleSheet, TextInput } from "react-native";
+import {
+  act,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react-native";
+import { FlatList, ScrollView, StyleSheet, TextInput } from "react-native";
 
 import {
   EMPTY_SALE_CART,
@@ -16,6 +21,10 @@ import { SalesScreen } from "./sales-screen";
 import { createAud, type CartLine, type CartSnapshot } from "@/core/contracts";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { posColors } from "@/ui/theme";
+
+jest.mock("@/ui/feedback", () => ({
+  usePosSound: () => ({ play: jest.fn() }),
+}));
 
 let mockStatusStripProps: any;
 
@@ -34,8 +43,34 @@ const ALL_CAPABILITIES: SalesCapabilities = {
   lock: true,
 };
 
+function descendantTestIds(root: unknown): string[] {
+  const result: string[] = [];
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null) return;
+    const candidate = node as Readonly<{
+      props?: Readonly<{ testID?: unknown }>;
+      children?: readonly unknown[];
+    }>;
+    if (typeof candidate.props?.testID === "string") {
+      result.push(candidate.props.testID);
+    }
+    for (const child of candidate.children ?? []) visit(child);
+  };
+  visit(root);
+  return result;
+}
+
 class ScreenCartPort implements SalesCartPort {
   public snapshot: CartSnapshot;
+  public mergeAvailable = false;
+  public mergeCompatibilityChecks = 0;
+  public mergeResult = {
+    groups: [] as {
+      keptLineId: string;
+      removedLineIds: readonly string[];
+    }[],
+    removedLineCount: 0,
+  };
   public readonly clearSignals: string[] = [];
   public readonly discounts: { lineId: string; basisPoints: number }[] = [];
   public readonly edits: {
@@ -56,6 +91,21 @@ class ScreenCartPort implements SalesCartPort {
   public subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  public publish(snapshot: CartSnapshot): void {
+    this.snapshot = snapshot;
+    this.emit();
+  }
+
+  public hasMergeCompatibleLines(): boolean {
+    this.mergeCompatibilityChecks += 1;
+    return this.mergeAvailable;
+  }
+
+  public async mergeCompatibleLines() {
+    this.edits.push({ operation: "merge-compatible-lines" });
+    return this.mergeResult;
   }
 
   public async increaseLine(lineId: string): Promise<void> {
@@ -228,7 +278,10 @@ function workflow(
       return [];
     },
     async addProduct() {},
-    async addByLookupCode() {},
+    async addByLookupCode() {
+      return null;
+    },
+    subscribeScanTarget: () => () => undefined,
     async addOpenItem() {},
     getPendingCatalogWorkCount: () => 0,
     subscribePendingCatalogWork: () => () => undefined,
@@ -295,6 +348,14 @@ function findRenderedNodesByType(
     ...(node.type === type ? [node.props ?? {}] : []),
     ...findRenderedNodesByType(node.children, type),
   ];
+}
+
+function flattenedStyle(node: Readonly<{ props: { style?: unknown } }>) {
+  const style =
+    typeof node.props.style === "function"
+      ? node.props.style({ pressed: false })
+      : node.props.style;
+  return StyleSheet.flatten(style);
 }
 
 afterEach(() => {
@@ -479,9 +540,10 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("迁移的管理入口只显示在功能区，并保持 44pt 触控目标", async () => {
+  it("分期管理迁入工具栏，本机历史占用原功能区位置，并保持 44pt 触控目标", async () => {
     const onOpenHeldOrders = jest.fn();
     const onOpenDailyClose = jest.fn();
+    const onOpenLocalHistory = jest.fn();
     const onOpenRemoteHistory = jest.fn();
     const onOpenReturns = jest.fn();
     const onOpenSpecialProducts = jest.fn();
@@ -497,6 +559,7 @@ describe("SalesScreen", () => {
         onOpenDailyClose={onOpenDailyClose}
         onOpenHeldOrders={onOpenHeldOrders}
         onOpenInstallments={onOpenInstallments}
+        onOpenLocalHistory={onOpenLocalHistory}
         onOpenRemoteHistory={onOpenRemoteHistory}
         onOpenReturns={onOpenReturns}
         onOpenSettings={onOpenSettings}
@@ -551,12 +614,46 @@ describe("SalesScreen", () => {
 
     const installments = screen.getByTestId("sales-open-installments");
     expect(screen.getByText("分期管理")).toBeTruthy();
-    expect(screen.queryByTestId("sales-open-installments-layout")).toBeNull();
+    expect(screen.getByTestId("sales-open-installments-layout")).toBeTruthy();
     expect(
       StyleSheet.flatten(installments.props.style).minHeight,
     ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
     await fireEvent.press(installments);
     expect(onOpenInstallments).toHaveBeenCalledTimes(1);
+
+    const localHistory = screen.getByTestId("sales-open-local-history");
+    expect(screen.getByText("本机历史")).toBeTruthy();
+    expect(screen.queryByTestId("sales-open-local-history-layout")).toBeNull();
+    expect(
+      StyleSheet.flatten(localHistory.props.style).minHeight,
+    ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+    await fireEvent.press(localHistory);
+    expect(onOpenLocalHistory).toHaveBeenCalledTimes(1);
+
+    expect(
+      descendantTestIds(screen.getByTestId("sales-toolbar")).filter(
+        (testID) =>
+          testID === "sales-open-remote-history" ||
+          testID === "sales-open-installments",
+      ),
+    ).toEqual([
+      "sales-open-remote-history",
+      "sales-open-installments",
+    ]);
+    expect(
+      descendantTestIds(
+        screen.getByTestId("sales-transaction-functions"),
+      ).filter(
+        (testID) =>
+          testID === "sales-open-returns" ||
+          testID === "sales-open-local-history" ||
+          testID === "sales-open-held-orders",
+      ),
+    ).toEqual([
+      "sales-open-returns",
+      "sales-open-local-history",
+      "sales-open-held-orders",
+    ]);
 
     const settings = screen.getByTestId("sales-open-settings");
     expect(screen.getByText("设置")).toBeTruthy();
@@ -618,6 +715,9 @@ describe("SalesScreen", () => {
     ).toBeNull();
     expect(
       withoutNavigation.queryByTestId("sales-open-installments"),
+    ).toBeNull();
+    expect(
+      withoutNavigation.queryByTestId("sales-open-local-history"),
     ).toBeNull();
     expect(withoutNavigation.queryByTestId("sales-open-settings")).toBeNull();
     expect(
@@ -706,6 +806,239 @@ describe("SalesScreen", () => {
     await fireEvent(image, "error");
     expect(screen.queryByTestId("sales-line-line-1-image-content")).toBeNull();
     expect(screen.getByTestId("sales-line-line-1-image")).toBeTruthy();
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("购物车按选中、负金额、零金额和普通金额优先级显示单选底色", async () => {
+    const baseLine = cartSnapshot().lines[0]!;
+    const cart = new ScreenCartPort({
+      ...cartSnapshot(),
+      lines: [
+        { ...baseLine, lineId: "positive", actualAmount: createAud(100) },
+        { ...baseLine, lineId: "zero", actualAmount: createAud(0) },
+        { ...baseLine, lineId: "negative", actualAmount: createAud(-100) },
+      ],
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(flattenedStyle(screen.getByTestId("sales-line-positive"))).toMatchObject({
+      backgroundColor: posColors.surface,
+      borderColor: posColors.border,
+    });
+    expect(flattenedStyle(screen.getByTestId("sales-line-zero"))).toMatchObject({
+      backgroundColor: posColors.yellowSoft,
+      borderColor: posColors.yellow,
+    });
+    expect(
+      flattenedStyle(screen.getByTestId("sales-line-negative")),
+    ).toMatchObject({
+      backgroundColor: posColors.greenSoft,
+      borderColor: posColors.green,
+    });
+    expect(
+      screen.getByTestId("sales-line-negative").props.accessibilityState,
+    ).toMatchObject({ selected: true });
+
+    await fireEvent.press(screen.getByTestId("sales-line-zero"));
+    expect(flattenedStyle(screen.getByTestId("sales-line-zero"))).toMatchObject({
+      backgroundColor: posColors.greenSoft,
+      borderColor: posColors.green,
+    });
+    expect(
+      flattenedStyle(screen.getByTestId("sales-line-negative")),
+    ).toMatchObject({
+      backgroundColor: posColors.redSoft,
+      borderColor: posColors.red,
+    });
+    expect(
+      screen.getByTestId("sales-line-negative").props.accessibilityState,
+    ).toMatchObject({ selected: false });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("交易功能仅在领域确认存在兼容组时启用合并购物车", async () => {
+    const base = cartSnapshot();
+    const cart = new ScreenCartPort({
+      ...base,
+      lines: [
+        base.lines[0]!,
+        { ...base.lines[0]!, lineId: "line-2" },
+      ],
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(screen.getByTestId("sales-merge-cart").props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+
+    cart.mergeAvailable = true;
+    cart.mergeResult = {
+      groups: [{ keptLineId: "line-1", removedLineIds: ["line-2"] }],
+      removedLineCount: 1,
+    };
+    await act(async () => {
+      cart.publish({ ...cart.snapshot, revision: cart.snapshot.revision + 1 });
+    });
+    expect(screen.getByTestId("sales-merge-cart").props.accessibilityState).toMatchObject({
+      disabled: false,
+    });
+
+    await fireEvent.press(screen.getByTestId("sales-merge-cart"));
+    expect(cart.edits).toContainEqual({ operation: "merge-compatible-lines" });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("替换 Presenter 后虚拟化行操作只调用新的交易会话", async () => {
+    const oldCart = new ScreenCartPort(cartSnapshot());
+    const newCart = new ScreenCartPort(cartSnapshot());
+    const oldPresenter = presenter(oldCart);
+    const newPresenter = presenter(newCart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={oldPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await screen.rerender(
+      <SalesScreen
+        locale="zh"
+        presenter={newPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    await fireEvent.press(screen.getByTestId("sales-line-line-1-increase"));
+
+    expect(oldCart.snapshot.lines[0]?.quantity).toBe("1");
+    expect(newCart.snapshot.lines[0]?.quantity).toBe("2");
+
+    oldPresenter.destroy();
+    newPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("数百行购物车配置有限首屏、批次和窗口虚拟化参数", async () => {
+    const baseLine = cartSnapshot().lines[0]!;
+    const resolveCartProductImage = jest.fn(async () => null);
+    const cart = new ScreenCartPort({
+      ...cartSnapshot(),
+      revision: 300,
+      lines: Array.from({ length: 300 }, (_, index) => ({
+        ...baseLine,
+        lineId: `line-${index + 1}`,
+        productCode: `P-${index + 1}`,
+        lookupCode: `BC-${index + 1}`,
+      })),
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        resolveCartProductImage={resolveCartProductImage}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(screen.getByTestId("sales-cart-list").props).toMatchObject({
+      initialNumToRender: 10,
+      maxToRenderPerBatch: 8,
+      updateCellsBatchingPeriod: 32,
+      windowSize: 7,
+    });
+    expect(resolveCartProductImage).toHaveBeenCalledTimes(10);
+    const checksAfterInitialRender = cart.mergeCompatibilityChecks;
+    await fireEvent.changeText(
+      screen.getByTestId("sales-search-input"),
+      "930000000001",
+    );
+    expect(cart.mergeCompatibilityChecks).toBe(checksAfterInitialRender);
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("新 reveal 会取消旧行尚未测量时排队的滚动重试", async () => {
+    const base = cartSnapshot();
+    const initial = {
+      ...base,
+      lines: [
+        base.lines[0]!,
+        { ...base.lines[0]!, lineId: "line-2" },
+      ],
+    };
+    const cart = new ScreenCartPort(initial);
+    const salesPresenter = presenter(cart);
+    const scrollToIndex = jest
+      .spyOn(FlatList.prototype, "scrollToIndex")
+      .mockImplementation(() => undefined);
+    const scrollToOffset = jest
+      .spyOn(FlatList.prototype, "scrollToOffset")
+      .mockImplementation(() => undefined);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    jest.useFakeTimers();
+    try {
+      await act(() => {
+        screen.getByTestId("sales-cart-list").props.onScrollToIndexFailed({
+          averageItemLength: 128,
+          highestMeasuredFrameIndex: 0,
+          index: 1,
+        });
+      });
+      await act(() => {
+        cart.publish({
+          ...initial,
+          revision: initial.revision + 1,
+          lines: [
+            ...initial.lines,
+            { ...base.lines[0]!, lineId: "line-3" },
+          ],
+        });
+      });
+      expect(scrollToIndex).toHaveBeenLastCalledWith({
+        animated: true,
+        index: 2,
+        viewPosition: 1,
+      });
+      scrollToIndex.mockClear();
+
+      await act(() => {
+        jest.runOnlyPendingTimers();
+      });
+      expect(scrollToIndex).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+      scrollToIndex.mockRestore();
+      scrollToOffset.mockRestore();
+    }
 
     salesPresenter.destroy();
     await screen.unmount();
@@ -845,6 +1178,57 @@ describe("SalesScreen", () => {
         .source,
     ).toEqual({
       uri: "https://pos.example.test/images/current.png",
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("旧图片 URI 的迟到错误不会隐藏同一行的新图片", async () => {
+    const resolveCartProductImage = jest.fn(
+      async (input: { productCode: string; lookupCode: string }) =>
+        `https://pos.example.test/images/${input.lookupCode}.png`,
+    );
+    const cart = new ScreenCartPort(cartSnapshot());
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        resolveCartProductImage={resolveCartProductImage}
+        showStatusStrip={false}
+      />,
+    );
+    const staleImage = await screen.findByTestId(
+      "sales-line-line-1-image-content",
+    );
+    const staleOnError = staleImage.props.onError as () => void;
+
+    await act(() => {
+      cart.publish({
+        ...cart.snapshot,
+        revision: cart.snapshot.revision + 1,
+        lines: cart.snapshot.lines.map((line) => ({
+          ...line,
+          lookupCode: "930000000002",
+        })),
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sales-line-line-1-image-content").props.source,
+      ).toEqual({
+        uri: "https://pos.example.test/images/930000000002.png",
+      });
+    });
+    await act(() => {
+      staleOnError();
+    });
+
+    expect(
+      screen.getByTestId("sales-line-line-1-image-content").props.source,
+    ).toEqual({
+      uri: "https://pos.example.test/images/930000000002.png",
     });
 
     salesPresenter.destroy();
@@ -1082,6 +1466,59 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("手动搜索键盘聚焦时滚动功能区揭示输入，HID 聚焦保持静默", async () => {
+    const revealInput = jest
+      .spyOn(
+        ScrollView.prototype,
+        "scrollResponderScrollNativeHandleToKeyboard",
+      )
+      .mockImplementation(() => undefined);
+    const textInputPrototype = (
+      TextInput as unknown as {
+        prototype: {
+          isFocused: jest.Mock;
+        };
+      }
+    ).prototype;
+    textInputPrototype.isFocused.mockReturnValue(false);
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    jest.useFakeTimers();
+    try {
+      expect(screen.getByTestId("sales-function-scroll").props).toMatchObject({
+        automaticallyAdjustKeyboardInsets: true,
+        keyboardDismissMode: "interactive",
+        keyboardShouldPersistTaps: "handled",
+      });
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 401,
+      });
+      expect(revealInput).not.toHaveBeenCalled();
+
+      await fireEvent.press(screen.getByTestId("sales-show-keyboard"));
+      await act(() => {
+        jest.runOnlyPendingTimers();
+      });
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 402,
+      });
+      expect(revealInput).toHaveBeenCalledWith(402, 16, true);
+    } finally {
+      jest.useRealTimers();
+      textInputPrototype.isFocused.mockReset();
+      revealInput.mockRestore();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
   it("搜索系统键盘切换到自定义编辑器时隐藏键盘并保持 HID 暂停", async () => {
     const onManualInputFocusChange = jest.fn();
     const textInputPrototype = (
@@ -1135,7 +1572,9 @@ describe("SalesScreen", () => {
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
       ).toBe(true);
       expect(textInputPrototype.focus).toHaveBeenCalledTimes(1);
-      await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 403,
+      });
       await fireEvent.press(screen.getByTestId("sales-open-item-button"));
       expect(
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
@@ -1270,7 +1709,9 @@ describe("SalesScreen", () => {
       ).toBe(true);
 
       // focus 命令发出后请求仍未完成；真正 onFocus 到达后，普通 blur 才回 HID。
-      await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 404,
+      });
       await fireEvent(screen.getByTestId("sales-search-input"), "blur");
       expect(
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
@@ -1285,7 +1726,9 @@ describe("SalesScreen", () => {
       textInputPrototype.setNativeProps.mockClear();
 
       // 系统键盘被手动收起后再次点击，仍重新建立第一响应者。
-      await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 405,
+      });
       await fireEvent.press(keyboardButton);
       expect(textInputPrototype.blur).toHaveBeenCalledTimes(1);
       expect(textInputPrototype.setNativeProps).toHaveBeenCalledWith({
@@ -1313,7 +1756,9 @@ describe("SalesScreen", () => {
       expect(
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
       ).toBe(true);
-      await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 406,
+      });
 
       await fireEvent(
         screen.getByTestId("sales-search-input"),
@@ -1400,7 +1845,9 @@ describe("SalesScreen", () => {
       expect(
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
       ).toBe(true);
-      await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+      await fireEvent(screen.getByTestId("sales-search-input"), "focus", {
+        target: 407,
+      });
       await fireEvent(screen.getByTestId("sales-search-input"), "blur");
       expect(
         screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
@@ -1896,6 +2343,50 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("无码商品遇到终端取单恢复锁时在弹窗内引导前往挂单管理", async () => {
+    const recoveryError = Object.assign(
+      new Error("Terminal recall recovery must be resolved before editing the cart."),
+      { code: "ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED" },
+    );
+    const cart = new ScreenCartPort(cartSnapshot(2_000));
+    const salesPresenter = presenter(cart, {
+      workflow: {
+        ...workflow(),
+        async addOpenItem() {
+          throw recoveryError;
+        },
+      },
+    });
+    const onOpenHeldOrders = jest.fn();
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        onOpenHeldOrders={onOpenHeldOrders}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-button"));
+    await pressKeypadKeys(screen, "sales-open-item", ["1"]);
+    await fireEvent.press(screen.getByTestId("sales-open-item-confirm"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("sales-open-item-recovery-error").props.children,
+      ).toBe(
+        "此终端仍有一笔取单恢复未完成。请前往挂单管理，选择“恢复取单”或“退回待取”后再继续收银。",
+      ),
+    );
+    await fireEvent.press(
+      screen.getByTestId("sales-open-item-recovery-action"),
+    );
+    expect(onOpenHeldOrders).toHaveBeenCalledTimes(1);
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("整单快捷/手动折扣和清空购物车均要求明确确认", async () => {
     const cart = new ScreenCartPort(cartSnapshot(2_000));
     const salesPresenter = presenter(cart);
@@ -1962,7 +2453,7 @@ describe("SalesScreen", () => {
         unitPriceCents: 250,
       },
     ]);
-    const addByLookupCode = jest.fn(async (_lookupCode: string) => undefined);
+    const addByLookupCode = jest.fn(async (_lookupCode: string) => null);
     const holdCart = jest.fn(async () => undefined);
     const lockTerminal = jest.fn(async () => undefined);
     const onSwitchLanguage = jest.fn();

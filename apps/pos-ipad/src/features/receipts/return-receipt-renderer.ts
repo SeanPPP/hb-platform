@@ -72,14 +72,17 @@ function refundDocument(
     paper: settings.paper,
     store: settings.store,
     orderNumber: order.orderGuid,
+    orderGuid: order.orderGuid,
+    orderDisplay: `#${order.localSequence}`,
     soldAtIso: order.soldAtIso,
     cashierName: order.cashierName,
+    storeCode: order.storeCode,
     deviceCode: order.deviceCode,
     lines: order.lines.map((line) => ({
       name: line.displayName,
+      lookupCode: line.lookupCode,
       // 账本 quantity 是正数，显示层显式加退款负号而不改写持久事实。
       quantity: `-${line.quantity}`,
-      unitPriceCents: line.unitPrice.cents,
       discountCents: 0,
       totalCents: line.actualAmount.cents,
     })),
@@ -94,6 +97,9 @@ function refundDocument(
     })),
     cashChangeCents: null,
     title: locale === "zh-CN" ? "退款小票" : "REFUND RECEIPT",
+    statusText: locale === "zh-CN" ? "*** 已退款 ***" : "*** Refunded ***",
+    includeMachineCodes: true,
+    printedAtIso: order.soldAtIso,
   });
   return replaceFooter(document, locale === "zh-CN" ? "退款已处理" : "Refund processed");
 }
@@ -102,7 +108,8 @@ function replaceFooter(document: EscPosDocument, replacement: string): EscPosDoc
   const previous = ["Thank you for your purchase!", "感谢惠顾"];
   let footerIndex = -1;
   for (let index = document.lines.length - 1; index >= 0; index -= 1) {
-    if (previous.includes(document.lines[index]?.text ?? "")) {
+    const line = document.lines[index];
+    if (line?.kind === "text" && previous.includes(line.text)) {
       footerIndex = index;
       break;
     }
@@ -110,9 +117,11 @@ function replaceFooter(document: EscPosDocument, replacement: string): EscPosDoc
   if (footerIndex < 0) throw new Error("RETURN_RECEIPT_FOOTER_INVALID");
   return {
     ...document,
-    lines: document.lines.map((line, index) =>
-      index === footerIndex ? { ...line, text: replacement } : line,
-    ),
+    lines: document.lines.map((line, index) => (
+      index === footerIndex && line.kind === "text"
+        ? { ...line, text: replacement }
+        : line
+    )),
   };
 }
 

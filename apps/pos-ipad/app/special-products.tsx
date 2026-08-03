@@ -132,7 +132,7 @@ export default function SpecialProductsRoute() {
   if (runtimeUnavailable) {
     return (
       <SpecialProductsUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -144,7 +144,7 @@ export default function SpecialProductsRoute() {
     <>
       <SpecialProductsSoundBridge presenter={presenter} />
       <SpecialProductsScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
         presenter={presenter}
       />
     </>

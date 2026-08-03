@@ -201,9 +201,6 @@ export class SqliteLocalSyncHistoryStore implements LocalSyncHistoryPort {
   public restoreExistingOrderOutboxToPending(
     orderGuids: readonly string[],
   ): Promise<LocalSyncHistoryRestoreResult> {
-    if (orderGuids.length > 500) {
-      throw new TypeError("At most 500 local orders can be restored at once.");
-    }
     const uniqueOrderGuids = [...new Set(orderGuids)];
     for (const orderGuid of uniqueOrderGuids) {
       if (!orderGuid.trim()) throw new TypeError("orderGuid is required.");

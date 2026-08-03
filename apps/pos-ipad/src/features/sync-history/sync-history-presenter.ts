@@ -162,7 +162,9 @@ export class SyncHistoryPresenter {
 
   public setSelected(orderGuid: string, selected: boolean): void {
     if (this.destroyed || !this.access.canView || !this.access.canManualRetransmit) return;
-    if (!this.orders.some((order) => order.orderGuid === orderGuid)) return;
+    const order = this.orders.find((candidate) => candidate.orderGuid === orderGuid);
+    if (!order) return;
+    if (selected && retransmitGate(order).kind !== "allowed") return;
     if (this.selectedOrderGuids.has(orderGuid) === selected) return;
     if (selected) this.selectedOrderGuids.add(orderGuid);
     else this.selectedOrderGuids.delete(orderGuid);
@@ -345,11 +347,17 @@ export class SyncHistoryPresenter {
         errorCode: null,
       };
     }
-    const restored = await this.options.port.restoreExistingOrderOutboxToPending(gate.orderGuids);
+    // 仓储在单个排他事务内逐笔 CAS，不拼接 IN 参数；整批原子提交可避免
+    // 后续分批失败时把前批已生效误报成“0 笔成功”。
+    const restored =
+      await this.options.port.restoreExistingOrderOutboxToPending(
+        gate.orderGuids,
+      );
     return {
       kind: "requested",
       requestedCount: restored.restoredOrderGuids.length,
-      skippedCount: gate.skippedCount + restored.skippedOrderGuids.length,
+      skippedCount:
+        gate.skippedCount + restored.skippedOrderGuids.length,
       reauthenticationRequiredCount: gate.reauthenticationRequiredCount,
       supervisorRequiredCount: gate.supervisorRequiredCount,
       errorCode: null,
@@ -386,7 +394,11 @@ export class SyncHistoryPresenter {
   }
 
   private removeMissingSelections(): void {
-    const current = new Set(this.orders.map((order) => order.orderGuid));
+    const current = new Set(
+      this.orders
+        .filter((order) => retransmitGate(order).kind === "allowed")
+        .map((order) => order.orderGuid),
+    );
     for (const orderGuid of this.selectedOrderGuids) {
       if (!current.has(orderGuid)) this.selectedOrderGuids.delete(orderGuid);
     }

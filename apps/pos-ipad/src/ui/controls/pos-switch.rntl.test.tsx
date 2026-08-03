@@ -1,19 +1,29 @@
+import { createRef } from "react";
 import { beforeEach, expect, jest, test } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
-import { createRef } from "react";
 import { Switch } from "react-native";
-
-import { PosSwitch } from "./pos-switch";
 
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
 
-jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
+import { PosSwitch } from "./pos-switch";
+
+jest.mock("@/ui/feedback/pos-sound-context", () => ({
+  usePosSound: jest.fn(),
+}));
 
 const mockUsePosSound = jest.mocked(usePosSound);
 const play = jest.fn();
 
 beforeEach(() => {
   jest.clearAllMocks();
+});
+
+test("开关在业务回调前同步播放默认 tap，并完整透传 Switch 属性", async () => {
+  const callOrder: string[] = [];
+  const onValueChange = jest.fn<(value: boolean) => void>((value) => {
+    callOrder.push(`value:${value}`);
+  });
+  play.mockImplementation((cue) => callOrder.push(`sound:${cue}`));
   mockUsePosSound.mockReturnValue({
     buttonSoundEnabled: true,
     play,
@@ -21,41 +31,71 @@ beforeEach(() => {
     setSpecialNodeSoundEnabled: jest.fn(),
     specialNodeSoundEnabled: true,
   });
-});
 
-test("默认 tap 音先于业务 valueChange", async () => {
-  const onValueChange = jest.fn<(value: boolean) => void>();
   const screen = await render(
-    <PosSwitch onValueChange={onValueChange} testID="switch" value />,
+    <PosSwitch
+      accessibilityLabel="触控音效"
+      onValueChange={onValueChange}
+      testID="touch-sound"
+      trackColor={{ false: "#111111", true: "#222222" }}
+      value
+    />,
   );
 
-  await fireEvent(screen.getByTestId("switch"), "valueChange", false);
+  const control = screen.getByTestId("touch-sound");
+  await fireEvent(control, "valueChange", false);
 
   expect(play).toHaveBeenCalledWith("tap");
   expect(onValueChange).toHaveBeenCalledWith(false);
-  expect(play.mock.invocationCallOrder[0]).toBeLessThan(
-    onValueChange.mock.invocationCallOrder[0]!,
-  );
+  expect(callOrder).toEqual(["sound:tap", "value:false"]);
 });
 
-test("禁用与显式静音均不播放", async () => {
+test("禁用或显式关音时不播放，但禁用状态不交给业务回调", async () => {
   const onValueChange = jest.fn<(value: boolean) => void>();
+  mockUsePosSound.mockReturnValue({
+    buttonSoundEnabled: true,
+    play,
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: true,
+  });
+
   const screen = await render(
     <>
-      <PosSwitch disabled onValueChange={onValueChange} testID="disabled" />
-      <PosSwitch onValueChange={onValueChange} sound={false} testID="silent" />
+      <PosSwitch
+        disabled
+        onValueChange={onValueChange}
+        testID="disabled-switch"
+        value
+      />
+      <PosSwitch
+        onValueChange={onValueChange}
+        sound={false}
+        testID="silent-switch"
+        value={false}
+      />
     </>,
   );
 
-  await fireEvent(screen.getByTestId("disabled"), "valueChange", true);
-  await fireEvent(screen.getByTestId("silent"), "valueChange", true);
+  await fireEvent(screen.getByTestId("disabled-switch"), "valueChange", false);
+  await fireEvent(screen.getByTestId("silent-switch"), "valueChange", true);
 
   expect(play).not.toHaveBeenCalled();
   expect(onValueChange).toHaveBeenCalledTimes(1);
+  expect(onValueChange).toHaveBeenCalledWith(true);
 });
 
 test("完整转发原生 Switch ref", async () => {
   const ref = createRef<Switch>();
-  await render(<PosSwitch ref={ref} testID="ref" value={false} />);
+  mockUsePosSound.mockReturnValue({
+    buttonSoundEnabled: true,
+    play,
+    setButtonSoundEnabled: jest.fn(),
+    setSpecialNodeSoundEnabled: jest.fn(),
+    specialNodeSoundEnabled: true,
+  });
+
+  await render(<PosSwitch ref={ref} testID="switch-ref" value={false} />);
+
   expect(ref.current).not.toBeNull();
 });

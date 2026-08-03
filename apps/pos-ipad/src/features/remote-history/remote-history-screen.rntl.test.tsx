@@ -109,6 +109,12 @@ test("横屏列表与详情可读，且不渲染退款、取单或重打入口",
   expect(screen.queryByTestId("remote-history-recall")).toBeNull();
   expect(screen.queryByTestId("remote-history-reprint")).toBeNull();
   expect(screen.getByTestId("remote-history-readonly-note")).toBeTruthy();
+  const keyboardScroll = screen.getByTestId(
+    "remote-history-filters-keyboard-scroll",
+  );
+  expect(keyboardScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(keyboardScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(keyboardScroll.props.keyboardShouldPersistTaps).toBe("handled");
 
   for (const testID of [
     "remote-history-back",

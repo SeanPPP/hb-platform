@@ -1,3 +1,4 @@
+import { useIsFocused } from "@react-navigation/native";
 import { usePathname } from "expo-router";
 import {
   createContext,
@@ -10,6 +11,7 @@ import {
 import {
   HidScannerCapture,
   type HidScannerRouter,
+  type RoutedScanEvent,
   type ScannerCaptureContext,
 } from "@/core/peripherals/scanner";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
@@ -22,7 +24,10 @@ type ScannerRouteContextValue = Readonly<{
 type RouteHidScannerCaptureProps = Readonly<{
   context: ScannerCaptureContext;
   enabled?: boolean;
-  onScan(value: string): Promise<void> | void;
+  onScan(
+    value: string,
+    source?: RoutedScanEvent["source"],
+  ): Promise<void> | void;
   path: string;
 }>;
 
@@ -92,15 +97,17 @@ function ActiveRouteHidScannerCapture({
     scanner: HidScannerRouter;
     supervisorAwaiting: boolean;
   }>) {
+  const isFocused = useIsFocused();
   const pathname = usePathname();
-  const active = enabled && pathname === path && !supervisorAwaiting;
+  const active =
+    enabled && isFocused && pathname === path && !supervisorAwaiting;
 
   useEffect(() => {
     if (!active) return undefined;
     const releaseContext = scanner.acquireContext(context);
-    const unsubscribe = scanner.subscribe((event) => {
+    const unsubscribe = scanner.subscribeRouted((event) => {
       if (event.context !== context) return;
-      void onScan(event.value);
+      void onScan(event.value, event.source);
     });
     return () => {
       unsubscribe();

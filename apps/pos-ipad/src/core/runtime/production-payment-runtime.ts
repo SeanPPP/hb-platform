@@ -151,6 +151,7 @@ export function createProductionPaymentRuntime(
   const voucherRelease = availableVoucherRelease(input.bootstrap);
   const drafts = input.database.paymentDraftRecovery({
     createOrderGuid: input.createId,
+    createOrderLineGuid: input.createId,
     createAuditEventId: input.createId,
   });
   const cartLease = new ActivePricingCartPaymentLeaseCoordinator(

@@ -41,7 +41,7 @@ export const catalogMaintenanceEnglishCopy = {
   "step.promotions": "Sync promotions",
   "step.activate": "Safe activation",
   "warning.runtimeReload":
-    "The new catalog is activated, but the runtime catalog reload did not complete. Do not continue checkout; retry refresh or contact support.",
+    "The new catalog product data is active and checkout can continue. The last verified promotion rules remain in use; retry refresh later or contact support.",
   "warning.activationVerification":
     "Catalog activation was committed, but local confirmation did not complete. Do not continue checkout; contact support.",
 } as const;
@@ -89,7 +89,7 @@ export const catalogMaintenanceChineseCopy = {
   "step.promotions": "同步促销",
   "step.activate": "安全激活",
   "warning.runtimeReload":
-    "新目录已激活，但运行时目录载入未完成。请勿继续收银；请重试刷新或联系支持。",
+    "新目录商品数据已启用，可以继续收银。系统会保留上一份已验证促销规则；请稍后重试刷新或联系支持。",
   "warning.activationVerification":
     "目录激活已提交，但本地确认未完成。请勿继续收银；请联系支持。",
 } as const satisfies Record<CatalogMaintenanceCopyKey, string>;

@@ -28,8 +28,11 @@ import type {
   OperationAuditUploadState,
 } from "./operation-audit-presenter";
 
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
-import { PosTextInput } from "@/ui/controls/pos-text-input";
 import { posColors } from "@/ui/theme";
 
 export const ATTENDANCE_AUDIT_MIN_TOUCH_TARGET = 44;
@@ -115,7 +118,6 @@ function Header({
         <ActionButton
           label={t("action.back")}
           onPress={onBack}
-          sound="navigate"
           testID="attendance-audit-back"
           tone="quiet"
         />
@@ -281,7 +283,11 @@ function AuditFilters({
     { label: t("audit.upload.rejected"), state: "rejected" },
   ];
   return (
-    <View style={styles.filters}>
+    <PosKeyboardAwareScrollView
+      contentContainerStyle={styles.filters}
+      style={styles.filtersScroll}
+      testID="attendance-audit-filters-keyboard-scroll"
+    >
       <View style={styles.filterLine}>
         {sources.map(({ label, source }) => (
           <ActionButton
@@ -309,7 +315,7 @@ function AuditFilters({
         ))}
       </View>
       <View style={styles.searchRow}>
-        <PosTextInput
+        <PosKeyboardAwareTextInput
           accessibilityLabel={t("audit.searchLabel")}
           autoCapitalize="none"
           autoCorrect={false}
@@ -331,7 +337,7 @@ function AuditFilters({
           testID="audit-search-submit"
         />
       </View>
-    </View>
+    </PosKeyboardAwareScrollView>
   );
 }
 
@@ -560,7 +566,6 @@ export function AttendanceAuditUnavailableScreen({
           <ActionButton
             label={t("action.back")}
             onPress={onBack}
-            sound="navigate"
             testID="attendance-audit-unavailable-back"
           />
         ) : null}
@@ -617,7 +622,6 @@ function ActionButton({
   label,
   onPress,
   selected = false,
-  sound = "tap",
   testID,
   tone = "primary",
 }: Readonly<{
@@ -626,7 +630,6 @@ function ActionButton({
   label: string;
   onPress(): void;
   selected?: boolean;
-  sound?: "navigate" | "tap";
   testID: string;
   tone?: "primary" | "quiet" | "secondary";
 }>) {
@@ -636,7 +639,6 @@ function ActionButton({
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
-      sound={sound}
       style={[
         styles.button,
         compact && styles.compactButton,
@@ -897,6 +899,9 @@ const styles = StyleSheet.create({
   filters: {
     marginTop: 12,
     gap: 10,
+  },
+  filtersScroll: {
+    flexGrow: 0,
   },
   filterLine: {
     flexDirection: "row",

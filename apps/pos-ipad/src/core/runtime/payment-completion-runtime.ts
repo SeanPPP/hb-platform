@@ -119,13 +119,16 @@ implements PaymentReceiptRendererPort {
           abn: settings.abn,
         },
         orderNumber: order.orderGuid,
+        orderGuid: order.orderGuid,
+        orderDisplay: `#${order.localSequence}`,
         soldAtIso: order.soldAtIso,
         cashierName: order.cashierName,
+        storeCode: order.storeCode,
         deviceCode: order.deviceCode,
         lines: order.lines.map((line) => ({
           name: line.displayName,
+          lookupCode: line.lookupCode,
           quantity: line.quantity,
-          unitPriceCents: line.unitPrice.cents,
           discountCents: line.discount.cents,
           totalCents: line.actualAmount.cents,
         })),
@@ -139,6 +142,9 @@ implements PaymentReceiptRendererPort {
           reference: null,
         })),
         cashChangeCents: null,
+        statusText: "*** Paid ***",
+        includeMachineCodes: true,
+        printedAtIso: order.soldAtIso,
       }),
     );
   }

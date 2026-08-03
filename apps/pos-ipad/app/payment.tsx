@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import type { PosAuthorizedFulfilmentActionResult } from "@/core/runtime/production-pos-service-composition";
 import {
   resolveProtectedSalesRouteGate,
   useCashierLoginStore,
@@ -27,6 +28,7 @@ import {
   type PaymentScreenPresenter,
   type PaymentInstallmentModeControl,
   type PaymentPresenterState,
+  type PaymentReceiptPrintOutcome,
   type RegularPaymentEntry,
   type UnifiedPaymentEntry,
   type UnifiedPaymentFacadeDependencies,
@@ -76,7 +78,7 @@ const UNAVAILABLE_INSTALLMENT_LANE: UnifiedPaymentFacadeDependencies["installmen
 
 /** 只接受 sales route 生成的最小 checkout 上下文；支付事实仍由组合根复核。 */
 export default function PaymentRoute() {
-  const { replace } = useRouter();
+  const { dismissTo } = useRouter();
   const runtime = usePosRuntime();
   const { i18n } = useTranslation();
   const activeCashier = useCashierLoginStore((state) => state.activeCashier);
@@ -128,6 +130,16 @@ export default function PaymentRoute() {
       ? binding.presenter
       : null;
   const presenterState = usePaymentPresenterState(presenter);
+  const printCurrentReceipt = useMemo<
+    ((orderGuid: string) => Promise<PaymentReceiptPrintOutcome>) | undefined
+  >(() => {
+    const services = runtime.services;
+    if (!services?.fulfilment.reprintCurrentReceipt) return undefined;
+    return async (orderGuid) =>
+      mapReceiptPrintResult(
+        await services.fulfilment.reprintCurrentReceipt(orderGuid),
+      );
+  }, [runtime.services]);
 
   useEffect(() => {
     if (
@@ -293,12 +305,33 @@ export default function PaymentRoute() {
   return (
     <PaymentScreen
       locale={resolvePaymentLocale(i18n.resolvedLanguage ?? i18n.language)}
-      onBack={() => replace("/sales" as Href)}
-      onComplete={() => replace("/sales" as Href)}
+      onBack={() => dismissTo("/sales" as Href)}
+      onComplete={() => dismissTo("/sales" as Href)}
       presenter={presenter}
       {...(installmentModeControl ? { installmentModeControl } : {})}
+      {...(printCurrentReceipt ? { onPrintReceipt: printCurrentReceipt } : {})}
     />
   );
+}
+
+function mapReceiptPrintResult(
+  result: PosAuthorizedFulfilmentActionResult,
+): PaymentReceiptPrintOutcome {
+  switch (result.state) {
+    case "Printed":
+      return "completed";
+    case "Ambiguous":
+    case "recovery-required":
+      return "unknown";
+    case "Completed":
+    case "Unknown":
+    case "Failed":
+    case "denied":
+    case "not-found":
+    case "not-retryable":
+    default:
+      return "failed";
+  }
 }
 
 function usePaymentPresenterState(

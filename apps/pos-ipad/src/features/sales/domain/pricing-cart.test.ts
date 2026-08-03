@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 
 import { createAud } from "../../../core/contracts";
@@ -97,7 +98,7 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
   );
 });
 
-test("加购 disposition 明确区分新增与既有行增量，并保留旧 string API", () => {
+test("加购 disposition 明确区分新增行与合并行，旧 string API 保持兼容", () => {
   const cart = new PricingCart({ asOfIso });
 
   assert.deepEqual(
@@ -106,12 +107,241 @@ test("加购 disposition 明确区分新增与既有行增量，并保留旧 str
   );
   assert.deepEqual(
     cart.addItemWithDisposition(
-      item("ignored", { lookupCode: " SAME-CODE ", quantity: 2 }),
+      item("ignored", { lookupCode: " SAME-CODE " }),
     ),
     { lineId: "first", kind: "incremented" },
   );
   assert.equal(cart.addItem(item("legacy", { lookupCode: "legacy" })), "legacy");
-  assert.equal(cart.snapshot().lines[0]?.quantity, "3");
+
+  assert.deepEqual(
+    cart.addScannedItemWithDisposition(
+      item("scan-first", {
+        lookupCode: "scan-code",
+        productCode: "SCAN-SKU",
+      }),
+    ),
+    { lineId: "scan-first", kind: "added" },
+  );
+  assert.deepEqual(
+    cart.addScannedItemWithDisposition(
+      item("scan-ignored", {
+        lookupCode: "SCAN-CODE",
+        productCode: "SCAN-SKU",
+      }),
+    ),
+    { lineId: "scan-first", kind: "incremented" },
+  );
+});
+
+test("扫码仅合并最后一行的完整同源商品，非连续重复与不兼容折扣保留独立行", () => {
+  const cart = new PricingCart({ asOfIso });
+  const sameTea = {
+    productCode: "P-TEA",
+    lookupCode: " 930000000001 ",
+    unitPrice: createAud(500),
+    syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 as const },
+  };
+
+  assert.equal(
+    cart.addScannedItem(item("tea-1", sameTea)),
+    "tea-1",
+  );
+  assert.equal(
+    cart.addScannedItem(
+      item("unused-consecutive-id", {
+        ...sameTea,
+        lookupCode: "930000000001",
+      }),
+    ),
+    "tea-1",
+  );
+  assert.deepEqual(
+    cart.snapshot().lines.map((line) => [line.lineId, line.quantity]),
+    [["tea-1", "2"]],
+  );
+
+  cart.addScannedItem(item("coffee", { lookupCode: "COFFEE" }));
+  assert.equal(
+    cart.addScannedItem(item("tea-2", sameTea)),
+    "tea-2",
+  );
+  assert.equal(cart.setLineDiscountAmount("tea-2", createAud(100)), true);
+  assert.equal(
+    cart.addScannedItem(item("tea-3", sameTea)),
+    "tea-3",
+  );
+
+  assert.deepEqual(
+    cart.snapshot().lines.map((line) => [line.lineId, line.quantity]),
+    [
+      ["tea-1", "2"],
+      ["coffee", "1"],
+      ["tea-2", "1"],
+      ["tea-3", "1"],
+    ],
+  );
+});
+
+test("扫码仅在商品、单价、基础价格来源与完整同步来源均相同时连续合并", () => {
+  const cases: readonly [
+    string,
+    Partial<AddCartItemInput>,
+  ][] = [
+    ["product", { productCode: "P-OTHER" }],
+    ["price", { unitPrice: createAud(501) }],
+    ["base-price-source", { priceSource: "manual" }],
+    [
+      "reference",
+      {
+        syncProvenance: {
+          referenceCode: "REF-OTHER",
+          priceSource: 1,
+        },
+      },
+    ],
+    [
+      "backend-price-source",
+      {
+        syncProvenance: {
+          referenceCode: "REF-TEA",
+          priceSource: 2,
+        },
+      },
+    ],
+  ];
+
+  for (const [name, overrides] of cases) {
+    const cart = new PricingCart({ asOfIso });
+    const base = item(`${name}-base`, {
+      productCode: "P-TEA",
+      lookupCode: "TEA",
+      unitPrice: createAud(500),
+      syncProvenance: {
+        referenceCode: "REF-TEA",
+        priceSource: 1,
+      },
+    });
+    cart.addScannedItem(base);
+    assert.equal(
+      cart.addScannedItem(
+        item(`${name}-next`, {
+          ...base,
+          lineId: `${name}-next`,
+          ...overrides,
+        }),
+      ),
+      `${name}-next`,
+      name,
+    );
+    assert.equal(cart.snapshot().lines.length, 2, name);
+  }
+});
+
+test("合并兼容行保留最早位置并汇总固定折扣，来源不同与退货/open item 不参与", () => {
+  const cart = new PricingCart({ asOfIso });
+  const tea = {
+    productCode: "P-TEA",
+    lookupCode: "TEA",
+    unitPrice: createAud(500),
+    syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 as const },
+  };
+  cart.addScannedItem(item("tea-1", tea));
+  cart.addScannedItem(item("coffee", { lookupCode: "COFFEE" }));
+  cart.addScannedItem(item("tea-2", tea));
+  assert.equal(cart.setLineDiscountAmount("tea-1", createAud(100)), true);
+  assert.equal(cart.setLineDiscountAmount("tea-2", createAud(200)), true);
+  cart.addScannedItem(
+    item("tea-other-source", {
+      ...tea,
+      syncProvenance: { referenceCode: "REF-TEA", priceSource: 2 },
+    }),
+  );
+  cart.addOpenItem({
+    lineId: "open-tea",
+    productCode: "P-TEA",
+    itemNumber: null,
+    lookupCode: "TEA",
+    displayName: "Open tea",
+    unitPrice: createAud(500),
+    syncProvenance: { referenceCode: "REF-TEA", priceSource: 1 },
+  });
+  cart.addScannedItem(
+    item("return-tea", {
+      ...tea,
+      kind: "return",
+      returnSourceKey: "order-1:detail-1",
+      originalOrderGuid: "order-1",
+      originalOrderDetailGuid: "detail-1",
+    }),
+  );
+  const before = cart.snapshot();
+
+  assert.equal(cart.hasMergeCompatibleLines(), true);
+  assert.deepEqual(cart.mergeCompatibleLines(), {
+    groups: [
+      {
+        keptLineId: "tea-1",
+        removedLineIds: ["tea-2"],
+      },
+    ],
+    removedLineCount: 1,
+  });
+
+  const after = cart.snapshot();
+  assert.deepEqual(
+    after.lines.map((line) => line.lineId),
+    [
+      "tea-1",
+      "coffee",
+      "tea-other-source",
+      "open-tea",
+      "return-tea",
+    ],
+  );
+  assert.equal(after.lines[0]?.quantity, "2");
+  assert.equal(after.lines[0]?.discount.cents, 300);
+  assert.equal(after.subtotal.cents, before.subtotal.cents);
+  assert.equal(after.discount.cents, before.discount.cents);
+  assert.equal(after.actualAmount.cents, before.actualAmount.cents);
+  assert.equal(cart.hasMergeCompatibleLines(), false);
+});
+
+test("百分比折扣仅在比例相同且分币金额不变时合并", () => {
+  const safe = new PricingCart({ asOfIso });
+  const safeItem = {
+    productCode: "P-SAFE",
+    lookupCode: "SAFE",
+    unitPrice: createAud(100),
+  };
+  safe.addScannedItem(item("safe-1", safeItem));
+  safe.addScannedItem(item("separator", { lookupCode: "SEPARATOR" }));
+  safe.addScannedItem(item("safe-2", safeItem));
+  safe.setLineDiscountPercentBps("safe-1", 1_000);
+  safe.setLineDiscountPercentBps("safe-2", 1_000);
+  assert.equal(safe.hasMergeCompatibleLines(), true);
+  assert.equal(safe.mergeCompatibleLines().removedLineCount, 1);
+  assert.equal(safe.snapshot().lines[0]?.discount.cents, 20);
+
+  const rounded = new PricingCart({ asOfIso });
+  const centItem = {
+    productCode: "P-CENT",
+    lookupCode: "CENT",
+    unitPrice: createAud(1),
+  };
+  rounded.addScannedItem(item("cent-1", centItem));
+  rounded.addScannedItem(item("separator", { lookupCode: "SEPARATOR" }));
+  rounded.addScannedItem(item("cent-2", centItem));
+  rounded.setLineDiscountPercentBps("cent-1", 5_000);
+  rounded.setLineDiscountPercentBps("cent-2", 5_000);
+  const revisionBefore = rounded.stateSnapshot().revision;
+
+  assert.equal(rounded.hasMergeCompatibleLines(), false);
+  assert.deepEqual(rounded.mergeCompatibleLines(), {
+    groups: [],
+    removedLineCount: 0,
+  });
+  assert.equal(rounded.stateSnapshot().revision, revisionBefore);
+  assert.equal(rounded.snapshot().lines.length, 3);
 });
 
 test("quantity, unit price and remove mutations use integer cents", () => {
@@ -395,4 +625,39 @@ test("在线目录校准遇到完全相同数据时不递增 revision，手工�
   assert.deepEqual(updatedLineIds, []);
   assert.equal(restored.stateSnapshot().revision, revisionBefore);
   assert.equal(restored.snapshot().lines[1]?.unitPrice.cents, 675);
+});
+
+test("300 行不可合并百分比折扣的按钮预测保持近线性", () => {
+  const cart = new PricingCart({ asOfIso });
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let product = 0; product < 150; product += 1) {
+      const lineId = `line-${pass}-${product}`;
+      cart.addScannedItem(
+        item(lineId, {
+          productCode: `P-${product}`,
+          lookupCode: `BC-${product}`,
+          unitPrice: createAud(995),
+          syncProvenance: {
+            referenceCode: `REF-${product}`,
+            priceSource: 0,
+          },
+        }),
+      );
+      assert.equal(
+        cart.setLineDiscountPercentBps(lineId, 1_000),
+        true,
+      );
+    }
+  }
+
+  const startedAt = performance.now();
+  for (let iteration = 0; iteration < 20; iteration += 1) {
+    assert.equal(cart.hasMergeCompatibleLines(), false);
+  }
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.ok(
+    elapsedMs < 100,
+    `300 行合并预测执行 20 次耗时 ${elapsedMs.toFixed(1)}ms`,
+  );
 });

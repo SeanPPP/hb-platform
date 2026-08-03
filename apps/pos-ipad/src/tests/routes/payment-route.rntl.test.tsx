@@ -3,6 +3,8 @@ import { act, render, waitFor } from "@testing-library/react-native";
 
 import PaymentRoute from "../../../app/payment";
 
+import type { PosAuthorizedFulfilmentActionResult } from "@/core/runtime/production-pos-service-composition";
+
 let mockRuntime: any;
 let mockActiveCashier: any;
 let mockParams: any;
@@ -16,7 +18,10 @@ const mockInstallmentRecoveryRequired =
   jest.fn<() => Promise<boolean>>();
 const mockDestroyRegularPresenter = jest.fn();
 const mockDestroyInstallmentPresenter = jest.fn();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
+const mockReprintCurrentReceipt = jest.fn<
+  (orderGuid: string) => Promise<PosAuthorizedFulfilmentActionResult>
+>();
 let mockRegularPresenters: any[];
 
 jest.mock("expo-router", () => {
@@ -34,7 +39,7 @@ jest.mock("expo-router", () => {
           Array.isArray(value) ? [...value] : value,
         ]),
       ),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -133,6 +138,10 @@ beforeEach(() => {
   };
   mockRegularRecoveryRequired.mockResolvedValue(false);
   mockInstallmentRecoveryRequired.mockResolvedValue(false);
+  mockReprintCurrentReceipt.mockResolvedValue({
+    state: "Printed",
+    errorCode: null,
+  });
   mockPrepareInstallmentCreate.mockReturnValue({
     kind: "installment-create",
     checkoutIntentId: "123e4567-e89b-42d3-a456-426614174000",
@@ -171,8 +180,47 @@ test("普通交易经统一 facade 只传最小 checkout entry", async () => {
 
   mockPaymentScreenProps.onBack();
   mockPaymentScreenProps.onComplete("order-not-used-by-route");
-  expect(mockRouterReplace).toHaveBeenNthCalledWith(1, "/sales");
-  expect(mockRouterReplace).toHaveBeenNthCalledWith(2, "/sales");
+  expect(mockRouterDismissTo).toHaveBeenNthCalledWith(1, "/sales");
+  expect(mockRouterDismissTo).toHaveBeenNthCalledWith(2, "/sales");
+});
+
+test.each([
+  ["Printed", "completed"],
+  ["Ambiguous", "unknown"],
+  ["recovery-required", "unknown"],
+  ["Completed", "failed"],
+  ["Unknown", "failed"],
+  ["Failed", "failed"],
+] as const)("成功页打印把 %s 映射为 %s 并传入精确订单号", async (state, expected) => {
+  mockReprintCurrentReceipt.mockResolvedValueOnce({
+    state,
+    errorCode: state === "Printed" ? null : "PRINT_RESULT",
+  });
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(mockPaymentScreenProps.onPrintReceipt).toEqual(
+      expect.any(Function),
+    );
+  });
+  await expect(
+    mockPaymentScreenProps.onPrintReceipt("order-guid-exact"),
+  ).resolves.toBe(expected);
+  expect(mockReprintCurrentReceipt).toHaveBeenCalledTimes(1);
+  expect(mockReprintCurrentReceipt).toHaveBeenCalledWith("order-guid-exact");
+  await screen.unmount();
+});
+
+test("运行时缺少当前订单重打回调时成功页保持打印禁用", async () => {
+  delete mockRuntime.services.fulfilment.reprintCurrentReceipt;
+  const screen = await render(<PaymentRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("payment-screen")).toBeTruthy();
+  });
+  expect(mockPaymentScreenProps.onPrintReceipt).toBeUndefined();
+  expect(mockReprintCurrentReceipt).not.toHaveBeenCalled();
+  await screen.unmount();
 });
 
 test("新建分期和续付参数分别创建对应统一支付 presenter", async () => {
@@ -579,6 +627,9 @@ function readyRuntime() {
         prepareCreateCheckout: mockPrepareInstallmentCreate,
         createCheckoutPresenter: mockCreateInstallmentPresenter,
         hasRecoveryRequired: mockInstallmentRecoveryRequired,
+      },
+      fulfilment: {
+        reprintCurrentReceipt: mockReprintCurrentReceipt,
       },
     },
   };

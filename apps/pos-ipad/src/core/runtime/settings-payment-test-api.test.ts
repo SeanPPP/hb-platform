@@ -25,7 +25,7 @@ class QueueTransport implements HbposTransport {
   }
 }
 
-test("Square 测试读取候选环境/门店的设备列表并匹配公开 device id", async () => {
+test("Square Production 测试读取候选门店的设备列表并匹配公开 device id", async () => {
   const transport = new QueueTransport([
     {
       success: true,
@@ -40,25 +40,31 @@ test("Square 测试读取候选环境/门店的设备列表并匹配公开 devic
     },
   ]);
   const subject = new HbposSettingsPaymentTestApi(transport);
+  const signal = new AbortController().signal;
 
-  await subject.test("square", {
-    provider: "square",
-    square: {
-      environment: "Sandbox",
-      deviceId: "SQ-1",
-      locationId: "LOC-1",
+  await subject.test(
+    "square",
+    {
+      provider: "square",
+      square: {
+        environment: "Production",
+        deviceId: "SQ-1",
+        locationId: "LOC-1",
+      },
+      linkly: null,
     },
-    linkly: null,
-  });
+    signal,
+  );
 
   assert.deepEqual(transport.requests, [
     {
       method: "GET",
       url: "/api/v1/square/devices",
       params: {
-        environment: "Sandbox",
+        environment: "Production",
         locationId: "LOC-1",
       },
+      signal,
     },
   ]);
 });
@@ -81,15 +87,19 @@ test("Square 候选设备不存在或门店不符时失败关闭", async () => {
 
   await assert.rejects(
     () =>
-      subject.test("square", {
-        provider: "square",
-        square: {
-          environment: "Production",
-          deviceId: "SQ-1",
-          locationId: "LOC-1",
+      subject.test(
+        "square",
+        {
+          provider: "square",
+          square: {
+            environment: "Production",
+            deviceId: "SQ-1",
+            locationId: "LOC-1",
+          },
+          linkly: null,
         },
-        linkly: null,
-      }),
+        new AbortController().signal,
+      ),
     /not available/i,
   );
 });
@@ -105,17 +115,23 @@ test("Linkly 测试调用 Backend Async logon-test 且只接受 succeeded", asyn
     },
   ]);
   const subject = new HbposSettingsPaymentTestApi(transport);
+  const signal = new AbortController().signal;
 
-  await subject.test("linkly", {
-    provider: "linkly",
-    square: null,
-    linkly: { environment: "Production" },
-  });
+  await subject.test(
+    "linkly",
+    {
+      provider: "linkly",
+      square: null,
+      linkly: { environment: "Production" },
+    },
+    signal,
+  );
   assert.deepEqual(transport.requests, [
     {
       method: "POST",
       url: "/api/v1/linkly/cloud-backend/logon-test",
       params: { environment: "Production" },
+      signal,
     },
   ]);
 });
@@ -126,11 +142,118 @@ test("支付测试不接受未提供的 provider 配置", async () => {
   );
   await assert.rejects(
     () =>
-      subject.test("square", {
-        provider: "linkly",
-        square: null,
-        linkly: { environment: "Production" },
-      }),
+      subject.test(
+        "square",
+        {
+          provider: "linkly",
+          square: null,
+          linkly: { environment: "Production" },
+        },
+        new AbortController().signal,
+      ),
     /configuration/i,
   );
+});
+
+test("Square Sandbox 测试复用官方设备合并和 device: 规范化规则", async () => {
+  const transport = new QueueTransport([]);
+  const subject = new HbposSettingsPaymentTestApi(transport);
+
+  await subject.test(
+    "square",
+    {
+      provider: "square",
+      square: {
+        environment: "Sandbox",
+        deviceId: " device:9FA747A2-25FF-48EE-B078-04381F7C828F ",
+        locationId: " LOC-1 ",
+      },
+      linkly: null,
+    },
+    new AbortController().signal,
+  );
+
+  assert.deepEqual(transport.requests, []);
+});
+
+test("Square Sandbox 官方测试终端不依赖不受支持的 Devices API", async () => {
+  const transport = new QueueTransport([
+    new Error("Square Sandbox Devices API is unsupported"),
+  ]);
+  const subject = new HbposSettingsPaymentTestApi(transport);
+
+  await subject.test(
+    "square",
+    {
+      provider: "square",
+      square: {
+        environment: "Sandbox",
+        deviceId: "device:9FA747A2-25FF-48EE-B078-04381F7C828F",
+        locationId: "LOC-1",
+      },
+      linkly: null,
+    },
+    new AbortController().signal,
+  );
+
+  assert.deepEqual(transport.requests, []);
+});
+
+test("Square Sandbox 本地测试仍响应已中止的操作", async () => {
+  const transport = new QueueTransport([]);
+  const subject = new HbposSettingsPaymentTestApi(transport);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () =>
+      subject.test(
+        "square",
+        {
+          provider: "square",
+          square: {
+            environment: "Sandbox",
+            deviceId: "9fa747a2-25ff-48ee-b078-04381f7c828f",
+            locationId: "LOC-1",
+          },
+          linkly: null,
+        },
+        controller.signal,
+      ),
+    { name: "AbortError" },
+  );
+  assert.deepEqual(transport.requests, []);
+});
+
+test("Square Sandbox 空门店或非官方测试终端失败关闭", async () => {
+  const transport = new QueueTransport([]);
+  const subject = new HbposSettingsPaymentTestApi(transport);
+
+  for (const square of [
+    {
+      environment: "Sandbox" as const,
+      deviceId: "9fa747a2-25ff-48ee-b078-04381f7c828f",
+      locationId: " ",
+    },
+    {
+      environment: "Sandbox" as const,
+      deviceId: "ordinary-production-device",
+      locationId: "LOC-1",
+    },
+  ]) {
+    await assert.rejects(
+      () =>
+        subject.test(
+          "square",
+          {
+            provider: "square",
+            square,
+            linkly: null,
+          },
+          new AbortController().signal,
+        ),
+      /location|required|not available/i,
+    );
+  }
+  assert.deepEqual(transport.requests, []);
 });

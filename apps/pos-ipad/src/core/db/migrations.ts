@@ -4363,6 +4363,179 @@ CREATE INDEX ix_application_log_outbox_ready
   ON application_log_outbox (delivery_state, next_attempt_at_iso, occurred_at_iso);
 `;
 
+const M27 = `
+-- 旧支付草稿曾把 payment:<OrderGuid>:<序号> 当作订单行 Guid 保存。
+-- 只恢复确认由支付草稿绑定、且因此被 ORDER_LINE_INVALID 拒绝的订单；
+-- 行主键保持不变，由同步适配器稳定映射，避免破坏不可变绑定和退货引用。
+UPDATE local_orders
+SET state = 'PendingSync',
+  updated_at_iso = (
+    SELECT ob.updated_at_iso
+    FROM outbox_messages ob
+    WHERE ob.aggregate_id = local_orders.order_guid
+      AND ob.kind = 'order-sync'
+    LIMIT 1
+  )
+WHERE state = 'Rejected'
+  AND EXISTS (
+    SELECT 1
+    FROM outbox_messages ob
+    WHERE ob.aggregate_id = local_orders.order_guid
+      AND ob.kind = 'order-sync'
+      AND ob.state = 'rejected'
+      AND ob.last_error_code = 'ORDER_LINE_INVALID'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM local_order_lines line
+    WHERE line.order_guid = local_orders.order_guid
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM local_order_lines line
+    LEFT JOIN payment_order_draft_line_bindings binding
+      ON binding.order_guid = line.order_guid
+     AND binding.order_line_id = line.line_id
+     AND binding.line_sequence = line.line_sequence
+    WHERE line.order_guid = local_orders.order_guid
+      AND (
+        line.line_id <> (
+          'payment:' || local_orders.order_guid || ':' ||
+          CAST(line.line_sequence AS TEXT)
+        )
+        OR binding.order_line_id IS NULL
+      )
+  );
+
+UPDATE outbox_messages
+SET state = 'pending',
+  lease_id = NULL,
+  lease_expires_at_iso = NULL,
+  last_error_code = NULL
+WHERE kind = 'order-sync'
+  AND state = 'rejected'
+  AND last_error_code = 'ORDER_LINE_INVALID'
+  AND EXISTS (
+    SELECT 1
+    FROM local_orders orders
+    WHERE orders.order_guid = outbox_messages.aggregate_id
+      AND orders.state = 'PendingSync'
+      AND EXISTS (
+        SELECT 1
+        FROM local_order_lines line
+        WHERE line.order_guid = orders.order_guid
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM local_order_lines line
+        LEFT JOIN payment_order_draft_line_bindings binding
+          ON binding.order_guid = line.order_guid
+         AND binding.order_line_id = line.line_id
+         AND binding.line_sequence = line.line_sequence
+        WHERE line.order_guid = orders.order_guid
+          AND (
+            line.line_id <> (
+              'payment:' || orders.order_guid || ':' ||
+              CAST(line.line_sequence AS TEXT)
+            )
+            OR binding.order_line_id IS NULL
+          )
+      )
+  );
+
+-- 本地小票退货会把旧支付订单的本地行号冻结为 originalOrderDetailGuid。
+-- 仅当本单每一行都能追溯到同一旧支付行及其不可变 binding 时恢复。
+UPDATE local_orders
+SET state = 'PendingSync',
+  updated_at_iso = (
+    SELECT ob.updated_at_iso
+    FROM outbox_messages ob
+    WHERE ob.aggregate_id = local_orders.order_guid
+      AND ob.kind = 'order-sync'
+    LIMIT 1
+  )
+WHERE state = 'Rejected'
+  AND EXISTS (
+    SELECT 1
+    FROM outbox_messages ob
+    WHERE ob.aggregate_id = local_orders.order_guid
+      AND ob.kind = 'order-sync'
+      AND ob.state = 'rejected'
+      AND ob.last_error_code = 'ORDER_RETURN_REFERENCE_INVALID'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM local_order_lines line
+    WHERE line.order_guid = local_orders.order_guid
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM local_order_lines line
+    WHERE line.order_guid = local_orders.order_guid
+      AND (
+        line.original_order_guid IS NULL
+        OR line.original_order_detail_guid IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM local_order_lines original
+          INNER JOIN payment_order_draft_line_bindings binding
+            ON binding.order_guid = original.order_guid
+           AND binding.order_line_id = original.line_id
+           AND binding.line_sequence = original.line_sequence
+          WHERE original.order_guid = line.original_order_guid
+            AND original.line_id = line.original_order_detail_guid
+            AND original.line_id = (
+              'payment:' || original.order_guid || ':' ||
+              CAST(original.line_sequence AS TEXT)
+            )
+        )
+      )
+  );
+
+UPDATE outbox_messages
+SET state = 'pending',
+  lease_id = NULL,
+  lease_expires_at_iso = NULL,
+  last_error_code = NULL
+WHERE kind = 'order-sync'
+  AND state = 'rejected'
+  AND last_error_code = 'ORDER_RETURN_REFERENCE_INVALID'
+  AND EXISTS (
+    SELECT 1
+    FROM local_orders orders
+    WHERE orders.order_guid = outbox_messages.aggregate_id
+      AND orders.state = 'PendingSync'
+      AND EXISTS (
+        SELECT 1
+        FROM local_order_lines line
+        WHERE line.order_guid = orders.order_guid
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM local_order_lines line
+        WHERE line.order_guid = orders.order_guid
+          AND (
+            line.original_order_guid IS NULL
+            OR line.original_order_detail_guid IS NULL
+            OR NOT EXISTS (
+              SELECT 1
+              FROM local_order_lines original
+              INNER JOIN payment_order_draft_line_bindings binding
+                ON binding.order_guid = original.order_guid
+               AND binding.order_line_id = original.line_id
+               AND binding.line_sequence = original.line_sequence
+              WHERE original.order_guid = line.original_order_guid
+                AND original.line_id = line.original_order_detail_guid
+                AND original.line_id = (
+                  'payment:' || original.order_guid || ':' ||
+                  CAST(original.line_sequence AS TEXT)
+                )
+            )
+          )
+      )
+  );
+`;
+
 const M28 = `
 -- 已批准支付也可能跨员工登录与进程重启后才完成；actor 与 action binding 同事务冻结。
 -- NULL 仅兼容 M28 前已有绑定，运行时会整体回退订单员工且 userGuid 置空。
@@ -4943,6 +5116,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 24, name: "M24_mixed_cash_amount_facts", sql: M24 },
   { version: 25, name: "M25_catalog_delta_generations", sql: M25 },
   { version: 26, name: "M26_log_delivery_outboxes", sql: M26 },
+  { version: 27, name: "M27_payment_order_line_guid_recovery", sql: M27 },
   { version: 28, name: "M28_payment_actor_snapshots", sql: M28 },
   { version: 29, name: "M29_voucher_actor_required", sql: M29 },
   { version: 30, name: "M30_audit_scope_delivery", sql: M30 },

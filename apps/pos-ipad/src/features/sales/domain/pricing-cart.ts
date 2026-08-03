@@ -13,6 +13,7 @@ import type {
   AddCartItemInput,
   AddOpenItemInput,
   CartAddDisposition,
+  MergeCompatibleCartLinesResult,
   PricingCartLineState,
   PricingCartOptions,
   PricingCartStateSnapshot,
@@ -274,12 +275,47 @@ function cloneLineState(line: MutablePricingLine): PricingCartLineState {
   };
 }
 
+function cloneMutableLine(line: MutablePricingLine): MutablePricingLine {
+  return {
+    lineId: line.lineId,
+    productCode: line.productCode,
+    itemNumber: line.itemNumber,
+    lookupCode: line.lookupCode,
+    displayName: line.displayName,
+    quantity: line.quantity,
+    unitPriceCents: line.unitPriceCents,
+    basePriceSource: line.basePriceSource,
+    syncProvenance:
+      line.syncProvenance === undefined
+        ? undefined
+        : normalizeLineSyncProvenance(line.syncProvenance),
+    kind: line.kind,
+    returnSourceKey: line.returnSourceKey,
+    originalOrderGuid: line.originalOrderGuid,
+    originalOrderDetailGuid: line.originalOrderDetailGuid,
+    discountState: cloneDiscountState(line.discountState),
+  };
+}
+
 function hasSameSyncProvenance(
   left: LineSyncProvenance | undefined,
   right: LineSyncProvenance,
 ): boolean {
   return (
     left !== undefined &&
+    left.referenceCode === right.referenceCode &&
+    left.priceSource === right.priceSource
+  );
+}
+
+function hasSameOptionalSyncProvenance(
+  left: LineSyncProvenance | undefined,
+  right: LineSyncProvenance | undefined,
+): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return (
     left.referenceCode === right.referenceCode &&
     left.priceSource === right.priceSource
   );
@@ -377,7 +413,7 @@ export class PricingCart {
     return cart;
   }
 
-  /** 保持已有调用方的 string API；需要业务反馈的新调用方消费 disposition。 */
+  /** 保持已有调用方的 string API；新代码应消费 disposition。 */
   addItem(input: AddCartItemInput): string {
     return this.addItemWithDisposition(input).lineId;
   }
@@ -421,7 +457,29 @@ export class PricingCart {
       }
     }
 
-    this.assertUniqueLineId(input.lineId);
+    return {
+      lineId: this.appendItem(input, quantity, syncProvenance, kind),
+      kind: "added",
+    };
+  }
+
+  /**
+   * 扫码只允许与最后一行连续合并，避免把中间已分开的销售决策重新折叠。
+   */
+  /** 保持已有调用方的 string API；新代码应消费 disposition。 */
+  addScannedItem(input: AddCartItemInput): string {
+    return this.addScannedItemWithDisposition(input).lineId;
+  }
+
+  addScannedItemWithDisposition(
+    input: AddCartItemInput,
+  ): CartAddDisposition {
+    const quantity = input.quantity ?? 1;
+    this.assertNewLineInput(input, quantity);
+    const syncProvenance = normalizeLineSyncProvenance(
+      input.syncProvenance,
+    );
+    const kind = input.kind ?? "sale";
     const unitPriceCents = assertAudCents(
       input.unitPrice,
       "cart unit price",
@@ -431,26 +489,88 @@ export class PricingCart {
     if (priceSource !== "catalog" && priceSource !== "manual") {
       throw new TypeError("cart item price source is invalid");
     }
-    this.assertGrossSafe(quantity, unitPriceCents);
 
-    this.lines.push({
-      lineId: input.lineId,
-      productCode: input.productCode,
-      itemNumber: input.itemNumber,
-      lookupCode: input.lookupCode,
-      displayName: input.displayName,
-      quantity,
-      unitPriceCents,
-      basePriceSource: priceSource,
-      syncProvenance,
-      kind,
-      returnSourceKey: input.returnSourceKey ?? null,
-      originalOrderGuid: input.originalOrderGuid ?? null,
-      originalOrderDetailGuid: input.originalOrderDetailGuid ?? null,
-      discountState: NONE_DISCOUNT,
+    const lastLine = this.lines.at(-1);
+    if (
+      kind === "sale" &&
+      lastLine?.kind === "sale" &&
+      lastLine.basePriceSource !== "open-item" &&
+      normalizeLookupCode(lastLine.lookupCode) ===
+        normalizeLookupCode(input.lookupCode) &&
+      normalizeProductCode(lastLine.productCode) ===
+        normalizeProductCode(input.productCode) &&
+      lastLine.unitPriceCents === unitPriceCents &&
+      lastLine.basePriceSource === priceSource &&
+      hasSameOptionalSyncProvenance(
+        lastLine.syncProvenance,
+        syncProvenance,
+      ) &&
+      (lastLine.discountState.kind === "none" ||
+        lastLine.discountState.kind === "promotion")
+    ) {
+      const nextQuantity = sumSafe(
+        [lastLine.quantity, quantity],
+        "merged scanned cart quantity",
+      );
+      this.assertGrossSafe(nextQuantity, lastLine.unitPriceCents);
+      lastLine.quantity = nextQuantity;
+      this.normalizeDiscountAfterGrossChange(lastLine);
+      this.finishMutation();
+      return { lineId: lastLine.lineId, kind: "incremented" };
+    }
+
+    return {
+      lineId: this.appendItem(input, quantity, syncProvenance, kind),
+      kind: "added",
+    };
+  }
+
+  hasMergeCompatibleLines(): boolean {
+    const baseline = this.snapshot();
+    const compatibleGroups = this.compatibleLineGroups(this.lines).filter(
+      (group) => this.groupPreservesCartAmounts(group),
+    );
+    if (compatibleGroups.length === 0) return false;
+
+    const batched = this.simulateCompatibleGroupsMerge(
+      this.lines,
+      compatibleGroups,
+    );
+    if (this.hasSameCartAmounts(baseline, batched.snapshot)) {
+      return true;
+    }
+
+    // 理论不变量被新促销算法打破时退回逐组验证，保持按钮预测与执行完全一致。
+    return compatibleGroups.some((group) => {
+      const candidate = this.simulateCompatibleGroupMerge(
+        this.lines,
+        group,
+      );
+      return (
+        candidate !== null &&
+        this.hasSameCartAmounts(baseline, candidate.snapshot)
+      );
     });
+  }
+
+  /**
+   * 先在候选车上逐组重算并核对三项金额；只有完全不改变金额的组才一次性提交。
+   */
+  mergeCompatibleLines(): MergeCompatibleCartLinesResult {
+    const plan = this.planCompatibleLineMerge();
+    if (plan.groups.length === 0) {
+      return { groups: [], removedLineCount: 0 };
+    }
+
+    this.lines = plan.lines;
     this.finishMutation();
-    return { lineId: input.lineId, kind: "added" };
+    return {
+      groups: plan.groups,
+      removedLineCount: plan.groups.reduce(
+        (count, group) => count + group.removedLineIds.length,
+        0,
+      ),
+    };
   }
 
   addOpenItem(input: AddOpenItemInput): string {
@@ -841,6 +961,330 @@ export class PricingCart {
 
   private static isPositiveQuantity(quantity: number): boolean {
     return Number.isSafeInteger(quantity) && quantity > 0;
+  }
+
+  private appendItem(
+    input: AddCartItemInput,
+    quantity: number,
+    syncProvenance: LineSyncProvenance,
+    kind: CartLineKind,
+  ): string {
+    this.assertUniqueLineId(input.lineId);
+    const unitPriceCents = assertAudCents(
+      input.unitPrice,
+      "cart unit price",
+      0,
+    );
+    const priceSource = input.priceSource ?? "catalog";
+    if (priceSource !== "catalog" && priceSource !== "manual") {
+      throw new TypeError("cart item price source is invalid");
+    }
+    this.assertGrossSafe(quantity, unitPriceCents);
+
+    this.lines.push({
+      lineId: input.lineId,
+      productCode: input.productCode,
+      itemNumber: input.itemNumber,
+      lookupCode: input.lookupCode,
+      displayName: input.displayName,
+      quantity,
+      unitPriceCents,
+      basePriceSource: priceSource,
+      syncProvenance,
+      kind,
+      returnSourceKey: input.returnSourceKey ?? null,
+      originalOrderGuid: input.originalOrderGuid ?? null,
+      originalOrderDetailGuid: input.originalOrderDetailGuid ?? null,
+      discountState: NONE_DISCOUNT,
+    });
+    this.finishMutation();
+    return input.lineId;
+  }
+
+  private planCompatibleLineMerge(): Readonly<{
+    lines: MutablePricingLine[];
+    groups: MergeCompatibleCartLinesResult["groups"];
+  }> {
+    const baseline = this.snapshot();
+    let workingLines = this.lines.map(cloneMutableLine);
+    const candidateGroups = this.compatibleLineGroups(workingLines).filter(
+      (group) => this.groupPreservesCartAmounts(group),
+    );
+    if (candidateGroups.length === 0) {
+      return { lines: workingLines, groups: [] };
+    }
+    const batched = this.simulateCompatibleGroupsMerge(
+      workingLines,
+      candidateGroups,
+    );
+    if (this.hasSameCartAmounts(baseline, batched.snapshot)) {
+      return { lines: batched.lines, groups: batched.groups };
+    }
+
+    const mergedGroups: {
+      keptLineId: string;
+      removedLineIds: string[];
+    }[] = [];
+    for (const group of candidateGroups) {
+      const candidate = this.simulateCompatibleGroupMerge(
+        workingLines,
+        group,
+      );
+      if (
+        candidate === null ||
+        !this.hasSameCartAmounts(baseline, candidate.snapshot)
+      ) {
+        continue;
+      }
+
+      workingLines = candidate.lines;
+      mergedGroups.push(candidate.group);
+    }
+
+    return { lines: workingLines, groups: mergedGroups };
+  }
+
+  private simulateCompatibleGroupsMerge(
+    lines: readonly MutablePricingLine[],
+    groups: readonly (readonly MutablePricingLine[])[],
+  ): Readonly<{
+    lines: MutablePricingLine[];
+    snapshot: CartSnapshot;
+    groups: MergeCompatibleCartLinesResult["groups"];
+  }> {
+    const candidate = new PricingCart({
+      mode: this.mode,
+      asOfIso: this.asOfIso,
+      promotions: this.promotions,
+    });
+    candidate.revision = this.revision;
+    candidate.lines = lines.map(cloneMutableLine);
+    const candidateById = new Map(
+      candidate.lines.map((line) => [line.lineId, line] as const),
+    );
+    const removedLineIds = new Set<string>();
+    const mergedGroups: {
+      keptLineId: string;
+      removedLineIds: string[];
+    }[] = [];
+
+    for (const group of groups) {
+      const mergedDiscount = this.mergedDiscountState(group);
+      if (mergedDiscount === null) continue;
+      const keptLineId = group[0]!.lineId;
+      const removedIds = group.slice(1).map((line) => line.lineId);
+      const kept = candidateById.get(keptLineId);
+      if (!kept) continue;
+      kept.quantity = sumSafe(
+        group.map((line) => line.quantity),
+        "merged compatible cart quantity",
+      );
+      candidate.assertGrossSafe(kept.quantity, kept.unitPriceCents);
+      kept.discountState = mergedDiscount;
+      for (const lineId of removedIds) removedLineIds.add(lineId);
+      mergedGroups.push({
+        keptLineId,
+        removedLineIds: removedIds,
+      });
+    }
+
+    candidate.lines = candidate.lines.filter(
+      (line) => !removedLineIds.has(line.lineId),
+    );
+    candidate.refreshPromotionDiscounts();
+    return {
+      lines: candidate.lines.map(cloneMutableLine),
+      snapshot: candidate.snapshot(),
+      groups: mergedGroups,
+    };
+  }
+
+  private compatibleLineGroups(
+    lines: readonly MutablePricingLine[],
+  ): MutablePricingLine[][] {
+    const groupsByKey = new Map<string, MutablePricingLine[]>();
+    for (const line of lines) {
+      if (
+        line.kind !== "sale" ||
+        line.basePriceSource === "open-item"
+      ) {
+        continue;
+      }
+      const provenance =
+        line.syncProvenance === undefined
+          ? ["missing"]
+          : [
+              "present",
+              line.syncProvenance.referenceCode,
+              line.syncProvenance.priceSource,
+            ];
+      const discountKey =
+        line.discountState.kind === "none" ||
+        line.discountState.kind === "promotion"
+          ? ["automatic"]
+          : line.discountState.kind === "manual-amount"
+            ? ["manual-amount"]
+            : [
+                "manual-percent",
+                line.discountState.basisPoints,
+              ];
+      const key = JSON.stringify([
+        normalizeLookupCode(line.lookupCode),
+        normalizeProductCode(line.productCode),
+        line.unitPriceCents,
+        line.basePriceSource,
+        provenance,
+        discountKey,
+      ]);
+      const group = groupsByKey.get(key);
+      if (group) {
+        group.push(line);
+      } else {
+        groupsByKey.set(key, [line]);
+      }
+    }
+    return [...groupsByKey.values()].filter((group) => group.length > 1);
+  }
+
+  private simulateCompatibleGroupMerge(
+    lines: readonly MutablePricingLine[],
+    groupLines: readonly MutablePricingLine[],
+  ): Readonly<{
+    lines: MutablePricingLine[];
+    snapshot: CartSnapshot;
+    group: {
+      keptLineId: string;
+      removedLineIds: string[];
+    };
+  }> | null {
+    const mergedDiscount = this.mergedDiscountState(groupLines);
+    if (mergedDiscount === null) return null;
+    const keptLineId = groupLines[0]!.lineId;
+    const removedLineIds = groupLines
+      .slice(1)
+      .map((line) => line.lineId);
+    const removed = new Set(removedLineIds);
+    const candidate = new PricingCart({
+      mode: this.mode,
+      asOfIso: this.asOfIso,
+      promotions: this.promotions,
+    });
+    candidate.revision = this.revision;
+    candidate.lines = lines
+      .filter((line) => !removed.has(line.lineId))
+      .map(cloneMutableLine);
+    const kept = candidate.lines.find(
+      (line) => line.lineId === keptLineId,
+    );
+    if (!kept) return null;
+    kept.quantity = sumSafe(
+      groupLines.map((line) => line.quantity),
+      "merged compatible cart quantity",
+    );
+    candidate.assertGrossSafe(kept.quantity, kept.unitPriceCents);
+    kept.discountState = mergedDiscount;
+    candidate.refreshPromotionDiscounts();
+    return {
+      lines: candidate.lines.map(cloneMutableLine),
+      snapshot: candidate.snapshot(),
+      group: { keptLineId, removedLineIds },
+    };
+  }
+
+  private hasSameCartAmounts(
+    left: CartSnapshot,
+    right: CartSnapshot,
+  ): boolean {
+    return (
+      left.subtotal.cents === right.subtotal.cents &&
+      left.discount.cents === right.discount.cents &&
+      left.actualAmount.cents === right.actualAmount.cents
+    );
+  }
+
+  /**
+   * 同商品、价格及来源的行合并后小计恒定；固定折扣可直接求和，
+   * 自动促销按相同总数量重算也保持订单级折扣。百分比折扣只需防守分币舍入差。
+   */
+  private groupPreservesCartAmounts(
+    lines: readonly MutablePricingLine[],
+  ): boolean {
+    const mergedDiscount = this.mergedDiscountState(lines);
+    if (mergedDiscount === null) return false;
+    if (mergedDiscount.kind !== "manual-percent") return true;
+
+    const currentDiscount = sumSafe(
+      lines.map((line) => this.lineDiscount(line)),
+      "compatible percentage discount",
+    );
+    const mergedQuantity = sumSafe(
+      lines.map((line) => line.quantity),
+      "compatible percentage quantity",
+    );
+    const mergedGross = multiplySafe(
+      mergedQuantity,
+      lines[0]!.unitPriceCents,
+      "compatible percentage gross",
+    );
+    const mergedDiscountCents = roundProductRatio(
+      mergedGross,
+      mergedDiscount.basisPoints,
+      10_000,
+      "compatible percentage discount",
+    );
+    return currentDiscount === mergedDiscountCents;
+  }
+
+  private mergedDiscountState(
+    lines: readonly MutablePricingLine[],
+  ): PricingDiscountState | null {
+    if (
+      lines.every(
+        (line) =>
+          line.discountState.kind === "none" ||
+          line.discountState.kind === "promotion",
+      )
+    ) {
+      return NONE_DISCOUNT;
+    }
+    if (
+      lines.every(
+        (line) => line.discountState.kind === "manual-amount",
+      )
+    ) {
+      return {
+        kind: "manual-amount",
+        cents: sumSafe(
+          lines.map((line) =>
+            line.discountState.kind === "manual-amount"
+              ? line.discountState.cents
+              : 0,
+          ),
+          "merged fixed cart discount",
+        ),
+      };
+    }
+    if (
+      lines.every(
+        (line) => line.discountState.kind === "manual-percent",
+      )
+    ) {
+      const first = lines[0]!.discountState;
+      if (
+        first.kind === "manual-percent" &&
+        lines.every(
+          (line) =>
+            line.discountState.kind === "manual-percent" &&
+            line.discountState.basisPoints === first.basisPoints,
+        )
+      ) {
+        return {
+          kind: "manual-percent",
+          basisPoints: first.basisPoints,
+        };
+      }
+    }
+    return null;
   }
 
   private assertNewLineInput(

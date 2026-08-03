@@ -135,7 +135,7 @@ export default function InstallmentsRoute() {
   if (runtimeUnavailable) {
     return (
       <InstallmentsUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -180,7 +180,7 @@ export default function InstallmentsRoute() {
 
   return (
     <InstallmentScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
       {...(startCreatePayment
         ? { onStartCreate: startCreatePayment }

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createSettingsApiHealthProbe,
+  reloadSettingsRuntimeTerminally,
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
@@ -92,4 +93,31 @@ test("候选 API 探测只接受 2xx，并把 AbortSignal 传给 fetch", async (
     true,
   );
   assert.equal(signals[0], abort.signal);
+});
+
+test("设置 reload 成功后保持 terminal pending，失败时仍向上抛出", async () => {
+  let settled = false;
+  const terminalReload = reloadSettingsRuntimeTerminally(
+    async () => undefined,
+  );
+  void terminalReload.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(settled, false);
+
+  await assert.rejects(
+    () =>
+      reloadSettingsRuntimeTerminally(async () => {
+        throw new Error("RELOAD_FAILED");
+      }),
+    /RELOAD_FAILED/u,
+  );
 });

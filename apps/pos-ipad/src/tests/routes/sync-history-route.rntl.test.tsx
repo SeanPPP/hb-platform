@@ -9,7 +9,7 @@ let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 const mockFileCreate = jest.fn();
 const mockFileWrite = jest.fn();
 const mockFileDelete = jest.fn();
@@ -60,7 +60,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -156,7 +156,7 @@ test("设备身份复核后创建同步历史 presenter，返回销售且卸载�
   );
 
   mockScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);

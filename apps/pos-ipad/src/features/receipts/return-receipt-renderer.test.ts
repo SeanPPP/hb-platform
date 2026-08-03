@@ -19,10 +19,9 @@ test("receipt 退货使用冻结 58mm 英文设置，展示退款语义且绝不
   assert.equal(rendered.printerId, "printer-1");
   assert.match(text, /REFUND RECEIPT/u);
   assert.match(text, /Refund processed/u);
-  assert.match(text, /-\$5\.00/u);
+  assert.match(text, /\$-5\.00/u);
   assert.match(text, /-2/u);
-  assert.match(text, /\$2\.50/u);
-  assert.equal(text.includes("-$2.50"), false);
+  assert.equal(text.includes("$2.50"), false, "WPF 商品行只打印 lookup code、数量和行金额");
   assert.equal(text.includes("SQ:payment-secret"), false);
   assert.equal(text.includes("RFN-SECRET"), false);
   assert.equal(text.includes("reservation-secret"), false);

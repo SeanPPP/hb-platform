@@ -117,7 +117,7 @@ export default function SyncHistoryRoute() {
 
   return (
     <SyncHistoryScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       onExport={shareSupportExport}
       presenter={presenter}
     />

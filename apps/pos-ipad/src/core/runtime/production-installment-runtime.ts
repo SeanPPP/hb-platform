@@ -420,6 +420,10 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     return this.recoverPersistedAction(blocking);
   }
 
+  public async hasRecoveryRequired(): Promise<boolean> {
+    return (await this.loadBlockingAction()) !== null;
+  }
+
   public create(input: InstallmentWorkflowCreateInput): Promise<InstallmentDetails> {
     return this.context.input.activeCart.runExclusive(async (cartLease) => {
       await this.assertOnlineAndScoped();

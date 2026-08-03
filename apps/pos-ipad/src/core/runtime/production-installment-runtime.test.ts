@@ -70,6 +70,27 @@ test("公开服务提供管理、统一支付与恢复工厂，在线列表成�
   assert.equal(presenter.getState().orders[0]?.installmentGuid, "installment-1");
 });
 
+test("统一支付确认前掉线且无耐久 action 时保留可重试状态", async () => {
+  const harness = createHarness();
+  const entry = harness.runtime.prepareCreateCheckout();
+  const presenter = harness.runtime.createCheckoutPresenter(entry);
+
+  assert.equal(await presenter.initialize(), true);
+  presenter.openInstallmentCustomerEditor();
+  presenter.setInstallmentCustomerDraftName("Customer");
+  presenter.setInstallmentCustomerDraftPhone("0400000000");
+  presenter.saveInstallmentCustomer();
+  assert.equal(await presenter.submitSelected(), true);
+
+  harness.online.value = false;
+  assert.equal(await presenter.confirm(), false);
+  assert.equal(presenter.getState().phase, "ready");
+  assert.equal(presenter.getState().runtimeErrorCode, "ONLINE_REQUIRED");
+  assert.equal(presenter.getState().allowedActions.recover, false);
+  assert.equal(harness.actionStore.createdCandidates.length, 0);
+  assert.equal(await harness.runtime.hasRecoveryRequired(), false);
+});
+
 test("远端列表失败不覆盖快照；离线只读取可信门店的 SQLCipher 缓存", async () => {
   const harness = createHarness({
     cached: [snapshot({ installmentGuid: "cached-store-1" })],

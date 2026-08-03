@@ -125,7 +125,7 @@ export default function AttendanceAuditRoute() {
   if (runtimeUnavailable) {
     return (
       <AttendanceAuditUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -135,7 +135,7 @@ export default function AttendanceAuditRoute() {
 
   return (
     <AttendanceAuditScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );

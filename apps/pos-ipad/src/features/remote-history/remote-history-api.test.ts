@@ -90,6 +90,24 @@ test("list 固定可信门店和 take=100，并严格转为整数分", async () 
   ]);
 });
 
+test("list 未指定终端时不附加有效终端筛选", async () => {
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: { orders: [] },
+    },
+  ]);
+  const api = new HbposRemoteHistoryApi(transport, "S1");
+
+  await api.list({
+    ...query,
+    deviceCode: null,
+  });
+
+  assert.equal(transport.requests[0]?.params?.storeCode, "S1");
+  assert.equal(transport.requests[0]?.params?.deviceCode, undefined);
+});
+
 test("details 将数量转为十进制字符串，并只保留付款脱敏白名单", async () => {
   const transport = new QueueTransport([
     {

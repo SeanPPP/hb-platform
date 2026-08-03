@@ -8,6 +8,8 @@ import {
 } from "./sales-toolbar";
 import { DEFAULT_SALES_TOOLBAR_ORDER } from "./sales-toolbar-order";
 
+import { PosSoundContext } from "@/ui/feedback/pos-sound-context";
+
 function action(
   id: SalesToolbarAction["id"],
   onPress = jest.fn(),
@@ -119,6 +121,41 @@ describe("SalesToolbar", () => {
 
     expect(enabledPress).toHaveBeenCalledTimes(1);
     expect(disabledPress).not.toHaveBeenCalled();
+    await screen.unmount();
+  });
+
+  it("短按与长按各只发出一次导航音", async () => {
+    const play = jest.fn();
+    const screen = await render(
+      <PosSoundContext.Provider
+        value={{
+          buttonSoundEnabled: true,
+          play,
+          setButtonSoundEnabled: jest.fn(),
+          setSpecialNodeSoundEnabled: jest.fn(),
+          specialNodeSoundEnabled: true,
+        }}
+      >
+        <SalesToolbar
+          actions={[action("held-orders")]}
+          canonicalOrder={DEFAULT_SALES_TOOLBAR_ORDER}
+          onOrderChange={jest.fn()}
+        />
+      </PosSoundContext.Provider>,
+    );
+    const heldOrders = screen.getByTestId("toolbar-held-orders");
+
+    await fireEvent.press(heldOrders);
+    await fireEvent(heldOrders, "pressIn", {
+      nativeEvent: { pageX: 10, pageY: 10 },
+    });
+    await fireEvent(heldOrders, "longPress");
+    await fireEvent(heldOrders, "press");
+
+    expect(play.mock.calls.map(([sound]) => sound)).toEqual([
+      "navigate",
+      "navigate",
+    ]);
     await screen.unmount();
   });
 

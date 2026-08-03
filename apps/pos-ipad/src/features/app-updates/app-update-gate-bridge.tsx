@@ -6,7 +6,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, View } from "react-native";
+import {
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
 import {
   resolveAppUpdateCopy,

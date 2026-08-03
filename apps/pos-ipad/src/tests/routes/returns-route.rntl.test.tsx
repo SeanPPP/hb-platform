@@ -15,7 +15,7 @@ const mockClearActiveCashier = jest.fn();
 const mockSignOut = jest.fn();
 const mockCreatePresenter = jest.fn<() => Promise<any>>();
 const mockDestroyPresenter = jest.fn();
-const mockRouterReplace = jest.fn();
+const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -24,7 +24,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ replace: mockRouterReplace }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
   };
 });
 
@@ -122,7 +122,7 @@ test("available 时保持稳定加载占位，异步创建窄 presenter 并在�
   ]);
 
   mockReturnScreenProps.onBack();
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
@@ -146,7 +146,7 @@ test("returns unavailable 时显示可恢复错误并允许返回销售", async 
     44,
   );
   await fireEvent.press(back);
-  expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
 });
 
 test("普通创建失败可原地重试，失败期间不清空收银员", async () => {
@@ -180,14 +180,14 @@ test("presenter 工厂同步抛错也进入可重试状态，不使 route 崩溃
   expect(mockClearActiveCashier).not.toHaveBeenCalled();
 });
 
-test("Returns.View 明确拒绝只替换回销售，不清空 cashier 或 signOut", async () => {
+test("Returns.View 明确拒绝时退回既有销售页，不清空 cashier 或 signOut", async () => {
   mockCreatePresenter.mockRejectedValueOnce({
     code: "RETURN_VIEW_FORBIDDEN",
   });
   const screen = await render(<ReturnsRoute />);
 
   await waitFor(() => {
-    expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+    expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   });
   expect(mockClearActiveCashier).not.toHaveBeenCalled();
   expect(mockSignOut).not.toHaveBeenCalled();

@@ -20,6 +20,15 @@ import {
   RECALL_RESTORE_PERMISSION,
 } from "../../features/held-orders/held-orders-domain";
 import {
+  type LocalHistoryDetails,
+  type LocalHistoryPage,
+  type LocalHistoryQuery,
+} from "../../features/local-history/local-history-domain";
+import {
+  LOCAL_HISTORY_REPRINT_PERMISSION,
+  LOCAL_HISTORY_VIEW_PERMISSION,
+} from "../../features/local-history/local-history-presenter";
+import {
   REMOTE_HISTORY_REPRINT_PERMISSION,
   REMOTE_HISTORY_VIEW_PERMISSION,
 } from "../../features/remote-history/remote-history-presenter";
@@ -30,6 +39,8 @@ import {
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
   SETTINGS_CATALOG_RESET_PERMISSION,
   SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+  SETTINGS_PAYMENT_TERMINAL_PERMISSION,
+  SETTINGS_RECEIPT_PRINTER_PERMISSION,
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type {
@@ -68,10 +79,12 @@ import type {
   LocalCatalogMatch,
 } from "../db/catalog-repository";
 import { PosDatabase } from "../db/pos-database";
+import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
 
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import {
+  createPostCommitWorkDrain,
   createPostCommitFulfilmentCashCheckout,
   createProductionPosRuntimeServices,
   type ProductionSettingsRuntimeConfiguration,
@@ -299,7 +312,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
   );
   assert.equal(
     remoteHistoryWithoutTrustedPermission.getState().filters.deviceCode,
-    "IPAD-1",
+    null,
   );
   remoteHistoryWithoutTrustedPermission.destroy();
   const syncHistoryPresenter = services.syncHistory.createPresenter(
@@ -415,6 +428,92 @@ test("销售履约 facade 缺少主管服务时按当前收银员权限 fail-clo
     },
   );
   assert.equal(drawerOpens, 0);
+});
+
+test("关闭自动打印后，最后小票与支付成功精确订单仍可经正式授权手动重打", async () => {
+  const order = lastCashOrder();
+  const preparedOrderGuids: string[] = [];
+  const printedJobIds: string[] = [];
+  const services = createTestComposition(
+    databaseFor([], {
+      lastOrder: order,
+      onReprintPrepared(input) {
+        preparedOrderGuids.push(input.orderGuid);
+      },
+    }),
+    {
+      cashierPermissions: [
+        "Permissions.PosTerminal.Receipt.PrintLast",
+      ],
+      onPrint(jobId) {
+        printedJobIds.push(jobId);
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  const currentSettings = await services.receiptSettings.get();
+  await services.receiptSettings.save({
+    ...currentSettings,
+    printEnabled: false,
+  });
+
+  const lastResult = await services.fulfilment.reprint.execute();
+  const currentResult = await services.fulfilment.reprintCurrentReceipt(
+    order.orderGuid,
+  );
+
+  assert.deepEqual(lastResult, { state: "Printed", errorCode: null });
+  assert.deepEqual(currentResult, { state: "Printed", errorCode: null });
+  assert.deepEqual(preparedOrderGuids, [order.orderGuid, order.orderGuid]);
+  assert.equal(printedJobIds.length, 2);
+});
+
+test("支付成功精确订单重打复用在途动作，并只接受 PrintLast 主管授权", async () => {
+  const order = lastCashOrder();
+  const printedJobIds: string[] = [];
+  const services = createTestComposition(
+    databaseFor([], { lastOrder: order }),
+    {
+      supervisorPermissions: [
+        "Permissions.PosTerminal.Receipt.PrintLast",
+      ],
+      onPrint(jobId) {
+        printedJobIds.push(jobId);
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  if (services.operationAuthorization.status !== "available") {
+    throw new Error("operation authorization must be available");
+  }
+
+  const first = services.fulfilment.reprintCurrentReceipt(order.orderGuid);
+  const duplicate = services.fulfilment.reprintCurrentReceipt(order.orderGuid);
+  assert.strictEqual(duplicate, first);
+  const authorization = services.operationAuthorization.getState();
+  assert.equal(authorization.kind, "awaiting-supervisor");
+  if (authorization.kind !== "awaiting-supervisor") {
+    throw new Error("current receipt authorization must be pending");
+  }
+  assert.equal(
+    authorization.permissionCode,
+    "Permissions.PosTerminal.Receipt.PrintLast",
+  );
+  assert.equal(authorization.action, "reprint-current-receipt");
+
+  assert.equal(
+    (
+      await services.operationAuthorization.submitSupervisorBarcode(
+        "supervisor",
+      )
+    ).outcome,
+    "authorized",
+  );
+  assert.deepEqual(await first, { state: "Printed", errorCode: null });
+  assert.deepEqual(await duplicate, { state: "Printed", errorCode: null });
+  assert.equal(printedJobIds.length, 1);
 });
 
 test("销售履约 facade 复用并发动作的 Promise 和 actionId，并通过主管授权后只触发一次硬件", async () => {
@@ -1321,6 +1420,168 @@ test("远程历史重打绑定当前收银员 lease，并从本地订单账本�
   presenter.destroy();
 });
 
+test("本机历史组合只按可信终端读取，并从选中订单账本进入本机来源重打", async () => {
+  const order = lastCashOrder();
+  const scopes: {
+    storeCode: string;
+    deviceCode: string;
+  }[] = [];
+  const queries: LocalHistoryQuery[] = [];
+  const preparedOrderGuids: string[] = [];
+  const printedJobIds: string[] = [];
+  const page: LocalHistoryPage = {
+    orders: [
+      {
+        orderGuid: order.orderGuid,
+        localSequence: order.localSequence,
+        soldAtIso: order.soldAtIso,
+        cashierName: order.cashierName,
+        state: "PendingSync",
+        totalCents: order.total.cents,
+        discountCents: order.discount.cents,
+        actualAmountCents: order.actualAmount.cents,
+        lineCount: order.lines.length,
+        paymentSummary: "Cash",
+      },
+    ],
+    nextCursor: null,
+  };
+  const details: LocalHistoryDetails = {
+    ...page.orders[0]!,
+    lines: order.lines.map((line) => ({
+      lineId: line.lineId,
+      productCode: line.productCode,
+      itemNumber: line.itemNumber,
+      lookupCode: line.lookupCode,
+      displayName: line.displayName,
+      quantity: line.quantity,
+      unitPriceCents: line.unitPrice.cents,
+      discountCents: line.discount.cents,
+      actualAmountCents: line.actualAmount.cents,
+      kind: line.kind,
+    })),
+    tenders: order.tenders.map((tender) => ({
+      method: tender.method,
+      amountCents: tender.amount.cents,
+    })),
+  };
+  const database = databaseFor([], {
+    lastOrder: order,
+    onReprintPrepared(input) {
+      preparedOrderGuids.push(input.orderGuid);
+    },
+  });
+  Object.assign(database as object, {
+    localHistory(scope: { storeCode: string; deviceCode: string }) {
+      scopes.push(scope);
+      return {
+        async list(query: LocalHistoryQuery) {
+          queries.push(query);
+          return page;
+        },
+        async getDetails(orderGuid: string) {
+          return orderGuid === order.orderGuid ? details : null;
+        },
+      };
+    },
+  });
+  const services = createTestComposition(database, {
+    cashierPermissions: [
+      LOCAL_HISTORY_VIEW_PERMISSION,
+      LOCAL_HISTORY_REPRINT_PERMISSION,
+    ],
+    onPrint(jobId) {
+      printedJobIds.push(jobId);
+    },
+  });
+
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  const receiptSettings = await services.receiptSettings.get();
+  await services.receiptSettings.save({
+    ...receiptSettings,
+    printEnabled: false,
+    peripheralId: null,
+  });
+  const presenter = services.localHistory.createPresenter();
+  await presenter.refresh();
+  await presenter.selectOrder(order.orderGuid);
+
+  const preview = presenter.getState().receiptPreview;
+  assert.equal(preview.kind, "ready");
+  if (preview.kind !== "ready") {
+    throw new Error("local history receipt preview was not ready");
+  }
+  assert.ok(preview.document.lines.some(
+    (line) => line.kind === "text" && line.text.includes(`#${order.localSequence}`),
+  ));
+  assert.ok(preview.document.lines.some(
+    (line) => line.kind === "qr" && line.value === order.orderGuid,
+  ));
+
+  // 预览不需要外设；真实重打仍须重新配置并冻结有效 printerId。
+  await services.receiptSettings.save({
+    ...receiptSettings,
+    printEnabled: false,
+    peripheralId: "printer-1",
+  });
+  await presenter.reprintSelected();
+
+  assert.deepEqual(scopes, [
+    { storeCode: "S001", deviceCode: "IPAD-1" },
+  ]);
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0]?.limit, 50);
+  assert.deepEqual(preparedOrderGuids, [order.orderGuid]);
+  assert.deepEqual(printedJobIds, ["reprint-job-1"]);
+  assert.deepEqual(presenter.getState().reprint, {
+    kind: "succeeded",
+    orderGuid: order.orderGuid,
+  });
+  presenter.destroy();
+});
+
+test("本机历史异步读取期间收银会话失效时，不发布旧 scope 数据", async () => {
+  const pendingPage = deferred<LocalHistoryPage>();
+  const invalidationCapture: { listener?: () => void } = {};
+  const database = databaseFor([]);
+  Object.assign(database as object, {
+    localHistory() {
+      return {
+        list() {
+          return pendingPage.promise;
+        },
+        async getDetails() {
+          throw new Error("details must not be read");
+        },
+      };
+    },
+  });
+  const services = createTestComposition(database, {
+    cashierPermissions: [LOCAL_HISTORY_VIEW_PERMISSION],
+    captureInvalidation(listener) {
+      invalidationCapture.listener = listener;
+    },
+  });
+
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  const presenter = services.localHistory.createPresenter();
+  const refresh = presenter.refresh();
+  await Promise.resolve();
+  const invalidate = invalidationCapture.listener;
+  if (!invalidate) {
+    throw new Error("session invalidation listener was not captured");
+  }
+  invalidate();
+  pendingPage.resolve({ orders: [], nextCursor: null });
+  await refresh;
+
+  assert.equal(presenter.getState().kind, "failed");
+  assert.deepEqual(presenter.getState().rows, []);
+  presenter.destroy();
+});
+
 test("现金提交耐久化成功后立即触发履约，履约失败不改变成功结果", async () => {
   const expected: CashCheckoutResult = {
     completed: true,
@@ -1335,6 +1596,16 @@ test("现金提交耐久化成功后立即触发履约，履约失败不改变�
     },
   };
   const trace: string[] = [];
+  const postCommitWork = createPostCommitWorkDrain(
+    async () => {
+      trace.push("drain-started");
+      throw new Error("printer is temporarily unavailable");
+    },
+    async () => {
+      trace.push("sync-wake-started");
+      throw new Error("network is temporarily unavailable");
+    },
+  );
   const checkout = createPostCommitFulfilmentCashCheckout(
     {
       async complete() {
@@ -1342,16 +1613,17 @@ test("现金提交耐久化成功后立即触发履约，履约失败不改变�
         return expected;
       },
     },
-    async () => {
-      trace.push("drain-started");
-      throw new Error("printer is temporarily unavailable");
-    },
+    postCommitWork,
   );
 
   const result = await checkout.complete({} as never);
 
   assert.equal(result, expected);
-  assert.deepEqual(trace, ["committed", "drain-started"]);
+  assert.deepEqual(trace, [
+    "committed",
+    "sync-wake-started",
+    "drain-started",
+  ]);
 });
 
 test("生产退货服务按可信收银员作用域启用，缺少主管授权时明确不可用", async () => {
@@ -1393,6 +1665,62 @@ test("生产更新安全快照把可信门店作用域内的退货恢复标记�
   assert.equal(snapshot.hasRecoveryRequired, true);
 });
 
+test("支付配置切换仍阻断需要恢复的退货，不把普通待同步退货误作恢复", async () => {
+  let saveCalls = 0;
+  let reloadCalls = 0;
+  const baseSettings = settingsRuntimeConfiguration();
+  const services = createTestComposition(
+    databaseFor([], { returnRecoveryRequired: true }),
+    {
+      appUpdateTransition: new UpdateTransitionLeaseCoordinator(),
+      cashierPermissions: [
+        "Permissions.PosTerminal.Returns.View",
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_PAYMENT_TERMINAL_PERMISSION,
+      ],
+      supervisorPermissions: [],
+      settings: {
+        ...baseSettings,
+        paymentConfiguration: {
+          current: {
+            provider: "linkly",
+            square: null,
+            linkly: { environment: "Production" },
+          },
+          availability: {
+            square: { available: false, blockerCode: "not-configured" },
+            linkly: { available: true, blockerCode: null },
+          },
+          test: async () => undefined,
+          save: async () => {
+            saveCalls += 1;
+          },
+        },
+        runtimeReload: {
+          reload: async () => {
+            reloadCalls += 1;
+          },
+        },
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  presenter.setLinklyEnvironment("Sandbox");
+  await presenter.savePaymentSettings();
+  await presenter.confirmDangerousAction();
+
+  assert.equal(presenter.getState().statusCode, "pending-local-data");
+  assert.equal(saveCalls, 0);
+  assert.equal(reloadCalls, 0);
+  presenter.destroy();
+});
+
 test("生产组合绑定全局 transition：自身 cart lease 不误报 durable write，封门期间拒绝新同步", async () => {
   const transition = new UpdateTransitionLeaseCoordinator();
   const services = createTestComposition(databaseFor([]), {
@@ -1422,6 +1750,75 @@ test("生产组合绑定全局 transition：自身 cart lease 不误报 durable 
     await transition.runOperation(async () => "released"),
     "released",
   );
+});
+
+test("支付配置保存等待既有 operation，封门拒绝新 operation，释放后才保存并重载", async () => {
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const existingRelease = deferred<void>();
+  const existing = transition.runOperation(() => existingRelease.promise);
+  let saveCalls = 0;
+  let reloadCalls = 0;
+  const baseSettings = settingsRuntimeConfiguration();
+  const services = createTestComposition(databaseFor([]), {
+    appUpdateTransition: transition,
+    cashierPermissions: [
+      SETTINGS_VIEW_PERMISSION,
+      SETTINGS_PAYMENT_TERMINAL_PERMISSION,
+    ],
+    settings: {
+      ...baseSettings,
+      paymentConfiguration: {
+        current: {
+          provider: "linkly",
+          square: null,
+          linkly: { environment: "Production" },
+        },
+        availability: {
+          square: { available: false, blockerCode: "not-configured" },
+          linkly: { available: true, blockerCode: null },
+        },
+        test: async () => undefined,
+        save: async () => {
+          saveCalls += 1;
+        },
+      },
+      runtimeReload: {
+        reload: async () => {
+          reloadCalls += 1;
+        },
+      },
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+  presenter.setLinklyEnvironment("Sandbox");
+  await presenter.savePaymentSettings();
+
+  const confirmation = presenter.confirmDangerousAction();
+  await Promise.resolve();
+  assert.equal(transition.isTransitionActive(), true);
+  assert.equal(saveCalls, 0);
+  assert.equal(reloadCalls, 0);
+  await assert.rejects(
+    transition.runOperation(async () => undefined),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code ===
+        UPDATE_TRANSITION_IN_PROGRESS,
+  );
+
+  existingRelease.resolve();
+  await existing;
+  await confirmation;
+
+  assert.equal(saveCalls, 1);
+  assert.equal(reloadCalls, 1);
+  assert.equal(transition.isTransitionActive(), false);
+  presenter.destroy();
 });
 
 test("目录刷新登记覆盖完整生命周期，transition 等完成后才在双独占锁内重读安全快照", async () => {
@@ -1538,6 +1935,69 @@ test("四个目录顶层入口各登记一次，Settings 重启直接进入 tran
   await presenter.confirmDangerousAction();
   assert.equal(transition.operationCalls, baseline + 4);
   assert.equal(transition.isTransitionActive(), false);
+  presenter.destroy();
+});
+
+test("Settings 钱箱测试复用受权限、lease 与审计保护的正式开箱动作", async () => {
+  const savedPeripheralIds: (string | null)[] = [];
+  let drawerOpens = 0;
+  const services = createTestComposition(
+    databaseFor([], {
+      onReceiptSettingsSave(settings) {
+        savedPeripheralIds.push(settings.peripheralId);
+      },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_RECEIPT_PRINTER_PERMISSION,
+        "Permissions.PosTerminal.CashDrawer.Open",
+      ],
+      settings: settingsRuntimeConfiguration(),
+      onDrawerOpen() {
+        drawerOpens += 1;
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+  presenter.setDrawerEnabled(true);
+
+  await presenter.testCashDrawer();
+
+  assert.deepEqual(savedPeripheralIds, ["printer-1"]);
+  assert.equal(drawerOpens, 1);
+  assert.equal(presenter.getState().statusCode, "cash-drawer-test-passed");
+  presenter.destroy();
+});
+
+test("Settings 钱箱测试缺少 CashDrawer.Open 权限时失败且不触发硬件", async () => {
+  let drawerOpens = 0;
+  const services = createTestComposition(databaseFor([]), {
+    cashierPermissions: [
+      SETTINGS_VIEW_PERMISSION,
+      SETTINGS_RECEIPT_PRINTER_PERMISSION,
+    ],
+    settings: settingsRuntimeConfiguration(),
+    onDrawerOpen() {
+      drawerOpens += 1;
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  await presenter.testCashDrawer();
+
+  assert.equal(drawerOpens, 0);
+  assert.equal(presenter.getState().statusCode, "cash-drawer-test-failed");
   presenter.destroy();
 });
 
@@ -2777,6 +3237,7 @@ function databaseFor(
   options: Readonly<{
     lastOrder?: LocalOrder;
     onFrozenSettingsRead?(): void;
+    onReceiptSettingsSave?(settings: ReceiptPrinterSettings): void;
     onReprintPrepared?(input: Readonly<{
       orderGuid: string;
       printerId: string;
@@ -2832,24 +3293,27 @@ function databaseFor(
           isSpecialProduct: false,
         }
       : null;
+  let receiptPrinterSettings: ReceiptPrinterSettings = {
+    printEnabled: true,
+    drawerEnabled: true,
+    peripheralId: "printer-1",
+    paper: "80mm",
+    locale: "en",
+    brandName: "Hot Bargain",
+    storeName: "Brisbane",
+    address: "1 Queen St",
+    phone: "0712345678",
+    abn: "12 345 678 901",
+  };
   const settings = {
     async getReceiptPrinterSettings() {
       options.onFrozenSettingsRead?.();
-      return {
-        printEnabled: true,
-        drawerEnabled: true,
-        peripheralId: "printer-1",
-        paper: "80mm" as const,
-        locale: "en" as const,
-        brandName: "Hot Bargain",
-        storeName: "Brisbane",
-        address: "1 Queen St",
-        phone: "0712345678",
-        abn: "12 345 678 901",
-      };
+      return receiptPrinterSettings;
     },
-    async saveReceiptPrinterSettings() {
-      throw new Error("not used");
+    async saveReceiptPrinterSettings(input: ReceiptPrinterSettings) {
+      receiptPrinterSettings = input;
+      options.onReceiptSettingsSave?.(input);
+      return input;
     },
   };
   const repositories = {
@@ -3023,6 +3487,7 @@ function databaseFor(
     settingsSafety: () => ({
       async read() {
         return {
+          paymentConfigurationSensitiveOrderCount: 0,
           pendingDurableWriteCount: 0,
           pendingReturnCount: 0,
           pendingSaleCount: 0,

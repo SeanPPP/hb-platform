@@ -123,7 +123,7 @@ export default function RemoteHistoryRoute() {
   if (integrationUnavailable) {
     return (
       <RemoteHistoryUnavailableScreen
-        onBack={() => router.replace("/sales" as Href)}
+        onBack={() => router.dismissTo("/sales" as Href)}
       />
     );
   }
@@ -133,7 +133,7 @@ export default function RemoteHistoryRoute() {
 
   return (
     <RemoteHistoryScreen
-      onBack={() => router.replace("/sales" as Href)}
+      onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );

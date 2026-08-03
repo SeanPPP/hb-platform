@@ -535,8 +535,9 @@ function buildCanonicalDeltaPage(input: Readonly<{
 }
 
 async function expoSha256(payload: string): Promise<string> {
-  // 延迟加载避免 Node 合同测试解析 React Native 入口；真机仍使用 Expo 原生 SHA256。
-  const Crypto = await import("expo-crypto");
+  // 同步 require 让 Metro 将原生摘要桥接放入主 bundle，同时避免 Node 合同测试在未调用时解析原生入口。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Crypto = require("expo-crypto") as typeof import("expo-crypto");
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, payload);
 }
 

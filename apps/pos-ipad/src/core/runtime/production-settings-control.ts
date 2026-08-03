@@ -36,6 +36,9 @@ export type ProductionSettingsControlDependencies = Readonly<{
   paymentConfiguration: Readonly<{
     save(input: SettingsPaymentSettingsInput): Promise<void>;
   }>;
+  paymentConfigurationTransition: Readonly<{
+    run<T>(operation: () => Promise<T>): Promise<T>;
+  }>;
   runtimeReload: Readonly<{
     reload(signal: AbortSignal): Promise<void>;
   }>;
@@ -191,8 +194,16 @@ export class ProductionSettingsControl implements SettingsControlPort {
   public async executeDangerousAction(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    assertActive: () => void = () => undefined,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
+    if (action.kind === "change-payment-settings") {
+      // transition 已按目录→购物车固定锁序封住新业务并等待在途 operation；
+      // 这里直接进入 guarded，不能再次申请同一目录门造成自锁。
+      return this.input.paymentConfigurationTransition.run(() =>
+        this.executeDangerousActionGuarded(action, signal, assertActive),
+      );
+    }
     if (
       action.kind === "reset-catalog" ||
       action.kind === "restart-app"
@@ -220,8 +231,10 @@ export class ProductionSettingsControl implements SettingsControlPort {
   private async executeDangerousActionGuarded(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    assertActive: () => void = () => undefined,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
+    assertActive();
     if (this.catalogRefreshBlocks()) {
       return safetyBlocked();
     }
@@ -231,7 +244,7 @@ export class ProductionSettingsControl implements SettingsControlPort {
     const mayBypassPendingData =
       action.kind === "change-api-address" &&
       this.input.apiConfiguration.allowSwitchWithPendingLocalData === true;
-    if (hasPendingLocalData(pending) && !mayBypassPendingData) {
+    if (pendingDataBlocksAction(action, pending) && !mayBypassPendingData) {
       return Object.freeze({
         status: "blocked",
         reason: "pending-local-data",
@@ -240,6 +253,8 @@ export class ProductionSettingsControl implements SettingsControlPort {
     if (this.catalogRefreshBlocks()) {
       return safetyBlocked();
     }
+    // 安全快照可能跨越异步数据库与恢复读取；任何持久化提交前必须重验会话。
+    assertActive();
 
     switch (action.kind) {
       case "change-api-address": {
@@ -318,6 +333,24 @@ export class ProductionSettingsControl implements SettingsControlPort {
   private catalogRefreshBlocks(): boolean {
     return this.input.catalog.getRefreshState().kind === "running";
   }
+}
+
+function pendingDataBlocksAction(
+  action: SettingsDangerousConfirmation,
+  pending: SettingsPendingDataSnapshot,
+): boolean {
+  if (action.kind === "change-payment-settings") {
+    // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
+    // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
+    return (
+      pending.hasActiveCart ||
+      pending.hasFulfilmentInFlight ||
+      pending.hasSyncOrAuditInFlight ||
+      pending.paymentConfigurationSensitiveOrderCount > 0 ||
+      pending.unresolvedPaymentCount > 0
+    );
+  }
+  return hasPendingLocalData(pending);
 }
 
 function completed(
