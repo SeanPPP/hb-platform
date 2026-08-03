@@ -1721,7 +1721,7 @@ function readAuditEvent(row: AuditRow): AuditEventDraft {
     eventId: text(row.event_id),
     eventType: text(row.event_type),
     occurredAtIso: text(row.occurred_at_iso),
-    orderGuid: nullable(row.order_guid),
+    orderGuid: nullable(row.order_guid) ?? nullable(row.external_order_guid),
     correlationId: text(row.correlation_id),
     payload: json(row.payload_json),
     ...(auditScope ? { auditScope } : {}),

@@ -250,6 +250,7 @@ test("离线状态明确说明远程历史只在线可用", async () => {
 
 test("仅在详情已可信加载并获重打权限时显示重打，退款入口仍不出现", async () => {
   const reprintPort: RemoteHistoryReprintPort = {
+    canReprint: () => true,
     reprintExistingOrder: jest.fn(async () => undefined),
   };
   const presenter = new RemoteHistoryPresenter({

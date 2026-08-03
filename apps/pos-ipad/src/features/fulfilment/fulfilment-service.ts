@@ -20,6 +20,8 @@ export type FulfilmentPrintJob = Readonly<{
   authorization?: FulfilmentAuthorizationContext;
   /** 重打来源必须随作业恢复，避免支付成功页重试错写为最后一单。 */
   reprintSource?: ReceiptReprintSource;
+  /** 首份授权审计冻结的终端范围；重启后终态审计不得改用新注册身份。 */
+  auditScope?: Readonly<{ storeCode: string; deviceCode: string }>;
 }>;
 
 export type FulfilmentDrawerEvent = Readonly<{
@@ -127,6 +129,9 @@ export type FulfilmentAuditEvent = Readonly<{
   orderGuid: string | null;
   correlationId: string;
   payload: Readonly<Record<string, string | number | null>>;
+  scopeStoreCode?: string;
+  scopeDeviceCode?: string;
+  externalOrderGuid?: string;
 }>;
 
 export type FulfilmentServiceOptions = Readonly<{
@@ -136,11 +141,14 @@ export type FulfilmentServiceOptions = Readonly<{
   nowIso(): string;
   createAuditId(): string;
   createCorrelationId(): string;
+  /** 生产组合根冻结当前终端审计范围；远程订单不能依赖本机订单表回填。 */
+  auditScope?: Readonly<{ storeCode: string; deviceCode: string }>;
   /** 由订单账本选择 orderGuid 并重新渲染；DB 层不得改绑订单或复制旧 bytes 伪造重打。 */
   prepareLastReceiptReprint(): Promise<PreparedLastReceiptReprint | null>;
-  /** 历史页只交付订单号；实现仍须从本地账本和冻结设置重新渲染。 */
+  /** 历史页只交付订单号和来源；实现仍须从对应可信账本与冻结设置重新渲染。 */
   prepareReceiptReprint?(
     orderGuid: string,
+    source: ReceiptReprintSource,
   ): Promise<PreparedLastReceiptReprint | null>;
   /** 每次手动开箱只读一次当前持久设置，并冻结该动作使用的打印机。 */
   prepareManualDrawerOpen?(): Promise<PreparedManualDrawerOpen | null>;
@@ -340,7 +348,7 @@ export class FulfilmentService {
   ): Promise<FulfilmentActionResult> {
     const prepare = this.options.prepareReceiptReprint;
     if (!prepare) return { state: "not-found", errorCode: null };
-    const prepared = await prepare(orderGuid);
+    const prepared = await prepare(orderGuid, "payment-success");
     // 账本与冻结设置读取结束后再复核 lease；失效页面不能留下可执行打印任务。
     assertActive();
     // 中文注释：支付成功页的 orderGuid 是唯一来源；准备器若返回别单必须 fail-closed。
@@ -381,7 +389,7 @@ export class FulfilmentService {
   ): Promise<FulfilmentActionResult> {
     const prepare = this.options.prepareReceiptReprint;
     if (!prepare) return { state: "not-found", errorCode: null };
-    const prepared = await prepare(orderGuid);
+    const prepared = await prepare(orderGuid, source);
     // 账本与设置准备跨越异步边界；创建耐久任务前再次确认原收银员仍绑定当前终端。
     assertActive();
     // 账本准备器不得把历史页选择静默改绑到另一订单。
@@ -516,6 +524,7 @@ export class FulfilmentService {
             errorCode: safeAuditText(result.errorCode),
             ...authorizationAuditPayload(job.authorization),
           },
+          job.auditScope,
         );
       } catch {
         return recoveryRequired();
@@ -673,7 +682,10 @@ export class FulfilmentService {
     orderGuid: string | null,
     correlationId: string,
     payload: Readonly<Record<string, string | number | null>>,
+    auditScope: Readonly<{ storeCode: string; deviceCode: string }> | undefined =
+      this.options.auditScope,
   ): FulfilmentAuditEvent {
+    const scope = auditScope;
     return {
       eventId: this.options.createAuditId(),
       eventType,
@@ -681,6 +693,21 @@ export class FulfilmentService {
       orderGuid,
       correlationId,
       payload,
+      ...(scope
+        ? {
+            scopeStoreCode: requiredAuditText(
+              scope.storeCode,
+              "Fulfilment audit store",
+            ),
+            scopeDeviceCode: requiredAuditText(
+              scope.deviceCode,
+              "Fulfilment audit device",
+            ),
+          }
+        : {}),
+      ...(payload.source === "remote-history" && orderGuid !== null
+        ? { externalOrderGuid: orderGuid }
+        : {}),
     };
   }
 

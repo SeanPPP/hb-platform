@@ -10,6 +10,7 @@ import {
   type FulfilmentStore,
   type PreparedManualDrawerOpen,
   type PreparedLastReceiptReprint,
+  type ReceiptReprintSource,
 } from "./fulfilment-service";
 
 import {
@@ -210,6 +211,7 @@ function setup(overrides: Readonly<{
   prepareLastReceiptReprint?: () => Promise<PreparedLastReceiptReprint | null>;
   prepareReceiptReprint?: (
     orderGuid: string,
+    source: ReceiptReprintSource,
   ) => Promise<PreparedLastReceiptReprint | null>;
   prepareManualDrawerOpen?: () => Promise<PreparedManualDrawerOpen | null>;
   operationLease?: UpdateOperationLeasePort;
@@ -919,15 +921,15 @@ test("支付成功页 Failed 人工重试沿用 payment-success 语义记录终�
 });
 
 test("远程历史重打只把所选 orderGuid 交给账本准备器，并记录准确来源", async () => {
-  const requestedOrderGuids: string[] = [];
+  const requests: Readonly<{ orderGuid: string; source: string }>[] = [];
   const prepared = {
     orderGuid: "ORDER-HISTORY-1",
     receiptBytes: Uint8Array.of(29, 33, 82),
     printerId: "XP-HISTORY",
   };
   const { store, printer, audit, service } = setup({
-    async prepareReceiptReprint(orderGuid) {
-      requestedOrderGuids.push(orderGuid);
+    async prepareReceiptReprint(orderGuid, source) {
+      requests.push({ orderGuid, source });
       return orderGuid === prepared.orderGuid ? prepared : null;
     },
   });
@@ -939,7 +941,10 @@ test("远程历史重打只把所选 orderGuid 交给账本准备器，并记录
     activeLease,
   );
 
-  assert.deepEqual(requestedOrderGuids, ["ORDER-HISTORY-1"]);
+  assert.deepEqual(requests, [{
+    orderGuid: "ORDER-HISTORY-1",
+    source: "remote-history",
+  }]);
   assert.equal(result.state, "Printed");
   assert.equal(
     store.printJobs.get(historyAuthorization.actionId)?.orderGuid,
@@ -980,13 +985,15 @@ test("远程历史重打只把所选 orderGuid 交给账本准备器，并记录
 });
 
 test("本机历史重打沿用耐久打印状态机并记录本机来源", async () => {
+  const sources: string[] = [];
   const prepared = {
     orderGuid: "ORDER-LOCAL-HISTORY-1",
     receiptBytes: Uint8Array.of(29, 33, 82),
     printerId: "XP-LOCAL-HISTORY",
   };
   const { audit, service } = setup({
-    async prepareReceiptReprint(orderGuid) {
+    async prepareReceiptReprint(orderGuid, source) {
+      sources.push(source);
       return orderGuid === prepared.orderGuid ? prepared : null;
     },
   });
@@ -999,6 +1006,7 @@ test("本机历史重打沿用耐久打印状态机并记录本机来源", async
   );
 
   assert.equal(result.state, "Printed");
+  assert.deepEqual(sources, ["local-history"]);
   assert.deepEqual(
     audit.map((event) => ({
       action: event.payload.action,

@@ -5089,6 +5089,80 @@ BEGIN
 END;
 `;
 
+/**
+ * 跨终端远程历史订单不属于本机订单账本。重打任务只保存独立外部订单身份，
+ * 绝不向 local_orders 写入伪造订单，也不放宽原有本机订单外键。
+ */
+const M33 = `
+ALTER TABLE print_jobs
+  ADD COLUMN external_order_guid TEXT NULL;
+
+ALTER TABLE audit_events
+  ADD COLUMN external_order_guid TEXT NULL;
+
+CREATE TRIGGER trg_print_jobs_external_order_insert_valid
+BEFORE INSERT ON print_jobs
+FOR EACH ROW
+WHEN NEW.external_order_guid IS NOT NULL
+  AND (
+    NEW.order_guid IS NOT NULL
+    OR NEW.is_reprint <> 1
+    OR TYPEOF(NEW.external_order_guid) <> 'text'
+    OR LENGTH(TRIM(NEW.external_order_guid)) = 0
+    OR LENGTH(NEW.external_order_guid) > 128
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'PRINT_JOB_EXTERNAL_ORDER_INVALID');
+END;
+
+CREATE TRIGGER trg_print_jobs_order_identity_immutable
+BEFORE UPDATE OF order_guid, external_order_guid, is_reprint ON print_jobs
+FOR EACH ROW
+WHEN NEW.order_guid IS NOT OLD.order_guid
+  OR NEW.external_order_guid IS NOT OLD.external_order_guid
+  OR NEW.is_reprint IS NOT OLD.is_reprint
+BEGIN
+  SELECT RAISE(ABORT, 'PRINT_JOB_ORDER_IDENTITY_IMMUTABLE');
+END;
+
+CREATE TRIGGER trg_audit_events_external_order_insert_valid
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN NEW.external_order_guid IS NOT NULL
+  AND (
+    NEW.order_guid IS NOT NULL
+    OR TYPEOF(NEW.external_order_guid) <> 'text'
+    OR LENGTH(TRIM(NEW.external_order_guid)) = 0
+    OR LENGTH(NEW.external_order_guid) > 128
+    OR NEW.scope_store_code IS NULL
+    OR NEW.scope_device_code IS NULL
+    OR NEW.event_type <> 'RECEIPT_REPRINT'
+    OR json_extract(NEW.payload_json, '$.source') <> 'remote-history'
+    OR json_extract(NEW.payload_json, '$.action') <> 'reprint-history-receipt'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_EXTERNAL_ORDER_INVALID');
+END;
+
+CREATE TRIGGER trg_audit_events_order_identity_immutable
+BEFORE UPDATE OF order_guid, external_order_guid ON audit_events
+FOR EACH ROW
+WHEN (
+  OLD.external_order_guid IS NOT NULL
+  AND (
+    NEW.order_guid IS NOT OLD.order_guid
+    OR NEW.external_order_guid IS NOT OLD.external_order_guid
+  )
+)
+OR (
+  OLD.external_order_guid IS NULL
+  AND NEW.external_order_guid IS NOT NULL
+)
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_ORDER_IDENTITY_IMMUTABLE');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5122,6 +5196,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 30, name: "M30_audit_scope_delivery", sql: M30 },
   { version: 31, name: "M31_audit_scope_immutability", sql: M31 },
   { version: 32, name: "M32_audit_scope_insert_guard", sql: M32 },
+  { version: 33, name: "M33_remote_receipt_reprint_identity", sql: M33 },
 ];
 
 export async function applyMigrations(

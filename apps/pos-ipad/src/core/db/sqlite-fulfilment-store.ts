@@ -10,6 +10,9 @@ export type FulfilmentAuditEvent = Readonly<{
   orderGuid: string | null;
   correlationId: string;
   payload: Readonly<Record<string, string | number | null>>;
+  scopeStoreCode?: string;
+  scopeDeviceCode?: string;
+  externalOrderGuid?: string;
 }>;
 
 export type PersistedFulfilmentAuthorization = Readonly<{
@@ -61,6 +64,7 @@ export type StoredFulfilmentPrintJob = Readonly<{
   authorization?: PersistedFulfilmentAuthorization;
   /** 由首份授权审计恢复，崩溃/人工重试时不得退化为最后一单。 */
   reprintSource?: PersistedReceiptReprintSource;
+  auditScope?: Readonly<{ storeCode: string; deviceCode: string }>;
 }>;
 
 export type StoredFulfilmentDrawerEvent = Readonly<{
@@ -322,14 +326,15 @@ export class SqliteFulfilmentStore {
 
       const job = await tx.getFirst<{
         order_guid: unknown;
+        external_order_guid: unknown;
         is_reprint: unknown;
         printer_id: unknown;
       }>(
-        "SELECT order_guid, is_reprint, printer_id FROM print_jobs WHERE job_id = ?",
+        "SELECT order_guid, external_order_guid, is_reprint, printer_id FROM print_jobs WHERE job_id = ?",
         [jobId],
       );
       if (!job) throw new Error("Finished print job could not be reloaded.");
-      const orderGuid = text(job.order_guid);
+      const orderGuid = printOrderGuid(job);
       if (audit === null) {
         if (booleanInt(job.is_reprint)) {
           throw new Error("A reprint finish requires a RECEIPT_REPRINT audit.");
@@ -416,15 +421,22 @@ export class SqliteFulfilmentStore {
         authorizationExpectation,
       );
     }
+    const externalOrderGuid =
+      authorizationExpectation &&
+      receiptReprintSource(authorizationExpectation) === "remote-history"
+        ? input.orderGuid
+        : null;
     const encryptedReceipt = await this.options.encryptor.encrypt(
       encodeReceipt(input.receiptBytes),
     );
     return this.db.withExclusiveTransaction(async (tx) => {
-      const order = await tx.getFirst<{ state: unknown }>(
-        "SELECT state FROM local_orders WHERE order_guid = ?",
-        [input.orderGuid],
-      );
-      if (!order || !isReprintableOrderState(order.state)) return null;
+      if (externalOrderGuid === null) {
+        const order = await tx.getFirst<{ state: unknown }>(
+          "SELECT state FROM local_orders WHERE order_guid = ?",
+          [input.orderGuid],
+        );
+        if (!order || !isReprintableOrderState(order.state)) return null;
+      }
 
       // 中文注释：orderGuid 只能来自调用方已经选择并重新渲染的订单，禁止从历史打印作业反推。
       const job: PersistedPrintJobInput = {
@@ -478,10 +490,19 @@ export class SqliteFulfilmentStore {
             reprintSource: receiptReprintSource(
               persistedAuthorization.expectation,
             ),
+            ...(persistedAuthorization.auditScope
+              ? { auditScope: persistedAuthorization.auditScope }
+              : {}),
           };
         }
       }
-      await insertPrintJob(tx, job, encryptedReceipt, this.options.nowIso());
+      await insertPrintJob(
+        tx,
+        job,
+        encryptedReceipt,
+        this.options.nowIso(),
+        externalOrderGuid,
+      );
       if (authorization) {
         await insertFulfilmentAudit(tx, authorization.audit);
       }
@@ -526,7 +547,7 @@ export class SqliteFulfilmentStore {
             tx,
             {
               eventType: "RECEIPT_REPRINT",
-              orderGuid: text(row.order_guid),
+              orderGuid: printOrderGuid(row),
               taskId: text(row.job_id),
               printerId: text(row.printer_id),
             },
@@ -541,6 +562,9 @@ export class SqliteFulfilmentStore {
         ...(authorization ? { authorization: authorization.context } : {}),
         ...(authorization
           ? { reprintSource: receiptReprintSource(authorization.expectation) }
+          : {}),
+        ...(authorization?.auditScope
+          ? { auditScope: authorization.auditScope }
           : {}),
       };
     });
@@ -578,9 +602,31 @@ export class SqliteFulfilmentStore {
   }
 }
 
-async function insertPrintJob(db: SqliteConnectionPort, input: PersistedPrintJobInput, encryptedReceipt: Uint8Array, nowIso: string): Promise<void> {
+async function insertPrintJob(
+  db: SqliteConnectionPort,
+  input: PersistedPrintJobInput,
+  encryptedReceipt: Uint8Array,
+  nowIso: string,
+  externalOrderGuid: string | null = null,
+): Promise<void> {
   assertPrinterId(input.printerId);
-  await db.run(`INSERT INTO print_jobs (job_id, order_guid, state, printer_id, receipt_ciphertext, is_reprint, retry_count, last_error_code, created_at_iso, updated_at_iso) VALUES (?, ?, 'Queued', ?, ?, ?, 0, NULL, ?, ?)`, [input.jobId, input.orderGuid, input.printerId, encryptedReceipt, input.isReprint ? 1 : 0, nowIso, nowIso]);
+  await db.run(
+    `INSERT INTO print_jobs (
+      job_id, order_guid, external_order_guid, state, printer_id,
+      receipt_ciphertext, is_reprint, retry_count, last_error_code,
+      created_at_iso, updated_at_iso
+    ) VALUES (?, ?, ?, 'Queued', ?, ?, ?, 0, NULL, ?, ?)`,
+    [
+      input.jobId,
+      externalOrderGuid === null ? input.orderGuid : null,
+      externalOrderGuid,
+      input.printerId,
+      encryptedReceipt,
+      input.isReprint ? 1 : 0,
+      nowIso,
+      nowIso,
+    ],
+  );
 }
 
 async function insertDrawerEvent(db: SqliteConnectionPort, input: PersistedDrawerEventInput, nowIso: string): Promise<void> {
@@ -601,15 +647,28 @@ async function insertFulfilmentAudit(
   db: SqliteConnectionPort,
   audit: FulfilmentAuditEvent,
 ): Promise<void> {
+  if (
+    audit.externalOrderGuid !== undefined &&
+    audit.externalOrderGuid !== audit.orderGuid
+  ) {
+    throw new Error("Fulfilment external audit order does not match.");
+  }
   await db.run(
-    "INSERT INTO audit_events (event_id, event_type, occurred_at_iso, order_guid, correlation_id, payload_json, uploaded_at_iso) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+    `INSERT INTO audit_events (
+      event_id, event_type, occurred_at_iso, order_guid, external_order_guid,
+      correlation_id, payload_json, uploaded_at_iso,
+      scope_store_code, scope_device_code
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       audit.eventId,
       audit.eventType,
       audit.occurredAtIso,
-      audit.orderGuid,
+      audit.externalOrderGuid ? null : audit.orderGuid,
+      audit.externalOrderGuid ?? null,
       audit.correlationId,
       JSON.stringify(audit.payload),
+      audit.scopeStoreCode ?? null,
+      audit.scopeDeviceCode ?? null,
     ],
   );
 }
@@ -669,6 +728,7 @@ type InitialAuthorizationTask = Pick<
 type LoadedInitialAuthorization = Readonly<{
   context: PersistedFulfilmentAuthorization;
   expectation: InitialAuthorizationExpectation;
+  auditScope?: Readonly<{ storeCode: string; deviceCode: string }>;
 }>;
 
 /**
@@ -844,7 +904,8 @@ async function loadInitialAuthorization(
 ): Promise<LoadedInitialAuthorization | null> {
   const rows = await db.getAll<Record<string, unknown>>(
     `SELECT event_id, event_type, occurred_at_iso, order_guid,
-      correlation_id, payload_json
+      external_order_guid, correlation_id, payload_json,
+      scope_store_code, scope_device_code
      FROM audit_events
      WHERE correlation_id = ? AND event_type = ?
      ORDER BY rowid ASC`,
@@ -857,9 +918,13 @@ async function loadInitialAuthorization(
       eventId: text(row.event_id),
       eventType: text(row.event_type),
       occurredAtIso: text(row.occurred_at_iso),
-      orderGuid: nullableText(row.order_guid),
+      orderGuid:
+        nullableText(row.order_guid) ?? nullableText(row.external_order_guid),
       correlationId: text(row.correlation_id),
       payload,
+      ...(nullableText(row.external_order_guid)
+        ? { externalOrderGuid: text(row.external_order_guid) }
+        : {}),
     };
     const context = authorizationContextFromAudit(
       expected.taskId,
@@ -874,7 +939,7 @@ async function loadInitialAuthorization(
       payload,
     );
     assertInitialAuthorization({ context, audit }, expectation);
-    return { context, expectation };
+    return { context, expectation, ...auditScopeFromRow(row) };
   }
   if (allowMissing) return null;
   throw new Error("Fulfilment authorization audit is missing.");
@@ -1051,6 +1116,21 @@ function optionalAuditText(value: unknown, name: string): string | null {
   return value === undefined || value === null ? null : auditText(value, name);
 }
 
+function auditScopeFromRow(
+  row: Record<string, unknown>,
+): Readonly<{
+  auditScope?: Readonly<{ storeCode: string; deviceCode: string }>;
+}> {
+  const storeCode = nullableText(row.scope_store_code);
+  const deviceCode = nullableText(row.scope_device_code);
+  if ((storeCode === null) !== (deviceCode === null)) {
+    throw new Error("Fulfilment audit scope is invalid.");
+  }
+  return storeCode === null || deviceCode === null
+    ? {}
+    : { auditScope: { storeCode, deviceCode } };
+}
+
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
@@ -1059,7 +1139,16 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 type PrintRow = Record<string, unknown>;
 type DrawerRow = Record<string, unknown>;
 
-function mapPrintJobMetadata(row: PrintRow): StoredFulfilmentPrintJob { return { jobId: text(row.job_id), orderGuid: text(row.order_guid), printerId: text(row.printer_id), isReprint: booleanInt(row.is_reprint), bytes: new Uint8Array(), state: printState(row.state), retryCount: int(row.retry_count) }; }
+function printOrderGuid(row: PrintRow): string {
+  const localOrderGuid = nullableText(row.order_guid);
+  const externalOrderGuid = nullableText(row.external_order_guid);
+  if ((localOrderGuid === null) === (externalOrderGuid === null)) {
+    throw new Error("Print job order identity is invalid.");
+  }
+  return localOrderGuid ?? externalOrderGuid!;
+}
+
+function mapPrintJobMetadata(row: PrintRow): StoredFulfilmentPrintJob { return { jobId: text(row.job_id), orderGuid: printOrderGuid(row), printerId: text(row.printer_id), isReprint: booleanInt(row.is_reprint), bytes: new Uint8Array(), state: printState(row.state), retryCount: int(row.retry_count) }; }
 function mapDrawerEvent(row: DrawerRow): StoredFulfilmentDrawerEvent { return { eventId: text(row.event_id), orderGuid: nullableText(row.order_guid), printerId: text(row.printer_id), state: drawerState(row.state), reason: text(row.reason), retryCount: int(row.retry_count) }; }
 function assertMatchingManualDrawerEvent(
   row: DrawerRow,

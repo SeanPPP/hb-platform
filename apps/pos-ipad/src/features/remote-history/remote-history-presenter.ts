@@ -22,6 +22,7 @@ export const REMOTE_HISTORY_READ_ONLY_CAPABILITIES = Object.freeze({
  * 不能让远程历史 UI 传入 receipt bytes、printer id 或支付 provider 引用。
  */
 export type RemoteHistoryReprintPort = Readonly<{
+  canReprint(details: RemoteOrderHistoryDetails): boolean;
   reprintExistingOrder(orderGuid: string): Promise<void>;
 }>;
 
@@ -92,13 +93,16 @@ export class RemoteHistoryPresenter {
 
   private readonly listeners = new Set<() => void>();
   private readonly trustedStoreCode: string;
-  private readonly currentDeviceCode: string;
   private readonly allowed: boolean;
   private readonly canReprint: boolean;
   private readonly online: boolean;
   private listGeneration = 0;
   private detailsGeneration = 0;
   private reprintGeneration = 0;
+  private reprintInFlight: Readonly<{
+    orderGuid: string;
+    promise: Promise<void>;
+  }> | null = null;
   private destroyed = false;
 
   public constructor(private readonly options: RemoteHistoryPresenterOptions) {
@@ -106,7 +110,7 @@ export class RemoteHistoryPresenter {
       options.trustedStoreCode,
       "Remote history trusted store",
     );
-    this.currentDeviceCode = requiredText(
+    requiredText(
       options.currentDeviceCode,
       "Remote history current device",
     );
@@ -259,12 +263,14 @@ export class RemoteHistoryPresenter {
     return this.loadDetails(orderGuid);
   }
 
-  public async reprintSelected(): Promise<void> {
+  public reprintSelected(): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    if (this.reprintInFlight) return this.reprintInFlight.promise;
     const details = this.reprintableDetails();
     const port = this.options.reprintPort;
     if (!details || !port) {
       this.publish({ ...this.state, reprint: { kind: "unavailable" } });
-      return;
+      return Promise.resolve();
     }
     const generation = ++this.reprintGeneration;
     const orderGuid = details.orderGuid;
@@ -272,25 +278,33 @@ export class RemoteHistoryPresenter {
       ...this.state,
       reprint: { kind: "submitting", orderGuid },
     });
-    try {
-      await port.reprintExistingOrder(orderGuid);
-      if (!this.isCurrentReprint(generation, orderGuid)) return;
-      // 中文注释：重打是外设副作用，绝不回写、刷新或改造历史订单快照。
-      this.publish({
-        ...this.state,
-        reprint: { kind: "succeeded", orderGuid },
+    const promise = port.reprintExistingOrder(orderGuid)
+      .then(() => {
+        if (!this.isCurrentReprint(generation, orderGuid)) return;
+        // 中文注释：重打是外设副作用，绝不回写、刷新或改造历史订单快照。
+        this.publish({
+          ...this.state,
+          reprint: { kind: "succeeded", orderGuid },
+        });
+      })
+      .catch(() => {
+        if (!this.isCurrentReprint(generation, orderGuid)) return;
+        this.publish({
+          ...this.state,
+          reprint: {
+            kind: "failed",
+            orderGuid,
+            errorCode: "remote-history-reprint-failed",
+          },
+        });
+      })
+      .finally(() => {
+        if (this.reprintInFlight?.promise === promise) {
+          this.reprintInFlight = null;
+        }
       });
-    } catch {
-      if (!this.isCurrentReprint(generation, orderGuid)) return;
-      this.publish({
-        ...this.state,
-        reprint: {
-          kind: "failed",
-          orderGuid,
-          errorCode: "remote-history-reprint-failed",
-        },
-      });
-    }
+    this.reprintInFlight = { orderGuid, promise };
+    return promise;
   }
 
   private async loadDetails(orderGuid: string): Promise<void> {
@@ -373,7 +387,7 @@ export class RemoteHistoryPresenter {
       details.kind !== "ready" ||
       details.orderGuid !== this.state.selectedOrderGuid ||
       details.value.storeCode.toUpperCase() !== this.trustedStoreCode.toUpperCase() ||
-      details.value.deviceCode.toUpperCase() !== this.currentDeviceCode.toUpperCase()
+      !this.options.reprintPort.canReprint(details.value)
     ) {
       return null;
     }

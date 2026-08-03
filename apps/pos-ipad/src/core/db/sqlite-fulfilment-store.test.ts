@@ -31,16 +31,19 @@ class FulfilmentConnection implements SqliteConnectionPort {
         event_type: parameter(parameters, 1),
         occurred_at_iso: parameter(parameters, 2),
         order_guid: parameter(parameters, 3),
-        correlation_id: parameter(parameters, 4),
-        payload_json: parameter(parameters, 5),
+        external_order_guid: parameter(parameters, 4),
+        correlation_id: parameter(parameters, 5),
+        payload_json: parameter(parameters, 6),
+        scope_store_code: parameter(parameters, 7),
+        scope_device_code: parameter(parameters, 8),
       });
       return { changes: 1, lastInsertRowId: 0 };
     }
     if (sql.includes("INSERT INTO print_jobs")) {
-      const jobId = parameter(parameters, 0); const orderGuid = parameter(parameters, 1); const printerId = parameter(parameters, 2);
-      const ciphertext = parameter(parameters, 3); const isReprint = parameter(parameters, 4); const createdAt = parameter(parameters, 5);
+      const jobId = parameter(parameters, 0); const orderGuid = parameter(parameters, 1); const externalOrderGuid = parameter(parameters, 2); const printerId = parameter(parameters, 3);
+      const ciphertext = parameter(parameters, 4); const isReprint = parameter(parameters, 5); const createdAt = parameter(parameters, 6);
       this.printJobs.set(string(jobId), {
-        job_id: jobId, order_guid: orderGuid, state: "Queued", printer_id: printerId, receipt_ciphertext: ciphertext,
+        job_id: jobId, order_guid: orderGuid, external_order_guid: externalOrderGuid, state: "Queued", printer_id: printerId, receipt_ciphertext: ciphertext,
         is_reprint: isReprint, retry_count: 0, last_error_code: null, created_at_iso: createdAt, updated_at_iso: createdAt,
       });
       return { changes: 1, lastInsertRowId: 0 };

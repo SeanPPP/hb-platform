@@ -319,6 +319,10 @@ test("真实 SQLite：已记录 M7 的不完整 drawer schema 原地修复后可
       () => nowIso,
       POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 10),
     );
+    // 当前 fulfilment facade 只会在全部生产迁移后创建；本测试仅隔离验证 M7 钱箱修复。
+    await connection.exec(
+      "ALTER TABLE print_jobs ADD COLUMN external_order_guid TEXT NULL",
+    );
 
     const store = new SqliteFulfilmentStore(connection, {
       encryptor: {

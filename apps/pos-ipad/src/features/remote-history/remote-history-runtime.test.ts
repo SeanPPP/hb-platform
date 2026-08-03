@@ -64,6 +64,7 @@ test("factory 将可信身份和在线门禁交给 presenter，并通过 Hbpos a
 test("factory 仅注入按可信会话绑定的窄重打 port，不暴露打印内容或设备参数", async () => {
   const reprintCalls: string[] = [];
   const reprintPort: RemoteHistoryReprintPort = {
+    canReprint: () => true,
     async reprintExistingOrder(orderGuid) {
       reprintCalls.push(orderGuid);
     },

@@ -26,6 +26,7 @@ type OperationAuditRow = Readonly<{
   event_type: unknown;
   occurred_at_iso: unknown;
   order_guid: unknown;
+  external_order_guid: unknown;
   correlation_id: unknown;
   payload_json: unknown;
   uploaded_at_iso: unknown;
@@ -64,7 +65,12 @@ export class SqliteOperationAuditRead implements OperationAuditReadPort {
     const rows = await this.connection.getAll<OperationAuditRow>(
       `${selectAuditRows()}
        WHERE (
-         audit.order_guid IS NULL
+         (audit.order_guid IS NULL AND audit.external_order_guid IS NULL)
+         OR (
+           audit.external_order_guid IS NOT NULL
+           AND audit.scope_store_code = ?
+           AND audit.scope_device_code = ?
+         )
          OR (
            orders.order_guid IS NOT NULL
            AND orders.store_code = ?
@@ -75,6 +81,8 @@ export class SqliteOperationAuditRead implements OperationAuditReadPort {
        ORDER BY audit.occurred_at_iso DESC, audit.event_id ASC
        LIMIT ?`,
       [
+        this.scope.storeCode,
+        this.scope.deviceCode,
         this.scope.storeCode,
         this.scope.deviceCode,
         OPERATION_AUDIT_CANDIDATE_LIMIT,
@@ -108,7 +116,12 @@ export class SqliteOperationAuditRead implements OperationAuditReadPort {
       `${selectAuditRows()}
        WHERE audit.event_id = ?
          AND (
-           audit.order_guid IS NULL
+           (audit.order_guid IS NULL AND audit.external_order_guid IS NULL)
+           OR (
+             audit.external_order_guid IS NOT NULL
+             AND audit.scope_store_code = ?
+             AND audit.scope_device_code = ?
+           )
            OR (
              orders.order_guid IS NOT NULL
              AND orders.store_code = ?
@@ -116,7 +129,13 @@ export class SqliteOperationAuditRead implements OperationAuditReadPort {
            )
          )
        LIMIT 1`,
-      [eventId, this.scope.storeCode, this.scope.deviceCode],
+      [
+        eventId,
+        this.scope.storeCode,
+        this.scope.deviceCode,
+        this.scope.storeCode,
+        this.scope.deviceCode,
+      ],
     );
     return row === null ? null : mapAuditRow(row, this.scope);
   }
@@ -128,6 +147,7 @@ function selectAuditRows(): string {
     audit.event_type,
     audit.occurred_at_iso,
     audit.order_guid,
+    audit.external_order_guid,
     audit.correlation_id,
     audit.payload_json,
     audit.uploaded_at_iso,
@@ -250,12 +270,18 @@ function mapAuditRow(
   }
 
   const orderLinked = row.order_guid !== null;
-  const orderGuid = orderLinked ? strictUuid(row.order_guid) : null;
+  const externalOrderLinked = row.external_order_guid !== null;
+  const orderGuid = orderLinked
+    ? strictUuid(row.order_guid)
+    : externalOrderLinked
+      ? strictUuid(row.external_order_guid)
+      : null;
   if (
-    orderLinked &&
+    (orderLinked || externalOrderLinked) &&
     (orderGuid === null ||
-      row.order_store_code !== scope.storeCode ||
-      row.order_device_code !== scope.deviceCode)
+      (orderLinked &&
+        (row.order_store_code !== scope.storeCode ||
+          row.order_device_code !== scope.deviceCode)))
   ) {
     return null;
   }

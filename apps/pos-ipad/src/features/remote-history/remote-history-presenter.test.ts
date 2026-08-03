@@ -69,8 +69,13 @@ class MemoryPort implements RemoteOrderHistoryPort {
 
 class MemoryReprintPort implements RemoteHistoryReprintPort {
   public readonly orderGuids: string[] = [];
+  public canReprintImpl: (details: RemoteOrderHistoryDetails) => boolean = () => true;
   public reprintImpl: (orderGuid: string) => Promise<void> = async () =>
     undefined;
+
+  public canReprint(details: RemoteOrderHistoryDetails): boolean {
+    return this.canReprintImpl(details);
+  }
 
   public reprintExistingOrder(orderGuid: string): Promise<void> {
     this.orderGuids.push(orderGuid);
@@ -155,7 +160,7 @@ test("仅对当前可信门店终端内已加载的订单详情，按 History.Re
   });
 });
 
-test("重打拒绝跨终端、未加载详情、缺权限或缺 port，且失败不改订单事实", async () => {
+test("同店跨终端订单可由窄 port 判定后重打；缺权限、缺 port 或不满足票据条件仍拒绝", async () => {
   const port = new MemoryPort();
   const reprintPort = new MemoryReprintPort();
   port.listImpl = async () => [firstRow];
@@ -191,9 +196,23 @@ test("重打拒绝跨终端、未加载详情、缺权限或缺 port，且失败
   });
   await outsideDevice.refresh();
   assert.equal(outsideDevice.state.details.kind, "ready");
-  assert.equal(outsideDevice.capabilities.reprint, false);
+  assert.equal(outsideDevice.capabilities.reprint, true);
   await outsideDevice.reprintSelected();
-  assert.deepEqual(reprintPort.orderGuids, []);
+  assert.deepEqual(reprintPort.orderGuids, [secondRow.orderGuid]);
+
+  reprintPort.canReprintImpl = () => false;
+  const ineligible = presenter(port, {
+    permissionCodes: [
+      REMOTE_HISTORY_VIEW_PERMISSION,
+      REMOTE_HISTORY_REPRINT_PERMISSION,
+    ],
+    reprintPort,
+  });
+  await ineligible.refresh();
+  assert.equal(ineligible.capabilities.reprint, false);
+  await ineligible.reprintSelected();
+  assert.deepEqual(reprintPort.orderGuids, [secondRow.orderGuid]);
+  reprintPort.canReprintImpl = () => true;
 
   const failing = presenter(port, {
     permissionCodes: [
@@ -218,6 +237,32 @@ test("重打拒绝跨终端、未加载详情、缺权限或缺 port，且失败
     orderGuid: firstRow.orderGuid,
     errorCode: "remote-history-reprint-failed",
   });
+});
+
+test("连续点击同一远程订单只创建一个在途重打动作", async () => {
+  const port = new MemoryPort();
+  const reprintPort = new MemoryReprintPort();
+  const pending = deferred<void>();
+  port.listImpl = async () => [firstRow];
+  port.detailsImpl = async () => firstDetails;
+  reprintPort.reprintImpl = () => pending.promise;
+  const value = presenter(port, {
+    permissionCodes: [
+      REMOTE_HISTORY_VIEW_PERMISSION,
+      REMOTE_HISTORY_REPRINT_PERMISSION,
+    ],
+    reprintPort,
+  });
+  await value.refresh();
+
+  const first = value.reprintSelected();
+  const duplicate = value.reprintSelected();
+
+  assert.equal(first, duplicate);
+  assert.deepEqual(reprintPort.orderGuids, [firstRow.orderGuid]);
+  pending.resolve();
+  await first;
+  assert.equal(value.state.reprint.kind, "succeeded");
 });
 
 test("缺 View 权限、离线或 runtime 未接线时不调用远端", async () => {

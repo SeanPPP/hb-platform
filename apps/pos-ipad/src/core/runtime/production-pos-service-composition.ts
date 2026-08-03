@@ -77,6 +77,8 @@ import {
   LocalHistoryReceiptPreviewService,
   OrderRepositoryReceiptReprintSource,
   ReceiptReprintPreparationService,
+  RemoteHistoryReceiptReprintPreparationService,
+  isRemoteHistoryReceiptReprintEligible,
   type ReceiptCompletionSettlementSource,
   type ReceiptPreviewSettingsSource,
   type ReceiptReprintSettingsSource,
@@ -95,6 +97,7 @@ import {
   VoucherBalancePostSyncService,
   VoucherBalanceReceiptRenderer,
 } from "../../features/receipts/voucher-balance-receipt";
+import { HbposRemoteHistoryApi } from "../../features/remote-history/remote-history-api";
 import { REMOTE_HISTORY_REPRINT_PERMISSION } from "../../features/remote-history/remote-history-presenter";
 import {
   createHbposRemoteHistoryPresenterFactory,
@@ -988,12 +991,28 @@ export function createProductionPosRuntimeServices(
     repositories.orders,
   );
   const receiptSettlements = receiptCompletionSettlementSource(input.database);
+  const frozenReceiptReprintSettings = receiptReprintSettings(settingsRepository);
   const receiptReprint = new ReceiptReprintPreparationService({
     orders: receiptOrderSource,
-    settings: receiptReprintSettings(settingsRepository),
+    settings: frozenReceiptReprintSettings,
     settlements: receiptSettlements,
     nowIso: input.clock.nowIso,
   });
+  const remoteHistoryReceiptReprint =
+    new RemoteHistoryReceiptReprintPreparationService({
+      history: {
+        async getDetails(orderGuid) {
+          const session = currentCashier.require();
+          assertTrustedCashierScope(session, input.auditMetadata);
+          return new HbposRemoteHistoryApi(
+            input.transport,
+            session.storeCode,
+          ).getDetails(orderGuid);
+        },
+      },
+      settings: frozenReceiptReprintSettings,
+      trustedStoreCode: input.auditMetadata.storeCode,
+    });
   const localHistoryReceiptPreview = new LocalHistoryReceiptPreviewService({
     orders: receiptOrderSource,
     settings: receiptPreviewSettings(settingsRepository),
@@ -1007,9 +1026,15 @@ export function createProductionPosRuntimeServices(
     nowIso: input.clock.nowIso,
     createAuditId: input.createId,
     createCorrelationId: input.createId,
+    auditScope: {
+      storeCode: input.auditMetadata.storeCode,
+      deviceCode: input.auditMetadata.deviceCode,
+    },
     prepareLastReceiptReprint: () => receiptReprint.prepareLast(),
-    prepareReceiptReprint: (orderGuid) =>
-      receiptReprint.prepareCurrent(orderGuid),
+    prepareReceiptReprint: (orderGuid, source) =>
+      source === "remote-history"
+        ? remoteHistoryReceiptReprint.prepare(orderGuid)
+        : receiptReprint.prepareCurrent(orderGuid),
     prepareManualDrawerOpen: async () => {
       // 手动动作只能使用本次从持久设置读取并冻结的外设；配置损坏或禁用时不猜测。
       const current = await settingsRepository.getReceiptPrinterSettings();
@@ -1059,6 +1084,7 @@ export function createProductionPosRuntimeServices(
         return active;
       };
       return {
+        canReprint: isRemoteHistoryReceiptReprintEligible,
         async reprintExistingOrder(orderGuid) {
           const session = assertActive();
           const result = await fulfilment.reprintReceipt(

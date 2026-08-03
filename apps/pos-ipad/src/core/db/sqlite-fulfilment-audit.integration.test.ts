@@ -4,12 +4,13 @@ import test from "node:test";
 
 import { FulfilmentService } from "../../features/fulfilment/fulfilment-service";
 
-import { POS_DATABASE_MIGRATIONS } from "./migrations";
+import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
   SqliteFulfilmentStore,
   type FulfilmentAuditEvent,
   type FulfilmentInitialAuthorization,
 } from "./sqlite-fulfilment-store";
+import { createSqliteRepositories } from "./sqlite-repositories";
 import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
 
 class NodeSqliteConnection implements SqliteConnectionPort {
@@ -190,13 +191,18 @@ function initialAuthorization(
     eventType: "RECEIPT_REPRINT" | "CASH_DRAWER_OPEN";
     orderGuid: string | null;
     printerId: string;
+    source?: "last-receipt" | "remote-history";
   }>,
 ): FulfilmentInitialAuthorization {
   const isReprint = input.eventType === "RECEIPT_REPRINT";
+  const source = input.source ?? "last-receipt";
+  const isHistory = isReprint && source === "remote-history";
   const context = {
     actionId: input.actionId,
     permissionCode: isReprint
-      ? "Permissions.PosTerminal.Receipt.PrintLast"
+      ? isHistory
+        ? "Permissions.PosTerminal.History.Reprint"
+        : "Permissions.PosTerminal.Receipt.PrintLast"
       : "Permissions.PosTerminal.CashDrawer.Open",
     authorizationMode: "online" as const,
     requestingCashierId: "cashier-1",
@@ -214,11 +220,13 @@ function initialAuthorization(
       correlationId: input.actionId,
       payload: {
         action: isReprint
-          ? "reprint-last-receipt"
+          ? isHistory
+            ? "reprint-history-receipt"
+            : "reprint-last-receipt"
           : "open-cash-drawer",
         status: "Authorized",
-        reason: isReprint ? "last-receipt" : "MANUAL",
-        source: "sales",
+        reason: isReprint ? source : "MANUAL",
+        source: isHistory ? "remote-history" : "sales",
         outcome: "Succeeded",
         printerId: input.printerId,
         errorCode: null,
@@ -229,9 +237,175 @@ function initialAuthorization(
         permissionCode: context.permissionCode,
         authorizationMode: context.authorizationMode,
       },
+      ...(isHistory && input.orderGuid
+        ? {
+            externalOrderGuid: input.orderGuid,
+            scopeStoreCode: "S1",
+            scopeDeviceCode: "IPAD1",
+          }
+        : {}),
     },
   };
 }
+
+test("真实 SQLite：M32 原有本机履约事实无损升级 M33 外部订单身份", async () => {
+  const { connection } = createHarness();
+  await applyMigrations(
+    connection,
+    () => "2026-07-28T03:00:00.000Z",
+    POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 32),
+  );
+  await seedOrder(connection, "order-before-m33");
+  await seedPrint(
+    connection,
+    "print-before-m33",
+    true,
+    "Printed",
+    "order-before-m33",
+  );
+
+  await applyMigrations(
+    connection,
+    () => "2026-07-28T04:00:00.000Z",
+  );
+
+  const row = await connection.getFirst<{
+    version: number;
+    orderGuid: string;
+    externalOrderGuid: string | null;
+  }>(
+    `SELECT
+      (SELECT MAX(version) FROM schema_migrations) AS version,
+      order_guid AS orderGuid,
+      external_order_guid AS externalOrderGuid
+     FROM print_jobs WHERE job_id = 'print-before-m33'`,
+  );
+  assert.deepEqual({ ...row }, {
+    version: 33,
+    orderGuid: "order-before-m33",
+    externalOrderGuid: null,
+  });
+});
+
+test("真实 SQLite：跨终端远程重打不伪造本机订单，重启恢复原 scope 且 Ambiguous 不重放", async () => {
+  const { connection, store } = createHarness();
+  await connection.exec(
+    POS_DATABASE_MIGRATIONS.map((migration) => migration.sql).join("\n"),
+  );
+  const orderGuid = "10000000-0000-4000-8000-000000000001";
+  const authorization = initialAuthorization({
+    actionId: "action-remote-history-reprint",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid,
+    printerId: "XP-REMOTE",
+    source: "remote-history",
+  });
+
+  await assert.rejects(
+    store.createLastReceiptReprint(
+      {
+        orderGuid,
+        receiptBytes: Uint8Array.of(29, 33, 82),
+        printerId: "XP-REMOTE",
+      },
+      {
+        ...authorization,
+        audit: {
+          ...authorization.audit,
+          externalOrderGuid: "20000000-0000-4000-8000-000000000002",
+        },
+      },
+    ),
+    /external audit order does not match/u,
+  );
+
+  const created = await store.createLastReceiptReprint({
+    orderGuid,
+    receiptBytes: Uint8Array.of(29, 33, 82),
+    printerId: "XP-REMOTE",
+  }, authorization);
+  assert.equal(created?.state, "Queued");
+
+  let printCalls = 0;
+  const restarted = new FulfilmentService({
+    store,
+    printer: {
+      async connect() {},
+      async print() {
+        printCalls += 1;
+        return { status: "ambiguous", errorCode: "DRIVER_UNKNOWN" };
+      },
+    },
+    drawer: { async open() { throw new Error("drawer must not be called"); } },
+    nowIso: () => "2026-07-28T05:00:00.000Z",
+    createAuditId: () => "audit-remote-history-terminal",
+    createCorrelationId: () => "unused-correlation",
+    // 中文注释：模拟重启后注册身份变化；终态必须沿用首份授权审计的原 scope。
+    auditScope: { storeCode: "S2", deviceCode: "IPAD2" },
+    async prepareLastReceiptReprint() { return null; },
+  });
+
+  await restarted.drainAutomaticQueue();
+  await restarted.drainAutomaticQueue();
+  assert.equal(printCalls, 1);
+
+  const row = await connection.getFirst<{
+    localOrders: number;
+    localOrderGuid: string | null;
+    externalOrderGuid: string;
+    state: string;
+    audits: number;
+    scopedAudits: number;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM local_orders) AS localOrders,
+      order_guid AS localOrderGuid,
+      external_order_guid AS externalOrderGuid,
+      state,
+      (SELECT COUNT(*) FROM audit_events
+       WHERE external_order_guid = ?) AS audits,
+      (SELECT COUNT(*) FROM audit_events
+       WHERE external_order_guid = ?
+         AND scope_store_code = 'S1'
+         AND scope_device_code = 'IPAD1') AS scopedAudits
+     FROM print_jobs WHERE job_id = ?`,
+    [orderGuid, orderGuid, authorization.context.actionId],
+  );
+  assert.deepEqual({ ...row }, {
+    localOrders: 0,
+    localOrderGuid: null,
+    externalOrderGuid: orderGuid,
+    state: "Ambiguous",
+    audits: 2,
+    scopedAudits: 2,
+  });
+  const delivery = createSqliteRepositories(connection, {
+    nowIso: () => "2026-07-28T05:01:00.000Z",
+    createLeaseId: () => "unused-lease",
+    encryptor: {
+      async encrypt(value) { return new TextEncoder().encode(value); },
+      async decrypt(value) { return new TextDecoder().decode(value); },
+    },
+    auditScope: { storeCode: "S1", deviceCode: "IPAD1" },
+  }).auditDelivery;
+  const pending = await delivery.listReady(10);
+  assert.deepEqual(
+    pending.map((event) => ({
+      orderGuid: event.orderGuid,
+      scope: event.auditScope,
+    })),
+    [
+      {
+        orderGuid,
+        scope: { storeCode: "S1", deviceCode: "IPAD1" },
+      },
+      {
+        orderGuid,
+        scope: { storeCode: "S1", deviceCode: "IPAD1" },
+      },
+    ],
+  );
+});
 
 test("真实 SQLite：打印和钱箱终态 CAS 与对应审计在同一事务成功", async () => {
   const { connection, store } = createHarness();

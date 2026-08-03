@@ -1309,9 +1309,9 @@ test("同步历史 presenter 只使用可信收银员 lease，会话失效后拒
   presenter.destroy();
 });
 
-test("远程历史重打绑定当前收银员 lease，并从本地订单账本重新渲染后进入耐久打印状态机", async () => {
+test("同店跨终端非现金远程历史重打会重新读取后端详情并进入耐久打印状态机", async () => {
   const orderGuid = "10000000-0000-4000-8000-000000000001";
-  const order = { ...lastCashOrder(), orderGuid };
+  const soldAtIso = "2026-07-28T01:02:03.000Z";
   const preparedOrderGuids: string[] = [];
   const printedJobIds: string[] = [];
   const transport: HbposTransport = {
@@ -1326,14 +1326,14 @@ test("远程历史重打绑定当前收银员 lease，并从本地订单账本�
                 {
                   orderGuid,
                   storeCode: "S001",
-                  deviceCode: "IPAD-1",
+                  deviceCode: "IPAD-2",
                   cashierName: "Cashier",
-                  soldAt: order.soldAtIso,
+                  soldAt: soldAtIso,
                   totalAmount: 1,
                   discountAmount: 0,
                   actualAmount: 1,
                   lineCount: 1,
-                  paymentSummary: "Cash",
+                  paymentSummary: "Card",
                   statusLabel: "Synced",
                 },
               ],
@@ -1348,9 +1348,9 @@ test("远程历史重打绑定当前收银员 lease，并从本地订单账本�
           data: {
             orderGuid,
             storeCode: "S001",
-            deviceCode: "IPAD-1",
+            deviceCode: "IPAD-2",
             cashierName: "Cashier",
-            soldAt: order.soldAtIso,
+            soldAt: soldAtIso,
             totalAmount: 1,
             discountAmount: 0,
             actualAmount: 1,
@@ -1371,7 +1371,7 @@ test("远程历史重打绑定当前收银员 lease，并从本地订单账本�
               {
                 paymentGuid:
                   "30000000-0000-4000-8000-000000000001",
-                method: 1,
+                method: 2,
                 amount: 1,
                 reference: null,
                 cardTransactions: [],
@@ -1384,7 +1384,6 @@ test("远程历史重打绑定当前收银员 lease，并从本地订单账本�
   };
   const services = createTestComposition(
     databaseFor([], {
-      lastOrder: order,
       onReprintPrepared(input) {
         preparedOrderGuids.push(input.orderGuid);
       },
