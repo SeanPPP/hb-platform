@@ -3498,6 +3498,8 @@
       "installmentRepaymentCancel": "取消分期还款",
       "dailyCloseSave": "保存日结",
       "dailyCloseReprint": "补打日结",
+      "linklySettlement": "Linkly 结算",
+      "linklySettlementReprint": "补打 Linkly 结算单",
       "cardPaymentSupervisorResolution": "主管付款结案"
     }
   },

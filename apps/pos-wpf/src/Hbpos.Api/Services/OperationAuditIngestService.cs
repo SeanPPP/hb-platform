@@ -35,7 +35,8 @@ public sealed class SqlSugarOperationAuditIngestService(
         "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
         "RETURN_REFUND_COMPLETE", "SALE_VOID", "RECEIPT_REPRINT",
         "INSTALLMENT_REPAYMENT_COMPLETE", "INSTALLMENT_REPAYMENT_CANCEL",
-        "DAILY_CLOSE_SAVE", "DAILY_CLOSE_REPRINT", "PERMISSION_OVERRIDE"
+        "DAILY_CLOSE_SAVE", "DAILY_CLOSE_REPRINT",
+        "LINKLY_SETTLEMENT", "LINKLY_SETTLEMENT_REPRINT", "PERMISSION_OVERRIDE"
     };
 
     private static readonly HashSet<string> AllowedPropertyKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -178,7 +179,7 @@ public sealed class SqlSugarOperationAuditIngestService(
 
         if (string.IsNullOrWhiteSpace(auditEvent.Outcome) ||
             (!AllowedOutcomes.Contains(auditEvent.Outcome.Trim()) &&
-             !IsLegacyCardPaymentSupervisorOutcome(auditEvent.OperationType, auditEvent.Outcome)))
+             !ShouldNormalizeOutcomeToSucceeded(auditEvent.OperationType, auditEvent.Outcome)))
         {
             return ("INVALID_OUTCOME", "outcome must be Succeeded, Denied or Failed");
         }
@@ -211,7 +212,7 @@ public sealed class SqlSugarOperationAuditIngestService(
             OccurredAtUtc = source.OccurredAtUtc.UtcDateTime,
             ReceivedAtUtc = DateTime.SpecifyKind(receivedAtUtc, DateTimeKind.Utc),
             OperationType = CanonicalOperationType(source.OperationType),
-            Outcome = IsLegacyCardPaymentSupervisorOutcome(source.OperationType, source.Outcome)
+            Outcome = ShouldNormalizeOutcomeToSucceeded(source.OperationType, source.Outcome)
                 ? "Succeeded"
                 : CanonicalOutcome(source.Outcome),
             CashierId = CleanStructured(source.CashierId, 100),
@@ -300,6 +301,18 @@ public sealed class SqlSugarOperationAuditIngestService(
         return string.Equals(outcome.Trim(), "ConfirmPaid", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(outcome.Trim(), "ConfirmNotPaid", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(outcome.Trim(), "ContinueWaiting", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldNormalizeOutcomeToSucceeded(string operationType, string outcome)
+    {
+        if (IsLegacyCardPaymentSupervisorOutcome(operationType, outcome))
+        {
+            return true;
+        }
+
+        // 兼容已经写入旧客户端 outbox 的主管结算结果；新客户端统一发送 Succeeded。
+        return string.Equals(operationType.Trim(), "LINKLY_SETTLEMENT", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(outcome.Trim(), "SupervisorResolved", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeCurrency(string? value)

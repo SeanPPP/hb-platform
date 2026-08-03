@@ -753,7 +753,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.LinklySettlement,
-                result.Resolved ? "SupervisorResolved" : "Failed",
+                result.Resolved ? "Succeeded" : "Failed",
                 Session,
                 reasonCode: resolution.ToString(),
                 safeMessage: result.Resolved ? null : result.Message,

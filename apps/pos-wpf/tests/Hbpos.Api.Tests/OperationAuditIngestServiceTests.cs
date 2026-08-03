@@ -175,6 +175,66 @@ public sealed class OperationAuditIngestServiceTests
     }
 
     [Theory]
+    [InlineData("LINKLY_SETTLEMENT", "Failed", "PRINT_FAILED")]
+    [InlineData("LINKLY_SETTLEMENT_REPRINT", "Succeeded", "REPRINT")]
+    public async Task IngestAsync_accepts_linkly_settlement_operation_types(
+        string operationType,
+        string outcome,
+        string reasonCode)
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = operationType;
+        request.Events[0].Outcome = outcome;
+        request.Events[0].ReasonCode = reasonCode;
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.AcceptedCount);
+        var persisted = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
+        Assert.Equal(operationType, persisted.OperationType);
+        Assert.Equal(outcome, persisted.Outcome);
+        Assert.Equal(reasonCode, persisted.ReasonCode);
+    }
+
+    [Fact]
+    public async Task IngestAsync_normalizes_legacy_linkly_supervisor_outcome_to_succeeded()
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "LINKLY_SETTLEMENT";
+        request.Events[0].Outcome = "SupervisorResolved";
+        request.Events[0].ReasonCode = "ConfirmedSucceeded";
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.AcceptedCount);
+        var persisted = Assert.Single(await fixture.PosmDb.Queryable<PosOperationAudit>().ToListAsync());
+        Assert.Equal("Succeeded", persisted.Outcome);
+        Assert.Equal("ConfirmedSucceeded", persisted.ReasonCode);
+    }
+
+    [Fact]
+    public async Task IngestAsync_rejects_linkly_supervisor_outcome_for_other_operation_types()
+    {
+        await using var fixture = OperationAuditFixture.Create();
+        await new SqlSugarOperationAuditSchemaInitializer(fixture.DbContext).InitializeAsync();
+        var service = new SqlSugarOperationAuditIngestService(fixture.DbContext);
+        var request = CreateRequest();
+        request.Events[0].OperationType = "PAYMENT_CANCEL";
+        request.Events[0].Outcome = "SupervisorResolved";
+
+        var result = await service.IngestAsync(request, "STORE-1", "POS-1", CancellationToken.None);
+
+        Assert.Equal(1, result.RejectedCount);
+        Assert.Equal("INVALID_OUTCOME", Assert.Single(result.Results).ErrorCode);
+    }
+
+    [Theory]
     [InlineData("ConfirmPaid")]
     [InlineData("ConfirmNotPaid")]
     [InlineData("ContinueWaiting")]

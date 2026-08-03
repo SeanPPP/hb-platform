@@ -3498,6 +3498,8 @@
       "installmentRepaymentCancel": "Cancel Installment Repayment",
       "dailyCloseSave": "Save Daily Close",
       "dailyCloseReprint": "Reprint Daily Close",
+      "linklySettlement": "Linkly Settlement",
+      "linklySettlementReprint": "Reprint Linkly Settlement",
       "cardPaymentSupervisorResolution": "Card Payment Supervisor Resolution"
     }
   },

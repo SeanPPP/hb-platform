@@ -374,7 +374,7 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal(LocalLinklySettlementStatus.Succeeded, viewModel.SelectedSettlement!.Status);
         var auditEvent = Assert.Single(logger.Events);
         Assert.Equal("LINKLY_SETTLEMENT", auditEvent.OperationType);
-        Assert.Equal("SupervisorResolved", auditEvent.Outcome);
+        Assert.Equal("Succeeded", auditEvent.Outcome);
         Assert.Equal("ConfirmedSucceeded", auditEvent.ReasonCode);
     }
 

@@ -138,6 +138,8 @@ export const OPERATION_TYPE_KEYS: Record<string, string> = {
   INSTALLMENT_REPAYMENT_CANCEL: 'operationLogs.operations.installmentRepaymentCancel',
   DAILY_CLOSE_SAVE: 'operationLogs.operations.dailyCloseSave',
   DAILY_CLOSE_REPRINT: 'operationLogs.operations.dailyCloseReprint',
+  LINKLY_SETTLEMENT: 'operationLogs.operations.linklySettlement',
+  LINKLY_SETTLEMENT_REPRINT: 'operationLogs.operations.linklySettlementReprint',
   CARD_PAYMENT_SUPERVISOR_RESOLUTION: 'operationLogs.operations.cardPaymentSupervisorResolution',
 }
 
