@@ -70,6 +70,8 @@
     "advertisements": "广告管理",
     "cashRegisterUsers": "收银用户条码",
     "operationLogs": "员工操作日志",
+    "linklySettlements": "Linkly 结算记录",
+    "linklySettlementDetail": "Linkly 结算详情",
     "scheduleAttendance": "排班考勤",
     "deviceRegistration": "设备注册",
     "appDownloads": "App 下载",
@@ -5752,6 +5754,114 @@
       "chinaSuppliers": "获取中国供应商数据失败",
       "branches": "获取门店数据失败",
       "products": "获取产品销售数据失败"
+    }
+  },
+  "linklySettlements": {
+    "title": "Linkly 结算记录",
+    "subtitle": "查询已同步到服务器的终端结算结果、金额与打印记录",
+    "syncedOnlyNotice": "仅显示已同步到服务器的结算记录；未上传记录请在 WPF 查看",
+    "paginationTotal": "共 {{count}} 条",
+    "actions": {
+      "search": "查询",
+      "reset": "重置",
+      "export": "导出当前筛选",
+      "view": "详情",
+      "backToList": "返回列表"
+    },
+    "messages": {
+      "loadFailed": "加载 Linkly 结算记录失败",
+      "detailLoadFailed": "加载 Linkly 结算详情失败",
+      "exportRangeInvalid": "导出日期范围必须有效且不超过 31 个含首尾自然日",
+      "exportSuccess": "导出文件已生成",
+      "exportFailed": "导出 Linkly 结算记录失败"
+    },
+    "filters": {
+      "businessDate": "营业日期",
+      "store": "门店",
+      "storePlaceholder": "输入门店编码",
+      "device": "设备",
+      "devicePlaceholder": "输入设备编码",
+      "connectionMode": "连接模式",
+      "environment": "环境",
+      "status": "结算状态",
+      "submissionState": "提交状态",
+      "keyword": "关键字",
+      "keywordPlaceholder": "结算 GUID、会话、响应等"
+    },
+    "columns": {
+      "requestedAt": "请求时间",
+      "businessDate": "营业日",
+      "store": "门店",
+      "device": "设备",
+      "status": "状态 / 提交状态",
+      "modeEnvironment": "模式 / 环境",
+      "purchase": "购买",
+      "refund": "退款",
+      "cashOut": "Cash Out",
+      "net": "净额",
+      "receipts": "回单数",
+      "prints": "打印数",
+      "response": "响应",
+      "detail": "详情"
+    },
+    "status": {
+      "Pending": "处理中",
+      "Succeeded": "成功",
+      "Failed": "失败",
+      "Unknown": "结果未知"
+    },
+    "submissionState": {
+      "NotSubmitted": "未提交",
+      "Submitted": "已提交",
+      "Unknown": "提交未知"
+    },
+    "connectionMode": {
+      "LocalIp": "本地 IP",
+      "CloudDirectSync": "云端直连同步",
+      "CloudBackendAsync": "云端后端异步"
+    },
+    "environment": {
+      "Production": "生产",
+      "Sandbox": "沙盒"
+    },
+    "amountParseStatus": {
+      "Parsed": "金额已解析",
+      "Missing": "无金额数据",
+      "Unsupported": "金额格式不支持",
+      "Invalid": "金额数据无效"
+    },
+    "detail": {
+      "title": "Linkly 结算详情",
+      "amountSummary": "总体金额",
+      "parseStatus": "解析状态",
+      "currency": "原始币种",
+      "purchaseCount": "购买笔数",
+      "refundCount": "退款笔数",
+      "cashOutCount": "Cash Out 笔数",
+      "totalCount": "总笔数",
+      "cardTotals": "卡种明细",
+      "cardName": "卡种",
+      "noCardTotals": "暂无卡种明细",
+      "identityAndStatus": "身份、会话与状态",
+      "id": "记录 ID",
+      "settlementGuid": "结算 GUID",
+      "clientRevision": "客户端修订号",
+      "providerSessionId": "服务商会话 ID",
+      "cloudBackendSessionId": "云端后端会话 ID",
+      "response": "响应信息",
+      "responseCode": "响应码",
+      "responseText": "响应文本",
+      "times": "全部时间",
+      "completedAt": "完成时间",
+      "receivedAt": "服务器接收时间",
+      "updatedAt": "服务器更新时间",
+      "firstPrintedAt": "首次打印时间",
+      "lastPrintedAt": "最后打印时间",
+      "printing": "打印信息",
+      "lastPrintError": "最后打印错误",
+      "receipts": "已脱敏回单",
+      "receiptNumber": "回单 {{number}}",
+      "noReceipts": "暂无回单"
     }
   },
   "formDemo": {

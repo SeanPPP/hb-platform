@@ -199,6 +199,90 @@ public class NavigationServiceTests
     }
 
     [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public void BuildMenu_四种系统管理员别名均显示Linkly结算(string roleName)
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, roleName));
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        var item = Assert.Single(
+            posAdmin.Children!,
+            child => child.Path == "/pos-admin/linkly-settlements"
+        );
+        Assert.Equal("menu.linklySettlements", item.TitleKey);
+        Assert.Equal("ReconciliationOutlined", item.Icon);
+        Assert.Null(item.Permission);
+        Assert.True(item.RequireAdmin);
+    }
+
+    [Theory]
+    [InlineData(Permissions.Dashboard.View)]
+    [InlineData(Permissions.PosTerminal.Audit.View)]
+    [InlineData(Permissions.System.ManageSettings)]
+    public void BuildMenu_普通后台用户不显示Linkly结算(string permission)
+    {
+        var user = CreateUser(new Claim("permission", permission));
+
+        var menu = _service.BuildMenu(user);
+
+        Assert.DoesNotContain(
+            menu.SelectMany(item => item.Children ?? new List<NavigationMenuDto>()),
+            child => child.Path == "/pos-admin/linkly-settlements"
+        );
+    }
+
+    [Fact]
+    public void FilterMenu_复制父叶节点时保留RequireAdmin标记()
+    {
+        var contextType = typeof(NavigationService).GetNestedType(
+            "NavigationPermissionContext",
+            BindingFlags.NonPublic
+        ) ?? throw new InvalidOperationException("NavigationPermissionContext was not found.");
+        var context = Activator.CreateInstance(contextType)
+            ?? throw new InvalidOperationException("NavigationPermissionContext could not be created.");
+        contextType.GetProperty("IsAdmin")!.SetValue(context, true);
+
+        var filterMenu = typeof(NavigationService).GetMethod(
+            "FilterMenu",
+            BindingFlags.NonPublic | BindingFlags.Static
+        ) ?? throw new InvalidOperationException("FilterMenu was not found.");
+        var source = new List<NavigationMenuDto>
+        {
+            new()
+            {
+                Path = "/admin-parent",
+                TitleKey = "menu.adminParent",
+                Icon = "SettingOutlined",
+                RequireAdmin = true,
+                Children = new List<NavigationMenuDto>
+                {
+                    new()
+                    {
+                        Path = "/admin-parent/admin-leaf",
+                        TitleKey = "menu.adminLeaf",
+                        Icon = "ReconciliationOutlined",
+                        RequireAdmin = true,
+                    },
+                },
+            },
+        };
+
+        var filtered = (List<NavigationMenuDto>)filterMenu.Invoke(
+            null,
+            new[] { source, context }
+        )!;
+
+        var parent = Assert.Single(filtered);
+        Assert.True(parent.RequireAdmin);
+        Assert.True(Assert.Single(parent.Children!).RequireAdmin);
+    }
+
+    [Theory]
     [InlineData("SuperAdmin")]
     [InlineData("超级管理员")]
     public void BuildMenu_ShowsFullMenuForSuperAdminAliases(string roleName)

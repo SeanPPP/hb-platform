@@ -143,6 +143,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/advertisements",        TitleKey = "menu.advertisements",         Icon = "PictureOutlined",            Permission = Permissions.Advertisements.View },
                     new() { Path = "/pos-admin/cash-register-users",   TitleKey = "menu.cashRegisterUsers",      Icon = "UserOutlined",               Permission = Permissions.Store.ManageOperations },
                     new() { Path = "/pos-admin/operation-logs",       TitleKey = "menu.operationLogs",          Icon = "FileTextOutlined",           Permission = Permissions.PosTerminal.Audit.View },
+                    new() { Path = "/pos-admin/linkly-settlements",   TitleKey = "menu.linklySettlements",      Icon = "ReconciliationOutlined",     RequireAdmin = true },
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
@@ -473,6 +474,7 @@ namespace BlazorApp.Api.Services
                             TitleKey = node.TitleKey,
                             Icon = node.Icon,
                             Permission = node.Permission,
+                            RequireAdmin = node.RequireAdmin,
                             Children = filteredChildren,
                         });
                     }
@@ -487,6 +489,7 @@ namespace BlazorApp.Api.Services
                             TitleKey = node.TitleKey,
                             Icon = node.Icon,
                             Permission = node.Permission,
+                            RequireAdmin = node.RequireAdmin,
                             Children = null,
                         });
                     }
@@ -498,6 +501,11 @@ namespace BlazorApp.Api.Services
 
         private static bool CanAccess(NavigationMenuDto node, NavigationPermissionContext context)
         {
+            if (node.RequireAdmin && !context.IsAdmin)
+            {
+                return false;
+            }
+
             if (string.IsNullOrEmpty(node.Permission))
             {
                 return true;

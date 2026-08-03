@@ -6,6 +6,8 @@ namespace Hbpos.Contracts.Linkly;
 
 public static class LinklyReceiptTextSanitizer
 {
+    private const int SettlementRecordLength = 69;
+
     private static readonly Regex FullPanRegex = new(
         @"(?<!\d)(?:\d[ \t\u00A0.\-]*){11,18}\d(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -96,6 +98,13 @@ public static class LinklyReceiptTextSanitizer
         if (string.IsNullOrWhiteSpace(value))
         {
             return value;
+        }
+
+        // Linkly 官方结算数据是无分隔符定长格式，普通 PAN 正则会把相邻金额和笔数组合误判为卡号。
+        // 按结构重建才能只保留金额/笔数字段，同时继续脱敏卡名和可选文本尾段。
+        if (TrySanitizeOfficialFixedWidthSettlement(value, out var fixedWidthSettlement))
+        {
+            return fixedWidthSettlement;
         }
 
         try
@@ -248,7 +257,141 @@ public static class LinklyReceiptTextSanitizer
             return SanitizeSettlementData(value) ?? string.Empty;
         }
 
+        if (propertyName == "settlementdata")
+        {
+            return SanitizeSettlementData(value) ?? string.Empty;
+        }
+
         return Sanitize(value);
+    }
+
+    private static bool TrySanitizeOfficialFixedWidthSettlement(
+        string value,
+        out string sanitized)
+    {
+        sanitized = string.Empty;
+        if (value.Length < 12 + 3 + SettlementRecordLength
+            || !TryReadUnsigned(value.AsSpan(0, 9), out var cardCount)
+            || !TryReadUnsigned(value.AsSpan(9, 3), out var cardDataLength)
+            || cardCount > 999 / SettlementRecordLength
+            || cardDataLength != cardCount * SettlementRecordLength)
+        {
+            return false;
+        }
+
+        var offset = 12;
+        var builder = new StringBuilder(value.Length);
+        builder.Append(value, 0, 12);
+        for (var index = 0; index < cardCount; index++)
+        {
+            if (value.Length - offset < SettlementRecordLength
+                || !TrySanitizeSettlementRecord(
+                    value.AsSpan(offset, SettlementRecordLength),
+                    total: false,
+                    out var record))
+            {
+                return false;
+            }
+
+            builder.Append(record);
+            offset += SettlementRecordLength;
+        }
+
+        if (value.Length - offset < 3 + SettlementRecordLength
+            || !TryReadUnsigned(value.AsSpan(offset, 3), out var totalLength)
+            || totalLength != SettlementRecordLength
+            || !TrySanitizeSettlementRecord(
+                value.AsSpan(offset + 3, SettlementRecordLength),
+                total: true,
+                out var totalRecord))
+        {
+            return false;
+        }
+
+        builder.Append(value, offset, 3);
+        builder.Append(totalRecord);
+        offset += 3 + SettlementRecordLength;
+        if (offset == value.Length)
+        {
+            sanitized = builder.ToString();
+            return true;
+        }
+
+        if (value.Length - offset < 3
+            || !TryReadUnsigned(value.AsSpan(offset, 3), out var tailLength)
+            || tailLength != value.Length - offset - 3)
+        {
+            return false;
+        }
+
+        var tail = value[(offset + 3)..];
+        var sanitizedTail = Sanitize(tail);
+        builder.Append(sanitizedTail.Length.ToString("D3", System.Globalization.CultureInfo.InvariantCulture));
+        builder.Append(sanitizedTail);
+        sanitized = builder.ToString();
+        return true;
+    }
+
+    private static bool TrySanitizeSettlementRecord(
+        ReadOnlySpan<char> record,
+        bool total,
+        out string sanitized)
+    {
+        sanitized = string.Empty;
+        if (record.Length != SettlementRecordLength)
+        {
+            return false;
+        }
+
+        var name = record[..20].Trim().ToString();
+        if (name.Length == 0
+            || name.Equals("TOTAL", StringComparison.OrdinalIgnoreCase) != total
+            || !AllDigits(record.Slice(20, 36))
+            || record[56] is not ('+' or '-')
+            || !AllDigits(record.Slice(57, 12)))
+        {
+            return false;
+        }
+
+        var sanitizedName = Sanitize(name).Trim();
+        if (string.IsNullOrWhiteSpace(sanitizedName)
+            || sanitizedName.Length > 20
+            || sanitizedName.Any(char.IsControl))
+        {
+            sanitizedName = "[REDACTED]";
+        }
+
+        sanitized = sanitizedName.PadRight(20) + record[20..].ToString();
+        return true;
+    }
+
+    private static bool TryReadUnsigned(ReadOnlySpan<char> value, out int parsed)
+    {
+        parsed = 0;
+        if (!AllDigits(value))
+        {
+            return false;
+        }
+
+        foreach (var character in value)
+        {
+            parsed = checked(parsed * 10 + character - '0');
+        }
+
+        return true;
+    }
+
+    private static bool AllDigits(ReadOnlySpan<char> value)
+    {
+        foreach (var character in value)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string NormalizePropertyName(string? propertyName)

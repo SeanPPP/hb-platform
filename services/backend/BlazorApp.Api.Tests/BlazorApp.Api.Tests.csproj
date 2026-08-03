@@ -128,6 +128,7 @@
     <Compile Include="LocalSupplierInvoiceBatchUpdateJobServiceTests.cs" />
     <Compile Include="ApplicationLogServiceTests.cs" />
     <Compile Include="OperationAuditQueryServiceTests.cs" />
+    <Compile Include="LinklySettlementManagementTests.cs" />
     <Compile Include="ApplicationLogSchemaMigratorTests.cs" />
     <Compile Include="ApplicationLogQueueTests.cs" />
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />

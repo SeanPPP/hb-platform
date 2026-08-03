@@ -466,6 +466,9 @@ builder.Services.AddScoped<OperationAuditQueryService>(sp =>
 builder.Services.AddScoped<OperationAuditRetentionService>(sp =>
     new OperationAuditRetentionService(sp.GetRequiredService<POSMSqlSugarContext>().Db)
 );
+builder.Services.AddScoped<ILinklySettlementQueryService, LinklySettlementQueryService>();
+builder.Services.AddSingleton<ILinklySettlementAmountParser, LinklySettlementAmountParser>();
+builder.Services.AddSingleton<LinklySettlementExcelExporter>();
 builder.Services.AddScoped<ApplicationLogService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();

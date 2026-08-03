@@ -5,6 +5,11 @@ namespace Hbpos.Api.Tests;
 
 public sealed class LinklySettlementSyncContractsTests
 {
+    private const string OfficialFixedWidthSettlement =
+        "000000002138VISA                000000100001000000100001000000100001+000000300003" +
+        "DEBIT               000000100001000000100001000000100001+000000300003" +
+        "069TOTAL               000000300001000000300001000000300001+000000900009";
+
     [Fact]
     public void Request_exposes_the_complete_versioned_settlement_snapshot()
     {
@@ -139,6 +144,48 @@ public sealed class LinklySettlementSyncContractsTests
         Assert.Equal("****1111", nested.RootElement.GetProperty("CardNumber").GetString());
         Assert.False(nested.RootElement.TryGetProperty("Track2", out _));
         Assert.Equal("456789012345", nested.RootElement.GetProperty("TxnRef").GetString());
+    }
+
+    [Fact]
+    public void Settlement_data_sanitizer_preserves_strict_official_fixed_width_payload()
+    {
+        Assert.Equal(
+            OfficialFixedWidthSettlement,
+            LinklyReceiptTextSanitizer.SanitizeSettlementData(OfficialFixedWidthSettlement));
+    }
+
+    [Fact]
+    public void Settlement_data_sanitizer_does_not_treat_arbitrary_twelve_digit_text_as_fixed_width()
+    {
+        Assert.Equal(
+            "MERCHANT ****9012",
+            LinklyReceiptTextSanitizer.SanitizeSettlementData("MERCHANT 123456789012"));
+    }
+
+    [Fact]
+    public void Settlement_data_sanitizer_rejects_pan_hidden_in_fixed_width_card_name()
+    {
+        var malicious = OfficialFixedWidthSettlement.Replace(
+            "VISA                ",
+            "4111111111111111    ",
+            StringComparison.Ordinal);
+
+        var sanitized = LinklyReceiptTextSanitizer.SanitizeSettlementData(malicious);
+
+        Assert.NotEqual(malicious, sanitized);
+        Assert.DoesNotContain("4111111111111111", sanitized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Settlement_data_sanitizer_sanitizes_optional_text_tail_and_rewrites_its_length()
+    {
+        const string tail = "Authorization=secret";
+        var source = OfficialFixedWidthSettlement + tail.Length.ToString("D3") + tail;
+
+        var sanitized = LinklyReceiptTextSanitizer.SanitizeSettlementData(source);
+
+        Assert.DoesNotContain("secret", sanitized, StringComparison.Ordinal);
+        Assert.EndsWith("000", sanitized, StringComparison.Ordinal);
     }
 
     [Fact]

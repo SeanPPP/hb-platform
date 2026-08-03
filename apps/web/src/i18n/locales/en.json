@@ -70,6 +70,8 @@
     "advertisements": "Advertisements",
     "cashRegisterUsers": "Cashier Barcodes",
     "operationLogs": "Employee Operation Logs",
+    "linklySettlements": "Linkly Settlements",
+    "linklySettlementDetail": "Linkly Settlement Detail",
     "scheduleAttendance": "Schedule Attendance",
     "deviceRegistration": "Device Registration",
     "appDownloads": "App Downloads",
@@ -5752,6 +5754,114 @@
       "chinaSuppliers": "Failed to fetch China suppliers data",
       "branches": "Failed to fetch branch data",
       "products": "Failed to fetch product sales data"
+    }
+  },
+  "linklySettlements": {
+    "title": "Linkly Settlements",
+    "subtitle": "Review terminal settlement results, amounts, and printing records synced to the server",
+    "syncedOnlyNotice": "Only settlements synced to the server are shown. View records that have not been uploaded in WPF.",
+    "paginationTotal": "{{count}} records",
+    "actions": {
+      "search": "Search",
+      "reset": "Reset",
+      "export": "Export Current Filters",
+      "view": "View",
+      "backToList": "Back to List"
+    },
+    "messages": {
+      "loadFailed": "Failed to load Linkly settlements",
+      "detailLoadFailed": "Failed to load the Linkly settlement detail",
+      "exportRangeInvalid": "The export date range must be valid and no more than 31 inclusive calendar days",
+      "exportSuccess": "The export file has been generated",
+      "exportFailed": "Failed to export Linkly settlements"
+    },
+    "filters": {
+      "businessDate": "Business Date",
+      "store": "Store",
+      "storePlaceholder": "Enter store code",
+      "device": "Device",
+      "devicePlaceholder": "Enter device code",
+      "connectionMode": "Connection Mode",
+      "environment": "Environment",
+      "status": "Settlement Status",
+      "submissionState": "Submission State",
+      "keyword": "Keyword",
+      "keywordPlaceholder": "Settlement GUID, session, response, etc."
+    },
+    "columns": {
+      "requestedAt": "Requested At",
+      "businessDate": "Business Date",
+      "store": "Store",
+      "device": "Device",
+      "status": "Status / Submission",
+      "modeEnvironment": "Mode / Environment",
+      "purchase": "Purchase",
+      "refund": "Refund",
+      "cashOut": "Cash Out",
+      "net": "Net",
+      "receipts": "Receipts",
+      "prints": "Prints",
+      "response": "Response",
+      "detail": "Detail"
+    },
+    "status": {
+      "Pending": "Pending",
+      "Succeeded": "Succeeded",
+      "Failed": "Failed",
+      "Unknown": "Result Unknown"
+    },
+    "submissionState": {
+      "NotSubmitted": "Not Submitted",
+      "Submitted": "Submitted",
+      "Unknown": "Submission Unknown"
+    },
+    "connectionMode": {
+      "LocalIp": "Local IP",
+      "CloudDirectSync": "Cloud Direct Sync",
+      "CloudBackendAsync": "Cloud Backend Async"
+    },
+    "environment": {
+      "Production": "Production",
+      "Sandbox": "Sandbox"
+    },
+    "amountParseStatus": {
+      "Parsed": "Amounts Parsed",
+      "Missing": "Amounts Missing",
+      "Unsupported": "Unsupported Amount Format",
+      "Invalid": "Invalid Amount Data"
+    },
+    "detail": {
+      "title": "Linkly Settlement Detail",
+      "amountSummary": "Overall Amounts",
+      "parseStatus": "Parse Status",
+      "currency": "Source Currency",
+      "purchaseCount": "Purchase Count",
+      "refundCount": "Refund Count",
+      "cashOutCount": "Cash Out Count",
+      "totalCount": "Total Count",
+      "cardTotals": "Card Totals",
+      "cardName": "Card",
+      "noCardTotals": "No card totals",
+      "identityAndStatus": "Identity, Sessions, and Status",
+      "id": "Record ID",
+      "settlementGuid": "Settlement GUID",
+      "clientRevision": "Client Revision",
+      "providerSessionId": "Provider Session ID",
+      "cloudBackendSessionId": "Cloud Backend Session ID",
+      "response": "Response",
+      "responseCode": "Response Code",
+      "responseText": "Response Text",
+      "times": "All Timestamps",
+      "completedAt": "Completed At",
+      "receivedAt": "Server Received At",
+      "updatedAt": "Server Updated At",
+      "firstPrintedAt": "First Printed At",
+      "lastPrintedAt": "Last Printed At",
+      "printing": "Printing",
+      "lastPrintError": "Last Print Error",
+      "receipts": "Redacted Receipts",
+      "receiptNumber": "Receipt {{number}}",
+      "noReceipts": "No receipts"
     }
   },
   "formDemo": {

@@ -5,6 +5,11 @@ namespace Hbpos.Api.Tests;
 
 public sealed class LinklySettlementSyncServiceTests
 {
+    private const string OfficialFixedWidthSettlement =
+        "000000002138VISA                000000100001000000100001000000100001+000000300003" +
+        "DEBIT               000000100001000000100001000000100001+000000300003" +
+        "069TOTAL               000000300001000000300001000000300001+000000900009";
+
     private static readonly DateTimeOffset RequestedAt =
         new(2026, 8, 1, 1, 0, 0, TimeSpan.Zero);
 
@@ -145,6 +150,21 @@ public sealed class LinklySettlementSyncServiceTests
         Assert.Equal("BATCH 123456789012", stored.ResponseText);
         Assert.Equal("MERCHANT ****9012", stored.SettlementData);
         Assert.Contains("****1111", stored.ReceiptTextsJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SyncAsync_preserves_official_fixed_width_settlement_for_central_parsing()
+    {
+        var repository = new FakeRepository();
+        var service = CreateService(repository);
+        var request = CreateRequest(status: "Succeeded", revision: 1) with
+        {
+            SettlementData = OfficialFixedWidthSettlement,
+        };
+
+        await service.SyncAsync(request, "S001", "POS-01", CancellationToken.None);
+
+        Assert.Equal(OfficialFixedWidthSettlement, Assert.Single(repository.Records).SettlementData);
     }
 
     [Fact]

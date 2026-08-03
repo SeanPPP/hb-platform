@@ -146,6 +146,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/pos-admin/schedule-attendance', title: 'menu.scheduleAttendance', accessKey: 'canViewAttendanceSchedule' },
       { path: '/pos-admin/cash-register-users', title: 'menu.cashRegisterUsers', accessKey: 'canManageStoreOps' },
       { path: '/pos-admin/operation-logs', title: 'menu.operationLogs', accessKey: 'canViewOperationAudits' },
+      { path: '/pos-admin/linkly-settlements', title: 'menu.linklySettlements', accessKey: 'isAdmin' },
       { path: '/pos-admin/sales-orders', title: 'menu.salesOrders', accessKey: 'canReadOrder' },
       { path: '/pos-admin/local-supplier-invoices', title: 'menu.localSupplierInvoices', accessKey: 'canManageLocalPurchase' },
     ],

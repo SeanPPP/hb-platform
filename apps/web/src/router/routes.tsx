@@ -58,6 +58,8 @@ import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
 import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
 import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import PosAdminOperationLogsPage from '../pages/PosAdmin/OperationLogs'
+import LinklySettlementsPage from '../pages/PosAdmin/LinklySettlements'
+import LinklySettlementDetailPage from '../pages/PosAdmin/LinklySettlementDetail'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
@@ -654,6 +656,27 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewOperationAudits',
         },
         element: <PosAdminOperationLogsPage />,
+      },
+      {
+        path: '/pos-admin/linkly-settlements',
+        meta: {
+          title: 'menu.linklySettlements',
+          icon: 'ReconciliationOutlined',
+          keepAlive: true,
+          accessKey: 'isAdmin',
+        },
+        element: <LinklySettlementsPage />,
+      },
+      {
+        path: '/pos-admin/linkly-settlements/:id',
+        meta: {
+          title: 'menu.linklySettlementDetail',
+          hidden: true,
+          accessKey: 'isAdmin',
+          activeMenu: '/pos-admin/linkly-settlements',
+          dynamicTitle: () => i18n.t('menu.linklySettlementDetail'),
+        },
+        element: <LinklySettlementDetailPage />,
       },
       {
         path: '/pos-admin/sales-orders',
