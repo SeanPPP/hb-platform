@@ -29,6 +29,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static readonly SemaphoreSlim ImageDecodeGate = new(4);
     private static Func<Uri, CancellationToken, Task<byte[]>> RemoteImageBytesLoader = DownloadRemoteImageBytesAsync;
     private static Func<Uri> ApiBaseAddressProvider = ServiceRegistration.GetApiBaseAddress;
+    private static Action? DataImageDecodeStartingForTests;
     private static int nextAsyncLoadVersion;
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
@@ -261,7 +262,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var imageRequest = TryCreateImageRequest(sourceText);
+        var imageRequest = TryCreateImageRequest(sourceText, decodeDataImageBytes: false);
         if (imageRequest is null || !imageRequest.CanCache)
         {
             return false;
@@ -351,12 +352,22 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         {
             if (Cache.ContainsKey(cacheKey))
             {
+                if (FailedCache.Remove(cacheKey))
+                {
+                    RemoveFailedCacheInsertionOrderEntry(cacheKey);
+                }
+
                 return false;
             }
 
             EnsureCacheCapacity(Cache, CacheInsertionOrder, imageCacheCapacity);
             Cache.Add(cacheKey, imageSource);
             CacheInsertionOrder.Enqueue(cacheKey);
+            if (FailedCache.Remove(cacheKey))
+            {
+                RemoveFailedCacheInsertionOrderEntry(cacheKey);
+            }
+
             return true;
         }
     }
@@ -365,6 +376,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     {
         lock (CacheLock)
         {
+            if (Cache.ContainsKey(cacheKey))
+            {
+                return;
+            }
+
             if (FailedCache.ContainsKey(cacheKey))
             {
                 FailedCache[cacheKey] = failedAt;
@@ -526,6 +542,18 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
+    internal static IDisposable UseDataImageDecodeStartingForTests(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        lock (RemoteImageLoaderLock)
+        {
+            var previous = DataImageDecodeStartingForTests;
+            DataImageDecodeStartingForTests = callback;
+            return new DataImageDecodeStartingScope(previous);
+        }
+    }
+
     internal static Task<byte[]> ReadRemoteImageContentForTestsAsync(
         HttpContent content,
         CancellationToken cancellationToken = default)
@@ -597,7 +625,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         var trimmedSourceText = sourceText.Trim();
-        var imageRequest = TryCreateImageRequest(trimmedSourceText);
+        var imageRequest = TryCreateImageRequest(trimmedSourceText, decodeDataImageBytes: false);
         if (imageRequest is null)
         {
             return;
@@ -762,6 +790,18 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         int decodePixelWidth,
         CancellationToken cancellationToken)
     {
+        if (string.Equals(imageRequest.SourceKind, "data", StringComparison.Ordinal) && imageRequest.ImageBytes is null)
+        {
+            // 异步路径只在共享闸门内解码 data URI，避免首屏同时分配多个原图 byte[]。
+            var decodedDataRequest = TryCreateImageRequest(imageRequest.CacheKey);
+            if (decodedDataRequest is null)
+            {
+                return null;
+            }
+
+            imageRequest = decodedDataRequest;
+        }
+
         var converter = new ProductThumbnailImageSourceConverter { DecodePixelWidth = decodePixelWidth };
         return converter.CreateImageSource(imageRequest, cancellationToken);
     }
@@ -801,9 +841,9 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return streamImage;
     }
 
-    private static ImageRequest? TryCreateImageRequest(string sourceText)
+    private static ImageRequest? TryCreateImageRequest(string sourceText, bool decodeDataImageBytes = true)
     {
-        if (TryCreateDataImageRequest(sourceText, out var dataRequest))
+        if (TryCreateDataImageRequest(sourceText, out var dataRequest, decodeDataImageBytes))
         {
             return dataRequest;
         }
@@ -890,7 +930,10 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return true;
     }
 
-    private static bool TryCreateDataImageRequest(string sourceText, out ImageRequest? imageRequest)
+    private static bool TryCreateDataImageRequest(
+        string sourceText,
+        out ImageRequest? imageRequest,
+        bool decodeImageBytes = true)
     {
         imageRequest = null;
         if (!sourceText.StartsWith(DataImagePrefix, StringComparison.OrdinalIgnoreCase))
@@ -930,9 +973,16 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return false;
         }
 
+        if (!decodeImageBytes)
+        {
+            imageRequest = new ImageRequest(sourceText, null, null, "data");
+            return true;
+        }
+
         try
         {
             // 先按 Base64 文本长度拒绝，避免为超大 data URI 分配完整 byte[]；解码后仍复核边界。
+            Volatile.Read(ref DataImageDecodeStartingForTests)?.Invoke();
             var bytes = System.Convert.FromBase64String(sourceText[(commaIndex + 1)..]);
             if (bytes.Length > byteLimit)
             {
@@ -1445,7 +1495,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private sealed record ImageRequest(string CacheKey, Uri? Uri, byte[]? ImageBytes, string SourceKind)
     {
-        public bool CanCache => ImageBytes is not null || IsRemoteUri || IsLocalFileUri;
+        public bool CanCache =>
+            ImageBytes is not null ||
+            string.Equals(SourceKind, "data", StringComparison.Ordinal) ||
+            IsRemoteUri ||
+            IsLocalFileUri;
 
         public bool IsLocalFileUri =>
             Uri is not null &&
@@ -1520,6 +1574,24 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             lock (RemoteImageLoaderLock)
             {
                 imageInputByteLimit = previous;
+            }
+        }
+    }
+
+    private sealed class DataImageDecodeStartingScope(Action? previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (RemoteImageLoaderLock)
+            {
+                DataImageDecodeStartingForTests = previous;
             }
         }
     }

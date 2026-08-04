@@ -655,6 +655,187 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public async Task PreloadAsync_defers_data_image_byte_decode_until_shared_gate_is_available()
+    {
+        ClearImageCacheForTests();
+        using var remoteLoadsStarted = new ManualResetEventSlim();
+        var startedCount = 0;
+        var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+            async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref startedCount) == 4)
+                {
+                    remoteLoadsStarted.Set();
+                }
+
+                return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
+            });
+        var remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+            Enumerable.Range(0, 4)
+                .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png"));
+
+        Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+
+        var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
+            () => dataDecodeStarted.TrySetResult());
+        var dataPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+            [$"data:image/png;base64,{OnePixelPngBase64}"]);
+
+        try
+        {
+            await Task.Delay(100);
+            Assert.False(dataDecodeStarted.Task.IsCompleted);
+        }
+        finally
+        {
+            releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+        }
+
+        Assert.Equal(4, await remotePreload);
+        await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(1, await dataPreload);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PreloadAsync_concurrent_success_and_failure_keeps_successful_image_cached(
+        bool failureCompletesFirst)
+    {
+        ClearImageCacheForTests();
+        var imageUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/product.png";
+        using var successStarted = new ManualResetEventSlim();
+        using var failureStarted = new ManualResetEventSlim();
+        var successRelease = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failureRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+            async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref loadCount) == 1)
+                {
+                    successStarted.Set();
+                    return await successRelease.Task.WaitAsync(cancellationToken);
+                }
+
+                failureStarted.Set();
+                await failureRelease.Task.WaitAsync(cancellationToken);
+                throw new IOException("download failed");
+            });
+
+        var successPreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
+        Assert.True(successStarted.Wait(TimeSpan.FromSeconds(3)));
+        var failurePreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
+        Assert.True(failureStarted.Wait(TimeSpan.FromSeconds(3)));
+
+        if (failureCompletesFirst)
+        {
+            failureRelease.TrySetResult();
+            Assert.Equal(0, await failurePreload);
+            successRelease.TrySetResult(OnePixelPngBytes());
+            Assert.Equal(1, await successPreload);
+        }
+        else
+        {
+            successRelease.TrySetResult(OnePixelPngBytes());
+            Assert.Equal(1, await successPreload);
+            failureRelease.TrySetResult();
+            Assert.Equal(0, await failurePreload);
+        }
+
+        var cacheCounts = ProductThumbnailImageSourceConverter.GetCacheCountsForTests();
+        Assert.Equal(1, cacheCounts.ImageCount);
+        Assert.Equal(0, cacheCounts.FailedCount);
+
+        var converter = new ProductThumbnailImageSourceConverter();
+        Assert.IsType<BitmapImage>(converter.Convert(imageUrl, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        Assert.Equal(2, loadCount);
+    }
+
+#pragma warning disable xUnit1031 // 保持 ImageBrush 的创建线程，手动 dispatcher 帧和所有等待均有超时。
+    [Fact]
+    public void Async_data_image_byte_decode_waits_for_shared_background_gate()
+    {
+        ClearImageCacheForTests();
+        using var remoteLoadsStarted = new ManualResetEventSlim();
+        var startedCount = 0;
+        var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+            async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref startedCount) == 4)
+                {
+                    remoteLoadsStarted.Set();
+                }
+
+                return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
+            });
+        var remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+            Enumerable.Range(0, 4)
+                .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png"));
+        var imageBrush = new ImageBrush();
+        var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
+            () => dataDecodeStarted.TrySetResult());
+
+        try
+        {
+            try
+            {
+                Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+                ProductThumbnailImageSourceConverter.SetAsyncSourceText(
+                    imageBrush,
+                    $"data:image/png;base64,{OnePixelPngBase64}");
+
+                Task.Delay(100).GetAwaiter().GetResult();
+                Assert.False(dataDecodeStarted.Task.IsCompleted);
+                Assert.Null(imageBrush.ImageSource);
+            }
+            finally
+            {
+                releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+            }
+
+            Assert.Equal(4, remotePreload.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
+            dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            var imageApplyDeadline = DateTimeOffset.UtcNow.AddSeconds(3);
+            var timer = new System.Windows.Threading.DispatcherTimer(
+                System.Windows.Threading.DispatcherPriority.Background,
+                imageBrush.Dispatcher)
+            {
+                Interval = TimeSpan.FromMilliseconds(10)
+            };
+            timer.Tick += (_, _) =>
+            {
+                if (imageBrush.ImageSource is not null || DateTimeOffset.UtcNow >= imageApplyDeadline)
+                {
+                    frame.Continue = false;
+                }
+            };
+            timer.Start();
+            try
+            {
+                System.Windows.Threading.Dispatcher.PushFrame(frame);
+            }
+            finally
+            {
+                timer.Stop();
+            }
+
+            Assert.IsType<BitmapImage>(imageBrush.ImageSource);
+        }
+        finally
+        {
+            ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
+        }
+    }
+#pragma warning restore xUnit1031
+
+    [Fact]
     public async Task Async_local_file_read_waits_for_shared_background_gate()
     {
         ClearImageCacheForTests();
