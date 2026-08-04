@@ -82,12 +82,12 @@ public sealed class PosCoreTests
                 Monitor.Exit(gate);
             }
         });
-        await gateHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        var workerBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        index.ExactLookupGateWaitForTests = () => workerBlocked.TrySetResult();
         try
         {
+            await gateHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var workerBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            index.ExactLookupGateWaitForTests = () => workerBlocked.TrySetResult();
             using var cancellationSource = new CancellationTokenSource();
             var lookupTask = index.FindExactMatchesAsync("S001", "690001", cancellationSource.Token);
             await workerBlocked.Task.WaitAsync(TimeSpan.FromSeconds(5));

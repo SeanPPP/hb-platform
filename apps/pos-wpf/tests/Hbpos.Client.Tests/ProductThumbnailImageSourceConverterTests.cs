@@ -586,13 +586,20 @@ public sealed class ProductThumbnailImageSourceConverterTests
                     TaskScheduler.Default);
         });
 
-        ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, imageUrl);
-        Assert.True(loadStarted.Wait(TimeSpan.FromSeconds(3)));
+        try
+        {
+            ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, imageUrl);
+            Assert.True(loadStarted.Wait(TimeSpan.FromSeconds(3)));
 
-        ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
+            ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
 
-        Assert.True(loadCanceled.Wait(TimeSpan.FromSeconds(3)));
-        Assert.Null(imageBrush.ImageSource);
+            Assert.True(loadCanceled.Wait(TimeSpan.FromSeconds(3)));
+            Assert.Null(imageBrush.ImageSource);
+        }
+        finally
+        {
+            ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
+        }
     }
 
     [Fact]
@@ -678,33 +685,41 @@ public sealed class ProductThumbnailImageSourceConverterTests
         var remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
             Enumerable.Range(0, 4)
                 .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png"));
-
-        Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
-
-        var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
-            () => dataDecodeStarted.TrySetResult());
-        using var cacheKeyEncoding = ProductThumbnailImageSourceConverter.UseCacheKeyUtf8ChunkForTests(
-            bytesUsed => cacheKeyUtf8Chunks.Add(bytesUsed));
-        var dataPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
-            [dataImage]);
+        Task<int>? dataPreload = null;
 
         try
         {
+            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+
+            var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
+                () => dataDecodeStarted.TrySetResult());
+            using var cacheKeyEncoding = ProductThumbnailImageSourceConverter.UseCacheKeyUtf8ChunkForTests(
+                bytesUsed => cacheKeyUtf8Chunks.Add(bytesUsed));
+            dataPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+                [dataImage]);
+
             await Task.Delay(100);
             Assert.False(dataDecodeStarted.Task.IsCompleted);
             Assert.NotEmpty(cacheKeyUtf8Chunks);
             Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 256));
+
+            releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+
+            Assert.Equal(4, await remotePreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(1, await dataPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
         }
         finally
         {
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+            await remotePreload.WaitAsync(TimeSpan.FromSeconds(3));
+            if (dataPreload is not null)
+            {
+                await dataPreload.WaitAsync(TimeSpan.FromSeconds(3));
+            }
         }
-
-        Assert.Equal(4, await remotePreload);
-        await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal(1, await dataPreload);
-        Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
     }
 
     [Theory]
@@ -734,33 +749,52 @@ public sealed class ProductThumbnailImageSourceConverterTests
                 throw new IOException("download failed");
             });
 
-        var successPreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
-        Assert.True(successStarted.Wait(TimeSpan.FromSeconds(3)));
-        var failurePreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
-        Assert.True(failureStarted.Wait(TimeSpan.FromSeconds(3)));
-
-        if (failureCompletesFirst)
+        Task<int>? successPreload = null;
+        Task<int>? failurePreload = null;
+        try
         {
-            failureRelease.TrySetResult();
-            Assert.Equal(0, await failurePreload);
-            successRelease.TrySetResult(OnePixelPngBytes());
-            Assert.Equal(1, await successPreload);
+            successPreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
+            Assert.True(successStarted.Wait(TimeSpan.FromSeconds(3)));
+            failurePreload = ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]);
+            Assert.True(failureStarted.Wait(TimeSpan.FromSeconds(3)));
+
+            if (failureCompletesFirst)
+            {
+                failureRelease.TrySetResult();
+                Assert.Equal(0, await failurePreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                successRelease.TrySetResult(OnePixelPngBytes());
+                Assert.Equal(1, await successPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            }
+            else
+            {
+                successRelease.TrySetResult(OnePixelPngBytes());
+                Assert.Equal(1, await successPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                failureRelease.TrySetResult();
+                Assert.Equal(0, await failurePreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            }
+
+            var cacheCounts = ProductThumbnailImageSourceConverter.GetCacheCountsForTests();
+            Assert.Equal(1, cacheCounts.ImageCount);
+            Assert.Equal(0, cacheCounts.FailedCount);
+
+            var converter = new ProductThumbnailImageSourceConverter();
+            Assert.IsType<BitmapImage>(converter.Convert(imageUrl, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+            Assert.Equal(2, loadCount);
         }
-        else
+        finally
         {
             successRelease.TrySetResult(OnePixelPngBytes());
-            Assert.Equal(1, await successPreload);
             failureRelease.TrySetResult();
-            Assert.Equal(0, await failurePreload);
+            if (successPreload is not null)
+            {
+                await successPreload.WaitAsync(TimeSpan.FromSeconds(3));
+            }
+
+            if (failurePreload is not null)
+            {
+                await failurePreload.WaitAsync(TimeSpan.FromSeconds(3));
+            }
         }
-
-        var cacheCounts = ProductThumbnailImageSourceConverter.GetCacheCountsForTests();
-        Assert.Equal(1, cacheCounts.ImageCount);
-        Assert.Equal(0, cacheCounts.FailedCount);
-
-        var converter = new ProductThumbnailImageSourceConverter();
-        Assert.IsType<BitmapImage>(converter.Convert(imageUrl, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
-        Assert.Equal(2, loadCount);
     }
 
 #pragma warning disable xUnit1031 // 保持 ImageBrush 的创建线程，手动 dispatcher 帧和所有等待均有超时。
@@ -866,20 +900,21 @@ public sealed class ProductThumbnailImageSourceConverterTests
             }
         }
 
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+            async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref startedCount) == 4)
+                {
+                    remoteLoadsStarted.Set();
+                }
+
+                return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
+            });
+        Task<int>? remotePreload = null;
         ConsoleLog.LineWritten += HandleLog;
         try
         {
-            using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
-                async (_, cancellationToken) =>
-                {
-                    if (Interlocked.Increment(ref startedCount) == 4)
-                    {
-                        remoteLoadsStarted.Set();
-                    }
-
-                    return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
-                });
-            var remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+            remotePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 Enumerable.Range(0, 4)
                     .Select(_ => $"https://cdn.example.test/images/{Guid.NewGuid():N}/product.png"));
 
@@ -893,6 +928,12 @@ public sealed class ProductThumbnailImageSourceConverterTests
         }
         finally
         {
+            releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+            if (remotePreload is not null)
+            {
+                await remotePreload.WaitAsync(TimeSpan.FromSeconds(3));
+            }
+
             ConsoleLog.LineWritten -= HandleLog;
             if (File.Exists(filePath))
             {
