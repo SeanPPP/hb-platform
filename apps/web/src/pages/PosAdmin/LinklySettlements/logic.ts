@@ -1,3 +1,4 @@
+import { matchPath } from 'react-router-dom'
 import type {
   LinklyAmountParseStatus,
   LinklySettlementAmountSummary,
@@ -155,6 +156,12 @@ export function canExportLinklySettlementRange(from: string, to: string) {
 export function getValidLinklySettlementRouteId(value: string | undefined): string | null {
   // 路由 ID 必须保持原始十进制文本，避免 BIGINT 经 Number 转换后丢失精度。
   return value && /^0*[1-9]\d*$/.test(value) ? value : null
+}
+
+export function getLinklySettlementRouteIdFromPathname(pathname: string): string | null {
+  // AdminLayout 手动解析并渲染路由元素，不会向页面注入 useParams 上下文。
+  const match = matchPath('/pos-admin/linkly-settlements/:id', pathname)
+  return getValidLinklySettlementRouteId(match?.params.id)
 }
 
 export interface LatestAbortableRequest {

@@ -56,9 +56,9 @@ assertEqual(
 )
 assert(!detailPageSource.includes('Number(params.id)'), '详情路由禁止将 ID 转为 Number')
 assert(
-  detailPageSource.includes('getValidLinklySettlementRouteId(params.id)')
+  detailPageSource.includes('getLinklySettlementRouteIdFromPathname(location.pathname)')
     && detailPageSource.includes('getLinklySettlementDetail(id, currentRequest.signal)'),
-  '详情请求必须使用校验后的原始字符串路由 ID',
+  '详情请求必须从 AdminLayout 当前 pathname 读取并校验原始字符串路由 ID',
 )
 
 const listRouteStart = routeSource.indexOf("path: '/pos-admin/linkly-settlements'")

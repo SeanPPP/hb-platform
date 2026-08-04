@@ -15,14 +15,14 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { getLinklySettlementDetail } from '../../../services/linklySettlementService'
 import type { LinklySettlementCardTotal, LinklySettlementDetail } from '../../../types/linklySettlement'
 import {
   formatAmountMinor,
   createLatestAbortableRequestGuard,
-  getValidLinklySettlementRouteId,
+  getLinklySettlementRouteIdFromPathname,
   getAmountParseStatusColor,
   getProviderSubmissionColor,
   getSettlementStatusColor,
@@ -41,8 +41,8 @@ function displayValue(value: unknown) {
 export default function LinklySettlementDetailPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const params = useParams<{ id: string }>()
-  const id = getValidLinklySettlementRouteId(params.id)
+  const location = useLocation()
+  const id = getLinklySettlementRouteIdFromPathname(location.pathname)
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<LinklySettlementDetail | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)

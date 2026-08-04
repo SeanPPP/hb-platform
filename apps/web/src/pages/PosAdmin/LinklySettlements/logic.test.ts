@@ -7,6 +7,7 @@ import {
   getAmountParseStatusColor,
   getInclusiveCalendarDayCount,
   getProviderSubmissionColor,
+  getLinklySettlementRouteIdFromPathname,
   getSettlementStatusColor,
   getValidLinklySettlementRouteId,
 } from './logic'
@@ -48,6 +49,16 @@ assertEqual(
 assertEqual(getValidLinklySettlementRouteId('00041'), '00041', '详情路由不得通过数值转换规范化 ID')
 assertEqual(getValidLinklySettlementRouteId('0'), null, '详情路由必须拒绝非正 ID')
 assertEqual(getValidLinklySettlementRouteId('41x'), null, '详情路由必须拒绝非十进制 ID')
+assertEqual(
+  getLinklySettlementRouteIdFromPathname('/pos-admin/linkly-settlements/9007199254740993'),
+  '9007199254740993',
+  '后台手动解析路由元素时仍须从当前 pathname 取得详情 ID',
+)
+assertEqual(
+  getLinklySettlementRouteIdFromPathname('/pos-admin/linkly-settlements/not-a-number'),
+  null,
+  '详情 pathname 必须拒绝非法 ID',
+)
 
 const guard = createLatestAbortableRequestGuard()
 const first = guard.begin()
