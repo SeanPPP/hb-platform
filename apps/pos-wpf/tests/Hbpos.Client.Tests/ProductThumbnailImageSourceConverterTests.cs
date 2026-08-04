@@ -658,6 +658,10 @@ public sealed class ProductThumbnailImageSourceConverterTests
     public async Task PreloadAsync_defers_data_image_byte_decode_until_shared_gate_is_available()
     {
         ClearImageCacheForTests();
+        var dataImage = CreatePngDataUri(32, 32, highEntropy: true);
+        Assert.True(dataImage.Length > 512);
+        var expectedCacheKey = $"sha256:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"72|{dataImage}")))}";
+        var cacheKeyUtf8Chunks = new List<int>();
         using var remoteLoadsStarted = new ManualResetEventSlim();
         var startedCount = 0;
         var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -680,13 +684,17 @@ public sealed class ProductThumbnailImageSourceConverterTests
         var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
             () => dataDecodeStarted.TrySetResult());
+        using var cacheKeyEncoding = ProductThumbnailImageSourceConverter.UseCacheKeyUtf8ChunkForTests(
+            bytesUsed => cacheKeyUtf8Chunks.Add(bytesUsed));
         var dataPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
-            [$"data:image/png;base64,{OnePixelPngBase64}"]);
+            [dataImage]);
 
         try
         {
             await Task.Delay(100);
             Assert.False(dataDecodeStarted.Task.IsCompleted);
+            Assert.NotEmpty(cacheKeyUtf8Chunks);
+            Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 256));
         }
         finally
         {
@@ -696,6 +704,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
         Assert.Equal(4, await remotePreload);
         await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.Equal(1, await dataPreload);
+        Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
     }
 
     [Theory]
@@ -759,6 +768,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
     public void Async_data_image_byte_decode_waits_for_shared_background_gate()
     {
         ClearImageCacheForTests();
+        var dataImage = CreatePngDataUri(32, 32, highEntropy: true);
+        Assert.True(dataImage.Length > 512);
         using var remoteLoadsStarted = new ManualResetEventSlim();
         var startedCount = 0;
         var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -787,7 +798,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
                 Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
                 ProductThumbnailImageSourceConverter.SetAsyncSourceText(
                     imageBrush,
-                    $"data:image/png;base64,{OnePixelPngBase64}");
+                    dataImage);
 
                 Task.Delay(100).GetAwaiter().GetResult();
                 Assert.False(dataDecodeStarted.Task.IsCompleted);
@@ -1022,9 +1033,19 @@ public sealed class ProductThumbnailImageSourceConverterTests
         ProductThumbnailImageSourceConverter.ClearCachesForTests();
     }
 
-    private static string CreatePngDataUri(int width, int height)
+    private static string CreatePngDataUri(int width, int height, bool highEntropy = false)
     {
         var pixels = new byte[width * height * 4];
+        if (highEntropy)
+        {
+            var state = 17u;
+            for (var index = 0; index < pixels.Length; index++)
+            {
+                state = unchecked(state * 1664525u + 1013904223u);
+                pixels[index] = (byte)(state >> 24);
+            }
+        }
+
         var source = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(source));

@@ -30,10 +30,12 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static Func<Uri, CancellationToken, Task<byte[]>> RemoteImageBytesLoader = DownloadRemoteImageBytesAsync;
     private static Func<Uri> ApiBaseAddressProvider = ServiceRegistration.GetApiBaseAddress;
     private static Action? DataImageDecodeStartingForTests;
+    private static Action<int>? CacheKeyUtf8ChunkForTests;
     private static int nextAsyncLoadVersion;
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
     private const int MaxCacheKeyLength = 512;
+    private const int CacheKeyHashBufferSize = 256;
     private const int DefaultImageCacheCapacity = 256;
     private const int DefaultFailedCacheCapacity = 1024;
     private const int DefaultLoggedDiagnosticCapacity = 512;
@@ -302,7 +304,10 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private static string CreateCacheKey(int decodePixelWidth, ImageRequest imageRequest)
     {
-        return NormalizeCacheKey($"{Math.Max(1, decodePixelWidth)}|{imageRequest.CacheKey}");
+        var decodePrefix = $"{Math.Max(1, decodePixelWidth)}|";
+        return imageRequest.CacheKey.Length <= MaxCacheKeyLength - decodePrefix.Length
+            ? decodePrefix + imageRequest.CacheKey
+            : CreateSha256CacheKey(decodePrefix, imageRequest.CacheKey);
     }
 
     private static bool IsFailureCached(string cacheKey)
@@ -455,7 +460,51 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return key;
         }
 
-        return $"sha256:{System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key)))}";
+        return CreateSha256CacheKey(key);
+    }
+
+    private static string CreateSha256CacheKey(string first, string? second = null)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        AppendUtf8CacheKeyPart(hash, first);
+        if (second is not null)
+        {
+            AppendUtf8CacheKeyPart(hash, second);
+        }
+
+        return $"sha256:{System.Convert.ToHexString(hash.GetHashAndReset())}";
+    }
+
+    private static void AppendUtf8CacheKeyPart(
+        System.Security.Cryptography.IncrementalHash hash,
+        string value)
+    {
+        var encoder = System.Text.Encoding.UTF8.GetEncoder();
+        var remainingChars = value.AsSpan();
+        Span<byte> buffer = stackalloc byte[CacheKeyHashBufferSize];
+        do
+        {
+            encoder.Convert(
+                remainingChars,
+                buffer,
+                flush: true,
+                out var charsUsed,
+                out var bytesUsed,
+                out var completed);
+            if (bytesUsed > 0)
+            {
+                Volatile.Read(ref CacheKeyUtf8ChunkForTests)?.Invoke(bytesUsed);
+                hash.AppendData(buffer[..bytesUsed]);
+            }
+
+            remainingChars = remainingChars[charsUsed..];
+            if (completed)
+            {
+                return;
+            }
+        }
+        while (true);
     }
 
     private static void OnAsyncSourceTextChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
@@ -551,6 +600,18 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             var previous = DataImageDecodeStartingForTests;
             DataImageDecodeStartingForTests = callback;
             return new DataImageDecodeStartingScope(previous);
+        }
+    }
+
+    internal static IDisposable UseCacheKeyUtf8ChunkForTests(Action<int> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        lock (RemoteImageLoaderLock)
+        {
+            var previous = CacheKeyUtf8ChunkForTests;
+            CacheKeyUtf8ChunkForTests = callback;
+            return new CacheKeyUtf8ChunkScope(previous);
         }
     }
 
@@ -1592,6 +1653,24 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             lock (RemoteImageLoaderLock)
             {
                 DataImageDecodeStartingForTests = previous;
+            }
+        }
+    }
+
+    private sealed class CacheKeyUtf8ChunkScope(Action<int>? previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (RemoteImageLoaderLock)
+            {
+                CacheKeyUtf8ChunkForTests = previous;
             }
         }
     }
