@@ -11,6 +11,8 @@ import { isPublicAppPath } from './pages/MobilePrivacy/publicPath'
 import ShopBestSellersPage from './pages/ShopBestSellers'
 import ShopComingSoonPage from './pages/ShopComingSoon'
 import ShopHomePage from './pages/ShopHome'
+import ShopLocalSupplierInvoiceDetailPage from './pages/ShopLocalSupplierInvoiceDetail'
+import ShopLocalSupplierInvoicesPage from './pages/ShopLocalSupplierInvoices'
 import ShopOrderDetailPage from './pages/ShopOrderDetail'
 import ShopOrdersPage from './pages/ShopOrders'
 import ShopPreorderPage from './pages/ShopPreorder'
@@ -80,6 +82,8 @@ function AppBootstrap() {
         <Route path="coming-soon" element={<ShopComingSoonPage />} />
         <Route path="orders" element={<ShopOrdersPage />} />
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
+        <Route path="local-supplier-invoices" element={<ShopLocalSupplierInvoicesPage />} />
+        <Route path="local-supplier-invoices/:invoiceGuid" element={<ShopLocalSupplierInvoiceDetailPage />} />
         <Route path="preorders/:activationGuid" element={<ShopPreorderPage />} />
       </Route>
       <Route

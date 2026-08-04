@@ -169,6 +169,94 @@ export interface LocalSupplierPurchaseSalesAnalysisSupplierOptionDto {
   value: string
 }
 
+export type ShopLocalSupplierInvoiceListPageSize = 20 | 50 | 100
+export type ShopLocalSupplierInvoiceDetailsPageSize = 50 | 100 | 200
+
+export interface ShopLocalSupplierInvoiceGridQuery {
+  page?: number
+  pageSize?: number
+  storeCode?: string
+  supplierCode?: string
+  productKeyword?: string
+}
+
+export interface ShopLocalSupplierInvoiceGridTextFilter {
+  filterType: 'text'
+  type: 'equals' | 'contains'
+  filter: string
+}
+
+export interface ShopLocalSupplierInvoiceGridRequest {
+  startRow: number
+  endRow: number
+  pageSize: ShopLocalSupplierInvoiceListPageSize
+  filterModel: Record<string, ShopLocalSupplierInvoiceGridTextFilter>
+  sortModel: Array<{
+    colId: 'OrderDate'
+    sort: 'desc'
+  }>
+}
+
+export interface ShopLocalSupplierInvoiceFilterOptionDto {
+  value: string
+  label: string
+}
+
+export interface ShopLocalSupplierInvoiceFilterOptionsDto {
+  suppliers: ShopLocalSupplierInvoiceFilterOptionDto[]
+}
+
+export interface ShopLocalSupplierInvoiceDto {
+  invoiceGUID: string
+  storeCode?: string
+  storeName?: string
+  supplierCode?: string
+  supplierName?: string
+  invoiceNo?: string
+  orderDate?: string
+  inboundDate?: string
+  totalAmount?: number
+  receivedTotalAmount?: number
+  flowStatus?: number
+  inboundStatus?: number
+  remarks?: string
+}
+
+export type ShopLocalSupplierInvoiceListItemDto = ShopLocalSupplierInvoiceDto
+
+export interface ShopLocalSupplierInvoiceGridResult {
+  items: ShopLocalSupplierInvoiceListItemDto[]
+  total: number
+}
+
+export interface ShopLocalSupplierInvoiceItemDto {
+  detailGUID: string
+  storeProductCode?: string
+  productCode?: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  specification?: string
+  unit?: string
+  quantity?: number
+  lastPurchasePrice?: number
+  purchasePrice?: number
+  retailPrice?: number
+  amount?: number
+  newAutoRetailPrice?: number
+}
+
+export interface ShopLocalSupplierInvoiceDetailsGridQuery {
+  page?: number
+  pageSize?: number
+}
+
+export interface ShopLocalSupplierInvoiceDetailsGridResult {
+  items: ShopLocalSupplierInvoiceItemDto[]
+  total: number
+}
+
 export interface UpdateInvoiceRequest {
   storeCode?: string
   supplierCode?: string

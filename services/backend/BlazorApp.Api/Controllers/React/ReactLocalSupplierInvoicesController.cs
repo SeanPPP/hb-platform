@@ -29,6 +29,11 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.LocalPurchase.View,
         };
 
+        private static readonly string[] ShopLocalSupplierInvoiceReadPermissions =
+        {
+            Permissions.OrderFront.View,
+        };
+
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
             SqlSugarContext dbContext,
@@ -64,6 +69,52 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             return false;
+        }
+
+        private async Task<bool> HasShopLocalSupplierInvoiceReadPermissionAsync()
+        {
+            if (await HasLocalSupplierInvoiceReadPermissionAsync())
+            {
+                return true;
+            }
+
+            if (_authorizationService == null)
+            {
+                return false;
+            }
+
+            foreach (var permission in ShopLocalSupplierInvoiceReadPermissions)
+            {
+                if ((await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded)
+                {
+                    return true;
+                }
+            }
+
+            // 与 Web canAccessOrderFront 对齐：Orders.Create 只兼容纯仓库员工，不能扩成通用读取权限。
+            return IsWarehouseStaffOnly()
+                && (
+                    await _authorizationService.AuthorizeAsync(
+                        User,
+                        null,
+                        Permissions.Orders.Create
+                    )
+                ).Succeeded;
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !HasAnyRole("Admin", "管理员")
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private bool HasAnyRole(params string[] roles)
+        {
+            return User?.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && roles.Any(role => role.Equals(claim.Value, StringComparison.OrdinalIgnoreCase))
+            ) == true;
         }
 
         private bool IsFullStoreAccessUser()
@@ -310,6 +361,74 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
+        private static ShopLocalSupplierInvoiceHeaderDto ToShopHeader(
+            LocalSupplierInvoiceListDto source
+        )
+        {
+            return new ShopLocalSupplierInvoiceHeaderDto
+            {
+                InvoiceGUID = source.InvoiceGUID,
+                StoreCode = source.StoreCode,
+                StoreName = source.StoreName,
+                SupplierCode = source.SupplierCode,
+                SupplierName = source.SupplierName,
+                InvoiceNo = source.InvoiceNo,
+                OrderDate = source.OrderDate,
+                InboundDate = source.InboundDate,
+                TotalAmount = source.TotalAmount,
+                ReceivedTotalAmount = source.ReceivedTotalAmount,
+                FlowStatus = source.FlowStatus,
+                InboundStatus = source.InboundStatus,
+                Remarks = source.Remarks,
+            };
+        }
+
+        private static ShopLocalSupplierInvoiceHeaderDto ToShopHeader(
+            LocalSupplierInvoiceDetailDto source
+        )
+        {
+            return new ShopLocalSupplierInvoiceHeaderDto
+            {
+                InvoiceGUID = source.InvoiceGUID,
+                StoreCode = source.StoreCode,
+                StoreName = source.StoreName,
+                SupplierCode = source.SupplierCode,
+                SupplierName = source.SupplierName,
+                InvoiceNo = source.InvoiceNo,
+                OrderDate = source.OrderDate,
+                InboundDate = source.InboundDate,
+                TotalAmount = source.TotalAmount,
+                ReceivedTotalAmount = source.ReceivedTotalAmount,
+                FlowStatus = source.FlowStatus,
+                InboundStatus = source.InboundStatus,
+                Remarks = source.Remarks,
+            };
+        }
+
+        private static ShopLocalSupplierInvoiceItemDto ToShopItem(
+            LocalSupplierInvoiceItemDto source
+        )
+        {
+            return new ShopLocalSupplierInvoiceItemDto
+            {
+                DetailGUID = source.DetailGUID,
+                StoreProductCode = source.StoreProductCode,
+                ProductCode = source.ProductCode,
+                ItemNumber = source.ItemNumber,
+                Barcode = source.Barcode,
+                ProductName = source.ProductName,
+                ProductImage = source.ProductImage,
+                Specification = source.Specification,
+                Unit = source.Unit,
+                Quantity = source.Quantity,
+                LastPurchasePrice = source.LastPurchasePrice,
+                PurchasePrice = source.PurchasePrice,
+                RetailPrice = source.RetailPrice,
+                Amount = source.Amount,
+                NewAutoRetailPrice = source.NewAutoRetailPrice,
+            };
+        }
+
         [HttpPost("grid")]
         public async Task<IActionResult> Grid([FromBody] GridRequestDto request)
         {
@@ -343,6 +462,100 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
+        [HttpPost("shop/grid")]
+        public async Task<IActionResult> ShopGrid([FromBody] GridRequestDto request)
+        {
+            if (!await HasShopLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
+            var allowedStoreCodes = IsFullStoreAccessUser()
+                ? null
+                : await GetCurrentUserStoreCodesAsync();
+            var result = await _service.GetGridDataAsync(request, allowedStoreCodes);
+            if (result.Success)
+            {
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = new
+                        {
+                            Items = (result.Items ?? new List<LocalSupplierInvoiceListDto>())
+                                .Select(ToShopHeader)
+                                .ToList(),
+                            Total = result.Total,
+                        },
+                        message = result.Message,
+                    }
+                );
+            }
+
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new
+                {
+                    success = false,
+                    data = new
+                    {
+                        Items = new List<ShopLocalSupplierInvoiceHeaderDto>(),
+                        Total = result.Total,
+                    },
+                    message = result.Message,
+                }
+            );
+        }
+
+        [HttpGet("shop/filter-options")]
+        public async Task<IActionResult> GetFilterOptions([FromQuery] string? storeCode)
+        {
+            if (!await HasShopLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
+            var normalizedStoreCode = storeCode?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+            {
+                normalizedStoreCode = null;
+            }
+
+            if (
+                normalizedStoreCode != null
+                && !await CanAccessStoreAsync(normalizedStoreCode)
+            )
+            {
+                return Forbid();
+            }
+
+            var allowedStoreCodes = IsFullStoreAccessUser()
+                ? null
+                : await GetCurrentUserStoreCodesAsync();
+            var result = await _service.GetFilterOptionsAsync(
+                allowedStoreCodes,
+                normalizedStoreCode
+            );
+            if (result.Success)
+            {
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+            }
+
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new
+                {
+                    success = false,
+                    data = new LocalSupplierInvoiceFilterOptionsDto(),
+                    message = result.Message,
+                    errorCode = result.ErrorCode,
+                }
+            );
+        }
+
         [HttpGet("{invoiceGuid}")]
         public async Task<IActionResult> GetInvoice(string invoiceGuid)
         {
@@ -363,6 +576,39 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return NotFound(new { success = false, message = result.Message });
+        }
+
+        [HttpGet("shop/{invoiceGuid}")]
+        public async Task<IActionResult> GetShopInvoice(string invoiceGuid)
+        {
+            if (!await HasShopLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var result = await _service.GetInvoiceAsync(invoiceGuid);
+            if (result.Success && result.Data != null)
+            {
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = ToShopHeader(result.Data),
+                        message = result.Message,
+                    }
+                );
+            }
+
+            var error = new
+            {
+                success = false,
+                message = result.Message,
+                errorCode = result.ErrorCode,
+            };
+            return result.ErrorCode == "NOT_FOUND"
+                ? NotFound(error)
+                : StatusCode(StatusCodes.Status500InternalServerError, error);
         }
 
         [HttpGet("{invoiceGuid}/details")]
@@ -416,6 +662,52 @@ namespace BlazorApp.Api.Controllers.React
                     data = new
                     {
                         Items = result.Items ?? new List<LocalSupplierInvoiceItemDto>(),
+                        Total = result.Total,
+                    },
+                    message = result.Message,
+                }
+            );
+        }
+
+        [HttpPost("shop/{invoiceGuid}/details/grid")]
+        public async Task<IActionResult> GetShopDetailsGrid(
+            string invoiceGuid,
+            [FromBody] GridRequestDto request
+        )
+        {
+            if (!await HasShopLocalSupplierInvoiceReadPermissionAsync())
+                return Forbid();
+
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var result = await _service.GetDetailsGridAsync(invoiceGuid, request);
+            if (result.Success)
+            {
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = new
+                        {
+                            Items = (result.Items ?? new List<LocalSupplierInvoiceItemDto>())
+                                .Select(ToShopItem)
+                                .ToList(),
+                            Total = result.Total,
+                        },
+                        message = result.Message,
+                    }
+                );
+            }
+
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new
+                {
+                    success = false,
+                    data = new
+                    {
+                        Items = new List<ShopLocalSupplierInvoiceItemDto>(),
                         Total = result.Total,
                     },
                     message = result.Message,

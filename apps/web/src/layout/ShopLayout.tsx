@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   DownOutlined,
+  FileTextOutlined,
   GiftOutlined,
   MenuOutlined,
   ShoppingCartOutlined,
@@ -54,6 +55,7 @@ export default function ShopLayout() {
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
+  const isLocalSupplierInvoicesPage = location.pathname.startsWith('/shop/local-supplier-invoices')
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
   const preorderDateTimeFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -394,6 +396,13 @@ export default function ShopLayout() {
           <span onClick={() => navigate('/shop/best-sellers')}>{t('shop.bestSellers', 'Best Sellers')}</span>
           <span onClick={() => navigate('/shop/coming-soon')}>{t('shop.comingSoon', 'Coming Soon')}</span>
           <span onClick={() => navigate('/shop/orders')}>{t('shop.orderHistory')}</span>
+          <Link
+            to="/shop/local-supplier-invoices"
+            className="shop-local-invoice-nav-entry"
+            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+          >
+            {t('shop.localSupplierInvoices')}
+          </Link>
           <span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>
           <LanguageSwitch className="shop-top-language-switch" size="small" />
         </div>
@@ -511,6 +520,14 @@ export default function ShopLayout() {
             <AppstoreOutlined className="icon" />
             <span>{t('shop.orderHistory', '订单')}</span>
           </div>
+          <Link
+            to="/shop/local-supplier-invoices"
+            className="shop-mobile-grid-item shop-local-invoice-nav-entry"
+            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+          >
+            <FileTextOutlined className="icon" />
+            <span>{t('shop.localSupplierInvoices', '本地进货单')}</span>
+          </Link>
           <div className="shop-mobile-grid-item" onClick={() => void handleLogout()}>
             <UserOutlined className="icon" />
             <span>{t('layout.logout', 'Logout')}</span>
@@ -556,6 +573,13 @@ export default function ShopLayout() {
           >
             {t('shop.orderHistory', '历史订单')}
           </div>
+          <Link
+            to="/shop/local-supplier-invoices"
+            className={`shop-menu-item shop-local-invoice-nav-entry${isLocalSupplierInvoicesPage ? ' active' : ''}`}
+            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+          >
+            {t('shop.localSupplierInvoices', '澳洲本地进货单')}
+          </Link>
         </div>
 
         {isShopHomePage ? (

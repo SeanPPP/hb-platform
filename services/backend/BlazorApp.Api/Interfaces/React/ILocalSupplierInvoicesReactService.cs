@@ -10,6 +10,10 @@ namespace BlazorApp.Api.Interfaces.React
             GridRequestDto request,
             List<string>? allowedStoreCodes
         );
+        Task<ApiResponse<LocalSupplierInvoiceFilterOptionsDto>> GetFilterOptionsAsync(
+            List<string>? allowedStoreCodes,
+            string? storeCode
+        );
         Task<ApiResponse<LocalSupplierInvoiceDetailDto>> GetInvoiceAsync(string invoiceGuid);
         Task<ApiResponse<List<LocalSupplierInvoiceItemDto>>> GetDetailsAsync(string invoiceGuid);
         Task<GridResponseDto<LocalSupplierInvoiceItemDto>> GetDetailsGridAsync(

@@ -3,6 +3,59 @@ using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
+    public sealed class LocalSupplierInvoiceFilterOptionDto
+    {
+        public string Value { get; set; } = string.Empty;
+        public string Label { get; set; } = string.Empty;
+    }
+
+    public sealed class LocalSupplierInvoiceFilterOptionsDto
+    {
+        public List<LocalSupplierInvoiceFilterOptionDto> Suppliers { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 商城只读进货单头；刻意排除审计、客户端标识和导入配置等后台字段。
+    /// </summary>
+    public sealed class ShopLocalSupplierInvoiceHeaderDto
+    {
+        public string InvoiceGUID { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string? StoreName { get; set; }
+        public string? SupplierCode { get; set; }
+        public string? SupplierName { get; set; }
+        public string? InvoiceNo { get; set; }
+        public DateTime? OrderDate { get; set; }
+        public DateTime? InboundDate { get; set; }
+        public decimal? TotalAmount { get; set; }
+        public decimal? ReceivedTotalAmount { get; set; }
+        public int? FlowStatus { get; set; }
+        public int? InboundStatus { get; set; }
+        public string? Remarks { get; set; }
+    }
+
+    /// <summary>
+    /// 商城只读进货商品；只保留页面展示所需的商品和价格字段。
+    /// </summary>
+    public sealed class ShopLocalSupplierInvoiceItemDto
+    {
+        public string DetailGUID { get; set; } = string.Empty;
+        public string? StoreProductCode { get; set; }
+        public string? ProductCode { get; set; }
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public string? ProductImage { get; set; }
+        public string? Specification { get; set; }
+        public string? Unit { get; set; }
+        public decimal? Quantity { get; set; }
+        public decimal? LastPurchasePrice { get; set; }
+        public decimal? PurchasePrice { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? Amount { get; set; }
+        public decimal? NewAutoRetailPrice { get; set; }
+    }
+
     public class LocalSupplierInvoiceListDto
     {
         public string InvoiceGUID { get; set; } = string.Empty;

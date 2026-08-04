@@ -32,6 +32,30 @@ const orderDetailCopy = resolveShopBannerCopy('/shop/orders/order-1')
 assertEqual(orderDetailCopy.titleKey, 'shop.orderHistory', '历史订单详情页标题应保持历史订单文案')
 assertEqual(orderDetailCopy.subtitleKey, 'shop.ordersBannerSubtitle', '历史订单详情页副标题应保持订单汇总文案')
 
+const localInvoicesCopy = resolveShopBannerCopy('/shop/local-supplier-invoices')
+assertEqual(
+  localInvoicesCopy.titleKey,
+  'shop.localSupplierInvoices',
+  '澳洲本地进货单列表页应使用专属标题',
+)
+assertEqual(
+  localInvoicesCopy.subtitleKey,
+  'shop.localSupplierInvoicesBannerSubtitle',
+  '澳洲本地进货单列表页应使用专属副标题',
+)
+
+const localInvoiceDetailCopy = resolveShopBannerCopy('/shop/local-supplier-invoices/invoice-1')
+assertEqual(
+  localInvoiceDetailCopy.titleKey,
+  'shop.localSupplierInvoices',
+  '澳洲本地进货单明细页应保持专属标题',
+)
+assertEqual(
+  localInvoiceDetailCopy.subtitleKey,
+  'shop.localSupplierInvoicesBannerSubtitle',
+  '澳洲本地进货单明细页应保持专属副标题',
+)
+
 const preorderCopy = resolveShopBannerCopy('/shop/preorders/preorder-1')
 assertEqual(preorderCopy.titleKey, 'shop.preorderTitle', '预订货页标题应使用预订货文案')
 assertEqual(
@@ -50,6 +74,18 @@ assertEqual(
   zh.shop.preorderBannerSubtitle,
   '按最小订货量填写本期份数，提交后继续处理下一期。',
   '中文预订货副标题资源应与页面语义一致',
+)
+assertEqual(en.shop.localSupplierInvoices, 'Australian Local Invoices', '英文澳洲本地进货单标题资源应存在')
+assertEqual(
+  en.shop.localSupplierInvoicesBannerSubtitle,
+  'View local purchase invoices, supplier details, product lines, and receiving status by store.',
+  '英文澳洲本地进货单副标题资源应完整',
+)
+assertEqual(zh.shop.localSupplierInvoices, '澳洲本地进货单', '中文澳洲本地进货单标题资源应存在')
+assertEqual(
+  zh.shop.localSupplierInvoicesBannerSubtitle,
+  '按分店和本地供应商查看进货单、商品明细及入库状态。',
+  '中文澳洲本地进货单副标题资源应与页面语义一致',
 )
 
 console.log('shopBannerCopy.test: ok')

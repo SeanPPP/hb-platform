@@ -1121,6 +1121,21 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.shop-local-invoice-nav-entry {
+  color: inherit;
+  text-decoration: none;
+}
+
+.shop-local-invoice-nav-entry:focus-visible {
+  outline: 3px solid rgba(99, 102, 241, 0.5);
+  outline-offset: -3px;
+}
+
+.shop-mobile-grid-item.shop-local-invoice-nav-entry:focus-visible {
+  outline-color: #fff;
+  outline-offset: -4px;
+}
+
 .shop-blue-menu {
   background: #1890ff;
 }
@@ -2622,6 +2637,125 @@ body {
   color: #475569;
 }
 
+.shop-local-invoice-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.shop-local-invoice-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1fr) minmax(300px, 1.5fr) auto;
+  align-items: end;
+}
+
+.shop-local-invoice-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.shop-local-invoice-filter-field label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.shop-local-invoice-filter-field .ant-select,
+.shop-local-invoice-filter-field .ant-input-search {
+  width: 100%;
+}
+
+.shop-local-invoice-reset {
+  min-width: 88px;
+}
+
+.shop-local-invoice-statuses {
+  justify-content: flex-end;
+}
+
+.shop-local-invoice-card-footer {
+  border-radius: 8px;
+  outline: none;
+}
+
+.shop-local-invoice-card-footer:focus-visible {
+  outline: 3px solid rgba(99, 102, 241, 0.42);
+  outline-offset: 5px;
+}
+
+.shop-local-invoice-detail-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.shop-local-invoice-detail-info-grid {
+  grid-template-columns: 1fr;
+}
+
+.shop-local-invoice-detail-stats .shop-order-detail-stat strong {
+  font-size: clamp(18px, 2vw, 25px);
+  overflow-wrap: anywhere;
+}
+
+.shop-local-invoice-line-card {
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.shop-local-invoice-line-identifiers .ant-tag {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.shop-local-invoice-line-attributes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.shop-local-invoice-line-attributes > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.shop-local-invoice-line-attributes span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.shop-local-invoice-line-attributes strong {
+  min-width: 0;
+  color: #0f172a;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.shop-local-invoice-line-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.shop-local-invoice-line-amount {
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(59, 130, 246, 0.08)) !important;
+}
+
+.shop-local-invoice-line-amount strong {
+  color: #4338ca;
+}
+
+.shop-local-invoice-detail-pagination {
+  margin-top: 20px;
+}
+
+.shop-local-invoice-detail-error .ant-result {
+  padding-block: 20px;
+}
+
 @media (max-width: 992px) {
   .shop-main-header .shop-shell {
     flex-direction: column;
@@ -2678,6 +2812,55 @@ body {
 
   .shop-order-line-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .shop-local-invoice-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shop-local-invoice-filter-field.product-keyword {
+    grid-column: 1 / -1;
+  }
+
+  .shop-local-invoice-reset {
+    justify-self: start;
+  }
+
+  .shop-local-invoice-detail-stats,
+  .shop-local-invoice-line-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 769px) and (max-width: 992px) {
+  .shop-layout {
+    overflow-x: hidden;
+  }
+
+  .shop-top-bar .shop-shell {
+    justify-content: flex-start;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: thin;
+  }
+
+  .shop-top-bar .shop-shell > * {
+    flex: 0 0 auto;
+  }
+
+  .shop-orange-menu {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0 16px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .shop-menu-item {
+    flex: 0 0 auto;
+    padding-inline: 18px;
+    white-space: nowrap;
   }
 }
 
@@ -2884,6 +3067,58 @@ body {
 
   .shop-order-line-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shop-local-invoice-toolbar {
+    display: flex;
+  }
+
+  .shop-local-invoice-filter-field,
+  .shop-local-invoice-reset {
+    width: 100%;
+  }
+
+  .shop-local-invoice-detail-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .shop-local-invoice-line-card {
+    grid-template-columns: 1fr;
+  }
+
+  .shop-local-invoice-detail-pagination {
+    overflow-x: auto;
+    justify-content: flex-start;
+    padding-bottom: 4px;
+  }
+}
+
+@media (max-width: 480px) {
+  .shop-local-invoice-card .shop-order-card-top,
+  .shop-local-invoice-line-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .shop-local-invoice-statuses {
+    justify-content: flex-start;
+  }
+
+  .shop-local-invoice-line-attributes,
+  .shop-local-invoice-line-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .shop-local-invoice-card,
+  .shop-local-invoice-line-card,
+  .shop-local-invoice-lines-panel {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .shop-local-invoice-detail-page .ant-pagination {
+    min-width: max-content;
   }
 }
 

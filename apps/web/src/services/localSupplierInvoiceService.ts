@@ -31,6 +31,16 @@ import type {
   PasteDetailsRequest,
   PasteDetailsJobResult,
   ProductsByBarcodeResponse,
+  ShopLocalSupplierInvoiceDetailsGridQuery,
+  ShopLocalSupplierInvoiceDetailsGridResult,
+  ShopLocalSupplierInvoiceDetailsPageSize,
+  ShopLocalSupplierInvoiceDto,
+  ShopLocalSupplierInvoiceFilterOptionDto,
+  ShopLocalSupplierInvoiceFilterOptionsDto,
+  ShopLocalSupplierInvoiceGridRequest,
+  ShopLocalSupplierInvoiceGridResult,
+  ShopLocalSupplierInvoiceItemDto,
+  ShopLocalSupplierInvoiceListItemDto,
   UpdateHqProductsJobResult,
   UpdateHqProductsRequest,
   UpdateHqProductsResult,
@@ -46,6 +56,7 @@ import request, { RequestError, unwrapApiData } from '../utils/request'
 const API_BASE = '/api/react/v1/local-supplier-invoices'
 const PURCHASE_SALES_ANALYSIS_API_BASE = `${API_BASE}/purchase-sales-analysis`
 const PURCHASE_SALES_ANALYSIS_ALLOWED_PAGE_SIZES = new Set([50, 100, 200])
+const SHOP_INVOICE_DETAILS_ALLOWED_PAGE_SIZES = new Set<ShopLocalSupplierInvoiceDetailsPageSize>([50, 100, 200])
 
 function readNumber(value: unknown, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -258,6 +269,153 @@ function buildPurchaseSalesAnalysisQuery(query: LocalSupplierPurchaseSalesAnalys
   }
 }
 
+function unwrapShopReadData(raw: unknown): unknown {
+  const unwrapped = unwrapApiData(raw)
+  if (unwrapped !== raw) {
+    return unwrapped
+  }
+
+  if (raw && typeof raw === 'object' && 'Data' in raw) {
+    return (raw as { Data?: unknown }).Data
+  }
+
+  return raw
+}
+
+function normalizeShopFilterOption(raw: unknown): ShopLocalSupplierInvoiceFilterOptionDto | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const value = readString(record.value ?? record.Value)
+  const label = readString(record.label ?? record.Label)
+  return value && label ? { value, label } : null
+}
+
+function normalizeShopFilterOptions(raw: unknown): ShopLocalSupplierInvoiceFilterOptionsDto {
+  const data = unwrapShopReadData(raw)
+  const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  const suppliers = record.suppliers ?? record.Suppliers
+
+  return {
+    suppliers: Array.isArray(suppliers)
+      ? suppliers
+          .map(normalizeShopFilterOption)
+          .filter((item): item is ShopLocalSupplierInvoiceFilterOptionDto => item !== null)
+      : [],
+  }
+}
+
+function normalizeShopInvoice(raw: unknown): ShopLocalSupplierInvoiceDto | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const invoiceGUID = readString(record.invoiceGUID ?? record.InvoiceGUID)
+  if (!invoiceGUID) {
+    return null
+  }
+
+  return {
+    invoiceGUID,
+    storeCode: readString(record.storeCode ?? record.StoreCode),
+    storeName: readString(record.storeName ?? record.StoreName),
+    supplierCode: readString(record.supplierCode ?? record.SupplierCode),
+    supplierName: readString(record.supplierName ?? record.SupplierName),
+    invoiceNo: readString(record.invoiceNo ?? record.InvoiceNo),
+    orderDate: readString(record.orderDate ?? record.OrderDate),
+    inboundDate: readString(record.inboundDate ?? record.InboundDate),
+    totalAmount: readOptionalNumber(record.totalAmount ?? record.TotalAmount) ?? undefined,
+    receivedTotalAmount:
+      readOptionalNumber(record.receivedTotalAmount ?? record.ReceivedTotalAmount) ?? undefined,
+    flowStatus: readOptionalNumber(record.flowStatus ?? record.FlowStatus) ?? undefined,
+    inboundStatus: readOptionalNumber(record.inboundStatus ?? record.InboundStatus) ?? undefined,
+    remarks: readString(record.remarks ?? record.Remarks),
+  }
+}
+
+function normalizeShopInvoiceGridResult(raw: unknown): ShopLocalSupplierInvoiceGridResult {
+  const data = unwrapShopReadData(raw)
+  const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  const rawItems = record.items ?? record.Items
+
+  return {
+    items: Array.isArray(rawItems)
+      ? rawItems
+          .map(normalizeShopInvoice)
+          .filter((item): item is ShopLocalSupplierInvoiceListItemDto => item !== null)
+      : [],
+    total: readNumber(record.total ?? record.Total ?? record.totalCount ?? record.TotalCount),
+  }
+}
+
+function normalizeShopInvoiceDetailItem(raw: unknown): ShopLocalSupplierInvoiceItemDto | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const detailGUID = readString(record.detailGUID ?? record.DetailGUID)
+  if (!detailGUID) {
+    return null
+  }
+
+  return {
+    detailGUID,
+    storeProductCode: readString(record.storeProductCode ?? record.StoreProductCode),
+    productCode: readString(record.productCode ?? record.ProductCode),
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
+    barcode: readString(record.barcode ?? record.Barcode),
+    productName: readString(record.productName ?? record.ProductName),
+    specification: readString(record.specification ?? record.Specification),
+    unit: readString(record.unit ?? record.Unit),
+    quantity: readOptionalNumber(record.quantity ?? record.Quantity) ?? undefined,
+    lastPurchasePrice: readOptionalNumber(record.lastPurchasePrice ?? record.LastPurchasePrice) ?? undefined,
+    purchasePrice: readOptionalNumber(record.purchasePrice ?? record.PurchasePrice) ?? undefined,
+    retailPrice: readOptionalNumber(record.retailPrice ?? record.RetailPrice) ?? undefined,
+    amount: readOptionalNumber(record.amount ?? record.Amount) ?? undefined,
+    productImage: readString(record.productImage ?? record.ProductImage),
+    newAutoRetailPrice: readOptionalNumber(record.newAutoRetailPrice ?? record.NewAutoRetailPrice) ?? undefined,
+  }
+}
+
+function normalizeShopDetailsPageSize(value: number | undefined): ShopLocalSupplierInvoiceDetailsPageSize {
+  return SHOP_INVOICE_DETAILS_ALLOWED_PAGE_SIZES.has(value as ShopLocalSupplierInvoiceDetailsPageSize)
+    ? (value as ShopLocalSupplierInvoiceDetailsPageSize)
+    : 50
+}
+
+function buildShopDetailsGridRequest(query: ShopLocalSupplierInvoiceDetailsGridQuery) {
+  const page = typeof query.page === 'number' && Number.isFinite(query.page) && query.page > 0
+    ? Math.trunc(query.page)
+    : 1
+  const pageSize = normalizeShopDetailsPageSize(query.pageSize)
+  const startRow = (page - 1) * pageSize
+
+  return {
+    startRow,
+    endRow: startRow + pageSize,
+    pageSize,
+  }
+}
+
+function normalizeShopDetailsGridResult(raw: unknown): ShopLocalSupplierInvoiceDetailsGridResult {
+  const data = unwrapShopReadData(raw)
+  const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  const rawItems = record.items ?? record.Items
+
+  return {
+    items: Array.isArray(rawItems)
+      ? rawItems
+          .map(normalizeShopInvoiceDetailItem)
+          .filter((item): item is ShopLocalSupplierInvoiceItemDto => item !== null)
+      : [],
+    total: readNumber(record.total ?? record.Total ?? record.totalCount ?? record.TotalCount),
+  }
+}
+
 export async function getInvoiceGrid(data: Record<string, unknown>) {
   const response = await request.post<ApiResponse<{ items: LocalSupplierInvoiceListDto[]; total: number; page?: number; pageSize?: number }>>(
     `${API_BASE}/grid`,
@@ -275,6 +433,56 @@ export async function getInvoiceDetails(invoiceGuid: string): Promise<LocalSuppl
   const response = await request.get<ApiResponse<LocalSupplierInvoiceItemDto[]>>(`${API_BASE}/${invoiceGuid}/details`)
   return unwrapApiData(response) ?? []
 }
+
+export async function getShopLocalSupplierInvoiceGrid(
+  data: ShopLocalSupplierInvoiceGridRequest,
+  signal?: AbortSignal,
+): Promise<ShopLocalSupplierInvoiceGridResult> {
+  const response = await request.post<unknown>(`${API_BASE}/shop/grid`, data, { signal })
+  return normalizeShopInvoiceGridResult(response)
+}
+
+export async function getShopLocalSupplierInvoice(
+  invoiceGuid: string,
+  signal?: AbortSignal,
+): Promise<ShopLocalSupplierInvoiceDto> {
+  const response = await request.get<unknown>(
+    `${API_BASE}/shop/${encodeURIComponent(invoiceGuid)}`,
+    { signal },
+  )
+  return normalizeShopInvoice(unwrapShopReadData(response)) ?? { invoiceGUID: '' }
+}
+
+export async function getShopLocalSupplierInvoiceFilterOptions(
+  storeCode?: string,
+  signal?: AbortSignal,
+): Promise<ShopLocalSupplierInvoiceFilterOptionsDto> {
+  const normalizedStoreCode = storeCode?.trim()
+  const response = await request.get<unknown>(`${API_BASE}/shop/filter-options`, {
+    params: normalizedStoreCode ? { storeCode: normalizedStoreCode } : undefined,
+    signal,
+  })
+  return normalizeShopFilterOptions(response)
+}
+
+// 保留贴近后端契约的短名称，便于非商城调用方复用同一只读选项接口。
+export const getInvoiceFilterOptions = getShopLocalSupplierInvoiceFilterOptions
+
+export async function getShopLocalSupplierInvoiceDetailsGrid(
+  invoiceGuid: string,
+  query: ShopLocalSupplierInvoiceDetailsGridQuery,
+  signal?: AbortSignal,
+): Promise<ShopLocalSupplierInvoiceDetailsGridResult> {
+  const response = await request.post<unknown>(
+    `${API_BASE}/shop/${encodeURIComponent(invoiceGuid)}/details/grid`,
+    buildShopDetailsGridRequest(query),
+    { signal },
+  )
+  return normalizeShopDetailsGridResult(response)
+}
+
+// 与既有 getInvoiceDetails 对齐命名，同时保持旧的非分页接口不变。
+export const getInvoiceDetailsGrid = getShopLocalSupplierInvoiceDetailsGrid
 
 export async function getInvoiceDetail(invoiceGuid: string): Promise<GetInvoiceDetailResponse> {
   const response = await request.get<ApiResponse<GetInvoiceDetailResponse>>(`${API_BASE}/${invoiceGuid}/full`)

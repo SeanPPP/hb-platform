@@ -64,6 +64,116 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetInvoice_LocalPurchaseViewUserCanStillReadAnAssignedStoreInvoice()
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service => service.GetInvoiceAsync("invoice-1"))
+            .ReturnsAsync(
+                ApiResponse<LocalSupplierInvoiceDetailDto>.OK(
+                    new LocalSupplierInvoiceDetailDto()
+                )
+            );
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.LocalPurchase.View).Object
+        );
+
+        var result = await controller.GetInvoice("invoice-1");
+
+        Assert.IsType<OkObjectResult>(result);
+        invoices.Verify(service => service.GetInvoiceAsync("invoice-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetShopInvoice_OrderFrontViewUserCanReadAnAssignedStoreInvoice()
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service => service.GetInvoiceAsync("invoice-1"))
+            .ReturnsAsync(
+                ApiResponse<LocalSupplierInvoiceDetailDto>.OK(
+                    new LocalSupplierInvoiceDetailDto()
+                )
+            );
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object
+        );
+
+        var result = await controller.GetShopInvoice("invoice-1");
+
+        Assert.IsType<OkObjectResult>(result);
+        invoices.Verify(service => service.GetInvoiceAsync("invoice-1"), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("WarehouseStaff")]
+    [InlineData("仓库员工")]
+    public async Task GetShopInvoice_WarehouseStaffWithOrdersCreateCanReadAssignedStoreInvoice(
+        string roleName
+    )
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service => service.GetInvoiceAsync("invoice-1"))
+            .ReturnsAsync(
+                ApiResponse<LocalSupplierInvoiceDetailDto>.OK(
+                    new LocalSupplierInvoiceDetailDto()
+                )
+            );
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.Orders.Create).Object,
+            roleNames: new[] { roleName }
+        );
+
+        var result = await controller.GetShopInvoice("invoice-1");
+
+        Assert.IsType<OkObjectResult>(result);
+        invoices.Verify(service => service.GetInvoiceAsync("invoice-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetShopInvoice_OrdersCreateWithoutWarehouseStaffRoleIsForbidden()
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.Orders.Create).Object
+        );
+
+        var result = await controller.GetShopInvoice("invoice-1");
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ShopGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopInvoice))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopDetailsGrid))]
+    public async Task ShopReadEndpoints_OrderFrontUserCanReadAssignedStoreData(string methodName)
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        SetupSuccessfulShopRead(invoices, methodName);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object
+        );
+
+        var result = await InvokeReadEndpointAsync(controller, methodName);
+
+        Assert.IsType<OkObjectResult>(result);
+        invoices.VerifyAll();
+    }
+
+    [Fact]
     public async Task GetInvoice_ForbidsWhenNeitherMobileNorExistingReadPermissionIsGranted()
     {
         await SeedScopedInvoiceAsync();
@@ -101,6 +211,30 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetShopInvoice_OrderFrontUserCannotReadAnUnassignedStoreInvoice()
+    {
+        await SeedScopedInvoiceAsync();
+        await _db.Insertable(
+            new StoreLocalSupplierInvoice
+            {
+                InvoiceGUID = "invoice-other-store",
+                StoreCode = "S02",
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object
+        );
+
+        var result = await controller.GetShopInvoice("invoice-other-store");
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task GetInvoice_WithoutAuthorizationServiceFailsClosed()
     {
         await SeedScopedInvoiceAsync();
@@ -113,11 +247,139 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
         invoices.VerifyNoOtherCalls();
     }
 
+    [Fact]
+    public async Task GetShopInvoice_WithoutAuthorizationServiceFailsClosed()
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(invoices.Object, authorizationService: null);
+
+        var result = await controller.GetShopInvoice("invoice-1");
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
     [Theory]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.Grid))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetInvoice))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetailsGrid))]
+    public async Task LegacyReadEndpoints_OrderFrontPermissionRemainsForbidden(string methodName)
+    {
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object,
+            isAdmin: true
+        );
+
+        var result = await InvokeReadEndpointAsync(controller, methodName);
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
+    public async Task SpecialReadEndpoints_OrderFrontPermissionRemainsForbidden(string methodName)
+    {
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object,
+            isAdmin: true
+        );
+
+        var result = await InvokeReadEndpointAsync(controller, methodName);
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
+    public async Task SpecialReadEndpoints_WarehouseStaffOrdersCreateRemainsForbidden(
+        string methodName
+    )
+    {
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.Orders.Create).Object,
+            isAdmin: true,
+            roleNames: new[] { "WarehouseStaff" }
+        );
+
+        var result = await InvokeReadEndpointAsync(controller, methodName);
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task FilterOptions_OrderFrontUserScopesSuppliersToAssignedStores()
+    {
+        await SeedScopedInvoiceAsync();
+        var expected = new LocalSupplierInvoiceFilterOptionsDto
+        {
+            Suppliers = new List<LocalSupplierInvoiceFilterOptionDto>
+            {
+                new() { Value = "SUP01", Label = "Supplier One" },
+            },
+        };
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service =>
+                service.GetFilterOptionsAsync(
+                    It.Is<List<string>?>(codes =>
+                        codes != null && codes.SequenceEqual(new[] { "S01" })
+                    ),
+                    null
+                )
+            )
+            .ReturnsAsync(ApiResponse<LocalSupplierInvoiceFilterOptionsDto>.OK(expected));
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object
+        );
+
+        var result = await controller.GetFilterOptions(null);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(expected, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        invoices.VerifyAll();
+    }
+
+    [Fact]
+    public async Task FilterOptions_OrderFrontUserCannotSelectAnUnassignedStore()
+    {
+        await SeedScopedInvoiceAsync();
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            invoices.Object,
+            CreateAuthorizationService(Permissions.OrderFront.View).Object
+        );
+
+        var result = await controller.GetFilterOptions("S02");
+
+        Assert.IsType<ForbidResult>(result);
+        invoices.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.Grid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetInvoice))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetails))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetailsGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ShopGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopInvoice))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopDetailsGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetFilterOptions))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
@@ -143,6 +405,10 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetInvoice))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetDetailsGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ShopGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopInvoice))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetShopDetailsGrid))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.GetFilterOptions))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.GetProductsByProductCode))]
@@ -210,7 +476,8 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
     private ReactLocalSupplierInvoicesController CreateController(
         ILocalSupplierInvoicesReactService invoices,
         IAuthorizationService? authorizationService,
-        bool isAdmin = false
+        bool isAdmin = false,
+        IReadOnlyList<string>? roleNames = null
     )
     {
         var controller = new ReactLocalSupplierInvoicesController(
@@ -226,13 +493,16 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
             {
                 User = new ClaimsPrincipal(
                     new ClaimsIdentity(
-                        isAdmin
-                            ? new[]
-                            {
-                                new Claim("userId", "user-1"),
-                                new Claim(ClaimTypes.Role, "Admin"),
-                            }
-                            : new[] { new Claim("userId", "user-1") },
+                        new[] { new Claim("userId", "user-1") }
+                            .Concat(
+                                isAdmin
+                                    ? new[] { new Claim(ClaimTypes.Role, "Admin") }
+                                    : Array.Empty<Claim>()
+                            )
+                            .Concat(
+                                (roleNames ?? Array.Empty<string>())
+                                    .Select(role => new Claim(ClaimTypes.Role, role))
+                            ),
                         "TestAuth"
                     )
                 ),
@@ -255,6 +525,14 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
                 "invoice-1",
                 new GridRequestDto()
             ),
+            nameof(ReactLocalSupplierInvoicesController.ShopGrid) =>
+                controller.ShopGrid(new GridRequestDto()),
+            nameof(ReactLocalSupplierInvoicesController.GetShopInvoice) =>
+                controller.GetShopInvoice("invoice-1"),
+            nameof(ReactLocalSupplierInvoicesController.GetShopDetailsGrid) =>
+                controller.GetShopDetailsGrid("invoice-1", new GridRequestDto()),
+            nameof(ReactLocalSupplierInvoicesController.GetFilterOptions) =>
+                controller.GetFilterOptions(null),
             nameof(ReactLocalSupplierInvoicesController.GetBarcodeAbnormalDetails) =>
                 controller.GetBarcodeAbnormalDetails("invoice-1"),
             nameof(ReactLocalSupplierInvoicesController.GetProductsByBarcode) =>
@@ -263,6 +541,56 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
                 controller.GetProductsByProductCode("invoice-1", "product-code"),
             _ => throw new ArgumentOutOfRangeException(nameof(methodName), methodName, null),
         };
+    }
+
+    private static void SetupSuccessfulShopRead(
+        Mock<ILocalSupplierInvoicesReactService> invoices,
+        string methodName
+    )
+    {
+        switch (methodName)
+        {
+            case nameof(ReactLocalSupplierInvoicesController.ShopGrid):
+                invoices
+                    .Setup(service =>
+                        service.GetGridDataAsync(
+                            It.IsAny<GridRequestDto>(),
+                            It.Is<List<string>?>(codes =>
+                                codes != null && codes.SequenceEqual(new[] { "S01" })
+                            )
+                        )
+                    )
+                    .ReturnsAsync(
+                        GridResponseDto<LocalSupplierInvoiceListDto>.OK(
+                            new List<LocalSupplierInvoiceListDto>(),
+                            0
+                        )
+                    );
+                break;
+            case nameof(ReactLocalSupplierInvoicesController.GetShopInvoice):
+                invoices
+                    .Setup(service => service.GetInvoiceAsync("invoice-1"))
+                    .ReturnsAsync(
+                        ApiResponse<LocalSupplierInvoiceDetailDto>.OK(
+                            new LocalSupplierInvoiceDetailDto()
+                        )
+                    );
+                break;
+            case nameof(ReactLocalSupplierInvoicesController.GetShopDetailsGrid):
+                invoices
+                    .Setup(service =>
+                        service.GetDetailsGridAsync("invoice-1", It.IsAny<GridRequestDto>())
+                    )
+                    .ReturnsAsync(
+                        GridResponseDto<LocalSupplierInvoiceItemDto>.OK(
+                            new List<LocalSupplierInvoiceItemDto>(),
+                            0
+                        )
+                    );
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(methodName), methodName, null);
+        }
     }
 
     private static Mock<IAuthorizationService> CreateAuthorizationService(

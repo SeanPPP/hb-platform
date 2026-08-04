@@ -76,6 +76,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 string? productKeyword = null;
+                string? selectedStoreCode = null;
                 if (request.FilterModel != null && request.FilterModel.Any())
                 {
                     foreach (var kv in request.FilterModel)
@@ -102,6 +103,10 @@ namespace BlazorApp.Api.Services.React
                             {
                                 case "StoreCode":
                                     query = ApplyText(query, op, v, x => x.StoreCode);
+                                    if (op == "equals")
+                                    {
+                                        selectedStoreCode = v;
+                                    }
                                     break;
                                 case "SupplierCode":
                                     query = ApplyText(query, op, v, x => x.SupplierCode);
@@ -176,32 +181,100 @@ namespace BlazorApp.Api.Services.React
                 if (!string.IsNullOrWhiteSpace(productKeyword))
                 {
                     var keyword = productKeyword;
-                    var matchingInvoiceGuids =
-                        await db.Queryable<StoreLocalSupplierInvoiceDetails>()
-                            .Where(d =>
-                                d.IsDeleted == false
-                                && (
-                                    (d.ItemNumber != null && d.ItemNumber.Contains(keyword))
-                                    || (d.Barcode != null && d.Barcode.Contains(keyword))
-                                    || (
-                                        d.StoreProductCode != null
-                                        && d.StoreProductCode.Contains(keyword)
-                                    )
-                                    || (d.ProductName != null && d.ProductName.Contains(keyword))
-                                )
-                            )
-                            .Select(d => d.InvoiceGUID)
-                            .Distinct()
-                            .ToListAsync();
+                    var allowedProductStoreCodes = allowedStoreCodes?
+                        .Select(code => code?.Trim())
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
 
-                    if (matchingInvoiceGuids.Any())
+                    if (!string.IsNullOrWhiteSpace(selectedStoreCode))
                     {
-                        var invoiceGuidSet = matchingInvoiceGuids.ToHashSet();
-                        query = query.Where((h, st, sup) => invoiceGuidSet.Contains(h.InvoiceGUID));
+                        query = query.Where((h, st, sup) =>
+                            SqlFunc.Subqueryable<StoreLocalSupplierInvoiceDetails>()
+                                .Where(d =>
+                                    d.IsDeleted == false
+                                    && d.InvoiceGUID == h.InvoiceGUID
+                                    && (
+                                        d.StoreCode == null
+                                        || (
+                                            d.StoreCode == selectedStoreCode
+                                            && d.StoreCode == h.StoreCode
+                                        )
+                                    )
+                                    && (
+                                        (d.ItemNumber != null && d.ItemNumber.Contains(keyword))
+                                        || (d.Barcode != null && d.Barcode.Contains(keyword))
+                                        || (
+                                            d.StoreProductCode != null
+                                            && d.StoreProductCode.Contains(keyword)
+                                        )
+                                        || (
+                                            d.ProductName != null
+                                            && d.ProductName.Contains(keyword)
+                                        )
+                                    )
+                                )
+                                .Any()
+                        );
+                    }
+                    else if (allowedProductStoreCodes != null && allowedProductStoreCodes.Any())
+                    {
+                        query = query.Where((h, st, sup) =>
+                            SqlFunc.Subqueryable<StoreLocalSupplierInvoiceDetails>()
+                                .Where(d =>
+                                    d.IsDeleted == false
+                                    && d.InvoiceGUID == h.InvoiceGUID
+                                    && (
+                                        d.StoreCode == null
+                                        || (
+                                            allowedProductStoreCodes.Contains(d.StoreCode)
+                                            && d.StoreCode == h.StoreCode
+                                        )
+                                    )
+                                    && (
+                                        (d.ItemNumber != null && d.ItemNumber.Contains(keyword))
+                                        || (d.Barcode != null && d.Barcode.Contains(keyword))
+                                        || (
+                                            d.StoreProductCode != null
+                                            && d.StoreProductCode.Contains(keyword)
+                                        )
+                                        || (
+                                            d.ProductName != null
+                                            && d.ProductName.Contains(keyword)
+                                        )
+                                    )
+                                )
+                                .Any()
+                        );
+                    }
+                    else if (allowedProductStoreCodes != null)
+                    {
+                        query = query.Where((h, st, sup) => false);
                     }
                     else
                     {
-                        query = query.Where((h, st, sup) => false);
+                        query = query.Where((h, st, sup) =>
+                            SqlFunc.Subqueryable<StoreLocalSupplierInvoiceDetails>()
+                                .Where(d =>
+                                    d.IsDeleted == false
+                                    && d.InvoiceGUID == h.InvoiceGUID
+                                    && (d.StoreCode == null || d.StoreCode == h.StoreCode)
+                                    && (
+                                        (d.ItemNumber != null && d.ItemNumber.Contains(keyword))
+                                        || (d.Barcode != null && d.Barcode.Contains(keyword))
+                                        || (
+                                            d.StoreProductCode != null
+                                            && d.StoreProductCode.Contains(keyword)
+                                        )
+                                        || (
+                                            d.ProductName != null
+                                            && d.ProductName.Contains(keyword)
+                                        )
+                                    )
+                                )
+                                .Any()
+                        );
                     }
                 }
 
@@ -338,6 +411,121 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "LocalSupplierInvoice Grid 查询失败");
                 return GridResponseDto<LocalSupplierInvoiceListDto>.Error("查询失败");
+            }
+        }
+
+        public async Task<ApiResponse<LocalSupplierInvoiceFilterOptionsDto>> GetFilterOptionsAsync(
+            List<string>? allowedStoreCodes,
+            string? storeCode
+        )
+        {
+            try
+            {
+                var normalizedStoreCode = storeCode?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+                {
+                    normalizedStoreCode = null;
+                }
+
+                var normalizedAllowedStoreCodes = allowedStoreCodes?
+                    .Select(code => code?.Trim())
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var response = new LocalSupplierInvoiceFilterOptionsDto();
+                if (
+                    normalizedStoreCode != null
+                    && normalizedAllowedStoreCodes != null
+                    && !normalizedAllowedStoreCodes.Contains(
+                        normalizedStoreCode,
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    // service 层再次做 scope 交集，避免未来复用时绕过 controller 的分店校验。
+                    return ApiResponse<LocalSupplierInvoiceFilterOptionsDto>.OK(response);
+                }
+
+                var query = _context.Db.Queryable<StoreLocalSupplierInvoice>()
+                    .LeftJoin<HBLocalSupplier>(
+                        (invoice, supplier) =>
+                            invoice.SupplierCode == supplier.LocalSupplierCode
+                            && supplier.IsDeleted == false
+                    )
+                    .Where((invoice, supplier) =>
+                        invoice.IsDeleted == false
+                        && invoice.SupplierCode != null
+                        && invoice.SupplierCode != ""
+                    );
+
+                if (normalizedStoreCode != null)
+                {
+                    query = query.Where((invoice, supplier) =>
+                        invoice.StoreCode == normalizedStoreCode
+                    );
+                }
+                else if (normalizedAllowedStoreCodes != null)
+                {
+                    query = normalizedAllowedStoreCodes.Any()
+                        ? query.Where((invoice, supplier) =>
+                            invoice.StoreCode != null
+                            && normalizedAllowedStoreCodes.Contains(invoice.StoreCode)
+                        )
+                        : query.Where((invoice, supplier) => false);
+                }
+
+                var rows = await query
+                    .Select(
+                        (invoice, supplier) =>
+                            new LocalSupplierInvoiceFilterOptionDto
+                            {
+                                Value = invoice.SupplierCode!,
+                                Label = supplier.Name,
+                            }
+                    )
+                    .Distinct()
+                    .ToListAsync();
+
+                response.Suppliers = rows
+                    .Select(option =>
+                    {
+                        var value = option.Value.Trim();
+                        var label = string.IsNullOrWhiteSpace(option.Label)
+                            ? value
+                            : option.Label.Trim();
+                        return new LocalSupplierInvoiceFilterOptionDto
+                        {
+                            Value = value,
+                            Label = label,
+                        };
+                    })
+                    .Where(option => !string.IsNullOrWhiteSpace(option.Value))
+                    .GroupBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+                    .Select(group =>
+                        group
+                            .OrderBy(option => option.Label, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(option => option.Label, StringComparer.Ordinal)
+                            .ThenBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(option => option.Value, StringComparer.Ordinal)
+                            .First()
+                    )
+                    .OrderBy(option => option.Label, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(option => option.Label, StringComparer.Ordinal)
+                    .ThenBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(option => option.Value, StringComparer.Ordinal)
+                    .ToList();
+
+                return ApiResponse<LocalSupplierInvoiceFilterOptionsDto>.OK(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "商城本地进货单供应商筛选项查询失败");
+                return ApiResponse<LocalSupplierInvoiceFilterOptionsDto>.Error(
+                    "供应商筛选项查询失败",
+                    "QUERY_ERROR"
+                );
             }
         }
 

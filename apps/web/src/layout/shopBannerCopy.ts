@@ -13,6 +13,15 @@ const orderHistoryBannerCopy: ShopBannerCopy = {
 }
 
 export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
+  if (pathname.startsWith('/shop/local-supplier-invoices')) {
+    return {
+      titleKey: 'shop.localSupplierInvoices',
+      titleFallback: '澳洲本地进货单',
+      subtitleKey: 'shop.localSupplierInvoicesBannerSubtitle',
+      subtitleFallback: '按分店和本地供应商查看进货单、商品明细及入库状态。',
+    }
+  }
+
   if (pathname.startsWith('/shop/preorders/')) {
     return {
       titleKey: 'shop.preorderTitle',
