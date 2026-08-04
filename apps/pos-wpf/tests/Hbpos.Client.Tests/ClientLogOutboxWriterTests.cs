@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Reflection;
 using System.Threading.Channels;
@@ -397,12 +398,14 @@ public sealed class ClientLogOutboxWriterTests
             new DeviceAuthorizationState(),
             CreateCashierContext(),
             new ClientLogIdentity("stopped-operation-instance", "1.0.0"));
+        var listener = new ThrowingTraceListener();
 
         try
         {
             await writer.StartAsync(CancellationToken.None);
             using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await writer.StopAsync(shutdownBudget.Token);
+            Trace.Listeners.Add(listener);
 
             var exception = Record.Exception(() => writer.Record(new OperationAuditEventDto
             {
@@ -424,6 +427,115 @@ public sealed class ClientLogOutboxWriterTests
         }
         finally
         {
+            Trace.Listeners.Remove(listener);
+            listener.Dispose();
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Operation_audit_drop_diagnostic_does_not_block_record()
+    {
+        var writer = new ClientLogOutboxWriter(
+            new ClientLogOutboxStore(CreateDatabasePath()),
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("slow-diagnostic-instance", "1.0.0"),
+            operationAuditQueueCapacity: 10);
+        var diagnosticStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseDiagnostic = new ManualResetEventSlim();
+        var listener = new BlockingTraceListener(diagnosticStarted, releaseDiagnostic);
+
+        try
+        {
+            Trace.Listeners.Add(listener);
+            for (var index = 0; index < 10; index++)
+            {
+                writer.Record(new OperationAuditEventDto
+                {
+                    EventId = Guid.NewGuid(),
+                    OperationType = "SLOW_DIAGNOSTIC_FILL",
+                    Outcome = "Succeeded"
+                });
+            }
+
+            var record = Task.Run(() => writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.NewGuid(),
+                OperationType = "SLOW_DIAGNOSTIC_DROP",
+                Outcome = "Succeeded"
+            }));
+
+            await diagnosticStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await record.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
+        }
+        finally
+        {
+            releaseDiagnostic.Set();
+            Trace.Listeners.Remove(listener);
+            listener.Dispose();
+            writer.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Operation_audit_throwing_diagnostic_preserves_revision_and_flush()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("throwing-diagnostic-instance", "1.0.0"),
+            operationAuditQueueCapacity: 10);
+        var listener = new ThrowingTraceListener();
+
+        try
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            Trace.Listeners.Add(listener);
+            for (var index = 0; index < 10; index++)
+            {
+                writer.Record(new OperationAuditEventDto
+                {
+                    EventId = Guid.NewGuid(),
+                    OperationType = "THROWING_DIAGNOSTIC_FILL",
+                    Outcome = "Succeeded"
+                });
+            }
+
+            var revision = writer.CaptureOperationAuditRevision();
+            var exception = Record.Exception(() => writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.NewGuid(),
+                OperationType = "THROWING_DIAGNOSTIC_DROP",
+                Outcome = "Succeeded"
+            }));
+
+            Assert.Null(exception);
+            Assert.Equal(revision + 1, writer.CaptureOperationAuditRevision());
+            Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
+            await WaitUntilAsync(() => listener.WriteCount > 0);
+
+            await writer.StartAsync(CancellationToken.None);
+            await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
+            Assert.Equal(10, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
+        }
+        finally
+        {
+            if (writer.ExecuteTask is { IsCompleted: false })
+            {
+                using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await writer.StopAsync(cleanupBudget.Token);
+            }
+
+            Trace.Listeners.Remove(listener);
+            listener.Dispose();
             writer.Dispose();
             await DeleteDatabaseFilesAsync(databasePath);
         }
@@ -791,6 +903,36 @@ public sealed class ClientLogOutboxWriterTests
         }
 
         throw new TimeoutException("未在预期时间内进入受控并发状态。");
+    }
+
+    private sealed class BlockingTraceListener(
+        TaskCompletionSource diagnosticStarted,
+        ManualResetEventSlim releaseDiagnostic) : TraceListener
+    {
+        public override void Write(string? message) => WriteLine(message);
+
+        public override void WriteLine(string? message)
+        {
+            diagnosticStarted.TrySetResult();
+            releaseDiagnostic.Wait();
+        }
+    }
+
+    private sealed class ThrowingTraceListener : TraceListener
+    {
+        private int _writeCount;
+
+        public int WriteCount => Volatile.Read(ref _writeCount);
+
+        public override void Write(string? message) => Throw();
+
+        public override void WriteLine(string? message) => Throw();
+
+        private void Throw()
+        {
+            Interlocked.Increment(ref _writeCount);
+            throw new InvalidOperationException("diagnostic listener failed");
+        }
     }
 
     private static string CreateDatabasePath() =>

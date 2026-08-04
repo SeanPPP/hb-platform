@@ -229,8 +229,11 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
                 snapshot.OccurredAtUtc,
                 ClientLogSanitizer.Serialize(snapshot));
             var enqueued = false;
+            long droppedCountBefore;
+            long droppedCountAfter;
             lock (_operationRevisionGate)
             {
+                droppedCountBefore = OperationAuditQueueDroppedCount;
                 BeginOperationAuditPersistence();
                 if (_operationChannel.Writer.TryWrite(queued))
                 {
@@ -241,11 +244,18 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
                 {
                     HandleOperationAuditQueueDrop();
                 }
+
+                droppedCountAfter = OperationAuditQueueDroppedCount;
             }
 
             if (enqueued)
             {
                 TryReleaseSignal();
+            }
+
+            if (droppedCountAfter > droppedCountBefore)
+            {
+                QueueOperationAuditQueueDropDiagnostic(droppedCountAfter);
             }
         }
         catch (Exception ex)
@@ -371,10 +381,36 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
 
     private static void WriteInternalDiagnostic(string message)
     {
-        var line = $"[HBPOS][Client][LogOutbox] {DateTimeOffset.Now:O} {message}";
-        Console.WriteLine(line);
-        Debug.WriteLine(line);
-        Trace.WriteLine(line);
+        try
+        {
+            var line = $"[HBPOS][Client][LogOutbox] {DateTimeOffset.Now:O} {message}";
+            try
+            {
+                Console.WriteLine(line);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Debug.WriteLine(line);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Trace.WriteLine(line);
+            }
+            catch
+            {
+            }
+        }
+        catch
+        {
+        }
     }
 
     private void TryReleaseSignal()
@@ -418,13 +454,27 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
 
     private void HandleOperationAuditQueueDrop()
     {
-        // 审计队列满载或关闭后拒绝新项时，已登记的 flush 计数必须同步结束，避免切换或停机永久等待。
-        var droppedCount = Interlocked.Increment(ref _operationAuditQueueDroppedCount);
+        // itemDropped 在 TryWrite 返回前同步执行；这里只能完成确定性计数和 pending 收尾，不能做诊断 I/O。
+        Interlocked.Increment(ref _operationAuditQueueDroppedCount);
         CompleteOperationAuditPersistence();
+    }
+
+    private void QueueOperationAuditQueueDropDiagnostic(long droppedCount)
+    {
         if ((droppedCount & (droppedCount - 1)) == 0)
         {
-            WriteInternalDiagnostic(
-                $"operation audit queue dropped count={droppedCount} capacity={_operationAuditQueueCapacity}");
+            try
+            {
+                // 诊断监听器可能阻塞或抛错，必须在 revision 锁和 Record 业务路径之外执行。
+                _ = ThreadPool.QueueUserWorkItem(
+                    static state => WriteInternalDiagnostic(
+                        $"operation audit queue dropped count={state.DroppedCount} capacity={state.Capacity}"),
+                    (DroppedCount: droppedCount, Capacity: _operationAuditQueueCapacity),
+                    preferLocal: false);
+            }
+            catch
+            {
+            }
         }
     }
 
