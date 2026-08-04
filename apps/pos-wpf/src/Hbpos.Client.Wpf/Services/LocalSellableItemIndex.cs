@@ -11,6 +11,7 @@ public sealed class LocalSellableItemIndex
     private readonly Dictionary<ExactLookupKey, List<SellableItemDto>> _metadataLookupIndex = [];
 
     internal Action<string, int>? SearchProgressForTests { get; set; }
+    internal Action? ExactLookupGateWaitForTests { get; set; }
 
     public IReadOnlyList<SellableItemDto> Items
     {
@@ -290,7 +291,46 @@ public sealed class LocalSellableItemIndex
         string storeCode,
         string query,
         CancellationToken cancellationToken) =>
-        Task.Run(() => FindExactMatches(storeCode, query), cancellationToken);
+        Task.Run(() => FindExactMatches(storeCode, query, cancellationToken), cancellationToken);
+
+    private IReadOnlyList<SellableItemDto> FindExactMatches(
+        string storeCode,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalizedStoreCode = Normalize(storeCode);
+        var normalizedQuery = Normalize(query);
+        if (normalizedStoreCode.Length == 0 || normalizedQuery.Length == 0)
+        {
+            return [];
+        }
+
+        var lockTaken = false;
+        try
+        {
+            // 使用有限等待轮询，避免已取消的后台查找无限阻塞在索引锁上。
+            while (!(lockTaken = Monitor.TryEnter(_gate, millisecondsTimeout: 50)))
+            {
+                ExactLookupGateWaitForTests?.Invoke();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var results = _exactLookupIndex.TryGetValue(new ExactLookupKey(normalizedStoreCode, normalizedQuery), out var matches)
+                ? matches.ToArray()
+                : [];
+            cancellationToken.ThrowIfCancellationRequested();
+            return results;
+        }
+        finally
+        {
+            if (lockTaken)
+            {
+                Monitor.Exit(_gate);
+            }
+        }
+    }
 
     internal IReadOnlyList<SellableItemDto> FindMetadataExactMatches(string storeCode, string query)
     {

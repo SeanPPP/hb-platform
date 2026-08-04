@@ -58,6 +58,57 @@ public sealed class PosCoreTests
     }
 
     [Fact]
+    public async Task Local_price_index_exact_lookup_async_cancels_after_worker_blocks_on_gate()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-001", "Milk 1L", "690001", PriceSourceKind.StoreRetailPrice, 12.5m)]);
+        var gate = typeof(LocalSellableItemIndex)
+            .GetField("_gate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.GetValue(index);
+        Assert.NotNull(gate);
+
+        var gateHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseGate = new ManualResetEventSlim();
+        var holder = Task.Run(() =>
+        {
+            Monitor.Enter(gate);
+            try
+            {
+                gateHeld.TrySetResult();
+                releaseGate.Wait();
+            }
+            finally
+            {
+                Monitor.Exit(gate);
+            }
+        });
+        await gateHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var workerBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        index.ExactLookupGateWaitForTests = () => workerBlocked.TrySetResult();
+        try
+        {
+            using var cancellationSource = new CancellationTokenSource();
+            var lookupTask = index.FindExactMatchesAsync("S001", "690001", cancellationSource.Token);
+            await workerBlocked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            cancellationSource.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                lookupTask.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            index.ExactLookupGateWaitForTests = null;
+            releaseGate.Set();
+            await holder.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.Single(index.FindExactMatches("S001", "690001"));
+        Assert.Single(await index.FindExactMatchesAsync("S001", "690001", CancellationToken.None));
+    }
+
+    [Fact]
     public void Local_price_index_search_can_filter_by_store()
     {
         var index = new LocalSellableItemIndex();
