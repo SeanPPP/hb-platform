@@ -22,6 +22,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static readonly Queue<string> CacheInsertionOrder = new();
     private static readonly Dictionary<string, DateTimeOffset> FailedCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Queue<string> FailedCacheInsertionOrder = new();
+    private static readonly Dictionary<string, InFlightImageLoadState> InFlightImageLoads = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, byte> LoggedDiagnostics = new(StringComparer.Ordinal);
     private static readonly Queue<string> LoggedDiagnosticInsertionOrder = new();
     private static readonly HttpClient RemoteImageHttpClient = CreateRemoteImageHttpClient();
@@ -30,6 +31,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static Func<Uri, CancellationToken, Task<byte[]>> RemoteImageBytesLoader = DownloadRemoteImageBytesAsync;
     private static Func<Uri> ApiBaseAddressProvider = ServiceRegistration.GetApiBaseAddress;
     private static Action? DataImageDecodeStartingForTests;
+    private static Action? DataImageBytesAllocatedForTests;
     private static Action<int>? CacheKeyUtf8ChunkForTests;
     private static int nextAsyncLoadVersion;
     private const string DataImagePrefix = "data:image/";
@@ -130,28 +132,44 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return null;
         }
 
-        var cacheKey = CreateCacheKey(DecodePixelWidth, imageRequest);
-        if (imageRequest.CanCache && IsFailureCached(cacheKey))
+        if (!imageRequest.CanCache)
         {
+            return CreateImageSource(imageRequest);
+        }
+
+        var cacheKey = CreateCacheKey(DecodePixelWidth, imageRequest);
+        var cacheDecision = GetCacheLoadDecision(cacheKey, registerProducerOnMiss: true);
+        if (cacheDecision.Disposition == CacheLoadDisposition.Cached)
+        {
+            return cacheDecision.CachedImage;
+        }
+
+        if (cacheDecision.Disposition != CacheLoadDisposition.Producer)
+        {
+            // 同步转换器不能等待后台任务；生产 XAML 使用异步 attached-property 路径。
             return null;
         }
 
-        if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
+        ImageSource? publishedImage = null;
+        try
         {
-            return cached;
-        }
+            var imageSource = CreateImageSource(imageRequest);
+            if (imageSource is not null)
+            {
+                TryCacheImage(cacheKey, imageSource);
+                publishedImage = imageSource;
+            }
+            else if (imageRequest.IsRemoteUri)
+            {
+                MarkFailedCache(cacheKey);
+            }
 
-        var imageSource = CreateImageSource(imageRequest);
-        if (imageRequest.CanCache && imageSource is not null)
-        {
-            TryCacheImage(cacheKey, imageSource);
+            return imageSource;
         }
-        else if (imageRequest.CanCache && imageRequest.IsRemoteUri)
+        finally
         {
-            MarkFailedCache(cacheKey);
+            CompleteInFlightImageLoad(cacheKey, cacheDecision.ProducerState!, publishedImage);
         }
-
-        return imageSource;
     }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
@@ -187,12 +205,14 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (imageRequest.ImageBytes is not null)
             {
                 return CreateBitmapImageFromBytes(
                     imageRequest.ImageBytes,
                     applyDecodePixelWidth: string.Equals(imageRequest.SourceKind, "data", StringComparison.Ordinal),
-                    Math.Max(1, DecodePixelWidth));
+                    Math.Max(1, DecodePixelWidth),
+                    cancellationToken);
             }
 
             if (imageRequest.Uri is null)
@@ -206,7 +226,8 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                     ? CreateBitmapImageFromBytes(
                         remoteBytes,
                         applyDecodePixelWidth: true,
-                        Math.Max(1, DecodePixelWidth))
+                        Math.Max(1, DecodePixelWidth),
+                        cancellationToken)
                     : null;
             }
 
@@ -223,7 +244,8 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                     return CreateBitmapImageFromBytes(
                         packBytes,
                         applyDecodePixelWidth: false,
-                        Math.Max(1, DecodePixelWidth));
+                        Math.Max(1, DecodePixelWidth),
+                        cancellationToken);
                 }
             }
 
@@ -232,7 +254,9 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             uriImage.UriSource = imageRequest.Uri;
             uriImage.DecodePixelWidth = Math.Max(1, DecodePixelWidth);
             uriImage.CacheOption = BitmapCacheOption.OnLoad;
+            cancellationToken.ThrowIfCancellationRequested();
             uriImage.EndInit();
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (uriImage.CanFreeze)
             {
@@ -273,35 +297,46 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         var cacheKey = RequiresHashedCacheKey(decodePixelWidth, imageRequest)
             ? await CreateHashedCacheKeyOnWorkerAsync(decodePixelWidth, imageRequest, cancellationToken).ConfigureAwait(false)
             : CreateCacheKey(decodePixelWidth, imageRequest);
-        if (IsImageCached(cacheKey) || IsFailureCached(cacheKey))
+        var cacheDecision = GetCacheLoadDecision(cacheKey, registerProducerOnMiss: true);
+        if (cacheDecision.Disposition != CacheLoadDisposition.Producer)
         {
             return false;
         }
 
-        ImageSource? imageSource;
-        await ImageDecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ImageSource? publishedImage = null;
         try
         {
-            imageSource = await Task.Run(
-                () => CreateImageSourceOnWorker(imageRequest, decodePixelWidth, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
+            ImageSource? imageSource;
+            await ImageDecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                imageSource = await Task.Run(
+                    () => CreateImageSourceOnWorker(imageRequest, decodePixelWidth, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                ImageDecodeGate.Release();
+            }
+
+            if (imageSource is not null)
+            {
+                var added = TryCacheImage(cacheKey, imageSource);
+                publishedImage = imageSource;
+                return added;
+            }
+
+            if (imageRequest.IsRemoteUri)
+            {
+                MarkFailedCache(cacheKey);
+            }
+
+            return false;
         }
         finally
         {
-            ImageDecodeGate.Release();
+            CompleteInFlightImageLoad(cacheKey, cacheDecision.ProducerState!, publishedImage);
         }
-
-        if (imageSource is not null)
-        {
-            return TryCacheImage(cacheKey, imageSource);
-        }
-
-        if (imageRequest.IsRemoteUri)
-        {
-            MarkFailedCache(cacheKey);
-        }
-
-        return false;
     }
 
     private static string CreateCacheKey(
@@ -340,24 +375,21 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
-    private static bool IsFailureCached(string cacheKey)
+    private static bool IsFailureCachedUnsafe(string cacheKey)
     {
-        lock (CacheLock)
+        if (!FailedCache.TryGetValue(cacheKey, out var failedAt))
         {
-            if (!FailedCache.TryGetValue(cacheKey, out var failedAt))
-            {
-                return false;
-            }
-
-            if (DateTimeOffset.UtcNow - failedAt <= FailedCacheDuration)
-            {
-                return true;
-            }
-
-            FailedCache.Remove(cacheKey);
-            RemoveFailedCacheInsertionOrderEntry(cacheKey);
             return false;
         }
+
+        if (DateTimeOffset.UtcNow - failedAt <= FailedCacheDuration)
+        {
+            return true;
+        }
+
+        FailedCache.Remove(cacheKey);
+        RemoveFailedCacheInsertionOrderEntry(cacheKey);
+        return false;
     }
 
     private static void MarkFailedCache(string cacheKey)
@@ -365,19 +397,76 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         CacheFailedImage(cacheKey, DateTimeOffset.UtcNow);
     }
 
-    private static bool TryGetCachedImage(string cacheKey, out ImageSource? imageSource)
+    private static CacheLoadDecision GetCacheLoadDecision(string cacheKey, bool registerProducerOnMiss)
     {
         lock (CacheLock)
         {
-            return Cache.TryGetValue(cacheKey, out imageSource);
+            if (Cache.TryGetValue(cacheKey, out var cachedImage))
+            {
+                return new CacheLoadDecision(CacheLoadDisposition.Cached, cachedImage, null, null);
+            }
+
+            if (IsFailureCachedUnsafe(cacheKey))
+            {
+                return InFlightImageLoads.TryGetValue(cacheKey, out var inFlightState) &&
+                       inFlightState.ActiveProducerCount > 0
+                    ? new CacheLoadDecision(
+                        CacheLoadDisposition.WaitForInFlight,
+                        null,
+                        inFlightState.Completion.Task,
+                        null)
+                    : new CacheLoadDecision(CacheLoadDisposition.Failed, null, null, null);
+            }
+
+            if (!registerProducerOnMiss)
+            {
+                return new CacheLoadDecision(CacheLoadDisposition.Miss, null, null, null);
+            }
+
+            if (!InFlightImageLoads.TryGetValue(cacheKey, out var producerState))
+            {
+                producerState = new InFlightImageLoadState();
+                InFlightImageLoads.Add(cacheKey, producerState);
+            }
+
+            producerState.ActiveProducerCount++;
+            return new CacheLoadDecision(CacheLoadDisposition.Producer, null, null, producerState);
         }
     }
 
-    private static bool IsImageCached(string cacheKey)
+    private static void CompleteInFlightImageLoad(
+        string cacheKey,
+        InFlightImageLoadState producerState,
+        ImageSource? publishedImage)
     {
         lock (CacheLock)
         {
-            return Cache.ContainsKey(cacheKey);
+            if (publishedImage is not null)
+            {
+                producerState.Completion.TrySetResult(publishedImage);
+            }
+            else if (Cache.TryGetValue(cacheKey, out var cachedImage))
+            {
+                producerState.Completion.TrySetResult(cachedImage);
+            }
+
+            producerState.ActiveProducerCount--;
+            if (producerState.ActiveProducerCount > 0)
+            {
+                return;
+            }
+
+            if (!producerState.Completion.Task.IsCompleted)
+            {
+                producerState.Completion.TrySetResult(
+                    Cache.TryGetValue(cacheKey, out var finalCachedImage) ? finalCachedImage : null);
+            }
+
+            if (InFlightImageLoads.TryGetValue(cacheKey, out var currentState) &&
+                ReferenceEquals(currentState, producerState))
+            {
+                InFlightImageLoads.Remove(cacheKey);
+            }
         }
     }
 
@@ -627,15 +716,19 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
-    internal static IDisposable UseDataImageDecodeStartingForTests(Action callback)
+    internal static IDisposable UseDataImageDecodeStartingForTests(
+        Action callback,
+        Action? bytesAllocated = null)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
         lock (RemoteImageLoaderLock)
         {
             var previous = DataImageDecodeStartingForTests;
+            var previousBytesAllocated = DataImageBytesAllocatedForTests;
             DataImageDecodeStartingForTests = callback;
-            return new DataImageDecodeStartingScope(previous);
+            DataImageBytesAllocatedForTests = bytesAllocated;
+            return new DataImageDecodeStartingScope(previous, previousBytesAllocated);
         }
     }
 
@@ -672,6 +765,14 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         lock (CacheLock)
         {
             return (Cache.Count, FailedCache.Count, LoggedDiagnostics.Count);
+        }
+    }
+
+    internal static int GetInFlightImageLoadCountForTests()
+    {
+        lock (CacheLock)
+        {
+            return InFlightImageLoads.Count;
         }
     }
 
@@ -733,15 +834,19 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         if (!RequiresHashedCacheKey(decodePixelWidth, imageRequest))
         {
             cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
-            if (imageRequest.CanCache && IsFailureCached(cacheKey))
+            if (imageRequest.CanCache)
             {
-                return;
-            }
+                var cacheDecision = GetCacheLoadDecision(cacheKey, registerProducerOnMiss: false);
+                if (cacheDecision.Disposition == CacheLoadDisposition.Cached)
+                {
+                    SetTargetImageSource(target, cacheDecision.CachedImage);
+                    return;
+                }
 
-            if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
-            {
-                SetTargetImageSource(target, cached);
-                return;
+                if (cacheDecision.Disposition == CacheLoadDisposition.Failed)
+                {
+                    return;
+                }
             }
         }
 
@@ -822,33 +927,65 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return;
         }
 
-        if (imageRequest.CanCache && IsFailureCached(resolvedCacheKey))
+        InFlightImageLoadState? producerState = null;
+        if (imageRequest.CanCache)
         {
-            await ApplyImageToTargetAsync(
-                target,
-                imageRequest,
-                sourceText,
-                imageSource: null,
-                resolvedCacheKey,
-                version,
-                cts);
-            return;
-        }
+            var cacheDecision = GetCacheLoadDecision(resolvedCacheKey, registerProducerOnMiss: true);
+            switch (cacheDecision.Disposition)
+            {
+                case CacheLoadDisposition.Cached:
+                    await ApplyImageToTargetAsync(
+                        target,
+                        imageRequest,
+                        sourceText,
+                        cacheDecision.CachedImage,
+                        resolvedCacheKey,
+                        version,
+                        cts);
+                    return;
 
-        if (imageRequest.CanCache && TryGetCachedImage(resolvedCacheKey, out var cached))
-        {
-            await ApplyImageToTargetAsync(
-                target,
-                imageRequest,
-                sourceText,
-                cached,
-                resolvedCacheKey,
-                version,
-                cts);
-            return;
+                case CacheLoadDisposition.Failed:
+                    await ApplyImageToTargetAsync(
+                        target,
+                        imageRequest,
+                        sourceText,
+                        imageSource: null,
+                        resolvedCacheKey,
+                        version,
+                        cts);
+                    return;
+
+                case CacheLoadDisposition.WaitForInFlight:
+                    ImageSource? inFlightImage;
+                    try
+                    {
+                        inFlightImage = await cacheDecision.InFlightCompletion!
+                            .WaitAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    await ApplyImageToTargetAsync(
+                        target,
+                        imageRequest,
+                        sourceText,
+                        inFlightImage,
+                        resolvedCacheKey,
+                        version,
+                        cts);
+                    return;
+
+                case CacheLoadDisposition.Producer:
+                    producerState = cacheDecision.ProducerState;
+                    break;
+            }
         }
 
         ImageSource? imageSource = null;
+        ImageSource? publishedImage = null;
         var gateEntered = false;
         try
         {
@@ -860,6 +997,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
             {
                 TryCacheImage(resolvedCacheKey, imageSource);
+                publishedImage = imageSource;
             }
             else if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
             {
@@ -875,6 +1013,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             if (gateEntered)
             {
                 ImageDecodeGate.Release();
+            }
+
+            if (producerState is not null)
+            {
+                CompleteInFlightImageLoad(resolvedCacheKey, producerState, publishedImage);
             }
         }
 
@@ -949,10 +1092,13 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         int decodePixelWidth,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.Equals(imageRequest.SourceKind, "data", StringComparison.Ordinal) && imageRequest.ImageBytes is null)
         {
             // 异步路径只在共享闸门内解码 data URI，避免首屏同时分配多个原图 byte[]。
-            var decodedDataRequest = TryCreateImageRequest(imageRequest.CacheKey);
+            var decodedDataRequest = TryCreateImageRequest(
+                imageRequest.CacheKey,
+                cancellationToken: cancellationToken);
             if (decodedDataRequest is null)
             {
                 return null;
@@ -978,8 +1124,13 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
-    private static BitmapImage CreateBitmapImageFromBytes(byte[] imageBytes, bool applyDecodePixelWidth, int decodePixelWidth)
+    private static BitmapImage CreateBitmapImageFromBytes(
+        byte[] imageBytes,
+        bool applyDecodePixelWidth,
+        int decodePixelWidth,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var stream = new MemoryStream(imageBytes, writable: false);
         var streamImage = new BitmapImage();
         streamImage.BeginInit();
@@ -991,7 +1142,9 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             streamImage.DecodePixelWidth = decodePixelWidth;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         streamImage.EndInit();
+        cancellationToken.ThrowIfCancellationRequested();
         if (streamImage.CanFreeze)
         {
             streamImage.Freeze();
@@ -1000,9 +1153,17 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return streamImage;
     }
 
-    private static ImageRequest? TryCreateImageRequest(string sourceText, bool decodeDataImageBytes = true)
+    private static ImageRequest? TryCreateImageRequest(
+        string sourceText,
+        bool decodeDataImageBytes = true,
+        CancellationToken cancellationToken = default)
     {
-        if (TryCreateDataImageRequest(sourceText, out var dataRequest, decodeDataImageBytes))
+        cancellationToken.ThrowIfCancellationRequested();
+        if (TryCreateDataImageRequest(
+                sourceText,
+                out var dataRequest,
+                decodeDataImageBytes,
+                cancellationToken))
         {
             return dataRequest;
         }
@@ -1092,8 +1253,10 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static bool TryCreateDataImageRequest(
         string sourceText,
         out ImageRequest? imageRequest,
-        bool decodeImageBytes = true)
+        bool decodeImageBytes = true,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         imageRequest = null;
         if (!sourceText.StartsWith(DataImagePrefix, StringComparison.OrdinalIgnoreCase))
         {
@@ -1143,7 +1306,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             // 先按 Base64 文本长度拒绝，避免为超大 data URI 分配完整 byte[]；解码后仍复核边界。
             // 直接在原始字符串 Span 上解码，避免复制完整 Base64 载荷。
             var base64Chars = sourceText.AsSpan(commaIndex + 1);
-            if (!TryGetDecodedBase64Length(base64Chars, out var decodedByteLength))
+            if (!TryGetDecodedBase64Length(base64Chars, out var decodedByteLength, cancellationToken))
             {
                 LogDataImageRejected("invalid-data-base64", metadata, dataLength);
                 return false;
@@ -1155,8 +1318,12 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 return false;
             }
 
-            var bytes = new byte[decodedByteLength];
+            cancellationToken.ThrowIfCancellationRequested();
             Volatile.Read(ref DataImageDecodeStartingForTests)?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            var bytes = new byte[decodedByteLength];
+            Volatile.Read(ref DataImageBytesAllocatedForTests)?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
             if (!System.Convert.TryFromBase64Chars(base64Chars, bytes, out var bytesWritten) ||
                 bytesWritten != decodedByteLength)
             {
@@ -1164,6 +1331,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 return false;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             imageRequest = new ImageRequest(sourceText, null, bytes, "data");
             return true;
         }
@@ -1179,14 +1347,23 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return (int)Math.Min(int.MaxValue, ((long)byteLimit + 2) / 3 * 4);
     }
 
-    private static bool TryGetDecodedBase64Length(ReadOnlySpan<char> base64Chars, out int decodedByteLength)
+    private static bool TryGetDecodedBase64Length(
+        ReadOnlySpan<char> base64Chars,
+        out int decodedByteLength,
+        CancellationToken cancellationToken = default)
     {
         // 与 Convert.TryFromBase64Chars 的空白兼容规则一致，先求精确输出长度再分配。
         var nonWhitespaceCount = 0;
         var lastNonWhitespace = '\0';
         var previousNonWhitespace = '\0';
-        foreach (var character in base64Chars)
+        for (var index = 0; index < base64Chars.Length; index++)
         {
+            if ((index & 0x0fff) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            var character = base64Chars[index];
             if (character is ' ' or '\t' or '\r' or '\n')
             {
                 continue;
@@ -1704,6 +1881,29 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return $"\"{normalized}\"";
     }
 
+    private enum CacheLoadDisposition
+    {
+        Miss,
+        Cached,
+        Failed,
+        WaitForInFlight,
+        Producer
+    }
+
+    private readonly record struct CacheLoadDecision(
+        CacheLoadDisposition Disposition,
+        ImageSource? CachedImage,
+        Task<ImageSource?>? InFlightCompletion,
+        InFlightImageLoadState? ProducerState);
+
+    private sealed class InFlightImageLoadState
+    {
+        public int ActiveProducerCount { get; set; }
+
+        public TaskCompletionSource<ImageSource?> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     private sealed record ImageRequest(string CacheKey, Uri? Uri, byte[]? ImageBytes, string SourceKind)
     {
         public bool CanCache =>
@@ -1789,7 +1989,9 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
-    private sealed class DataImageDecodeStartingScope(Action? previous) : IDisposable
+    private sealed class DataImageDecodeStartingScope(
+        Action? previous,
+        Action? previousBytesAllocated) : IDisposable
     {
         private int _disposed;
 
@@ -1803,6 +2005,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             lock (RemoteImageLoaderLock)
             {
                 DataImageDecodeStartingForTests = previous;
+                DataImageBytesAllocatedForTests = previousBytesAllocated;
             }
         }
     }
