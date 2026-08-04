@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Hbpos.Client.Wpf.Converters;
@@ -189,6 +188,33 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public void Convert_evicts_oldest_diagnostic_when_diagnostic_cache_reaches_capacity()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var converter = new ProductThumbnailImageSourceConverter();
+        var sourceTexts = Enumerable.Range(0, 3)
+            .Select(index => $"unsupported://image/{Guid.NewGuid():N}/{index}")
+            .ToArray();
+
+        var logs = CaptureProductImageLogs(() =>
+        {
+            foreach (var sourceText in sourceTexts)
+            {
+                Assert.Null(converter.Convert(sourceText, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+            }
+
+            // 第一键重新记录会按 FIFO 淘汰第二键，因此先验证第二键仍受抑制。
+            Assert.Null(converter.Convert(sourceTexts[1], typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+            Assert.Null(converter.Convert(sourceTexts[0], typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        });
+
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().DiagnosticCount);
+        Assert.Equal(2, logs.Count(line => line.Contains(sourceTexts[0], StringComparison.Ordinal)));
+        Assert.Equal(1, logs.Count(line => line.Contains(sourceTexts[1], StringComparison.Ordinal)));
+        Assert.Equal(1, logs.Count(line => line.Contains(sourceTexts[2], StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void Convert_downloads_http_bitmap_once_and_caches_result()
     {
         ClearImageCacheForTests();
@@ -210,6 +236,49 @@ public sealed class ProductThumbnailImageSourceConverterTests
         Assert.True(secondImage.IsFrozen);
         Assert.Same(firstImage, secondImage);
         Assert.Equal(1, loadCount);
+    }
+
+    [Fact]
+    public void Convert_evicts_oldest_image_when_cache_reaches_capacity()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var converter = new ProductThumbnailImageSourceConverter();
+        var imageUrls = Enumerable.Range(0, 3)
+            .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png")
+            .ToArray();
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((_, _) =>
+        {
+            loadCount++;
+            return Task.FromResult(OnePixelPngBytes());
+        });
+
+        foreach (var imageUrl in imageUrls)
+        {
+            Assert.IsType<BitmapImage>(converter.Convert(imageUrl, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        }
+
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().ImageCount);
+        Assert.IsType<BitmapImage>(converter.Convert(imageUrls[1], typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        Assert.Equal(3, loadCount);
+
+        Assert.IsType<BitmapImage>(converter.Convert(imageUrls[0], typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        Assert.Equal(4, loadCount);
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().ImageCount);
+    }
+
+    [Fact]
+    public void Convert_hashes_long_static_image_cache_keys()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var converter = new ProductThumbnailImageSourceConverter();
+        var sourceText = $"data:image/png;base64,{new string(' ', 513)}{OnePixelPngBase64}";
+
+        Assert.IsType<BitmapImage>(converter.Convert(sourceText, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+
+        var cacheKey = Assert.Single(ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
+        Assert.StartsWith("sha256:", cacheKey, StringComparison.Ordinal);
+        Assert.InRange(cacheKey.Length, 1, 80);
     }
 
     [Fact]
@@ -344,6 +413,36 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public void Convert_keeps_relative_image_cache_entries_isolated_across_endpoint_switches()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var state = new ApiRuntimeEndpointState("https://first.example.test/pos-api/");
+        var converter = new ProductThumbnailImageSourceConverter();
+        var requestedUris = new List<string>();
+        using var endpoint = ProductThumbnailImageSourceConverter.UseApiBaseAddressProviderForTests(
+            () => state.CurrentAddress);
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
+        {
+            requestedUris.Add(uri.AbsoluteUri);
+            return Task.FromResult(OnePixelPngBytes());
+        });
+
+        converter.Convert("images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
+        state.Switch("https://second.example.test/other-base/");
+        converter.Convert("images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
+        state.Switch("https://first.example.test/pos-api/");
+        converter.Convert("images/product.png", typeof(BitmapSource), null, CultureInfo.InvariantCulture);
+
+        Assert.Equal(
+            [
+                "https://first.example.test/pos-api/images/product.png",
+                "https://second.example.test/other-base/images/product.png"
+            ],
+            requestedUris);
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().ImageCount);
+    }
+
+    [Fact]
     public void Convert_returns_null_for_invalid_data_image()
     {
         var converter = new ProductThumbnailImageSourceConverter();
@@ -450,7 +549,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
     [Fact]
     public async Task PreloadAsync_limits_background_read_and_decode_to_four_concurrent_images()
     {
-        ClearImageCacheForTests();
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
         var activeLoads = 0;
         var maxConcurrentLoads = 0;
         var imageUrls = Enumerable.Range(0, 9)
@@ -483,6 +582,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
         Assert.Equal(imageUrls.Length, preloaded);
         Assert.InRange(maxConcurrentLoads, 1, 4);
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().ImageCount);
     }
 
     [Fact]
@@ -555,6 +655,63 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public async Task PreloadAsync_evicts_oldest_failed_image_when_failure_cache_reaches_capacity()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var imageUrls = Enumerable.Range(0, 3)
+            .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/missing-{index}.png")
+            .ToArray();
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((_, _) =>
+        {
+            loadCount++;
+            throw new IOException("download failed");
+        });
+
+        foreach (var imageUrl in imageUrls)
+        {
+            Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([imageUrl]));
+        }
+
+        Assert.Equal(3, loadCount);
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().FailedCount);
+
+        Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([imageUrls[0]]));
+        Assert.Equal(4, loadCount);
+        Assert.Equal(2, ProductThumbnailImageSourceConverter.GetCacheCountsForTests().FailedCount);
+    }
+
+    [Fact]
+    public async Task PreloadAsync_keeps_retried_expired_failure_when_evicting_oldest_failure()
+    {
+        using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
+        var expiredUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/expired.png";
+        var freshUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/fresh.png";
+        var newestUrl = $"https://cdn.example.test/images/{Guid.NewGuid():N}/newest.png";
+        SetFailedCacheForTests(expiredUrl, DateTimeOffset.UtcNow.AddMinutes(-11));
+        SetFailedCacheForTests(freshUrl, DateTimeOffset.UtcNow);
+
+        var loadCount = 0;
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((_, _) =>
+        {
+            loadCount++;
+            throw new IOException("download failed");
+        });
+
+        Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([expiredUrl]));
+        Assert.Equal(1, loadCount);
+
+        Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([newestUrl]));
+        Assert.Equal(2, loadCount);
+
+        Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([expiredUrl]));
+        Assert.Equal(2, loadCount);
+
+        Assert.Equal(0, await ProductThumbnailImageSourceConverter.PreloadAsync([freshUrl]));
+        Assert.Equal(3, loadCount);
+    }
+
+    [Fact]
     public async Task PreloadAsync_remembers_failed_remote_image_and_does_not_retry_convert_or_async_load()
     {
         ClearImageCacheForTests();
@@ -612,29 +769,12 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
     private static void ClearImageCacheForTests()
     {
-        ClearConcurrentDictionaryField("Cache");
-        ClearConcurrentDictionaryField("FailedCache");
-        ClearConcurrentDictionaryField("LoggedDiagnostics");
-    }
-
-    private static void ClearConcurrentDictionaryField(string fieldName)
-    {
-        var field = typeof(ProductThumbnailImageSourceConverter).GetField(fieldName, BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-
-        var clearMethod = field!.FieldType.GetMethod("Clear", BindingFlags.Instance | BindingFlags.Public);
-        Assert.NotNull(clearMethod);
-        clearMethod!.Invoke(field.GetValue(null), null);
+        ProductThumbnailImageSourceConverter.ClearCachesForTests();
     }
 
     private static void SetFailedCacheForTests(string sourceText, DateTimeOffset failedAt)
     {
-        var field = typeof(ProductThumbnailImageSourceConverter).GetField("FailedCache", BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-
-        var indexerProperty = field!.FieldType.GetProperty("Item");
-        Assert.NotNull(indexerProperty);
-        indexerProperty!.SetValue(field.GetValue(null), failedAt, [$"72|{sourceText}"]);
+        ProductThumbnailImageSourceConverter.SetFailedCacheEntryForTests(sourceText, failedAt);
     }
 
     private static List<string> CaptureProductImageLogs(Action action)

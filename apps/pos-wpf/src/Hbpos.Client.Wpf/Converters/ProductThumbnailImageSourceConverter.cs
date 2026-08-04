@@ -16,9 +16,13 @@ namespace Hbpos.Client.Wpf.Converters;
 
 public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 {
-    private static readonly ConcurrentDictionary<string, ImageSource> Cache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, DateTimeOffset> FailedCache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, byte> LoggedDiagnostics = new(StringComparer.Ordinal);
+    private static readonly object CacheLock = new();
+    private static readonly Dictionary<string, ImageSource> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Queue<string> CacheInsertionOrder = new();
+    private static readonly Dictionary<string, DateTimeOffset> FailedCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Queue<string> FailedCacheInsertionOrder = new();
+    private static readonly Dictionary<string, byte> LoggedDiagnostics = new(StringComparer.Ordinal);
+    private static readonly Queue<string> LoggedDiagnosticInsertionOrder = new();
     private static readonly HttpClient RemoteImageHttpClient = CreateRemoteImageHttpClient();
     private static readonly object RemoteImageLoaderLock = new();
     private static readonly SemaphoreSlim ImageDecodeGate = new(4);
@@ -27,8 +31,15 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static int nextAsyncLoadVersion;
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
+    private const int MaxCacheKeyLength = 512;
+    private const int DefaultImageCacheCapacity = 256;
+    private const int DefaultFailedCacheCapacity = 1024;
+    private const int DefaultLoggedDiagnosticCapacity = 512;
     private static readonly TimeSpan RemoteImageDownloadTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan FailedCacheDuration = TimeSpan.FromMinutes(10);
+    private static int imageCacheCapacity = DefaultImageCacheCapacity;
+    private static int failedCacheCapacity = DefaultFailedCacheCapacity;
+    private static int loggedDiagnosticCapacity = DefaultLoggedDiagnosticCapacity;
 
     public int DecodePixelWidth { get; set; } = 72;
 
@@ -117,7 +128,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return null;
         }
 
-        if (imageRequest.CanCache && Cache.TryGetValue(cacheKey, out var cached))
+        if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
         {
             return cached;
         }
@@ -125,7 +136,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         var imageSource = CreateImageSource(imageRequest);
         if (imageRequest.CanCache && imageSource is not null)
         {
-            Cache.TryAdd(cacheKey, imageSource);
+            TryCacheImage(cacheKey, imageSource);
         }
         else if (imageRequest.CanCache && imageRequest.IsRemoteUri)
         {
@@ -252,7 +263,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         var cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
-        if (Cache.ContainsKey(cacheKey) || IsFailureCached(cacheKey))
+        if (IsImageCached(cacheKey) || IsFailureCached(cacheKey))
         {
             return false;
         }
@@ -272,7 +283,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
         if (imageSource is not null)
         {
-            return Cache.TryAdd(cacheKey, imageSource);
+            return TryCacheImage(cacheKey, imageSource);
         }
 
         if (imageRequest.IsRemoteUri)
@@ -285,28 +296,145 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private static string CreateCacheKey(int decodePixelWidth, ImageRequest imageRequest)
     {
-        return $"{Math.Max(1, decodePixelWidth)}|{imageRequest.CacheKey}";
+        return NormalizeCacheKey($"{Math.Max(1, decodePixelWidth)}|{imageRequest.CacheKey}");
     }
 
     private static bool IsFailureCached(string cacheKey)
     {
-        if (!FailedCache.TryGetValue(cacheKey, out var failedAt))
+        lock (CacheLock)
         {
+            if (!FailedCache.TryGetValue(cacheKey, out var failedAt))
+            {
+                return false;
+            }
+
+            if (DateTimeOffset.UtcNow - failedAt <= FailedCacheDuration)
+            {
+                return true;
+            }
+
+            FailedCache.Remove(cacheKey);
+            RemoveFailedCacheInsertionOrderEntry(cacheKey);
             return false;
         }
-
-        if (DateTimeOffset.UtcNow - failedAt <= FailedCacheDuration)
-        {
-            return true;
-        }
-
-        FailedCache.TryRemove(cacheKey, out _);
-        return false;
     }
 
     private static void MarkFailedCache(string cacheKey)
     {
-        FailedCache[cacheKey] = DateTimeOffset.UtcNow;
+        CacheFailedImage(cacheKey, DateTimeOffset.UtcNow);
+    }
+
+    private static bool TryGetCachedImage(string cacheKey, out ImageSource? imageSource)
+    {
+        lock (CacheLock)
+        {
+            return Cache.TryGetValue(cacheKey, out imageSource);
+        }
+    }
+
+    private static bool IsImageCached(string cacheKey)
+    {
+        lock (CacheLock)
+        {
+            return Cache.ContainsKey(cacheKey);
+        }
+    }
+
+    private static bool TryCacheImage(string cacheKey, ImageSource imageSource)
+    {
+        lock (CacheLock)
+        {
+            if (Cache.ContainsKey(cacheKey))
+            {
+                return false;
+            }
+
+            EnsureCacheCapacity(Cache, CacheInsertionOrder, imageCacheCapacity);
+            Cache.Add(cacheKey, imageSource);
+            CacheInsertionOrder.Enqueue(cacheKey);
+            return true;
+        }
+    }
+
+    private static void CacheFailedImage(string cacheKey, DateTimeOffset failedAt)
+    {
+        lock (CacheLock)
+        {
+            if (FailedCache.ContainsKey(cacheKey))
+            {
+                FailedCache[cacheKey] = failedAt;
+                return;
+            }
+
+            EnsureCacheCapacity(FailedCache, FailedCacheInsertionOrder, failedCacheCapacity);
+            FailedCache.Add(cacheKey, failedAt);
+            FailedCacheInsertionOrder.Enqueue(cacheKey);
+        }
+    }
+
+    private static void RemoveFailedCacheInsertionOrderEntry(string cacheKey)
+    {
+        var queuedCount = FailedCacheInsertionOrder.Count;
+        for (var index = 0; index < queuedCount; index++)
+        {
+            var queuedKey = FailedCacheInsertionOrder.Dequeue();
+            if (!string.Equals(queuedKey, cacheKey, StringComparison.OrdinalIgnoreCase))
+            {
+                FailedCacheInsertionOrder.Enqueue(queuedKey);
+            }
+        }
+    }
+
+    private static bool TryRememberDiagnostic(string key)
+    {
+        var normalizedKey = NormalizeCacheKey(key);
+        lock (CacheLock)
+        {
+            if (LoggedDiagnostics.ContainsKey(normalizedKey))
+            {
+                return false;
+            }
+
+            EnsureCacheCapacity(
+                LoggedDiagnostics,
+                LoggedDiagnosticInsertionOrder,
+                loggedDiagnosticCapacity);
+            LoggedDiagnostics.Add(normalizedKey, 0);
+            LoggedDiagnosticInsertionOrder.Enqueue(normalizedKey);
+            return true;
+        }
+    }
+
+    private static void EnsureCacheCapacity<TValue>(
+        Dictionary<string, TValue> cache,
+        Queue<string> insertionOrder,
+        int capacity)
+    {
+        // 过期失败项会在队列中留下陈旧键，持续出队才能确保字典始终受容量限制。
+        while (cache.Count >= capacity && insertionOrder.Count > 0)
+        {
+            cache.Remove(insertionOrder.Dequeue());
+        }
+    }
+
+    private static void ClearCachesUnsafe()
+    {
+        Cache.Clear();
+        CacheInsertionOrder.Clear();
+        FailedCache.Clear();
+        FailedCacheInsertionOrder.Clear();
+        LoggedDiagnostics.Clear();
+        LoggedDiagnosticInsertionOrder.Clear();
+    }
+
+    private static string NormalizeCacheKey(string key)
+    {
+        if (key.Length <= MaxCacheKeyLength)
+        {
+            return key;
+        }
+
+        return $"sha256:{System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key)))}";
     }
 
     private static void OnAsyncSourceTextChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
@@ -354,6 +482,63 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
     }
 
+    internal static IDisposable UseCacheLimitsForTests(
+        int imageCapacity,
+        int failureCapacity,
+        int diagnosticCapacity)
+    {
+        if (imageCapacity <= 0 || failureCapacity <= 0 || diagnosticCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(imageCapacity), "缓存容量必须大于零。");
+        }
+
+        lock (CacheLock)
+        {
+            var scope = new CacheLimitsScope(
+                imageCacheCapacity,
+                failedCacheCapacity,
+                loggedDiagnosticCapacity);
+            imageCacheCapacity = imageCapacity;
+            failedCacheCapacity = failureCapacity;
+            loggedDiagnosticCapacity = diagnosticCapacity;
+            ClearCachesUnsafe();
+            return scope;
+        }
+    }
+
+    internal static void ClearCachesForTests()
+    {
+        lock (CacheLock)
+        {
+            ClearCachesUnsafe();
+        }
+    }
+
+    internal static (int ImageCount, int FailedCount, int DiagnosticCount) GetCacheCountsForTests()
+    {
+        lock (CacheLock)
+        {
+            return (Cache.Count, FailedCache.Count, LoggedDiagnostics.Count);
+        }
+    }
+
+    internal static IReadOnlyList<string> GetImageCacheKeysForTests()
+    {
+        lock (CacheLock)
+        {
+            return Cache.Keys.ToArray();
+        }
+    }
+
+    internal static void SetFailedCacheEntryForTests(string sourceText, DateTimeOffset failedAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceText);
+
+        var imageRequest = TryCreateImageRequest(sourceText.Trim())
+            ?? throw new ArgumentException("测试失败缓存源无效。", nameof(sourceText));
+        CacheFailedImage(CreateCacheKey(72, imageRequest), failedAt);
+    }
+
     internal static void ConfigureApiBaseAddressProvider(Func<Uri> provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
@@ -397,7 +582,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return;
         }
 
-        if (imageRequest.CanCache && Cache.TryGetValue(cacheKey, out var cached))
+        if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
         {
             SetTargetImageSource(target, cached);
             return;
@@ -478,7 +663,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 cancellationToken).ConfigureAwait(false);
             if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
             {
-                Cache.TryAdd(cacheKey, imageSource);
+                TryCacheImage(cacheKey, imageSource);
             }
             else if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
             {
@@ -1134,7 +1319,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private static void LogImageDiagnosticOnce(string key, string message)
     {
-        if (LoggedDiagnostics.TryAdd(key, 0))
+        if (TryRememberDiagnostic(key))
         {
             ConsoleLog.Write("ProductImage", message);
         }
@@ -1168,6 +1353,30 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             Uri is not null &&
             (string.Equals(Uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
              string.Equals(Uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class CacheLimitsScope(
+        int previousImageCacheCapacity,
+        int previousFailedCacheCapacity,
+        int previousLoggedDiagnosticCapacity) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (CacheLock)
+            {
+                imageCacheCapacity = previousImageCacheCapacity;
+                failedCacheCapacity = previousFailedCacheCapacity;
+                loggedDiagnosticCapacity = previousLoggedDiagnosticCapacity;
+                ClearCachesUnsafe();
+            }
+        }
     }
 
     private sealed class RemoteImageLoaderScope(Func<Uri, CancellationToken, Task<byte[]>> previous) : IDisposable
