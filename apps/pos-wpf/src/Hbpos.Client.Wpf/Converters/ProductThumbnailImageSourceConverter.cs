@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -35,11 +36,15 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private const int DefaultImageCacheCapacity = 256;
     private const int DefaultFailedCacheCapacity = 1024;
     private const int DefaultLoggedDiagnosticCapacity = 512;
+    private const int MaxDataImageMetadataLength = 256;
+    // 商品原图 JPEG/PNG 可能超过 2 MiB；8 MiB 兼容常见上传，同时把 4 路流式读取与返回 byte[] 的峰值限定在约 64 MiB。
+    private const int DefaultImageInputByteLimit = 8 * 1024 * 1024;
     private static readonly TimeSpan RemoteImageDownloadTimeout = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan FailedCacheDuration = TimeSpan.FromMinutes(10);
     private static int imageCacheCapacity = DefaultImageCacheCapacity;
     private static int failedCacheCapacity = DefaultFailedCacheCapacity;
     private static int loggedDiagnosticCapacity = DefaultLoggedDiagnosticCapacity;
+    private static int imageInputByteLimit = DefaultImageInputByteLimit;
 
     public int DecodePixelWidth { get; set; } = 72;
 
@@ -183,7 +188,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             {
                 return CreateBitmapImageFromBytes(
                     imageRequest.ImageBytes,
-                    applyDecodePixelWidth: false,
+                    applyDecodePixelWidth: string.Equals(imageRequest.SourceKind, "data", StringComparison.Ordinal),
                     Math.Max(1, DecodePixelWidth));
             }
 
@@ -504,6 +509,29 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             ClearCachesUnsafe();
             return scope;
         }
+    }
+
+    internal static IDisposable UseImageInputByteLimitForTests(int byteLimit)
+    {
+        if (byteLimit <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteLimit), "图像输入上限必须大于零。");
+        }
+
+        lock (RemoteImageLoaderLock)
+        {
+            var previous = imageInputByteLimit;
+            imageInputByteLimit = byteLimit;
+            return new ImageInputByteLimitScope(previous);
+        }
+    }
+
+    internal static Task<byte[]> ReadRemoteImageContentForTestsAsync(
+        HttpContent content,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return ReadRemoteImageContentAsync(content, cancellationToken);
     }
 
     internal static void ClearCachesForTests()
@@ -876,6 +904,26 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return false;
         }
 
+        var dataLength = sourceText.Length - commaIndex - 1;
+        var byteLimit = Volatile.Read(ref imageInputByteLimit);
+        if (commaIndex > MaxDataImageMetadataLength)
+        {
+            LogImageDiagnosticOnce(
+                $"data-metadata-too-large|{commaIndex}|{dataLength}",
+                "image request rejected " +
+                "sourceKind=data " +
+                "reason=data-metadata-too-large " +
+                $"metadataLength={commaIndex} " +
+                $"dataLength={dataLength}");
+            return false;
+        }
+
+        if (dataLength > GetMaxBase64Length(byteLimit))
+        {
+            LogDataImageRejected("data-payload-too-large", sourceText[..commaIndex], dataLength);
+            return false;
+        }
+
         var metadata = sourceText[..commaIndex];
         if (!metadata.Contains(";base64", StringComparison.OrdinalIgnoreCase))
         {
@@ -884,22 +932,38 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
         try
         {
+            // 先按 Base64 文本长度拒绝，避免为超大 data URI 分配完整 byte[]；解码后仍复核边界。
             var bytes = System.Convert.FromBase64String(sourceText[(commaIndex + 1)..]);
+            if (bytes.Length > byteLimit)
+            {
+                LogDataImageRejected("data-decoded-too-large", metadata, dataLength);
+                return false;
+            }
+
             imageRequest = new ImageRequest(sourceText, null, bytes, "data");
             return true;
         }
         catch (FormatException)
         {
-            var dataLength = sourceText.Length - commaIndex - 1;
-            LogImageDiagnosticOnce(
-                $"invalid-data-base64|{metadata}|{dataLength}",
-                "image request rejected " +
-                "sourceKind=data " +
-                "reason=invalid-data-base64 " +
-                $"metadata={FormatLogValue(metadata)} " +
-                $"dataLength={dataLength}");
+            LogDataImageRejected("invalid-data-base64", metadata, dataLength);
             return false;
         }
+    }
+
+    private static int GetMaxBase64Length(int byteLimit)
+    {
+        return (int)Math.Min(int.MaxValue, ((long)byteLimit + 2) / 3 * 4);
+    }
+
+    private static void LogDataImageRejected(string reason, string metadata, int dataLength)
+    {
+        LogImageDiagnosticOnce(
+            $"{reason}|{metadata}|{dataLength}",
+            "image request rejected " +
+            "sourceKind=data " +
+            $"reason={reason} " +
+            $"metadata={FormatLogValue(metadata)} " +
+            $"dataLength={dataLength}");
     }
 
     private static bool TryCreatePackResourceRequest(string sourceText, out ImageRequest? imageRequest)
@@ -1191,6 +1255,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             LogRemoteDownloadSuccess(imageRequest, bytes.Length, stopwatch.ElapsedMilliseconds);
             return true;
         }
+        catch (ImageInputTooLargeException ex)
+        {
+            LogRemoteDownloadFailure(imageRequest, ex.Reason, null, stopwatch.ElapsedMilliseconds);
+            return false;
+        }
         catch (OperationCanceledException ex) when (timeout.IsCancellationRequested)
         {
             LogRemoteDownloadFailure(imageRequest, "timeout", ex, stopwatch.ElapsedMilliseconds);
@@ -1228,7 +1297,40 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             .ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRemoteImageContentAsync(response.Content, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]> ReadRemoteImageContentAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        var byteLimit = Volatile.Read(ref imageInputByteLimit);
+        if (content.Headers.ContentLength is long contentLength && contentLength > byteLimit)
+        {
+            throw new ImageInputTooLargeException("content-length-too-large");
+        }
+
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var bufferLength = (int)Math.Min(81920L, (long)byteLimit + 1);
+        using var bufferOwner = MemoryPool<byte>.Shared.Rent(bufferLength);
+        using var memory = new MemoryStream();
+        var totalRead = 0;
+        while (true)
+        {
+            // 对未声明或错误声明 Content-Length 的响应也只读取到上限加一个探测字节。
+            var readLength = (int)Math.Min(bufferOwner.Memory.Length, (long)byteLimit - totalRead + 1);
+            var read = await stream.ReadAsync(bufferOwner.Memory[..readLength], cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return memory.ToArray();
+            }
+
+            if (read > byteLimit - totalRead)
+            {
+                throw new ImageInputTooLargeException("stream-too-large");
+            }
+
+            memory.Write(bufferOwner.Memory.Span[..read]);
+            totalRead += read;
+        }
     }
 
     private static HttpClient CreateRemoteImageHttpClient()
@@ -1396,6 +1498,29 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             }
 
             _disposed = true;
+        }
+    }
+
+    private sealed class ImageInputTooLargeException(string reason) : IOException
+    {
+        public string Reason { get; } = reason;
+    }
+
+    private sealed class ImageInputByteLimitScope(int previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            lock (RemoteImageLoaderLock)
+            {
+                imageInputByteLimit = previous;
+            }
         }
     }
 

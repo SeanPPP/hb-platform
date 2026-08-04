@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Net;
+using System.Net.Http;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Hbpos.Client.Wpf.Converters;
@@ -23,8 +25,75 @@ public sealed class ProductThumbnailImageSourceConverterTests
             CultureInfo.InvariantCulture);
 
         var image = Assert.IsType<BitmapImage>(result);
-        Assert.Equal(1, image.PixelWidth);
-        Assert.Equal(1, image.PixelHeight);
+        Assert.Equal(72, image.PixelWidth);
+        Assert.Equal(72, image.PixelHeight);
+    }
+
+    [Fact]
+    public void Convert_decodes_larger_data_image_to_thumbnail_width()
+    {
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        var result = converter.Convert(
+            CreatePngDataUri(144, 144),
+            typeof(BitmapSource),
+            null,
+            CultureInfo.InvariantCulture);
+
+        var image = Assert.IsType<BitmapImage>(result);
+        Assert.Equal(72, image.PixelWidth);
+        Assert.Equal(72, image.PixelHeight);
+    }
+
+    [Fact]
+    public void Convert_rejects_data_image_before_decoding_when_base64_payload_exceeds_limit()
+    {
+        using var byteLimit = ProductThumbnailImageSourceConverter.UseImageInputByteLimitForTests(12);
+        var payload = Convert.ToBase64String(new byte[13]);
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        var logs = CaptureProductImageLogs(() =>
+            Assert.Null(converter.Convert($"data:image/png;base64,{payload}", typeof(BitmapSource), null, CultureInfo.InvariantCulture)));
+
+        var line = Assert.Single(logs);
+        Assert.Contains("reason=data-payload-too-large", line);
+        Assert.DoesNotContain(payload, line);
+    }
+
+    [Fact]
+    public void Convert_rejects_data_image_after_decoding_when_bytes_exceed_limit()
+    {
+        using var byteLimit = ProductThumbnailImageSourceConverter.UseImageInputByteLimitForTests(11);
+        var payload = Convert.ToBase64String(new byte[12]);
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        var logs = CaptureProductImageLogs(() =>
+            Assert.Null(converter.Convert($"data:image/png;base64,{payload}", typeof(BitmapSource), null, CultureInfo.InvariantCulture)));
+
+        var line = Assert.Single(logs);
+        Assert.Contains("reason=data-decoded-too-large", line);
+        Assert.DoesNotContain(payload, line);
+    }
+
+    [Fact]
+    public async Task ReadRemoteImageContent_rejects_response_when_content_length_exceeds_limit()
+    {
+        using var byteLimit = ProductThumbnailImageSourceConverter.UseImageInputByteLimitForTests(8);
+        using var content = new ByteArrayContent(new byte[9]);
+
+        await Assert.ThrowsAnyAsync<IOException>(
+            () => ProductThumbnailImageSourceConverter.ReadRemoteImageContentForTestsAsync(content));
+    }
+
+    [Fact]
+    public async Task ReadRemoteImageContent_rejects_stream_when_content_length_is_missing_and_limit_is_exceeded()
+    {
+        using var byteLimit = ProductThumbnailImageSourceConverter.UseImageInputByteLimitForTests(8);
+        using var content = new UnknownLengthByteArrayContent(new byte[9]);
+        Assert.Null(content.Headers.ContentLength);
+
+        await Assert.ThrowsAnyAsync<IOException>(
+            () => ProductThumbnailImageSourceConverter.ReadRemoteImageContentForTestsAsync(content));
     }
 
     [Fact]
@@ -772,6 +841,17 @@ public sealed class ProductThumbnailImageSourceConverterTests
         ProductThumbnailImageSourceConverter.ClearCachesForTests();
     }
 
+    private static string CreatePngDataUri(int width, int height)
+    {
+        var pixels = new byte[width * height * 4];
+        var source = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(source));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return $"data:image/png;base64,{Convert.ToBase64String(stream.ToArray())}";
+    }
+
     private static void SetFailedCacheForTests(string sourceText, DateTimeOffset failedAt)
     {
         ProductThumbnailImageSourceConverter.SetFailedCacheEntryForTests(sourceText, failedAt);
@@ -799,5 +879,31 @@ public sealed class ProductThumbnailImageSourceConverterTests
         }
 
         return lines;
+    }
+
+    private sealed class UnknownLengthByteArrayContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        public UnknownLengthByteArrayContent(byte[] bytes)
+        {
+            _bytes = bytes;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            return stream.WriteAsync(_bytes, 0, _bytes.Length);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync()
+        {
+            return Task.FromResult<Stream>(new MemoryStream(_bytes, writable: false));
+        }
     }
 }
