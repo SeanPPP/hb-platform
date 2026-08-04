@@ -35,7 +35,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private const string DataImagePrefix = "data:image/";
     private const int MaxLoggedValueLength = 300;
     private const int MaxCacheKeyLength = 512;
-    private const int CacheKeyHashBufferSize = 256;
+    private const int CacheKeyHashBufferSize = 4 * 1024;
     private const int DefaultImageCacheCapacity = 256;
     private const int DefaultFailedCacheCapacity = 1024;
     private const int DefaultLoggedDiagnosticCapacity = 512;
@@ -270,7 +270,9 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             return false;
         }
 
-        var cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
+        var cacheKey = RequiresHashedCacheKey(decodePixelWidth, imageRequest)
+            ? await CreateHashedCacheKeyOnWorkerAsync(decodePixelWidth, imageRequest, cancellationToken).ConfigureAwait(false)
+            : CreateCacheKey(decodePixelWidth, imageRequest);
         if (IsImageCached(cacheKey) || IsFailureCached(cacheKey))
         {
             return false;
@@ -302,12 +304,40 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return false;
     }
 
-    private static string CreateCacheKey(int decodePixelWidth, ImageRequest imageRequest)
+    private static string CreateCacheKey(
+        int decodePixelWidth,
+        ImageRequest imageRequest,
+        CancellationToken cancellationToken = default)
     {
         var decodePrefix = $"{Math.Max(1, decodePixelWidth)}|";
         return imageRequest.CacheKey.Length <= MaxCacheKeyLength - decodePrefix.Length
             ? decodePrefix + imageRequest.CacheKey
-            : CreateSha256CacheKey(decodePrefix, imageRequest.CacheKey);
+            : CreateSha256CacheKey(decodePrefix, imageRequest.CacheKey, cancellationToken);
+    }
+
+    private static bool RequiresHashedCacheKey(int decodePixelWidth, ImageRequest imageRequest)
+    {
+        var decodePrefixLength = $"{Math.Max(1, decodePixelWidth)}|".Length;
+        return imageRequest.CacheKey.Length > MaxCacheKeyLength - decodePrefixLength;
+    }
+
+    private static async Task<string> CreateHashedCacheKeyOnWorkerAsync(
+        int decodePixelWidth,
+        ImageRequest imageRequest,
+        CancellationToken cancellationToken)
+    {
+        // 长键先占用共享槽位再转交后台，避免批量预加载在 Dispatcher 同步 SHA-256。
+        await ImageDecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(
+                () => CreateCacheKey(decodePixelWidth, imageRequest, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ImageDecodeGate.Release();
+        }
     }
 
     private static bool IsFailureCached(string cacheKey)
@@ -463,14 +493,17 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         return CreateSha256CacheKey(key);
     }
 
-    private static string CreateSha256CacheKey(string first, string? second = null)
+    private static string CreateSha256CacheKey(
+        string first,
+        string? second = null,
+        CancellationToken cancellationToken = default)
     {
         using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
             System.Security.Cryptography.HashAlgorithmName.SHA256);
-        AppendUtf8CacheKeyPart(hash, first);
+        AppendUtf8CacheKeyPart(hash, first, cancellationToken);
         if (second is not null)
         {
-            AppendUtf8CacheKeyPart(hash, second);
+            AppendUtf8CacheKeyPart(hash, second, cancellationToken);
         }
 
         return $"sha256:{System.Convert.ToHexString(hash.GetHashAndReset())}";
@@ -478,13 +511,16 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
 
     private static void AppendUtf8CacheKeyPart(
         System.Security.Cryptography.IncrementalHash hash,
-        string value)
+        string value,
+        CancellationToken cancellationToken)
     {
         var encoder = System.Text.Encoding.UTF8.GetEncoder();
         var remainingChars = value.AsSpan();
+        var cacheKeyUtf8ChunkForTests = Volatile.Read(ref CacheKeyUtf8ChunkForTests);
         Span<byte> buffer = stackalloc byte[CacheKeyHashBufferSize];
         do
         {
+            cancellationToken.ThrowIfCancellationRequested();
             encoder.Convert(
                 remainingChars,
                 buffer,
@@ -494,7 +530,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 out var completed);
             if (bytesUsed > 0)
             {
-                Volatile.Read(ref CacheKeyUtf8ChunkForTests)?.Invoke(bytesUsed);
+                cacheKeyUtf8ChunkForTests?.Invoke(bytesUsed);
                 hash.AppendData(buffer[..bytesUsed]);
             }
 
@@ -693,16 +729,20 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
 
         var decodePixelWidth = Math.Max(1, GetAsyncDecodePixelWidth(target));
-        var cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
-        if (imageRequest.CanCache && IsFailureCached(cacheKey))
+        string? cacheKey = null;
+        if (!RequiresHashedCacheKey(decodePixelWidth, imageRequest))
         {
-            return;
-        }
+            cacheKey = CreateCacheKey(decodePixelWidth, imageRequest);
+            if (imageRequest.CanCache && IsFailureCached(cacheKey))
+            {
+                return;
+            }
 
-        if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
-        {
-            SetTargetImageSource(target, cached);
-            return;
+            if (imageRequest.CanCache && TryGetCachedImage(cacheKey, out var cached))
+            {
+                SetTargetImageSource(target, cached);
+                return;
+            }
         }
 
         var cts = new CancellationTokenSource();
@@ -755,7 +795,7 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         ImageRequest imageRequest,
         string sourceText,
         int decodePixelWidth,
-        string cacheKey,
+        string? cacheKey,
         int version,
         CancellationTokenSource cts)
     {
@@ -766,6 +806,45 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         }
         catch (ObjectDisposedException)
         {
+            return;
+        }
+
+        string resolvedCacheKey;
+        try
+        {
+            resolvedCacheKey = cacheKey ?? await CreateHashedCacheKeyOnWorkerAsync(
+                decodePixelWidth,
+                imageRequest,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (imageRequest.CanCache && IsFailureCached(resolvedCacheKey))
+        {
+            await ApplyImageToTargetAsync(
+                target,
+                imageRequest,
+                sourceText,
+                imageSource: null,
+                resolvedCacheKey,
+                version,
+                cts);
+            return;
+        }
+
+        if (imageRequest.CanCache && TryGetCachedImage(resolvedCacheKey, out var cached))
+        {
+            await ApplyImageToTargetAsync(
+                target,
+                imageRequest,
+                sourceText,
+                cached,
+                resolvedCacheKey,
+                version,
+                cts);
             return;
         }
 
@@ -780,11 +859,11 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
                 cancellationToken).ConfigureAwait(false);
             if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageSource is not null)
             {
-                TryCacheImage(cacheKey, imageSource);
+                TryCacheImage(resolvedCacheKey, imageSource);
             }
             else if (!cancellationToken.IsCancellationRequested && imageRequest.CanCache && imageRequest.IsRemoteUri)
             {
-                MarkFailedCache(cacheKey);
+                MarkFailedCache(resolvedCacheKey);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -799,6 +878,25 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
             }
         }
 
+        await ApplyImageToTargetAsync(
+            target,
+            imageRequest,
+            sourceText,
+            imageSource,
+            resolvedCacheKey,
+            version,
+            cts);
+    }
+
+    private static async Task ApplyImageToTargetAsync(
+        DependencyObject target,
+        ImageRequest imageRequest,
+        string sourceText,
+        ImageSource? imageSource,
+        string cacheKey,
+        int version,
+        CancellationTokenSource cts)
+    {
         var dispatcher = target.Dispatcher;
         if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
         {
@@ -1043,11 +1141,26 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
         try
         {
             // 先按 Base64 文本长度拒绝，避免为超大 data URI 分配完整 byte[]；解码后仍复核边界。
-            Volatile.Read(ref DataImageDecodeStartingForTests)?.Invoke();
-            var bytes = System.Convert.FromBase64String(sourceText[(commaIndex + 1)..]);
-            if (bytes.Length > byteLimit)
+            // 直接在原始字符串 Span 上解码，避免复制完整 Base64 载荷。
+            var base64Chars = sourceText.AsSpan(commaIndex + 1);
+            if (!TryGetDecodedBase64Length(base64Chars, out var decodedByteLength))
+            {
+                LogDataImageRejected("invalid-data-base64", metadata, dataLength);
+                return false;
+            }
+
+            if (decodedByteLength > byteLimit)
             {
                 LogDataImageRejected("data-decoded-too-large", metadata, dataLength);
+                return false;
+            }
+
+            var bytes = new byte[decodedByteLength];
+            Volatile.Read(ref DataImageDecodeStartingForTests)?.Invoke();
+            if (!System.Convert.TryFromBase64Chars(base64Chars, bytes, out var bytesWritten) ||
+                bytesWritten != decodedByteLength)
+            {
+                LogDataImageRejected("invalid-data-base64", metadata, dataLength);
                 return false;
             }
 
@@ -1064,6 +1177,43 @@ public sealed class ProductThumbnailImageSourceConverter : IValueConverter
     private static int GetMaxBase64Length(int byteLimit)
     {
         return (int)Math.Min(int.MaxValue, ((long)byteLimit + 2) / 3 * 4);
+    }
+
+    private static bool TryGetDecodedBase64Length(ReadOnlySpan<char> base64Chars, out int decodedByteLength)
+    {
+        // 与 Convert.TryFromBase64Chars 的空白兼容规则一致，先求精确输出长度再分配。
+        var nonWhitespaceCount = 0;
+        var lastNonWhitespace = '\0';
+        var previousNonWhitespace = '\0';
+        foreach (var character in base64Chars)
+        {
+            if (character is ' ' or '\t' or '\r' or '\n')
+            {
+                continue;
+            }
+
+            previousNonWhitespace = lastNonWhitespace;
+            lastNonWhitespace = character;
+            nonWhitespaceCount++;
+        }
+
+        if (nonWhitespaceCount == 0)
+        {
+            decodedByteLength = 0;
+            return true;
+        }
+
+        if (nonWhitespaceCount % 4 != 0)
+        {
+            decodedByteLength = 0;
+            return false;
+        }
+
+        var paddingCount = lastNonWhitespace == '='
+            ? previousNonWhitespace == '=' ? 2 : 1
+            : 0;
+        decodedByteLength = checked(nonWhitespaceCount / 4 * 3 - paddingCount);
+        return decodedByteLength >= 0;
     }
 
     private static void LogDataImageRejected(string reason, string metadata, int dataLength)

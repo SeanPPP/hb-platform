@@ -75,6 +75,57 @@ public sealed class ProductThumbnailImageSourceConverterTests
         Assert.DoesNotContain(payload, line);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("TWFu")]
+    [InlineData("TWE=")]
+    [InlineData("TQ==")]
+    [InlineData("T W\r\nFu")]
+    public void Convert_accepts_base64_empty_padding_and_whitespace(string payload)
+    {
+        ClearImageCacheForTests();
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        var logs = CaptureProductImageLogs(() =>
+            converter.Convert($"data:image/png;base64,{payload}", typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+
+        Assert.DoesNotContain(logs, line => line.Contains("reason=invalid-data-base64", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("====")]
+    [InlineData("A===")]
+    [InlineData("AAA")]
+    [InlineData("T=Fu")]
+    public void Convert_rejects_malformed_base64(string payload)
+    {
+        ClearImageCacheForTests();
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        var logs = CaptureProductImageLogs(() =>
+            Assert.Null(converter.Convert($"data:image/png;base64,{payload}", typeof(BitmapSource), null, CultureInfo.InvariantCulture)));
+
+        Assert.Contains(logs, line => line.Contains("reason=invalid-data-base64", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Convert_invalid_long_base64_keeps_managed_allocation_bounded()
+    {
+        const int byteLimit = 1024 * 1024;
+        using var limit = ProductThumbnailImageSourceConverter.UseImageInputByteLimitForTests(byteLimit);
+        var base64Length = (int)(((long)byteLimit + 2) / 3 * 4);
+        var sourceText = $"data:image/png;base64,{new string('!', base64Length)}";
+        var converter = new ProductThumbnailImageSourceConverter();
+
+        Assert.Null(converter.Convert(sourceText, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Null(converter.Convert(sourceText, typeof(BitmapSource), null, CultureInfo.InvariantCulture));
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        Assert.InRange(allocatedBytes, 0, 1_300_000);
+    }
+
     [Fact]
     public async Task ReadRemoteImageContent_rejects_response_when_content_length_exceeds_limit()
     {
@@ -623,6 +674,53 @@ public sealed class ProductThumbnailImageSourceConverterTests
     }
 
     [Fact]
+    public async Task PreloadAsync_uses_cached_short_key_without_waiting_for_shared_gate()
+    {
+        ClearImageCacheForTests();
+        const string cachedImageUrl = "https://cdn.example.test/cached.png";
+        using var remoteLoadsStarted = new ManualResetEventSlim();
+        var startedCount = 0;
+        var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests(
+            async (uri, cancellationToken) =>
+            {
+                if (string.Equals(uri.AbsoluteUri, cachedImageUrl, StringComparison.Ordinal))
+                {
+                    return OnePixelPngBytes();
+                }
+
+                if (Interlocked.Increment(ref startedCount) == 4)
+                {
+                    remoteLoadsStarted.Set();
+                }
+
+                return await releaseRemoteLoads.Task.WaitAsync(cancellationToken);
+            });
+        Task<int>? blockingPreload = null;
+        try
+        {
+            Assert.Equal(1, await ProductThumbnailImageSourceConverter.PreloadAsync([cachedImageUrl]));
+            blockingPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
+                Enumerable.Range(0, 4)
+                    .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png"));
+            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+
+            var cachedPreload = ProductThumbnailImageSourceConverter.PreloadAsync([cachedImageUrl]);
+
+            Assert.True(cachedPreload.IsCompleted);
+            Assert.Equal(0, await cachedPreload);
+        }
+        finally
+        {
+            releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
+            if (blockingPreload is not null)
+            {
+                await blockingPreload.WaitAsync(TimeSpan.FromSeconds(3));
+            }
+        }
+    }
+
+    [Fact]
     public async Task PreloadAsync_limits_background_read_and_decode_to_four_concurrent_images()
     {
         using var cacheLimits = ProductThumbnailImageSourceConverter.UseCacheLimitsForTests(2, 2, 2);
@@ -701,14 +799,15 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
             await Task.Delay(100);
             Assert.False(dataDecodeStarted.Task.IsCompleted);
-            Assert.NotEmpty(cacheKeyUtf8Chunks);
-            Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 256));
+            Assert.Empty(cacheKeyUtf8Chunks);
 
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
 
             Assert.Equal(4, await remotePreload.WaitAsync(TimeSpan.FromSeconds(3)));
             await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.Equal(1, await dataPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.NotEmpty(cacheKeyUtf8Chunks);
+            Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 4 * 1024));
             Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
         }
         finally
@@ -804,6 +903,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
         ClearImageCacheForTests();
         var dataImage = CreatePngDataUri(32, 32, highEntropy: true);
         Assert.True(dataImage.Length > 512);
+        var expectedCacheKey = $"sha256:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"72|{dataImage}")))}";
+        var cacheKeyUtf8Chunks = new List<int>();
         using var remoteLoadsStarted = new ManualResetEventSlim();
         var startedCount = 0;
         var releaseRemoteLoads = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -824,6 +925,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
         var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
             () => dataDecodeStarted.TrySetResult());
+        using var cacheKeyEncoding = ProductThumbnailImageSourceConverter.UseCacheKeyUtf8ChunkForTests(
+            bytesUsed => cacheKeyUtf8Chunks.Add(bytesUsed));
 
         try
         {
@@ -836,6 +939,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
                 Task.Delay(100).GetAwaiter().GetResult();
                 Assert.False(dataDecodeStarted.Task.IsCompleted);
+                Assert.Empty(cacheKeyUtf8Chunks);
                 Assert.Null(imageBrush.ImageSource);
             }
             finally
@@ -845,6 +949,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
             Assert.Equal(4, remotePreload.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
             dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+            Assert.NotEmpty(cacheKeyUtf8Chunks);
+            Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 4 * 1024));
 
             var frame = new System.Windows.Threading.DispatcherFrame();
             var imageApplyDeadline = DateTimeOffset.UtcNow.AddSeconds(3);
@@ -872,6 +978,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
             }
 
             Assert.IsType<BitmapImage>(imageBrush.ImageSource);
+            Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
         }
         finally
         {
