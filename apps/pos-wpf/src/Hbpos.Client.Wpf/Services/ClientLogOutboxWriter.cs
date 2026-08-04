@@ -45,6 +45,7 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly ClientLogIdentity _identity;
     private readonly int _runtimeQueueCapacity;
+    private readonly int _operationAuditQueueCapacity;
     private readonly Channel<QueuedClientLog> _runtimeChannel;
     private readonly Channel<QueuedClientLog> _operationChannel;
     private readonly SemaphoreSlim _signal = new(0, 1);
@@ -54,6 +55,7 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     private long _pendingOperationAuditPersistenceCount;
     private long _operationAuditRevision;
     private long _runtimeQueueDroppedCount;
+    private long _operationAuditQueueDroppedCount;
     private CancellationToken _hostShutdownToken = CancellationToken.None;
 
     public ClientLogOutboxWriter(
@@ -61,13 +63,15 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         DeviceAuthorizationState authorizationState,
         ICashierSessionContext cashierSessionContext,
         ClientLogIdentity identity,
-        int runtimeQueueCapacity = 200)
+        int runtimeQueueCapacity = 200,
+        int operationAuditQueueCapacity = 1000)
     {
         _store = store;
         _authorizationState = authorizationState;
         _cashierSessionContext = cashierSessionContext;
         _identity = identity;
         _runtimeQueueCapacity = Math.Clamp(runtimeQueueCapacity, 10, 5_000);
+        _operationAuditQueueCapacity = Math.Clamp(operationAuditQueueCapacity, 10, 5_000);
         _runtimeChannel = Channel.CreateBounded<QueuedClientLog>(
             new BoundedChannelOptions(_runtimeQueueCapacity)
             {
@@ -76,14 +80,19 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
                 SingleWriter = false
             },
             _ => Interlocked.Increment(ref _runtimeQueueDroppedCount));
-        _operationChannel = Channel.CreateUnbounded<QueuedClientLog>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
+        _operationChannel = Channel.CreateBounded<QueuedClientLog>(
+            new BoundedChannelOptions(_operationAuditQueueCapacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false
+            },
+            _ => HandleOperationAuditQueueDrop());
     }
 
     public long RuntimeQueueDroppedCount => Interlocked.Read(ref _runtimeQueueDroppedCount);
+
+    public long OperationAuditQueueDroppedCount => Interlocked.Read(ref _operationAuditQueueDroppedCount);
 
     public long PendingOperationAuditPersistenceCount =>
         Interlocked.Read(ref _pendingOperationAuditPersistenceCount);
@@ -230,7 +239,7 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
                 }
                 else
                 {
-                    CompleteOperationAuditPersistence();
+                    HandleOperationAuditQueueDrop();
                 }
             }
 
@@ -405,6 +414,18 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         }
 
         flushed?.TrySetResult();
+    }
+
+    private void HandleOperationAuditQueueDrop()
+    {
+        // 审计队列满载或关闭后拒绝新项时，已登记的 flush 计数必须同步结束，避免切换或停机永久等待。
+        var droppedCount = Interlocked.Increment(ref _operationAuditQueueDroppedCount);
+        CompleteOperationAuditPersistence();
+        if ((droppedCount & (droppedCount - 1)) == 0)
+        {
+            WriteInternalDiagnostic(
+                $"operation audit queue dropped count={droppedCount} capacity={_operationAuditQueueCapacity}");
+        }
     }
 
     private static TaskCompletionSource CreateCompletedSource()

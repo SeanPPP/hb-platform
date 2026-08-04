@@ -215,6 +215,221 @@ public sealed class ClientLogOutboxWriterTests
     }
 
     [Fact]
+    public async Task Operation_audit_small_capacity_drops_oldest_and_flushes_remaining_items()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("operation-drop-instance", "1.0.0"),
+            operationAuditQueueCapacity: 1);
+        var writeGateField = typeof(ClientLogOutboxStore)
+            .GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic);
+        var writeGate = Assert.IsType<SemaphoreSlim>(writeGateField!.GetValue(store));
+        var eventIds = Enumerable.Range(0, 12).Select(_ => Guid.NewGuid()).ToArray();
+
+        try
+        {
+            await writer.StartAsync(CancellationToken.None);
+            var warmupEventId = Guid.NewGuid();
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = warmupEventId,
+                OperationType = "OPERATION_QUEUE_WARMUP",
+                Outcome = "Succeeded"
+            });
+            _ = await WaitForSinglePendingAsync(store, ClientLogOutboxKind.OperationAudit);
+            await store.ApplyResultsAsync(
+                ClientLogOutboxKind.OperationAudit,
+                [warmupEventId],
+                [],
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+            await writeGate.WaitAsync(CancellationToken.None);
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = eventIds[0],
+                OperationType = "OPERATION_QUEUE_FIRST",
+                Outcome = "Succeeded"
+            });
+
+            var channelField = typeof(ClientLogOutboxWriter)
+                .GetField("_operationChannel", BindingFlags.Instance | BindingFlags.NonPublic);
+            var channel = Assert.IsAssignableFrom<Channel<QueuedClientLog>>(channelField!.GetValue(writer));
+            await WaitUntilAsync(() => !channel.Reader.TryPeek(out _));
+
+            for (var index = 1; index < eventIds.Length; index++)
+            {
+                writer.Record(new OperationAuditEventDto
+                {
+                    EventId = eventIds[index],
+                    OperationType = "OPERATION_QUEUE_OVERFLOW",
+                    Outcome = "Succeeded"
+                });
+            }
+
+            var flush = writer.WaitForOperationAuditFlushAsync(CancellationToken.None);
+            Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
+            Assert.Equal(11L, writer.PendingOperationAuditPersistenceCount);
+            Assert.False(flush.IsCompleted);
+
+            writeGate.Release();
+            await flush.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var persistedIds = (await store.ReadPendingAsync(
+                    ClientLogOutboxKind.OperationAudit,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    100,
+                    CancellationToken.None))
+                .Select(record => record.EventId)
+                .ToHashSet();
+            Assert.Equal(11, persistedIds.Count);
+            Assert.DoesNotContain(eventIds[1], persistedIds);
+            Assert.Contains(eventIds[0], persistedIds);
+            Assert.All(eventIds[2..], eventId => Assert.Contains(eventId, persistedIds));
+            Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
+        }
+        finally
+        {
+            if (writeGate.CurrentCount == 0)
+            {
+                writeGate.Release();
+            }
+
+            if (writer.ExecuteTask is { IsCompleted: false })
+            {
+                using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await writer.StopAsync(cleanupBudget.Token);
+            }
+
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Operation_audit_retries_after_sqlite_lock_is_released()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("sqlite-lock-instance", "1.0.0"));
+        await using var lockConnection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWrite,
+                Cache = Microsoft.Data.Sqlite.SqliteCacheMode.Shared,
+                Pooling = false
+            }.ToString());
+        var lockHeld = false;
+
+        try
+        {
+            await writer.StartAsync(CancellationToken.None);
+            await lockConnection.OpenAsync();
+            await using var lockCommand = lockConnection.CreateCommand();
+            lockCommand.CommandText = "BEGIN IMMEDIATE;";
+            await lockCommand.ExecuteNonQueryAsync();
+            lockHeld = true;
+
+            var eventId = Guid.NewGuid();
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = eventId,
+                OperationType = "SQLITE_LOCK_RECOVERY",
+                Outcome = "Succeeded"
+            });
+            var flush = writer.WaitForOperationAuditFlushAsync(CancellationToken.None);
+
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            Assert.False(flush.IsCompleted);
+
+            lockCommand.CommandText = "COMMIT;";
+            await lockCommand.ExecuteNonQueryAsync();
+            lockHeld = false;
+            await flush.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var pending = await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                100,
+                CancellationToken.None);
+            Assert.Equal([eventId], pending.Select(record => record.EventId));
+        }
+        finally
+        {
+            if (lockHeld)
+            {
+                await using var rollback = lockConnection.CreateCommand();
+                rollback.CommandText = "ROLLBACK;";
+                await rollback.ExecuteNonQueryAsync();
+            }
+
+            await lockConnection.CloseAsync();
+
+            if (writer.ExecuteTask is { IsCompleted: false })
+            {
+                using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await writer.StopAsync(cleanupBudget.Token);
+            }
+
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Operation_audit_record_after_stop_is_dropped_without_throwing()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("stopped-operation-instance", "1.0.0"));
+
+        try
+        {
+            await writer.StartAsync(CancellationToken.None);
+            using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await writer.StopAsync(shutdownBudget.Token);
+
+            var exception = Record.Exception(() => writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.NewGuid(),
+                OperationType = "STOPPED_OPERATION_AUDIT",
+                Outcome = "Succeeded"
+            }));
+
+            Assert.Null(exception);
+            Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
+            Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
+            await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Empty(await store.ReadPendingAsync(
+                ClientLogOutboxKind.OperationAudit,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                100,
+                CancellationToken.None));
+        }
+        finally
+        {
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Stop_retries_inflight_event_with_shared_shutdown_token_instead_of_losing_it()
     {
         var databasePath = CreateDatabasePath();
