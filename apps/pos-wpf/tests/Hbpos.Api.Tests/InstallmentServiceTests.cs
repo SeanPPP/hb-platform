@@ -29,6 +29,19 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
+    public void Installment_card_transactions_use_unbounded_column_length()
+    {
+        var property = typeof(InstallmentPaymentEntity).GetProperty(
+            nameof(InstallmentPaymentEntity.CardTransactionsJson));
+
+        Assert.NotNull(property);
+        var column = property!.GetCustomAttribute<SugarColumn>();
+        Assert.NotNull(column);
+        Assert.Equal(-1, column!.Length);
+        Assert.True(column.IsNullable);
+    }
+
+    [Fact]
     public void Installment_order_schema_repair_makes_legacy_lifecycle_columns_nullable()
     {
         var field = typeof(SqlSugarInstallmentRepository).GetField(
