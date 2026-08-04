@@ -1508,7 +1508,7 @@ public sealed class InstallmentPaymentEntity
     [SugarColumn(Length = 50)]
     public string DeviceCode { get; set; } = string.Empty;
 
-    [SugarColumn(Length = -1, IsNullable = true)]
+    [SugarColumn(ColumnDataType = StaticConfig.CodeFirst_BigString, IsNullable = true)]
     public string? CardTransactionsJson { get; set; }
 
     [SugarColumn(Length = 100, IsNullable = true)]

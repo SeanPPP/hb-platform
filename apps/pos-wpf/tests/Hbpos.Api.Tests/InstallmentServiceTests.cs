@@ -29,7 +29,7 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
-    public void Installment_card_transactions_use_unbounded_column_length()
+    public void Installment_card_transactions_use_cross_database_unbounded_column_type()
     {
         var property = typeof(InstallmentPaymentEntity).GetProperty(
             nameof(InstallmentPaymentEntity.CardTransactionsJson));
@@ -37,7 +37,7 @@ public sealed class InstallmentServiceTests
         Assert.NotNull(property);
         var column = property!.GetCustomAttribute<SugarColumn>();
         Assert.NotNull(column);
-        Assert.Equal(-1, column!.Length);
+        Assert.Equal(StaticConfig.CodeFirst_BigString, column!.ColumnDataType);
         Assert.True(column.IsNullable);
     }
 

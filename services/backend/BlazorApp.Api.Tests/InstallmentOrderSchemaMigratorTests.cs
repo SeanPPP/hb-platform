@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
+using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
@@ -50,6 +51,15 @@ public sealed class InstallmentOrderSchemaMigratorTests : IDisposable
         Assert.True(_db.DbMaintenance.IsAnyTable("InstallmentOrder", false));
         Assert.True(_db.DbMaintenance.IsAnyTable("InstallmentOrderLine", false));
         Assert.True(_db.DbMaintenance.IsAnyTable("InstallmentPayment", false));
+
+        var paymentColumns = _db.Ado.GetDataTable("PRAGMA table_info(InstallmentPayment)")
+            .Rows.Cast<System.Data.DataRow>()
+            .ToDictionary(
+                row => Convert.ToString(row["name"])!,
+                row => Convert.ToString(row["type"]),
+                StringComparer.OrdinalIgnoreCase
+            );
+        Assert.Equal("TEXT", paymentColumns["CardTransactionsJson"]?.ToUpperInvariant());
 
         var columns = _db.Ado.GetDataTable("PRAGMA table_info(InstallmentOrder)")
             .Rows.Cast<System.Data.DataRow>()
@@ -132,6 +142,47 @@ public sealed class InstallmentOrderSchemaMigratorTests : IDisposable
             normalized,
             StringComparison.Ordinal
         );
+    }
+
+    [Fact]
+    public void CodeFirst模型_卡交易JSON必须使用跨数据库无界类型()
+    {
+        var property = typeof(InstallmentPayment).GetProperty(
+            nameof(InstallmentPayment.CardTransactionsJson)
+        );
+
+        Assert.NotNull(property);
+        var column = property!.GetCustomAttribute<SugarColumn>();
+        Assert.NotNull(column);
+        Assert.Equal(StaticConfig.CodeFirst_BigString, column!.ColumnDataType);
+        Assert.True(column.IsNullable);
+    }
+
+    [Theory]
+    [InlineData(DbType.SqlServer, "varcharmax")]
+    [InlineData(DbType.Sqlite, "text")]
+    public void CodeFirst大字符串常量_各Provider选择无界映射(DbType dbType, string expectedMapping)
+    {
+        using var db = new SqlSugarClient(
+            new ConnectionConfig
+            {
+                ConnectionString = dbType == DbType.Sqlite
+                    ? "Data Source=:memory:"
+                    : "Server=(local);Database=unused;Trusted_Connection=True;",
+                DbType = dbType,
+                InitKeyType = InitKeyType.Attribute,
+            }
+        );
+        var mappingTypes = db.Ado.DbBind.MappingTypes
+            .Select(mapping => mapping.Key.ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal);
+        var selected = StaticConfig.CodeFirst_BigString
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(type => type.ToLowerInvariant())
+            .First(mappingTypes.Contains);
+
+        // SqlSugar 会把 SQL Server 的 varcharmax 特殊映射为 nvarchar(max)。
+        Assert.Equal(expectedMapping, selected);
     }
 
     [Fact]
