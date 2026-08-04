@@ -223,6 +223,7 @@ function initialAuthorization(
     orderGuid: string | null;
     printerId: string;
     source?: "sales" | "payment-success" | "local-history" | "remote-history" | "installment-history";
+    externalOrderGuid?: string;
   }>,
 ): FulfilmentInitialAuthorization {
   const isReprint = input.eventType === "RECEIPT_REPRINT";
@@ -253,6 +254,13 @@ function initialAuthorization(
       occurredAtIso: "2026-07-28T03:00:00.000Z",
       orderGuid: input.orderGuid,
       correlationId: input.actionId,
+      ...(input.externalOrderGuid
+        ? {
+            externalOrderGuid: input.externalOrderGuid,
+            scopeStoreCode: "S1",
+            scopeDeviceCode: "IPAD1",
+          }
+        : {}),
       ...((input.source === "remote-history" ||
         input.source === "installment-history") && input.orderGuid
         ? { externalOrderGuid: input.orderGuid }
@@ -537,6 +545,72 @@ test("支付成功页精确订单重打接受 PrintLast 授权并原子创建 Qu
   assert.equal(reprint?.state, "Queued");
   assert.equal(reprint?.isReprint, true);
   assert.equal(connection.auditEvents.size, 1);
+});
+
+test("支付成功页分期重打以显式外部订单身份创建作业且不查询本地订单", async () => {
+  const { connection, store } = createStore();
+  const orderGuid = "12345678-1234-1234-1234-abcdef654321";
+  const authorization = initialAuthorization({
+    actionId: "payment-success-installment-reprint-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid,
+    printerId: "XP-PAYMENT-INSTALLMENT",
+    source: "payment-success",
+    externalOrderGuid: orderGuid,
+  });
+
+  const created = await store.createLastReceiptReprint(
+    {
+      orderGuid,
+      receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+      printerId: "XP-PAYMENT-INSTALLMENT",
+    },
+    authorization,
+  );
+
+  assert.equal(created?.reprintSource, "payment-success");
+  assert.equal(connection.localOrderReads, 0);
+  assert.equal(
+    connection.printJobs.get(authorization.context.actionId)
+      ?.external_order_guid,
+    orderGuid,
+  );
+  assert.equal(
+    connection.auditEvents.get(authorization.audit.eventId)
+      ?.external_order_guid,
+    orderGuid,
+  );
+});
+
+test("同一付款成功 actionId 不能在本机订单与外部分期身份之间复用", async () => {
+  const { store } = createStore();
+  const orderGuid = "12345678-1234-1234-1234-abcdef654322";
+  const localAuthorization = initialAuthorization({
+    actionId: "payment-success-order-identity-conflict-1",
+    eventType: "RECEIPT_REPRINT",
+    orderGuid,
+    printerId: "XP-PAYMENT-IDENTITY",
+    source: "payment-success",
+  });
+  const input = {
+    orderGuid,
+    receiptBytes: Uint8Array.of(27, 64, 29, 86, 66, 0),
+    printerId: "XP-PAYMENT-IDENTITY",
+  };
+  await store.createLastReceiptReprint(input, localAuthorization);
+
+  await assert.rejects(
+    store.createLastReceiptReprint(input, {
+      ...localAuthorization,
+      audit: {
+        ...localAuthorization.audit,
+        externalOrderGuid: orderGuid,
+        scopeStoreCode: "S1",
+        scopeDeviceCode: "IPAD1",
+      },
+    }),
+    /conflict/i,
+  );
 });
 
 test("支付成功页重打崩溃后重新领取，仍恢复 payment-success 来源", async () => {

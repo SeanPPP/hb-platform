@@ -100,6 +100,7 @@ export class InstallmentReceiptReprintPreparationService {
 
       return {
         orderGuid: installmentGuid,
+        externalOrderGuid: installmentGuid,
         receiptBytes: documentToEscPosBytes(document),
         printerId: settings.printerId,
       };

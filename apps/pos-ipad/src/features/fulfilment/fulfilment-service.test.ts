@@ -138,6 +138,9 @@ class MemoryStore implements FulfilmentStore {
     const copy: MemoryPrintJob = {
       jobId: authorization?.context.actionId ?? `reprint-${input.orderGuid}`,
       orderGuid: input.orderGuid,
+      ...(input.externalOrderGuid
+        ? { externalOrderGuid: input.externalOrderGuid }
+        : {}),
       printerId: input.printerId,
       bytes: input.receiptBytes,
       isReprint: true,
@@ -799,6 +802,7 @@ test("支付成功页手动重打只使用精确 orderGuid，并以 PrintLast �
   const requestedOrderGuids: string[] = [];
   const prepared = {
     orderGuid: "ORDER-PAYMENT-SUCCESS-1",
+    externalOrderGuid: "ORDER-PAYMENT-SUCCESS-1",
     receiptBytes: Uint8Array.of(29, 33, 82),
     printerId: "XP-PAYMENT-SUCCESS",
   };
@@ -834,6 +838,7 @@ test("支付成功页手动重打只使用精确 orderGuid，并以 PrintLast �
   assert.deepEqual(
     audit.map((event) => ({
       action: event.payload.action,
+      externalOrderGuid: event.externalOrderGuid ?? null,
       source: event.payload.source,
       reason: event.payload.reason,
       permissionCode: event.payload.permissionCode,
@@ -841,12 +846,14 @@ test("支付成功页手动重打只使用精确 orderGuid，并以 PrintLast �
     [
       {
         action: "reprint-current-receipt",
+        externalOrderGuid: prepared.orderGuid,
         source: "payment-success",
         reason: "payment-success",
         permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",
       },
       {
         action: "reprint-current-receipt",
+        externalOrderGuid: prepared.orderGuid,
         source: "payment-success",
         reason: "payment-success",
         permissionCode: "Permissions.PosTerminal.Receipt.PrintLast",

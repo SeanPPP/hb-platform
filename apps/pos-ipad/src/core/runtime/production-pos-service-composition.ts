@@ -1057,6 +1057,14 @@ export function createProductionPosRuntimeServices(
           ? installmentHistoryReceiptReprint.prepare(orderGuid)
           : Promise.resolve(null);
       }
+      if (source === "payment-success") {
+        return receiptReprint.prepareCurrent(orderGuid).then((prepared) => {
+          // 中文注释：普通销售优先使用本地已结账事实；仅在精确 GUID 不存在时回退可信分期详情。
+          return prepared ?? (installmentHistoryReceiptReprint
+            ? installmentHistoryReceiptReprint.prepare(orderGuid)
+            : null);
+        });
+      }
       return receiptReprint.prepareCurrent(orderGuid);
     },
     prepareManualDrawerOpen: async () => {

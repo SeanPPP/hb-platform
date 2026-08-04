@@ -40,6 +40,7 @@ export type FulfilmentInitialAuthorization = Readonly<{
 export type PersistedPrintJobInput = Readonly<{
   jobId: string;
   orderGuid: string;
+  externalOrderGuid?: string;
   printerId: string;
   /** 已由 receipt domain 预渲染完成；这里绝不拼接或猜测重打标记。 */
   receiptBytes: Uint8Array;
@@ -57,6 +58,7 @@ export type PersistedDrawerEventInput = Readonly<{
 export type StoredFulfilmentPrintJob = Readonly<{
   jobId: string;
   orderGuid: string;
+  externalOrderGuid?: string;
   printerId: string;
   isReprint: boolean;
   bytes: Uint8Array;
@@ -425,8 +427,18 @@ export class SqliteFulfilmentStore {
     const reprintSource = authorizationExpectation
       ? receiptReprintSource(authorizationExpectation)
       : null;
+    const auditExternalOrderGuid = authorization?.audit.externalOrderGuid;
+    if (
+      auditExternalOrderGuid !== undefined &&
+      auditExternalOrderGuid !== input.orderGuid
+    ) {
+      throw new Error("Fulfilment external audit order does not match.");
+    }
     const externalOrderGuid =
-      reprintSource === "remote-history" || reprintSource === "installment-history"
+      auditExternalOrderGuid === input.orderGuid &&
+      (reprintSource === "remote-history" ||
+        reprintSource === "installment-history" ||
+        reprintSource === "payment-success")
         ? input.orderGuid
         : null;
     const encryptedReceipt = await this.options.encryptor.encrypt(
@@ -447,6 +459,7 @@ export class SqliteFulfilmentStore {
           authorization?.context.actionId ??
           this.options.createPrintJobId(),
         orderGuid: input.orderGuid,
+        ...(externalOrderGuid ? { externalOrderGuid } : {}),
         printerId: input.printerId,
         receiptBytes: input.receiptBytes,
         isReprint: true,
@@ -512,6 +525,7 @@ export class SqliteFulfilmentStore {
       return {
         jobId: job.jobId,
         orderGuid: job.orderGuid,
+        ...(externalOrderGuid ? { externalOrderGuid } : {}),
         printerId: job.printerId,
         isReprint: true,
         bytes: job.receiptBytes,
@@ -1087,6 +1101,8 @@ async function assertMatchingAuthorizedReprint(
   if (
     persisted.jobId !== expected.jobId ||
     persisted.orderGuid !== expected.orderGuid ||
+    (persisted.externalOrderGuid ?? null) !==
+      (expected.externalOrderGuid ?? null) ||
     persisted.printerId !== expected.printerId ||
     !persisted.isReprint
   ) {
@@ -1160,7 +1176,19 @@ function printOrderGuid(row: PrintRow): string {
   return localOrderGuid ?? externalOrderGuid!;
 }
 
-function mapPrintJobMetadata(row: PrintRow): StoredFulfilmentPrintJob { return { jobId: text(row.job_id), orderGuid: printOrderGuid(row), printerId: text(row.printer_id), isReprint: booleanInt(row.is_reprint), bytes: new Uint8Array(), state: printState(row.state), retryCount: int(row.retry_count) }; }
+function mapPrintJobMetadata(row: PrintRow): StoredFulfilmentPrintJob {
+  const externalOrderGuid = nullableText(row.external_order_guid);
+  return {
+    jobId: text(row.job_id),
+    orderGuid: printOrderGuid(row),
+    ...(externalOrderGuid ? { externalOrderGuid } : {}),
+    printerId: text(row.printer_id),
+    isReprint: booleanInt(row.is_reprint),
+    bytes: new Uint8Array(),
+    state: printState(row.state),
+    retryCount: int(row.retry_count),
+  };
+}
 function mapDrawerEvent(row: DrawerRow): StoredFulfilmentDrawerEvent { return { eventId: text(row.event_id), orderGuid: nullableText(row.order_guid), printerId: text(row.printer_id), state: drawerState(row.state), reason: text(row.reason), retryCount: int(row.retry_count) }; }
 function assertMatchingManualDrawerEvent(
   row: DrawerRow,

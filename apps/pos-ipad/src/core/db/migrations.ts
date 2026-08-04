@@ -5193,6 +5193,47 @@ BEGIN
 END;
 `;
 
+/**
+ * 分期继续付款完成页仍使用 PrintLast 授权，但订单身份来自已严格核验的服务端分期详情。
+ * 仅允许该精确语义作为外部订单；普通付款成功和其他授权组合仍保持本机订单外键。
+ */
+const M35 = `
+DROP TRIGGER IF EXISTS trg_audit_events_external_order_insert_valid;
+
+CREATE TRIGGER trg_audit_events_external_order_insert_valid
+BEFORE INSERT ON audit_events
+FOR EACH ROW
+WHEN NEW.external_order_guid IS NOT NULL
+  AND (
+    NEW.order_guid IS NOT NULL
+    OR TYPEOF(NEW.external_order_guid) <> 'text'
+    OR LENGTH(TRIM(NEW.external_order_guid)) = 0
+    OR LENGTH(NEW.external_order_guid) > 128
+    OR NEW.scope_store_code IS NULL
+    OR NEW.scope_device_code IS NULL
+    OR NEW.event_type <> 'RECEIPT_REPRINT'
+    OR NOT (
+      (
+        COALESCE(json_extract(NEW.payload_json, '$.source'), '') IN (
+          'remote-history',
+          'installment-history'
+        )
+        AND COALESCE(json_extract(NEW.payload_json, '$.action'), '') =
+          'reprint-history-receipt'
+      )
+      OR (
+        COALESCE(json_extract(NEW.payload_json, '$.source'), '') =
+          'payment-success'
+        AND COALESCE(json_extract(NEW.payload_json, '$.action'), '') =
+          'reprint-current-receipt'
+      )
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'AUDIT_EXTERNAL_ORDER_INVALID');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5228,6 +5269,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 32, name: "M32_audit_scope_insert_guard", sql: M32 },
   { version: 33, name: "M33_remote_receipt_reprint_identity", sql: M33 },
   { version: 34, name: "M34_installment_receipt_reprint_identity", sql: M34 },
+  { version: 35, name: "M35_installment_payment_success_external_order", sql: M35 },
 ];
 
 export async function applyMigrations(

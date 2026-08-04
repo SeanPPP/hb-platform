@@ -228,6 +228,11 @@ test("prepare 点击时重读可信分期并按 WPF 字段生成带 REPRINT 的�
   assert.deepEqual(harness.detailCalls, [installmentGuid]);
   assert.equal(harness.settingsCalls, 1);
   assert.equal(prepared?.orderGuid, installmentGuid);
+  assert.equal(
+    (prepared as (typeof prepared & { externalOrderGuid?: string }))
+      ?.externalOrderGuid,
+    installmentGuid,
+  );
   assert.equal(prepared?.printerId, "printer-installment");
   assert.match(receipt, /\*\*\* REPRINT \*\*\*/u);
   assert.match(receipt, /\*\*\* Paid - Pickup Pending \*\*\*/u);

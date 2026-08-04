@@ -10,6 +10,8 @@ import type { UpdateOperationLeasePort } from "@/features/app-updates/update-tra
 export type FulfilmentPrintJob = Readonly<{
   jobId: string;
   orderGuid: string;
+  /** 外部订单作业必须保留同一 GUID，使终态审计继续使用外部身份。 */
+  externalOrderGuid?: string;
   printerId: string;
   /** reprint 作业的 ESC/POS bytes 必须已包含重打标记，不能直接复用原始字节。 */
   isReprint: boolean;
@@ -77,6 +79,8 @@ export type FulfilmentInitialAuthorization = Readonly<{
 export type PreparedLastReceiptReprint = Readonly<{
   /** 由订单账本/调用方选定的不可变订单；store 不得从旧 print_jobs 猜测或替换。 */
   orderGuid: string;
+  /** 仅可信远程准备器可声明；付款成功页据此区分本机订单与外部分期订单。 */
+  externalOrderGuid?: string;
   receiptBytes: Uint8Array;
   printerId: string;
 }>;
@@ -353,26 +357,35 @@ export class FulfilmentService {
     // 账本与冻结设置读取结束后再复核 lease；失效页面不能留下可执行打印任务。
     assertActive();
     // 中文注释：支付成功页的 orderGuid 是唯一来源；准备器若返回别单必须 fail-closed。
-    if (!prepared || prepared.orderGuid !== orderGuid) {
+    if (
+      !prepared ||
+      prepared.orderGuid !== orderGuid ||
+      (prepared.externalOrderGuid !== undefined &&
+        prepared.externalOrderGuid !== orderGuid)
+    ) {
       return { state: "not-found", errorCode: null };
     }
+    const externalOrderGuid = prepared.externalOrderGuid;
     const initialAuthorization = {
       context: authorization,
-      audit: this.createAuditEvent(
-        "RECEIPT_REPRINT",
-        prepared.orderGuid,
-        authorization.actionId,
-        {
-          action: "reprint-current-receipt",
-          status: "Authorized",
-          reason: "payment-success",
-          source: "payment-success",
-          outcome: "Succeeded",
-          printerId: safeAuditText(prepared.printerId),
-          errorCode: null,
-          ...authorizationAuditPayload(authorization),
-        },
-      ),
+      audit: {
+        ...this.createAuditEvent(
+          "RECEIPT_REPRINT",
+          prepared.orderGuid,
+          authorization.actionId,
+          {
+            action: "reprint-current-receipt",
+            status: "Authorized",
+            reason: "payment-success",
+            source: "payment-success",
+            outcome: "Succeeded",
+            printerId: safeAuditText(prepared.printerId),
+            errorCode: null,
+            ...authorizationAuditPayload(authorization),
+          },
+        ),
+        ...(externalOrderGuid ? { externalOrderGuid } : {}),
+      },
     } satisfies FulfilmentInitialAuthorization;
     return this.createAndSendReprint(
       prepared,
@@ -505,28 +518,33 @@ export class FulfilmentService {
     if (shouldAuditAsReprint) {
       try {
         // 中文注释：审计必须在原子 finish 前构造，并描述本次真实硬件终态；CAS 失败时不得补写另一份。
-        audit = this.createAuditEvent(
-          "RECEIPT_REPRINT",
-          job.orderGuid,
-          job.jobId,
-          {
-            action: job.isReprint
-              ? source === "last-receipt"
-                ? "reprint-last-receipt"
-                : source === "payment-success"
-                  ? "reprint-current-receipt"
-                  : "reprint-history-receipt"
-              : "retry-failed-print",
-            status: state,
-            reason: safeAuditText(result.errorCode) ?? source,
-            source,
-            outcome: state === "Printed" ? "Succeeded" : "Failed",
-            printerId: safeAuditText(job.printerId),
-            errorCode: safeAuditText(result.errorCode),
-            ...authorizationAuditPayload(job.authorization),
-          },
-          job.auditScope,
-        );
+        audit = {
+          ...this.createAuditEvent(
+            "RECEIPT_REPRINT",
+            job.orderGuid,
+            job.jobId,
+            {
+              action: job.isReprint
+                ? source === "last-receipt"
+                  ? "reprint-last-receipt"
+                  : source === "payment-success"
+                    ? "reprint-current-receipt"
+                    : "reprint-history-receipt"
+                : "retry-failed-print",
+              status: state,
+              reason: safeAuditText(result.errorCode) ?? source,
+              source,
+              outcome: state === "Printed" ? "Succeeded" : "Failed",
+              printerId: safeAuditText(job.printerId),
+              errorCode: safeAuditText(result.errorCode),
+              ...authorizationAuditPayload(job.authorization),
+            },
+            job.auditScope,
+          ),
+          ...(job.externalOrderGuid
+            ? { externalOrderGuid: job.externalOrderGuid }
+            : {}),
+        };
       } catch {
         return recoveryRequired();
       }

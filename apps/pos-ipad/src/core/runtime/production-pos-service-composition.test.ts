@@ -470,6 +470,155 @@ test("关闭自动打印后，最后小票与支付成功精确订单仍可经�
   assert.equal(printedJobIds.length, 2);
 });
 
+test("支付成功重打在本地普通订单缺失时回退可信分期详情", async () => {
+  const installmentGuid = "10000000-0000-4000-8000-000000000001";
+  const ordinaryOrder = lastCashOrder();
+  const installmentRequests: HbposTransportRequest[] = [];
+  const printedBytes: Uint8Array[] = [];
+  const database = databaseFor([], { lastOrder: ordinaryOrder });
+  Object.assign(database, {
+    installmentSnapshots: () => ({
+      async upsertForStore() {},
+      async listForStore() {
+        return [];
+      },
+    }),
+    installmentActions: () => ({
+      async loadBlocking() {
+        return null;
+      },
+    }),
+    installmentPaymentPersistence: () => ({
+      providerAttempts: {},
+      voucherIntents: {},
+      voucherProtectedTokens: {},
+      voucherContextForAttempt: async () => {
+        throw new Error("not called by this composition test");
+      },
+      voucherMaterials: {},
+      refundProvenance: {},
+    }),
+  });
+  const configuredAvailability = {
+    getAvailability(provider: "square" | "linkly-cloud" | "voucher") {
+      return {
+        provider,
+        available: false,
+        blocker: "PAYMENT_PROVIDER_UNKNOWN" as const,
+      };
+    },
+    listAvailability() {
+      return [];
+    },
+  };
+  const bootstrap = {
+    providers: {
+      ...configuredAvailability,
+      get() {
+        throw new Error("provider is outside this composition test");
+      },
+      listAvailableProviders() {
+        return [];
+      },
+      getVoucherApprovedPurchaseReleasePort() {
+        return {
+          status: "unavailable" as const,
+          reason: "PAYMENT_PROVIDER_UNKNOWN" as const,
+        };
+      },
+    },
+    configurationAvailability: configuredAvailability,
+    bindVoucherContextProvider() {},
+    createLinklyOperator() {
+      return null;
+    },
+  } as PaymentProviderRuntimeBootstrap;
+  const services = createTestComposition(database, {
+    cashierPermissions: ["Permissions.PosTerminal.Receipt.PrintLast"],
+    installmentBootstrap: bootstrap,
+    transport: {
+      async request<T>(request: HbposTransportRequest) {
+        installmentRequests.push(request);
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              installmentGuid,
+              installmentNumber: "INS-100",
+              storeCode: "S001",
+              deviceCode: "IPAD-1",
+              cashierId: "cashier-1",
+              cashierName: "Cashier",
+              customerName: "Customer One",
+              customerPhone: "0400000000",
+              createdAt: "2026-08-01T01:00:00Z",
+              updatedAt: "2026-08-04T00:00:00Z",
+              totalAmount: 10,
+              minimumDownPayment: 2,
+              downPaymentAmount: 4,
+              paidAmount: 6,
+              balanceAmount: 4,
+              status: 1,
+              lines: [{
+                installmentLineGuid:
+                  "30000000-0000-4000-8000-000000000001",
+                productCode: "P-1",
+                referenceCode: null,
+                displayName: "Spring water",
+                lookupCode: "930000000001",
+                quantity: 1,
+                unitPrice: 10,
+                discountAmount: 0,
+                actualAmount: 10,
+                itemNumber: "SKU-1",
+              }],
+              payments: [{
+                paymentGuid: "20000000-0000-4000-8000-000000000001",
+                method: 1,
+                amount: 6,
+                reference: null,
+                status: 1,
+                recordedAt: "2026-08-04T00:00:00Z",
+                cashierId: "cashier-1",
+                deviceCode: "IPAD-1",
+                idempotencyKey: "test-idempotency-key",
+                cardTransactions: [],
+              }],
+              pickupInfo: null,
+              cancellationInfo: null,
+              note: null,
+            },
+          } as T,
+        };
+      },
+    },
+    onPrint(_jobId, bytes) {
+      printedBytes.push(bytes);
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const result = await services.fulfilment.reprintCurrentReceipt(
+    installmentGuid,
+  );
+
+  assert.deepEqual(result, { state: "Printed", errorCode: null });
+  assert.deepEqual(installmentRequests.map((request) => request.url), [
+    `/api/v1/installments/${installmentGuid}`,
+  ]);
+  assert.equal(printedBytes.length, 1);
+  assert.match(new TextDecoder().decode(printedBytes[0]), /INS-100/u);
+
+  assert.deepEqual(
+    await services.fulfilment.reprintCurrentReceipt(ordinaryOrder.orderGuid),
+    { state: "Printed", errorCode: null },
+  );
+  assert.equal(installmentRequests.length, 1);
+  assert.equal(printedBytes.length, 2);
+});
+
 test("支付成功精确订单重打复用在途动作，并只接受 PrintLast 主管授权", async () => {
   const order = lastCashOrder();
   const printedJobIds: string[] = [];
