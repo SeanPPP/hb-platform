@@ -159,7 +159,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_scans_exact_barcode_into_cart()
+    public async Task Pos_terminal_scans_exact_barcode_into_cart()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -171,7 +171,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930101";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         Assert.Empty(viewModel.ScanText);
         Assert.Equal(2.5m, viewModel.ActualAmount);
@@ -345,6 +345,63 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         Assert.True(maxHeartbeatGap < TimeSpan.FromMilliseconds(100), $"UI heartbeat gap was {maxHeartbeatGap.TotalMilliseconds:F0}ms.");
         await WaitUntilAsync(() => viewModel.Matches.Count == 1 && viewModel.Matches[0].DisplayName == item.DisplayName);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_manual_search_keeps_heartbeat_running_and_never_adds_a_stale_result()
+    {
+        var index = new LocalSellableItemIndex();
+        var secondItem = CreateItem("SKU-SECOND", "Second Catalog", "930SECOND", PriceSourceKind.StoreRetailPrice, 1m);
+        index.ReplaceAll(Enumerable.Range(0, 99_999)
+            .Select(itemIndex => CreateItem(
+                $"SKU-FIRST-{itemIndex}",
+                $"First Catalog {itemIndex:D6}",
+                $"930FIRST{itemIndex:D6}",
+                PriceSourceKind.StoreRetailPrice,
+                1m))
+            .Append(secondItem));
+        var firstSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        index.SearchProgressForTests = (query, progress) =>
+        {
+            if (query == "first" && progress == 0)
+            {
+                firstSearchStarted.TrySetResult();
+                Thread.Sleep(300);
+            }
+        };
+        using var viewModel = new PosTerminalViewModel(index, new PosCartService(), Session, onOpenPayment: null)
+        {
+            ScanText = "first"
+        };
+
+        try
+        {
+            viewModel.NumberInputCommand.Execute("Enter");
+            await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var stopwatch = Stopwatch.StartNew();
+            var previousHeartbeat = stopwatch.Elapsed;
+            var maxHeartbeatGap = TimeSpan.Zero;
+            while (stopwatch.Elapsed < TimeSpan.FromMilliseconds(200))
+            {
+                await Task.Delay(10);
+                var currentHeartbeat = stopwatch.Elapsed;
+                maxHeartbeatGap = TimeSpan.FromTicks(Math.Max(maxHeartbeatGap.Ticks, (currentHeartbeat - previousHeartbeat).Ticks));
+                previousHeartbeat = currentHeartbeat;
+            }
+
+            Assert.True(maxHeartbeatGap < TimeSpan.FromMilliseconds(100), $"UI heartbeat gap was {maxHeartbeatGap.TotalMilliseconds:F0}ms.");
+
+            viewModel.ScanText = "second";
+            viewModel.NumberInputCommand.Execute("Enter");
+            await WaitUntilAsync(() => viewModel.CartLines.Count == 1);
+
+            Assert.Equal(secondItem.ProductCode, Assert.Single(viewModel.CartLines).ProductCode);
+        }
+        finally
+        {
+            index.SearchProgressForTests = null;
+        }
     }
 
     [Fact]
@@ -530,11 +587,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: promotionService);
 
         viewModel.ScanText = "930PROMO-PAY";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 1);
 
         viewModel.ScanText = "930PROMO-PAY";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 2);
 
         viewModel.OpenPaymentCommand.Execute(null);
@@ -582,11 +639,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: promotionService);
 
         viewModel.ScanText = "930PROMO-HOLD";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 1);
 
         viewModel.ScanText = "930PROMO-HOLD";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 2);
 
         var holdTask = viewModel.HoldOrderCommand.ExecuteAsync(null);
@@ -602,7 +659,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_selects_the_latest_added_cart_line()
+    public async Task Pos_terminal_selects_the_latest_added_cart_line()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -618,11 +675,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930121";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var firstLine = Assert.Single(viewModel.CartLines);
 
         viewModel.ScanText = "930122";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var secondLine = Assert.Single(viewModel.CartLines, line => line.LookupCode == "930122");
         Assert.NotSame(firstLine, secondLine);
@@ -770,7 +827,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_touch_keyboard_enter_closes_keyboard_after_search()
+    public async Task Pos_terminal_touch_keyboard_enter_closes_keyboard_after_search()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -786,6 +843,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         };
 
         viewModel.NumberInputCommand.Execute("Enter");
+        await WaitUntilAsync(() => !viewModel.IsTouchKeyboardOpen && string.IsNullOrEmpty(viewModel.ScanText) && viewModel.CartLines.Count == 1);
 
         Assert.False(viewModel.IsTouchKeyboardOpen);
         Assert.Empty(viewModel.ScanText);
@@ -894,7 +952,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_scan_success_plays_success_feedback_and_marks_success_status()
+    public async Task Pos_terminal_scan_success_plays_success_feedback_and_marks_success_status()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -910,7 +968,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             ScanText = "930114A"
         };
 
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         Assert.Equal(StatusFeedbackKind.Success, viewModel.StatusFeedbackKind);
         Assert.Equal(1, viewModel.StatusPulseToken);
@@ -1137,7 +1195,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keypad_can_modify_selected_line_quantity_and_price()
+    public async Task Pos_terminal_keypad_can_modify_selected_line_quantity_and_price()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1149,7 +1207,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930129";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         viewModel.KeypadInputCommand.Execute("2");
@@ -1170,7 +1228,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keypad_rejects_decimal_quantity_updates()
+    public async Task Pos_terminal_keypad_rejects_decimal_quantity_updates()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1182,7 +1240,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930136";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         viewModel.KeypadInputCommand.Execute("2");
@@ -1197,7 +1255,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keypad_can_apply_selected_line_discount_amount_and_percent()
+    public async Task Pos_terminal_keypad_can_apply_selected_line_discount_amount_and_percent()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1209,7 +1267,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930130";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         viewModel.KeypadInputCommand.Execute("2");
@@ -1249,9 +1307,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
 
         viewModel.ScanText = "930PROMO1";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO1";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var line = Assert.Single(viewModel.CartLines);
         await WaitUntilAsync(() => line.DiscountAmount == 5m);
@@ -1278,9 +1336,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
 
         viewModel.ScanText = "930PROMO2";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO2";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         await WaitUntilAsync(() => line.DiscountAmount == 5m);
 
@@ -1325,13 +1383,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
 
         viewModel.ScanText = "930PROMO3A";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO3A";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO3B";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO3B";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var lineA = Assert.Single(viewModel.CartLines, item => item.LookupCode == "930PROMO3A");
         var lineB = Assert.Single(viewModel.CartLines, item => item.LookupCode == "930PROMO3B");
@@ -1367,15 +1425,15 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: promotionService);
 
         viewModel.ScanText = "930PROMO4";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930PROMO4";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var line = Assert.Single(viewModel.CartLines);
         await WaitUntilAsync(() => line.DiscountAmount == 5m);
 
         viewModel.ScanText = "930PROMO4";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => viewModel.StatusMessage == localization.T("pos.status.promotionFallback"));
 
         Assert.Equal(3m, line.Quantity);
@@ -1404,11 +1462,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: promotionService);
 
         viewModel.ScanText = "930PROMO5";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 1);
 
         viewModel.ScanText = "930PROMO5";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         await WaitUntilAsync(() => promotionService.CallCount == 2 && line.DiscountAmount == 5m);
         await Task.Delay(100);
@@ -1438,11 +1496,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             promotionEvaluationService: promotionService);
 
         viewModel.ScanText = "930PROMO6";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await WaitUntilAsync(() => promotionService.CallCount == 1);
 
         viewModel.ScanText = "930PROMO6";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         await Task.Delay(50);
         Assert.Equal(1, promotionService.CallCount);
 
@@ -1457,7 +1515,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keypad_commands_ignore_missing_selection_or_invalid_input()
+    public async Task Pos_terminal_keypad_commands_ignore_missing_selection_or_invalid_input()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1477,7 +1535,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("pos.status.selectCartLine", viewModel.StatusMessage);
 
         viewModel.ScanText = "930131";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         viewModel.KeypadInputCommand.Execute("Clear");
 
@@ -1513,7 +1571,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_non_error_line_update_does_not_play_extra_feedback()
+    public async Task Pos_terminal_non_error_line_update_does_not_play_extra_feedback()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1529,7 +1587,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             ScanText = "930129A"
         };
 
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         feedback.Cues.Clear();
 
         viewModel.KeypadInputCommand.Execute("3");
@@ -1540,7 +1598,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_keypad_commands_show_friendly_messages_for_zero_quantity_and_invalid_discounts()
+    public async Task Pos_terminal_keypad_commands_show_friendly_messages_for_zero_quantity_and_invalid_discounts()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1552,7 +1610,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930134";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         viewModel.KeypadInputCommand.Execute("0");
@@ -1583,7 +1641,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_whole_order_discount_shows_friendly_messages_for_invalid_values()
+    public async Task Pos_terminal_whole_order_discount_shows_friendly_messages_for_invalid_values()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1595,7 +1653,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930135";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         viewModel.IsWholeOrderOperation = true;
         viewModel.KeypadInputCommand.Execute("1");
@@ -1620,7 +1678,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_whole_order_toggle_applies_one_time_order_discount()
+    public async Task Pos_terminal_whole_order_toggle_applies_one_time_order_discount()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1636,9 +1694,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930132";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930133";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         viewModel.IsWholeOrderOperation = true;
         viewModel.KeypadInputCommand.Execute("1");
@@ -1657,7 +1715,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_blocks_payment_until_zero_price_line_is_fixed()
+    public async Task Pos_terminal_blocks_payment_until_zero_price_line_is_fixed()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1672,7 +1730,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             userFeedbackService: feedback);
 
         viewModel.ScanText = "930140";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         viewModel.OpenPaymentCommand.Execute(null);
@@ -1693,7 +1751,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_quick_discount_applies_percent_to_selected_line()
+    public async Task Pos_terminal_quick_discount_applies_percent_to_selected_line()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1705,7 +1763,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930136";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         viewModel.KeypadInputCommand.Execute("9");
 
@@ -1719,7 +1777,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_quick_discount_applies_percent_to_whole_order_and_turns_mode_off()
+    public async Task Pos_terminal_quick_discount_applies_percent_to_whole_order_and_turns_mode_off()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1735,9 +1793,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930137";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930138";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.IsWholeOrderOperation = true;
         viewModel.KeypadInputCommand.Execute("9");
 
@@ -1776,7 +1834,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_remove_line_command_removes_entire_cart_line_and_recalculates_total()
+    public async Task Pos_terminal_remove_line_command_removes_entire_cart_line_and_recalculates_total()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1792,11 +1850,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930111";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930111";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930112";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         Assert.Equal(2, viewModel.CartLines.Count);
         Assert.Equal(7m, viewModel.ActualAmount);
@@ -1811,7 +1869,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_line_quantity_commands_update_totals_selection_and_counts()
+    public async Task Pos_terminal_line_quantity_commands_update_totals_selection_and_counts()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1823,7 +1881,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930123";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
 
         Assert.Equal(1m, viewModel.CartItemQuantity);
@@ -1855,7 +1913,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_cart_operations_write_diagnostic_logs()
+    public async Task Pos_terminal_cart_operations_write_diagnostic_logs()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1870,7 +1928,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         using var logCapture = CaptureClientLog(logs);
         viewModel.ScanText = "930129";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         viewModel.IncreaseLineCommand.Execute(line);
         viewModel.OpenPaymentCommand.Execute(null);
@@ -1887,7 +1945,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_counts_quantity_and_sku_lines_separately()
+    public async Task Pos_terminal_counts_quantity_and_sku_lines_separately()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -1903,11 +1961,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             onOpenPayment: null);
 
         viewModel.ScanText = "930124";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930124";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930125";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         Assert.Equal(3m, viewModel.CartItemQuantity);
         Assert.Equal(2, viewModel.CartSkuCount);
@@ -1955,7 +2013,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var logCapture = CaptureClientLog(logs);
 
         viewModel.ScanText = "930104";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Local Coffee", line.DisplayName);
@@ -1994,7 +2052,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var logCapture = CaptureClientLog(logs);
 
         viewModel.ScanText = "930105";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         Assert.Single(viewModel.CartLines);
 
@@ -2038,9 +2096,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
             remoteLookupRefreshAsync: (_, _, _) => remoteLookup.Task);
 
         viewModel.ScanText = "930126";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         viewModel.ScanText = "930126";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal(2m, line.Quantity);
 
@@ -2086,7 +2144,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var logCapture = CaptureClientLog(logs);
 
         viewModel.ScanText = "930127";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930127", Found: true, Item: remoteItem, DeletedCount: 0));
         await WaitUntilAsync(() => HasLog(logs, "remote lookup ignored for cart"));
@@ -2119,7 +2177,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var logCapture = CaptureClientLog(logs);
 
         viewModel.ScanText = "930128";
-        viewModel.ScanCommand.Execute(null);
+        await ExecuteManualScanAsync(viewModel);
 
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Timeout Tea", line.DisplayName);
@@ -5424,6 +5482,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var field = typeof(CartLine).GetField("_quantity", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(field);
         field.SetValue(line, quantity);
+    }
+
+    private static Task ExecuteManualScanAsync(PosTerminalViewModel viewModel)
+    {
+        return viewModel.ScanCommand.ExecuteAsync(null);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

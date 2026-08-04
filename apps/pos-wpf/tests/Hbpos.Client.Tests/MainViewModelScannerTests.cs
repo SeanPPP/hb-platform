@@ -2945,6 +2945,7 @@ public sealed class MainViewModelScannerTests
         Assert.Same(viewModel.SpecialProducts, viewModel.CurrentScreen);
         Assert.Empty(viewModel.PosTerminal.CartLines);
         Assert.Equal("319844731768", viewModel.SpecialProducts.SearchText);
+        await WaitUntilAsync(() => viewModel.SpecialProducts.SearchResults.Count == 1);
         var candidate = Assert.Single(viewModel.SpecialProducts.SearchResults);
         Assert.Equal("SKU-001", candidate.ProductCode);
         Assert.Same(candidate, viewModel.SpecialProducts.SelectedSearchResult);
@@ -3563,6 +3564,7 @@ public sealed class MainViewModelScannerTests
         Assert.Same(viewModel.SpecialProducts, viewModel.CurrentScreen);
         Assert.Empty(viewModel.PosTerminal.CartLines);
         Assert.Equal("319844731768", viewModel.SpecialProducts.SearchText);
+        await WaitUntilAsync(() => viewModel.SpecialProducts.SearchResults.Count == 1);
         Assert.Equal("SKU-001", Assert.Single(viewModel.SpecialProducts.SearchResults).ProductCode);
     }
 
@@ -7121,6 +7123,14 @@ public sealed class MainViewModelScannerTests
         public SpecialProductsSearchResult Search(string storeCode, string searchText)
         {
             return new SpecialProductsSearchResult(storeCode, searchText, []);
+        }
+
+        public Task<SpecialProductsSearchResult> SearchAsync(
+            string storeCode,
+            string searchText,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new SpecialProductsSearchResult(storeCode, searchText, []));
         }
 
         public SpecialProductsAddToCartResult AddToCart(SellableItemDto item)

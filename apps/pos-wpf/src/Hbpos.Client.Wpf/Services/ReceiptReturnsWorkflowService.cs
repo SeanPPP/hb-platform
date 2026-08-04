@@ -18,6 +18,11 @@ public interface IReceiptReturnsWorkflowService
         PosSessionState session,
         string productQuery);
 
+    Task<ReceiptReturnProductLookupResult> LookupNoReceiptProductAsync(
+        PosSessionState session,
+        string productQuery,
+        CancellationToken cancellationToken = default);
+
     ReceiptReturnPendingLineResult CreateNoReceiptOpenItem(
         PosSessionState session,
         string displayName,
@@ -185,6 +190,32 @@ public sealed class ReceiptReturnsWorkflowService(
 
         var exactMatches = priceIndex.FindExactMatches(session.StoreCode, query);
         var matches = exactMatches.Count > 0 ? exactMatches : priceIndex.Search(session.StoreCode, query, 8);
+        return CreateNoReceiptProductLookupResult(matches);
+    }
+
+    public async Task<ReceiptReturnProductLookupResult> LookupNoReceiptProductAsync(
+        PosSessionState session,
+        string productQuery,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var query = NormalizeQuery(productQuery);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new ReceiptReturnProductLookupResult(null, T("returns.status.scanProduct", "Scan a product barcode."));
+        }
+
+        var exactMatches = priceIndex.FindExactMatches(session.StoreCode, query);
+        var matches = exactMatches.Count > 0
+            ? exactMatches
+            : await priceIndex.SearchAsync(session.StoreCode, query, cancellationToken, 8);
+        cancellationToken.ThrowIfCancellationRequested();
+        return CreateNoReceiptProductLookupResult(matches);
+    }
+
+    private ReceiptReturnProductLookupResult CreateNoReceiptProductLookupResult(
+        IReadOnlyList<SellableItemDto> matches)
+    {
         var item = matches.FirstOrDefault();
         return item is null
             ? new ReceiptReturnProductLookupResult(null, T("returns.status.productNotFound", "Product was not found."))

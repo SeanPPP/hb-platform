@@ -211,6 +211,13 @@ public sealed class LocalSellableItemIndex
         return Search(storeCode, query, CancellationToken.None, take);
     }
 
+    public Task<IReadOnlyList<SellableItemDto>> SearchAsync(
+        string? storeCode,
+        string query,
+        CancellationToken cancellationToken,
+        int take = 20) =>
+        Task.Run(() => Search(storeCode, query, cancellationToken, take), cancellationToken);
+
     public IReadOnlyList<SellableItemDto> Search(
         string? storeCode,
         string query,

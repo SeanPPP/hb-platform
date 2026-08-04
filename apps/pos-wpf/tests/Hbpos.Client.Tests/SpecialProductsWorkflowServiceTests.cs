@@ -43,7 +43,7 @@ public sealed class SpecialProductsWorkflowServiceTests
     }
 
     [Fact]
-    public void Search_returns_deduplicated_non_special_results_for_store()
+    public async Task SearchAsync_returns_deduplicated_non_special_results_for_store()
     {
         var duplicateA = CreateItem("SKU-001", "Alpha", "930001");
         var duplicateB = duplicateA with { LookupCode = "ITEM-001", Barcode = "930001" };
@@ -53,7 +53,7 @@ public sealed class SpecialProductsWorkflowServiceTests
         index.ReplaceAll([duplicateA, duplicateB, alreadySpecial, otherStore]);
         var service = CreateWorkflowService(index: index);
 
-        var result = service.Search("S001", "930001");
+        var result = await service.SearchAsync("S001", "930001");
 
         var item = Assert.Single(result.Items);
         Assert.Equal("SKU-001", item.ProductCode);

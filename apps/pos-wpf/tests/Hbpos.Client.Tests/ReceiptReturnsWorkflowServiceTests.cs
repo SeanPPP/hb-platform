@@ -208,13 +208,26 @@ public sealed class ReceiptReturnsWorkflowServiceTests
     }
 
     [Fact]
-    public void LookupNoReceiptProduct_ReturnsCurrentLocalCatalogItem()
+    public async Task LookupNoReceiptProductAsync_ReturnsCurrentLocalCatalogItem()
     {
         var priceIndex = new LocalSellableItemIndex();
         priceIndex.ReplaceAll([CreateItem()]);
         var service = CreateService(priceIndex: priceIndex);
 
-        var result = service.LookupNoReceiptProduct(CreateOnlineSession(), "690001");
+        var result = await service.LookupNoReceiptProductAsync(CreateOnlineSession(), "690001");
+
+        Assert.NotNull(result.Item);
+        Assert.Equal("SKU-001", result.Item.ProductCode);
+    }
+
+    [Fact]
+    public async Task LookupNoReceiptProductAsync_searches_after_exact_miss()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        priceIndex.ReplaceAll([CreateItem("SKU-001", "Green Tea", "690001", 2m)]);
+        var service = CreateService(priceIndex: priceIndex);
+
+        var result = await service.LookupNoReceiptProductAsync(CreateOnlineSession(), "tea");
 
         Assert.NotNull(result.Item);
         Assert.Equal("SKU-001", result.Item.ProductCode);

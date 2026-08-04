@@ -55,6 +55,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private Task _pendingPromotionEvaluationTask = Task.CompletedTask;
     private CancellationTokenSource? _matchesRefreshCts;
     private long _matchesRefreshVersion;
+    private CancellationTokenSource? _manualSearchCts;
+    private long _manualSearchVersion;
     private bool _disposed;
 
     [ObservableProperty]
@@ -347,6 +349,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         _disposed = true;
         CancelMatchesRefresh();
+        CancelManualSearch();
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;
@@ -369,6 +372,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     partial void OnScanTextChanged(string value)
     {
+        CancelManualSearch();
         ClearSearchCommand.NotifyCanExecuteChanged();
         if (IsMatchesPopupOpen)
         {
@@ -396,6 +400,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        CancelManualSearch();
         if (value.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(value.CashierSession);
@@ -764,7 +769,32 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task SearchAndAddAsync()
     {
-        await ExecuteScanAsync(_scanController.CreateManual(ScanText), statusTextOverrideFactory: null);
+        var storeCode = Session.StoreCode;
+        var scanText = ScanText;
+        var cancellationSource = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _manualSearchCts, cancellationSource);
+        var version = Interlocked.Increment(ref _manualSearchVersion);
+        previous?.Cancel();
+        try
+        {
+            await ExecuteScanAsync(
+                _scanController.CreateManual(scanText),
+                statusTextOverrideFactory: null,
+                cancellationToken: cancellationSource.Token,
+                isCurrent: () => !_disposed &&
+                    version == Volatile.Read(ref _manualSearchVersion) &&
+                    string.Equals(scanText, ScanText, StringComparison.Ordinal) &&
+                    string.Equals(storeCode, Session.StoreCode, StringComparison.Ordinal));
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+            // 手工输入已更新、清空或离开当前会话时，不应用旧搜索结果。
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _manualSearchCts, null, cancellationSource);
+            cancellationSource.Dispose();
+        }
     }
 
     private async Task SearchAndAddSafeAsync()
@@ -1118,6 +1148,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ClearSearch()
     {
+        CancelManualSearch();
         ScanText = string.Empty;
         IsMatchesPopupOpen = false;
         IsTouchKeyboardOpen = false;
@@ -1435,7 +1466,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ExecuteScanAsync(
         PosTerminalScanPlan plan,
-        Func<PosTerminalWorkflowResult, string?>? statusTextOverrideFactory)
+        Func<PosTerminalWorkflowResult, string?>? statusTextOverrideFactory,
+        CancellationToken cancellationToken = default,
+        Func<bool>? isCurrent = null)
     {
         // 中文注释：统一承接手动检索与扫描枪入口，只让 VM 负责 UI 状态投影和结果应用。
         var totalStopwatch = Stopwatch.StartNew();
@@ -1483,7 +1516,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 return;
             }
 
-            using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddItem, "scan-add-item");
+            using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.AddItem, "scan-add-item", cancellationToken);
             if (permissionGrant is null)
             {
                 return;
@@ -1497,10 +1530,16 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 plan.Barcode,
                 plan.PreferExactLookup,
                 plan.Source,
-                plan.TraceId);
+                plan.TraceId,
+                cancellationToken);
             workflowStopwatch.Stop();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (isCurrent is not null && !isCurrent())
+            {
+                return;
+            }
             if (!hasCashierSession &&
-                await TryApplyCashierLoginFallbackAsync(plan, result, CancellationToken.None))
+                await TryApplyCashierLoginFallbackAsync(plan, result, cancellationToken))
             {
                 totalStopwatch.Stop();
                 _scanController.LogFinished(
@@ -1804,6 +1843,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     {
         Interlocked.Increment(ref _matchesRefreshVersion);
         var cancellationSource = Interlocked.Exchange(ref _matchesRefreshCts, null);
+        cancellationSource?.Cancel();
+    }
+
+    private void CancelManualSearch()
+    {
+        Interlocked.Increment(ref _manualSearchVersion);
+        var cancellationSource = Interlocked.Exchange(ref _manualSearchCts, null);
         cancellationSource?.Cancel();
     }
 

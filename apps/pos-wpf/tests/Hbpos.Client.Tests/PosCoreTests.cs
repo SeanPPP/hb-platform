@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Windows.Threading;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -826,6 +828,184 @@ public sealed class PosCoreTests
 
         Assert.True(printed);
         Assert.Equal("Receipt printed.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Local_price_index_search_async_matches_sync_at_340k_and_honors_cancellation()
+    {
+        const int itemCount = 340_000;
+        const int measurementCount = 20;
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(Enumerable.Range(0, itemCount)
+            .Select(itemIndex => CreateItem(
+                $"SKU-{itemIndex:D6}",
+                $"Catalog Item {itemIndex:D6}",
+                $"LOOKUP-{itemIndex:D6}",
+                PriceSourceKind.StoreRetailPrice,
+                1m,
+                storeCode: itemIndex % 2 == 0 ? "S001" : "S002")));
+
+        var expected = index.Search("S001", "Catalog", take: 20)
+            .Select(item => item.ProductCode)
+            .ToArray();
+        var actual = (await index.SearchAsync("S001", "Catalog", CancellationToken.None, take: 20))
+            .Select(item => item.ProductCode)
+            .ToArray();
+
+        Assert.Equal(expected, actual);
+
+        using var cancellationSource = new CancellationTokenSource();
+        index.SearchProgressForTests = (query, progress) =>
+        {
+            if (query == "cancel" && progress == 0)
+            {
+                cancellationSource.Cancel();
+            }
+        };
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                index.SearchAsync("S001", "cancel", cancellationSource.Token));
+        }
+        finally
+        {
+            index.SearchProgressForTests = null;
+        }
+
+        var metrics = await MeasureSearchOnWpfDispatcherAsync(index, measurementCount);
+
+        Assert.True(metrics.InputLatency <= TimeSpan.FromMilliseconds(250),
+            $"DispatcherPriority.Input waited {metrics.InputLatency.TotalMilliseconds:F0}ms.");
+        Assert.True(metrics.NormalP95 <= TimeSpan.FromMilliseconds(750),
+            $"Regular search P95 was {metrics.NormalP95.TotalMilliseconds:F0}ms.");
+        Assert.True(metrics.MissP95 <= TimeSpan.FromMilliseconds(750),
+            $"Miss search P95 was {metrics.MissP95.TotalMilliseconds:F0}ms.");
+        Assert.True(metrics.BroadP95 <= TimeSpan.FromSeconds(2),
+            $"Broad search P95 was {metrics.BroadP95.TotalMilliseconds:F0}ms.");
+        Assert.Equal(metrics.DispatcherThreadId, metrics.InputThreadId);
+        Assert.NotEqual(metrics.DispatcherThreadId, metrics.WorkerThreadId);
+
+        Console.WriteLine(
+            $"[SearchPerf] x64={Environment.Is64BitProcess} inputMs={metrics.InputLatency.TotalMilliseconds:F0} normalP95Ms={metrics.NormalP95.TotalMilliseconds:F0} missP95Ms={metrics.MissP95.TotalMilliseconds:F0} broadP95Ms={metrics.BroadP95.TotalMilliseconds:F0}");
+    }
+
+    private static async Task<(TimeSpan InputLatency, TimeSpan NormalP95, TimeSpan MissP95, TimeSpan BroadP95, int DispatcherThreadId, int InputThreadId, int WorkerThreadId)> MeasureSearchOnWpfDispatcherAsync(
+        LocalSellableItemIndex index,
+        int measurementCount)
+    {
+        Assert.True(Environment.Is64BitProcess, "Release performance gate requires an x64 test process.");
+
+        var searchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workerThreadId = 0;
+        index.SearchProgressForTests = (query, progress) =>
+        {
+            if (query == "catalog" && progress == 0)
+            {
+                workerThreadId = Environment.CurrentManagedThreadId;
+                searchStarted.TrySetResult();
+            }
+        };
+
+        try
+        {
+            return await RunOnStaDispatcherAsync(async dispatcher =>
+            {
+                Assert.True(dispatcher.CheckAccess());
+                Assert.Equal(ApartmentState.STA, Thread.CurrentThread.GetApartmentState());
+                var dispatcherThreadId = Environment.CurrentManagedThreadId;
+
+                var broadSearch = index.SearchAsync("S001", "catalog", CancellationToken.None, take: 20);
+                await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                var inputQueuedAt = Stopwatch.GetTimestamp();
+                var inputThreadId = 0;
+                var inputOperation = dispatcher.InvokeAsync(
+                    () => inputThreadId = Environment.CurrentManagedThreadId,
+                    DispatcherPriority.Input);
+                await inputOperation.Task;
+                var inputLatency = Stopwatch.GetElapsedTime(inputQueuedAt);
+
+                Assert.Equal(20, (await broadSearch).Count);
+                index.SearchProgressForTests = null;
+
+                var normalP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "SKU-339998", measurementCount, 1));
+                var missP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "NO-SUCH-CATALOG", measurementCount, 0));
+                var broadP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "catalog", measurementCount, 20));
+                return (inputLatency, normalP95, missP95, broadP95, dispatcherThreadId, inputThreadId, workerThreadId);
+            });
+        }
+        finally
+        {
+            index.SearchProgressForTests = null;
+        }
+    }
+
+    private static async Task<IReadOnlyList<TimeSpan>> MeasureSearchSamplesAsync(
+        LocalSellableItemIndex index,
+        string query,
+        int measurementCount,
+        int expectedResultCount)
+    {
+        var samples = new TimeSpan[measurementCount];
+        for (var measurementIndex = 0; measurementIndex < measurementCount; measurementIndex++)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var results = await index.SearchAsync("S001", query, CancellationToken.None, take: 20);
+            stopwatch.Stop();
+            Assert.Equal(expectedResultCount, results.Count);
+            samples[measurementIndex] = stopwatch.Elapsed;
+        }
+
+        return samples;
+    }
+
+    private static TimeSpan CalculateP95(IReadOnlyList<TimeSpan> samples)
+    {
+        Assert.NotEmpty(samples);
+        var sorted = samples.OrderBy(sample => sample).ToArray();
+        var percentileIndex = (int)Math.Ceiling(sorted.Length * 0.95d) - 1;
+        return sorted[percentileIndex];
+    }
+
+    private static async Task<T> RunOnStaDispatcherAsync<T>(Func<Dispatcher, Task<T>> action)
+    {
+        var dispatcherReady = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+                dispatcherReady.TrySetResult(dispatcher);
+                Dispatcher.Run();
+            }
+            catch (Exception ex)
+            {
+                dispatcherReady.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Hbpos.Client.Tests.WpfDispatcher"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var operation = dispatcher.InvokeAsync(() => action(dispatcher), DispatcherPriority.Normal);
+            return await await operation.Task;
+        }
+        finally
+        {
+            if (!dispatcher.HasShutdownStarted)
+            {
+                dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
+            }
+
+            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+        }
     }
 
     private static SellableItemDto CreateItem(

@@ -37,6 +37,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     private readonly Func<IEnumerable<string?>, int, CancellationToken, Task<int>> _thumbnailPreloadAsync;
     private CancellationTokenSource? _downloadProgressHideCts;
     private CancellationTokenSource? _thumbnailEnableCts;
+    private CancellationTokenSource? _searchCts;
+    private long _searchVersion;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -119,7 +121,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _thumbnailPreloadAsync = thumbnailPreloadAsync ?? ProductThumbnailImageSourceConverter.PreloadAsync;
 
         BackCommand = new RelayCommand(Back);
-        SearchCommand = new RelayCommand(SearchCatalog);
+        SearchCommand = new AsyncRelayCommand(() => SearchCatalogAsync());
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(SearchText));
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
         DownloadCommand = new AsyncRelayCommand(DownloadSpecialProductsAsync, CanDownloadSpecialProducts);
@@ -146,7 +148,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     public IRelayCommand BackCommand { get; }
 
-    public IRelayCommand SearchCommand { get; }
+    public IAsyncRelayCommand SearchCommand { get; }
 
     public IRelayCommand ClearSearchCommand { get; }
 
@@ -363,6 +365,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        CancelSearch();
         if (value.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(value.CashierSession);
@@ -375,6 +378,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     partial void OnSearchTextChanged(string value)
     {
+        CancelSearch();
         ClearSearchCommand.NotifyCanExecuteChanged();
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -432,20 +436,13 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
         var stopwatch = Stopwatch.StartNew();
         SearchText = normalizedBarcode;
-        SearchCatalog();
+        _ = SearchCatalogSafeAsync();
         stopwatch.Stop();
-
-        var selected = SelectedSearchResult;
-        if (selected is not null)
-        {
-            SetStatus("specialProducts.status.scanConfirm", selected.DisplayName);
-        }
-
-        Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} consumed=true searched=true results={SearchResults.Count} selectedProductCode={selected?.ProductCode ?? "<none>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+        Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} consumed=true searched=true async=true elapsedMs={stopwatch.ElapsedMilliseconds}");
         return true;
     }
 
-    private void SearchCatalog()
+    private async Task SearchCatalogAsync(bool scannerSearch = false)
     {
         if (string.IsNullOrWhiteSpace(SearchText))
         {
@@ -455,18 +452,62 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             return;
         }
 
-        var results = _workflowService.Search(Session.StoreCode, SearchText);
-        SearchResults.ReplaceWith(results.Items);
-        SelectedSearchResult = SearchResults.FirstOrDefault();
-        OnPropertyChanged(nameof(HasSearchResults));
-        SetStatus(results.Items.Count == 0
-            ? "specialProducts.status.noSearchResults"
-            : "specialProducts.status.searchResults",
-            results.Items.Count);
+        var storeCode = Session.StoreCode;
+        var searchText = SearchText;
+        var cancellationSource = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _searchCts, cancellationSource);
+        var version = Interlocked.Increment(ref _searchVersion);
+        previous?.Cancel();
+        try
+        {
+            var results = await _workflowService.SearchAsync(storeCode, searchText, cancellationSource.Token);
+            cancellationSource.Token.ThrowIfCancellationRequested();
+            if (_disposed ||
+                version != Volatile.Read(ref _searchVersion) ||
+                !string.Equals(searchText, SearchText, StringComparison.Ordinal) ||
+                !string.Equals(storeCode, Session.StoreCode, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            SearchResults.ReplaceWith(results.Items);
+            SelectedSearchResult = SearchResults.FirstOrDefault();
+            OnPropertyChanged(nameof(HasSearchResults));
+            if (scannerSearch && SelectedSearchResult is not null)
+            {
+                SetStatus("specialProducts.status.scanConfirm", SelectedSearchResult.DisplayName);
+            }
+            else
+            {
+                SetStatus(results.Items.Count == 0
+                    ? "specialProducts.status.noSearchResults"
+                    : "specialProducts.status.searchResults",
+                    results.Items.Count);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
+        {
+            // 输入、会话或页面已变化，取消旧目录搜索。
+        }
+        catch (Exception ex)
+        {
+            Log($"operation=search store={storeCode} success=false error={ex.Message}");
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _searchCts, null, cancellationSource);
+            cancellationSource.Dispose();
+        }
+    }
+
+    private async Task SearchCatalogSafeAsync()
+    {
+        await SearchCatalogAsync(scannerSearch: true);
     }
 
     private void ClearSearch()
     {
+        CancelSearch();
         SearchText = string.Empty;
         SearchResults.Clear();
         SelectedSearchResult = null;
@@ -567,7 +608,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             replaceStopwatch.Stop();
 
             var searchStopwatch = Stopwatch.StartNew();
-            SearchCatalog();
+            await SearchCatalogAsync();
             searchStopwatch.Stop();
             ApplyDownloadProgress(new SpecialProductDownloadProgress(
                 result.DownloadResult.StoreCode,
@@ -617,7 +658,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         }
 
         await MarkSpecialProductAsync(itemSnapshot, true, cancellationToken);
-        SearchCatalog();
+        await SearchCatalogAsync();
     }
 
     private async Task RemoveSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
@@ -1031,6 +1072,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         }
 
         _disposed = true;
+        CancelSearch();
         _localization.CultureChanged -= OnCultureChanged;
         CancelDownloadProgressAutoHide();
         _thumbnailEnableCts?.Cancel();
@@ -1050,7 +1092,15 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         DownloadCommand.Cancel();
         AddSpecialProductCommand.Cancel();
         RemoveSpecialProductCommand.Cancel();
+        CancelSearch();
         _onBack();
+    }
+
+    private void CancelSearch()
+    {
+        Interlocked.Increment(ref _searchVersion);
+        var cancellationSource = Interlocked.Exchange(ref _searchCts, null);
+        cancellationSource?.Cancel();
     }
 
     private void ApplyDownloadProgress(SpecialProductDownloadProgress progress)

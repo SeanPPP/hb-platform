@@ -48,6 +48,11 @@ public interface ISpecialProductsWorkflowService
 
     SpecialProductsSearchResult Search(string storeCode, string searchText);
 
+    Task<SpecialProductsSearchResult> SearchAsync(
+        string storeCode,
+        string searchText,
+        CancellationToken cancellationToken = default);
+
     SpecialProductsAddToCartResult AddToCart(SellableItemDto item);
 
     Task<SpecialProductsDownloadWorkflowResult> DownloadAsync(
@@ -147,7 +152,34 @@ public sealed class SpecialProductsWorkflowService(
             return new SpecialProductsSearchResult(normalizedStoreCode, searchText, []);
         }
 
-        var results = priceIndex.Search(normalizedStoreCode, searchText, 80)
+        return CreateSearchResult(
+            normalizedStoreCode,
+            searchText,
+            priceIndex.Search(normalizedStoreCode, searchText, 80));
+    }
+
+    public async Task<SpecialProductsSearchResult> SearchAsync(
+        string storeCode,
+        string searchText,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return new SpecialProductsSearchResult(normalizedStoreCode, searchText, []);
+        }
+
+        var matches = await priceIndex.SearchAsync(normalizedStoreCode, searchText, cancellationToken, 80);
+        cancellationToken.ThrowIfCancellationRequested();
+        return CreateSearchResult(normalizedStoreCode, searchText, matches);
+    }
+
+    private static SpecialProductsSearchResult CreateSearchResult(
+        string normalizedStoreCode,
+        string searchText,
+        IReadOnlyList<SellableItemDto> matches)
+    {
+        var results = matches
             .Where(item =>
                 string.Equals(item.StoreCode, normalizedStoreCode, StringComparison.OrdinalIgnoreCase) &&
                 !item.IsSpecialProduct)

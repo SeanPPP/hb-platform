@@ -38,6 +38,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private ViewModelAuthorizationGrant? _openItemAuthorizationGrant;
     private ReceiptReturnOrder? _currentOrder;
+    private CancellationTokenSource? _noReceiptLookupCts;
+    private long _noReceiptLookupVersion;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -166,6 +168,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         }
 
         _disposed = true;
+        CancelNoReceiptLookup();
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;
@@ -222,6 +225,7 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        CancelNoReceiptLookup();
         if (value.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(value.CashierSession);
@@ -239,6 +243,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     partial void OnIsNoReceiptModeChanged(bool value)
     {
+        if (!value)
+        {
+            CancelNoReceiptLookup();
+        }
+
         ClearSelection();
         if (!value)
         {
@@ -277,19 +286,38 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
         var querySnapshot = ScanText;
         var isNoReceiptLookup = IsNoReceiptMode;
+        CancellationTokenSource? noReceiptCancellationSource = null;
+        var noReceiptLookupVersion = 0L;
+        var storeCodeSnapshot = Session.StoreCode;
         var stopwatch = Stopwatch.StartNew();
         IsBusy = true;
+        if (isNoReceiptLookup)
+        {
+            noReceiptCancellationSource = new CancellationTokenSource();
+            var previous = Interlocked.Exchange(ref _noReceiptLookupCts, noReceiptCancellationSource);
+            noReceiptLookupVersion = Interlocked.Increment(ref _noReceiptLookupVersion);
+            previous?.Cancel();
+        }
+
         try
         {
             if (isNoReceiptLookup)
             {
-                await AddNoReceiptProductAsync(querySnapshot);
+                await AddNoReceiptProductAsync(
+                    querySnapshot,
+                    storeCodeSnapshot,
+                    noReceiptLookupVersion,
+                    noReceiptCancellationSource!.Token);
                 return;
             }
 
             StatusMessage = T("returns.status.searching", "Searching for order...");
             var result = await _workflowService.LookupOrderAsync(Session, querySnapshot);
             ApplyOrderLookupResult(result);
+        }
+        catch (OperationCanceledException) when (noReceiptCancellationSource?.IsCancellationRequested == true)
+        {
+            // 离开无小票模式、切换会话或释放页面时，不应用旧商品结果。
         }
         catch (Exception ex)
         {
@@ -306,6 +334,12 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         }
         finally
         {
+            if (noReceiptCancellationSource is not null)
+            {
+                Interlocked.CompareExchange(ref _noReceiptLookupCts, null, noReceiptCancellationSource);
+                noReceiptCancellationSource.Dispose();
+            }
+
             IsBusy = false;
             RefreshCommandStates();
         }
@@ -344,16 +378,33 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         OnPendingLinesChanged();
     }
 
-    private async Task AddNoReceiptProductAsync(string query)
+    private async Task AddNoReceiptProductAsync(
+        string query,
+        string storeCode,
+        long version,
+        CancellationToken cancellationToken)
     {
-        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Returns.AddNoReceiptItem, "add-no-receipt-product");
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Returns.AddNoReceiptItem,
+            "add-no-receipt-product",
+            cancellationToken);
         if (permissionGrant is null)
         {
             return;
         }
 
         using var authorizationActivation = permissionGrant.Activate();
-        var result = _workflowService.LookupNoReceiptProduct(Session, query);
+        var result = await _workflowService.LookupNoReceiptProductAsync(Session, query, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_disposed ||
+            !IsNoReceiptMode ||
+            version != Volatile.Read(ref _noReceiptLookupVersion) ||
+            !string.Equals(storeCode, Session.StoreCode, StringComparison.Ordinal) ||
+            !string.Equals(query, ScanText, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         StatusMessage = result.StatusMessage;
         if (result.Item is null)
         {
@@ -697,6 +748,13 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         ConfirmNoReceiptOpenItemCommand.NotifyCanExecuteChanged();
     }
 
+    private void CancelNoReceiptLookup()
+    {
+        Interlocked.Increment(ref _noReceiptLookupVersion);
+        var cancellationSource = Interlocked.Exchange(ref _noReceiptLookupCts, null);
+        cancellationSource?.Cancel();
+    }
+
     private void ResetOpenItemDialog()
     {
         DisposeOpenItemAuthorization();
@@ -712,14 +770,18 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         _openItemAuthorizationGrant = null;
     }
 
-    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(string permissionCode, string action) =>
+    private Task<ViewModelAuthorizationGrant?> AuthorizeAsync(
+        string permissionCode,
+        string action,
+        CancellationToken cancellationToken = default) =>
         ViewModelOperationAuthorization.AuthorizeAsync(
             _operationAuthorizationService,
             TryRequirePermission,
             permissionCode,
             "receipt-returns",
             action,
-            Session);
+            Session,
+            cancellationToken);
 
     private bool TryRequirePermission(string permissionCode)
     {

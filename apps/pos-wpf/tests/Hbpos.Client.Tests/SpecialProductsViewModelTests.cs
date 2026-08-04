@@ -717,6 +717,40 @@ public sealed class SpecialProductsViewModelTests
         Assert.Contains("Alpha", viewModel.StatusMessage, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ScannerBarcode_search_applies_only_the_latest_result()
+    {
+        var firstSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newItem = CreateItem("SKU-NEW", "New Candidate", "930NEW");
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            SearchAsyncOverride = async (_, query, cancellationToken) =>
+            {
+                if (query == "old")
+                {
+                    using var registration = cancellationToken.Register(() => firstCancellationObserved.TrySetResult());
+                    firstSearchStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+
+                return new SpecialProductsSearchResult("S001", query, [newItem]);
+            }
+        };
+        using var viewModel = CreateViewModel(workflow: workflow);
+        viewModel.ToggleEditModeCommand.Execute(null);
+
+        Assert.True(viewModel.ProcessScannerBarcode("old", "scanner-device", "raw"));
+        await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(viewModel.ProcessScannerBarcode("new", "scanner-device", "raw"));
+
+        await WaitUntilAsync(() => viewModel.SearchResults.Count == 1);
+        await firstCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal("new", workflow.LastSearchText);
+        Assert.Equal(newItem.ProductCode, Assert.Single(viewModel.SearchResults).ProductCode);
+    }
+
     [Theory]
     [InlineData("HBPOSE1-K1-AA-BB")]
     [InlineData("HBPOSE2-compact-token")]
@@ -1199,6 +1233,8 @@ public sealed class SpecialProductsViewModelTests
 
         public Func<bool, CancellationToken, Task<SpecialProductsMutationWorkflowResult>>? MarkAsyncOverride { get; init; }
 
+        public Func<string, string, CancellationToken, Task<SpecialProductsSearchResult>>? SearchAsyncOverride { get; init; }
+
         public Func<string, string, bool, SpecialProductsMutationWorkflowResult> MarkResultFactory { get; init; } =
             (storeCode, productCode, isSpecialProduct) => new SpecialProductsMutationWorkflowResult(
                 storeCode,
@@ -1237,6 +1273,17 @@ public sealed class SpecialProductsViewModelTests
             SearchCallCount++;
             LastSearchText = searchText;
             return new SpecialProductsSearchResult(storeCode, searchText, SearchItems);
+        }
+
+        public Task<SpecialProductsSearchResult> SearchAsync(
+            string storeCode,
+            string searchText,
+            CancellationToken cancellationToken = default)
+        {
+            SearchCallCount++;
+            LastSearchText = searchText;
+            return SearchAsyncOverride?.Invoke(storeCode, searchText, cancellationToken)
+                ?? Task.FromResult(new SpecialProductsSearchResult(storeCode, searchText, SearchItems));
         }
 
         public Task<SpecialProductsDownloadWorkflowResult> DownloadAsync(

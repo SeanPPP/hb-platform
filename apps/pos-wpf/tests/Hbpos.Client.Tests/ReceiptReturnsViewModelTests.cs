@@ -1,8 +1,11 @@
 using Hbpos.Client.Wpf.Localization;
+using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -101,6 +104,91 @@ public sealed class ReceiptReturnsViewModelTests
 
         Assert.False(viewModel.IsBusy);
         Assert.Single(viewModel.OrderLines);
+    }
+
+    [Fact]
+    public async Task No_receipt_lookup_stays_single_flight_and_dispose_cancels_without_adding_a_pending_line()
+    {
+        var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            NoReceiptLookupHandler = async (_, cancellationToken) =>
+            {
+                using var registration = cancellationToken.Register(() => cancellationObserved.TrySetResult());
+                lookupStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return new ReceiptReturnProductLookupResult(null, string.Empty);
+            }
+        };
+        var viewModel = new ReceiptReturnsViewModel(workflow, CreateSession(), () => { })
+        {
+            IsNoReceiptMode = true,
+            ScanText = "930001"
+        };
+
+        var lookupTask = viewModel.LookupCommand.ExecuteAsync(null);
+        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(viewModel.IsBusy);
+        Assert.True(viewModel.ProcessScannerBarcode("930002", "scanner-device", "raw"));
+        Assert.Equal("930001", viewModel.ScanText);
+        Assert.Equal(1, workflow.NoReceiptLookupCallCount);
+
+        viewModel.Dispose();
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await lookupTask;
+
+        Assert.Empty(viewModel.PendingLines);
+    }
+
+    [Fact]
+    public async Task No_receipt_lookup_dispose_cancels_real_authorization_prompt_and_releases_pending_slot()
+    {
+        var requester = CreateCashier();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(requester);
+        var authorization = new OperationAuthorizationService(
+            new NoopCashierLoginService(),
+            cashierContext,
+            new NoopOperationAuditLogger());
+        var workflow = new FakeReceiptReturnsWorkflowService
+        {
+            NoReceiptLookupHandler = (_, _) => Task.FromResult(
+                new ReceiptReturnProductLookupResult(CreateItem("SKU-LOOKUP", "930001"), "Added no-receipt return item."))
+        };
+        var session = CreateSession(requester);
+        var viewModel = new ReceiptReturnsViewModel(
+            workflow,
+            session,
+            () => { },
+            cashierSessionContext: cashierContext,
+            operationAuthorizationService: authorization)
+        {
+            IsNoReceiptMode = true,
+            ScanText = "930001"
+        };
+
+        var lookupTask = viewModel.LookupCommand.ExecuteAsync(null);
+        await WaitUntilAsync(() => authorization.IsPromptOpen);
+        Assert.Equal(Permissions.PosTerminal.Returns.AddNoReceiptItem, authorization.PermissionCode);
+
+        viewModel.Dispose();
+        await lookupTask;
+
+        Assert.False(authorization.IsPromptOpen);
+        Assert.Empty(authorization.PermissionCode);
+        Assert.Equal(0, workflow.NoReceiptLookupCallCount);
+        Assert.Empty(viewModel.PendingLines);
+
+        var nextAuthorization = authorization.AuthorizeAsync(
+            Permissions.PosTerminal.Returns.AddNoReceiptItem,
+            "receipt-returns",
+            "next-operation",
+            session);
+        await WaitUntilAsync(() => authorization.IsPromptOpen);
+        authorization.Cancel();
+        Assert.Null(await nextAuthorization);
     }
 
     [Fact]
@@ -415,6 +503,56 @@ public sealed class ReceiptReturnsViewModelTests
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C01", "Alice", true, 0);
     }
 
+    private static PosSessionState CreateSession(CashierSessionDto cashier)
+    {
+        return CreateSession() with
+        {
+            CashierId = cashier.CashierId,
+            CashierName = cashier.CashierName,
+            CashierSession = cashier
+        };
+    }
+
+    private static CashierSessionDto CreateCashier() =>
+        new(
+            "C01",
+            "USER-C01",
+            "Alice",
+            "S001",
+            "POS-01",
+            [],
+            [],
+            ["S001"],
+            IsSuperAdmin: false,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false);
+
+    private static SellableItemDto CreateItem(string productCode, string lookupCode) =>
+        new(
+            "S001",
+            productCode,
+            null,
+            "Lookup item",
+            lookupCode,
+            lookupCode,
+            lookupCode,
+            1m,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            1m,
+            DateTimeOffset.UtcNow);
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (!condition() && DateTimeOffset.UtcNow < timeoutAt)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition());
+    }
+
     private sealed class FakeReceiptReturnsWorkflowService : IReceiptReturnsWorkflowService
     {
         public int LookupCallCount { get; private set; }
@@ -424,6 +562,10 @@ public sealed class ReceiptReturnsViewModelTests
         public ReceiptReturnLookupResult LookupResult { get; init; } = new(null, false, false, "");
 
         public Func<string, CancellationToken, Task<ReceiptReturnLookupResult>>? LookupHandler { get; init; }
+
+        public Func<string, CancellationToken, Task<ReceiptReturnProductLookupResult>>? NoReceiptLookupHandler { get; init; }
+
+        public int NoReceiptLookupCallCount { get; private set; }
 
         public List<PendingReturnLine> AddedLines { get; } = [];
 
@@ -447,6 +589,16 @@ public sealed class ReceiptReturnsViewModelTests
             return new ReceiptReturnProductLookupResult(null, "");
         }
 
+        public Task<ReceiptReturnProductLookupResult> LookupNoReceiptProductAsync(
+            PosSessionState session,
+            string productQuery,
+            CancellationToken cancellationToken = default)
+        {
+            NoReceiptLookupCallCount++;
+            return NoReceiptLookupHandler?.Invoke(productQuery, cancellationToken)
+                ?? Task.FromResult(new ReceiptReturnProductLookupResult(null, ""));
+        }
+
         public ReceiptReturnPendingLineResult CreateNoReceiptOpenItem(
             PosSessionState session,
             string displayName,
@@ -461,6 +613,24 @@ public sealed class ReceiptReturnsViewModelTests
         {
             AddedLines.AddRange(lines);
             return [];
+        }
+    }
+
+    private sealed class NoopCashierLoginService : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            bool attemptOnline = true,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(CashierLoginResult.Fail("Not configured."));
+    }
+
+    private sealed class NoopOperationAuditLogger : IOperationAuditLogger
+    {
+        public void Record(OperationAuditEventDto auditEvent)
+        {
         }
     }
 }

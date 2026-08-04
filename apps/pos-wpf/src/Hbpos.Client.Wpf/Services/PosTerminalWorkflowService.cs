@@ -195,13 +195,49 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        var localResult = ProcessScan(session, scanText, preferExactLookup, source, traceId);
+        var localResult = preferExactLookup
+            ? ProcessScan(session, scanText, preferExactLookup, source, traceId)
+            : await ProcessSearchScanAsync(session, scanText, source, traceId, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (!IsLocalMiss(localResult))
         {
             return localResult;
         }
 
         return await TryAddRemoteLookupMissAsync(session, scanText, source, traceId, localResult, cancellationToken);
+    }
+
+    private async Task<PosTerminalWorkflowResult> ProcessSearchScanAsync(
+        PosSessionState session,
+        string scanText,
+        string source,
+        string? traceId,
+        CancellationToken cancellationToken)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var submittedScanText = scanText;
+        var exactLookupStopwatch = Stopwatch.StartNew();
+        var exactMatches = _priceIndex.FindExactMatches(session.StoreCode, submittedScanText);
+        exactLookupStopwatch.Stop();
+        var hasDuplicateExactMatch = exactMatches.Count > 1;
+        var matchKind = hasDuplicateExactMatch ? "search-multiple" : "search";
+
+        var searchStopwatch = Stopwatch.StartNew();
+        var matches = await _priceIndex.SearchAsync(session.StoreCode, submittedScanText, cancellationToken);
+        searchStopwatch.Stop();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PosTerminalWorkflowResult result;
+        using (_uiPriorityCoordinator.BeginUiOperation("process-scan"))
+        {
+            result = ApplyScanMatches(session, matches, submittedScanText, allowAutoAdd: !hasDuplicateExactMatch, traceId);
+        }
+
+        totalStopwatch.Stop();
+        ConsoleLog.Write(
+            "PosScan",
+            $"{FormatTraceId(traceId)}barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(submittedScanText)} storeCode={session.StoreCode} source={source} hit={matchKind} matchCount={matches.Count} autoAdded={FormatBool(result.ClearScanText)} cartLines={_cart.Lines.Count} exactLookupElapsedMs={exactLookupStopwatch.ElapsedMilliseconds} searchElapsedMs={searchStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        return result;
     }
 
     public PosTerminalWorkflowResult AddSelectedItem(
