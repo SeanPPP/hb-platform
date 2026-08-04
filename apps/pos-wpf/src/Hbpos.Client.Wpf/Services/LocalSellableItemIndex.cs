@@ -286,6 +286,12 @@ public sealed class LocalSellableItemIndex
         }
     }
 
+    public Task<IReadOnlyList<SellableItemDto>> FindExactMatchesAsync(
+        string storeCode,
+        string query,
+        CancellationToken cancellationToken) =>
+        Task.Run(() => FindExactMatches(storeCode, query), cancellationToken);
+
     internal IReadOnlyList<SellableItemDto> FindMetadataExactMatches(string storeCode, string query)
     {
         var normalizedStoreCode = Normalize(storeCode);

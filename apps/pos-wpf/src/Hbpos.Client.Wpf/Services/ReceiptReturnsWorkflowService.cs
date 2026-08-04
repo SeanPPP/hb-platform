@@ -205,7 +205,9 @@ public sealed class ReceiptReturnsWorkflowService(
             return new ReceiptReturnProductLookupResult(null, T("returns.status.scanProduct", "Scan a product barcode."));
         }
 
-        var exactMatches = priceIndex.FindExactMatches(session.StoreCode, query);
+        // 无小票退货从 UI 线程进入时，精确命中也必须可取消并在后台完成。
+        var exactMatches = await priceIndex.FindExactMatchesAsync(session.StoreCode, query, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var matches = exactMatches.Count > 0
             ? exactMatches
             : await priceIndex.SearchAsync(session.StoreCode, query, cancellationToken, 8);

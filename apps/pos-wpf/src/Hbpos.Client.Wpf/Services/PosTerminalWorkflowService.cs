@@ -217,8 +217,13 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         var totalStopwatch = Stopwatch.StartNew();
         var submittedScanText = scanText;
         var exactLookupStopwatch = Stopwatch.StartNew();
-        var exactMatches = _priceIndex.FindExactMatches(session.StoreCode, submittedScanText);
+        // 手工检索的精确命中可能复制大量重复条目，先离开 Dispatcher 再继续匹配流程。
+        var exactMatches = await _priceIndex.FindExactMatchesAsync(
+            session.StoreCode,
+            submittedScanText,
+            cancellationToken);
         exactLookupStopwatch.Stop();
+        cancellationToken.ThrowIfCancellationRequested();
         var hasDuplicateExactMatch = exactMatches.Count > 1;
         var matchKind = hasDuplicateExactMatch ? "search-multiple" : "search";
 

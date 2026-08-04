@@ -1,12 +1,14 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Catalog;
@@ -862,6 +864,139 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
+    public async Task Pos_terminal_manual_search_cancels_cashier_login_fallback_when_input_changes()
+    {
+        var fallbackStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fallbackCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            workflowService: new FakePosTerminalWorkflowService(),
+            tryLoginCashierFromScannerFallbackAsync: async (_, cancellationToken) =>
+            {
+                fallbackStarted.TrySetResult(cancellationToken);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return false;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    fallbackCanceled.TrySetResult();
+                    throw;
+                }
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: true);
+        viewModel.ScanText = "CASHIER-OLD";
+
+        var searchTask = viewModel.ScanCommand.ExecuteAsync(null);
+        var cancellationToken = await fallbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.True(cancellationToken.CanBeCanceled);
+        viewModel.ScanText = "CASHIER-NEW";
+
+        await fallbackCanceled.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await searchTask;
+        Assert.Empty(viewModel.CartLines);
+        Assert.Equal("CASHIER-NEW", viewModel.ScanText);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_manual_search_keeps_successful_cashier_login_after_session_change_cancels_search()
+    {
+        var cashierSession = CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]);
+        PosTerminalViewModel? viewModel = null;
+        using var disposableViewModel = viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            workflowService: new FakePosTerminalWorkflowService(),
+            tryLoginCashierFromScannerFallbackAsync: (_, _) =>
+            {
+                // 模拟 MainViewModel.ApplyCashierSession 触发子页面 SessionChanged 并取消本次手工请求。
+                viewModel!.Session = viewModel.Session with
+                {
+                    CashierId = cashierSession.CashierId,
+                    CashierName = cashierSession.CashierName,
+                    CashierSession = cashierSession
+                };
+                return Task.FromResult(true);
+            },
+            cashierSessionContext: new CashierSessionContext(),
+            enforcePermissionsWhenNoCashier: true);
+        viewModel.ScanText = "CASHIER-LOGIN";
+
+        await viewModel.ScanCommand.ExecuteAsync(null);
+
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Equal(StatusFeedbackKind.Success, viewModel.StatusFeedbackKind);
+        Assert.Equal(string.Empty, viewModel.ScanText);
+    }
+
+    [Fact]
+    public async Task Main_view_model_canceled_emergency_login_does_not_call_service_or_apply_session()
+    {
+        var cashierSession = CashierSessionContext.CreateEmergencyOverride(
+            "S001",
+            "POS-01",
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddHours(1),
+            "HBPOSE1-token");
+        var loginService = new RecordingMainViewModelCashierLoginService(CashierLoginResult.Success(cashierSession));
+        var cashierContext = new CashierSessionContext();
+        using var viewModel = CreateMainViewModelForCashierLogin(loginService, cashierContext);
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            viewModel.TryLoginCashierFromScannerFallbackAsync("HBPOSE1-K1-AA-BB", cancellationSource.Token));
+
+        Assert.Equal(0, loginService.CallCount);
+        Assert.Null(cashierContext.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+    }
+
+    [Fact]
+    public async Task Main_view_model_canceled_login_ignoring_token_does_not_apply_old_session()
+    {
+        var cashierSession = CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]);
+        var loginService = new DeferredIgnoringCancellationCashierLoginService(CashierLoginResult.Success(cashierSession));
+        var cashierContext = new CashierSessionContext();
+        using var viewModel = CreateMainViewModelForCashierLogin(loginService, cashierContext);
+        using var cancellationSource = new CancellationTokenSource();
+
+        var loginTask = viewModel.TryLoginCashierFromScannerFallbackAsync("CASHIER-OLD", cancellationSource.Token);
+        await loginService.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        cancellationSource.Cancel();
+        loginService.Complete();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => loginTask);
+        Assert.Equal(1, loginService.CallCount);
+        Assert.Null(cashierContext.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+    }
+
+    [Fact]
+    public async Task Main_view_model_current_login_applies_cashier_session()
+    {
+        var cashierSession = CreateSession(permissionCodes: [Permissions.PosTerminal.Sales.AddItem]);
+        var cashierContext = new CashierSessionContext();
+        using var viewModel = CreateMainViewModelForCashierLogin(
+            new RecordingMainViewModelCashierLoginService(CashierLoginResult.Success(cashierSession)),
+            cashierContext);
+
+        var loggedIn = await viewModel.TryLoginCashierFromScannerFallbackAsync("CASHIER-CURRENT");
+
+        Assert.True(loggedIn);
+        Assert.Same(cashierSession, cashierContext.CurrentSession);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+    }
+
+    [Fact]
     public async Task Pos_terminal_cashier_login_success_status_follows_current_culture()
     {
         var localization = new FakeLocalizationService();
@@ -1139,6 +1274,91 @@ public sealed class CashierPermissionTests
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
+    private static MainViewModel CreateMainViewModelForCashierLogin(
+        ICashierLoginService cashierLoginService,
+        ICashierSessionContext cashierSessionContext)
+    {
+        var localization = new LocalizationService();
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepository = CreateNoop<ILocalCatalogRepository>();
+        var orderRepository = CreateNoop<ILocalOrderRepository>();
+        var syncQueueRepository = CreateNoop<ISyncQueueRepository>();
+        var deviceRepository = CreateNoop<ILocalDeviceRepository>();
+        var deviceFingerprintService = CreateNoop<IDeviceFingerprintService>();
+        var specialProductService = CreateNoop<ISpecialProductService>();
+        return new MainViewModel(
+            new PosCoreServices(priceIndex, cart, checkout, CreateNoop<ILocalSchemaService>()),
+            new PosInfrastructureFacade(
+                CreateNoop<IConnectivityApiClient>(),
+                CreateNoop<IRawScannerService>(),
+                NoopUserFeedbackService.Instance,
+                CreateNoop<IApplicationExitService>(),
+                new WpfConfirmationDialogService(localization)),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, CreateNoop<ILocalAppSettingsRepository>()),
+            new ShellCatalogService(priceIndex, catalogRepository, CreateNoop<ILocalCatalogSyncService>()),
+            catalogRepository,
+            CreateNoop<IRemoteLookupRefreshService>(),
+            specialProductService,
+            new MainShellStartupService(deviceRepository, deviceFingerprintService, new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueueRepository),
+            localization,
+            new CustomerDisplayOrchestrator(CreateNoop<ICustomerDisplayWindowService>()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
+            new DeviceRegistrationWorkflowService(CreateNoop<IDeviceApiClient>(), deviceRepository, deviceFingerprintService),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepository, specialProductService),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync),
+            cashierSessionContext: cashierSessionContext,
+            cashierLoginService: cashierLoginService);
+    }
+
+    private static T CreateNoop<T>() where T : class => DispatchProxy.Create<T, NoopDispatchProxy>();
+
+    public class NoopDispatchProxy : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            var returnType = targetMethod!.ReturnType;
+            if (returnType == typeof(void))
+            {
+                return null;
+            }
+
+            if (returnType == typeof(Task))
+            {
+                return Task.CompletedTask;
+            }
+
+            if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+            {
+                var resultType = returnType.GenericTypeArguments[0];
+                return typeof(Task)
+                    .GetMethod(nameof(Task.FromResult))!
+                    .MakeGenericMethod(resultType)
+                    .Invoke(null, [GetDefaultValue(resultType)]);
+            }
+
+            if (returnType == typeof(ValueTask))
+            {
+                return ValueTask.CompletedTask;
+            }
+
+            return GetDefaultValue(returnType);
+        }
+
+        private static object? GetDefaultValue(Type type) =>
+            type.IsValueType ? Activator.CreateInstance(type) : null;
+    }
+
     private static CashierSessionDto CreateSession(
         string[]? permissionCodes = null,
         string[]? allowedStoreCodes = null) =>
@@ -1253,6 +1473,46 @@ public sealed class CashierPermissionTests
         public DateTimeOffset UtcNow { get; set; } = utcNow;
 
         public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
+
+    private sealed class RecordingMainViewModelCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        public int CallCount { get; private set; }
+
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            bool attemptOnline = true,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(result);
+        }
+    }
+
+    private sealed class DeferredIgnoringCancellationCashierLoginService(CashierLoginResult result) : ICashierLoginService
+    {
+        private readonly TaskCompletionSource<CashierLoginResult> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int CallCount { get; private set; }
+
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            bool attemptOnline = true,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            Started.TrySetResult();
+            return _completion.Task;
+        }
+
+        public void Complete() => _completion.TrySetResult(result);
     }
 
     private sealed class SequenceCashierLoginApiClient(params CashierLoginAttempt[] attempts) : ICashierLoginApiClient

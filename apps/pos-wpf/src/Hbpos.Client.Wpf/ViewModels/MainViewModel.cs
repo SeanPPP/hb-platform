@@ -1153,6 +1153,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         bool updateFailureStatus,
         CancellationToken cancellationToken)
     {
+        // 手工检索取消后，紧急令牌和普通登录都不能再写入旧收银员会话。
+        cancellationToken.ThrowIfCancellationRequested();
         var input = barcode.Trim();
         if (input.Length == 0)
         {
@@ -1194,6 +1196,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             throw;
         }
 
+        // 某些登录服务无法及时响应取消；在应用成功或失败状态前再次拦截旧请求。
+        cancellationToken.ThrowIfCancellationRequested();
         if (!result.Succeeded || result.Session is null)
         {
             OperationAuditEvents.RecordAction(

@@ -42,6 +42,22 @@ public sealed class PosCoreTests
     }
 
     [Fact]
+    public async Task Local_price_index_exact_lookup_async_matches_sync_and_honors_cancellation()
+    {
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-001", "Milk 1L", "690001", PriceSourceKind.StoreRetailPrice, 12.5m)]);
+
+        var expected = index.FindExactMatches("S001", "690001");
+        var actual = await index.FindExactMatchesAsync("S001", "690001", CancellationToken.None);
+
+        Assert.Equal(expected, actual);
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            index.FindExactMatchesAsync("S001", "690001", cancellationSource.Token));
+    }
+
+    [Fact]
     public void Local_price_index_search_can_filter_by_store()
     {
         var index = new LocalSellableItemIndex();
@@ -831,10 +847,10 @@ public sealed class PosCoreTests
     }
 
     [Fact]
-    public async Task Local_price_index_search_async_matches_sync_at_340k_and_honors_cancellation()
+    public async Task Local_price_index_search_async_matches_sync_honors_cancellation_and_stays_off_dispatcher()
     {
-        const int itemCount = 340_000;
-        const int measurementCount = 20;
+        const int itemCount = 10_000;
+        const int measurementCount = 1;
         var index = new LocalSellableItemIndex();
         index.ReplaceAll(Enumerable.Range(0, itemCount)
             .Select(itemIndex => CreateItem(
@@ -872,7 +888,28 @@ public sealed class PosCoreTests
             index.SearchProgressForTests = null;
         }
 
-        var metrics = await MeasureSearchOnWpfDispatcherAsync(index, measurementCount);
+        var metrics = await MeasureSearchOnWpfDispatcherAsync(index, measurementCount, "SKU-009998");
+
+        Assert.Equal(metrics.DispatcherThreadId, metrics.InputThreadId);
+        Assert.NotEqual(metrics.DispatcherThreadId, metrics.WorkerThreadId);
+    }
+
+    [ReleaseX64PerformanceFact]
+    public async Task Local_price_index_search_async_340k_meets_release_performance_gate()
+    {
+        const int itemCount = 340_000;
+        const int measurementCount = 20;
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(Enumerable.Range(0, itemCount)
+            .Select(itemIndex => CreateItem(
+                $"SKU-{itemIndex:D6}",
+                $"Catalog Item {itemIndex:D6}",
+                $"LOOKUP-{itemIndex:D6}",
+                PriceSourceKind.StoreRetailPrice,
+                1m,
+                storeCode: itemIndex % 2 == 0 ? "S001" : "S002")));
+
+        var metrics = await MeasureSearchOnWpfDispatcherAsync(index, measurementCount, "SKU-339998");
 
         Assert.True(metrics.InputLatency <= TimeSpan.FromMilliseconds(250),
             $"DispatcherPriority.Input waited {metrics.InputLatency.TotalMilliseconds:F0}ms.");
@@ -882,19 +919,36 @@ public sealed class PosCoreTests
             $"Miss search P95 was {metrics.MissP95.TotalMilliseconds:F0}ms.");
         Assert.True(metrics.BroadP95 <= TimeSpan.FromSeconds(2),
             $"Broad search P95 was {metrics.BroadP95.TotalMilliseconds:F0}ms.");
-        Assert.Equal(metrics.DispatcherThreadId, metrics.InputThreadId);
-        Assert.NotEqual(metrics.DispatcherThreadId, metrics.WorkerThreadId);
 
         Console.WriteLine(
             $"[SearchPerf] x64={Environment.Is64BitProcess} inputMs={metrics.InputLatency.TotalMilliseconds:F0} normalP95Ms={metrics.NormalP95.TotalMilliseconds:F0} missP95Ms={metrics.MissP95.TotalMilliseconds:F0} broadP95Ms={metrics.BroadP95.TotalMilliseconds:F0}");
     }
 
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+    private sealed class ReleaseX64PerformanceFactAttribute : FactAttribute
+    {
+        public ReleaseX64PerformanceFactAttribute()
+        {
+#if DEBUG
+            Skip = "性能门禁仅在 Release x64 测试进程中运行。";
+#else
+            if (!string.Equals(Environment.GetEnvironmentVariable("HBPOS_RUN_PERF_TESTS"), "1", StringComparison.Ordinal))
+            {
+                Skip = "设置 HBPOS_RUN_PERF_TESTS=1 后运行 Release x64 性能门禁。";
+            }
+            else if (!Environment.Is64BitProcess)
+            {
+                Skip = "性能门禁需要 x64 测试进程。";
+            }
+#endif
+        }
+    }
+
     private static async Task<(TimeSpan InputLatency, TimeSpan NormalP95, TimeSpan MissP95, TimeSpan BroadP95, int DispatcherThreadId, int InputThreadId, int WorkerThreadId)> MeasureSearchOnWpfDispatcherAsync(
         LocalSellableItemIndex index,
-        int measurementCount)
+        int measurementCount,
+        string normalQuery)
     {
-        Assert.True(Environment.Is64BitProcess, "Release performance gate requires an x64 test process.");
-
         var searchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var workerThreadId = 0;
         index.SearchProgressForTests = (query, progress) =>
@@ -928,7 +982,7 @@ public sealed class PosCoreTests
                 Assert.Equal(20, (await broadSearch).Count);
                 index.SearchProgressForTests = null;
 
-                var normalP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "SKU-339998", measurementCount, 1));
+                var normalP95 = CalculateP95(await MeasureSearchSamplesAsync(index, normalQuery, measurementCount, 1));
                 var missP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "NO-SUCH-CATALOG", measurementCount, 0));
                 var broadP95 = CalculateP95(await MeasureSearchSamplesAsync(index, "catalog", measurementCount, 20));
                 return (inputLatency, normalP95, missP95, broadP95, dispatcherThreadId, inputThreadId, workerThreadId);

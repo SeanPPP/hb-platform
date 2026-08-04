@@ -1501,7 +1501,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 _cashierSessionContext.HasPermission(Permissions.PosTerminal.Sales.AddItem);
             if (!hasAddItemPermission &&
                 !hasCashierSession &&
-                await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
+                await TryApplyCashierLoginFallbackAsync(plan, result: null, cancellationToken))
             {
                 workflowStopwatch.Stop();
                 totalStopwatch.Stop();
