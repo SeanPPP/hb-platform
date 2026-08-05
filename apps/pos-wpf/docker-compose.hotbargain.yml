@@ -46,8 +46,8 @@ services:
       - LinklyCloudBackendAsync__ProductionPosVendorId=${LINKLY_CLOUD_PRODUCTION_POS_VENDOR_ID:-}
       - LinklyCloudBackendAsync__SandboxPosVendorId=${LINKLY_CLOUD_SANDBOX_POS_VENDOR_ID:-11111111-1111-4111-8111-111111111111}
       # Square Dashboard 需要登记同一个公网 URL；签名密钥只从服务器 .env 注入。
-      - Square__WebhookNotificationUrls__Production=https://hotbargain.vip/pos-api/api/v1/square/webhooks
-      - Square__WebhookNotificationUrls__Sandbox=https://hotbargain.vip/pos-api/api/v1/square/webhooks
+      - Square__WebhookNotificationUrls__Production=https://hotbargainpos.com/api/v1/square/webhooks
+      - Square__WebhookNotificationUrls__Sandbox=https://hotbargainpos.com/api/v1/square/webhooks
       - Square__WebhookSignatureKeys__Production=${SQUARE_WEBHOOK_SIGNATURE_KEY_PRODUCTION:-}
       - Square__WebhookSignatureKeys__Sandbox=${SQUARE_WEBHOOK_SIGNATURE_KEY_SANDBOX:-}
     volumes:
