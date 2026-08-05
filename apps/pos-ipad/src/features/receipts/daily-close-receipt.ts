@@ -1,3 +1,7 @@
+import {
+  appendEscPosInitialize,
+  encodeEscPosText,
+} from "./esc-pos-text-encoding";
 import type { ReceiptLocale, ReceiptPaper } from "./receipt-document";
 
 import type { DailyCloseArchive } from "@/core/contracts";
@@ -178,8 +182,8 @@ export function dailyCloseReceiptToEscPosBytes(
   ) {
     throw new TypeError("Daily close receipt document is invalid.");
   }
-  const encoder = new TextEncoder();
-  const output: number[] = [0x1b, 0x40];
+  const output: number[] = [];
+  appendEscPosInitialize(output);
   for (const line of document.lines) {
     if (
       typeof line !== "string" ||
@@ -189,7 +193,7 @@ export function dailyCloseReceiptToEscPosBytes(
     ) {
       throw new TypeError("Daily close receipt line is invalid.");
     }
-    output.push(...encoder.encode(line), 0x0a);
+    output.push(...encodeEscPosText(line), 0x0a);
   }
   output.push(0x1b, 0x64, 0x03, 0x1d, 0x56, 0x00);
   if (output.length > 256 * 1_024) {

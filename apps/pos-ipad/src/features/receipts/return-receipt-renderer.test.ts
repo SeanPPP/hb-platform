@@ -35,11 +35,10 @@ test("no-receipt 退货允许 originalOrderGuid 为 null，并使用 80mm 中文
     order({ originalOrderGuid: null }),
     settings({ paper: "80mm", locale: "zh-CN" }),
   ).render(returnOrderGuid);
-  const text = decode(rendered.receiptBytes);
 
-  assert.match(text, /退款小票/u);
-  assert.match(text, /退款已处理/u);
-  assert.equal(text.includes("REPRINT"), false);
+  assert.ok(containsBytes(rendered.receiptBytes, [0xcd, 0xcb, 0xbf, 0xee, 0xd0, 0xa1, 0xc6, 0xb1]));
+  assert.ok(containsBytes(rendered.receiptBytes, [0xcd, 0xcb, 0xbf, 0xee, 0xd2, 0xd1, 0xb4, 0xa6, 0xc0, 0xed]));
+  assert.equal(decode(rendered.receiptBytes).includes("REPRINT"), false);
 });
 
 test("账本金额不闭合、混杂 sale、Draft、正 tender 或缺失冻结设置均 fail closed", async () => {
@@ -94,3 +93,9 @@ function settings(overrides: Partial<FrozenReturnReceiptSettings> = {}): FrozenR
 
 function money(cents: number) { return { currency: "AUD" as const, cents }; }
 function decode(bytes: Uint8Array) { return new TextDecoder().decode(bytes); }
+function containsBytes(bytes: Uint8Array, expected: readonly number[]) {
+  return Array.from(
+    { length: Math.max(0, bytes.length - expected.length + 1) },
+    (_, start) => expected.every((value, offset) => bytes[start + offset] === value),
+  ).some(Boolean);
+}

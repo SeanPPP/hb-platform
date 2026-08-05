@@ -73,6 +73,53 @@ test("单一券退款只在打印瞬间解析受保护券码，并生成独立 C
   assert.deepEqual(bytes.slice(-3), [0x1d, 0x56, 0x00]);
 });
 
+test("zh-CN 退款券启用中文模式并使用 GB18030 文本字节", async () => {
+  const renderer = new ProtectedRefundVoucherReceiptRenderer(
+    {
+      async getByGuid() {
+        return pureVoucherReturn();
+      },
+    },
+    {
+      async resolveApprovedRefundVoucher() {
+        return protectedMaterial();
+      },
+    },
+    {
+      async getFrozenReturnReceiptSettings() {
+        return { ...settings(), locale: "zh-CN" };
+      },
+    },
+    () => new Date(2026, 6, 10, 9, 30, 0),
+  );
+
+  const rendered = await renderer.render(
+    "return-action-1",
+    "return-order-1",
+  );
+  const bytes = [...rendered.receiptBytes];
+
+  assert.equal(
+    containsSequence(bytes, [0x1b, 0x40, 0x1c, 0x26]),
+    true,
+    "ESC @ 后必须立即进入中文字符模式",
+  );
+  assert.equal(
+    containsSequence(bytes, [0xcd, 0xcb, 0xbf, 0xee, 0xc8, 0xaf]),
+    true,
+    "退款券必须以 GB18030 字节输出",
+  );
+  assert.equal(
+    containsSequence(bytes, [
+      0xe9, 0x80, 0x80,
+      0xe6, 0xac, 0xbe,
+      0xe5, 0x88, 0xb8,
+    ]),
+    false,
+    "不得再输出 UTF-8 中文字节",
+  );
+});
+
 test("CODE128 转义券码中的左花括号并按转义后长度编码，QR 与明文保持原值", async () => {
   const voucherCode = "AB{C12";
   const renderer = new ProtectedRefundVoucherReceiptRenderer(

@@ -1,3 +1,7 @@
+import {
+  appendEscPosInitialize,
+  encodeEscPosText,
+} from "./esc-pos-text-encoding";
 import type {
   FrozenReturnReceiptSettings,
   RenderedReturnReceipt,
@@ -164,7 +168,8 @@ function encodeRefundVoucher(input: Readonly<{
   amountCents: number;
   printedAt: string;
 }>): Uint8Array {
-  const bytes: number[] = [0x1b, 0x40];
+  const bytes: number[] = [];
+  appendEscPosInitialize(bytes);
   const width = input.paper === "58mm" ? 32 : 48;
   const title =
     input.locale === "zh-CN" ? "===== 退款券 =====" : "===== REFUND VOUCHER =====";
@@ -214,7 +219,7 @@ function appendText(
 ): void {
   const align = alignment === "center" ? 1 : alignment === "right" ? 2 : 0;
   output.push(0x1b, 0x61, align, 0x1b, 0x45, bold ? 1 : 0);
-  output.push(...new TextEncoder().encode(value), 0x0a);
+  output.push(...encodeEscPosText(value), 0x0a);
 }
 
 function appendWrappedText(

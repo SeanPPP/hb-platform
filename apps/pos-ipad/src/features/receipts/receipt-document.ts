@@ -1,4 +1,8 @@
 import {
+  appendEscPosInitialize,
+  encodeEscPosText,
+} from "./esc-pos-text-encoding";
+import {
   receiptCode128,
   receiptCode128ModuleWidth,
 } from "./receipt-code128";
@@ -195,7 +199,8 @@ export function buildBankReceiptDocument(input: BankInput): EscPosDocument {
 }
 
 export function documentToEscPosBytes(document: EscPosDocument): Uint8Array {
-  const chunks: number[] = [0x1b, 0x40];
+  const chunks: number[] = [];
+  appendEscPosInitialize(chunks);
   const utf8 = new TextEncoder();
   for (const line of document.lines) {
     switch (line.kind) {
@@ -206,14 +211,14 @@ export function documentToEscPosBytes(document: EscPosDocument): Uint8Array {
         chunks.push(
           0x1b, 0x61, 0,
           0x1b, 0x45, 0,
-          ...utf8.encode(line.text), 0x0a,
+          ...encodeEscPosText(line.text), 0x0a,
         );
         break;
       case "text":
         chunks.push(
           0x1b, 0x61, line.align === "center" ? 1 : line.align === "right" ? 2 : 0,
           0x1b, 0x45, line.bold ? 1 : 0,
-          ...utf8.encode(line.text), 0x0a,
+          ...encodeEscPosText(line.text), 0x0a,
         );
         break;
       case "barcode":

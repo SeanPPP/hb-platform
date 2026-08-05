@@ -58,13 +58,27 @@ test("58mm 英文销售小票按整数分币输出确定性文档与 ESC/POS 字
   assert.match(text, /Payment:/);
   assert.equal((text.match(/Device: IPAD-1/g) ?? []).length, 2, "WPF 在订单信息和尾部各打印一次设备");
   assert.ok(document.lines.every((line) => line.kind !== "text" || displayWidth(line.text) <= 32));
-  assert.deepEqual([...bytes.slice(0, 3)], [0x1b, 0x40, 0x1b]);
+  assert.deepEqual([...bytes.slice(0, 4)], [0x1b, 0x40, 0x1c, 0x26]);
   assert.deepEqual(
     [...bytes.slice(-3)],
     [0x1d, 0x56, 0x00],
     "每个冻结小票作业只在字节尾部切纸一次",
   );
   assert.ok(document.lines.every((line) => line.kind !== "barcode" && line.kind !== "qr"));
+});
+
+test("中文销售文本使用 GB18030 双字节并替换 N160 不可靠字形", () => {
+  const document = buildSaleReceiptDocument({
+    ...sale,
+    locale: "zh-CN",
+    store: { ...sale.store, brandName: "商品😀𠀀" },
+  });
+  const bytes = documentToEscPosBytes(document);
+
+  assert.ok(containsBytes(bytes, [0xc9, 0xcc, 0xc6, 0xb7, 0x3f, 0x3f]));
+  assert.ok(containsBytes(bytes, [0xb8, 0xd0, 0xd0, 0xbb, 0xbb, 0xdd, 0xb9, 0xcb]));
+  assert.equal(containsBytes(bytes, [...new TextEncoder().encode("商品")]), false);
+  assert.equal(containsBytes(bytes, [...new TextEncoder().encode("感谢惠顾")]), false);
 });
 
 test("销售小票按 WPF 顺序加入显示元数据和完整 GUID 机读码", () => {

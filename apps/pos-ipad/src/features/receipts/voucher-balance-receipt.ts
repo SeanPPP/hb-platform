@@ -1,3 +1,7 @@
+import {
+  appendEscPosInitialize,
+  encodeEscPosText,
+} from "./esc-pos-text-encoding";
 import type {
   FrozenReturnReceiptSettings,
   RenderedReturnReceipt,
@@ -430,7 +434,8 @@ function encodeVoucherBalanceReceipt(
   material: ReturnType<typeof normalizeRenderableMaterial>,
   settings: FrozenReturnReceiptSettings,
 ): Uint8Array {
-  const output: number[] = [0x1b, 0x40];
+  const output: number[] = [];
+  appendEscPosInitialize(output);
   const width = settings.paper === "58mm" ? 32 : 48;
   const zh = settings.locale === "zh-CN";
   appendText(
@@ -482,7 +487,7 @@ function appendText(
 ): void {
   const align = alignment === "center" ? 1 : alignment === "right" ? 2 : 0;
   output.push(0x1b, 0x61, align, 0x1b, 0x45, bold ? 1 : 0);
-  output.push(...new TextEncoder().encode(value), 0x0a);
+  output.push(...encodeEscPosText(value), 0x0a);
 }
 
 function appendWrappedText(

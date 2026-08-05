@@ -105,6 +105,57 @@ test("订单同步成功后查询同一礼券并只保存、打印 post-sync 最
   assert.doesNotMatch(receipt, /AU\$7\.50/);
 });
 
+test("zh-CN 礼券余额联启用中文模式并使用 GB18030 文本字节", async () => {
+  const renderer = new VoucherBalanceReceiptRenderer({
+    async getFrozenReturnReceiptSettings() {
+      return {
+        printerId: "printer-1",
+        paper: "80mm",
+        locale: "zh-CN",
+        store: {
+          brandName: "Hot Bargain",
+          storeName: "测试店",
+          address: "",
+          phone: "",
+          abn: "",
+        },
+      };
+    },
+  });
+
+  const rendered = await renderer.render({
+    ...material(),
+    confirmation: {
+      status: "confirmed",
+      remainingCents: 625,
+      confirmedAtIso: CONFIRMED_AT,
+    },
+  });
+  assert.ok(rendered);
+  const bytes = [...rendered.receiptBytes];
+
+  assert.equal(
+    containsSequence(bytes, [0x1b, 0x40, 0x1c, 0x26]),
+    true,
+    "ESC @ 后必须立即进入中文字符模式",
+  );
+  assert.equal(
+    containsSequence(bytes, [0xc0, 0xf1, 0xc8, 0xaf, 0xd3, 0xe0, 0xb6, 0xee]),
+    true,
+    "礼券余额必须以 GB18030 字节输出",
+  );
+  assert.equal(
+    containsSequence(bytes, [
+      0xe7, 0xa4, 0xbc,
+      0xe5, 0x88, 0xb8,
+      0xe4, 0xbd, 0x99,
+      0xe9, 0xa2, 0x9d,
+    ]),
+    false,
+    "不得再输出 UTF-8 中文字节",
+  );
+});
+
 test("同一礼券多个 tender 只查询一次、只生成一张余额联", async () => {
   const materials = new MemoryMaterials([
     material({ attemptId: "voucher-attempt-2", voucherCode: "vc100" }),
@@ -587,4 +638,13 @@ class MemoryMaterials {
     this.saved.push({ attemptId, confirmation });
     return Promise.resolve();
   }
+}
+
+function containsSequence(
+  source: readonly number[],
+  expected: readonly number[],
+): boolean {
+  return source.some((_, index) =>
+    expected.every((value, offset) => source[index + offset] === value),
+  );
 }

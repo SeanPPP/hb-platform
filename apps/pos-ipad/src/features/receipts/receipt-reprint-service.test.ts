@@ -160,7 +160,10 @@ test("没有历史打印作业也能从本地订单账本准备真实重打 ESC/
 
   assert.equal(prepared?.orderGuid, current.orderGuid);
   assert.equal(prepared?.printerId, settings.printerId);
-  assert.deepEqual([...prepared?.receiptBytes.slice(0, 3) ?? []], [0x1b, 0x40, 0x1b]);
+  assert.deepEqual(
+    [...prepared?.receiptBytes.slice(0, 4) ?? []],
+    [0x1b, 0x40, 0x1c, 0x26],
+  );
   assert.match(encoder.decode(prepared?.receiptBytes), /\*\*\* REPRINT \*\*\*/);
   assert.match(encoder.decode(prepared?.receiptBytes), /123456\s+1\s+\$7\.62/);
   assert.match(encoder.decode(prepared?.receiptBytes), /order-without-print-history\n.*Date:/s);

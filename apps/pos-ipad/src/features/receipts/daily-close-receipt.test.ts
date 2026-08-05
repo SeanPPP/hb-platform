@@ -94,9 +94,23 @@ test("日结文本编码为完整 ESC/POS 作业并在末尾切纸", () => {
   });
   const bytes = dailyCloseReceiptToEscPosBytes(receipt);
 
-  assert.deepEqual([...bytes.slice(0, 2)], [0x1b, 0x40]);
+  assert.deepEqual([...bytes.slice(0, 4)], [0x1b, 0x40, 0x1c, 0x26]);
   assert.deepEqual([...bytes.slice(-3)], [0x1d, 0x56, 0x00]);
   assert.match(new TextDecoder().decode(bytes), /DAILY CLOSE/);
+});
+
+test("中文日结文本使用 GB18030 且不输出 UTF-8 字节", () => {
+  const receipt = buildDailyCloseReceipt({
+    archive: createArchive(),
+    locale: "zh-CN",
+    paper: "80mm",
+    reprint: false,
+    storeName: "商品😀𠀀",
+  });
+  const bytes = dailyCloseReceiptToEscPosBytes(receipt);
+
+  assert.ok(containsBytes(bytes, [0xc9, 0xcc, 0xc6, 0xb7, 0x3f, 0x3f]));
+  assert.equal(containsBytes(bytes, [...new TextEncoder().encode("商品")]), false);
 });
 
 function createArchive(): DailyCloseArchive {
@@ -159,4 +173,13 @@ function createArchive(): DailyCloseArchive {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsBytes(bytes: Uint8Array, expected: readonly number[]): boolean {
+  return Array.from(
+    { length: Math.max(0, bytes.length - expected.length + 1) },
+    (_, start) => expected.every(
+      (value, offset) => bytes[start + offset] === value,
+    ),
+  ).some(Boolean);
 }
