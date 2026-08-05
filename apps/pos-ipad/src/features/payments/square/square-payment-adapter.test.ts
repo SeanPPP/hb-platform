@@ -174,6 +174,25 @@ test("PENDING checkout 只返回 Pending；recover 按 CheckoutId 查询并验�
   assert.equal(transport.calls[2]?.url, "/api/v1/square/payments/payment-1");
 });
 
+test("Sandbox 成功测试终端拒绝超过 25.00 的付款且不会创建 checkout", async () => {
+  const transport = new ScriptedTransport([]);
+  const adapter = createAdapter(transport, {
+    environment: "Sandbox",
+    deviceId: "device:9fa747a2-25ff-48ee-b078-04381f7c828f",
+  });
+
+  const result = await adapter.submit(
+    attempt({ amount: { currency: "AUD", cents: 2_501 } }),
+  );
+
+  assert.equal(result.state, "Declined");
+  assert.equal(
+    result.responseCode,
+    "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED",
+  );
+  assert.equal(transport.calls.length, 0);
+});
+
 test("已有 CheckoutId 的恢复只依赖 environment，不被后来缺失的终端设置阻断", async () => {
   const transport = new ScriptedTransport([
     ok({

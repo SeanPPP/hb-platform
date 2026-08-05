@@ -161,6 +161,47 @@ public sealed class InstallmentOperationService(
             request.CashierId,
             EnsureIdempotencyKey(request.IdempotencyKey, request.PaymentGuid),
             JsonSerializer.Serialize(request, JsonOptions)), cancellationToken);
+        // 同一 operation 的所有重试只使用首次落盘的不可变请求指纹，忽略后续 UI/body 漂移。
+        request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
+
+        var claim = await EnsureRepaymentClaimAsync(operation, request, cancellationToken);
+        if (!claim.Succeeded)
+        {
+            return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(
+                false,
+                Message: claim.Message,
+                RequiresReview: claim.RequiresReview);
+        }
+
+        if (claim.Response is not null)
+        {
+            return await CompleteCommittedRepaymentAsync(operation, claim.Response, cancellationToken);
+        }
+
+        if ((claim.Claim?.Status is InstallmentRepaymentClaimStatus.ProviderPending or InstallmentRepaymentClaimStatus.Unknown) &&
+            operation.State is not LocalInstallmentOperationState.TerminalApproved and not LocalInstallmentOperationState.ApiSubmitting)
+        {
+            if (operation.State is LocalInstallmentOperationState.Prepared or LocalInstallmentOperationState.ResultUnknown)
+            {
+                var recovery = await RecoverRepaymentAsync(operation, session, cancellationToken);
+                var recoveredOperation = await repository.GetAsync(operation.OperationGuid, cancellationToken);
+                if (recovery.ReplayedApi &&
+                    recoveredOperation?.State == LocalInstallmentOperationState.Completed &&
+                    !string.IsNullOrWhiteSpace(recoveredOperation.ResponseJson))
+                {
+                    var response = Deserialize<InstallmentAppendPaymentResponse>(recoveredOperation.ResponseJson);
+                    return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(true, response, ToLocalOrder(response.Details), response.Message);
+                }
+
+                return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(false, Message: recovery.Message, RequiresReview: true);
+            }
+
+            // 中文注释：中央 claim 已进入 provider 阶段时，只有本机恢复流程可以继续查询同一 attempt；此处绝不能再次授权。
+            return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(
+                false,
+                Message: "补款 provider 结果正在由发起设备恢复，请勿再次收款。",
+                RequiresReview: true);
+        }
 
         var ready = await EnsureRepaymentTerminalApprovalAsync(operation, session, authorizeCard, cancellationToken);
         if (!ready.Succeeded)
@@ -186,7 +227,24 @@ public sealed class InstallmentOperationService(
         string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        var operationGuid = DeterministicGuid($"cancel:{localOrder.InstallmentGuid:D}");
+        if (!string.Equals(localOrder.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(localOrder.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消退款仅允许分期创建设备执行。");
+        }
+
+        var recoverable = await repository.GetRecoverableAsync(session.StoreCode, cancellationToken);
+        var existing = recoverable.FirstOrDefault(operation =>
+            operation.Kind == LocalInstallmentOperationKind.Cancel &&
+            operation.InstallmentGuid == localOrder.InstallmentGuid &&
+            string.Equals(operation.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            return await ContinueCancelAsync(existing, localOrder.InstallmentNumber, session, false, cancellationToken);
+        }
+
+        // 中央 claim 的 Released/Declined 是终态；每次真正重试使用新的 operation，不能复活旧 claim。
+        var operationGuid = Guid.NewGuid();
         var cancelRequest = new InstallmentCancelRequest(
             localOrder.InstallmentGuid,
             session.StoreCode,
@@ -196,18 +254,18 @@ public sealed class InstallmentOperationService(
             DateTimeOffset.UtcNow,
             [],
             string.IsNullOrWhiteSpace(reason) ? "取消分期并退款" : reason.Trim(),
-            $"{localOrder.InstallmentGuid:D}:cancel");
+            operationGuid.ToString("D"));
         var now = DateTimeOffset.UtcNow;
         var steps = localOrder.Payments
             .Where(payment => payment.Status == InstallmentPaymentStatus.Recorded && payment.Amount > 0m)
             .Select(payment => new LocalInstallmentRefundStep(
-                DeterministicGuid($"refund:{localOrder.InstallmentGuid:D}:{payment.PaymentGuid:D}"),
+                DeterministicGuid($"refund:{operationGuid:D}:{payment.PaymentGuid:D}"),
                 operationGuid,
                 payment.PaymentGuid,
                 payment.Method,
                 payment.Amount,
                 payment.Reference,
-                $"{localOrder.InstallmentGuid:D}:refund:{payment.PaymentGuid:D}",
+                $"{operationGuid:D}:refund:{payment.PaymentGuid:D}",
                 LocalInstallmentRefundStepState.Prepared,
                 null,
                 payment.CardTransactions is null ? null : JsonSerializer.Serialize(payment.CardTransactions, JsonOptions),
@@ -223,6 +281,19 @@ public sealed class InstallmentOperationService(
             session.CashierId,
             cancelRequest.IdempotencyKey!,
             JsonSerializer.Serialize(cancelRequest, JsonOptions)), steps, cancellationToken);
+
+        var claimReady = await EnsureCancelClaimAsync(operation, steps, cancellationToken);
+        if (!claimReady.Succeeded)
+        {
+            return new InstallmentOperationResult<InstallmentCancelResponse>(
+                false,
+                Message: claimReady.Message,
+                RequiresReview: claimReady.RequiresReview);
+        }
+        if (claimReady.Response is not null)
+        {
+            return await CompleteCommittedCancelAsync(operation, claimReady.Response, cancellationToken);
+        }
 
         return await ContinueCancelAsync(operation, localOrder.InstallmentNumber, session, false, cancellationToken);
     }
@@ -243,6 +314,7 @@ public sealed class InstallmentOperationService(
                 {
                     // 退款终端调用在重启前中断时，不能假定没有金融副作用；先把每个未落结果的步骤锁定。
                     var refundSteps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+                    var hadSubmittingRefund = refundSteps.Any(step => step.State == LocalInstallmentRefundStepState.TerminalSubmitting);
                     foreach (var refundStep in refundSteps.Where(step => step.State == LocalInstallmentRefundStepState.TerminalSubmitting))
                     {
                         await repository.TryTransitionRefundStepAsync(
@@ -263,6 +335,39 @@ public sealed class InstallmentOperationService(
                         cancellationToken: CancellationToken.None);
                     var resumedCancel = await repository.GetAsync(operation.OperationGuid, CancellationToken.None);
                     var resumedSteps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+                    if (resumedCancel is not null && !hadSubmittingRefund && !resumedSteps.Any(IsRefundApproved))
+                    {
+                        // operation 已抢占但尚未有任何退款步骤进入 provider；可安全终结旧 claim 并让用户生成新 operation。
+                        var declined = await TryResolveCancelClaimAsync(
+                            resumedCancel,
+                            InstallmentCancelClaimResolveOutcome.Declined,
+                            [],
+                            CancellationToken.None);
+                        if (declined)
+                        {
+                            await repository.TryTransitionAsync(
+                                resumedCancel.OperationGuid,
+                                [LocalInstallmentOperationState.ResultUnknown],
+                                LocalInstallmentOperationState.Failed,
+                                DateTimeOffset.UtcNow,
+                                failureMessage: "重启前尚未调用退款 provider，可重新发起取消。",
+                                cancellationToken: CancellationToken.None);
+                            results.Add(new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.Failed, false, "尚未调用退款 provider，可重新发起取消。"));
+                        }
+                        else
+                        {
+                            results.Add(new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "中央取消 claim 结案失败，保持锁定。"));
+                        }
+                        continue;
+                    }
+                    if (resumedCancel is not null)
+                    {
+                        await TryResolveCancelClaimAsync(
+                            resumedCancel,
+                            InstallmentCancelClaimResolveOutcome.Unknown,
+                            BuildApprovedRefundCommands(resumedSteps),
+                            CancellationToken.None);
+                    }
                     if (resumedCancel is not null && resumedSteps.All(IsRefundApproved))
                     {
                         results.Add(await RecoverCancelAsync(resumedCancel, session, cancellationToken));
@@ -300,6 +405,12 @@ public sealed class InstallmentOperationService(
 
             if (operation.State == LocalInstallmentOperationState.Prepared)
             {
+                if (operation.Kind == LocalInstallmentOperationKind.Repayment)
+                {
+                    results.Add(await RecoverRepaymentAsync(operation, session, cancellationToken));
+                    continue;
+                }
+
                 results.Add(new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, "未提交终端的草稿保留给用户继续。"));
                 continue;
             }
@@ -413,6 +524,422 @@ public sealed class InstallmentOperationService(
         return await ContinueCancelAsync(operation, installmentNumber, session, true, cancellationToken);
     }
 
+    private async Task<RepaymentClaimReady> EnsureRepaymentClaimAsync(
+        LocalInstallmentOperation operation,
+        InstallmentAppendPaymentRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var capabilities = await apiClient.GetRepaymentCapabilitiesAsync(cancellationToken);
+            if (!capabilities.RepaymentClaimsSupported)
+            {
+                return RepaymentClaimReady.Failed("当前服务端不支持安全补款 claim，已在 provider 调用前停止。", requiresReview: true);
+            }
+
+            var claim = await apiClient.CreateRepaymentClaimAsync(
+                operation.InstallmentGuid,
+                new InstallmentRepaymentClaimCreateRequest(
+                    operation.OperationGuid,
+                    request.PaymentGuid,
+                    request.Amount,
+                    request.Method,
+                    operation.IdempotencyKey),
+                cancellationToken);
+            if (claim.Status == InstallmentRepaymentClaimStatus.Committed)
+            {
+                return claim.Commit is null
+                    ? RepaymentClaimReady.Failed("中央补款已提交但缺少结果快照，保持锁定等待对账。", requiresReview: true)
+                    : RepaymentClaimReady.Committed(claim, claim.Commit);
+            }
+
+            if (claim.Status is InstallmentRepaymentClaimStatus.Released or InstallmentRepaymentClaimStatus.Declined)
+            {
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.Prepared],
+                    LocalInstallmentOperationState.Failed,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: $"中央补款 claim 已结束：{claim.Status}",
+                    cancellationToken: CancellationToken.None);
+                return RepaymentClaimReady.Failed("原补款 claim 已结束，请重新发起付款。", requiresReview: false);
+            }
+
+            return RepaymentClaimReady.Success(claim);
+        }
+        catch (CatalogApiException exception) when (exception.ErrorCode is
+            "INSTALLMENT_REPAYMENT_BUSY" or
+            "INSTALLMENT_REPAYMENT_CLAIM_MISMATCH")
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.Failed,
+                DateTimeOffset.UtcNow,
+                failureMessage: exception.Message,
+                cancellationToken: CancellationToken.None);
+            return RepaymentClaimReady.Failed(
+                exception.ErrorCode == "INSTALLMENT_REPAYMENT_BUSY"
+                    ? "该分期正在另一台收银机付款，本机未调用 provider。"
+                    : "补款 claim 与本地付款指纹不一致，本机未调用 provider。",
+                requiresReview: false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return RepaymentClaimReady.Failed($"创建补款 claim 失败，已在 provider 调用前停止：{exception.Message}", requiresReview: true);
+        }
+    }
+
+    private async Task<TerminalReady> BeginRepaymentProviderAsync(
+        LocalInstallmentOperation operation,
+        string provider,
+        string providerAttemptId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var claim = await apiClient.BeginRepaymentProviderAsync(
+                operation.InstallmentGuid,
+                operation.OperationGuid,
+                new InstallmentRepaymentClaimBeginProviderRequest(provider, providerAttemptId),
+                cancellationToken);
+            return claim.Status == InstallmentRepaymentClaimStatus.ProviderPending
+                ? TerminalReady.Success(operation)
+                : TerminalReady.Unknown($"中央补款 claim 状态为 {claim.Status}，禁止调用 provider。");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return TerminalReady.Unknown($"登记补款 provider 失败，未调用 provider：{exception.Message}");
+        }
+    }
+
+    private async Task TryResolveRepaymentClaimAsync(
+        LocalInstallmentOperation operation,
+        InstallmentRepaymentClaimResolveOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await apiClient.ResolveRepaymentClaimAsync(
+                operation.InstallmentGuid,
+                operation.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(outcome),
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // 中文注释：provider 已产生或可能产生副作用时，resolve 失败不能解锁本地 operation；后续仅允许本机按相同 claim 恢复。
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.TerminalSubmitting, LocalInstallmentOperationState.ResultUnknown],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                failureMessage: $"中央补款 claim 结案失败：{exception.Message}",
+                cancellationToken: CancellationToken.None);
+        }
+    }
+
+    private static string? ResolveRepaymentProvider(InstallmentAppendPaymentRequest request) =>
+        request.Method == PaymentMethodKind.Card
+            ? NormalizeRepaymentCardProvider(request.CardTransactions?.FirstOrDefault()?.Processor)
+            : request.Method.ToString();
+
+    private static string? NormalizeRepaymentCardProvider(string? processor)
+    {
+        if (string.IsNullOrWhiteSpace(processor))
+        {
+            return null;
+        }
+
+        var value = processor.Trim();
+        if (value.StartsWith("Square", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Square";
+        }
+        if (value.StartsWith("Linkly", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Linkly";
+        }
+        if (value.StartsWith("ANZ", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ANZ";
+        }
+
+        return null;
+    }
+
+    private static string ResolveRepaymentProviderAttemptId(LocalInstallmentOperation operation, InstallmentAppendPaymentRequest request) =>
+        operation.TerminalAttemptGuid ??
+        (request.Method == PaymentMethodKind.Card
+            ? request.CardTransactions?.FirstOrDefault()?.TxnRef
+            : null) ??
+        operation.OperationGuid.ToString("D");
+
+    private async Task<InstallmentOperationResult<InstallmentAppendPaymentResponse>> CompleteCommittedRepaymentAsync(
+        LocalInstallmentOperation operation,
+        InstallmentAppendPaymentResponse response,
+        CancellationToken cancellationToken)
+    {
+        var local = ToLocalOrder(response.Details);
+        var current = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        if (current.State != LocalInstallmentOperationState.Completed &&
+            !await repository.CompleteWithSnapshotAsync(
+                operation.OperationGuid,
+                [current.State],
+                local,
+                JsonSerializer.Serialize(response, JsonOptions),
+                false,
+                DateTimeOffset.UtcNow,
+                cancellationToken))
+        {
+            return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(false, Message: "中央补款已提交，本地快照正在恢复。", RequiresReview: true);
+        }
+
+        return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(true, response, local, response.Message);
+    }
+
+    private async Task<CancelClaimReady> EnsureCancelClaimAsync(
+        LocalInstallmentOperation operation,
+        IReadOnlyList<LocalInstallmentRefundStep> steps,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var fingerprint = CreateCancelRefundPlanFingerprint(operation.InstallmentGuid, steps);
+            var capabilities = await apiClient.GetRepaymentCapabilitiesAsync(cancellationToken);
+            if (!capabilities.CancelClaimsSupported)
+            {
+                return CancelClaimReady.Failed("当前服务端不支持安全取消 claim，已在退款前停止。", requiresReview: true);
+            }
+
+            InstallmentCancelClaimDto claim;
+            try
+            {
+                claim = await apiClient.GetCancelClaimAsync(operation.InstallmentGuid, operation.OperationGuid, cancellationToken);
+            }
+            catch (CatalogApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                if (!CanRecreateMissingCancelClaim(operation, steps))
+                {
+                    const string message = "远端取消 claim 缺失，但本地已越过退款 provider 前边界；保持锁定并等待人工对账。";
+                    await repository.TryTransitionAsync(
+                        operation.OperationGuid,
+                        [operation.State],
+                        LocalInstallmentOperationState.ResultUnknown,
+                        DateTimeOffset.UtcNow,
+                        failureMessage: message,
+                        cancellationToken: CancellationToken.None);
+                    return CancelClaimReady.Failed(message, requiresReview: true);
+                }
+
+                var request = Deserialize<InstallmentCancelRequest>(operation.RequestJson);
+                claim = await apiClient.CreateCancelClaimAsync(
+                    operation.InstallmentGuid,
+                    new InstallmentCancelClaimCreateRequest(
+                        operation.OperationGuid,
+                        operation.IdempotencyKey,
+                        request.Reason,
+                        fingerprint),
+                    cancellationToken);
+            }
+
+            if (!IsMatchingCancelClaim(operation, fingerprint, claim))
+            {
+                return CancelClaimReady.Failed("取消 claim 与本地耐久退款计划不一致，未调用退款 provider。", requiresReview: true);
+            }
+
+            if (claim.Status == InstallmentCancelClaimStatus.Committed)
+            {
+                return claim.Commit is null
+                    ? CancelClaimReady.Failed("中央取消已提交但缺少结果快照，保持锁定等待对账。", requiresReview: true)
+                    : CancelClaimReady.Committed(claim, ToCancelResponse(operation.InstallmentGuid, claim.Commit));
+            }
+
+            if (claim.Status is InstallmentCancelClaimStatus.Released or InstallmentCancelClaimStatus.Declined)
+            {
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [operation.State],
+                    LocalInstallmentOperationState.Failed,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: $"中央取消 claim 已结束：{claim.Status}",
+                    cancellationToken: CancellationToken.None);
+                return CancelClaimReady.Failed("原取消 claim 已结束，请重新发起取消。", requiresReview: false);
+            }
+
+            return CancelClaimReady.Success(claim);
+        }
+        catch (CatalogApiException exception) when (exception.ErrorCode is
+            "INSTALLMENT_MUTATION_BUSY" or
+            "INSTALLMENT_CANCEL_CLAIM_MISMATCH" or
+            "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED")
+        {
+            var safeToRestart = CanSafelyTerminateCancelBeforeRefund(operation, steps);
+            var terminated = safeToRestart && await TryMarkCancelFailedAsync(operation, exception.Message);
+            if (!terminated)
+            {
+                await LockCancelForReviewAsync(operation, exception.Message);
+            }
+
+            var message = exception.ErrorCode switch
+            {
+                "INSTALLMENT_MUTATION_BUSY" => "该分期正在执行付款或取消，本机未调用退款 provider。",
+                "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED" => "当前服务端不支持该退款方式，本机未调用退款 provider。",
+                _ => "取消 claim 与服务端权威退款计划不一致，本机未调用退款 provider。"
+            };
+            return CancelClaimReady.Failed(
+                message,
+                requiresReview: !terminated);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return CancelClaimReady.Failed($"创建或读取取消 claim 失败，已在退款前停止：{exception.Message}", requiresReview: true);
+        }
+    }
+
+    private async Task<CancelClaimReady> BeginCancelRefundAsync(
+        LocalInstallmentOperation operation,
+        InstallmentCancelClaimDto claim,
+        CancellationToken cancellationToken)
+    {
+        if (claim.Status == InstallmentCancelClaimStatus.RefundPending)
+        {
+            return CancelClaimReady.Success(claim);
+        }
+
+        if (claim.Status is not InstallmentCancelClaimStatus.Prepared and not InstallmentCancelClaimStatus.Unknown)
+        {
+            return CancelClaimReady.Failed($"中央取消 claim 状态为 {claim.Status}，禁止调用退款 provider。", requiresReview: true);
+        }
+
+        try
+        {
+            var begun = await apiClient.BeginCancelRefundAsync(operation.InstallmentGuid, operation.OperationGuid, cancellationToken);
+            return begun.Status == InstallmentCancelClaimStatus.RefundPending
+                ? CancelClaimReady.Success(begun)
+                : CancelClaimReady.Failed($"中央取消 claim 状态为 {begun.Status}，禁止调用退款 provider。", requiresReview: true);
+        }
+        catch (CatalogApiException exception) when (exception.ErrorCode == "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED")
+        {
+            var steps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+            if (claim.Status != InstallmentCancelClaimStatus.Prepared ||
+                !CanSafelyTerminateCancelBeforeRefund(operation, steps))
+            {
+                await LockCancelForReviewAsync(operation, exception.Message);
+                return CancelClaimReady.Failed("取消退款方式不受支持，但本地已越过安全终结边界；保持锁定等待人工对账。", requiresReview: true);
+            }
+
+            var released = await TryResolveCancelClaimAsync(
+                operation,
+                InstallmentCancelClaimResolveOutcome.Released,
+                [],
+                CancellationToken.None);
+            if (!released)
+            {
+                await LockCancelForReviewAsync(operation, "中央取消 claim 释放失败，保持锁定等待人工对账。");
+                return CancelClaimReady.Failed("中央取消 claim 释放失败，保持锁定等待人工对账。", requiresReview: true);
+            }
+
+            if (!await TryMarkCancelFailedAsync(operation, "当前服务端不支持该退款方式，中央 claim 已安全释放。"))
+            {
+                await LockCancelForReviewAsync(operation, "中央取消 claim 已释放，但本地终态落盘失败。");
+                return CancelClaimReady.Failed("中央取消 claim 已释放，但本地终态落盘失败。", requiresReview: true);
+            }
+
+            return CancelClaimReady.Failed("当前服务端不支持该退款方式，本机未调用退款 provider，可重新发起取消。", requiresReview: false);
+        }
+        catch (CatalogApiException exception) when (exception.ErrorCode == "INSTALLMENT_CANCEL_CLAIM_EXPIRED")
+        {
+            try
+            {
+                var steps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+                var current = await apiClient.GetCancelClaimAsync(operation.InstallmentGuid, operation.OperationGuid, CancellationToken.None);
+                var fingerprint = CreateCancelRefundPlanFingerprint(operation.InstallmentGuid, steps);
+                if (!IsMatchingCancelClaim(operation, fingerprint, current) ||
+                    current.Status is not InstallmentCancelClaimStatus.Released and not InstallmentCancelClaimStatus.Declined ||
+                    !CanSafelyTerminateCancelBeforeRefund(operation, steps))
+                {
+                    await LockCancelForReviewAsync(operation, "取消 claim 过期后的远端终态无法安全确认。");
+                    return CancelClaimReady.Failed("取消 claim 过期后的远端终态无法安全确认，保持锁定等待人工对账。", requiresReview: true);
+                }
+
+                if (!await TryMarkCancelFailedAsync(operation, $"中央取消 claim 已结束：{current.Status}"))
+                {
+                    await LockCancelForReviewAsync(operation, "中央取消 claim 已结束，但本地终态落盘失败。");
+                    return CancelClaimReady.Failed("中央取消 claim 已结束，但本地终态落盘失败。", requiresReview: true);
+                }
+
+                return CancelClaimReady.Failed("原取消 claim 已过期结束，请重新发起取消。", requiresReview: false);
+            }
+            catch (Exception refreshException)
+            {
+                await LockCancelForReviewAsync(operation, $"取消 claim 过期后重新读取失败：{refreshException.Message}");
+                return CancelClaimReady.Failed("取消 claim 过期后的远端状态读取失败，保持锁定等待人工对账。", requiresReview: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            return CancelClaimReady.Failed($"登记取消退款阶段失败，未调用退款 provider：{exception.Message}", requiresReview: true);
+        }
+    }
+
+    private async Task<bool> TryResolveCancelClaimAsync(
+        LocalInstallmentOperation operation,
+        InstallmentCancelClaimResolveOutcome outcome,
+        IReadOnlyList<InstallmentRefundPaymentCommandDto> approvedRefunds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = await apiClient.ResolveCancelClaimAsync(
+                operation.InstallmentGuid,
+                operation.OperationGuid,
+                new InstallmentCancelClaimResolveRequest(outcome, approvedRefunds),
+                cancellationToken);
+            return outcome switch
+            {
+                InstallmentCancelClaimResolveOutcome.Released => resolved.Status == InstallmentCancelClaimStatus.Released,
+                InstallmentCancelClaimResolveOutcome.Declined => resolved.Status == InstallmentCancelClaimStatus.Declined,
+                _ => resolved.Status == InstallmentCancelClaimStatus.Unknown
+            };
+        }
+        catch (Exception exception)
+        {
+            // provider 已产生或可能产生副作用时，中央结案失败不能解锁本地操作。
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.TerminalSubmitting, LocalInstallmentOperationState.ResultUnknown],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                failureMessage: $"中央取消 claim 结案失败：{exception.Message}",
+                cancellationToken: CancellationToken.None);
+            return false;
+        }
+    }
+
+    private async Task<InstallmentOperationResult<InstallmentCancelResponse>> CompleteCommittedCancelAsync(
+        LocalInstallmentOperation operation,
+        InstallmentCancelResponse response,
+        CancellationToken cancellationToken)
+    {
+        var local = ToLocalOrder(response.Details);
+        var current = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        if (current.State != LocalInstallmentOperationState.Completed &&
+            !await repository.CompleteWithSnapshotAsync(
+                operation.OperationGuid,
+                [current.State],
+                local,
+                JsonSerializer.Serialize(response, JsonOptions),
+                true,
+                DateTimeOffset.UtcNow,
+                cancellationToken))
+        {
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "中央取消已提交，本地快照正在恢复。", RequiresReview: true);
+        }
+
+        return new InstallmentOperationResult<InstallmentCancelResponse>(true, response, local, response.Message);
+    }
+
     private async Task<TerminalReady> EnsureCreateTerminalApprovalAsync(LocalInstallmentOperation operation, PosSessionState session, bool authorizeCard, CancellationToken cancellationToken)
     {
         var request = Deserialize<InstallmentCreateRequest>(operation.RequestJson);
@@ -446,15 +973,30 @@ public sealed class InstallmentOperationService(
     private async Task<TerminalReady> EnsureRepaymentTerminalApprovalAsync(LocalInstallmentOperation operation, PosSessionState session, bool authorizeCard, CancellationToken cancellationToken)
     {
         var request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
-        if (!authorizeCard || request.Method != PaymentMethodKind.Card || request.CardTransactions is { Count: > 0 })
+        if (request.Method == PaymentMethodKind.Voucher && string.IsNullOrWhiteSpace(request.ReservationToken))
         {
-            return await MarkTerminalApprovedAsync(operation, operation.RequestJson, cancellationToken);
+            return await EnsureVoucherRepaymentApprovalAsync(operation, request, session, cancellationToken);
         }
 
-        var claim = await repository.TryTransitionAsync(operation.OperationGuid, [LocalInstallmentOperationState.Prepared], LocalInstallmentOperationState.TerminalSubmitting, DateTimeOffset.UtcNow, cancellationToken: cancellationToken);
-        if (!claim)
+        if (!authorizeCard || request.Method != PaymentMethodKind.Card || request.CardTransactions is { Count: > 0 })
         {
-            return await ReadReadyOrUnknownAsync(operation.OperationGuid, cancellationToken);
+            var provider = ResolveRepaymentProvider(request);
+            if (string.IsNullOrWhiteSpace(provider))
+            {
+                return TerminalReady.Unknown("无法确定具体银行卡处理器，未登记 claim begin 且未调用付款 provider。");
+            }
+
+            var begin = await BeginRepaymentProviderAsync(
+                operation,
+                provider,
+                ResolveRepaymentProviderAttemptId(operation, request),
+                cancellationToken);
+            if (!begin.Succeeded)
+            {
+                return begin;
+            }
+
+            return await MarkTerminalApprovedAsync(operation, operation.RequestJson, cancellationToken);
         }
 
         return await ApproveCardAsync(
@@ -467,24 +1009,185 @@ public sealed class InstallmentOperationService(
                 Reference = authorization.Reference ?? request.Reference,
                 CardTransactions = authorization.CardTransactions
             }, JsonOptions),
-            cancellationToken);
+            cancellationToken,
+            beginRepaymentClaim: true);
     }
 
-    private async Task<TerminalReady> ApproveCardAsync(LocalInstallmentOperation operation, decimal amount, PosSessionState session, Func<PaymentAuthorizationResult, string> approvedRequestFactory, CancellationToken cancellationToken)
+    private async Task<TerminalReady> EnsureVoucherRepaymentApprovalAsync(
+        LocalInstallmentOperation operation,
+        InstallmentAppendPaymentRequest request,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        var providerAttemptId = operation.OperationGuid.ToString("D");
+        var begin = await BeginRepaymentProviderAsync(operation, PaymentMethodKind.Voucher.ToString(), providerAttemptId, cancellationToken);
+        if (!begin.Succeeded)
+        {
+            return begin;
+        }
+
+        if (!await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.TerminalSubmitting,
+                DateTimeOffset.UtcNow,
+                terminalAttemptGuid: providerAttemptId,
+                terminalProcessor: PaymentMethodKind.Voucher.ToString(),
+                cancellationToken: CancellationToken.None))
+        {
+            // 另一恢复入口可能已进入 provider；本地竞争失败不能把中央 claim 错误解锁为 Declined。
+            return TerminalReady.Unknown("礼券补款正在恢复，请勿重复预占。");
+        }
+
+        try
+        {
+            var authorization = await voucherTenderClient.RedeemAsync(request.Amount, session, request.Reference, cancellationToken);
+            if (authorization.ResultUnknown)
+            {
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.TerminalSubmitting],
+                    LocalInstallmentOperationState.ResultUnknown,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: authorization.Message ?? "礼券预占结果未知。",
+                    cancellationToken: CancellationToken.None);
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                return TerminalReady.Unknown("礼券预占结果未知，请勿重复操作。");
+            }
+
+            if (!authorization.Approved || !HasExactAuthorizedAmount(authorization, request.Amount))
+            {
+                var (lockedVoucherCode, lockedReservationToken) = OrderUploadService.ParseVoucherReference(authorization.Reference);
+                if (!string.IsNullOrWhiteSpace(lockedVoucherCode) && !string.IsNullOrWhiteSpace(lockedReservationToken))
+                {
+                    // Voucher redeem 是预占。即使批准金额不足，只要返回了 token，就必须先确认释放后才能把 claim 结为 Declined。
+                    var released = await voucherTenderClient.ReleaseAsync(
+                        session,
+                        lockedVoucherCode,
+                        lockedReservationToken,
+                        CancellationToken.None);
+                    if (!released)
+                    {
+                        await repository.TryTransitionAsync(
+                            operation.OperationGuid,
+                            [LocalInstallmentOperationState.TerminalSubmitting],
+                            LocalInstallmentOperationState.ResultUnknown,
+                            DateTimeOffset.UtcNow,
+                            failureMessage: "礼券不足额预占未确认释放。",
+                            cancellationToken: CancellationToken.None);
+                        await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                        return TerminalReady.Unknown("礼券预占释放结果未知，保持锁定等待对账。");
+                    }
+                }
+                else if (authorization.Approved)
+                {
+                    await repository.TryTransitionAsync(
+                        operation.OperationGuid,
+                        [LocalInstallmentOperationState.TerminalSubmitting],
+                        LocalInstallmentOperationState.ResultUnknown,
+                        DateTimeOffset.UtcNow,
+                        failureMessage: "礼券已部分批准但缺少可释放的 reservation token。",
+                        cancellationToken: CancellationToken.None);
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                    return TerminalReady.Unknown("礼券部分批准证据不完整，保持锁定等待对账。");
+                }
+
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.TerminalSubmitting],
+                    LocalInstallmentOperationState.Failed,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: authorization.Message ?? "礼券未获批准。",
+                    cancellationToken: CancellationToken.None);
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Declined, CancellationToken.None);
+                return TerminalReady.Failed(authorization.Message ?? "礼券未获批准。");
+            }
+
+            var (voucherCode, reservationToken) = OrderUploadService.ParseVoucherReference(authorization.Reference);
+            if (string.IsNullOrWhiteSpace(voucherCode) || string.IsNullOrWhiteSpace(reservationToken))
+            {
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.TerminalSubmitting],
+                    LocalInstallmentOperationState.ResultUnknown,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: "礼券已批准但缺少可恢复的 reservation token。",
+                    cancellationToken: CancellationToken.None);
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                return TerminalReady.Unknown("礼券批准证据不完整，保持锁定等待对账。");
+            }
+
+            var approvedRequest = request with
+            {
+                Amount = authorization.AuthorizedAmount ?? request.Amount,
+                Reference = voucherCode,
+                ReservationToken = reservationToken
+            };
+            if (!await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.TerminalSubmitting],
+                    LocalInstallmentOperationState.TerminalApproved,
+                    DateTimeOffset.UtcNow,
+                    requestJson: JsonSerializer.Serialize(approvedRequest, JsonOptions),
+                    cancellationToken: CancellationToken.None))
+            {
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                return TerminalReady.Unknown("礼券批准结果未能持久化，保持锁定等待恢复。");
+            }
+
+            var approved = await repository.GetAsync(operation.OperationGuid, CancellationToken.None)
+                ?? throw new InvalidOperationException("礼券补款批准状态未保存。");
+            return TerminalReady.Success(approved);
+        }
+        catch (Exception exception)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.TerminalSubmitting],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                failureMessage: exception.Message,
+                cancellationToken: CancellationToken.None);
+            await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+            return TerminalReady.Unknown("礼券预占结果未知，请勿重复操作。");
+        }
+    }
+
+    private async Task<TerminalReady> ApproveCardAsync(LocalInstallmentOperation operation, decimal amount, PosSessionState session, Func<PaymentAuthorizationResult, string> approvedRequestFactory, CancellationToken cancellationToken, bool beginRepaymentClaim = false)
     {
         TerminalAttemptScope? terminalAttempt = null;
         try
         {
             terminalAttempt = await CreateTerminalAttemptScopeAsync(operation, amount, session, cancellationToken);
-            if (terminalAttempt.AttemptGuid is not null && !await repository.TryTransitionAsync(
+            var providerAttemptId = terminalAttempt.AttemptGuid?.ToString("D") ?? operation.OperationGuid.ToString("D");
+            var provider = NormalizeRepaymentCardProvider(terminalAttempt.Processor);
+            if (beginRepaymentClaim)
+            {
+                if (string.IsNullOrWhiteSpace(provider))
+                {
+                    return TerminalReady.Unknown("无法确定具体银行卡处理器，未登记 claim begin 且未调用付款 provider。");
+                }
+
+                var begin = await BeginRepaymentProviderAsync(operation, provider, providerAttemptId, cancellationToken);
+                if (!begin.Succeeded)
+                {
+                    return begin;
+                }
+            }
+
+            var expectedStates = beginRepaymentClaim
+                ? new[] { LocalInstallmentOperationState.Prepared }
+                : new[] { LocalInstallmentOperationState.TerminalSubmitting };
+            if (!await repository.TryTransitionAsync(
                     operation.OperationGuid,
-                    [LocalInstallmentOperationState.TerminalSubmitting],
+                    expectedStates,
                     LocalInstallmentOperationState.TerminalSubmitting,
                     DateTimeOffset.UtcNow,
-                    terminalAttemptGuid: terminalAttempt.AttemptGuid.Value.ToString("D"),
-                    terminalProcessor: terminalAttempt.Processor,
+                    terminalAttemptGuid: providerAttemptId,
+                    terminalProcessor: provider,
                     cancellationToken: CancellationToken.None))
             {
+                // 另一恢复入口可能已进入 provider；本地竞争失败不能把中央 claim 错误解锁为 Declined。
                 return TerminalReady.Unknown("终端操作正在恢复，请勿重复收款。");
             }
             using var terminalContext = terminalAttempt.BeginContext();
@@ -501,6 +1204,10 @@ public sealed class InstallmentOperationService(
                     terminalAttemptGuid: terminalAttemptGuid,
                     terminalProcessor: authorization.Processor ?? terminalAttempt.Processor,
                     cancellationToken: CancellationToken.None);
+                if (beginRepaymentClaim)
+                {
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                }
                 return TerminalReady.Unknown(authorization.Message ?? "终端结果未知，请勿重复收款。");
             }
 
@@ -510,6 +1217,10 @@ public sealed class InstallmentOperationService(
                 if (!await repository.TryTransitionAsync(operation.OperationGuid, [LocalInstallmentOperationState.TerminalSubmitting], LocalInstallmentOperationState.Failed, DateTimeOffset.UtcNow, terminalProcessor: authorization.Processor, failureMessage: authorization.Message, cancellationToken: CancellationToken.None))
                 {
                     return TerminalReady.Unknown("Terminal rejection could not be durably recorded; payment remains locked.");
+                }
+                if (beginRepaymentClaim)
+                {
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Declined, CancellationToken.None);
                 }
                 return TerminalReady.Failed(authorization.Message ?? "银行卡未获批准。");
             }
@@ -527,6 +1238,10 @@ public sealed class InstallmentOperationService(
                     terminalProcessor: authorization.Processor ?? terminalAttempt.Processor,
                     failureMessage: "Terminal approved amount did not match the persisted installment amount.",
                     cancellationToken: CancellationToken.None);
+                if (beginRepaymentClaim)
+                {
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                }
                 return TerminalReady.Unknown("终端批准金额与分期金额不一致，保持锁定，请勿重复收款。");
             }
 
@@ -550,6 +1265,10 @@ public sealed class InstallmentOperationService(
                 terminalAttemptGuid: terminalAttempt?.AttemptGuid?.ToString("D"),
                 terminalProcessor: terminalAttempt?.Processor,
                 cancellationToken: CancellationToken.None);
+            if (beginRepaymentClaim)
+            {
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+            }
             return TerminalReady.Unknown("终端结果未知，请勿重复收款。");
         }
         catch (Exception exception)
@@ -563,6 +1282,10 @@ public sealed class InstallmentOperationService(
                 terminalProcessor: terminalAttempt?.Processor,
                 failureMessage: exception.Message,
                 cancellationToken: CancellationToken.None);
+            if (beginRepaymentClaim)
+            {
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+            }
             return TerminalReady.Unknown("终端结果未知，请勿重复收款。");
         }
         finally
@@ -793,7 +1516,20 @@ public sealed class InstallmentOperationService(
 
         try
         {
-            var response = await apiClient.AppendPaymentAsync(request, cancellationToken);
+            var committedClaim = await apiClient.CommitRepaymentClaimAsync(
+                operation.InstallmentGuid,
+                operation.OperationGuid,
+                new InstallmentRepaymentClaimCommitRequest(
+                    request.Reference,
+                    request.ReservationToken,
+                    request.CardTransactions),
+                cancellationToken);
+            var response = committedClaim.Commit;
+            if (committedClaim.Status != InstallmentRepaymentClaimStatus.Committed || response is null)
+            {
+                await MarkApiUnknownAsync(operation.OperationGuid, $"中央补款 claim 返回状态 {committedClaim.Status}，缺少提交结果。", CancellationToken.None);
+                return new InstallmentOperationResult<InstallmentAppendPaymentResponse>(false, Message: "补款提交结果不完整，保持锁定等待恢复。", RequiresReview: true);
+            }
             var local = ToLocalOrder(response.Details);
             if (!await repository.CompleteWithSnapshotAsync(operation.OperationGuid, [LocalInstallmentOperationState.ApiSubmitting], local, JsonSerializer.Serialize(response, JsonOptions), false, DateTimeOffset.UtcNow, cancellationToken))
             {
@@ -815,18 +1551,52 @@ public sealed class InstallmentOperationService(
 
     private async Task<InstallmentOperationResult<InstallmentCancelResponse>> ContinueCancelAsync(LocalInstallmentOperation operation, string installmentNumber, PosSessionState session, bool supervisorResolved, CancellationToken cancellationToken)
     {
+        if (!string.Equals(operation.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(operation.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消退款仅允许原设备恢复。", RequiresReview: true);
+        }
+
         var steps = await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken);
+        var claimReady = await EnsureCancelClaimAsync(operation, steps, cancellationToken);
+        if (!claimReady.Succeeded)
+        {
+            if (claimReady.RequiresReview)
+            {
+                await LockCancelForReviewAsync(operation, claimReady.Message ?? "取消 claim 状态无法安全确认。");
+            }
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: claimReady.Message, RequiresReview: claimReady.RequiresReview);
+        }
+        if (claimReady.Response is not null)
+        {
+            return await CompleteCommittedCancelAsync(operation, claimReady.Response, cancellationToken);
+        }
+
         if ((operation.State is LocalInstallmentOperationState.ApiSubmitting or LocalInstallmentOperationState.ResultUnknown) && steps.All(IsRefundApproved))
         {
             return await PersistApprovedRefundSnapshotAndSubmitAsync(operation, steps, cancellationToken);
         }
 
-        if ((operation.State == LocalInstallmentOperationState.ResultUnknown && !supervisorResolved) || steps.Any(step => step.State == LocalInstallmentRefundStepState.ResultUnknown))
+        var hasUnknownStep = steps.Any(step => step.State == LocalInstallmentRefundStepState.ResultUnknown);
+        var partialApprovedRetry = operation.State == LocalInstallmentOperationState.ResultUnknown &&
+            !hasUnknownStep &&
+            steps.Any(IsRefundApproved);
+        if ((operation.State == LocalInstallmentOperationState.ResultUnknown && !supervisorResolved && !partialApprovedRetry) || hasUnknownStep)
         {
             return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "退款结果未知，已锁定等待主管三态结案。", RequiresReview: true);
         }
 
-        var expected = supervisorResolved
+        var begun = await BeginCancelRefundAsync(operation, claimReady.Claim!, cancellationToken);
+        if (!begun.Succeeded)
+        {
+            if (begun.RequiresReview)
+            {
+                await LockCancelForReviewAsync(operation, begun.Message ?? "取消退款阶段无法安全确认。");
+            }
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: begun.Message, RequiresReview: begun.RequiresReview);
+        }
+
+        var expected = supervisorResolved || partialApprovedRetry
             ? new[] { LocalInstallmentOperationState.Prepared, LocalInstallmentOperationState.TerminalApproved, LocalInstallmentOperationState.ResultUnknown }
             : new[] { LocalInstallmentOperationState.Prepared, LocalInstallmentOperationState.TerminalApproved };
         var claimed = await repository.TryTransitionAsync(operation.OperationGuid, expected, LocalInstallmentOperationState.TerminalSubmitting, DateTimeOffset.UtcNow, cancellationToken: cancellationToken);
@@ -858,21 +1628,33 @@ public sealed class InstallmentOperationService(
             if (result.RequiresReview)
             {
                 await repository.TryTransitionAsync(operation.OperationGuid, [LocalInstallmentOperationState.TerminalSubmitting], LocalInstallmentOperationState.ResultUnknown, DateTimeOffset.UtcNow, failureMessage: result.Message, cancellationToken: CancellationToken.None);
+                var currentSteps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+                await TryResolveCancelClaimAsync(operation, InstallmentCancelClaimResolveOutcome.Unknown, BuildApprovedRefundCommands(currentSteps), CancellationToken.None);
                 return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: result.Message, RequiresReview: true);
             }
 
             if (!result.Succeeded)
             {
-                var hasApproved = (await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken)).Any(IsRefundApproved);
-                // 终端明确拒绝没有退款副作用。保留已批准步骤，下一次取消只会执行仍处于 Prepared 的步骤。
+                var currentSteps = await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken);
+                var approvedRefunds = BuildApprovedRefundCommands(currentSteps);
+                var hasApproved = approvedRefunds.Count > 0;
+                var outcome = hasApproved
+                    ? InstallmentCancelClaimResolveOutcome.Unknown
+                    : InstallmentCancelClaimResolveOutcome.Declined;
+                var resolved = await TryResolveCancelClaimAsync(operation, outcome, approvedRefunds, CancellationToken.None);
+                if (!resolved)
+                {
+                    return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "中央取消 claim 结案失败，保持锁定等待恢复。", RequiresReview: true);
+                }
+                // 零成功的明确拒绝可终结本次 claim；部分退款已成功则保持 Unknown，只允许本机继续同一 operation。
                 await repository.TryTransitionAsync(
                     operation.OperationGuid,
                     [LocalInstallmentOperationState.TerminalSubmitting],
-                    hasApproved ? LocalInstallmentOperationState.TerminalApproved : LocalInstallmentOperationState.Prepared,
+                    hasApproved ? LocalInstallmentOperationState.ResultUnknown : LocalInstallmentOperationState.Failed,
                     DateTimeOffset.UtcNow,
                     failureMessage: result.Message,
                     cancellationToken: CancellationToken.None);
-                return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: result.Message);
+                return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: result.Message, RequiresReview: hasApproved);
             }
         }
 
@@ -890,6 +1672,35 @@ public sealed class InstallmentOperationService(
         IReadOnlyList<LocalInstallmentRefundStep> steps,
         CancellationToken cancellationToken)
     {
+        var claimReady = await EnsureCancelClaimAsync(operation, steps, cancellationToken);
+        if (!claimReady.Succeeded)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.TerminalSubmitting, LocalInstallmentOperationState.TerminalApproved],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                failureMessage: claimReady.Message,
+                cancellationToken: CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: claimReady.Message, RequiresReview: claimReady.RequiresReview);
+        }
+        if (claimReady.Response is not null)
+        {
+            return await CompleteCommittedCancelAsync(operation, claimReady.Response, cancellationToken);
+        }
+        var begun = await BeginCancelRefundAsync(operation, claimReady.Claim!, cancellationToken);
+        if (!begun.Succeeded)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.TerminalSubmitting, LocalInstallmentOperationState.TerminalApproved],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                failureMessage: begun.Message,
+                cancellationToken: CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: begun.Message, RequiresReview: begun.RequiresReview);
+        }
+
         var original = Deserialize<InstallmentCancelRequest>(operation.RequestJson);
         var request = original with
         {
@@ -899,7 +1710,8 @@ public sealed class InstallmentOperationService(
                 step.Amount,
                 step.RefundReference ?? step.OriginalReference,
                 DeserializeTransactions(step.CardTransactionsJson),
-                step.IdempotencyKey)).ToList()
+                RefundStepIdempotencyKey(step),
+                step.OriginalPaymentGuid)).ToList()
         };
 
         // 退款全部获批后，先用 CAS 固化最终退款快照；读取确认成功后才调用取消 API。
@@ -935,23 +1747,52 @@ public sealed class InstallmentOperationService(
 
         try
         {
-            var response = await apiClient.CancelAsync(request, cancellationToken);
-            var local = ToLocalOrder(response.Details);
-            if (!await repository.CompleteWithSnapshotAsync(operation.OperationGuid, [LocalInstallmentOperationState.ApiSubmitting], local, JsonSerializer.Serialize(response, JsonOptions), true, DateTimeOffset.UtcNow, cancellationToken))
+            InstallmentCancelClaimDto committedClaim;
+            try
             {
-                return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消结果已提交，正在安全对账，不会重复退款。", RequiresReview: true);
+                committedClaim = await apiClient.CommitCancelClaimAsync(
+                    operation.InstallmentGuid,
+                    operation.OperationGuid,
+                    new InstallmentCancelClaimCommitRequest(request.Refunds),
+                    cancellationToken);
             }
-            return new InstallmentOperationResult<InstallmentCancelResponse>(true, response, local, response.Message);
+            catch (Exception firstException)
+            {
+                // commit 可能已成功而响应丢失；只 GET/重提同一 commit，绝不重新遍历退款步骤。
+                try
+                {
+                    committedClaim = await apiClient.GetCancelClaimAsync(operation.InstallmentGuid, operation.OperationGuid, CancellationToken.None);
+                    if (committedClaim.Status == InstallmentCancelClaimStatus.RefundPending)
+                    {
+                        committedClaim = await apiClient.CommitCancelClaimAsync(
+                            operation.InstallmentGuid,
+                            operation.OperationGuid,
+                            new InstallmentCancelClaimCommitRequest(request.Refunds),
+                            CancellationToken.None);
+                    }
+                }
+                catch (Exception recoveryException)
+                {
+                    await MarkApiUnknownAsync(operation.OperationGuid, $"{firstException.Message}; commit 恢复失败：{recoveryException.Message}", CancellationToken.None);
+                    return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消提交结果未知，退款不会重复执行。", RequiresReview: true);
+                }
+            }
+
+            if (committedClaim.Status != InstallmentCancelClaimStatus.Committed || committedClaim.Commit is null)
+            {
+                await MarkApiUnknownAsync(operation.OperationGuid, $"中央取消 claim 返回状态 {committedClaim.Status}，缺少提交结果。", CancellationToken.None);
+                return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消提交结果不完整，退款不会重复执行。", RequiresReview: true);
+            }
+
+            return await CompleteCommittedCancelAsync(
+                operation,
+                ToCancelResponse(operation.InstallmentGuid, committedClaim.Commit),
+                cancellationToken);
         }
-        catch (OperationCanceledException)
-        {
-            await MarkApiUnknownAsync(operation.OperationGuid, "取消 API 调用已取消，结果未知。", CancellationToken.None);
-            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消结果未知，退款不会重复执行。", RequiresReview: true);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             await MarkApiUnknownAsync(operation.OperationGuid, exception.Message, CancellationToken.None);
-            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消 API 结果未知，退款不会重复执行。", RequiresReview: true);
+            return new InstallmentOperationResult<InstallmentCancelResponse>(false, Message: "取消提交结果未知，退款不会重复执行。", RequiresReview: true);
         }
     }
 
@@ -1138,12 +1979,163 @@ public sealed class InstallmentOperationService(
     private async Task<InstallmentOperationRecoveryResult> RecoverRepaymentAsync(LocalInstallmentOperation operation, PosSessionState session, CancellationToken cancellationToken)
     {
         var request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
+        InstallmentRepaymentClaimDto claim;
+        try
+        {
+            claim = await apiClient.GetRepaymentClaimAsync(operation.InstallmentGuid, operation.OperationGuid, cancellationToken);
+        }
+        catch (CatalogApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            if (!CanRecreateMissingRepaymentClaim(operation, request))
+            {
+                const string message = "远端补款 claim 缺失，但本地已有 provider attempt 或批准证据；保持锁定并等待人工对账。";
+                await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    [operation.State],
+                    LocalInstallmentOperationState.ResultUnknown,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: message,
+                    cancellationToken: CancellationToken.None);
+                return new InstallmentOperationRecoveryResult(
+                    operation.OperationGuid,
+                    operation.Kind,
+                    LocalInstallmentOperationState.ResultUnknown,
+                    false,
+                    message);
+            }
+
+            // 中文注释：只有纯 Prepared 且无任何 provider 证据的本地 action，才能证明 create claim 可能尚未到达服务端。
+            var recreated = await EnsureRepaymentClaimAsync(operation, request, cancellationToken);
+            if (!recreated.Succeeded || recreated.Claim is null)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, recreated.Message);
+            }
+
+            if (recreated.Response is not null)
+            {
+                var completed = await CompleteCommittedRepaymentAsync(operation, recreated.Response, cancellationToken);
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, completed.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown, completed.Succeeded, completed.Message);
+            }
+
+            claim = recreated.Claim;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, $"读取中央补款 claim 失败，保持锁定：{exception.Message}");
+        }
+
+        if (claim.Status == InstallmentRepaymentClaimStatus.Committed)
+        {
+            if (claim.Commit is null)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "中央补款已提交但缺少结果快照，保持锁定。");
+            }
+
+            var completed = await CompleteCommittedRepaymentAsync(operation, claim.Commit, cancellationToken);
+            return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, completed.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown, completed.Succeeded, completed.Message);
+        }
+
+        if (claim.Status is InstallmentRepaymentClaimStatus.Released or InstallmentRepaymentClaimStatus.Declined)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [operation.State],
+                LocalInstallmentOperationState.Failed,
+                DateTimeOffset.UtcNow,
+                failureMessage: $"中央补款 claim 已结束：{claim.Status}",
+                cancellationToken: CancellationToken.None);
+            return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.Failed, false, "原补款 claim 已结束，可重新发起付款。");
+        }
+
+        if (claim.Status == InstallmentRepaymentClaimStatus.Unknown &&
+            !string.IsNullOrWhiteSpace(claim.Provider) &&
+            !string.IsNullOrWhiteSpace(claim.ProviderAttemptId))
+        {
+            var resumed = await BeginRepaymentProviderAsync(operation, claim.Provider, claim.ProviderAttemptId, cancellationToken);
+            if (!resumed.Succeeded)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, resumed.Message);
+            }
+        }
+
+        if (request.Method == PaymentMethodKind.Card &&
+            request.CardTransactions is not { Count: > 0 } &&
+            operation.State == LocalInstallmentOperationState.Prepared &&
+            claim.Status is InstallmentRepaymentClaimStatus.ProviderPending or InstallmentRepaymentClaimStatus.Unknown)
+        {
+            if (string.IsNullOrWhiteSpace(claim.Provider) || string.IsNullOrWhiteSpace(claim.ProviderAttemptId))
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "中央补款缺少卡 provider attempt 绑定，保持锁定。");
+            }
+
+            // begin-provider 已成功但本地状态尚未来得及推进：先把中央耐久 attempt 绑定回本地，再且仅再做 provider 查询。
+            var bound = await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.ResultUnknown,
+                DateTimeOffset.UtcNow,
+                terminalAttemptGuid: claim.ProviderAttemptId,
+                terminalProcessor: claim.Provider,
+                failureMessage: "begin-provider 后本地状态中断，正在查询原卡 attempt。",
+                cancellationToken: CancellationToken.None);
+            operation = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+            if (!bound && operation.State is not LocalInstallmentOperationState.ResultUnknown and not LocalInstallmentOperationState.TerminalApproved and not LocalInstallmentOperationState.ApiSubmitting)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, "原卡 attempt 正由另一恢复入口处理。");
+            }
+        }
+
+        if (request.Method == PaymentMethodKind.Voucher &&
+            string.IsNullOrWhiteSpace(request.ReservationToken) &&
+            claim.Status is InstallmentRepaymentClaimStatus.ProviderPending or InstallmentRepaymentClaimStatus.Unknown)
+        {
+            if (operation.State != LocalInstallmentOperationState.Prepared)
+            {
+                // 本地已越过 provider 前置状态却没有 reservation token，结果只能保持 Unknown，绝不能再次兑换。
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "礼券 reservation 结果未知，禁止重复兑换。");
+            }
+
+            // 礼券调用严格位于 Prepared -> TerminalSubmitting 之后；仍为 Prepared 证明 provider 尚未执行，可安全推进一次。
+            var ready = await EnsureVoucherRepaymentApprovalAsync(operation, request, session, cancellationToken);
+            if (!ready.Succeeded || ready.Operation is null)
+            {
+                var current = await repository.GetAsync(operation.OperationGuid, CancellationToken.None);
+                return new InstallmentOperationRecoveryResult(
+                    operation.OperationGuid,
+                    operation.Kind,
+                    current?.State ?? LocalInstallmentOperationState.ResultUnknown,
+                    false,
+                    ready.Message);
+            }
+
+            operation = ready.Operation;
+            request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
+        }
+
+        if (operation.State == LocalInstallmentOperationState.Prepared &&
+            claim.Status is InstallmentRepaymentClaimStatus.ProviderPending or InstallmentRepaymentClaimStatus.Unknown &&
+            (request.Method == PaymentMethodKind.Cash ||
+             request.Method == PaymentMethodKind.Voucher && !string.IsNullOrWhiteSpace(request.ReservationToken) ||
+             request.Method == PaymentMethodKind.Card && request.CardTransactions is { Count: > 0 }))
+        {
+            // 现金没有外部 provider；已有礼券/卡证据也不再授权，只补齐 begin 后未落下的本地批准状态。
+            var ready = await MarkTerminalApprovedAsync(operation, operation.RequestJson, cancellationToken);
+            if (!ready.Succeeded || ready.Operation is null)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, ready.Message);
+            }
+
+            operation = ready.Operation;
+        }
+
         if (request.Method == PaymentMethodKind.Card && request.CardTransactions is not { Count: > 0 })
         {
             var terminalRecovery = await ReadPersistedTerminalApprovalAsync(operation, session, cancellationToken);
             if (terminalRecovery.Rejected)
             {
                 await repository.TryTransitionAsync(operation.OperationGuid, [LocalInstallmentOperationState.ResultUnknown], LocalInstallmentOperationState.Failed, DateTimeOffset.UtcNow, failureMessage: "终端明确拒绝或取消。", cancellationToken: CancellationToken.None);
+                await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Declined, CancellationToken.None);
                 return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.Failed, false, "终端已明确拒绝或取消，可重新操作。");
             }
 
@@ -1158,7 +2150,26 @@ public sealed class InstallmentOperationService(
                 operation = (await repository.GetAsync(operation.OperationGuid, cancellationToken))!;
             }
             else
-            return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "未确认终端批准，禁止自动重扣。");
+            {
+                if (claim.Status is InstallmentRepaymentClaimStatus.ProviderPending or InstallmentRepaymentClaimStatus.Unknown)
+                {
+                    // Unknown 可能已通过同 provider/attempt 的 begin 恢复成 ProviderPending；未确认时必须再次归档为 Unknown。
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                }
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, "未确认终端批准，禁止自动重扣。");
+            }
+        }
+
+        if (claim.Status == InstallmentRepaymentClaimStatus.Prepared)
+        {
+            var ready = await EnsureRepaymentTerminalApprovalAsync(operation, session, authorizeCard: false, cancellationToken);
+            if (!ready.Succeeded || ready.Operation is null)
+            {
+                return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.ResultUnknown, false, ready.Message);
+            }
+
+            operation = ready.Operation;
+            request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
         }
 
         var result = await SubmitRepaymentAsync(operation, request, cancellationToken, allowStaleApiSubmittingClaim: true);
@@ -1268,6 +2279,147 @@ public sealed class InstallmentOperationService(
 
     private static string EnsureIdempotencyKey(string? value, Guid scope) => string.IsNullOrWhiteSpace(value) ? $"{scope:D}:installment" : value.Trim();
     private static bool IsRefundApproved(LocalInstallmentRefundStep step) => step.State is LocalInstallmentRefundStepState.Approved or LocalInstallmentRefundStepState.Completed or LocalInstallmentRefundStepState.SupervisorConfirmedRefunded;
+    private static bool CanRecreateMissingRepaymentClaim(
+        LocalInstallmentOperation operation,
+        InstallmentAppendPaymentRequest request) =>
+        operation.State == LocalInstallmentOperationState.Prepared &&
+        string.IsNullOrWhiteSpace(operation.TerminalAttemptGuid) &&
+        string.IsNullOrWhiteSpace(operation.TerminalProcessor) &&
+        string.IsNullOrWhiteSpace(operation.ResponseJson) &&
+        request.CardTransactions is not { Count: > 0 } &&
+        string.IsNullOrWhiteSpace(request.ReservationToken) &&
+        (request.Method != PaymentMethodKind.Card || string.IsNullOrWhiteSpace(request.Reference));
+
+    private static bool CanRecreateMissingCancelClaim(
+        LocalInstallmentOperation operation,
+        IReadOnlyList<LocalInstallmentRefundStep> steps) =>
+        operation.State == LocalInstallmentOperationState.Prepared &&
+        string.IsNullOrWhiteSpace(operation.TerminalAttemptGuid) &&
+        string.IsNullOrWhiteSpace(operation.TerminalProcessor) &&
+        string.IsNullOrWhiteSpace(operation.ResponseJson) &&
+        steps.Count > 0 &&
+        steps.All(step =>
+            step.State == LocalInstallmentRefundStepState.Prepared &&
+            string.IsNullOrWhiteSpace(step.RefundReference) &&
+            step.SupervisorDecision is null);
+
+    private static bool CanSafelyTerminateCancelBeforeRefund(
+        LocalInstallmentOperation operation,
+        IReadOnlyList<LocalInstallmentRefundStep> steps) =>
+        operation.State == LocalInstallmentOperationState.Prepared &&
+        steps.Count > 0 &&
+        steps.All(step => step.State == LocalInstallmentRefundStepState.Prepared);
+
+    private static bool IsMatchingCancelClaim(
+        LocalInstallmentOperation operation,
+        string fingerprint,
+        InstallmentCancelClaimDto claim) =>
+        claim.InstallmentGuid == operation.InstallmentGuid &&
+        claim.OperationGuid == operation.OperationGuid &&
+        string.Equals(claim.IdempotencyKey, operation.IdempotencyKey, StringComparison.Ordinal) &&
+        string.Equals(claim.RefundPlanFingerprint, fingerprint, StringComparison.Ordinal);
+
+    private async Task<bool> TryMarkCancelFailedAsync(LocalInstallmentOperation operation, string failureMessage)
+    {
+        if (await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [operation.State],
+                LocalInstallmentOperationState.Failed,
+                DateTimeOffset.UtcNow,
+                failureMessage: failureMessage,
+                cancellationToken: CancellationToken.None))
+        {
+            return true;
+        }
+
+        return (await repository.GetAsync(operation.OperationGuid, CancellationToken.None))?.State == LocalInstallmentOperationState.Failed;
+    }
+
+    private Task<bool> LockCancelForReviewAsync(LocalInstallmentOperation operation, string failureMessage) =>
+        repository.TryTransitionAsync(
+            operation.OperationGuid,
+            [
+                LocalInstallmentOperationState.Prepared,
+                LocalInstallmentOperationState.TerminalSubmitting,
+                LocalInstallmentOperationState.TerminalApproved,
+                LocalInstallmentOperationState.ApiSubmitting,
+                LocalInstallmentOperationState.ResultUnknown
+            ],
+            LocalInstallmentOperationState.ResultUnknown,
+            DateTimeOffset.UtcNow,
+            failureMessage: failureMessage,
+            cancellationToken: CancellationToken.None);
+
+    private static IReadOnlyList<InstallmentRefundPaymentCommandDto> BuildApprovedRefundCommands(IReadOnlyList<LocalInstallmentRefundStep> steps) =>
+        steps.Where(IsRefundApproved)
+            .Select(step => new InstallmentRefundPaymentCommandDto(
+                DeterministicGuid($"refund-command:{step.RefundStepGuid:D}"),
+                step.Method,
+                step.Amount,
+                step.RefundReference ?? step.OriginalReference,
+                DeserializeTransactions(step.CardTransactionsJson),
+                RefundStepIdempotencyKey(step),
+                step.OriginalPaymentGuid))
+            .ToList();
+
+    private static string RefundStepIdempotencyKey(LocalInstallmentRefundStep step) =>
+        $"{step.OperationGuid:D}:refund:{step.OriginalPaymentGuid:D}";
+
+    private static string CreateCancelRefundPlanFingerprint(Guid installmentGuid, IReadOnlyList<LocalInstallmentRefundStep> steps)
+    {
+        var payments = steps
+            .Select(step => new
+            {
+                PaymentGuid = step.OriginalPaymentGuid.ToString("D"),
+                Method = step.Method switch
+                {
+                    PaymentMethodKind.Cash => "cash",
+                    PaymentMethodKind.Card => "card",
+                    PaymentMethodKind.Voucher => "voucher",
+                    _ => throw new InvalidOperationException("退款计划包含无效付款方式。")
+                },
+                AmountCents = ToExactCents(step.Amount)
+            })
+            .OrderBy(payment => payment.PaymentGuid, StringComparer.Ordinal)
+            .ToArray();
+        if (payments.Length == 0)
+        {
+            throw new InvalidOperationException("分期没有可退款付款。");
+        }
+
+        var material = new StringBuilder();
+        material.Append("{\"installmentGuid\":\"")
+            .Append(installmentGuid.ToString("D"))
+            .Append("\",\"payments\":[");
+        for (var index = 0; index < payments.Length; index++)
+        {
+            if (index > 0) material.Append(',');
+            var payment = payments[index];
+            material.Append("[\"")
+                .Append(payment.PaymentGuid)
+                .Append("\",\"")
+                .Append(payment.Method)
+                .Append("\",")
+                .Append(payment.AmountCents)
+                .Append(']');
+        }
+        material.Append("]}");
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
+        return $"sha256:{digest}";
+    }
+
+    private static long ToExactCents(decimal amount)
+    {
+        var cents = amount * 100m;
+        if (cents != decimal.Truncate(cents) || cents <= 0m || cents > long.MaxValue)
+        {
+            throw new InvalidOperationException("退款金额无法转换为精确整数分。");
+        }
+        return decimal.ToInt64(cents);
+    }
+
+    private static InstallmentCancelResponse ToCancelResponse(Guid installmentGuid, InstallmentCancelClaimCommitResponse commit) =>
+        new(installmentGuid, commit.Details.Status, commit.Details, commit.AlreadyCancelled, commit.AlreadyCancelled ? "分期已取消。" : "分期取消并退款完成。");
     private static bool HasExactAuthorizedAmount(PaymentAuthorizationResult authorization, decimal expectedAmount)
     {
         return authorization.AuthorizedAmount is decimal authorizedAmount &&
@@ -1315,6 +2467,30 @@ public sealed class InstallmentOperationService(
         public static TerminalReady Success(LocalInstallmentOperation operation) => new(true, operation, null, false);
         public static TerminalReady Failed(string message) => new(false, null, message, false);
         public static TerminalReady Unknown(string message) => new(false, null, message, true);
+    }
+
+    private sealed record RepaymentClaimReady(
+        bool Succeeded,
+        InstallmentRepaymentClaimDto? Claim,
+        InstallmentAppendPaymentResponse? Response,
+        string? Message,
+        bool RequiresReview)
+    {
+        public static RepaymentClaimReady Success(InstallmentRepaymentClaimDto claim) => new(true, claim, null, null, false);
+        public static RepaymentClaimReady Committed(InstallmentRepaymentClaimDto claim, InstallmentAppendPaymentResponse response) => new(true, claim, response, null, false);
+        public static RepaymentClaimReady Failed(string message, bool requiresReview) => new(false, null, null, message, requiresReview);
+    }
+
+    private sealed record CancelClaimReady(
+        bool Succeeded,
+        InstallmentCancelClaimDto? Claim,
+        InstallmentCancelResponse? Response,
+        string? Message,
+        bool RequiresReview)
+    {
+        public static CancelClaimReady Success(InstallmentCancelClaimDto claim) => new(true, claim, null, null, false);
+        public static CancelClaimReady Committed(InstallmentCancelClaimDto claim, InstallmentCancelResponse response) => new(true, claim, response, null, false);
+        public static CancelClaimReady Failed(string message, bool requiresReview) => new(false, null, null, message, requiresReview);
     }
 
     private sealed record TerminalAttemptRecovery(

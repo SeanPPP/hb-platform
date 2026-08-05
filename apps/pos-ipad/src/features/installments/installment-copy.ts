@@ -66,6 +66,8 @@ export const installmentEnglishCopy = {
   "details.failed": "Installment details could not be loaded.",
   "details.offlineHint":
     "Details are unavailable. Refresh the selected installment and try again.",
+  "details.crossDeviceRepaymentNotice":
+    "Created on another device. You can continue payment here; cancellation, void, pickup and receipt reprint remain on the original device.",
   "reprint.accessibility": "Reprint receipt for {{installmentNumber}}",
   "reprint.hint":
     "Prints another copy of the existing installment receipt.",
@@ -168,6 +170,8 @@ export const installmentEnglishCopy = {
   "status.authorization-declined":
     "Payment was declined; no installment change was made.",
   "status.cancel-complete": "Installment refunded and cancelled.",
+  "status.claim-review-required":
+    "Repayment claim mismatch. No payment was started; ask a supervisor to review the audit record.",
   "status.conflict": "Server state changed; refresh first.",
   "status.create-complete": "Installment and down payment recorded.",
   "status.details-failed": "Unable to load details.",
@@ -257,6 +261,8 @@ const installmentChineseCopy = {
   "details.empty": "选择一张分期单",
   "details.failed": "分期详情读取失败。",
   "details.offlineHint": "详情暂不可用，请刷新所选分期后重试。",
+  "details.crossDeviceRepaymentNotice":
+    "此分期单创建于另一台设备；本机可继续付款，取消、作废、提货和重打小票仍须回到原设备操作。",
   "reprint.accessibility": "重打分期单 {{installmentNumber}} 的小票",
   "reprint.hint": "再次打印这张分期单的既有小票。",
   "reprint.succeeded": "小票已重打。",
@@ -351,6 +357,8 @@ const installmentChineseCopy = {
   "status.action-failed": "操作失败，请核对状态后重试。",
   "status.authorization-declined": "支付未获批准，分期状态未改变。",
   "status.cancel-complete": "分期已退款取消。",
+  "status.claim-review-required":
+    "续付占用信息不一致，尚未发起付款；请让主管查看审计记录。",
   "status.conflict": "服务端状态已变化，请刷新后处理。",
   "status.create-complete": "分期已创建并记录首付。",
   "status.details-failed": "详情读取失败。",

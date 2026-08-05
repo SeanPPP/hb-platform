@@ -9,6 +9,18 @@ import type {
   InstallmentPaymentCommand,
   InstallmentPaymentMethod,
   InstallmentPickupCommand,
+  InstallmentRepaymentCapabilities,
+  InstallmentRepaymentClaim,
+  InstallmentRepaymentClaimBeginProviderCommand,
+  InstallmentRepaymentClaimCommitCommand,
+  InstallmentRepaymentClaimCreateCommand,
+  InstallmentRepaymentClaimIdentity,
+  InstallmentRepaymentClaimResolveCommand,
+  InstallmentCancelClaim,
+  InstallmentCancelClaimCommitCommand,
+  InstallmentCancelClaimCreateCommand,
+  InstallmentCancelClaimIdentity,
+  InstallmentCancelClaimResolveCommand,
   InstallmentRefundCommand,
   InstallmentsRemotePort,
   InstallmentVoidCommand,
@@ -69,6 +81,12 @@ const METHOD_TO_API = Object.freeze({
   voucher: 3,
 } satisfies Readonly<Record<InstallmentPaymentMethod, 1 | 2 | 3>>);
 
+const RESOLVE_OUTCOME_TO_API = Object.freeze({
+  Released: 1,
+  Declined: 2,
+  Unknown: 3,
+} as const);
+
 export class HbposInstallmentsApi implements InstallmentsRemotePort {
   private readonly storeCode: string;
 
@@ -77,6 +95,239 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
     trustedStoreCode: string,
   ) {
     this.storeCode = requestIdentity(trustedStoreCode, "storeCode");
+  }
+
+  public async getCapabilities(): Promise<InstallmentRepaymentCapabilities> {
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "GET",
+      url: "/api/v1/installments/capabilities",
+    });
+    const payload = unwrapHbposEnvelope(response.data);
+    if (!isRecord(payload)) throw invalidResponse("capabilities");
+    // 旧服务端尚未发布取消 claim 字段时，保留字段缺失而非显式写入 undefined，
+    // 以兼容 exactOptionalPropertyTypes；调用方仍按缺失值 fail-closed。
+    const cancelClaimCapabilities = {
+      ...(payload.cancelClaimsSupported === undefined
+        ? {}
+        : {
+            cancelClaimsSupported: responseBoolean(
+              payload.cancelClaimsSupported,
+              "capabilities.cancelClaimsSupported",
+            ),
+          }),
+      ...(payload.cancelClaimsRequired === undefined
+        ? {}
+        : {
+            cancelClaimsRequired: responseBoolean(
+              payload.cancelClaimsRequired,
+              "capabilities.cancelClaimsRequired",
+            ),
+          }),
+      ...(payload.cancelPreparedClaimTtlSeconds === undefined
+        ? {}
+        : {
+            cancelPreparedClaimTtlSeconds: responseNonNegativeInteger(
+              payload.cancelPreparedClaimTtlSeconds,
+              "capabilities.cancelPreparedClaimTtlSeconds",
+            ),
+          }),
+    };
+    return Object.freeze({
+      repaymentClaimsSupported: responseBoolean(
+        payload.repaymentClaimsSupported,
+        "capabilities.repaymentClaimsSupported",
+      ),
+      repaymentClaimsRequired: responseBoolean(
+        payload.repaymentClaimsRequired,
+        "capabilities.repaymentClaimsRequired",
+      ),
+      crossDeviceRepaymentEnabled: responseBoolean(
+        payload.crossDeviceRepaymentEnabled,
+        "capabilities.crossDeviceRepaymentEnabled",
+      ),
+      preparedClaimTtlSeconds: responseNonNegativeInteger(
+        payload.preparedClaimTtlSeconds,
+        "capabilities.preparedClaimTtlSeconds",
+      ),
+      ...cancelClaimCapabilities,
+    });
+  }
+
+  public async createRepaymentClaim(
+    command: InstallmentRepaymentClaimCreateCommand,
+  ): Promise<InstallmentRepaymentClaim> {
+    const installmentGuid = requestUuid(
+      command.installmentGuid,
+      "installmentGuid",
+    );
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: `/api/v1/installments/${installmentGuid}/repayment-claims`,
+      data: {
+        operationGuid: requestUuid(command.operationGuid, "operationGuid"),
+        paymentGuid: requestUuid(command.paymentGuid, "paymentGuid"),
+        amount: centsToDollars(command.amountCents, "amountCents", false),
+        method: METHOD_TO_API[command.method],
+        idempotencyKey: requestText(
+          command.idempotencyKey,
+          "idempotencyKey",
+          100,
+        ),
+      },
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      installmentGuid,
+      command.operationGuid,
+    );
+  }
+
+  public async beginRepaymentClaimProvider(
+    command: InstallmentRepaymentClaimBeginProviderCommand,
+  ): Promise<InstallmentRepaymentClaim> {
+    const identity = mapClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: claimUrl(identity, "/begin-provider"),
+      data: {
+        provider: requestText(command.provider, "provider", 32),
+        providerAttemptId: requestText(
+          command.providerAttemptId,
+          "providerAttemptId",
+          128,
+        ),
+      },
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
+  public async getRepaymentClaim(
+    input: InstallmentRepaymentClaimIdentity,
+  ): Promise<InstallmentRepaymentClaim> {
+    const identity = mapClaimIdentity(input);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "GET",
+      url: claimUrl(identity),
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
+  public async resolveRepaymentClaim(
+    command: InstallmentRepaymentClaimResolveCommand,
+  ): Promise<InstallmentRepaymentClaim> {
+    const identity = mapClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: claimUrl(identity, "/resolve"),
+      data: { outcome: RESOLVE_OUTCOME_TO_API[command.outcome] },
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
+  public async commitRepaymentClaim(
+    command: InstallmentRepaymentClaimCommitCommand,
+  ): Promise<InstallmentRepaymentClaim> {
+    const identity = mapClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: claimUrl(identity, "/commit"),
+      data: {
+        reference: optionalProtectedText(command.reference, "reference"),
+        reservationToken: optionalProtectedText(
+          command.reservationToken,
+          "reservationToken",
+        ),
+        cardTransactions: [...command.cardTransactions],
+      },
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
+  public async createCancelClaim(
+    command: InstallmentCancelClaimCreateCommand,
+  ): Promise<InstallmentCancelClaim> {
+    const identity = mapCancelClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: `/api/v1/installments/${identity.installmentGuid}/cancel-claims`,
+      data: {
+        operationGuid: identity.operationGuid,
+        idempotencyKey: requestText(command.idempotencyKey, "idempotencyKey", 100),
+        reason: optionalRequestText(command.reason, "reason", 500),
+        refundPlanFingerprint: requestText(
+          command.refundPlanFingerprint,
+          "refundPlanFingerprint",
+          128,
+        ),
+      },
+    });
+    return this.mapCancelClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
+  public async beginCancelClaimRefund(
+    input: InstallmentCancelClaimIdentity,
+  ): Promise<InstallmentCancelClaim> {
+    const identity = mapCancelClaimIdentity(input);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: cancelClaimUrl(identity, "/begin-refund"),
+    });
+    return this.mapCancelClaim(unwrapHbposEnvelope(response.data), identity.installmentGuid, identity.operationGuid);
+  }
+
+  public async getCancelClaim(
+    input: InstallmentCancelClaimIdentity,
+  ): Promise<InstallmentCancelClaim> {
+    const identity = mapCancelClaimIdentity(input);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "GET",
+      url: cancelClaimUrl(identity),
+    });
+    return this.mapCancelClaim(unwrapHbposEnvelope(response.data), identity.installmentGuid, identity.operationGuid);
+  }
+
+  public async resolveCancelClaim(
+    command: InstallmentCancelClaimResolveCommand,
+  ): Promise<InstallmentCancelClaim> {
+    const identity = mapCancelClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: cancelClaimUrl(identity, "/resolve"),
+      data: { outcome: RESOLVE_OUTCOME_TO_API[command.outcome] },
+    });
+    return this.mapCancelClaim(unwrapHbposEnvelope(response.data), identity.installmentGuid, identity.operationGuid);
+  }
+
+  public async commitCancelClaim(
+    command: InstallmentCancelClaimCommitCommand,
+  ): Promise<InstallmentCancelClaim> {
+    const identity = mapCancelClaimIdentity(command);
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: cancelClaimUrl(identity, "/commit"),
+      data: { refunds: command.refunds.map(mapRefundCommand) },
+    });
+    return this.mapCancelClaim(unwrapHbposEnvelope(response.data), identity.installmentGuid, identity.operationGuid);
   }
 
   public async list(
@@ -398,6 +649,156 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
       note: responseOptionalText(details.note, "details.note", 2_000),
     });
   }
+
+  private mapRepaymentClaim(
+    input: unknown,
+    expectedInstallmentGuid: string,
+    expectedOperationGuid: string,
+  ): InstallmentRepaymentClaim {
+    if (!isRecord(input)) throw invalidResponse("repaymentClaim");
+    const installmentGuid = responseUuid(
+      input.installmentGuid,
+      "repaymentClaim.installmentGuid",
+    );
+    const operationGuid = responseUuid(
+      input.operationGuid,
+      "repaymentClaim.operationGuid",
+    );
+    if (
+      installmentGuid !== expectedInstallmentGuid ||
+      operationGuid !== expectedOperationGuid
+    ) {
+      throw invalidResponse("repaymentClaim.identity");
+    }
+    return Object.freeze({
+      installmentGuid,
+      operationGuid,
+      paymentGuid: responseUuid(
+        input.paymentGuid,
+        "repaymentClaim.paymentGuid",
+      ),
+      amountCents: responseMoneyCents(
+        input.amount,
+        "repaymentClaim.amount",
+      ),
+      method: responsePaymentMethod(
+        input.method,
+        "repaymentClaim.method",
+      ),
+      idempotencyKey: responseText(
+        input.idempotencyKey,
+        "repaymentClaim.idempotencyKey",
+        100,
+      ),
+      status: responseClaimStatus(
+        input.status,
+        "repaymentClaim.status",
+      ),
+      provider: responseOptionalText(
+        input.provider,
+        "repaymentClaim.provider",
+        32,
+      ),
+      providerAttemptId: responseOptionalText(
+        input.providerAttemptId,
+        "repaymentClaim.providerAttemptId",
+        128,
+      ),
+      createdAtIso: responseIso(
+        input.createdAtUtc,
+        "repaymentClaim.createdAtUtc",
+      ),
+      updatedAtIso: responseIso(
+        input.updatedAtUtc,
+        "repaymentClaim.updatedAtUtc",
+      ),
+      expiresAtIso:
+        input.expiresAtUtc === null || input.expiresAtUtc === undefined
+          ? null
+          : responseIso(
+              input.expiresAtUtc,
+              "repaymentClaim.expiresAtUtc",
+            ),
+      commit: this.mapClaimCommit(input.commit),
+      alreadyExists: responseBoolean(
+        input.alreadyExists,
+        "repaymentClaim.alreadyExists",
+      ),
+    });
+  }
+
+  private mapClaimCommit(input: unknown): InstallmentRepaymentClaim["commit"] {
+    if (input === null || input === undefined) return null;
+    if (!isRecord(input) || !isRecord(input.details)) {
+      throw invalidResponse("repaymentClaim.commit");
+    }
+    return Object.freeze({
+      details: this.mapDetails(input.details as GeneratedDetails),
+      alreadyRecorded: responseBoolean(
+        input.alreadyRecorded,
+        "repaymentClaim.commit.alreadyRecorded",
+      ),
+    });
+  }
+
+  private mapCancelClaim(
+    input: unknown,
+    expectedInstallmentGuid: string,
+    expectedOperationGuid: string,
+  ): InstallmentCancelClaim {
+    if (!isRecord(input)) throw invalidResponse("cancelClaim");
+    const installmentGuid = responseUuid(input.installmentGuid, "cancelClaim.installmentGuid");
+    const operationGuid = responseUuid(input.operationGuid, "cancelClaim.operationGuid");
+    if (installmentGuid !== expectedInstallmentGuid || operationGuid !== expectedOperationGuid) {
+      throw invalidResponse("cancelClaim.identity");
+    }
+    const commit = input.commit;
+    return Object.freeze({
+      installmentGuid,
+      operationGuid,
+      idempotencyKey: responseText(input.idempotencyKey, "cancelClaim.idempotencyKey", 100),
+      refundPlanFingerprint: responseText(input.refundPlanFingerprint, "cancelClaim.refundPlanFingerprint", 128),
+      status: responseCancelClaimStatus(input.status, "cancelClaim.status"),
+      createdAtIso: responseIso(input.createdAtUtc, "cancelClaim.createdAtUtc"),
+      updatedAtIso: responseIso(input.updatedAtUtc, "cancelClaim.updatedAtUtc"),
+      expiresAtIso: input.expiresAtUtc == null ? null : responseIso(input.expiresAtUtc, "cancelClaim.expiresAtUtc"),
+      commit: commit == null ? null : this.mapCancelClaimCommit(commit),
+      alreadyExists: responseBoolean(input.alreadyExists, "cancelClaim.alreadyExists"),
+    });
+  }
+
+  private mapCancelClaimCommit(input: unknown): InstallmentCancelClaim["commit"] {
+    if (!isRecord(input) || !isRecord(input.details)) throw invalidResponse("cancelClaim.commit");
+    return Object.freeze({
+      details: this.mapDetails(input.details as GeneratedDetails),
+      alreadyCancelled: responseBoolean(input.alreadyCancelled, "cancelClaim.commit.alreadyCancelled"),
+    });
+  }
+}
+
+function mapClaimIdentity(input: InstallmentRepaymentClaimIdentity) {
+  return Object.freeze({
+    installmentGuid: requestUuid(input.installmentGuid, "installmentGuid"),
+    operationGuid: requestUuid(input.operationGuid, "operationGuid"),
+  });
+}
+
+function claimUrl(
+  identity: InstallmentRepaymentClaimIdentity,
+  suffix = "",
+): string {
+  return `/api/v1/installments/${identity.installmentGuid}/repayment-claims/${identity.operationGuid}${suffix}`;
+}
+
+function mapCancelClaimIdentity(input: InstallmentCancelClaimIdentity) {
+  return Object.freeze({
+    installmentGuid: requestUuid(input.installmentGuid, "installmentGuid"),
+    operationGuid: requestUuid(input.operationGuid, "operationGuid"),
+  });
+}
+
+function cancelClaimUrl(identity: InstallmentCancelClaimIdentity, suffix = ""): string {
+  return `/api/v1/installments/${identity.installmentGuid}/cancel-claims/${identity.operationGuid}${suffix}`;
 }
 
 function mapIdentity(input: Readonly<{
@@ -484,6 +885,14 @@ function mapRefundCommand(
       "refund.idempotencyKey",
       256,
     ),
+    ...(refund.originalPaymentGuid
+      ? {
+          originalPaymentGuid: requestUuid(
+            refund.originalPaymentGuid,
+            "refund.originalPaymentGuid",
+          ),
+        }
+      : {}),
   };
 }
 
@@ -645,6 +1054,44 @@ function responsePaymentStatus(
   if (value === 1) return "Recorded";
   if (value === 2) return "Voided";
   throw invalidResponse(field);
+}
+
+function responseClaimStatus(
+  value: unknown,
+  field: string,
+): InstallmentRepaymentClaim["status"] {
+  if (value === 1 || value === "Prepared") return "Prepared";
+  if (value === 2 || value === "ProviderPending") return "ProviderPending";
+  if (value === 3 || value === "Committed") return "Committed";
+  if (value === 4 || value === "Released") return "Released";
+  if (value === 5 || value === "Declined") return "Declined";
+  if (value === 6 || value === "Unknown") return "Unknown";
+  throw invalidResponse(field);
+}
+
+function responseCancelClaimStatus(
+  value: unknown,
+  field: string,
+): InstallmentCancelClaim["status"] {
+  if (value === 1 || value === "Prepared") return "Prepared";
+  if (value === 2 || value === "RefundPending") return "RefundPending";
+  if (value === 3 || value === "Committed") return "Committed";
+  if (value === 4 || value === "Released") return "Released";
+  if (value === 5 || value === "Declined") return "Declined";
+  if (value === 6 || value === "Unknown") return "Unknown";
+  throw invalidResponse(field);
+}
+
+function responseBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw invalidResponse(field);
+  return value;
+}
+
+function responseNonNegativeInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw invalidResponse(field);
+  }
+  return Number(value);
 }
 
 function safeCardDisplay(value: unknown): Readonly<{

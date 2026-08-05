@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
@@ -24,6 +27,7 @@ const ACTION_C = "10000000-0000-4000-8000-000000000003";
 const INSTALLMENT = "20000000-0000-4000-8000-000000000001";
 const PAYMENT = "30000000-0000-4000-8000-000000000001";
 const LINE = "40000000-0000-4000-8000-000000000001";
+const REFUND_PLAN_FINGERPRINT = `sha256:${"a".repeat(64)}`;
 
 test("M20/M21 分段建立耐久 action ledger 与不可变 CAS triggers，失败不推进版本", async () => {
   await withDatabase(async (connection) => {
@@ -263,6 +267,176 @@ test("真实 SQLite：旧 V1 密文缺少支付选择字段仍按原形恢复", 
     assert.equal(
       Object.hasOwn(restored.command, "cashTenderedCents"),
       false,
+    );
+  });
+});
+
+test("真实 SQLite：cancel 摘要经 create/load、transition 与关闭重开完整恢复", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "hb-pos-installment-action-"),
+  );
+  const databasePath = join(directory, "actions.sqlite");
+  const encryptor = new RecordingEncryptor();
+  let connection: SqliteConnectionPort | null =
+    new SystemSqliteConnection(new DatabaseSync(databasePath));
+
+  try {
+    await applyMigrations(connection, () => NOW);
+    let store = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const candidate = cancelCandidate({
+      refundPlanFingerprint: REFUND_PLAN_FINGERPRINT,
+    });
+
+    assert.deepEqual(await store.createIfNone(candidate), {
+      created: true,
+      action: candidate,
+    });
+    assert.deepEqual(
+      await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      candidate,
+    );
+    assert.deepEqual(
+      (JSON.parse(encryptor.encryptedPlaintexts[0] ?? "") as {
+        command?: unknown;
+      }).command,
+      candidate.command,
+    );
+
+    const transitioned = await store.transition({
+      actionId: ACTION_C,
+      expectedState: "Created",
+      nextState: "ProviderPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    assert.deepEqual(transitioned, {
+      ...candidate,
+      state: "ProviderPending",
+    });
+
+    await connection.close();
+    connection = null;
+    connection = new SystemSqliteConnection(
+      new DatabaseSync(databasePath),
+    );
+    store = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    assert.deepEqual(
+      await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      {
+        ...candidate,
+        state: "ProviderPending",
+      },
+    );
+  } finally {
+    await connection?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("真实 SQLite：旧 cancel 密文缺少摘要仍可恢复", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const legacy = cancelCandidate();
+    const ciphertext = new Uint8Array([72]);
+    const plaintext = JSON.stringify({
+      format: "hb-pos-installment-action-v1",
+      aad: {
+        revision: 1,
+        storeCode: STORE,
+        deviceCode: DEVICE,
+        actionId: ACTION_C,
+      },
+      action: legacy.action,
+      command: legacy.command,
+      intentFingerprint: legacy.intentFingerprint,
+    });
+    await connection.run(
+      `INSERT INTO installment_actions (
+        action_id, store_code, device_code, installment_guid,
+        action_kind, idempotency_key, payment_guid, payment_method,
+        amount_cents, state, resolution, payload_revision,
+        command_ciphertext, created_at_iso, updated_at_iso,
+        resolved_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ACTION_C,
+        STORE,
+        DEVICE,
+        INSTALLMENT,
+        "cancel-refund",
+        ACTION_C,
+        null,
+        null,
+        null,
+        "Created",
+        null,
+        1,
+        ciphertext,
+        NOW,
+        NOW,
+        null,
+      ],
+    );
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new FixtureDecryptor(ciphertext, plaintext),
+      () => NOW,
+    );
+
+    const restored = await store.loadBlocking({
+      storeCode: STORE,
+      deviceCode: DEVICE,
+    });
+
+    assert.deepEqual(restored, legacy);
+    assert.ok(restored?.command.kind === "cancel-refund");
+    assert.equal(
+      Object.hasOwn(restored.command, "refundPlanFingerprint"),
+      false,
+    );
+  });
+});
+
+test("真实 SQLite：cancel 坏摘要与未知字段 fail closed", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const invalidCommands = [
+      { refundPlanFingerprint: `sha256:${"a".repeat(63)}` },
+      { refundPlanFingerprint: `sha256:${"A".repeat(64)}` },
+      { refundPlanFingerprint: "a".repeat(64) },
+      { refundPlanFingerprint: `sha256:${"g".repeat(64)}` },
+      { refundPlanFingerprint: `${REFUND_PLAN_FINGERPRINT}\n` },
+      { refundPlanFingerprint: null },
+      {
+        refundPlanFingerprint: REFUND_PLAN_FINGERPRINT,
+        unexpected: true,
+      },
+    ] as const;
+
+    for (const command of invalidCommands) {
+      await assert.rejects(
+        () => store.createIfNone(cancelCandidate(command)),
+        /cancel command|fingerprint/i,
+      );
+    }
+    assert.equal(encryptor.encryptedPlaintexts.length, 0);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM installment_actions",
+      ),
+      0,
     );
   });
 });
@@ -726,6 +900,141 @@ test("真实 SQLite：decline 仅释放 ProviderPending/Unknown 并保留 Declin
   });
 });
 
+test("真实 SQLite：Created claim 确定失败在单事务终结，并发调用不再进入恢复列表", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createIfNone(repaymentCandidate({ actionId: ACTION_C }));
+
+    const [first, second] = await Promise.allSettled([
+      store.finalizeCreatedFailure({
+        actionId: ACTION_C,
+        reason: "ClaimMismatch",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+      }),
+      store.finalizeCreatedFailure({
+        actionId: ACTION_C,
+        reason: "ClaimMismatch",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+      }),
+    ]);
+
+    assert.deepEqual(
+      [first.status, second.status].sort(),
+      ["fulfilled", "rejected"],
+    );
+    assert.equal(
+      await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      null,
+    );
+    const row = await connection.getFirst<{
+      state: unknown;
+      resolution: unknown;
+    }>(
+      "SELECT state, resolution FROM installment_actions WHERE action_id = ?",
+      [ACTION_C],
+    );
+    assert.deepEqual(row === null ? null : { ...row }, {
+      state: "ProviderPending",
+      resolution: "Declined",
+    });
+    const audit = await connection.getFirst<{
+      event_type: unknown;
+      payload_json: unknown;
+    }>(
+      "SELECT event_type, payload_json FROM audit_events WHERE event_id = ?",
+      [ACTION_C],
+    );
+    assert.equal(audit?.event_type, "INSTALLMENT_REPAYMENT_CLAIM_REVIEW");
+    assert.deepEqual(JSON.parse(String(audit?.payload_json)), {
+      outcome: "RequiresReview",
+      reason: "Repayment claim provider binding mismatch.",
+      status: "Failed",
+    });
+  });
+});
+
+test("真实 SQLite：Created claim 终结的 audit 写入失败时状态与 resolution 全部回滚", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createIfNone(repaymentCandidate({ actionId: ACTION_C }));
+    await connection.exec(`
+      CREATE TRIGGER fail_installment_claim_review_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.event_type = 'INSTALLMENT_REPAYMENT_CLAIM_REVIEW'
+      BEGIN
+        SELECT RAISE(ABORT, 'INSTALLMENT_CLAIM_REVIEW_AUDIT_FAILURE');
+      END;
+    `);
+
+    await assert.rejects(
+      store.finalizeCreatedFailure({
+        actionId: ACTION_C,
+        reason: "ClaimMismatch",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+      }),
+      /INSTALLMENT_CLAIM_REVIEW_AUDIT_FAILURE/,
+    );
+
+    assert.equal(
+      (
+        await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE })
+      )?.state,
+      "Created",
+    );
+    const row = await connection.getFirst<{
+      state: unknown;
+      resolution: unknown;
+    }>(
+      "SELECT state, resolution FROM installment_actions WHERE action_id = ?",
+      [ACTION_C],
+    );
+    assert.deepEqual(row === null ? null : { ...row }, {
+      state: "Created",
+      resolution: null,
+    });
+  });
+});
+
+test("真实 SQLite：ClaimBusy 普通终结不生成 requires-review audit", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createIfNone(repaymentCandidate({ actionId: ACTION_C }));
+    await store.finalizeCreatedFailure({
+      actionId: ACTION_C,
+      reason: "ClaimBusy",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+
+    assert.equal(
+      await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      null,
+    );
+    assert.equal(
+      Number(
+        (
+          await connection.getFirst<{ count: unknown }>(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_id = ?",
+            [ACTION_C],
+          )
+        )?.count,
+      ),
+      0,
+    );
+  });
+});
+
 test("PosDatabase.installmentActions(encryptor) 暴露冻结 runtime Port", async () => {
   const database = await PosDatabase.open({
     databaseName: ":memory:",
@@ -861,6 +1170,15 @@ function paymentSelectionCandidate(
 }
 
 function cancelCandidateWithPaymentSelection(): PersistedInstallmentAction {
+  return cancelCandidate({
+    cardProvider: null,
+    cashTenderedCents: 1,
+  });
+}
+
+function cancelCandidate(
+  commandOverrides: Readonly<Record<string, unknown>> = {},
+): PersistedInstallmentAction {
   return Object.freeze({
     action: Object.freeze({
       actionId: ACTION_C,
@@ -880,8 +1198,7 @@ function cancelCandidateWithPaymentSelection(): PersistedInstallmentAction {
       cancelledAtIso: NOW,
       reason: null,
       idempotencyKey: ACTION_C,
-      cardProvider: null,
-      cashTenderedCents: 1,
+      ...commandOverrides,
     }),
     deviceCode: DEVICE,
     intentFingerprint: '{"kind":"cancel-refund"}',

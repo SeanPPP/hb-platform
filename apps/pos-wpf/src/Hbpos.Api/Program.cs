@@ -65,6 +65,12 @@ using (var scope = app.Services.CreateScope())
         var linklySettlementSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklySettlementSchemaInitializer>();
         await linklySettlementSchemaInitializer.InitializeAsync();
 
+        var installmentRepaymentClaimSchemaInitializer = scope.ServiceProvider.GetRequiredService<IInstallmentRepaymentClaimSchemaInitializer>();
+        await installmentRepaymentClaimSchemaInitializer.InitializeAsync();
+
+        var installmentCancelClaimSchemaInitializer = scope.ServiceProvider.GetRequiredService<IInstallmentCancelClaimSchemaInitializer>();
+        await installmentCancelClaimSchemaInitializer.InitializeAsync();
+
         var squareWebhookSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISquareWebhookSchemaInitializer>();
         await squareWebhookSchemaInitializer.InitializeAsync();
     }

@@ -733,6 +733,11 @@ function blockingResult(
     case "Declined":
       return result("declined", snapshot, {
         attemptId: attempt.attemptId,
+        errorCode:
+          attempt.provider === "square" &&
+          attempt.lastErrorCode === "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"
+            ? "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"
+            : null,
       });
     case "Cancelled":
       return result("cancelled", snapshot, {

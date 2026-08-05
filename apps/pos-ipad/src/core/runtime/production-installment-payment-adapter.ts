@@ -271,6 +271,59 @@ export class ProductionInstallmentPaymentAdapter
     return this.run(persistedActionId);
   }
 
+  public async prepareRepaymentClaim(
+    persistedActionId: string,
+  ): Promise<Readonly<{ provider: string; providerAttemptId: string }>> {
+    const actionId = requiredText(persistedActionId, "persisted action id");
+    const rawAction = await this.options.store.loadAction(actionId);
+    if (!rawAction) {
+      throw adapterError(
+        "INSTALLMENT_ACTION_NOT_FOUND",
+        "Persisted installment action was not found.",
+      );
+    }
+    // Runtime 在 central claim 已创建后、begin-provider 之前绑定不可变 provider plan。
+    // 此时 action 仍是 Created；只允许这个无 provider 副作用的入口读取该状态。
+    const action = validateAction(rawAction, actionId, { allowCreated: true });
+    if (action.action.kind !== "repayment") {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+        "Repayment claim binding requires a repayment action.",
+      );
+    }
+    const plan = await this.loadOrBindPlan(action);
+    if (plan.cashSettlements.length === 1 && plan.attempts.length === 0) {
+      const settlement = plan.cashSettlements[0];
+      if (!settlement) {
+        throw adapterError(
+          "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+          "Cash repayment claim binding is incomplete.",
+        );
+      }
+      return Object.freeze({
+        provider: "cash",
+        providerAttemptId: settlement.settlementId,
+      });
+    }
+    if (plan.attempts.length === 1 && plan.cashSettlements.length === 0) {
+      const attempt = plan.attempts[0]?.attempt;
+      if (!attempt) {
+        throw adapterError(
+          "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+          "Repayment provider claim binding is incomplete.",
+        );
+      }
+      return Object.freeze({
+        provider: attempt.provider,
+        providerAttemptId: attempt.attemptId,
+      });
+    }
+    throw adapterError(
+      "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+      "Repayment claim binding must contain exactly one provider attempt.",
+    );
+  }
+
   public async listProviderAvailability(): Promise<
     readonly PaymentProviderAvailability[]
   > {
@@ -441,6 +494,10 @@ export class ProductionInstallmentPaymentAdapter
         this.options.createId(),
         "refund payment guid",
       );
+      const refundIdempotencyKey = refundStepIdempotencyKey(
+        action.action.actionId,
+        evidence.sourcePaymentGuid,
+      );
       if (evidence.method === "cash") {
         cashSettlements.push(
           Object.freeze({
@@ -456,7 +513,7 @@ export class ProductionInstallmentPaymentAdapter
             sequence,
             operation: "refund",
             amountCents: evidence.amountCents,
-            idempotencyKey: action.action.idempotencyKey,
+            idempotencyKey: refundIdempotencyKey,
             state: "Prepared",
           }),
         );
@@ -473,6 +530,7 @@ export class ProductionInstallmentPaymentAdapter
         originalTenderEvidenceId: evidence.evidenceId,
         sourcePaymentGuid: evidence.sourcePaymentGuid,
         sourceAttemptId: evidence.sourceAttemptId,
+        idempotencyKey: refundIdempotencyKey,
       });
       const seededAttempt = await this.options.provenance.seedRefundAttempt({
         evidence,
@@ -507,6 +565,7 @@ export class ProductionInstallmentPaymentAdapter
     originalTenderEvidenceId: string;
     sourcePaymentGuid: string | null;
     sourceAttemptId: string | null;
+    idempotencyKey?: string;
   }>): InstallmentProviderAttemptRecord {
     const attemptId = generatedId(this.options.createId(), "provider attempt id");
     const nowIso = canonicalIso(this.options.nowIso(), "provider attempt time");
@@ -519,10 +578,9 @@ export class ProductionInstallmentPaymentAdapter
       sequence: input.sequence,
       attempt: Object.freeze({
         attemptId,
-        idempotencyKey: generatedId(
-          this.options.createId(),
-          "provider idempotency key",
-        ),
+        idempotencyKey:
+          input.idempotencyKey ??
+          generatedId(this.options.createId(), "provider idempotency key"),
         orderGuid: input.action.action.installmentGuid,
         provider: input.provider,
         operation: input.operation,
@@ -1078,17 +1136,19 @@ export class ProductionInstallmentPaymentAdapter
 function validateAction(
   action: PersistedInstallmentAction,
   expectedActionId: string,
+  options: Readonly<{ allowCreated?: boolean }> = {},
 ): PersistedInstallmentAction {
   const payment = action.action;
+  const allowedStates = options.allowCreated
+    ? ["Created", "ProviderPending", "Unknown", "Approved", "BackendPending"]
+    : ["ProviderPending", "Unknown", "Approved", "BackendPending"];
   if (
     payment.actionId !== expectedActionId ||
     payment.idempotencyKey !== payment.actionId ||
     payment.installmentGuid !== action.command.installmentGuid ||
     payment.kind !== action.command.kind ||
     action.deviceCode !== action.command.deviceCode ||
-    !["ProviderPending", "Unknown", "Approved", "BackendPending"].includes(
-      action.state,
-    )
+    !allowedStates.includes(action.state)
   ) {
     throw adapterError(
       "INSTALLMENT_ACTION_INVALID",
@@ -1197,7 +1257,12 @@ function validateAttemptRecord(
       attempt.operation !== "refund" ||
       attempt.amount.cents >= 0 ||
       !record.sourcePaymentGuid ||
-      !record.sourceAttemptId
+      !record.sourceAttemptId ||
+      attempt.idempotencyKey !==
+        refundStepIdempotencyKey(
+          action.action.actionId,
+          record.sourcePaymentGuid,
+        )
     ) {
       throw planConflict();
     }
@@ -1233,7 +1298,6 @@ function validateCashSettlement(
     !Number.isSafeInteger(settlement.sequence) ||
     settlement.sequence < 0 ||
     positiveCents(settlement.amountCents) !== settlement.amountCents ||
-    settlement.idempotencyKey !== action.action.idempotencyKey ||
     (settlement.state !== "Prepared" && settlement.state !== "Approved")
   ) {
     throw planConflict();
@@ -1242,7 +1306,12 @@ function validateCashSettlement(
     if (
       settlement.operation !== "refund" ||
       !settlement.sourcePaymentGuid ||
-      !settlement.sourceAttemptId
+      !settlement.sourceAttemptId ||
+      settlement.idempotencyKey !==
+        refundStepIdempotencyKey(
+          action.action.actionId,
+          settlement.sourcePaymentGuid,
+        )
     ) {
       throw planConflict();
     }
@@ -1251,6 +1320,7 @@ function validateCashSettlement(
     settlement.operation !== "purchase" ||
     settlement.paymentGuid !== action.action.paymentGuid ||
     settlement.amountCents !== action.action.amountCents ||
+    settlement.idempotencyKey !== action.action.idempotencyKey ||
     settlement.sourcePaymentGuid !== null ||
     settlement.sourceAttemptId !== null
   ) {
@@ -1462,7 +1532,7 @@ function paymentCommand(
 }
 
 function refundCommand(
-  action: PersistedInstallmentAction,
+  _action: PersistedInstallmentAction,
   record: InstallmentProviderAttemptRecord,
   material: InstallmentApprovedPaymentMaterial,
 ): InstallmentRefundCommand {
@@ -1474,7 +1544,7 @@ function refundCommand(
       amountCents: positiveCents(-record.attempt.amount.cents),
       reference: material.reference,
       cardTransactions: Object.freeze([]),
-      idempotencyKey: action.action.idempotencyKey,
+      idempotencyKey: record.attempt.idempotencyKey,
     });
   }
   return Object.freeze({
@@ -1485,7 +1555,7 @@ function refundCommand(
     cardTransactions: Object.freeze([
       cardTransaction(material.evidence, material.receiptText),
     ]),
-    idempotencyKey: action.action.idempotencyKey,
+    idempotencyKey: record.attempt.idempotencyKey,
   });
 }
 
@@ -1507,7 +1577,7 @@ function refundFromCash(
       amountCents: settlement.amountCents,
       reference: null,
       cardTransactions: Object.freeze([]),
-      idempotencyKey: action.action.idempotencyKey,
+      idempotencyKey: settlement.idempotencyKey,
     }),
     originalTenderEvidenceId: settlement.originalTenderEvidenceId,
     refundAttemptId: settlement.settlementId,
@@ -1524,7 +1594,7 @@ function approvedRefund(
   if (!record.sourcePaymentGuid || !record.sourceAttemptId) {
     throw planConflict();
   }
-  if (refund.idempotencyKey !== action.action.idempotencyKey) {
+  if (refund.idempotencyKey !== record.attempt.idempotencyKey) {
     throw planConflict();
   }
   return Object.freeze({
@@ -1771,6 +1841,19 @@ function generatedId(value: string, label: string): string {
     );
   }
   return normalized;
+}
+
+function refundStepIdempotencyKey(
+  operationGuid: string,
+  originalPaymentGuid: string,
+): string {
+  if (!isUuid(operationGuid) || !isUuid(originalPaymentGuid)) {
+    throw adapterError(
+      "INSTALLMENT_ACTION_INVALID",
+      "Refund provenance identifiers are invalid.",
+    );
+  }
+  return `${operationGuid.toLowerCase()}:refund:${originalPaymentGuid.toLowerCase()}`;
 }
 
 function isUuid(value: string): boolean {

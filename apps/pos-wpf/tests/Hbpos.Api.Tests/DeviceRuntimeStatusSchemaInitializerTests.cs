@@ -92,11 +92,22 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
                 services.RemoveAll<ILinklyCloudBackendAsyncSchemaInitializer>();
                 services.AddSingleton<ILinklyCloudBackendAsyncSchemaInitializer>(new NoOpLinklyCloudBackendAsyncSchemaInitializer());
 
+                services.RemoveAll<ILinklySettlementSchemaInitializer>();
+                services.AddSingleton<ILinklySettlementSchemaInitializer>(
+                    new TestNoOpLinklySettlementSchemaInitializer());
+
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton<ISquareTokenSchemaInitializer>(new NoOpSquareTokenSchemaInitializer());
 
                 services.RemoveAll<ISquareWebhookSchemaInitializer>();
                 services.AddSingleton<ISquareWebhookSchemaInitializer>(new NoOpSquareWebhookSchemaInitializer());
+
+                services.RemoveAll<IInstallmentRepaymentClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentRepaymentClaimSchemaInitializer>(
+                    new TestNoOpInstallmentRepaymentClaimSchemaInitializer());
+                services.RemoveAll<IInstallmentCancelClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentCancelClaimSchemaInitializer>(
+                    new TestNoOpInstallmentCancelClaimSchemaInitializer());
             });
         }
     }

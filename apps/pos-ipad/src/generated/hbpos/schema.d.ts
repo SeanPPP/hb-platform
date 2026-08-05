@@ -911,6 +911,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/installments/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentCapabilitiesResponseApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentCapabilitiesResponseApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentCapabilitiesResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/installments": {
         parameters: {
             query?: never;
@@ -1213,6 +1250,446 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/repayment-claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentRepaymentClaimCreateRequest"];
+                    "text/json": components["schemas"]["InstallmentRepaymentClaimCreateRequest"];
+                    "application/*+json": components["schemas"]["InstallmentRepaymentClaimCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/begin-provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentRepaymentClaimBeginProviderRequest"];
+                    "text/json": components["schemas"]["InstallmentRepaymentClaimBeginProviderRequest"];
+                    "application/*+json": components["schemas"]["InstallmentRepaymentClaimBeginProviderRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentRepaymentClaimResolveRequest"];
+                    "text/json": components["schemas"]["InstallmentRepaymentClaimResolveRequest"];
+                    "application/*+json": components["schemas"]["InstallmentRepaymentClaimResolveRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentRepaymentClaimCommitRequest"];
+                    "text/json": components["schemas"]["InstallmentRepaymentClaimCommitRequest"];
+                    "application/*+json": components["schemas"]["InstallmentRepaymentClaimCommitRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/cancel-claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentCancelClaimCreateRequest"];
+                    "text/json": components["schemas"]["InstallmentCancelClaimCreateRequest"];
+                    "application/*+json": components["schemas"]["InstallmentCancelClaimCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/begin-refund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentCancelClaimResolveRequest"];
+                    "text/json": components["schemas"]["InstallmentCancelClaimResolveRequest"];
+                    "application/*+json": components["schemas"]["InstallmentCancelClaimResolveRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentCancelClaimCommitRequest"];
+                    "text/json": components["schemas"]["InstallmentCancelClaimCommitRequest"];
+                    "application/*+json": components["schemas"]["InstallmentCancelClaimCommitRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentCancelClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -3752,6 +4229,57 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        InstallmentCancelClaimCommitRequest: {
+            refunds?: components["schemas"]["InstallmentRefundPaymentCommandDto"][] | null;
+        };
+        InstallmentCancelClaimCommitResponse: {
+            details?: components["schemas"]["InstallmentDetailsDto"];
+            alreadyCancelled?: boolean;
+        };
+        InstallmentCancelClaimCreateRequest: {
+            /** Format: uuid */
+            operationGuid?: string;
+            idempotencyKey?: string | null;
+            reason?: string | null;
+            refundPlanFingerprint?: string | null;
+        };
+        InstallmentCancelClaimDto: {
+            /** Format: uuid */
+            installmentGuid?: string;
+            /** Format: uuid */
+            operationGuid?: string;
+            idempotencyKey?: string | null;
+            refundPlanFingerprint?: string | null;
+            status?: components["schemas"]["InstallmentCancelClaimStatus"];
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            commit?: components["schemas"]["InstallmentCancelClaimCommitResponse"];
+            alreadyExists?: boolean;
+        };
+        InstallmentCancelClaimDtoApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["InstallmentCancelClaimDto"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        InstallmentCancelClaimResolveOutcome: 1 | 2 | 3;
+        InstallmentCancelClaimResolveRequest: {
+            outcome?: components["schemas"]["InstallmentCancelClaimResolveOutcome"];
+            approvedRefunds?: components["schemas"]["InstallmentRefundPaymentCommandDto"][] | null;
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        InstallmentCancelClaimStatus: 1 | 2 | 3 | 4 | 5 | 6;
         InstallmentCancelRequest: {
             /** Format: uuid */
             installmentGuid?: string;
@@ -3942,6 +4470,7 @@ export interface components {
             deviceCode?: string | null;
             cardTransactions?: components["schemas"]["CardTransactionDto"][] | null;
             idempotencyKey?: string | null;
+            cashierName?: string | null;
         };
         /**
          * Format: int32
@@ -3963,7 +4492,87 @@ export interface components {
             reference?: string | null;
             cardTransactions?: components["schemas"]["CardTransactionDto"][] | null;
             idempotencyKey?: string | null;
+            /** Format: uuid */
+            originalPaymentGuid?: string;
         };
+        InstallmentRepaymentCapabilitiesResponse: {
+            repaymentClaimsSupported?: boolean;
+            repaymentClaimsRequired?: boolean;
+            crossDeviceRepaymentEnabled?: boolean;
+            /** Format: int32 */
+            preparedClaimTtlSeconds?: number;
+            cancelClaimsSupported?: boolean;
+            cancelClaimsRequired?: boolean;
+            /** Format: int32 */
+            cancelPreparedClaimTtlSeconds?: number;
+        };
+        InstallmentRepaymentCapabilitiesResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["InstallmentRepaymentCapabilitiesResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        InstallmentRepaymentClaimBeginProviderRequest: {
+            provider?: string | null;
+            providerAttemptId?: string | null;
+        };
+        InstallmentRepaymentClaimCommitRequest: {
+            reference?: string | null;
+            reservationToken?: string | null;
+            cardTransactions?: components["schemas"]["CardTransactionDto"][] | null;
+        };
+        InstallmentRepaymentClaimCreateRequest: {
+            /** Format: uuid */
+            operationGuid?: string;
+            /** Format: uuid */
+            paymentGuid?: string;
+            /** Format: double */
+            amount?: number;
+            method?: components["schemas"]["PaymentMethodKind"];
+            idempotencyKey?: string | null;
+        };
+        InstallmentRepaymentClaimDto: {
+            /** Format: uuid */
+            installmentGuid?: string;
+            /** Format: uuid */
+            operationGuid?: string;
+            /** Format: uuid */
+            paymentGuid?: string;
+            /** Format: double */
+            amount?: number;
+            method?: components["schemas"]["PaymentMethodKind"];
+            idempotencyKey?: string | null;
+            status?: components["schemas"]["InstallmentRepaymentClaimStatus"];
+            provider?: string | null;
+            providerAttemptId?: string | null;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            commit?: components["schemas"]["InstallmentAppendPaymentResponse"];
+            alreadyExists?: boolean;
+        };
+        InstallmentRepaymentClaimDtoApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["InstallmentRepaymentClaimDto"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        InstallmentRepaymentClaimResolveOutcome: 1 | 2 | 3;
+        InstallmentRepaymentClaimResolveRequest: {
+            outcome?: components["schemas"]["InstallmentRepaymentClaimResolveOutcome"];
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        InstallmentRepaymentClaimStatus: 1 | 2 | 3 | 4 | 5 | 6;
         /**
          * Format: int32
          * @enum {integer}

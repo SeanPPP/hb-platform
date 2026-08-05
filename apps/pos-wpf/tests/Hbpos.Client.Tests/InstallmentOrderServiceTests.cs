@@ -365,7 +365,7 @@ public sealed class InstallmentOrderServiceTests
     }
 
     [Fact]
-    public async Task AddRepaymentAsync_builds_append_payment_request()
+    public async Task AddRepaymentAsync_without_claim_operation_service_fails_closed_before_legacy_append()
     {
         var databasePath = CreateTempDatabasePath();
 
@@ -395,20 +395,10 @@ public sealed class InstallmentOrderServiceTests
                         "VIP001",
                         "LOCK-002")));
 
-            Assert.True(result.Succeeded);
-            Assert.Equal("补款完成", result.Message);
-            Assert.NotNull(apiClient.LastAppendPaymentRequest);
-            Assert.Equal(PaymentMethodKind.Voucher, apiClient.LastAppendPaymentRequest!.Method);
-            Assert.Equal("VIP001", apiClient.LastAppendPaymentRequest.Reference);
-            Assert.Equal("LOCK-002", apiClient.LastAppendPaymentRequest.ReservationToken);
-            Assert.NotNull(result.Order);
-            Assert.Equal(70m, result.Order!.PaidAmount);
-            Assert.Equal(50m, result.Order.OutstandingAmount);
-
-            var saved = await repository.GetAsync(result.Order.OrderId);
-            Assert.NotNull(saved);
-            Assert.Equal(70m, saved.PaidAmount);
-            Assert.Equal(50m, saved.BalanceAmount);
+            Assert.False(result.Succeeded);
+            Assert.Contains("安全补款服务未配置", result.Message);
+            Assert.Equal(0, apiClient.AppendPaymentCallCount);
+            Assert.Null(apiClient.LastAppendPaymentRequest);
         }
         finally
         {
@@ -417,7 +407,7 @@ public sealed class InstallmentOrderServiceTests
     }
 
     [Fact]
-    public async Task CancelWithRefundAsync_builds_refund_request_from_recorded_payments()
+    public async Task CancelWithRefundAsync_without_operation_service_fails_before_legacy_cancel()
     {
         var databasePath = CreateTempDatabasePath();
 
@@ -440,18 +430,13 @@ public sealed class InstallmentOrderServiceTests
                 Guid.Parse("11111111-2222-3333-4444-555555555555"),
                 CreateOnlineSession());
 
-            Assert.True(result.Succeeded);
-            Assert.Equal("已取消并退款", result.Message);
-            Assert.NotNull(apiClient.LastCancelRequest);
-            var refund = Assert.Single(apiClient.LastCancelRequest!.Refunds);
-            Assert.Equal(PaymentMethodKind.Cash, refund.Method);
-            Assert.NotNull(result.Order);
-            Assert.False(result.Order!.CanAddRepayment);
+            Assert.False(result.Succeeded);
+            Assert.Contains("安全取消服务未配置", result.Message);
+            Assert.Null(apiClient.LastCancelRequest);
 
-            var saved = await repository.GetAsync(result.Order.OrderId);
+            var saved = await repository.GetAsync(Guid.Parse("11111111-2222-3333-4444-555555555555"));
             Assert.NotNull(saved);
-            Assert.Equal(InstallmentStatus.Cancelled, saved.Status);
-            Assert.Equal(InstallmentCancellationKind.RefundCancel, saved.CancellationInfo?.Kind);
+            Assert.Equal(InstallmentStatus.Active, saved.Status);
         }
         finally
         {
@@ -460,7 +445,7 @@ public sealed class InstallmentOrderServiceTests
     }
 
     [Fact]
-    public async Task CancelWithRefundAsync_does_not_call_api_when_card_refund_fails()
+    public async Task CancelWithRefundAsync_without_operation_service_stops_before_card_refund()
     {
         var databasePath = CreateTempDatabasePath();
 
@@ -473,10 +458,11 @@ public sealed class InstallmentOrderServiceTests
             {
                 CancelResponse = CreateCancelResponse()
             };
+            var cardTerminal = new DeclinedCardTerminalClient();
             var service = new InstallmentOrderService(
                 repository,
                 apiClient,
-                cardTerminalClient: new DeclinedCardTerminalClient());
+                cardTerminalClient: cardTerminal);
 
             await schema.InitializeAsync();
             await repository.UpsertAsync(CreateLocalOrderWithPayments([
@@ -496,7 +482,8 @@ public sealed class InstallmentOrderServiceTests
                 CreateOnlineSession());
 
             Assert.False(result.Succeeded);
-            Assert.Equal("card refund declined", result.Message);
+            Assert.Contains("安全取消服务未配置", result.Message);
+            Assert.Equal(0, cardTerminal.RefundCallCount);
             Assert.Null(apiClient.LastCancelRequest);
         }
         finally
@@ -942,6 +929,8 @@ public sealed class InstallmentOrderServiceTests
 
     private sealed class DeclinedCardTerminalClient : ICardTerminalClient
     {
+        public int RefundCallCount { get; private set; }
+
         public Task<PaymentAuthorizationResult> AuthorizeAsync(
             decimal amount,
             PosSessionState session,
@@ -956,6 +945,7 @@ public sealed class InstallmentOrderServiceTests
             string? originalReference,
             CancellationToken cancellationToken = default)
         {
+            RefundCallCount++;
             return Task.FromResult(new PaymentAuthorizationResult(false, Message: "card refund declined"));
         }
     }

@@ -23,6 +23,113 @@ public enum InstallmentCancellationKind
     VoidCancel = 2
 }
 
+public enum InstallmentRepaymentClaimStatus
+{
+    Prepared = 1,
+    ProviderPending = 2,
+    Committed = 3,
+    Released = 4,
+    Declined = 5,
+    Unknown = 6
+}
+
+public enum InstallmentRepaymentClaimResolveOutcome
+{
+    Released = 1,
+    Declined = 2,
+    Unknown = 3
+}
+
+public enum InstallmentCancelClaimStatus
+{
+    Prepared = 1,
+    RefundPending = 2,
+    Committed = 3,
+    Released = 4,
+    Declined = 5,
+    Unknown = 6
+}
+
+public enum InstallmentCancelClaimResolveOutcome
+{
+    Released = 1,
+    Declined = 2,
+    Unknown = 3
+}
+
+public sealed record InstallmentRepaymentCapabilitiesResponse(
+    bool RepaymentClaimsSupported,
+    bool RepaymentClaimsRequired,
+    bool CrossDeviceRepaymentEnabled,
+    int PreparedClaimTtlSeconds,
+    bool CancelClaimsSupported = true,
+    bool CancelClaimsRequired = false,
+    int CancelPreparedClaimTtlSeconds = 120);
+
+public sealed record InstallmentRepaymentClaimCreateRequest(
+    Guid OperationGuid,
+    Guid PaymentGuid,
+    decimal Amount,
+    PaymentMethodKind Method,
+    string IdempotencyKey);
+
+public sealed record InstallmentRepaymentClaimBeginProviderRequest(
+    string Provider,
+    string ProviderAttemptId);
+
+public sealed record InstallmentRepaymentClaimResolveRequest(
+    InstallmentRepaymentClaimResolveOutcome Outcome);
+
+public sealed record InstallmentRepaymentClaimCommitRequest(
+    string? Reference = null,
+    string? ReservationToken = null,
+    IReadOnlyList<CardTransactionDto>? CardTransactions = null);
+
+public sealed record InstallmentRepaymentClaimDto(
+    Guid InstallmentGuid,
+    Guid OperationGuid,
+    Guid PaymentGuid,
+    decimal Amount,
+    PaymentMethodKind Method,
+    string IdempotencyKey,
+    InstallmentRepaymentClaimStatus Status,
+    string? Provider,
+    string? ProviderAttemptId,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? ExpiresAtUtc,
+    InstallmentAppendPaymentResponse? Commit = null,
+    bool AlreadyExists = false);
+
+public sealed record InstallmentCancelClaimCreateRequest(
+    Guid OperationGuid,
+    string IdempotencyKey,
+    string? Reason,
+    string RefundPlanFingerprint);
+
+public sealed record InstallmentCancelClaimResolveRequest(
+    InstallmentCancelClaimResolveOutcome Outcome,
+    IReadOnlyList<InstallmentRefundPaymentCommandDto>? ApprovedRefunds = null);
+
+public sealed record InstallmentCancelClaimCommitRequest(
+    IReadOnlyList<InstallmentRefundPaymentCommandDto> Refunds);
+
+public sealed record InstallmentCancelClaimCommitResponse(
+    InstallmentDetailsDto Details,
+    bool AlreadyCancelled);
+
+public sealed record InstallmentCancelClaimDto(
+    Guid InstallmentGuid,
+    Guid OperationGuid,
+    string IdempotencyKey,
+    string RefundPlanFingerprint,
+    InstallmentCancelClaimStatus Status,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? ExpiresAtUtc,
+    InstallmentCancelClaimCommitResponse? Commit = null,
+    bool AlreadyExists = false);
+
 public sealed record InstallmentLineDto(
     Guid InstallmentLineGuid,
     string ProductCode,
@@ -115,7 +222,8 @@ public sealed record InstallmentRefundPaymentCommandDto(
     decimal Amount,
     string? Reference,
     IReadOnlyList<CardTransactionDto>? CardTransactions = null,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null,
+    Guid OriginalPaymentGuid = default);
 
 public sealed record InstallmentCancelRequest(
     Guid InstallmentGuid,
@@ -214,7 +322,8 @@ public sealed record InstallmentPaymentDto(
     string DeviceCode,
     IReadOnlyList<CardTransactionDto>? CardTransactions = null,
     string? IdempotencyKey = null,
-    [property: JsonIgnore] string? ReservationToken = null);
+    [property: JsonIgnore] string? ReservationToken = null,
+    string? CashierName = null);
 
 public sealed record InstallmentPickupInfoDto(
     DateTimeOffset PickedUpAt,

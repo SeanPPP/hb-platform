@@ -152,6 +152,7 @@ export function PaymentScreen({
       state.phase !== "pending" ||
       state.runtimeStatus !== "pending" ||
       state.busy ||
+      state.recoveryInFlight === true ||
       !state.allowedActions.recover ||
       squareAutoRecovery.current.recoveryCount >=
         SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS
@@ -179,7 +180,7 @@ export function PaymentScreen({
         return;
       }
       tracker.recoveryCount += 1;
-      void presenter.recover();
+      void presenter.recover({ background: true });
     }, Math.min(SQUARE_AUTO_RECOVERY_INTERVAL_MS, deadlineAt - now));
     return () => clearTimeout(timer);
   }, [
@@ -189,6 +190,7 @@ export function PaymentScreen({
     state.busy,
     state.phase,
     state.provider,
+    state.recoveryInFlight,
     state.runtimeStatus,
   ]);
 
@@ -221,6 +223,8 @@ export function PaymentScreen({
 
       <PosKeyboardAwareScrollView
         contentContainerStyle={styles.scrollContent}
+        scrollEnabled={compact || state.phase === "success"}
+        style={styles.contentScroll}
         testID="payment-content-scroll"
       >
         {state.phase !== "success" ? (
@@ -292,168 +296,178 @@ export function PaymentScreen({
               ]}
               testID="payment-entry-pane"
             >
+              <ScrollView
+                contentContainerStyle={[
+                  styles.entryScrollContent,
+                  compact && styles.entryScrollContentCompact,
+                ]}
+                nestedScrollEnabled
+                scrollEnabled={!compact}
+                style={[
+                  styles.entryScroll,
+                  compact && styles.entryScrollCompact,
+                ]}
+                testID="payment-entry-scroll"
+              >
+                {showEntry ? (
+                  <View
+                    style={[
+                      styles.form,
+                      shortLandscape && styles.formShort,
+                    ]}
+                    testID="payment-entry-form"
+                  >
+                    <Text style={styles.inputLabel}>{t("amount.label")}</Text>
+                    <PosTextInput
+                      accessibilityLabel={t("amount.label")}
+                      editable={!state.busy}
+                      keyboardType="decimal-pad"
+                      onChangeText={(value) => presenter.setAmountText(value)}
+                      placeholder="0.00"
+                      placeholderTextColor="#7B8793"
+                      selectionColor={posColors.blue}
+                      showSoftInputOnFocus={false}
+                      style={[
+                        styles.amountInput,
+                        shortLandscape && styles.amountInputShort,
+                      ]}
+                      testID="payment-amount"
+                      value={state.amountText}
+                    />
+                    <Text
+                      style={[
+                        styles.inputHint,
+                        shortLandscape && styles.inputHintShort,
+                      ]}
+                    >
+                      {t("amount.hint")}
+                    </Text>
+                    <PaymentKeypad
+                      amountText={state.amountText}
+                      dense={shortLandscape}
+                      disabled={state.busy}
+                      onChange={(value) => presenter.setAmountText(value)}
+                    />
+
+                    {state.selectedMethod === "cash" ? (
+                      <View
+                        style={[
+                          styles.quickCashRow,
+                          shortLandscape && styles.quickCashRowShort,
+                        ]}
+                        testID="payment-cash-quick"
+                      >
+                        {(
+                          [
+                            [5, styles.quickCashNote5],
+                            [10, styles.quickCashNote10],
+                            [20, styles.quickCashNote20],
+                            [50, styles.quickCashNote50],
+                            [100, styles.quickCashNote100],
+                          ] as const
+                        ).map(([amount, noteStyle]) => (
+                          <ActionButton
+                            key={amount}
+                            label={`$${amount}`}
+                            onPress={() =>
+                              presenter.setAmountText(amount.toFixed(2))
+                            }
+                            sound="key"
+                            style={[styles.quickCashButton, noteStyle]}
+                            testID={`payment-cash-quick-${amount}`}
+                            tone="quiet"
+                          />
+                        ))}
+                      </View>
+                    ) : null}
+
+                    {state.selectedMethod === "voucher" ? (
+                      <View
+                        key={state.sensitiveInputRevision}
+                        style={styles.voucherInputGroup}
+                      >
+                        <Text style={styles.inputLabel}>
+                          {t("voucher.label")}
+                        </Text>
+                        <PosKeyboardAwareTextInput
+                          accessibilityLabel={t("voucher.label")}
+                          autoCapitalize="characters"
+                          autoCorrect={false}
+                          editable={!state.busy}
+                          onChangeText={(value) =>
+                            presenter.setVoucherCode(value)
+                          }
+                          placeholder={t("voucher.placeholder")}
+                          placeholderTextColor="#7B8793"
+                          secureTextEntry
+                          selectionColor={posColors.blue}
+                          style={styles.voucherInput}
+                          testID="payment-voucher-code"
+                        />
+                        {state.voucherCaptured ? (
+                          <Text
+                            style={styles.secureCapture}
+                            testID="payment-voucher-captured"
+                          >
+                            {t("voucher.captured")}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+                {state.fieldIssue ? (
+                  <Text
+                    accessibilityRole="alert"
+                    style={styles.fieldError}
+                    testID="payment-field-error"
+                  >
+                    {t(paymentFieldIssueCopyKey(state.fieldIssue))}
+                  </Text>
+                ) : null}
+              </ScrollView>
               {showEntry ? (
                 <View
                   style={[
-                    styles.form,
-                    shortLandscape && styles.formShort,
+                    styles.formActions,
+                    shortLandscape && styles.formActionsShort,
                   ]}
-                  testID="payment-entry-form"
+                  testID="payment-entry-actions"
                 >
-                  <Text style={styles.inputLabel}>{t("amount.label")}</Text>
-                  <PosTextInput
-                    accessibilityLabel={t("amount.label")}
-                    editable={!state.busy}
-                    keyboardType="decimal-pad"
-                    onChangeText={(value) => presenter.setAmountText(value)}
-                    placeholder="0.00"
-                    placeholderTextColor="#7B8793"
-                    selectionColor={posColors.blue}
-                    showSoftInputOnFocus={false}
-                    style={[
-                      styles.amountInput,
-                      shortLandscape && styles.amountInputShort,
-                    ]}
-                    testID="payment-amount"
-                    value={state.amountText}
-                  />
-                  <Text
-                    style={[
-                      styles.inputHint,
-                      shortLandscape && styles.inputHintShort,
-                    ]}
-                  >
-                    {t("amount.hint")}
-                  </Text>
-                  <PaymentKeypad
-                    amountText={state.amountText}
-                    dense={shortLandscape}
+                  <ActionButton
                     disabled={state.busy}
-                    onChange={(value) => presenter.setAmountText(value)}
+                    label={t("action.cancel")}
+                    onPress={() => {
+                      if (state.allowedActions.cancel) {
+                        void presenter.cancel();
+                      } else if (onBack && canLeave) {
+                        onBack();
+                      } else {
+                        presenter.setAmountText("");
+                      }
+                    }}
+                    style={styles.formAction}
+                    sound="danger"
+                    testID="payment-entry-cancel"
+                    tone="quiet"
                   />
-
-                  {state.selectedMethod === "cash" ? (
-                    <View
-                      style={[
-                        styles.quickCashRow,
-                        shortLandscape && styles.quickCashRowShort,
-                      ]}
-                      testID="payment-cash-quick"
-                    >
-                      {(
-                        [
-                          [5, styles.quickCashNote5],
-                          [10, styles.quickCashNote10],
-                          [20, styles.quickCashNote20],
-                          [50, styles.quickCashNote50],
-                          [100, styles.quickCashNote100],
-                        ] as const
-                      ).map(([amount, noteStyle]) => (
-                        <ActionButton
-                          key={amount}
-                          label={`$${amount}`}
-                          onPress={() =>
-                            presenter.setAmountText(amount.toFixed(2))
-                          }
-                          sound="key"
-                          style={[
-                            styles.quickCashButton,
-                            noteStyle,
-                          ]}
-                          testID={`payment-cash-quick-${amount}`}
-                          tone="quiet"
-                        />
-                      ))}
-                    </View>
-                  ) : null}
-
-                  {state.selectedMethod === "voucher" ? (
-                    <View
-                      key={state.sensitiveInputRevision}
-                      style={styles.voucherInputGroup}
-                    >
-                      <Text style={styles.inputLabel}>
-                        {t("voucher.label")}
-                      </Text>
-                      <PosKeyboardAwareTextInput
-                        accessibilityLabel={t("voucher.label")}
-                        autoCapitalize="characters"
-                        autoCorrect={false}
-                        editable={!state.busy}
-                        onChangeText={(value) =>
-                          presenter.setVoucherCode(value)
-                        }
-                        placeholder={t("voucher.placeholder")}
-                        placeholderTextColor="#7B8793"
-                        secureTextEntry
-                        selectionColor={posColors.blue}
-                        style={styles.voucherInput}
-                        testID="payment-voucher-code"
-                      />
-                      {state.voucherCaptured ? (
-                        <Text
-                          style={styles.secureCapture}
-                          testID="payment-voucher-captured"
-                        >
-                          {t("voucher.captured")}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
-
-                  <View
-                    style={[
-                      styles.formActions,
-                      shortLandscape && styles.formActionsShort,
-                    ]}
-                  >
-            <ActionButton
-              disabled={state.busy}
-              label={t("action.cancel")}
-                      onPress={() => {
-                        if (state.allowedActions.cancel) {
-                          void presenter.cancel();
-                        } else if (onBack && canLeave) {
-                          onBack();
-                        } else {
-                          presenter.setAmountText("");
-                        }
-                      }}
-              style={styles.formAction}
-              sound="danger"
-              testID="payment-entry-cancel"
-                      tone="quiet"
-                    />
-                    <ActionButton
-                      disabled={
-                        !state.selectedMethod ||
-                        !canSubmitPaymentMethod(
-                          state,
-                          state.selectedMethod,
-                        )
-                      }
-                      label={
-                        state.orderGuid
-                          ? t("action.addTender")
-                          : t("action.pay")
-                      }
-                      onPress={() => {
-                        void presenter.submitSelected();
-                      }}
-                      style={styles.formAction}
-                      testID="payment-submit"
-                    />
-                  </View>
+                  <ActionButton
+                    disabled={
+                      !state.selectedMethod ||
+                      !canSubmitPaymentMethod(state, state.selectedMethod)
+                    }
+                    label={
+                      state.orderGuid
+                        ? t("action.addTender")
+                        : t("action.pay")
+                    }
+                    onPress={() => {
+                      void presenter.submitSelected();
+                    }}
+                    style={styles.formAction}
+                    testID="payment-submit"
+                  />
                 </View>
-              ) : null}
-              {state.fieldIssue ? (
-                <Text
-                  accessibilityRole="alert"
-                  style={styles.fieldError}
-                  testID="payment-field-error"
-                >
-                  {t(paymentFieldIssueCopyKey(state.fieldIssue))}
-                </Text>
               ) : null}
             </View>
 
@@ -878,89 +892,105 @@ function PaymentContextPane({
       <Text style={styles.contextEyebrow}>{flowLabel}</Text>
 
       {customer ? (
-        <View style={styles.customerCard} testID="payment-installment-customer">
-          <View style={styles.customerHeading}>
-            <Text style={styles.customerTitle}>
-              {locale === "zh" ? "分期顾客" : "Installment customer"}
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.customerScrollContent}
+          nestedScrollEnabled
+          scrollEnabled={customer.editorOpen}
+          style={styles.customerScroll}
+          testID="payment-customer-scroll"
+        >
+          <View
+            style={styles.customerCard}
+            testID="payment-installment-customer"
+          >
+            <View style={styles.customerHeading}>
+              <Text style={styles.customerTitle}>
+                {locale === "zh" ? "分期顾客" : "Installment customer"}
+              </Text>
+              {customer.editable &&
+              presenter.openInstallmentCustomerEditor ? (
+                <PosPressable
+                  accessibilityRole="button"
+                  disabled={state.busy}
+                  onPress={() =>
+                    presenter.openInstallmentCustomerEditor?.()
+                  }
+                  sound="navigate"
+                  style={({ pressed }) => [
+                    styles.customerEdit,
+                    pressed && styles.pressed,
+                  ]}
+                  testID="payment-customer-edit"
+                >
+                  <Text style={styles.customerEditText}>
+                    {locale === "zh" ? "编辑" : "Edit"}
+                  </Text>
+                </PosPressable>
+              ) : null}
+            </View>
+            {customer.installmentNumber ? (
+              <Text style={styles.customerNumber}>
+                {customer.installmentNumber}
+              </Text>
+            ) : null}
+            <Text style={styles.customerValue}>
+              {customer.name ||
+                (locale === "zh" ? "未填写姓名" : "Name required")}
             </Text>
-            {customer.editable &&
-            presenter.openInstallmentCustomerEditor ? (
-              <PosPressable
-                accessibilityRole="button"
-                disabled={state.busy}
-                onPress={() =>
-                  presenter.openInstallmentCustomerEditor?.()
-                }
-                sound="navigate"
-                style={({ pressed }) => [
-                  styles.customerEdit,
-                  pressed && styles.pressed,
-                ]}
-                testID="payment-customer-edit"
+            <Text style={styles.customerValue}>
+              {customer.phone ||
+                (locale === "zh" ? "未填写电话" : "Phone required")}
+            </Text>
+            {customer.editorOpen ? (
+              <View
+                style={styles.customerEditor}
+                testID="payment-customer-editor"
               >
-                <Text style={styles.customerEditText}>
-                  {locale === "zh" ? "编辑" : "Edit"}
-                </Text>
-              </PosPressable>
+                <PosKeyboardAwareTextInput
+                  autoCorrect={false}
+                  editable={!state.busy}
+                  onChangeText={(value) =>
+                    presenter.setInstallmentCustomerDraftName?.(value)
+                  }
+                  placeholder={locale === "zh" ? "顾客姓名" : "Customer name"}
+                  style={styles.customerInput}
+                  testID="payment-customer-name"
+                  value={customer.draftName}
+                />
+                <PosKeyboardAwareTextInput
+                  autoCorrect={false}
+                  editable={!state.busy}
+                  keyboardType="phone-pad"
+                  onChangeText={(value) =>
+                    presenter.setInstallmentCustomerDraftPhone?.(value)
+                  }
+                  placeholder={locale === "zh" ? "联系电话" : "Phone"}
+                  style={styles.customerInput}
+                  testID="payment-customer-phone"
+                  value={customer.draftPhone}
+                />
+                <View style={styles.customerEditorActions}>
+                  <ActionButton
+                    label={locale === "zh" ? "取消" : "Cancel"}
+                    onPress={() =>
+                      presenter.cancelInstallmentCustomerEditor?.()
+                    }
+                    style={styles.customerEditorButton}
+                    sound="navigate"
+                    testID="payment-customer-cancel"
+                    tone="quiet"
+                  />
+                  <ActionButton
+                    label={locale === "zh" ? "保存" : "Save"}
+                    onPress={() => presenter.saveInstallmentCustomer?.()}
+                    style={styles.customerEditorButton}
+                    testID="payment-customer-save"
+                  />
+                </View>
+              </View>
             ) : null}
           </View>
-          {customer.installmentNumber ? (
-            <Text style={styles.customerNumber}>
-              {customer.installmentNumber}
-            </Text>
-          ) : null}
-          <Text style={styles.customerValue}>
-            {customer.name || (locale === "zh" ? "未填写姓名" : "Name required")}
-          </Text>
-          <Text style={styles.customerValue}>
-            {customer.phone || (locale === "zh" ? "未填写电话" : "Phone required")}
-          </Text>
-          {customer.editorOpen ? (
-            <View style={styles.customerEditor} testID="payment-customer-editor">
-              <PosKeyboardAwareTextInput
-                autoCorrect={false}
-                editable={!state.busy}
-                onChangeText={(value) =>
-                  presenter.setInstallmentCustomerDraftName?.(value)
-                }
-                placeholder={locale === "zh" ? "顾客姓名" : "Customer name"}
-                style={styles.customerInput}
-                testID="payment-customer-name"
-                value={customer.draftName}
-              />
-              <PosKeyboardAwareTextInput
-                autoCorrect={false}
-                editable={!state.busy}
-                keyboardType="phone-pad"
-                onChangeText={(value) =>
-                  presenter.setInstallmentCustomerDraftPhone?.(value)
-                }
-                placeholder={locale === "zh" ? "联系电话" : "Phone"}
-                style={styles.customerInput}
-                testID="payment-customer-phone"
-                value={customer.draftPhone}
-              />
-              <View style={styles.customerEditorActions}>
-                <ActionButton
-                label={locale === "zh" ? "取消" : "Cancel"}
-                  onPress={() =>
-                    presenter.cancelInstallmentCustomerEditor?.()
-                  }
-                style={styles.customerEditorButton}
-                sound="navigate"
-                  testID="payment-customer-cancel"
-                  tone="quiet"
-                />
-                <ActionButton
-                  label={locale === "zh" ? "保存" : "Save"}
-                  onPress={() => presenter.saveInstallmentCustomer?.()}
-                  style={styles.customerEditorButton}
-                  testID="payment-customer-save"
-                />
-              </View>
-            </View>
-          ) : null}
-        </View>
+        </PosKeyboardAwareScrollView>
       ) : null}
 
       <Text style={styles.contextListTitle}>
@@ -968,6 +998,7 @@ function PaymentContextPane({
       </Text>
       <ScrollView
         nestedScrollEnabled
+        scrollEnabled
         style={styles.contextLines}
         testID="payment-context-lines"
       >
@@ -1022,11 +1053,18 @@ function PaymentStatusPanel({
           {t(paymentPhaseHintKey(state.phase))}
         </Text>
       </View>
-      {state.busy ? (
+      {state.busy || state.recoveryInFlight ? (
         <ActivityIndicator
+          accessibilityLabel={
+            state.recoveryInFlight ? t("action.recovering") : undefined
+          }
           color={tone === "danger" ? posColors.red : posColors.blue}
           size="small"
-          testID="payment-busy"
+          testID={
+            state.recoveryInFlight
+              ? "payment-recovery-in-flight"
+              : "payment-busy"
+          }
         />
       ) : null}
     </View>
@@ -1068,12 +1106,17 @@ function RecoveryActions({
   if (!state.allowedActions.recover && !state.allowedActions.cancel) {
     return null;
   }
+  const actionDisabled = state.busy || state.recoveryInFlight === true;
   return (
     <View style={styles.recoveryActions} testID="payment-recovery-actions">
       {state.allowedActions.recover ? (
         <ActionButton
-          disabled={state.busy}
-          label={t("action.recover")}
+          disabled={actionDisabled}
+          label={
+            state.recoveryInFlight
+              ? t("action.recovering")
+              : t("action.recover")
+          }
           onPress={() => {
             void presenter.recover();
           }}
@@ -1083,7 +1126,7 @@ function RecoveryActions({
       ) : null}
       {state.allowedActions.cancel ? (
         <ActionButton
-          disabled={state.busy}
+          disabled={actionDisabled}
           label={t("action.cancel")}
           onPress={() => {
             void presenter.cancel();
@@ -1187,92 +1230,112 @@ function PaymentSummary({
       ]}
       testID="payment-summary"
     >
-      <Text style={styles.sectionTitle}>{t("method.title")}</Text>
-      <View style={styles.methodGrid}>
-        {PAYMENT_METHODS.map((method) => (
-          <PaymentMethodButton
-            active={state.selectedMethod === method}
-            disabled={!canSelectPaymentMethod(state, method)}
-            key={method}
-            label={t(paymentMethodCopyKey(method))}
-            onPress={() => presenter.selectMethod(method)}
-            testID={`payment-method-${method}`}
-          />
-        ))}
-      </View>
-      <ProviderBlockers state={state} t={t} />
-      <View style={styles.summarySectionRule} />
-      <Text style={styles.sectionTitle}>{t("summary.title")}</Text>
-      <SummaryAmount
-        label={t("summary.total")}
-        locale={locale}
-        value={state.total.cents}
-      />
-      <SummaryAmount
-        label={t("summary.paid")}
-        locale={locale}
-        value={paidCents}
-      />
-      <View style={styles.remainingRule} />
-      <SummaryAmount
-        emphasis
-        label={t("summary.remaining")}
-        locale={locale}
-        testID="payment-remaining"
-        value={state.remaining.cents}
-      />
-      {state.checkout.cash.tenderedCents > 0 ? (
-        <View style={styles.cashSettlement} testID="payment-cash-settlement">
-          <SummaryAmount
-            label={locale === "zh" ? "实收现金" : "Cash tendered"}
-            locale={locale}
-            value={state.checkout.cash.tenderedCents}
-          />
-          <SummaryAmount
-            label={locale === "zh" ? "入账金额" : "Applied"}
-            locale={locale}
-            testID="payment-cash-applied"
-            value={state.checkout.cash.appliedCents}
-          />
-          <SummaryAmount
-            emphasis
-            label={locale === "zh" ? "找零" : "Change"}
-            locale={locale}
-            testID="payment-change"
-            value={state.checkout.cash.changeCents}
+      <ScrollView
+        contentContainerStyle={[
+          styles.summaryScrollContent,
+          compact && styles.summaryScrollContentCompact,
+        ]}
+        nestedScrollEnabled
+        scrollEnabled={!compact}
+        style={[
+          styles.summaryScroll,
+          compact && styles.summaryScrollCompact,
+        ]}
+        testID="payment-summary-scroll"
+      >
+        <Text style={styles.sectionTitle}>{t("method.title")}</Text>
+        <View style={styles.methodGrid}>
+          {PAYMENT_METHODS.map((method) => (
+            <PaymentMethodButton
+              active={state.selectedMethod === method}
+              disabled={!canSelectPaymentMethod(state, method)}
+              key={method}
+              label={t(paymentMethodCopyKey(method))}
+              onPress={() => presenter.selectMethod(method)}
+              testID={`payment-method-${method}`}
+            />
+          ))}
+        </View>
+        <ProviderBlockers state={state} t={t} />
+        <View style={styles.summarySectionRule} />
+        <Text style={styles.sectionTitle}>{t("summary.title")}</Text>
+        <SummaryAmount
+          label={t("summary.total")}
+          locale={locale}
+          value={state.total.cents}
+        />
+        <SummaryAmount
+          label={t("summary.paid")}
+          locale={locale}
+          value={paidCents}
+        />
+        <View style={styles.remainingRule} />
+        <SummaryAmount
+          emphasis
+          label={t("summary.remaining")}
+          locale={locale}
+          testID="payment-remaining"
+          value={state.remaining.cents}
+        />
+        {state.checkout.cash.tenderedCents > 0 ? (
+          <View style={styles.cashSettlement} testID="payment-cash-settlement">
+            <SummaryAmount
+              label={locale === "zh" ? "实收现金" : "Cash tendered"}
+              locale={locale}
+              value={state.checkout.cash.tenderedCents}
+            />
+            <SummaryAmount
+              label={locale === "zh" ? "入账金额" : "Applied"}
+              locale={locale}
+              testID="payment-cash-applied"
+              value={state.checkout.cash.appliedCents}
+            />
+            <SummaryAmount
+              emphasis
+              label={locale === "zh" ? "找零" : "Change"}
+              locale={locale}
+              testID="payment-change"
+              value={state.checkout.cash.changeCents}
+            />
+          </View>
+        ) : null}
+
+        <Text style={styles.tenderTitle}>{t("summary.tenders")}</Text>
+        {state.tenders.length ? (
+          state.tenders.map((tender) => (
+            <TenderRow
+              key={tender.tenderGuid}
+              locale={locale}
+              onRemove={() => {
+                void presenter.removeTender(tender.tenderGuid);
+              }}
+              state={state}
+              tender={tender}
+              t={t}
+            />
+          ))
+        ) : (
+          <Text style={styles.emptyTenders}>{t("summary.noTenders")}</Text>
+        )}
+        <RecoveryActions presenter={presenter} state={state} t={t} />
+        <LinklyControls presenter={presenter} state={state} t={t} />
+      </ScrollView>
+      {presenter.confirm && state.checkout.canConfirm ? (
+        <View style={styles.summaryFooter} testID="payment-summary-footer">
+          <ActionButton
+            disabled={state.busy}
+            label={
+              locale === "zh"
+                ? "确认分期付款"
+                : "Confirm installment payment"
+            }
+            onPress={onConfirm}
+            sound="danger"
+            style={styles.confirmAction}
+            testID="payment-confirm"
           />
         </View>
       ) : null}
-
-      <Text style={styles.tenderTitle}>{t("summary.tenders")}</Text>
-      {state.tenders.length ? (
-        state.tenders.map((tender) => (
-          <TenderRow
-            key={tender.tenderGuid}
-            locale={locale}
-            onRemove={() => {
-              void presenter.removeTender(tender.tenderGuid);
-            }}
-            state={state}
-            tender={tender}
-            t={t}
-          />
-        ))
-      ) : (
-        <Text style={styles.emptyTenders}>{t("summary.noTenders")}</Text>
-      )}
-      {presenter.confirm && state.checkout.canConfirm ? (
-        <ActionButton
-          disabled={state.busy}
-          label={locale === "zh" ? "确认分期付款" : "Confirm installment payment"}
-          onPress={onConfirm}
-          sound="danger"
-          style={styles.confirmAction}
-          testID="payment-confirm"
-        />
-      ) : null}
-      <RecoveryActions presenter={presenter} state={state} t={t} />
-      <LinklyControls presenter={presenter} state={state} t={t} />
     </View>
   );
 }
@@ -1664,6 +1727,9 @@ const styles = StyleSheet.create({
     color: "#D8E2EA",
     fontSize: 13,
     fontVariant: ["tabular-nums"],
+  },
+  contentScroll: {
+    flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
@@ -2072,14 +2138,16 @@ const styles = StyleSheet.create({
   },
   workspace: {
     flex: 1,
-    minHeight: 480,
+    minHeight: 0,
     flexDirection: "row",
+    overflow: "hidden",
     backgroundColor: posColors.surface,
     borderWidth: 1,
     borderColor: posColors.border,
   },
   contextPane: {
     flex: 30,
+    minHeight: 0,
     minWidth: 250,
     padding: 16,
     borderRightWidth: 1,
@@ -2155,11 +2223,19 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   customerCard: {
-    marginTop: 14,
     padding: 12,
     borderWidth: 1,
     borderColor: posColors.border,
     backgroundColor: "#FFFFFF",
+  },
+  customerScroll: {
+    flexShrink: 1,
+    minHeight: 0,
+    marginTop: 14,
+  },
+  customerScrollContent: {
+    flexGrow: 0,
+    paddingBottom: 4,
   },
   customerHeading: {
     flexDirection: "row",
@@ -2224,6 +2300,8 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   contextLines: {
+    flex: 1,
+    minHeight: 0,
     marginTop: 8,
   },
   contextLine: {
@@ -2261,11 +2339,15 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   workspaceCompact: {
+    flex: 0,
     minHeight: 0,
     flexDirection: "column",
+    overflow: "visible",
   },
   entryPane: {
     flex: 42,
+    minHeight: 0,
+    minWidth: 0,
     padding: 20,
     borderRightWidth: 1,
     borderRightColor: posColors.border,
@@ -2278,14 +2360,47 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: posColors.border,
   },
+  entryScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  entryScrollCompact: {
+    flex: 0,
+  },
+  entryScrollContent: {
+    flexGrow: 1,
+    paddingBottom: 4,
+  },
+  entryScrollContentCompact: {
+    flexGrow: 0,
+  },
   summaryPane: {
     flex: 28,
+    minHeight: 0,
     minWidth: 270,
     padding: 20,
     backgroundColor: "#FBFAF7",
   },
   summaryPaneCompact: {
     minWidth: 0,
+  },
+  summaryScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  summaryScrollCompact: {
+    flex: 0,
+  },
+  summaryScrollContent: {
+    paddingBottom: 4,
+  },
+  summaryScrollContentCompact: {
+    flexGrow: 0,
+  },
+  summaryFooter: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: posColors.border,
   },
   sectionTitle: {
     color: posColors.ink,
@@ -2651,7 +2766,7 @@ const styles = StyleSheet.create({
     minWidth: 240,
   },
   confirmAction: {
-    marginTop: 20,
+    marginTop: 0,
   },
   disabled: {
     opacity: 0.42,

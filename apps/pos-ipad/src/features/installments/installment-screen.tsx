@@ -1144,14 +1144,16 @@ function DetailsActions({
   setMoreOpen(value: boolean): void;
   state: InstallmentPresenterState;
 }>) {
-  if (!presenter.capabilities.selectedDetailsWritable) {
-    return null;
-  }
+  const selectedDetailsWritable =
+    presenter.capabilities.selectedDetailsWritable;
+  const selectedDetailsRepayable =
+    presenter.capabilities.selectedDetailsRepayable;
   if (details.status === "PickedUp" || details.status === "Cancelled") {
     return null;
   }
 
   if (details.status === "PaidOff") {
+    if (!selectedDetailsWritable) return null;
     const blocked = actionBlockReason(
       state,
       state.access.canConfirmPickup,
@@ -1197,11 +1199,42 @@ function DetailsActions({
     );
   }
 
+  if (!selectedDetailsRepayable) return null;
+
   const repaymentBlocked = actionBlockReason(
     state,
     state.access.canAddRepayment,
     Boolean(onStartRepayment),
   );
+  if (!selectedDetailsWritable) {
+    return (
+      <View style={styles.actionDock} testID="installment-action-dock">
+        <ActionButton
+          disabled={Boolean(repaymentBlocked)}
+          label={installmentText(
+            locale,
+            state.busy ? "action.working" : "action.continuePayment",
+          )}
+          onPress={() => {
+            if (!onStartRepayment?.(details.installmentGuid)) {
+              onRouteFailure();
+            }
+          }}
+          testID="installment-continue-to-payment"
+          wide
+        />
+        <Text
+          style={styles.crossDeviceNotice}
+          testID="installment-cross-device-notice"
+        >
+          {installmentText(locale, "details.crossDeviceRepaymentNotice")}
+        </Text>
+        {repaymentBlocked ? (
+          <ActionBlockNotice locale={locale} reason={repaymentBlocked} />
+        ) : null}
+      </View>
+    );
+  }
   const moreBlocked = actionBlockReason(
     state,
     state.access.canCancel,
@@ -1509,6 +1542,7 @@ function StatusBanner({
   const danger = [
     "action-failed",
     "authorization-declined",
+    "claim-review-required",
     "conflict",
     "details-failed",
     "history-failed",
@@ -1522,7 +1556,10 @@ function StatusBanner({
   ].includes(statusCode);
   return (
     <NoticeBanner
-      assertive={statusCode === "payment-recovery-required"}
+      assertive={
+        statusCode === "payment-recovery-required" ||
+        statusCode === "claim-review-required"
+      }
       message={statusMessage(statusCode, locale)}
       testID={
         statusCode === "payment-recovery-required"
@@ -2125,6 +2162,15 @@ const styles = StyleSheet.create({
     color: posColors.ink,
     fontSize: 14,
     fontWeight: "800",
+  },
+  crossDeviceNotice: {
+    backgroundColor: posColors.blueSoft,
+    borderLeftColor: posColors.blue,
+    borderLeftWidth: 4,
+    color: posColors.ink,
+    fontSize: 12,
+    lineHeight: 18,
+    padding: 8,
   },
   actionDockButtons: {
     flexDirection: "row",

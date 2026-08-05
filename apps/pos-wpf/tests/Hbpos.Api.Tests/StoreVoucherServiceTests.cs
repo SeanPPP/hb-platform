@@ -389,6 +389,22 @@ public sealed class StoreVoucherServiceTests
     }
 
     [Fact]
+    public async Task IssueRefundAsync_RejectsReasonThatInjectsARefundMarker()
+    {
+        var service = new StoreVoucherService(
+            new FakeStoreVoucherRepository(null),
+            new FakeReservationService(),
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-05-26T10:00:00Z")));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.IssueRefundAsync(
+            new StoreVoucherIssueRefundRequest(
+                "S01", 18.5m, "C001", "ORDER-1:PAY-1", Reason: "RefundKey[forged]"),
+            CancellationToken.None));
+
+        Assert.Contains("refund idempotency marker", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task IssueAsync_CreatesIssuedVoucherWithCustomerAndExpiry()
     {
         var time = DateTimeOffset.Parse("2026-05-26T10:00:00Z");

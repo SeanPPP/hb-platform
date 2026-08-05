@@ -11,6 +11,7 @@ import type {
   InstallmentDetails,
   InstallmentDeviceScope,
   InstallmentPaymentMethod,
+  InstallmentRepaymentCapabilities,
 } from "./installment-models";
 
 import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
@@ -87,6 +88,8 @@ export interface InstallmentWorkflowPort {
   listPaymentProviderAvailability?(): Promise<
     readonly PaymentProviderAvailability[]
   >;
+  /** 旧测试/非生产实现可省略；Presenter 会按未支持失败关闭。 */
+  getRepaymentCapabilities?(): Promise<InstallmentRepaymentCapabilities>;
   list(input: Readonly<{
     dateFilter: InstallmentDateFilter;
     deviceScope: InstallmentDeviceScope;
@@ -121,6 +124,7 @@ export interface InstallmentWorkflowPort {
 
 export type InstallmentWorkflowErrorCode =
   | "authorization-declined"
+  | "claim-review-required"
   | "conflict"
   | "online-required"
   | "payment-recovery-required"
@@ -140,6 +144,7 @@ export type InstallmentStatusCode =
   | "action-failed"
   | "authorization-declined"
   | "cancel-complete"
+  | "claim-review-required"
   | "conflict"
   | "create-complete"
   | "details-failed"
@@ -200,6 +205,7 @@ export type InstallmentReprintState =
 
 export type InstallmentPresenterCapabilities = Readonly<{
   reprint: boolean;
+  selectedDetailsRepayable: boolean;
   selectedDetailsWritable: boolean;
 }>;
 
@@ -209,6 +215,7 @@ export type InstallmentPresenterOptions = Readonly<{
   permissions: readonly string[];
   reprintPort?: InstallmentReprintPort | null;
   trustedDeviceCode: string;
+  trustedStoreCode: string;
   workflow: InstallmentWorkflowPort;
 }>;
 
@@ -224,6 +231,8 @@ export class InstallmentPresenter {
   private nextSkip = 0;
   private actionInFlight: Promise<void> | null = null;
   private reprintInFlight: Promise<void> | null = null;
+  private repaymentClaimsSupported = false;
+  private crossDeviceRepaymentEnabled = false;
 
   public constructor(private readonly options: InstallmentPresenterOptions) {
     this.workflow = options.workflow;
@@ -282,6 +291,7 @@ export class InstallmentPresenter {
   public get capabilities(): InstallmentPresenterCapabilities {
     return Object.freeze({
       reprint: this.reprintableDetails() !== null,
+      selectedDetailsRepayable: this.selectedDetailsRepayable(),
       selectedDetailsWritable: this.selectedDetailsWritable(),
     });
   }
@@ -305,6 +315,8 @@ export class InstallmentPresenter {
   public setOnline(online: boolean): void {
     if (this.destroyed || this.state.online === online) return;
     if (!online) {
+      this.repaymentClaimsSupported = false;
+      this.crossDeviceRepaymentEnabled = false;
       this.loadGeneration += 1;
       this.detailGeneration += 1;
       this.reprintGeneration += 1;
@@ -467,6 +479,9 @@ export class InstallmentPresenter {
       return;
     }
     const generation = ++this.loadGeneration;
+    // 每一轮加载都先失败关闭；只有本轮可信服务端快照成功才开放跨机续付。
+    this.repaymentClaimsSupported = false;
+    this.crossDeviceRepaymentEnabled = false;
     this.detailGeneration += 1;
     this.reprintGeneration += 1;
     this.nextSkip = 0;
@@ -482,8 +497,21 @@ export class InstallmentPresenter {
       statusCode: null,
     });
     try {
-      const orders = await this.workflow.list(this.historyInput(0));
+      const [capabilitiesResult, ordersResult] = await Promise.allSettled([
+        this.workflow.getRepaymentCapabilities?.() ??
+          Promise.reject(new Error("Repayment capabilities unavailable.")),
+        this.workflow.list(this.historyInput(0)),
+      ]);
       if (!this.isCurrentLoad(generation)) return;
+      if (capabilitiesResult.status === "fulfilled") {
+        this.repaymentClaimsSupported =
+          capabilitiesResult.value.repaymentClaimsSupported;
+        this.crossDeviceRepaymentEnabled =
+          capabilitiesResult.value.repaymentClaimsSupported &&
+          capabilitiesResult.value.crossDeviceRepaymentEnabled;
+      }
+      if (ordersResult.status === "rejected") throw ordersResult.reason;
+      const orders = ordersResult.value;
       const page = orders.slice(0, INSTALLMENT_HISTORY_PAGE_SIZE);
       this.nextSkip = INSTALLMENT_HISTORY_PAGE_SIZE;
       this.patch({
@@ -678,7 +706,7 @@ export class InstallmentPresenter {
   }
 
   public addRepayment(): Promise<void> {
-    const guard = this.guardSelectedWrite(
+    const guard = this.guardSelectedRepayment(
       this.state.access.canAddRepayment,
     );
     if (guard) return guard;
@@ -819,6 +847,22 @@ export class InstallmentPresenter {
     return null;
   }
 
+  private guardSelectedRepayment(
+    hasPermission: boolean,
+  ): Promise<void> | null {
+    const guard = this.guardWrite(hasPermission);
+    if (guard) return guard;
+    if (
+      this.state.details &&
+      !this.selectedDetailsRepaymentScopeAllowed(this.state.details)
+    ) {
+      // 中文注释：跨机续付只能由可信服务端 capability 放行；跨店或非 Active 始终拒绝。
+      this.patch({ statusCode: "conflict" });
+      return Promise.resolve();
+    }
+    return null;
+  }
+
   private runAction(
     operation: () => Promise<InstallmentDetails>,
     successCode: InstallmentStatusCode,
@@ -920,8 +964,38 @@ export class InstallmentPresenter {
   private selectedDetailsWritable(): boolean {
     const details = this.state.details;
     return Boolean(
-      details && details.deviceCode === this.options.trustedDeviceCode,
+      details &&
+        this.selectedDetailsSameStore(details) &&
+        details.deviceCode === this.options.trustedDeviceCode,
     );
+  }
+
+  private selectedDetailsRepayable(): boolean {
+    const details = this.state.details;
+    if (
+      !details ||
+      !this.selectedDetailsSameStore(details) ||
+      details.status !== "Active" ||
+      details.balanceCents <= 0
+    ) {
+      return false;
+    }
+    return this.selectedDetailsRepaymentScopeAllowed(details);
+  }
+
+  private selectedDetailsRepaymentScopeAllowed(
+    details: InstallmentDetails,
+  ): boolean {
+    return (
+      this.repaymentClaimsSupported &&
+      this.selectedDetailsSameStore(details) &&
+      (details.deviceCode === this.options.trustedDeviceCode ||
+        this.crossDeviceRepaymentEnabled)
+    );
+  }
+
+  private selectedDetailsSameStore(details: InstallmentDetails): boolean {
+    return details.storeCode === this.options.trustedStoreCode;
   }
 
   private historyInput(skip: number): Parameters<InstallmentWorkflowPort["list"]>[0] {
@@ -1091,6 +1165,9 @@ function workflowFailureCode(error: unknown): InstallmentStatusCode {
       return "authorization-declined";
     }
     if (error.code === "conflict") return "conflict";
+    if (error.code === "claim-review-required") {
+      return "claim-review-required";
+    }
     if (error.code === "online-required") return "online-required";
     if (error.code === "payment-recovery-required") {
       return "payment-recovery-required";

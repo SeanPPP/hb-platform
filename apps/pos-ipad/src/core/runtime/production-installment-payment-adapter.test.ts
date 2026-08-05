@@ -31,6 +31,64 @@ const STORE_CODE = "STORE-1";
 const DEVICE_CODE = "IPAD-1";
 const NOW = "2026-07-29T01:02:03.000Z";
 
+test("claim provider 绑定对现金、券、Square、Linkly 可耐久重放且不触发 provider", async () => {
+  const cases = [
+    { method: "cash" as const, cardProvider: undefined, provider: "cash" },
+    { method: "voucher" as const, cardProvider: undefined, provider: "voucher" },
+    { method: "card" as const, cardProvider: "square" as const, provider: "square" },
+    { method: "card" as const, cardProvider: "linkly-cloud" as const, provider: "linkly-cloud" },
+  ];
+
+  for (const entry of cases) {
+    const store = new MemoryAttemptStore(
+      paymentAction(entry.method, entry.cardProvider),
+    );
+    const square = new ScriptedProvider("square");
+    const linkly = new ScriptedProvider("linkly-cloud");
+    const voucher = new ScriptedProvider("voucher");
+    const adapter = createAdapter({
+      store,
+      providers: new ProviderRegistry(square, linkly, voucher),
+      configuredCardProviders: ["square", "linkly-cloud"],
+    });
+
+    const first = await adapter.prepareRepaymentClaim(ACTION_ID);
+    const second = await adapter.prepareRepaymentClaim(ACTION_ID);
+
+    assert.equal(first.provider, entry.provider);
+    assert.equal(first.providerAttemptId, second.providerAttemptId);
+    assert.ok(first.providerAttemptId.length > 0);
+    assert.equal(square.calls.length + linkly.calls.length + voucher.calls.length, 0);
+    assert.equal(store.plans.size, 1);
+  }
+});
+
+test("Created 还款 action 只能为 claim 耐久绑定 provider，未经 runtime 转为 ProviderPending 不得执行付款", async () => {
+  const store = new MemoryAttemptStore(
+    Object.freeze({
+      ...paymentAction("cash"),
+      state: "Created" as const,
+    }),
+  );
+  const adapter = createAdapter({ store });
+
+  const binding = await adapter.prepareRepaymentClaim(ACTION_ID);
+  assert.equal(binding.provider, "cash");
+  assert.equal(store.plans.size, 1);
+
+  await assert.rejects(
+    () => adapter.beginOrRecover(ACTION_ID),
+    (error) =>
+      error instanceof InstallmentPaymentAdapterError &&
+      error.code === "INSTALLMENT_ACTION_INVALID",
+  );
+  assert.equal(store.cashApprovalCalls, 0);
+
+  store.action = Object.freeze({ ...store.action, state: "ProviderPending" });
+  assert.equal((await adapter.beginOrRecover(ACTION_ID)).kind, "approved");
+  assert.equal(store.cashApprovalCalls, 1);
+});
+
 test("现金首付/续付先耐久批准并建立原付款证据，恢复返回同一 paymentGuid", async () => {
   const store = new MemoryAttemptStore(paymentAction("cash"));
   const ids = new StableIds();
@@ -338,19 +396,19 @@ test("取消按 paymentGuid 精确绑定现金/Square/券原付款，先完成 p
         method: "cash",
         sourcePaymentGuid: sourcePaymentGuid("01"),
         evidenceId: "evidence-01",
-        idempotencyKey: ACTION_ID,
+        idempotencyKey: `${ACTION_ID}:refund:${sourcePaymentGuid("01")}`,
       },
       {
         method: "card",
         sourcePaymentGuid: sourcePaymentGuid("02"),
         evidenceId: "evidence-02",
-        idempotencyKey: ACTION_ID,
+        idempotencyKey: `${ACTION_ID}:refund:${sourcePaymentGuid("02")}`,
       },
       {
         method: "voucher",
         sourcePaymentGuid: sourcePaymentGuid("03"),
         evidenceId: "evidence-03",
-        idempotencyKey: ACTION_ID,
+        idempotencyKey: `${ACTION_ID}:refund:${sourcePaymentGuid("03")}`,
       },
     ],
   );

@@ -36,6 +36,12 @@ export type SquareTerminalConfiguration = Readonly<{
 
 type SquareEnvironmentConfiguration = Pick<SquareTerminalConfiguration, "environment">;
 
+const SQUARE_SANDBOX_CREDIT_CARD_SUCCESS_DEVICE_ID =
+  "9fa747a2-25ff-48ee-b078-04381f7c828f";
+const SQUARE_SANDBOX_SUCCESS_MAX_AMOUNT_CENTS = 2_500;
+const SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED =
+  "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED";
+
 export type SquareTerminalConfigurationProvider =
   () => Promise<SquareTerminalConfiguration>;
 
@@ -139,6 +145,20 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
     attempt: PaymentAttempt,
     configuration: SquareTerminalConfiguration,
   ): Promise<PaymentProviderResult> {
+    const amountCents = squareProviderAmountCents(attempt);
+    if (
+      configuration.environment.toUpperCase() === "SANDBOX" &&
+      configuration.deviceId.toLowerCase() ===
+        SQUARE_SANDBOX_CREDIT_CARD_SUCCESS_DEVICE_ID &&
+      amountCents > SQUARE_SANDBOX_SUCCESS_MAX_AMOUNT_CENTS
+    ) {
+      // Square 官方成功测试终端会让超额 checkout 长时间停在 PENDING；请求前确定性拒绝。
+      return providerResult(
+        "Declined",
+        attempt.references,
+        SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED,
+      );
+    }
     // 中文注释：响应丢失后的恢复仍进入本方法，但请求体只复用耐久 attempt 的同一幂等键。
     const request: SquareCreateCheckoutRequest = {
       environment: configuration.environment,
@@ -146,7 +166,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       deviceId: configuration.deviceId,
       locationId: configuration.locationId,
       amountMoney: {
-        amount: attempt.amount.cents,
+        amount: amountCents,
         currency: "AUD",
       },
       referenceId: limit(attempt.orderGuid, 40),

@@ -49,6 +49,8 @@ public static class ServiceRegistration
         services.AddOptions<CatalogSnapshotOptions>();
         services.AddOptions<CatalogSyncOptions>();
         services.AddOptions<CatalogDailyPrebuildOptions>();
+        services.AddOptions<InstallmentRepaymentClaimOptions>();
+        services.AddOptions<InstallmentCancelClaimOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -72,6 +74,8 @@ public static class ServiceRegistration
             services.Configure<CatalogSnapshotOptions>(configuration.GetSection("CatalogSnapshot"));
             services.Configure<CatalogSyncOptions>(configuration.GetSection("CatalogSync"));
             services.Configure<CatalogDailyPrebuildOptions>(configuration.GetSection("CatalogDailyPrebuild"));
+            services.Configure<InstallmentRepaymentClaimOptions>(configuration.GetSection("InstallmentRepaymentClaims"));
+            services.Configure<InstallmentCancelClaimOptions>(configuration.GetSection("InstallmentCancelClaims"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -106,6 +110,19 @@ public static class ServiceRegistration
         services.AddScoped<InstallmentService>();
         services.AddScoped<IInstallmentService>(sp => sp.GetRequiredService<InstallmentService>());
         services.AddScoped<IInstallmentHistoryService>(sp => sp.GetRequiredService<InstallmentService>());
+        services.AddScoped<IInstallmentRepaymentClaimRepository, SqlSugarInstallmentRepaymentClaimRepository>();
+        services.AddScoped<IInstallmentRepaymentClaimCommitRepository, SqlSugarInstallmentRepaymentClaimCommitRepository>();
+        services.AddScoped<IInstallmentRepaymentClaimService, InstallmentRepaymentClaimService>();
+        services.AddScoped<IInstallmentRepaymentClaimIdentityResolver, InstallmentRepaymentClaimIdentityResolver>();
+        services.AddScoped<IInstallmentRepaymentClaimSchemaSqlExecutor, SqlSugarInstallmentRepaymentClaimSchemaSqlExecutor>();
+        services.AddScoped<IInstallmentRepaymentClaimSchemaInitializer, SqlSugarInstallmentRepaymentClaimSchemaInitializer>();
+        services.AddSingleton<IInstallmentRepaymentClaimCommitFaultInjector, NoOpInstallmentRepaymentClaimCommitFaultInjector>();
+        services.AddScoped<IInstallmentCancelClaimRepository, SqlSugarInstallmentCancelClaimRepository>();
+        services.AddScoped<IInstallmentCancelClaimCommitRepository, SqlSugarInstallmentCancelClaimCommitRepository>();
+        services.AddScoped<IInstallmentCancelClaimService, InstallmentCancelClaimService>();
+        services.AddScoped<IInstallmentCancelClaimSchemaSqlExecutor, SqlSugarInstallmentCancelClaimSchemaSqlExecutor>();
+        services.AddScoped<IInstallmentCancelClaimSchemaInitializer, SqlSugarInstallmentCancelClaimSchemaInitializer>();
+        services.AddSingleton<IInstallmentCancelClaimCommitFaultInjector, NoOpInstallmentCancelClaimCommitFaultInjector>();
         services.AddScoped<IStoreVoucherRepository, SqlSugarStoreVoucherRepository>();
         services.AddScoped<IStoreVoucherService, StoreVoucherService>();
         services.AddScoped<ILinklyCloudCredentialRepository, SqlSugarLinklyCloudCredentialRepository>();

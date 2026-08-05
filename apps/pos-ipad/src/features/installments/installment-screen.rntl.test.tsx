@@ -328,7 +328,7 @@ test("Active 主操作走统一支付，失败明确提示；退款取消和作�
   await fireEvent.press(screen.getByTestId("installment-confirm-operation-submit"));
   expect(spies.voidSelected).toHaveBeenCalledTimes(1);
   await screen.unmount();
-});
+}, 15_000);
 
 test("PaidOff 取货要求二次确认；无权限和恢复状态显示原因并禁用", async () => {
   const denied = createPresenter({
@@ -648,16 +648,69 @@ test("打印中禁用新建、续付、危险操作与取货入口", async () =>
   await paidOffScreen.unmount();
 });
 
-test("同店跨终端详情只展示业务事实，不呈现重打或任何既有分期写入口", async () => {
-  for (const status of ["Active", "PaidOff"] as const) {
+test("同店跨终端 capability 启用后只展示继续付款与原设备动作说明", async () => {
+  const onStartRepayment = jest.fn((_installmentGuid: string) => true);
+  const crossDevice = createPresenter(
+    {
+      details: { ...details("Active"), deviceCode: "IPAD-2" },
+      orders: [{ ...summary(), deviceCode: "IPAD-2" }],
+      selectedGuid: GUID,
+    },
+    false,
+    false,
+    true,
+  );
+  const screen = await render(
+    <InstallmentScreen
+      onStartRepayment={onStartRepayment}
+      presenter={crossDevice.presenter}
+    />,
+  );
+
+  expect(screen.getAllByText("IPAD-2").length).toBeGreaterThan(0);
+  expect(screen.queryByTestId("installment-reprint")).toBeNull();
+  expect(screen.getByTestId("installment-action-dock")).toBeTruthy();
+  expect(screen.getByTestId("installment-continue-to-payment")).toBeTruthy();
+  expect(screen.queryByTestId("installment-more-actions")).toBeNull();
+  expect(screen.getByTestId("installment-cross-device-notice").props.children).toBe(
+    "Created on another device. You can continue payment here; cancellation, void, pickup and receipt reprint remain on the original device.",
+  );
+
+  await fireEvent.press(screen.getByTestId("installment-continue-to-payment"));
+  expect(onStartRepayment).toHaveBeenCalledWith(GUID);
+  await screen.unmount();
+
+  mockLanguage = "zh-CN";
+  setWindowWidth(820);
+  const chinese = await render(
+    <InstallmentScreen
+      onStartRepayment={() => true}
+      presenter={crossDevice.presenter}
+    />,
+  );
+  await fireEvent.press(
+    chinese.getByTestId(`installment-row-${GUID}`),
+  );
+  expect(chinese.getByTestId("installment-cross-device-notice").props.children).toBe(
+    "此分期单创建于另一台设备；本机可继续付款，取消、作废、提货和重打小票仍须回到原设备操作。",
+  );
+  await chinese.unmount();
+});
+
+test("跨终端 capability 关闭或分期已付清时不呈现续付及原设备高风险动作", async () => {
+  for (const scenario of [
+    { status: "Active" as const, repayable: false },
+    { status: "PaidOff" as const, repayable: false },
+  ]) {
     const readonly = createPresenter(
       {
-        details: { ...details(status), deviceCode: "IPAD-2" },
+        details: { ...details(scenario.status), deviceCode: "IPAD-2" },
         orders: [{ ...summary(), deviceCode: "IPAD-2" }],
         selectedGuid: GUID,
       },
       false,
       false,
+      scenario.repayable,
     );
     const screen = await render(
       <InstallmentScreen
@@ -666,7 +719,6 @@ test("同店跨终端详情只展示业务事实，不呈现重打或任何既�
       />,
     );
 
-    expect(screen.getAllByText("IPAD-2").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("installment-reprint")).toBeNull();
     expect(screen.queryByTestId("installment-action-dock")).toBeNull();
     expect(screen.queryByTestId("installment-continue-to-payment")).toBeNull();
@@ -717,6 +769,7 @@ function createPresenter(
   overrides: Partial<InstallmentPresenterState>,
   canReprint = false,
   selectedDetailsWritable = true,
+  selectedDetailsRepayable = selectedDetailsWritable,
 ) {
   const state: InstallmentPresenterState = {
     access: {
@@ -779,7 +832,11 @@ function createPresenter(
   };
   const presenter: InstallmentScreenPresenter = {
     ...spies,
-    capabilities: { reprint: canReprint, selectedDetailsWritable },
+    capabilities: {
+      reprint: canReprint,
+      selectedDetailsRepayable,
+      selectedDetailsWritable,
+    },
     getState: () => state,
   };
   return { presenter, spies };

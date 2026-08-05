@@ -40,6 +40,9 @@ import type {
   InstallmentPaymentMethod,
   InstallmentCardProvider,
   InstallmentPickupCommand,
+  InstallmentRepaymentCapabilities,
+  InstallmentRepaymentClaim,
+  InstallmentCancelClaim,
   InstallmentRefundCommand,
   InstallmentsRemotePort,
   InstallmentVoidCommand,
@@ -148,7 +151,7 @@ type InstallmentCancelActionCommand = Omit<
   InstallmentCancelCommand,
   "refunds"
 > &
-  Readonly<{ kind: "cancel-refund" }>;
+  Readonly<{ kind: "cancel-refund"; refundPlanFingerprint?: string }>;
 
 export type InstallmentActionCommand =
   | Readonly<InstallmentCreateActionCommand>
@@ -178,6 +181,15 @@ export interface InstallmentActionStorePort {
     created: boolean;
     action: PersistedInstallmentAction;
   }>>;
+  /**
+   * claim 在 provider 前确定性拒绝时，原子地终结 Created；实现必须保证不存在
+   * 可观察的 ProviderPending 中间态，也不得删除审计事实。
+   */
+  finalizeCreatedFailure?(input: Readonly<{
+    actionId: string;
+    reason: "ClaimBusy" | "ClaimMismatch" | "ClaimReleased";
+    terminal: TerminalScope;
+  }>): Promise<void>;
   transition(input: Readonly<{
     actionId: string;
     expectedState: InstallmentActionState;
@@ -212,6 +224,13 @@ export interface InstallmentMutationPaymentPort {
   listProviderAvailability?(): Promise<
     readonly import("@/features/payments/runtime/payment-provider-registry").PaymentProviderAvailability[]
   >;
+  /**
+   * 只耐久绑定 provider plan，不调用 provider。claim 的 begin-provider 成功后，
+   * runtime 才能进入 beginOrRecover；恢复必须复用这里返回的同一 attempt 身份。
+   */
+  prepareRepaymentClaim(
+    persistedActionId: string,
+  ): Promise<Readonly<{ provider: string; providerAttemptId: string }>>;
   beginOrRecover(
     persistedActionId: string,
   ): Promise<
@@ -220,7 +239,7 @@ export interface InstallmentMutationPaymentPort {
         kind: "approved";
         refunds: readonly InstallmentApprovedRefund[];
       }>
-    | Readonly<{ kind: "declined" }>
+    | Readonly<{ kind: "declined"; allRefundsDeclined?: boolean }>
     | Readonly<{ kind: "unknown" }>
   >;
   recoverBlocking(
@@ -231,7 +250,7 @@ export interface InstallmentMutationPaymentPort {
         kind: "approved";
         refunds: readonly InstallmentApprovedRefund[];
       }>
-    | Readonly<{ kind: "declined" }>
+    | Readonly<{ kind: "declined"; allRefundsDeclined?: boolean }>
     | Readonly<{ kind: "unknown" }>
   >;
 }
@@ -292,6 +311,7 @@ export function createProductionInstallmentRuntime(
         permissions: session.permissionCodes,
         reprintPort: createInstallmentReprintPort(input, lease, terminal),
         trustedDeviceCode: terminal.deviceCode,
+        trustedStoreCode: terminal.storeCode,
         workflow,
       });
     },
@@ -419,6 +439,20 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       terminal: TerminalScope;
     }>,
   ) {}
+
+  public async getRepaymentCapabilities(): Promise<InstallmentRepaymentCapabilities> {
+    await this.assertOnlineAndScoped();
+    this.requireCurrentPermission(INSTALLMENTS_VIEW_PERMISSION);
+    try {
+      const capabilities = validateRepaymentCapabilities(
+        await this.context.input.api.getCapabilities(),
+      );
+      requireScopedLease(this.context.lease, this.context.terminal);
+      return capabilities;
+    } catch (error) {
+      throw mapRemoteError(error);
+    }
+  }
 
   public async listPaymentProviderAvailability() {
     requireScopedLease(this.context.lease, this.context.terminal);
@@ -580,8 +614,10 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (blocking) return this.executePersistedAction(blocking);
     this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
     this.requireTenderPermissions(input.method);
+    const capabilities = await this.getRequiredRepaymentCapabilities();
     await this.assertInitialMutationScope(
       requiredText(input.installmentGuid, "installment guid"),
+      capabilities.crossDeviceRepaymentEnabled,
     );
     const candidate = await this.createRepaymentAction(input);
     const persisted = await this.persistCandidate(candidate);
@@ -596,10 +632,12 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     const blocking = await this.loadBlockingAction();
     if (blocking) return this.executePersistedAction(blocking);
     this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
-    await this.assertInitialMutationScope(
+    await this.getRequiredCancelClaimCapabilities();
+    const details = await this.assertInitialMutationScope(
       requiredText(input.installmentGuid, "installment guid"),
+      false,
     );
-    const candidate = await this.createCancelAction(input);
+    const candidate = await this.createCancelAction(input, details);
     const persisted = await this.persistCandidate(candidate);
     return this.executePersistedAction(persisted);
   }
@@ -609,9 +647,15 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     reason: string;
   }>): Promise<InstallmentDetails> {
     await this.assertWriteAllowed(INSTALLMENTS_CANCEL_PERMISSION);
+    const installmentGuid = requiredText(
+      input.installmentGuid,
+      "installment guid",
+    );
+    // 作废不参与跨机续付 rollout，直接 workflow 调用也必须在写入前复核原终端。
+    await this.assertInitialMutationScope(installmentGuid, false);
     const command: InstallmentVoidCommand = Object.freeze({
       ...identityFor(this.context.lease, this.context.terminal),
-      installmentGuid: requiredText(input.installmentGuid, "installment guid"),
+      installmentGuid,
       voidedAtIso: runtimeIso(this.context.input),
       reason: requiredText(input.reason, "void reason"),
       idempotencyKey: runtimeId(this.context.input),
@@ -637,9 +681,15 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     note: string | null;
   }>): Promise<InstallmentDetails> {
     await this.assertWriteAllowed(INSTALLMENTS_CONFIRM_PICKUP_PERMISSION);
+    const installmentGuid = requiredText(
+      input.installmentGuid,
+      "installment guid",
+    );
+    // 提货是原终端高风险动作；Presenter 校验不能替代 runtime 信任边界。
+    await this.assertInitialMutationScope(installmentGuid, false);
     const command: InstallmentPickupCommand = Object.freeze({
       ...identityFor(this.context.lease, this.context.terminal),
-      installmentGuid: requiredText(input.installmentGuid, "installment guid"),
+      installmentGuid,
       confirmedAtIso: runtimeIso(this.context.input),
       note: input.note,
     });
@@ -675,6 +725,29 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       throw workflowError("online-required", "Installment write requires online.");
     }
     requireScopedLease(this.context.lease, this.context.terminal);
+  }
+
+  private async getRequiredRepaymentCapabilities(): Promise<InstallmentRepaymentCapabilities> {
+    const capabilities = await this.getRepaymentCapabilities();
+    if (
+      !capabilities.repaymentClaimsSupported
+    ) {
+      throw workflowError(
+        "service-unavailable",
+        "Repayment claims are not available on this server.",
+      );
+    }
+    return capabilities;
+  }
+
+  private async getRequiredCancelClaimCapabilities(): Promise<void> {
+    const capabilities = await this.getRepaymentCapabilities();
+    if (capabilities.cancelClaimsSupported !== true) {
+      throw workflowError(
+        "service-unavailable",
+        "Cancellation claims are not available on this server.",
+      );
+    }
   }
 
   private requireCurrentPermission(permission: string): void {
@@ -856,7 +929,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
   private async createCancelAction(input: Readonly<{
     installmentGuid: string;
     reason: string | null;
-  }>): Promise<InstallmentActionCandidate> {
+  }>, details: InstallmentDetails): Promise<InstallmentActionCandidate> {
     const installmentGuid = requiredText(
       input.installmentGuid,
       "installment guid",
@@ -875,6 +948,10 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       cancelledAtIso: runtimeIso(this.context.input),
       reason: input.reason,
       idempotencyKey: action.idempotencyKey,
+      refundPlanFingerprint: await createCancelRefundPlanFingerprint(
+        this.context.input,
+        details,
+      ),
     });
     return this.createActionCandidate({
       action,
@@ -898,6 +975,13 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     this.requireCurrentPermission(permissionForAction(persisted.action.kind));
     if (persisted.action.method) {
       this.requireTenderPermissions(persisted.action.method);
+    }
+
+    if (persisted.action.kind === "repayment") {
+      return this.executeRepaymentClaimAction(persisted);
+    }
+    if (persisted.action.kind === "cancel-refund") {
+      return this.executeCancelClaimAction(persisted);
     }
 
     let result: Awaited<
@@ -1023,9 +1107,653 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     }
   }
 
+  private async executeRepaymentClaimAction(
+    persistedInput: PersistedInstallmentAction,
+  ): Promise<InstallmentDetails> {
+    let persisted = persistedInput;
+    const action = persisted.action;
+    if (
+      action.kind !== "repayment" ||
+      action.paymentGuid === null ||
+      action.method === null ||
+      action.amountCents === null
+    ) {
+      throw paymentRecoveryError("Repayment action identity is incomplete.");
+    }
+    const identity = Object.freeze({
+      installmentGuid: action.installmentGuid,
+      operationGuid: action.actionId,
+    });
+
+    let claim = await this.loadOrCreateRepaymentClaim(
+      persisted,
+      identity,
+    );
+
+    if (claim.status === "Committed") {
+      return this.finishCommittedRepayment(persisted, claim);
+    }
+    if (claim.status === "Released" || claim.status === "Declined") {
+      await this.releaseUnapprovedRepayment(persisted);
+      throw workflowError(
+        claim.status === "Declined" ? "authorization-declined" : "conflict",
+        `Repayment claim is ${claim.status.toLowerCase()}.`,
+      );
+    }
+
+    let binding: Readonly<{ provider: string; providerAttemptId: string }>;
+    try {
+      binding = await this.context.input.payments.prepareRepaymentClaim(
+        action.actionId,
+      );
+      validateClaimBinding(binding);
+    } catch (error) {
+      if (claim.status === "Prepared" && persisted.state === "Created") {
+        try {
+          const released = await this.context.input.api.resolveRepaymentClaim({
+            ...identity,
+            outcome: "Released",
+          });
+          validateRepaymentClaim(released, action);
+          if (released.status === "Released") {
+            await this.releaseUnapprovedRepayment(persisted);
+          }
+        } catch {
+          // 释放失败时保留本地阻塞 action，避免不确定的 claim 被其他操作越过。
+        }
+      }
+      throw paymentRecoveryError(
+        error instanceof Error
+          ? error.message
+          : "Repayment provider binding requires recovery.",
+      );
+    }
+
+    if (claim.provider !== null || claim.providerAttemptId !== null) {
+      if (
+        claim.provider !== binding.provider ||
+        claim.providerAttemptId !== binding.providerAttemptId
+      ) {
+        if (persisted.state === "Created") {
+          await this.finalizeCreatedClaimFailure(
+            persisted,
+            "ClaimMismatch",
+          );
+          throw workflowError(
+            "claim-review-required",
+            "Repayment claim provider binding mismatch requires review.",
+          );
+        }
+        throw workflowError(
+          "conflict",
+          "Repayment claim provider binding does not match this device.",
+        );
+      }
+    }
+
+    try {
+      if (claim.status === "Prepared" || claim.status === "Unknown") {
+        claim = await this.context.input.api.beginRepaymentClaimProvider({
+          ...identity,
+          ...binding,
+        });
+        validateRepaymentClaim(claim, action, binding);
+      }
+      if (claim.status !== "ProviderPending") {
+        throw workflowError(
+          "conflict",
+          "Repayment claim is not ready for provider recovery.",
+        );
+      }
+    } catch (error) {
+      const deterministic =
+        repaymentClaimDeterministicFailure(error) ??
+        (repaymentClaimLocalMismatch(error) ? "ClaimMismatch" : null);
+      if (deterministic && persisted.state === "Created") {
+        await this.finalizeCreatedClaimFailure(persisted, deterministic);
+        throw workflowError(
+          deterministic === "ClaimMismatch"
+            ? "claim-review-required"
+            : "conflict",
+          deterministic === "ClaimMismatch"
+            ? "Repayment claim binding mismatch requires review."
+            : "Another repayment claim is active.",
+        );
+      }
+      throw mapRemoteError(error);
+    }
+
+    const authorize = persisted.state === "Created";
+    if (persisted.state === "Created") {
+      persisted = await this.transitionAction(persisted, "ProviderPending");
+    }
+
+    let result: Awaited<
+      ReturnType<InstallmentMutationPaymentPort["beginOrRecover"]>
+    >;
+    try {
+      result = authorize
+        ? await this.context.input.payments.beginOrRecover(action.actionId)
+        : await this.context.input.payments.recoverBlocking(action.actionId);
+    } catch {
+      await this.markRepaymentUnknown(
+        persisted,
+        identity,
+        action,
+        binding,
+      );
+      throw paymentRecoveryError(
+        "Payment provider request must be recovered before another action.",
+      );
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+
+    if (result.kind === "unknown") {
+      await this.markRepaymentUnknown(persisted, identity, action, binding);
+      throw paymentRecoveryError("Installment payment outcome is unknown.");
+    }
+
+    if (result.kind === "declined") {
+      try {
+        const declined = await this.context.input.api.resolveRepaymentClaim({
+          ...identity,
+          outcome: "Declined",
+        });
+        validateRepaymentClaim(declined, action, binding);
+        if (declined.status !== "Declined") {
+          throw paymentRecoveryError("Repayment claim decline was not recorded.");
+        }
+        await this.context.input.actionStore.decline({
+          actionId: action.actionId,
+          expectedState:
+            persisted.state === "Unknown" ? "Unknown" : "ProviderPending",
+          terminal: this.context.terminal,
+        });
+      } catch (error) {
+        throw paymentRecoveryError(
+          error instanceof Error
+            ? error.message
+            : "Declined repayment requires recovery.",
+        );
+      }
+      throw workflowError("authorization-declined", "Payment was declined.");
+    }
+
+    if (!("payment" in result)) {
+      throw paymentRecoveryError(
+        "Payment adapter returned an action of the wrong kind.",
+      );
+    }
+    const payment = validateApprovedPayment(action, result.payment);
+    claim = await this.commitRepaymentClaimWithRecovery(
+      persisted,
+      payment,
+      binding,
+    );
+    return this.finishCommittedRepayment(persisted, claim, payment);
+  }
+
+  private async loadOrCreateRepaymentClaim(
+    persisted: PersistedInstallmentAction,
+    identity: Readonly<{ installmentGuid: string; operationGuid: string }>,
+  ): Promise<InstallmentRepaymentClaim> {
+    const action = persisted.action;
+    const validate = (claim: InstallmentRepaymentClaim) => {
+      requireScopedLease(this.context.lease, this.context.terminal);
+      validateRepaymentClaim(claim, action);
+      return claim;
+    };
+    if (persisted.state !== "Created") {
+      try {
+        return validate(
+          await this.context.input.api.getRepaymentClaim(identity),
+        );
+      } catch (error) {
+        throw mapRemoteError(error);
+      }
+    }
+
+    try {
+      // Created 可能来自上次 create 回包丢失；先 GET 同 operation，404 才创建。
+      return validate(
+        await this.context.input.api.getRepaymentClaim(identity),
+      );
+    } catch (error) {
+      if (
+        repaymentClaimLocalMismatch(error) ||
+        repaymentClaimDeterministicFailure(error) === "ClaimMismatch"
+      ) {
+        await this.finalizeCreatedClaimFailure(
+          persisted,
+          "ClaimMismatch",
+        );
+        throw workflowError(
+          "claim-review-required",
+          "Repayment claim mismatch requires review.",
+        );
+      }
+      if (!repaymentClaimNotFound(error)) throw mapRemoteError(error);
+    }
+
+    if (
+      action.paymentGuid === null ||
+      action.method === null ||
+      action.amountCents === null
+    ) {
+      throw paymentRecoveryError("Repayment action identity is incomplete.");
+    }
+    try {
+      return validate(
+        await this.context.input.api.createRepaymentClaim({
+          ...identity,
+          paymentGuid: action.paymentGuid,
+          amountCents: action.amountCents,
+          method: action.method,
+          idempotencyKey: action.idempotencyKey,
+        }),
+      );
+    } catch (error) {
+      const deterministic =
+        repaymentClaimDeterministicFailure(error) ??
+        (repaymentClaimLocalMismatch(error) ? "ClaimMismatch" : null);
+      if (deterministic) {
+        await this.finalizeCreatedClaimFailure(persisted, deterministic);
+        throw workflowError(
+          deterministic === "ClaimMismatch"
+            ? "claim-review-required"
+            : "conflict",
+          deterministic === "ClaimMismatch"
+            ? "Repayment claim mismatch requires review."
+            : "Another repayment claim is active.",
+        );
+      }
+      if (repaymentClaimCreateAmbiguous(error)) {
+        try {
+          return validate(
+            await this.context.input.api.getRepaymentClaim(identity),
+          );
+        } catch (recoveryError) {
+          if (repaymentClaimLocalMismatch(recoveryError)) {
+            await this.finalizeCreatedClaimFailure(
+              persisted,
+              "ClaimMismatch",
+            );
+            throw workflowError(
+              "claim-review-required",
+              "Repayment claim mismatch requires review.",
+            );
+          }
+          // GET 也未确认 claim；保留 Created，下一轮仍以同 operation GET/create。
+        }
+      }
+      throw mapRemoteError(error);
+    }
+  }
+
+  private async finalizeCreatedClaimFailure(
+    persisted: PersistedInstallmentAction,
+    reason: "ClaimBusy" | "ClaimMismatch" | "ClaimReleased",
+  ): Promise<void> {
+    const finalize = this.context.input.actionStore.finalizeCreatedFailure;
+    if (!finalize) {
+      throw paymentRecoveryError(
+        "Created repayment failure cannot be durably finalized.",
+      );
+    }
+    await finalize.call(this.context.input.actionStore, {
+      actionId: persisted.action.actionId,
+      reason,
+      terminal: this.context.terminal,
+    });
+    requireScopedLease(this.context.lease, this.context.terminal);
+  }
+
+  private async markRepaymentUnknown(
+    persisted: PersistedInstallmentAction,
+    identity: Readonly<{ installmentGuid: string; operationGuid: string }>,
+    action: InstallmentPaymentAction,
+    binding: Readonly<{ provider: string; providerAttemptId: string }>,
+  ): Promise<void> {
+    if (persisted.state === "ProviderPending") {
+      await this.transitionAction(persisted, "Unknown");
+    } else if (persisted.state !== "Unknown") {
+      throw paymentRecoveryError(
+        "Provider uncertainty cannot be recorded from the current state.",
+      );
+    }
+    try {
+      const unknown = await this.context.input.api.resolveRepaymentClaim({
+        ...identity,
+        outcome: "Unknown",
+      });
+      validateRepaymentClaim(unknown, action, binding);
+    } catch {
+      // 本地 Unknown 已先耐久化；远端失败留待同一 action 的下一轮恢复。
+    }
+  }
+
+  private async commitRepaymentClaimWithRecovery(
+    persisted: PersistedInstallmentAction,
+    payment: InstallmentPaymentCommand,
+    binding: Readonly<{ provider: string; providerAttemptId: string }>,
+  ): Promise<InstallmentRepaymentClaim> {
+    const command = Object.freeze({
+      installmentGuid: persisted.action.installmentGuid,
+      operationGuid: persisted.action.actionId,
+      reference: payment.reference,
+      reservationToken: payment.reservationToken,
+      cardTransactions: payment.cardTransactions,
+    });
+    const validate = (claim: InstallmentRepaymentClaim) => {
+      validateRepaymentClaim(claim, persisted.action, binding);
+      return claim;
+    };
+    try {
+      return validate(
+        await this.context.input.api.commitRepaymentClaim(command),
+      );
+    } catch (firstError) {
+      let observed: InstallmentRepaymentClaim;
+      try {
+        observed = validate(
+          await this.context.input.api.getRepaymentClaim({
+            installmentGuid: command.installmentGuid,
+            operationGuid: command.operationGuid,
+          }),
+        );
+      } catch {
+        throw paymentRecoveryError(
+          firstError instanceof Error
+            ? firstError.message
+            : "Repayment claim commit requires recovery.",
+        );
+      }
+      if (observed.status === "Committed") return observed;
+      if (observed.status !== "ProviderPending") {
+        throw paymentRecoveryError(
+          `Repayment claim commit requires recovery from ${observed.status}.`,
+        );
+      }
+      try {
+        return validate(
+          await this.context.input.api.commitRepaymentClaim(command),
+        );
+      } catch (error) {
+        throw paymentRecoveryError(
+          error instanceof Error
+            ? error.message
+            : "Repayment claim commit requires recovery.",
+        );
+      }
+    }
+  }
+
+  private async finishCommittedRepayment(
+    persistedInput: PersistedInstallmentAction,
+    claim: InstallmentRepaymentClaim,
+    approvedPayment?: InstallmentPaymentCommand,
+  ): Promise<InstallmentDetails> {
+    if (claim.status !== "Committed" || !claim.commit) {
+      throw paymentRecoveryError(
+        "Committed repayment claim is missing its server result.",
+      );
+    }
+    let persisted = persistedInput;
+    const action = persisted.action;
+    const payment =
+      approvedPayment ??
+      Object.freeze({
+        paymentGuid: claim.paymentGuid,
+        method: claim.method,
+        amountCents: claim.amountCents,
+        reference: null,
+        reservationToken: null,
+        cardTransactions: Object.freeze([]),
+        idempotencyKey: claim.idempotencyKey,
+      });
+    validatePaymentMutationResult(claim.commit.details, persisted, payment, null);
+    if (persisted.state === "Created") {
+      persisted = await this.transitionAction(persisted, "ProviderPending");
+    }
+    if (persisted.state === "ProviderPending" || persisted.state === "Unknown") {
+      persisted = await this.transitionAction(persisted, "Approved");
+    }
+    if (persisted.state === "Approved") {
+      persisted = await this.transitionAction(persisted, "BackendPending");
+    }
+    if (persisted.state !== "BackendPending") {
+      throw paymentRecoveryError("Committed repayment action state is invalid.");
+    }
+    await this.cacheDetails(claim.commit.details);
+    await this.context.input.actionStore.complete({
+      actionId: action.actionId,
+      expectedState: "BackendPending",
+      terminal: this.context.terminal,
+    });
+    requireScopedLease(this.context.lease, this.context.terminal);
+    return claim.commit.details;
+  }
+
+  private async releaseUnapprovedRepayment(
+    persistedInput: PersistedInstallmentAction,
+  ): Promise<void> {
+    let persisted = persistedInput;
+    if (persisted.state === "Created") {
+      await this.finalizeCreatedClaimFailure(persisted, "ClaimReleased");
+      return;
+    }
+    if (persisted.state !== "ProviderPending" && persisted.state !== "Unknown") {
+      throw paymentRecoveryError("Approved repayment cannot be released.");
+    }
+    await this.context.input.actionStore.decline({
+      actionId: persisted.action.actionId,
+      expectedState: persisted.state,
+      terminal: this.context.terminal,
+    });
+  }
+
+  private async executeCancelClaimAction(
+    persistedInput: PersistedInstallmentAction,
+  ): Promise<InstallmentDetails> {
+    let persisted = persistedInput;
+    const action = persisted.action;
+    if (action.kind !== "cancel-refund" || persisted.command.kind !== "cancel-refund") {
+      throw paymentRecoveryError("Cancel action identity is incomplete.");
+    }
+    const cancelCommand = persisted.command;
+    const identity = Object.freeze({
+      installmentGuid: action.installmentGuid,
+      operationGuid: action.actionId,
+    });
+    let claim = await this.loadOrCreateCancelClaim(persisted, identity);
+    if (claim.status === "Committed") {
+      return this.finishCommittedCancel(persisted, claim, null);
+    }
+    if (claim.status === "Released" || claim.status === "Declined") {
+      await this.releaseUnapprovedRepayment(persisted);
+      throw workflowError("conflict", `Cancel claim is ${claim.status.toLowerCase()}.`);
+    }
+    try {
+      if (claim.status === "Prepared" || claim.status === "Unknown") {
+        claim = await this.context.input.api.beginCancelClaimRefund(identity);
+        validateCancelClaim(claim, action, cancelCommand);
+      }
+      if (claim.status !== "RefundPending") {
+        throw workflowError("conflict", "Cancel claim is not ready for refund recovery.");
+      }
+    } catch (error) {
+      if (cancelClaimDeterministicFailure(error) && persisted.state === "Created") {
+        await this.finalizeCreatedClaimFailure(persisted, "ClaimBusy");
+      }
+      throw mapRemoteError(error);
+    }
+
+    const authorize = persisted.state === "Created";
+    if (authorize) persisted = await this.transitionAction(persisted, "ProviderPending");
+    let result: Awaited<ReturnType<InstallmentMutationPaymentPort["beginOrRecover"]>>;
+    try {
+      result = authorize
+        ? await this.context.input.payments.beginOrRecover(action.actionId)
+        : await this.context.input.payments.recoverBlocking(action.actionId);
+    } catch {
+      await this.markCancelUnknown(persisted, identity);
+      throw paymentRecoveryError("Refund provider request must be recovered before another action.");
+    }
+    if (result.kind === "unknown") {
+      await this.markCancelUnknown(persisted, identity);
+      throw paymentRecoveryError("Installment refund outcome is unknown.");
+    }
+    if (result.kind === "declined") {
+      if (result.allRefundsDeclined !== true) {
+        await this.markCancelUnknown(persisted, identity);
+        throw paymentRecoveryError(
+          "Refund decline does not prove that no earlier refund was approved.",
+        );
+      }
+      try {
+        const declined = await this.context.input.api.resolveCancelClaim({ ...identity, outcome: "Declined" });
+        validateCancelClaim(declined, action, cancelCommand);
+        if (declined.status !== "Declined") throw paymentRecoveryError("Cancel claim decline was not recorded.");
+        await this.context.input.actionStore.decline({
+          actionId: action.actionId,
+          expectedState: persisted.state === "Unknown" ? "Unknown" : "ProviderPending",
+          terminal: this.context.terminal,
+        });
+      } catch (error) {
+        throw paymentRecoveryError(error instanceof Error ? error.message : "Declined refund requires recovery.");
+      }
+      throw workflowError("authorization-declined", "Refund was declined.");
+    }
+    if (!("refunds" in result)) throw paymentRecoveryError("Payment adapter returned an action of the wrong kind.");
+    const refunds = validateApprovedRefunds(action, result.refunds);
+    claim = await this.commitCancelClaimWithRecovery(persisted, refunds);
+    return this.finishCommittedCancel(persisted, claim, refunds);
+  }
+
+  private async loadOrCreateCancelClaim(
+    persisted: PersistedInstallmentAction,
+    identity: Readonly<{ installmentGuid: string; operationGuid: string }>,
+  ): Promise<InstallmentCancelClaim> {
+    const command = persisted.command;
+    if (command.kind !== "cancel-refund") throw paymentRecoveryError("Cancel command is invalid.");
+    const refundPlanFingerprint = command.refundPlanFingerprint;
+    if (!refundPlanFingerprint) {
+      throw paymentRecoveryError("Cancel action predates the required central claim plan.");
+    }
+    const validate = (claim: InstallmentCancelClaim) => {
+      validateCancelClaim(claim, persisted.action, command);
+      return claim;
+    };
+    try {
+      return validate(await this.context.input.api.getCancelClaim(identity));
+    } catch (error) {
+      if (!repaymentClaimNotFound(error)) {
+        if (cancelClaimDeterministicFailure(error) && persisted.state === "Created") {
+          await this.finalizeCreatedClaimFailure(persisted, "ClaimBusy");
+        }
+        throw mapRemoteError(error);
+      }
+    }
+    if (persisted.state !== "Created") {
+      throw paymentRecoveryError(
+        "Cancel claim is missing during provider recovery; creating a new claim is unsafe.",
+      );
+    }
+    try {
+      return validate(await this.context.input.api.createCancelClaim({
+        ...identity,
+        idempotencyKey: persisted.action.idempotencyKey,
+        reason: command.reason,
+        refundPlanFingerprint,
+      }));
+    } catch (error) {
+      if (cancelClaimDeterministicFailure(error) && persisted.state === "Created") {
+        await this.finalizeCreatedClaimFailure(persisted, "ClaimBusy");
+      }
+      throw mapRemoteError(error);
+    }
+  }
+
+  private async markCancelUnknown(
+    persisted: PersistedInstallmentAction,
+    identity: Readonly<{ installmentGuid: string; operationGuid: string }>,
+  ): Promise<void> {
+    if (persisted.state === "ProviderPending") {
+      persisted = await this.transitionAction(persisted, "Unknown");
+    }
+    try {
+      await this.context.input.api.resolveCancelClaim({ ...identity, outcome: "Unknown" });
+    } catch {
+      // 本地 Unknown 已先耐久化，远端锁由同一发起机恢复时继续处理。
+    }
+  }
+
+  private async commitCancelClaimWithRecovery(
+    persisted: PersistedInstallmentAction,
+    refunds: readonly InstallmentRefundCommand[],
+  ): Promise<InstallmentCancelClaim> {
+    const command = Object.freeze({
+      installmentGuid: persisted.action.installmentGuid,
+      operationGuid: persisted.action.actionId,
+      refunds,
+    });
+    const validate = (claim: InstallmentCancelClaim) => {
+      if (persisted.command.kind !== "cancel-refund") throw paymentRecoveryError("Cancel command is invalid.");
+      validateCancelClaim(claim, persisted.action, persisted.command);
+      return claim;
+    };
+    try {
+      return validate(await this.context.input.api.commitCancelClaim(command));
+    } catch (firstError) {
+      let observed: InstallmentCancelClaim;
+      try {
+        observed = validate(await this.context.input.api.getCancelClaim(command));
+      } catch {
+        throw paymentRecoveryError(firstError instanceof Error ? firstError.message : "Cancel claim commit requires recovery.");
+      }
+      if (observed.status === "Committed") return observed;
+      if (observed.status !== "RefundPending") {
+        throw paymentRecoveryError(`Cancel claim commit requires recovery from ${observed.status}.`);
+      }
+      try {
+        return validate(await this.context.input.api.commitCancelClaim(command));
+      } catch (error) {
+        throw paymentRecoveryError(error instanceof Error ? error.message : "Cancel claim commit requires recovery.");
+      }
+    }
+  }
+
+  private async finishCommittedCancel(
+    persistedInput: PersistedInstallmentAction,
+    claim: InstallmentCancelClaim,
+    refunds: readonly InstallmentRefundCommand[] | null,
+  ): Promise<InstallmentDetails> {
+    if (claim.status !== "Committed" || !claim.commit) throw paymentRecoveryError("Committed cancel claim is missing its server result.");
+    let persisted = persistedInput;
+    const details = claim.commit.details;
+    if (
+      details.installmentGuid !== persisted.action.installmentGuid ||
+      details.storeCode !== persisted.storeCode ||
+      details.deviceCode !== persisted.deviceCode ||
+      details.status !== "Cancelled" ||
+      details.cancellationInfo?.kind !== "RefundCancel"
+    ) {
+      throw paymentRecoveryError("Refund cancellation was not confirmed.");
+    }
+    if (refunds) validatePaymentMutationResult(details, persisted, null, refunds);
+    if (persisted.state === "Created") persisted = await this.transitionAction(persisted, "ProviderPending");
+    if (persisted.state === "ProviderPending" || persisted.state === "Unknown") persisted = await this.transitionAction(persisted, "Approved");
+    if (persisted.state === "Approved") persisted = await this.transitionAction(persisted, "BackendPending");
+    if (persisted.state !== "BackendPending") throw paymentRecoveryError("Committed cancel action state is invalid.");
+    await this.cacheDetails(details);
+    await this.context.input.actionStore.complete({ actionId: persisted.action.actionId, expectedState: "BackendPending", terminal: this.context.terminal });
+    return details;
+  }
+
   private async assertInitialMutationScope(
     installmentGuid: string,
-  ): Promise<void> {
+    crossDeviceRepaymentAllowed: boolean,
+  ): Promise<InstallmentDetails> {
     let details: InstallmentDetails;
     try {
       // 中文注释：跨设备详情可只读，但首次还款/退款必须在 candidate、券材料
@@ -1048,13 +1776,15 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (
       details.installmentGuid !== installmentGuid ||
       details.storeCode !== this.context.terminal.storeCode ||
-      details.deviceCode !== this.context.terminal.deviceCode
+      (details.deviceCode !== this.context.terminal.deviceCode &&
+        !crossDeviceRepaymentAllowed)
     ) {
       throw workflowError(
         "conflict",
         "Installment payment scope does not match the current terminal.",
       );
     }
+    return details;
   }
 
   private async transitionAction(
@@ -1529,6 +2259,118 @@ function validateApprovedPayment(
   return payment;
 }
 
+function validateRepaymentCapabilities(
+  capabilities: InstallmentRepaymentCapabilities,
+): InstallmentRepaymentCapabilities {
+  if (
+    typeof capabilities.repaymentClaimsSupported !== "boolean" ||
+    typeof capabilities.repaymentClaimsRequired !== "boolean" ||
+    typeof capabilities.crossDeviceRepaymentEnabled !== "boolean" ||
+    !Number.isSafeInteger(capabilities.preparedClaimTtlSeconds) ||
+    capabilities.preparedClaimTtlSeconds < 0
+  ) {
+    throw new Error("Installment repayment capabilities are invalid.");
+  }
+  return Object.freeze({ ...capabilities });
+}
+
+async function createCancelRefundPlanFingerprint(
+  input: Pick<ProductionInstallmentRuntimeDependencies, "sha256Hex">,
+  details: InstallmentDetails,
+): Promise<string> {
+  const payments = details.payments
+    .filter((payment) => payment.status === "Recorded" && payment.amountCents > 0)
+    .map((payment) => [payment.paymentGuid, payment.method, payment.amountCents])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  if (payments.length === 0) throw workflowError("conflict", "Installment has no refundable payments.");
+  return sha256Digest(input, JSON.stringify({ installmentGuid: details.installmentGuid, payments }));
+}
+
+function validateCancelClaim(
+  claim: InstallmentCancelClaim,
+  action: InstallmentPaymentAction,
+  command: InstallmentCancelActionCommand,
+): void {
+  if (
+    action.kind !== "cancel-refund" ||
+    claim.installmentGuid !== action.installmentGuid ||
+    claim.operationGuid !== action.actionId ||
+    claim.idempotencyKey !== action.idempotencyKey ||
+    !command.refundPlanFingerprint ||
+    claim.refundPlanFingerprint !== command.refundPlanFingerprint
+  ) {
+    throw workflowError("conflict", "Cancel claim does not match the durable action.");
+  }
+}
+
+function cancelClaimDeterministicFailure(error: unknown): boolean {
+  if (!(error instanceof HbposApiError) || error.kind !== "http") return false;
+  return error.status === 409 || error.status === 400;
+}
+
+function validateClaimBinding(
+  binding: Readonly<{ provider: string; providerAttemptId: string }>,
+): void {
+  recoveryText(binding.provider, "repayment claim provider");
+  recoveryText(
+    binding.providerAttemptId,
+    "repayment claim provider attempt id",
+  );
+}
+
+function validateRepaymentClaim(
+  claim: InstallmentRepaymentClaim,
+  action: InstallmentPaymentAction,
+  binding?: Readonly<{ provider: string; providerAttemptId: string }>,
+): void {
+  if (
+    action.kind !== "repayment" ||
+    action.paymentGuid === null ||
+    action.method === null ||
+    action.amountCents === null ||
+    claim.installmentGuid !== action.installmentGuid ||
+    claim.operationGuid !== action.actionId ||
+    claim.paymentGuid !== action.paymentGuid ||
+    claim.amountCents !== action.amountCents ||
+    claim.method !== action.method ||
+    claim.idempotencyKey !== action.idempotencyKey
+  ) {
+    throw workflowError(
+      "conflict",
+      "Repayment claim does not match the durable action.",
+    );
+  }
+  if (
+    (claim.provider === null) !== (claim.providerAttemptId === null) ||
+    (binding &&
+      (claim.provider !== binding.provider ||
+        claim.providerAttemptId !== binding.providerAttemptId))
+  ) {
+    throw workflowError(
+      "conflict",
+      "Repayment claim provider binding is invalid.",
+    );
+  }
+  if (
+    claim.status === "Prepared" &&
+    (claim.provider !== null || claim.providerAttemptId !== null)
+  ) {
+    throw workflowError(
+      "conflict",
+      "Prepared repayment claim cannot contain a provider binding.",
+    );
+  }
+  if (
+    (claim.status === "ProviderPending" || claim.status === "Unknown") &&
+    (claim.provider === null || claim.providerAttemptId === null)
+  ) {
+    throw workflowError(
+      "conflict",
+      "Repayment claim provider binding is missing.",
+    );
+  }
+}
+
 function validateApprovedRefunds(
   action: InstallmentPaymentAction,
   approvedRefunds: readonly InstallmentApprovedRefund[],
@@ -1540,6 +2382,7 @@ function validateApprovedRefunds(
     );
   }
   const refundPaymentGuids = new Set<string>();
+  const refundIdempotencyKeys = new Set<string>();
   const refundAttemptIds = new Set<string>();
   const sourceAttemptIds = new Set<string>();
   const sourcePaymentGuids = new Set<string>();
@@ -1547,7 +2390,6 @@ function validateApprovedRefunds(
   for (const approved of approvedRefunds) {
     const refund = approved.refund;
     if (
-      refund.idempotencyKey !== action.idempotencyKey ||
       !Number.isSafeInteger(refund.amountCents) ||
       refund.amountCents <= 0
     ) {
@@ -1575,12 +2417,18 @@ function validateApprovedRefunds(
       approved.sourcePaymentGuid,
       "source payment guid",
     );
+    const expectedIdempotencyKey = `${recoveryUuid(
+      action.actionId,
+      "cancel operation guid",
+    )}:refund:${sourcePaymentGuid}`;
     const evidenceId = recoveryText(
       approved.originalTenderEvidenceId,
       "original tender evidence id",
     );
     if (
       refundPaymentGuids.has(paymentGuid) ||
+      refund.idempotencyKey !== expectedIdempotencyKey ||
+      refundIdempotencyKeys.has(refund.idempotencyKey) ||
       refundAttemptIds.has(refundAttemptId) ||
       sourceAttemptIds.has(sourceAttemptId) ||
       sourcePaymentGuids.has(sourcePaymentGuid) ||
@@ -1592,12 +2440,20 @@ function validateApprovedRefunds(
       );
     }
     refundPaymentGuids.add(paymentGuid);
+    refundIdempotencyKeys.add(refund.idempotencyKey);
     refundAttemptIds.add(refundAttemptId);
     sourceAttemptIds.add(sourceAttemptId);
     sourcePaymentGuids.add(sourcePaymentGuid);
     evidenceIds.add(evidenceId);
   }
-  return Object.freeze(approvedRefunds.map((approved) => approved.refund));
+  return Object.freeze(
+    approvedRefunds.map((approved) =>
+      Object.freeze({
+        ...approved.refund,
+        originalPaymentGuid: approved.sourcePaymentGuid,
+      }),
+    ),
+  );
 }
 
 function validatePaymentMutationResult(
@@ -1797,6 +2653,40 @@ function mapRemoteError(error: unknown): Error {
     }
   }
   return new Error("Installment remote request failed.");
+}
+
+function repaymentClaimNotFound(error: unknown): boolean {
+  return (
+    error instanceof HbposApiError &&
+    (error.status === 404 ||
+      error.code?.trim().toUpperCase() === "CLAIM_NOT_FOUND")
+  );
+}
+
+function repaymentClaimDeterministicFailure(
+  error: unknown,
+): "ClaimBusy" | "ClaimMismatch" | null {
+  if (!(error instanceof HbposApiError) || error.status !== 409) return null;
+  const code = error.code?.trim().toUpperCase();
+  if (code === "INSTALLMENT_REPAYMENT_BUSY") return "ClaimBusy";
+  if (code === "INSTALLMENT_REPAYMENT_CLAIM_MISMATCH") {
+    return "ClaimMismatch";
+  }
+  return null;
+}
+
+function repaymentClaimCreateAmbiguous(error: unknown): boolean {
+  return (
+    error instanceof HbposApiError &&
+    (error.kind === "transport" ||
+      (error.status !== undefined && error.status >= 500))
+  );
+}
+
+function repaymentClaimLocalMismatch(error: unknown): boolean {
+  return (
+    error instanceof InstallmentWorkflowError && error.code === "conflict"
+  );
 }
 
 function deviceCodeForScope(

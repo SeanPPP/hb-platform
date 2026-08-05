@@ -26,6 +26,270 @@ class QueueTransport implements HbposTransport {
 const installmentGuid = "10000000-0000-4000-8000-000000000001";
 const paymentGuid = "20000000-0000-4000-8000-000000000001";
 const lineGuid = "30000000-0000-4000-8000-000000000001";
+const operationGuid = "40000000-0000-4000-8000-000000000001";
+const originalPaymentGuid = "50000000-0000-4000-8000-000000000001";
+
+test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operationGuid", async () => {
+  const claimPayload = {
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amount: 80,
+    method: 2,
+    idempotencyKey: operationGuid,
+    status: 2,
+    provider: "square",
+    providerAttemptId: "attempt-1",
+    createdAtUtc: "2026-08-04T01:00:00Z",
+    updatedAtUtc: "2026-08-04T01:01:00Z",
+    expiresAtUtc: null,
+    commit: null,
+    alreadyExists: false,
+  };
+  const committedPayload = {
+    ...claimPayload,
+    status: 3,
+    commit: {
+      details: detailsPayload({ status: 2, balanceAmount: 0 }),
+      alreadyRecorded: false,
+    },
+  };
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: {
+        repaymentClaimsSupported: true,
+        repaymentClaimsRequired: true,
+        crossDeviceRepaymentEnabled: true,
+        preparedClaimTtlSeconds: 300,
+        cancelClaimsSupported: true,
+        cancelClaimsRequired: false,
+        cancelPreparedClaimTtlSeconds: 120,
+      },
+    },
+    { success: true, data: { ...claimPayload, status: 1, provider: null, providerAttemptId: null } },
+    { success: true, data: claimPayload },
+    { success: true, data: claimPayload },
+    { success: true, data: { ...claimPayload, status: 6 } },
+    { success: true, data: committedPayload },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+
+  assert.deepEqual(await api.getCapabilities(), {
+    repaymentClaimsSupported: true,
+    repaymentClaimsRequired: true,
+    crossDeviceRepaymentEnabled: true,
+    preparedClaimTtlSeconds: 300,
+    cancelClaimsSupported: true,
+    cancelClaimsRequired: false,
+    cancelPreparedClaimTtlSeconds: 120,
+  });
+  await api.createRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amountCents: 8_000,
+    method: "card",
+    idempotencyKey: operationGuid,
+  });
+  await api.beginRepaymentClaimProvider({
+    installmentGuid,
+    operationGuid,
+    provider: "square",
+    providerAttemptId: "attempt-1",
+  });
+  await api.getRepaymentClaim({ installmentGuid, operationGuid });
+  await api.resolveRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    outcome: "Unknown",
+  });
+  const committed = await api.commitRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    reference: "TXN-1",
+    reservationToken: null,
+    cardTransactions: [],
+  });
+
+  assert.deepEqual(
+    transport.requests.map(({ method, url, data }) => ({ method, url, data })),
+    [
+      { method: "GET", url: "/api/v1/installments/capabilities", data: undefined },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/repayment-claims`,
+        data: { operationGuid, paymentGuid, amount: 80, method: 2, idempotencyKey: operationGuid },
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/begin-provider`,
+        data: { provider: "square", providerAttemptId: "attempt-1" },
+      },
+      {
+        method: "GET",
+        url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}`,
+        data: undefined,
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/resolve`,
+        data: { outcome: 3 },
+      },
+      {
+        method: "POST",
+        url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/commit`,
+        data: { reference: "TXN-1", reservationToken: null, cardTransactions: [] },
+      },
+    ],
+  );
+  assert.equal(committed.status, "Committed");
+  assert.equal(committed.commit?.details.status, "PaidOff");
+});
+
+test("repayment claim 字段长度在客户端精确对齐服务端 100/32/128", async () => {
+  const createPayload = {
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amount: 10,
+    method: 1,
+    idempotencyKey: "i".repeat(100),
+    status: 1,
+    provider: null,
+    providerAttemptId: null,
+    createdAtUtc: "2026-08-04T01:00:00Z",
+    updatedAtUtc: "2026-08-04T01:00:00Z",
+    expiresAtUtc: null,
+    commit: null,
+    alreadyExists: false,
+  };
+  const begunPayload = {
+    ...createPayload,
+    status: 2,
+    provider: "p".repeat(32),
+    providerAttemptId: "a".repeat(128),
+  };
+  const accepted = new HbposInstallmentsApi(
+    new QueueTransport([
+      { success: true, data: createPayload },
+      { success: true, data: begunPayload },
+    ]),
+    "S1",
+  );
+  await accepted.createRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amountCents: 1_000,
+    method: "cash",
+    idempotencyKey: "i".repeat(100),
+  });
+  await accepted.beginRepaymentClaimProvider({
+    installmentGuid,
+    operationGuid,
+    provider: "p".repeat(32),
+    providerAttemptId: "a".repeat(128),
+  });
+
+  const rejected = new HbposInstallmentsApi(new QueueTransport([]), "S1");
+  await assert.rejects(
+    rejected.createRepaymentClaim({
+      installmentGuid,
+      operationGuid,
+      paymentGuid,
+      amountCents: 1_000,
+      method: "cash",
+      idempotencyKey: "i".repeat(101),
+    }),
+    /idempotencyKey/i,
+  );
+  await assert.rejects(
+    rejected.beginRepaymentClaimProvider({
+      installmentGuid,
+      operationGuid,
+      provider: "p".repeat(33),
+      providerAttemptId: "attempt",
+    }),
+    /provider/i,
+  );
+  await assert.rejects(
+    rejected.beginRepaymentClaimProvider({
+      installmentGuid,
+      operationGuid,
+      provider: "cash",
+      providerAttemptId: "a".repeat(129),
+    }),
+    /providerAttemptId/i,
+  );
+});
+
+test("旧 capabilities payload 缺少 cancel claim 字段时保持兼容，调用方可 fail-closed", async () => {
+  const api = new HbposInstallmentsApi(
+    new QueueTransport([
+      {
+        success: true,
+        data: {
+          repaymentClaimsSupported: true,
+          repaymentClaimsRequired: false,
+          crossDeviceRepaymentEnabled: false,
+          preparedClaimTtlSeconds: 120,
+        },
+      },
+    ]),
+    "S1",
+  );
+  const capabilities = await api.getCapabilities();
+  assert.deepEqual(capabilities, {
+    repaymentClaimsSupported: true,
+    repaymentClaimsRequired: false,
+    crossDeviceRepaymentEnabled: false,
+    preparedClaimTtlSeconds: 120,
+  });
+  assert.equal(capabilities.cancelClaimsSupported, undefined);
+  assert.equal(capabilities.cancelClaimsRequired, undefined);
+  assert.equal(capabilities.cancelPreparedClaimTtlSeconds, undefined);
+});
+
+test("cancel claim 不携带门店或收银员身份，并复用同一 durable operation", async () => {
+  const payload = {
+    installmentGuid,
+    operationGuid,
+    idempotencyKey: operationGuid,
+    refundPlanFingerprint: `sha256:${"a".repeat(64)}`,
+    status: 2,
+    createdAtUtc: "2026-08-04T01:00:00Z",
+    updatedAtUtc: "2026-08-04T01:00:00Z",
+    expiresAtUtc: null,
+    commit: null,
+    alreadyExists: false,
+  };
+  const committed = {
+    ...payload,
+    status: 3,
+    commit: { details: detailsPayload({ status: 4, balanceAmount: 0 }), alreadyCancelled: false },
+  };
+  const transport = new QueueTransport([
+    { success: true, data: { ...payload, status: 1 } },
+    { success: true, data: payload },
+    { success: true, data: payload },
+    { success: true, data: { ...payload, status: 6 } },
+    { success: true, data: committed },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+  await api.createCancelClaim({ installmentGuid, operationGuid, idempotencyKey: operationGuid, reason: "customer", refundPlanFingerprint: payload.refundPlanFingerprint });
+  await api.beginCancelClaimRefund({ installmentGuid, operationGuid });
+  await api.getCancelClaim({ installmentGuid, operationGuid });
+  await api.resolveCancelClaim({ installmentGuid, operationGuid, outcome: "Unknown" });
+  await api.commitCancelClaim({ installmentGuid, operationGuid, refunds: [{ paymentGuid, originalPaymentGuid, method: "cash", amountCents: 2_000, reference: null, cardTransactions: [], idempotencyKey: `${operationGuid}:refund:${originalPaymentGuid}` }] });
+  assert.deepEqual(transport.requests.map(({ method, url, data }) => ({ method, url, data })), [
+    { method: "POST", url: `/api/v1/installments/${installmentGuid}/cancel-claims`, data: { operationGuid, idempotencyKey: operationGuid, reason: "customer", refundPlanFingerprint: payload.refundPlanFingerprint } },
+    { method: "POST", url: `/api/v1/installments/${installmentGuid}/cancel-claims/${operationGuid}/begin-refund`, data: undefined },
+    { method: "GET", url: `/api/v1/installments/${installmentGuid}/cancel-claims/${operationGuid}`, data: undefined },
+    { method: "POST", url: `/api/v1/installments/${installmentGuid}/cancel-claims/${operationGuid}/resolve`, data: { outcome: 3 } },
+    { method: "POST", url: `/api/v1/installments/${installmentGuid}/cancel-claims/${operationGuid}/commit`, data: { refunds: [{ paymentGuid, method: 1, amount: 20, reference: null, cardTransactions: [], idempotencyKey: `${operationGuid}:refund:${originalPaymentGuid}`, originalPaymentGuid }] } },
+  ]);
+});
 
 test("历史查询固定可信门店并严格映射状态、时间和整数分", async () => {
   const transport = new QueueTransport([

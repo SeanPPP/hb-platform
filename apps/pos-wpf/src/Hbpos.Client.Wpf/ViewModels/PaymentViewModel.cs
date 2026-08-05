@@ -931,10 +931,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancellationTokenSource? cardPaymentCts = null;
         var cardPaymentWasManuallyCancelled = false;
         var isCard = method == PaymentMethodKind.Card;
+        var deferInstallmentRepaymentProvider = IsInstallmentRepaymentMode;
         var paymentEntryVersion = _paymentEntryVersion;
         try
         {
-            if (isCard)
+            if (isCard && !deferInstallmentRepaymentProvider)
             {
                 cardPaymentCts = _cardSession.BeginCardPayment();
             }
@@ -947,15 +948,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                     $"tenders={PaymentTenders.Count} capacities={_cart.ReturnPaymentCapacities.Count}");
             }
 
-            result = await _workflowService.AddTenderAsync(
-                method,
-                Session,
-                GetPaymentTargetAmount(),
-                PaymentTenders.ToList(),
-                amountText,
-                referenceText,
-                isCard ? cardPaymentCts?.Token ?? CancellationToken.None : CancellationToken.None,
-                isCard && !IsInstallmentRepaymentMode ? _cart.CreateSnapshot() : null);
+            result = deferInstallmentRepaymentProvider
+                ? CreateDeferredInstallmentRepaymentTender(method, amountText, referenceText)
+                : await _workflowService.AddTenderAsync(
+                    method,
+                    Session,
+                    GetPaymentTargetAmount(),
+                    PaymentTenders.ToList(),
+                    amountText,
+                    referenceText,
+                    isCard ? cardPaymentCts?.Token ?? CancellationToken.None : CancellationToken.None,
+                    isCard ? _cart.CreateSnapshot() : null);
             if (isCard && cardPaymentCts?.IsCancellationRequested == true)
             {
                 cardPaymentWasManuallyCancelled = _cardSession.IsManualCancellation(cardPaymentCts);
@@ -1074,7 +1077,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            if (isCard)
+            if (isCard && !deferInstallmentRepaymentProvider)
             {
                 _cardSession.EndCardPayment(cardPaymentCts);
             }
@@ -1705,6 +1708,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                         paymentMethod: appliedTender.Method.ToString(),
                         paymentAmount: appliedTender.Amount,
                         orderGuid: repaymentOrder.OrderId.ToString("D"));
+                    if (!repaymentResult.RequiresReview)
+                    {
+                        // 明确拒绝/claim busy 没有不确定 provider 副作用，可丢弃本次草稿并让下一次生成新的 operation。
+                        ResetInstallmentPaymentDraft();
+                        PaymentTenders.Clear();
+                        RecalculateTenderSummary();
+                    }
                     SetStatus("payment.installment.status.actionFailed", repaymentResult.Message);
                     return;
                 }
@@ -2451,6 +2461,39 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private decimal GetPaymentTargetAmount()
     {
         return _installmentRepaymentOrder?.OutstandingAmount ?? ActualAmount;
+    }
+
+    private PaymentTenderAttemptResult CreateDeferredInstallmentRepaymentTender(
+        PaymentMethodKind method,
+        string? amountText,
+        string? referenceText)
+    {
+        if (!_workflowService.TryParseTenderedAmount(amountText, out var amount) || amount <= 0m)
+        {
+            return PaymentTenderAttemptResult.Fail("payment.status.invalidAmount");
+        }
+
+        if (method == PaymentMethodKind.Voucher && string.IsNullOrWhiteSpace(referenceText))
+        {
+            return PaymentTenderAttemptResult.Fail("payment.status.voucherCodeRequired");
+        }
+
+        var statusKey = method switch
+        {
+            PaymentMethodKind.Cash => "payment.status.cashTenderAdded",
+            PaymentMethodKind.Card => "payment.status.cardTenderAdded",
+            PaymentMethodKind.Voucher => "payment.status.voucherTenderAdded",
+            _ => "payment.status.unsupportedMethod"
+        };
+        if (method is not (PaymentMethodKind.Cash or PaymentMethodKind.Card or PaymentMethodKind.Voucher))
+        {
+            return PaymentTenderAttemptResult.Fail(statusKey);
+        }
+
+        // 中文注释：续付页这里只固定 tender 草稿；真正现金登记、礼券预占或卡终端授权必须在 durable action + 中央 claim 之后执行。
+        return PaymentTenderAttemptResult.Success(
+            new PaymentTender(method, amount, method == PaymentMethodKind.Voucher ? referenceText?.Trim() : null),
+            statusKey);
     }
 
     private static bool IsInstallmentTenderAmountAllowed(PaymentMethodKind method, decimal amount, decimal targetAmount)

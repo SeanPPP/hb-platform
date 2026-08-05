@@ -11,6 +11,7 @@ import {
   PaymentPresenter,
   type PaymentConfirmOptions,
   type PaymentPresenterState,
+  type PaymentRecoverOptions,
   type PaymentScreenPresenter,
   type PaymentUiMethod,
 } from "./payment-presenter";
@@ -647,6 +648,7 @@ test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async 
       await jest.advanceTimersByTimeAsync(1);
     });
     expect(spies.recover).toHaveBeenCalledTimes(1);
+    expect(spies.recover).toHaveBeenCalledWith({ background: true });
 
     await screen.unmount();
     await jest.advanceTimersByTimeAsync(10_000);
@@ -654,6 +656,46 @@ test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async 
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("Square 后台恢复期间明确提示并禁用恢复与取消", async () => {
+  const square = createUiPresenter({
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: "order-square-recovery-ui",
+    attemptId: "attempt-square-recovery-ui",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={square.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await act(async () => {
+    square.publish({
+      ...square.presenter.getState(),
+      recoveryInFlight: true,
+    });
+  });
+
+  expect(screen.getByTestId("payment-recovery-in-flight")).toBeTruthy();
+  expect(screen.getByText("正在自动恢复当前支付…")).toBeTruthy();
+  expect(screen.getByTestId("payment-recover").props.accessibilityState).toEqual(
+    { disabled: true },
+  );
+  expect(screen.getByTestId("payment-cancel").props.accessibilityState).toEqual(
+    { disabled: true },
+  );
+
+  await fireEvent.press(screen.getByTestId("payment-recover"));
+  await fireEvent.press(screen.getByTestId("payment-cancel"));
+  expect(square.spies.recover).not.toHaveBeenCalled();
+  expect(square.spies.cancel).not.toHaveBeenCalled();
+  await screen.unmount();
 });
 
 test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
@@ -768,6 +810,211 @@ test("同一 Square attempt 重挂载不会重置 90 秒恢复窗口", async () 
   } finally {
     jest.useRealTimers();
   }
+});
+
+test.each(
+  [
+    { height: 768, label: "1024×768", width: 1024 },
+    { height: 810, label: "1080×810", width: 1080 },
+    { height: 834, label: "1194×834", width: 1194 },
+    { height: 1024, label: "1366×1024", width: 1366 },
+  ].flatMap((viewport) =>
+    (
+      ["regular", "installment-create", "installment-repayment"] as const
+    ).map((flow) => ({
+      ...viewport,
+      flow,
+      label: `${viewport.label} ${flow}`,
+    })),
+  ),
+)("$label 横屏三栏各自滚动且关键付款动作固定底部", async ({
+  flow,
+  height,
+  width,
+}) => {
+  setPaymentWindowSize(width, height);
+  const installment = flow !== "regular";
+  const { presenter } = createUiPresenter({
+    selectedMethod: "cash",
+    orderGuid: installment ? "order-installment-ui" : null,
+    checkout: {
+      flow,
+      lines: Array.from({ length: 12 }, (_, index) => ({
+        lineKey: `line-layout-${index}`,
+        displayName: `Layout item ${index}`,
+        quantity: "1",
+        actualAmountCents: 100,
+      })),
+      installmentCustomer: installment
+        ? {
+            name: "Bob",
+            phone: "0400000000",
+            editable: flow === "installment-create",
+            editorOpen: false,
+            draftName: "Bob",
+            draftPhone: "0400000000",
+            installmentNumber:
+              flow === "installment-repayment" ? "IP-0001" : null,
+          }
+        : null,
+      cash: {
+        tenderedCents: 0,
+        appliedCents: 0,
+        changeCents: 0,
+      },
+      canConfirm: installment,
+      fullInstallmentConfirmationRequired: false,
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByTestId("payment-content-scroll").props.scrollEnabled).toBe(
+    false,
+  );
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style),
+  ).toMatchObject({
+    flex: 1,
+    flexDirection: "row",
+    minHeight: 0,
+    overflow: "hidden",
+  });
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-context-pane").props.style)
+      .flex,
+  ).toBe(30);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-entry-pane").props.style)
+      .flex,
+  ).toBe(42);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-summary").props.style).flex,
+  ).toBe(28);
+
+  for (const scrollTestId of [
+    "payment-context-lines",
+    "payment-entry-scroll",
+    "payment-summary-scroll",
+  ]) {
+    const scroll = screen.getByTestId(scrollTestId);
+    expect(scroll.props).toMatchObject({
+      nestedScrollEnabled: true,
+      scrollEnabled: true,
+    });
+    expect(StyleSheet.flatten(scroll.props.style)).toMatchObject({
+      flex: 1,
+      minHeight: 0,
+    });
+  }
+
+  const entryPane = screen.getByTestId("payment-entry-pane");
+  const entryActions = screen.getByTestId("payment-entry-actions");
+  expect(entryActions.parent).toBe(entryPane);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-entry-cancel").props.style)
+      .minHeight,
+  ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  expect(
+    StyleSheet.flatten(screen.getByTestId("payment-submit").props.style)
+      .minHeight,
+  ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+
+  if (installment) {
+    const summary = screen.getByTestId("payment-summary");
+    const summaryFooter = screen.getByTestId("payment-summary-footer");
+    expect(summaryFooter.parent).toBe(summary);
+    expect(
+      StyleSheet.flatten(screen.getByTestId("payment-confirm").props.style)
+        .minHeight,
+    ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  } else {
+    expect(screen.queryByTestId("payment-summary-footer")).toBeNull();
+  }
+
+  await screen.unmount();
+});
+
+test.each([
+  { height: 768, label: "1024×768", width: 1024 },
+  { height: 810, label: "1080×810", width: 1080 },
+  { height: 834, label: "1194×834", width: 1194 },
+])("$label 新建分期客户编辑独立避让键盘且操作保持 44pt", async ({
+  height,
+  width,
+}) => {
+  setPaymentWindowSize(width, height);
+  const { presenter } = createUiPresenter({
+    orderGuid: "order-installment-customer-layout",
+    checkout: {
+      flow: "installment-create",
+      lines: Array.from({ length: 12 }, (_, index) => ({
+        lineKey: `line-customer-layout-${index}`,
+        displayName: `Customer layout item ${index}`,
+        quantity: "1",
+        actualAmountCents: 100,
+      })),
+      installmentCustomer: {
+        name: "Bob",
+        phone: "0400000000",
+        editable: true,
+        editorOpen: false,
+        draftName: "Bob",
+        draftPhone: "0400000000",
+        installmentNumber: null,
+      },
+      cash: {
+        tenderedCents: 0,
+        appliedCents: 0,
+        changeCents: 0,
+      },
+      canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("payment-customer-edit"));
+
+  expect(screen.getByTestId("payment-content-scroll").props.scrollEnabled).toBe(
+    false,
+  );
+  const customerScroll = screen.getByTestId("payment-customer-scroll");
+  expect(customerScroll.props).toMatchObject({
+    automaticallyAdjustKeyboardInsets: true,
+    keyboardDismissMode: "interactive",
+    keyboardShouldPersistTaps: "handled",
+    nestedScrollEnabled: true,
+    scrollEnabled: true,
+  });
+  expect(StyleSheet.flatten(customerScroll.props.style)).toMatchObject({
+    flexShrink: 1,
+    minHeight: 0,
+  });
+  expect(screen.getByTestId("payment-context-lines").props.scrollEnabled).toBe(
+    true,
+  );
+  for (const action of [
+    "payment-customer-cancel",
+    "payment-customer-save",
+  ]) {
+    expect(
+      StyleSheet.flatten(screen.getByTestId(action).props.style).minHeight,
+    ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  }
+
+  await screen.unmount();
 });
 
 test("统一支付保持 30/42/28 三栏，并只提供五个现金快捷金额", async () => {
@@ -924,6 +1171,18 @@ test("窄屏支付页改为单列且分期开关保持可达", async () => {
       screen.getByTestId("payment-context-pane").props.style,
     ).maxHeight,
   ).toBe(420);
+  expect(screen.getByTestId("payment-content-scroll").props).toMatchObject({
+    automaticallyAdjustKeyboardInsets: true,
+    keyboardDismissMode: "interactive",
+    keyboardShouldPersistTaps: "handled",
+    scrollEnabled: true,
+  });
+  expect(screen.getByTestId("payment-entry-scroll").props.scrollEnabled).toBe(
+    false,
+  );
+  expect(screen.getByTestId("payment-summary-scroll").props.scrollEnabled).toBe(
+    false,
+  );
   expect(screen.getByTestId("payment-installment-toggle")).toBeTruthy();
   await screen.unmount();
 });
@@ -1317,6 +1576,7 @@ function createUiPresenter(
   let state: PaymentPresenterState = {
     phase: "ready",
     busy: false,
+    recoveryInFlight: false,
     initialized: true,
     providers: [
       providerAvailability("square"),
@@ -1400,7 +1660,7 @@ function createUiPresenter(
       if (applySubmittedState) publish(applySubmittedState(state));
       return true;
     }),
-    recover: jest.fn(async () => true),
+    recover: jest.fn(async (_options?: PaymentRecoverOptions) => true),
     cancel: jest.fn(async () => true),
     removeTender: jest.fn(async (_tenderGuid: string) => true),
     sendLinklyKey: jest.fn(async (_key: LinklySafeOperatorKey) => true),

@@ -147,6 +147,7 @@ public sealed class StoreVoucherService(
         var normalizedStoreCode = NormalizeRequired(request.StoreCode, nameof(request.StoreCode));
         var normalizedCashierId = NormalizeRequired(request.CashierId, nameof(request.CashierId));
         var normalizedIdempotencyKey = NormalizeRequired(request.IdempotencyKey ?? string.Empty, nameof(request.IdempotencyKey));
+        EnsureReasonCannotInjectRefundMarker(request.Reason);
         if (request.Amount <= 0m)
         {
             throw new InvalidOperationException("Amount must be greater than zero.");
@@ -273,6 +274,16 @@ public sealed class StoreVoucherService(
         }
 
         return value.Trim();
+    }
+
+    private static void EnsureReasonCannotInjectRefundMarker(string? reason)
+    {
+        if (!string.IsNullOrWhiteSpace(reason) &&
+            reason.Contains(StoreVoucherRefundMarker.Prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            // 退款归属标记只允许由服务端生成，不能让自由文本伪造另一个 claim 的凭据。
+            throw new InvalidOperationException("Reason must not contain a refund idempotency marker.");
+        }
     }
 
     private static string? NormalizeOptional(string? value)
@@ -558,8 +569,11 @@ public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContex
     {
         var marker = request.BuildIdempotencyMarker(request.IdempotencyKey);
         var query = dbContext.PosmDb.Queryable<StoreVoucher>()
-            .Where(x => x.Remark != null && x.Remark.Contains(marker))
             .Where(x => x.IsDelete == null || x.IsDelete == false);
+        // 退款券以唯一的首段 marker 归属；普通发券保留既有备注格式，避免扩大本次安全变更。
+        query = request.CodePrefix == "RF"
+            ? query.Where(x => x.Remark != null && x.Remark.StartsWith(marker + StoreVoucherRefundMarker.Separator))
+            : query.Where(x => x.Remark != null && x.Remark.Contains(marker));
         query = string.IsNullOrWhiteSpace(request.StoreCode)
             ? query.Where(x => x.StoreCode == null || x.StoreCode == string.Empty)
             : query.Where(x => x.StoreCode == request.StoreCode);
@@ -573,8 +587,7 @@ public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContex
 
     private static string BuildRefundRemark(VoucherCreatePersistenceModel request)
     {
-        var parts = new List<string> { "Refund voucher" };
-        parts.Add(BuildRefundIdempotencyMarker(request.IdempotencyKey));
+        var parts = new List<string> { BuildRefundIdempotencyMarker(request.IdempotencyKey), "Refund voucher" };
         if (!string.IsNullOrWhiteSpace(request.OrderReference))
         {
             parts.Add($"Order {request.OrderReference}");
@@ -602,8 +615,7 @@ public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContex
 
     private static string BuildRefundIdempotencyMarker(string idempotencyKey)
     {
-        var encodedKey = Convert.ToBase64String(Encoding.UTF8.GetBytes(idempotencyKey.Trim()));
-        return $"RefundKey[{encodedKey}]";
+        return StoreVoucherRefundMarker.Create(idempotencyKey);
     }
 
     private static string BuildIssueIdempotencyMarker(string idempotencyKey)

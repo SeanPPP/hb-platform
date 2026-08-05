@@ -54,6 +54,9 @@ test("冷启动 Unknown 仅保留恢复动作，重复恢复共享同一单飞�
   assert.strictEqual(first, duplicate);
   await tick();
   assert.equal(runtime.recoverCalls, 1);
+  assert.equal(presenter.getState().phase, "submitting");
+  assert.equal(presenter.getState().busy, true);
+  assert.equal(presenter.getState().recoveryInFlight, false);
 
   pending.resolve(
     snapshot({
@@ -74,6 +77,30 @@ test("冷启动 Unknown 仅保留恢复动作，重复恢复共享同一单飞�
   assert.equal(await first, true);
   assert.equal(presenter.getState().phase, "success");
   assert.equal(presenter.getState().orderGuid, "order-local-1");
+});
+
+test("后台恢复保持 Pending 页面稳定并公开独立恢复状态", async () => {
+  const runtime = new FakePaymentRuntime();
+  const pending = deferred<PaymentCheckoutPublicSnapshot>();
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "square",
+    attemptId: "attempt-square-background",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  runtime.recoverImpl = async () => pending.promise;
+  const presenter = createPresenter(runtime);
+
+  await presenter.initialize();
+  const recovery = presenter.recover({ background: true });
+  await tick();
+
+  assert.equal(presenter.getState().phase, "pending");
+  assert.equal(presenter.getState().busy, false);
+  assert.equal(presenter.getState().recoveryInFlight, true);
+  pending.resolve(runtime.recovery);
+  assert.equal(await recovery, false);
+  assert.equal(presenter.getState().recoveryInFlight, false);
 });
 
 test("冷启动礼券撤销 Unknown 使用脱敏持久恢复入口，完成后清除旧恢复标记", async () => {
@@ -166,6 +193,14 @@ test("Blocked 礼券撤销提供明确的中英文稳定文案", () => {
   assert.equal(
     paymentText("zh", "error.TENDER_REVERSAL_BLOCKED"),
     "礼券撤销已阻断，必须由主管处理且不能重试。",
+  );
+  assert.equal(
+    paymentText("en", "error.SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"),
+    "Square Sandbox test payments must not exceed AUD 25.00.",
+  );
+  assert.equal(
+    paymentText("zh", "error.SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"),
+    "Square 沙盒测试付款不得超过 25.00 澳元。",
   );
 });
 

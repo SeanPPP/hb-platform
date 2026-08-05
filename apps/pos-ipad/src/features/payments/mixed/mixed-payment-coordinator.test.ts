@@ -309,6 +309,33 @@ test("Submitted/Approved 映射 awaiting-terminal，终态恢复映射 declined/
   }
 });
 
+test("Sandbox 金额超限的 Declined attempt 保留稳定错误码供支付页提示", async () => {
+  const truth = new MemoryTruth(orderTruth(5_000));
+  const attempts = new FakeAttempts();
+  const declined = paymentAttempt({
+    attemptId: "attempt-square-sandbox-limit",
+    provider: "square",
+    state: "Declined",
+    amount: aud(2_501),
+    lastErrorCode: "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED",
+  });
+  attempts.attempts.set(declined.attemptId, declined);
+  const coordinator = createCoordinator({
+    truth,
+    attempts,
+    completion: new FakeCompletion(truth),
+  });
+
+  const result = await coordinator.recoverOnlineAttempt({
+    orderGuid: "order-1",
+    attemptId: declined.attemptId,
+  });
+
+  assert.equal(result.status, "declined");
+  assert.equal(result.errorCode, "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED");
+  assert.equal(attempts.recoverInputs.length, 0);
+});
+
 test("Approved completion 异常返回 recovery-required，不能宣称 partial 或 completed", async () => {
   const truth = new MemoryTruth(orderTruth(500));
   const attempts = new FakeAttempts();

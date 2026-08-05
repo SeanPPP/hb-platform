@@ -51,6 +51,89 @@ public sealed class InstallmentOperationServiceTests
         }
     }
 
+    [Theory]
+    [InlineData(PaymentMethodKind.Cash, null)]
+    [InlineData(PaymentMethodKind.Voucher, null)]
+    [InlineData(PaymentMethodKind.Card, "Linkly")]
+    [InlineData(PaymentMethodKind.Card, "Square")]
+    public async Task Repayment_persists_action_before_claim_then_begins_provider_before_provider_and_commit(
+        PaymentMethodKind method,
+        string? cardProcessor)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var events = new List<string>();
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var linklyAttempts = new LocalCardPaymentAttemptRepository(store);
+            var squareAttempts = new LocalSquarePaymentAttemptRepository(store);
+            var request = CreateRepaymentRequest() with
+            {
+                Method = method,
+                Reference = method == PaymentMethodKind.Voucher ? "VOUCHER-1" : null
+            };
+            var legacyApi = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var claimApi = new DurableActionOrderingApi(
+                new ClaimAwareInstallmentApiTestAdapter(legacyApi, request, claimState),
+                repository,
+                events);
+            var terminal = new RepaymentOrderingTerminal(cardProcessor, events);
+            var voucher = new RepaymentOrderingVoucherClient(events);
+            var processor = cardProcessor switch
+            {
+                "Linkly" => CardProcessorKind.Linkly,
+                "Square" => CardProcessorKind.Square,
+                _ => CardProcessorKind.None
+            };
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = processor,
+                LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync,
+                SquareDeviceId = "device:TEST-DEVICE",
+                SquareLocationId = "TEST-LOCATION"
+            };
+            var service = new InstallmentOperationService(
+                repository,
+                claimApi,
+                terminal,
+                voucher,
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                cardPaymentAttemptRepository: linklyAttempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor(),
+                squarePaymentAttemptRepository: squareAttempts,
+                squarePaymentAttemptContextAccessor: new SquarePaymentAttemptContextAccessor());
+
+            var result = await service.ExecuteRepaymentAsync(
+                Session,
+                request,
+                authorizeCard: method == PaymentMethodKind.Card);
+
+            Assert.True(result.Succeeded, result.Message);
+            var provider = cardProcessor ?? method.ToString();
+            var expected = new List<string>
+            {
+                "action:persisted",
+                "claim:create",
+                $"claim:begin:{provider}"
+            };
+            if (method != PaymentMethodKind.Cash)
+            {
+                expected.Add($"provider:{provider}");
+            }
+            expected.Add("claim:commit");
+            Assert.Equal(expected, events);
+            Assert.Equal(method == PaymentMethodKind.Card ? 1 : 0, terminal.AuthorizeCalls);
+            Assert.Equal(method == PaymentMethodKind.Voucher ? 1 : 0, voucher.RedeemCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
     [Fact]
     public async Task Repayment_api_cancellation_recovers_by_replaying_only_the_original_api_request()
     {
@@ -59,9 +142,10 @@ public sealed class InstallmentOperationServiceTests
         {
             var repository = await CreateRepositoryAsync(path);
             var request = CreateRepaymentRequest();
+            var claimState = new RepaymentClaimTestState();
             var firstTerminal = new CountingTerminal(approve: true);
             var firstApi = new RecordingInstallmentApi { AppendException = new OperationCanceledException() };
-            var firstService = CreateService(repository, firstApi, firstTerminal);
+            var firstService = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(firstApi, request, claimState), firstTerminal);
 
             var initial = await firstService.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -73,7 +157,7 @@ public sealed class InstallmentOperationServiceTests
 
             var restartedTerminal = new CountingTerminal(approve: true);
             var restartedApi = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var restartedService = CreateService(repository, restartedApi, restartedTerminal);
+            var restartedService = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(restartedApi, request, claimState), restartedTerminal);
 
             var recovered = await restartedService.RecoverAsync(Session);
 
@@ -100,9 +184,11 @@ public sealed class InstallmentOperationServiceTests
             var request = CreateRepaymentRequest();
             var operation = CreateApprovedRepaymentOperation(request);
             await repository.CreateOrGetAsync(operation);
+            var claimState = new RepaymentClaimTestState();
+            claimState.Seed(request, InstallmentRepaymentClaimStatus.ProviderPending, "Linkly", operation.TerminalAttemptGuid!);
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request), AppendGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) };
             var terminal = new CountingTerminal(approve: true);
-            var service = CreateService(repository, api, terminal);
+            var service = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal);
 
             var firstRecovery = service.RecoverAsync(Session);
             await api.AppendStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -134,7 +220,9 @@ public sealed class InstallmentOperationServiceTests
 
             var terminal = new CountingTerminal(approve: true);
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var restartedService = CreateService(repository, api, terminal);
+            var claimState = new RepaymentClaimTestState();
+            claimState.Seed(request, InstallmentRepaymentClaimStatus.ProviderPending, "Linkly", operation.TerminalAttemptGuid!);
+            var restartedService = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal);
 
             var recovered = await restartedService.RecoverAsync(Session);
 
@@ -175,7 +263,9 @@ public sealed class InstallmentOperationServiceTests
             await repository.CreateOrGetAsync(operation);
             var terminal = new CountingTerminal(approve: true);
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient(), cardPaymentAttemptRepository: attemptRepository);
+            var claimState = new RepaymentClaimTestState();
+            claimState.Seed(request, InstallmentRepaymentClaimStatus.Unknown, "Linkly", attemptGuid.ToString("D"));
+            var service = new InstallmentOperationService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal, new NoopVoucherTenderClient(), cardPaymentAttemptRepository: attemptRepository);
 
             var recovered = await service.RecoverAsync(Session);
 
@@ -216,7 +306,9 @@ public sealed class InstallmentOperationServiceTests
 
             var terminal = new RemoteApprovalTerminal(request.Amount);
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient(), cardPaymentAttemptRepository: attemptRepository);
+            var claimState = new RepaymentClaimTestState();
+            claimState.Seed(request, InstallmentRepaymentClaimStatus.Unknown, "Linkly", attemptGuid.ToString("D"));
+            var service = new InstallmentOperationService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal, new NoopVoucherTenderClient(), cardPaymentAttemptRepository: attemptRepository);
 
             var recovered = await service.RecoverAsync(Session);
 
@@ -225,6 +317,8 @@ public sealed class InstallmentOperationServiceTests
             Assert.Equal(0, terminal.AuthorizeCalls);
             Assert.Equal(1, api.AppendCalls);
             Assert.Equal("ANZ:LINKLY-REMOTE", api.LastAppendRequest!.Reference);
+            Assert.Equal("Linkly", claimState.LastBeginProvider);
+            Assert.Equal(attemptGuid.ToString("D"), claimState.LastBeginProviderAttemptId);
         }
         finally
         {
@@ -258,7 +352,9 @@ public sealed class InstallmentOperationServiceTests
 
             var terminal = new RemoteSquareApprovalTerminal(request.Amount);
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient(), squarePaymentAttemptRepository: attempts);
+            var claimState = new RepaymentClaimTestState();
+            claimState.Seed(request, InstallmentRepaymentClaimStatus.Unknown, "Square", attemptGuid.ToString("D"));
+            var service = new InstallmentOperationService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal, new NoopVoucherTenderClient(), squarePaymentAttemptRepository: attempts);
 
             var recovered = await service.RecoverAsync(Session);
 
@@ -270,6 +366,8 @@ public sealed class InstallmentOperationServiceTests
             Assert.Equal("payment-001", Assert.Single(api.LastAppendRequest.CardTransactions!).TxnRef);
             Assert.Equal(request.PaymentGuid, api.LastAppendRequest.PaymentGuid);
             Assert.Equal(request.IdempotencyKey, api.LastAppendRequest.IdempotencyKey);
+            Assert.Equal("Square", claimState.LastBeginProvider);
+            Assert.Equal(attemptGuid.ToString("D"), claimState.LastBeginProviderAttemptId);
         }
         finally
         {
@@ -341,7 +439,16 @@ public sealed class InstallmentOperationServiceTests
             Assert.All(terminal.RetryReferences, reference => Assert.NotEqual("CARD-1", reference));
             Assert.NotEqual(terminal.RetryReferences[0], terminal.RetryReferences[1]);
             Assert.Equal(terminal.RetryReferences, terminal.PersistedReferencesAtRetry);
-            Assert.Equal(1, api.CancelCalls);
+            Assert.Equal(1, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+            Assert.NotNull(api.LastCancelClaimCommitRequest);
+            Assert.All(api.LastCancelClaimCommitRequest!.Refunds, refund =>
+            {
+                var original = Assert.Single(order.Payments.Where(payment => payment.PaymentGuid == refund.OriginalPaymentGuid));
+                Assert.Equal(original.Method, refund.Method);
+                Assert.Equal(original.Amount, refund.Amount);
+                Assert.Equal($"{operation.OperationGuid:D}:refund:{original.PaymentGuid:D}", refund.IdempotencyKey);
+            });
         }
         finally
         {
@@ -367,9 +474,11 @@ public sealed class InstallmentOperationServiceTests
                 Processor = CardProcessorKind.Linkly,
                 LinklyConnectionMode = LinklyConnectionMode.LocalIp
             };
+            var api = new RecordingInstallmentApi();
+            var claimState = new RepaymentClaimTestState();
             var service = new InstallmentOperationService(
                 repository,
-                new RecordingInstallmentApi(),
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
                 terminal,
                 new NoopVoucherTenderClient(),
                 cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
@@ -402,7 +511,8 @@ public sealed class InstallmentOperationServiceTests
             var request = CreateRepaymentRequest();
             var terminal = new MissingAuthorizedAmountTerminal();
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient());
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal, new NoopVoucherTenderClient());
 
             var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -448,7 +558,7 @@ public sealed class InstallmentOperationServiceTests
     }
 
     [Fact]
-    public async Task Cancel_api_cancellation_does_not_repeat_completed_refunds_after_restart()
+    public async Task Cancel_claim_commit_failure_does_not_repeat_completed_refunds_after_restart()
     {
         var path = CreateTempDatabasePath();
         try
@@ -456,7 +566,11 @@ public sealed class InstallmentOperationServiceTests
             var repository = await CreateRepositoryAsync(path);
             var order = CreateLocalOrder();
             var firstTerminal = new CountingTerminal(approve: true);
-            var firstApi = new RecordingInstallmentApi { CancelException = new OperationCanceledException() };
+            var firstApi = new RecordingInstallmentApi
+            {
+                CancelResponse = CreateCancelResponse(order),
+                CancelClaimCommitException = new OperationCanceledException()
+            };
             var firstService = CreateService(repository, firstApi, firstTerminal);
 
             var initial = await firstService.ExecuteCancelAsync(order, Session, "客户取消");
@@ -476,7 +590,8 @@ public sealed class InstallmentOperationServiceTests
 
             Assert.True(Assert.Single(recovered).ReplayedApi);
             Assert.Equal(0, restartedTerminal.RefundCalls);
-            Assert.Equal(1, restartedApi.CancelCalls);
+            Assert.Equal(1, restartedApi.CommitCancelClaimCalls);
+            Assert.Equal(0, restartedApi.CancelCalls);
             Assert.All(await repository.GetRefundStepsAsync(operation.OperationGuid), step => Assert.Equal(LocalInstallmentRefundStepState.Completed, step.State));
         }
         finally
@@ -486,7 +601,7 @@ public sealed class InstallmentOperationServiceTests
     }
 
     [Fact]
-    public async Task Explicit_refund_decline_returns_step_to_prepared_and_next_cancel_retries_without_supervisor_review()
+    public async Task Explicit_refund_decline_terminates_claim_and_next_cancel_uses_new_operation()
     {
         var path = CreateTempDatabasePath();
         try
@@ -501,17 +616,23 @@ public sealed class InstallmentOperationServiceTests
 
             Assert.False(first.Succeeded);
             Assert.False(first.RequiresReview);
-            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
-            Assert.Equal(LocalInstallmentOperationState.Prepared, operation.State);
+            Assert.Empty(await repository.GetRecoverableAsync(Session.StoreCode));
+            var firstOperationGuid = Assert.Single(api.CreatedCancelOperationGuids);
+            var operation = Assert.IsType<LocalInstallmentOperation>(await repository.GetAsync(firstOperationGuid));
+            Assert.Equal(LocalInstallmentOperationState.Failed, operation.State);
             Assert.Equal(
                 LocalInstallmentRefundStepState.Prepared,
                 Assert.Single((await repository.GetRefundStepsAsync(operation.OperationGuid)).Where(step => step.Method == PaymentMethodKind.Card)).State);
+            Assert.Equal(InstallmentCancelClaimResolveOutcome.Declined, Assert.Single(api.CancelResolveOutcomes));
 
             var second = await service.ExecuteCancelAsync(order, Session, "客户取消");
 
             Assert.True(second.Succeeded, second.Message);
             Assert.Equal(2, terminal.RefundCalls);
-            Assert.Equal(1, api.CancelCalls);
+            Assert.Equal(2, api.CreatedCancelOperationGuids.Count);
+            Assert.NotEqual(firstOperationGuid, api.CreatedCancelOperationGuids[1]);
+            Assert.Equal(1, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
         }
         finally
         {
@@ -552,7 +673,7 @@ public sealed class InstallmentOperationServiceTests
     }
 
     [Fact]
-    public async Task Restarted_cancel_with_all_refunds_approved_submits_only_cancel_api()
+    public async Task Restarted_cancel_with_all_refunds_approved_and_missing_remote_claim_stays_locked()
     {
         var path = CreateTempDatabasePath();
         try
@@ -561,22 +682,577 @@ public sealed class InstallmentOperationServiceTests
             var order = CreateLocalOrder();
             var operation = CreateCancelOperation(order, LocalInstallmentOperationState.TerminalSubmitting);
             var now = DateTimeOffset.UtcNow;
-            var step = new LocalInstallmentRefundStep(
+            var cardStep = new LocalInstallmentRefundStep(
                 Guid.NewGuid(), operation.OperationGuid, order.Payments[1].PaymentGuid, PaymentMethodKind.Card, 40m,
                 "CARD-1", "refund-idempotency", LocalInstallmentRefundStepState.Approved,
                 "REFUND-1", JsonSerializer.Serialize<IReadOnlyList<CardTransactionDto>>([CreateCardTransaction(40m)]), null,
                 null, null, null, null, null, now, now);
-            await repository.CreateCancelOrGetAsync(operation, [step]);
+            var cashStep = new LocalInstallmentRefundStep(
+                Guid.NewGuid(), operation.OperationGuid, order.Payments[0].PaymentGuid, PaymentMethodKind.Cash, 30m,
+                "CASH-1", "cash-refund-idempotency", LocalInstallmentRefundStepState.Approved,
+                "CASH-1", null, null, null, null, null, null, null, now, now);
+            await repository.CreateCancelOrGetAsync(operation, [cashStep, cardStep]);
             var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
             var terminal = new CountingTerminal(approve: true);
             var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient());
 
             var recovered = await service.RecoverAsync(Session);
 
-            Assert.True(Assert.Single(recovered).ReplayedApi);
-            Assert.Equal(1, api.CancelCalls);
+            var recovery = Assert.Single(recovered);
+            Assert.False(recovery.ReplayedApi);
+            Assert.Contains("人工对账", recovery.Message);
+            Assert.Equal(0, api.CreateCancelClaimCalls);
+            Assert.Equal(0, api.BeginCancelRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
             Assert.Equal(0, terminal.RefundCalls);
-            Assert.Equal(LocalInstallmentOperationState.Completed, (await repository.GetAsync(operation.OperationGuid))!.State);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operation.OperationGuid))!.State);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(LocalInstallmentOperationState.TerminalApproved)]
+    [InlineData(LocalInstallmentOperationState.ApiSubmitting)]
+    [InlineData(LocalInstallmentOperationState.ResultUnknown)]
+    public async Task Missing_cancel_claim_after_refund_boundary_never_recreates_or_calls_provider(
+        LocalInstallmentOperationState state)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder();
+            var operation = CreateCancelOperation(order, state);
+            var now = DateTimeOffset.UtcNow;
+            var approvedSteps = order.Payments.Select(payment => new LocalInstallmentRefundStep(
+                Guid.NewGuid(),
+                operation.OperationGuid,
+                payment.PaymentGuid,
+                payment.Method,
+                payment.Amount,
+                payment.Reference,
+                $"refund:{payment.PaymentGuid:D}",
+                LocalInstallmentRefundStepState.Approved,
+                $"REFUND:{payment.PaymentGuid:D}",
+                payment.CardTransactions is null ? null : JsonSerializer.Serialize(payment.CardTransactions),
+                null, null, null, null, null, null, now, now)).ToList();
+            await repository.CreateCancelOrGetAsync(operation, approvedSteps);
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var terminal = new CountingTerminal(approve: true);
+            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient());
+
+            var recovery = Assert.Single(await service.RecoverAsync(Session));
+
+            Assert.False(recovery.ReplayedApi);
+            Assert.Contains("人工对账", recovery.Message);
+            Assert.Equal(0, api.CreateCancelClaimCalls);
+            Assert.Equal(0, api.BeginCancelRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, api.CancelCalls);
+            Assert.NotEqual(LocalInstallmentOperationState.Completed, (await repository.GetAsync(operation.OperationGuid))!.State);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_refund_plan_fingerprint_matches_backend_golden_vector()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var installmentGuid = Guid.Parse("11111111-1111-4111-8111-111111111111");
+            var now = DateTimeOffset.UtcNow;
+            var order = CreateLocalOrder() with
+            {
+                OrderGuid = installmentGuid,
+                InstallmentGuid = installmentGuid,
+                PaidAmount = 37.75m,
+                Payments =
+                [
+                    new InstallmentPaymentDto(Guid.Parse("40000000-0000-4000-8000-000000000001"), PaymentMethodKind.Voucher, 7.25m, "VIP-GOLDEN", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01"),
+                    new InstallmentPaymentDto(Guid.Parse("20000000-0000-4000-8000-000000000001"), PaymentMethodKind.Cash, 20m, null, InstallmentPaymentStatus.Recorded, now, "C001", "POS-01"),
+                    new InstallmentPaymentDto(Guid.Parse("30000000-0000-4000-8000-000000000001"), PaymentMethodKind.Card, 10.50m, "CARD-GOLDEN", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01")
+                ]
+            };
+            var api = new RecordingInstallmentApi
+            {
+                CancelResponse = CreateCancelResponse(order),
+                CancelClaimCreateException = new CatalogApiException("busy", System.Net.HttpStatusCode.Conflict, "INSTALLMENT_MUTATION_BUSY")
+            };
+            var service = new InstallmentOperationService(repository, api, new CountingTerminal(approve: true), new NoopVoucherTenderClient());
+
+            var result = await service.ExecuteCancelAsync(order, Session, "golden vector");
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(
+                "sha256:e71e70a0dde391c395f87e43cbeb12056488ad6fbbd76622ba77761cf2b816e4",
+                api.LastCancelClaimCreateRequest!.RefundPlanFingerprint);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_claim_busy_stops_before_any_refund()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var api = new RecordingInstallmentApi
+            {
+                CancelResponse = CreateCancelResponse(order),
+                CancelClaimCreateException = new CatalogApiException(
+                    "busy",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_MUTATION_BUSY")
+            };
+            var service = CreateService(repository, api, terminal);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, api.CancelCalls);
+            Assert.Equal(1, api.CreateCancelClaimCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("Square")]
+    [InlineData("Linkly")]
+    [InlineData("Mixed")]
+    public async Task Unsupported_cancel_refund_method_at_claim_create_has_no_side_effects_and_next_attempt_uses_new_operation(
+        string paymentScenario)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateUnsupportedCancelOrder(paymentScenario);
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimCreateException = new CatalogApiException(
+                    "unsupported refund method",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED")
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+            var second = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(first.Succeeded);
+            Assert.False(first.RequiresReview);
+            Assert.False(second.Succeeded);
+            Assert.False(second.RequiresReview);
+            Assert.Equal(2, api.CreatedCancelOperationGuids.Count);
+            Assert.NotEqual(api.CreatedCancelOperationGuids[0], api.CreatedCancelOperationGuids[1]);
+            foreach (var operationGuid in api.CreatedCancelOperationGuids)
+            {
+                Assert.Equal(LocalInstallmentOperationState.Failed, (await repository.GetAsync(operationGuid))!.State);
+            }
+            Assert.Empty(await repository.GetRecoverableAsync(Session.StoreCode));
+            Assert.Equal(0, api.BeginCancelRefundCalls);
+            Assert.Empty(api.CancelResolveOutcomes);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Unsupported_cancel_claim_read_with_non_prepared_refund_step_stays_locked()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var operation = CreateCancelOperation(order, LocalInstallmentOperationState.Prepared);
+            var payment = order.Payments[0];
+            var now = DateTimeOffset.UtcNow;
+            var step = new LocalInstallmentRefundStep(
+                Guid.NewGuid(),
+                operation.OperationGuid,
+                payment.PaymentGuid,
+                payment.Method,
+                payment.Amount,
+                payment.Reference,
+                $"{operation.OperationGuid:D}:refund:{payment.PaymentGuid:D}",
+                LocalInstallmentRefundStepState.ResultUnknown,
+                null,
+                null,
+                "previous result unknown",
+                null,
+                null,
+                null,
+                null,
+                null,
+                now,
+                now);
+            await repository.CreateCancelOrGetAsync(operation, [step]);
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimGetException = new CatalogApiException(
+                    "unsupported refund method",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED")
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operation.OperationGuid))!.State);
+            Assert.Equal(0, api.CreateCancelClaimCalls);
+            Assert.Equal(0, api.BeginCancelRefundCalls);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Unsupported_cancel_refund_method_at_begin_releases_claim_and_next_attempt_uses_new_operation()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimBeginException = new CatalogApiException(
+                    "unsupported refund method",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED")
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+            var second = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(first.Succeeded);
+            Assert.False(first.RequiresReview);
+            Assert.False(second.Succeeded);
+            Assert.False(second.RequiresReview);
+            Assert.Equal(2, api.CreatedCancelOperationGuids.Count);
+            Assert.NotEqual(api.CreatedCancelOperationGuids[0], api.CreatedCancelOperationGuids[1]);
+            Assert.Equal(
+                [InstallmentCancelClaimResolveOutcome.Released, InstallmentCancelClaimResolveOutcome.Released],
+                api.CancelResolveOutcomes);
+            foreach (var operationGuid in api.CreatedCancelOperationGuids)
+            {
+                Assert.Equal(LocalInstallmentOperationState.Failed, (await repository.GetAsync(operationGuid))!.State);
+            }
+            Assert.Empty(await repository.GetRecoverableAsync(Session.StoreCode));
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Unsupported_cancel_refund_method_at_begin_keeps_lock_when_claim_release_fails()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimBeginException = new CatalogApiException(
+                    "unsupported refund method",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_CANCEL_REFUND_METHOD_UNSUPPORTED"),
+                CancelClaimResolveException = new HttpRequestException("release response lost")
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operationGuid))!.State);
+            Assert.Equal(InstallmentCancelClaimResolveOutcome.Released, Assert.Single(api.CancelResolveOutcomes));
+            Assert.Contains(operationGuid, await service.GetLockedInstallmentGuidsAsync(Session));
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(InstallmentCancelClaimStatus.Released)]
+    [InlineData(InstallmentCancelClaimStatus.Declined)]
+    public async Task Expired_cancel_begin_only_terminates_after_remote_terminal_status_is_confirmed(
+        InstallmentCancelClaimStatus remoteStatus)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimBeginException = new CatalogApiException(
+                    "claim expired",
+                    System.Net.HttpStatusCode.Conflict,
+                    "INSTALLMENT_CANCEL_CLAIM_EXPIRED"),
+                CancelClaimStatusAfterBeginException = remoteStatus
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.False(result.RequiresReview);
+            var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
+            Assert.Equal(LocalInstallmentOperationState.Failed, (await repository.GetAsync(operationGuid))!.State);
+            Assert.True(api.GetCancelClaimCalls >= 3);
+            Assert.Empty(api.CancelResolveOutcomes);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Ambiguous_cancel_begin_failure_stays_locked_without_provider_side_effects(bool remoteUnknown)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient();
+            var api = new RecordingInstallmentApi
+            {
+                CancelClaimBeginException = remoteUnknown
+                    ? new CatalogApiException("claim expired", System.Net.HttpStatusCode.Conflict, "INSTALLMENT_CANCEL_CLAIM_EXPIRED")
+                    : new HttpRequestException("begin response lost"),
+                CancelClaimStatusAfterBeginException = remoteUnknown
+                    ? InstallmentCancelClaimStatus.Unknown
+                    : null
+            };
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operationGuid))!.State);
+            Assert.Contains(operationGuid, await service.GetLockedInstallmentGuidsAsync(Session));
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, voucher.IssueRefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_begins_claim_before_refund_and_commits_without_legacy_cancel()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSupportedCancelOrder();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var terminal = new CountingTerminal(approve: true);
+            var voucher = new CountingVoucherTenderClient(claimBegun: () => api.BeginCancelRefundCalls > 0);
+            var service = new InstallmentOperationService(repository, api, terminal, voucher);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.True(voucher.ClaimWasBegunBeforeRefund);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(1, voucher.IssueRefundCalls);
+            Assert.Equal(1, api.CommitCancelClaimCalls);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_commit_response_loss_reads_committed_claim_without_replaying_refund()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var api = new RecordingInstallmentApi
+            {
+                CancelResponse = CreateCancelResponse(order),
+                LoseFirstCancelCommitResponse = true
+            };
+            var service = CreateService(repository, api, terminal);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.Equal(1, terminal.RefundCalls);
+            Assert.Equal(1, api.CommitCancelClaimCalls);
+            Assert.True(api.GetCancelClaimCalls >= 2);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Fully_declined_cancel_terminates_claim_and_next_attempt_uses_new_operation()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder() with
+            {
+                Payments = [CreateLocalOrder().Payments.Single(payment => payment.Method == PaymentMethodKind.Card)]
+            };
+            var terminal = new CountingTerminal(approve: false);
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var service = CreateService(repository, api, terminal);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+            var second = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(first.Succeeded);
+            Assert.False(second.Succeeded);
+            Assert.Equal(2, api.CreatedCancelOperationGuids.Count);
+            Assert.NotEqual(api.CreatedCancelOperationGuids[0], api.CreatedCancelOperationGuids[1]);
+            Assert.Equal(
+                [InstallmentCancelClaimResolveOutcome.Declined, InstallmentCancelClaimResolveOutcome.Declined],
+                api.CancelResolveOutcomes);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Partial_refund_then_unknown_resolves_central_claim_with_approved_snapshot()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder();
+            var terminal = new UnknownRefundTerminal();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient());
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            var resolve = Assert.Single(api.CancelResolveRequests);
+            Assert.Equal(InstallmentCancelClaimResolveOutcome.Unknown, resolve.Outcome);
+            var approved = Assert.Single(resolve.ApprovedRefunds!);
+            Assert.Equal(PaymentMethodKind.Cash, approved.Method);
+            Assert.Equal(30m, approved.Amount);
+            Assert.Equal(0, api.CancelCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_from_non_origin_device_stops_before_claim_and_refund()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateLocalOrder();
+            var terminal = new CountingTerminal(approve: true);
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var service = CreateService(repository, api, terminal);
+            var otherDevice = Session with { DeviceCode = "POS-02" };
+
+            var result = await service.ExecuteCancelAsync(order, otherDevice, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(0, api.CreateCancelClaimCalls);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Equal(0, api.CancelCalls);
         }
         finally
         {
@@ -595,7 +1271,7 @@ public sealed class InstallmentOperationServiceTests
 
     private static InstallmentOperationService CreateService(
         LocalInstallmentOperationRepository repository,
-        RecordingInstallmentApi api,
+        IInstallmentApiClient api,
         CountingTerminal terminal) =>
         new(repository, api, terminal, new NoopVoucherTenderClient());
 
@@ -693,6 +1369,53 @@ public sealed class InstallmentOperationServiceTests
         return new LocalInstallmentOrder(details.InstallmentGuid, details.InstallmentGuid, details.InstallmentNumber, details.StoreCode, details.DeviceCode, details.CashierId, details.CashierName, details.CustomerName, details.CustomerPhone, details.CreatedAt, DateTimeOffset.UtcNow, details.TotalAmount, details.MinimumDownPayment, details.DownPaymentAmount, details.PaidAmount, details.BalanceAmount, details.Status, details.Lines, details.Payments, details.PickupInfo, details.Note, details.CancellationInfo);
     }
 
+    private static LocalInstallmentOrder CreateSupportedCancelOrder()
+    {
+        var order = CreateLocalOrder();
+        var now = DateTimeOffset.UtcNow;
+        return order with
+        {
+            Payments =
+            [
+                new InstallmentPaymentDto(Guid.Parse("12345678-1111-2222-3333-444444444444"), PaymentMethodKind.Cash, 30m, "CASH-1", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01"),
+                new InstallmentPaymentDto(Guid.Parse("12345678-3333-4444-5555-666666666666"), PaymentMethodKind.Voucher, 40m, "VOUCHER-1", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01")
+            ],
+            PaidAmount = 70m,
+            BalanceAmount = 50m
+        };
+    }
+
+    private static LocalInstallmentOrder CreateUnsupportedCancelOrder(string paymentScenario)
+    {
+        var order = CreateLocalOrder();
+        var now = DateTimeOffset.UtcNow;
+        var processor = paymentScenario == "Square" ? "Square" : "Linkly";
+        var card = new InstallmentPaymentDto(
+            Guid.Parse("12345678-2222-3333-4444-555555555555"),
+            PaymentMethodKind.Card,
+            40m,
+            processor == "Square" ? "SQ:PAYMENT-1" : "ANZ:PAYMENT-1",
+            InstallmentPaymentStatus.Recorded,
+            now,
+            "C001",
+            "POS-01",
+            [new CardTransactionDto(processor, "PAYMENT-1", null, null, null, null, null, "00", "APPROVED", null, now, 40m, null)]);
+        var payments = paymentScenario == "Mixed"
+            ? new List<InstallmentPaymentDto>
+            {
+                new(Guid.Parse("12345678-1111-2222-3333-444444444444"), PaymentMethodKind.Cash, 30m, "CASH-1", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01"),
+                new(Guid.Parse("12345678-3333-4444-5555-666666666666"), PaymentMethodKind.Voucher, 20m, "VOUCHER-1", InstallmentPaymentStatus.Recorded, now, "C001", "POS-01"),
+                card
+            }
+            : [card];
+        return order with
+        {
+            Payments = payments,
+            PaidAmount = payments.Sum(payment => payment.Amount),
+            BalanceAmount = 50m
+        };
+    }
+
     private static InstallmentCancelResponse CreateCancelResponse(LocalInstallmentOrder order)
     {
         var details = CreateDetails(order.InstallmentGuid, InstallmentStatus.Cancelled) with
@@ -738,6 +1461,219 @@ public sealed class InstallmentOperationServiceTests
             RefundCalls++;
             return Task.FromResult(new PaymentAuthorizationResult(approve, $"REFUND:{originalReference}", AuthorizedAmount: amount, CardTransactions: approve ? [CreateCardTransaction(amount)] : null, Processor: "Linkly"));
         }
+    }
+
+    private sealed class CountingVoucherTenderClient(
+        Func<int, decimal, PaymentAuthorizationResult>? refundFactory = null,
+        Func<bool>? claimBegun = null) : IVoucherTenderClient
+    {
+        public int IssueRefundCalls { get; private set; }
+        public bool ClaimWasBegunBeforeRefund { get; private set; }
+
+        public Task<PaymentAuthorizationResult> RedeemAsync(
+            decimal amount,
+            PosSessionState session,
+            string? voucherCode,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> IssueRefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string orderReference,
+            string idempotencyKey,
+            string? reason = null,
+            CancellationToken cancellationToken = default)
+        {
+            IssueRefundCalls++;
+            ClaimWasBegunBeforeRefund = claimBegun?.Invoke() ?? false;
+            return Task.FromResult(
+                refundFactory?.Invoke(IssueRefundCalls, amount) ??
+                new PaymentAuthorizationResult(true, $"VOUCHER-REFUND:{idempotencyKey}", AuthorizedAmount: amount));
+        }
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+    }
+
+    private sealed class DurableActionOrderingApi(
+        IInstallmentApiClient inner,
+        LocalInstallmentOperationRepository repository,
+        List<string> events) : IInstallmentApiClient
+    {
+        public Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
+            inner.GetRepaymentCapabilitiesAsync(cancellationToken);
+
+        public async Task<InstallmentRepaymentClaimDto> CreateRepaymentClaimAsync(
+            Guid installmentGuid,
+            InstallmentRepaymentClaimCreateRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var operation = await repository.GetAsync(request.OperationGuid, cancellationToken);
+            Assert.NotNull(operation);
+            Assert.Equal(LocalInstallmentOperationState.Prepared, operation.State);
+            events.Add("action:persisted");
+            events.Add("claim:create");
+            return await inner.CreateRepaymentClaimAsync(installmentGuid, request, cancellationToken);
+        }
+
+        public async Task<InstallmentRepaymentClaimDto> BeginRepaymentProviderAsync(
+            Guid installmentGuid,
+            Guid operationGuid,
+            InstallmentRepaymentClaimBeginProviderRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            events.Add($"claim:begin:{request.Provider}");
+            return await inner.BeginRepaymentProviderAsync(installmentGuid, operationGuid, request, cancellationToken);
+        }
+
+        public Task<InstallmentRepaymentClaimDto> GetRepaymentClaimAsync(
+            Guid installmentGuid,
+            Guid operationGuid,
+            CancellationToken cancellationToken = default) =>
+            inner.GetRepaymentClaimAsync(installmentGuid, operationGuid, cancellationToken);
+
+        public Task<InstallmentRepaymentClaimDto> ResolveRepaymentClaimAsync(
+            Guid installmentGuid,
+            Guid operationGuid,
+            InstallmentRepaymentClaimResolveRequest request,
+            CancellationToken cancellationToken = default) =>
+            inner.ResolveRepaymentClaimAsync(installmentGuid, operationGuid, request, cancellationToken);
+
+        public async Task<InstallmentRepaymentClaimDto> CommitRepaymentClaimAsync(
+            Guid installmentGuid,
+            Guid operationGuid,
+            InstallmentRepaymentClaimCommitRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            events.Add("claim:commit");
+            return await inner.CommitRepaymentClaimAsync(installmentGuid, operationGuid, request, cancellationToken);
+        }
+
+        public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) =>
+            inner.CreateAsync(request, cancellationToken);
+
+        public Task<InstallmentAppendPaymentResponse> AppendPaymentAsync(InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default) =>
+            inner.AppendPaymentAsync(request, cancellationToken);
+
+        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) =>
+            inner.ConfirmPickupAsync(request, cancellationToken);
+
+        public Task<InstallmentCancelResponse> CancelAsync(InstallmentCancelRequest request, CancellationToken cancellationToken = default) =>
+            inner.CancelAsync(request, cancellationToken);
+
+        public Task<InstallmentVoidResponse> VoidAsync(InstallmentVoidRequest request, CancellationToken cancellationToken = default) =>
+            inner.VoidAsync(request, cancellationToken);
+    }
+
+    private sealed class RepaymentOrderingTerminal(string? processor, List<string> events) : ICardTerminalClient
+    {
+        public int AuthorizeCalls { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            AuthorizeCalls++;
+            events.Add($"provider:{processor}");
+            var transaction = new CardTransactionDto(
+                processor ?? "Unknown",
+                processor == "Square" ? "square-payment-1" : "linkly-payment-1",
+                "AUTH-1",
+                "VISA",
+                4,
+                "1234",
+                "MID-1",
+                "00",
+                "APPROVED",
+                "RRN-1",
+                DateTimeOffset.UtcNow,
+                amount,
+                null);
+            return Task.FromResult(new PaymentAuthorizationResult(
+                true,
+                processor == "Square" ? "SQ:square-payment-1" : "ANZ:linkly-payment-1",
+                AuthorizedAmount: amount,
+                CardTransactions: [transaction],
+                Processor: processor));
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class RepaymentOrderingVoucherClient(List<string> events) : IVoucherTenderClient
+    {
+        public int RedeemCalls { get; private set; }
+
+        public Task<PaymentAuthorizationResult> RedeemAsync(
+            decimal amount,
+            PosSessionState session,
+            string? voucherCode,
+            CancellationToken cancellationToken = default)
+        {
+            RedeemCalls++;
+            events.Add("provider:Voucher");
+            return Task.FromResult(new PaymentAuthorizationResult(
+                true,
+                $"VOUCHER:{voucherCode}:LOCK-1",
+                AuthorizedAmount: amount));
+        }
+
+        public Task<PaymentAuthorizationResult> IssueRefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string orderReference,
+            string idempotencyKey,
+            string? reason = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+    }
+
+    private sealed class ClaimOrderingRefundTerminal(Func<bool> claimBegun) : ICardTerminalClient
+    {
+        public int RefundCalls { get; private set; }
+        public bool ClaimWasBegunBeforeRefund { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> RefundAsync(decimal amount, PosSessionState session, string? originalReference, CancellationToken cancellationToken = default)
+        {
+            RefundCalls++;
+            ClaimWasBegunBeforeRefund = claimBegun();
+            return Task.FromResult(new PaymentAuthorizationResult(
+                true,
+                $"REFUND:{originalReference}",
+                AuthorizedAmount: amount,
+                CardTransactions: [CreateCardTransaction(amount)],
+                Processor: "Linkly"));
+        }
+    }
+
+    private sealed class UnknownRefundTerminal : ICardTerminalClient
+    {
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> RefundAsync(decimal amount, PosSessionState session, string? originalReference, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false, null, "network lost", ResultUnknown: true, Processor: "Linkly"));
     }
 
     private sealed class MissingAuthorizedAmountTerminal : ICardTerminalClient
@@ -909,7 +1845,24 @@ public sealed class InstallmentOperationServiceTests
         public TaskCompletionSource AppendStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int AppendCalls { get; private set; }
         public int CancelCalls { get; private set; }
+        public int CreateCancelClaimCalls { get; private set; }
+        public int BeginCancelRefundCalls { get; private set; }
+        public int GetCancelClaimCalls { get; private set; }
+        public int CommitCancelClaimCalls { get; private set; }
+        public Exception? CancelClaimCreateException { get; init; }
+        public Exception? CancelClaimBeginException { get; init; }
+        public Exception? CancelClaimGetException { get; init; }
+        public Exception? CancelClaimResolveException { get; init; }
+        public InstallmentCancelClaimStatus? CancelClaimStatusAfterBeginException { get; init; }
+        public bool LoseFirstCancelCommitResponse { get; init; }
+        public Exception? CancelClaimCommitException { get; init; }
+        public List<Guid> CreatedCancelOperationGuids { get; } = [];
+        public List<InstallmentCancelClaimResolveOutcome> CancelResolveOutcomes { get; } = [];
+        public List<InstallmentCancelClaimResolveRequest> CancelResolveRequests { get; } = [];
+        public InstallmentCancelClaimCreateRequest? LastCancelClaimCreateRequest { get; private set; }
+        public InstallmentCancelClaimCommitRequest? LastCancelClaimCommitRequest { get; private set; }
         public InstallmentAppendPaymentRequest? LastAppendRequest { get; private set; }
+        private readonly Dictionary<Guid, InstallmentCancelClaimDto> _cancelClaims = [];
 
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
@@ -924,6 +1877,120 @@ public sealed class InstallmentOperationServiceTests
         }
 
         public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new InstallmentRepaymentCapabilitiesResponse(true, false, false, 120, true, false, 120));
+
+        public Task<InstallmentCancelClaimDto> CreateCancelClaimAsync(Guid installmentGuid, InstallmentCancelClaimCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            CreateCancelClaimCalls++;
+            CreatedCancelOperationGuids.Add(request.OperationGuid);
+            LastCancelClaimCreateRequest = request;
+            if (CancelClaimCreateException is not null)
+            {
+                return Task.FromException<InstallmentCancelClaimDto>(CancelClaimCreateException);
+            }
+
+            if (_cancelClaims.TryGetValue(request.OperationGuid, out var existing))
+            {
+                return Task.FromResult(existing with { AlreadyExists = true });
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var claim = new InstallmentCancelClaimDto(
+                installmentGuid,
+                request.OperationGuid,
+                request.IdempotencyKey,
+                request.RefundPlanFingerprint,
+                InstallmentCancelClaimStatus.Prepared,
+                now,
+                now,
+                now.AddSeconds(120));
+            _cancelClaims.Add(request.OperationGuid, claim);
+            return Task.FromResult(claim);
+        }
+
+        public Task<InstallmentCancelClaimDto> BeginCancelRefundAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default)
+        {
+            BeginCancelRefundCalls++;
+            if (CancelClaimBeginException is not null)
+            {
+                if (CancelClaimStatusAfterBeginException is { } status)
+                {
+                    _cancelClaims[operationGuid] = _cancelClaims[operationGuid] with
+                    {
+                        Status = status,
+                        UpdatedAtUtc = DateTimeOffset.UtcNow,
+                        ExpiresAtUtc = null
+                    };
+                }
+                return Task.FromException<InstallmentCancelClaimDto>(CancelClaimBeginException);
+            }
+
+            var claim = _cancelClaims[operationGuid] with
+            {
+                Status = InstallmentCancelClaimStatus.RefundPending,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+                ExpiresAtUtc = null
+            };
+            _cancelClaims[operationGuid] = claim;
+            return Task.FromResult(claim);
+        }
+
+        public Task<InstallmentCancelClaimDto> GetCancelClaimAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default)
+        {
+            GetCancelClaimCalls++;
+            if (CancelClaimGetException is not null)
+            {
+                return Task.FromException<InstallmentCancelClaimDto>(CancelClaimGetException);
+            }
+            return _cancelClaims.TryGetValue(operationGuid, out var claim)
+                ? Task.FromResult(claim with { AlreadyExists = true })
+                : Task.FromException<InstallmentCancelClaimDto>(new CatalogApiException("not found", System.Net.HttpStatusCode.NotFound, "INSTALLMENT_CANCEL_CLAIM_NOT_FOUND"));
+        }
+
+        public Task<InstallmentCancelClaimDto> ResolveCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimResolveRequest request, CancellationToken cancellationToken = default)
+        {
+            CancelResolveOutcomes.Add(request.Outcome);
+            CancelResolveRequests.Add(request);
+            if (CancelClaimResolveException is not null)
+            {
+                return Task.FromException<InstallmentCancelClaimDto>(CancelClaimResolveException);
+            }
+            var status = request.Outcome switch
+            {
+                InstallmentCancelClaimResolveOutcome.Released => InstallmentCancelClaimStatus.Released,
+                InstallmentCancelClaimResolveOutcome.Declined => InstallmentCancelClaimStatus.Declined,
+                _ => InstallmentCancelClaimStatus.Unknown
+            };
+            var claim = _cancelClaims[operationGuid] with { Status = status, UpdatedAtUtc = DateTimeOffset.UtcNow, ExpiresAtUtc = null };
+            _cancelClaims[operationGuid] = claim;
+            return Task.FromResult(claim);
+        }
+
+        public Task<InstallmentCancelClaimDto> CommitCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimCommitRequest request, CancellationToken cancellationToken = default)
+        {
+            CommitCancelClaimCalls++;
+            LastCancelClaimCommitRequest = request;
+            if (CancelClaimCommitException is not null)
+            {
+                return Task.FromException<InstallmentCancelClaimDto>(CancelClaimCommitException);
+            }
+            var response = CancelResponse ?? throw new NotSupportedException();
+            var claim = _cancelClaims[operationGuid] with
+            {
+                Status = InstallmentCancelClaimStatus.Committed,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+                ExpiresAtUtc = null,
+                Commit = new InstallmentCancelClaimCommitResponse(response.Details, response.AlreadyCancelled)
+            };
+            _cancelClaims[operationGuid] = claim;
+            if (LoseFirstCancelCommitResponse && CommitCancelClaimCalls == 1)
+            {
+                return Task.FromException<InstallmentCancelClaimDto>(new HttpRequestException("response lost"));
+            }
+            return Task.FromResult(claim);
+        }
 
         public Task<InstallmentCancelResponse> CancelAsync(InstallmentCancelRequest request, CancellationToken cancellationToken = default)
         {

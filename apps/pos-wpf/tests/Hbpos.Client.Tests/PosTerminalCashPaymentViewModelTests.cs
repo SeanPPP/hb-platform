@@ -2603,6 +2603,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
+        Assert.Equal(0, workflow.AddTenderCallCount);
         Assert.Equal(0, workflow.CompletePaymentCallCount);
         Assert.Single(viewModel.PaymentTenders);
         Assert.Equal("payment.refund.status.voucherOfflineUnavailable", viewModel.StatusMessage);
@@ -5318,6 +5319,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectCashCommand.ExecuteAsync(null);
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
+        Assert.Equal(0, workflow.AddTenderCallCount);
         Assert.Equal(0, workflow.CompletePaymentCallCount);
         Assert.NotNull(installmentService.LastRepaymentRequest);
         Assert.Equal(order.OrderId, installmentService.LastRepaymentRequest!.InstallmentGuid);
@@ -5351,13 +5353,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
+        Assert.Equal(0, workflow.AddTenderCallCount);
         Assert.NotNull(installmentService.LastRepaymentRequest);
         Assert.Equal(order.OrderId, installmentService.LastRepaymentRequest!.InstallmentGuid);
         Assert.Equal(48m, installmentService.LastRepaymentRequest.Payment.Amount);
     }
 
     [Fact]
-    public async Task Payment_page_installment_repayment_splits_voucher_reference_for_append_request()
+    public async Task Payment_page_installment_repayment_defers_voucher_provider_until_claimed_operation()
     {
         var workflow = new FakeCashPaymentWorkflowService
         {
@@ -5378,9 +5381,37 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectVoucherCommand.ExecuteAsync(null);
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
+        Assert.Equal(0, workflow.AddTenderCallCount);
         Assert.NotNull(installmentService.LastRepaymentRequest);
         Assert.Equal("VIP002", installmentService.LastRepaymentRequest!.Payment.Reference);
-        Assert.Equal("LOCK-002", installmentService.LastRepaymentRequest.Payment.ReservationToken);
+        Assert.True(string.IsNullOrWhiteSpace(installmentService.LastRepaymentRequest.Payment.ReservationToken));
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_defers_card_terminal_until_claimed_operation()
+    {
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderException = new InvalidOperationException("Card provider must not run while selecting a repayment tender.")
+        };
+        var installmentService = new FakeInstallmentOrderService();
+        var order = CreateInstallmentOrder("IO-20260703-0005", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 90m);
+        var viewModel = new PaymentViewModel(
+            new PosCartService(),
+            workflow,
+            Session,
+            installmentOrderService: installmentService);
+
+        viewModel.PrepareForInstallmentRepayment(Session, order);
+        viewModel.TenderAmountText = "30";
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, workflow.AddTenderCallCount);
+        Assert.NotNull(installmentService.LastRepaymentRequest);
+        Assert.Equal(PaymentMethodKind.Card, installmentService.LastRepaymentRequest!.Payment.Method);
+        Assert.Null(installmentService.LastRepaymentRequest.Payment.CardTransactions);
     }
 
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);

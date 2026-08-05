@@ -895,11 +895,22 @@ public sealed class SquareControllerTests
                 services.AddSingleton<ILinklyCloudBackendAsyncSchemaInitializer>(
                     new NoOpLinklyCloudBackendAsyncSchemaInitializer());
 
+                services.RemoveAll<ILinklySettlementSchemaInitializer>();
+                services.AddSingleton<ILinklySettlementSchemaInitializer>(
+                    new TestNoOpLinklySettlementSchemaInitializer());
+
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton<IAdvertisementSchemaInitializer>(new NoOpAdvertisementSchemaInitializer());
 
                 services.RemoveAll<ISquareWebhookSchemaInitializer>();
                 services.AddSingleton(webhookSchemaInitializer ?? new NoOpSquareWebhookSchemaInitializer());
+
+                services.RemoveAll<IInstallmentRepaymentClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentRepaymentClaimSchemaInitializer>(
+                    new TestNoOpInstallmentRepaymentClaimSchemaInitializer());
+                services.RemoveAll<IInstallmentCancelClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentCancelClaimSchemaInitializer>(
+                    new TestNoOpInstallmentCancelClaimSchemaInitializer());
 
                 services.RemoveAll<ISquareTerminalBackendService>();
                 if (registerBackendService)

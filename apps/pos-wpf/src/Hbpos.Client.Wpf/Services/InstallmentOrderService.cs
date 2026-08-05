@@ -55,6 +55,39 @@ public interface IInstallmentOrderService
 
 public interface IInstallmentApiClient
 {
+    Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentCapabilitiesResponse>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentRepaymentClaimDto> CreateRepaymentClaimAsync(Guid installmentGuid, InstallmentRepaymentClaimCreateRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentClaimDto>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentRepaymentClaimDto> BeginRepaymentProviderAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimBeginProviderRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentClaimDto>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentRepaymentClaimDto> GetRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentClaimDto>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentRepaymentClaimDto> ResolveRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimResolveRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentClaimDto>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentRepaymentClaimDto> CommitRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimCommitRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentRepaymentClaimDto>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
+
+    Task<InstallmentCancelClaimDto> CreateCancelClaimAsync(Guid installmentGuid, InstallmentCancelClaimCreateRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentCancelClaimDto>(new NotSupportedException("当前分期 API 客户端未实现取消 claim 协议。"));
+
+    Task<InstallmentCancelClaimDto> BeginCancelRefundAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentCancelClaimDto>(new NotSupportedException("当前分期 API 客户端未实现取消 claim 协议。"));
+
+    Task<InstallmentCancelClaimDto> GetCancelClaimAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentCancelClaimDto>(new NotSupportedException("当前分期 API 客户端未实现取消 claim 协议。"));
+
+    Task<InstallmentCancelClaimDto> ResolveCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimResolveRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentCancelClaimDto>(new NotSupportedException("当前分期 API 客户端未实现取消 claim 协议。"));
+
+    Task<InstallmentCancelClaimDto> CommitCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimCommitRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentCancelClaimDto>(new NotSupportedException("当前分期 API 客户端未实现取消 claim 协议。"));
+
     Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default);
 
     Task<InstallmentAppendPaymentResponse> AppendPaymentAsync(InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default);
@@ -75,6 +108,7 @@ public sealed class InstallmentOrderService(
     IInstallmentOperationService? installmentOperations = null) : IInstallmentOrderService
 {
     private readonly ICardTerminalClient _cardTerminalClient = cardTerminalClient ?? UnavailableCardTerminalClient.Instance;
+    // 保留注入边界供旧组合根兼容；取消退款已强制由 durable operation service 使用该依赖。
     private readonly IVoucherTenderClient _voucherTenderClient = voucherTenderClient ?? UnavailableVoucherTenderClient.Instance;
 
     public async Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
@@ -169,9 +203,8 @@ public sealed class InstallmentOrderService(
             return InstallmentWriteResult<InstallmentAppendPaymentResponse>.Success(operation.Response, operation.LocalOrder, operation.Message);
         }
 
-        var response = await apiClient.AppendPaymentAsync(request, cancellationToken);
-        var localOrder = await SaveSnapshotAsync(response.Details, cancellationToken);
-        return InstallmentWriteResult<InstallmentAppendPaymentResponse>.Success(response, localOrder, response.Message);
+        // 中文注释：新 WPF 补款必须经过 durable operation + 中央 claim；未注入协调器时在任何 provider/API 副作用前失败。
+        return InstallmentWriteResult<InstallmentAppendPaymentResponse>.OnlineRequired("安全补款服务未配置，已停止付款；禁止降级调用旧 /payments。");
     }
 
     public async Task<InstallmentWriteResult<InstallmentConfirmPickupResponse>> ConfirmPickupAsync(PosSessionState session, InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
@@ -186,16 +219,15 @@ public sealed class InstallmentOrderService(
         return InstallmentWriteResult<InstallmentConfirmPickupResponse>.Success(response, localOrder);
     }
 
-    public async Task<InstallmentWriteResult<InstallmentCancelResponse>> CancelWithRefundAsync(PosSessionState session, InstallmentCancelRequest request, CancellationToken cancellationToken = default)
+    public Task<InstallmentWriteResult<InstallmentCancelResponse>> CancelWithRefundAsync(PosSessionState session, InstallmentCancelRequest request, CancellationToken cancellationToken = default)
     {
         if (!session.IsOnline)
         {
-            return InstallmentWriteResult<InstallmentCancelResponse>.OnlineRequired("OnlineRequired");
+            return Task.FromResult(InstallmentWriteResult<InstallmentCancelResponse>.OnlineRequired("OnlineRequired"));
         }
 
-        var response = await apiClient.CancelAsync(request, cancellationToken);
-        var localOrder = await SaveSnapshotAsync(response.Details, cancellationToken);
-        return InstallmentWriteResult<InstallmentCancelResponse>.Success(response, localOrder, response.Message);
+        // 取消必须从本机分期快照建立 durable operation 与中央 claim，禁止直接提交已组装的退款结果。
+        return Task.FromResult(InstallmentWriteResult<InstallmentCancelResponse>.OnlineRequired("安全取消服务要求从分期详情发起，已停止旧 /cancel 调用。"));
     }
 
     public async Task<InstallmentWriteResult<InstallmentVoidResponse>> VoidCancelAsync(PosSessionState session, InstallmentVoidRequest request, CancellationToken cancellationToken = default)
@@ -376,53 +408,7 @@ public sealed class InstallmentOrderService(
                 operation.RequiresReview);
         }
 
-        var refunds = new List<InstallmentRefundPaymentCommandDto>();
-        foreach (var payment in local.Payments.Where(payment => payment.Status == InstallmentPaymentStatus.Recorded && payment.Amount > 0m))
-        {
-            var idempotencyKey = $"{local.InstallmentGuid:D}:refund:{payment.PaymentGuid:D}";
-            if (payment.Method == PaymentMethodKind.Card)
-            {
-                var authorization = await _cardTerminalClient.RefundAsync(payment.Amount, session, payment.Reference, cancellationToken);
-                if (!authorization.Approved)
-                {
-                    return new InstallmentOrderActionResult(false, authorization.Message ?? "银行卡退款失败，分期单未取消。");
-                }
-
-                refunds.Add(new InstallmentRefundPaymentCommandDto(
-                    Guid.NewGuid(),
-                    payment.Method,
-                    authorization.AuthorizedAmount ?? payment.Amount,
-                    authorization.Reference ?? payment.Reference,
-                    authorization.CardTransactions ?? payment.CardTransactions,
-                    idempotencyKey));
-                continue;
-            }
-
-            if (payment.Method == PaymentMethodKind.Voucher)
-            {
-                var authorization = await _voucherTenderClient.IssueRefundAsync(payment.Amount, session, local.InstallmentNumber, idempotencyKey, "取消分期退款", cancellationToken);
-                if (!authorization.Approved)
-                {
-                    return new InstallmentOrderActionResult(false, authorization.Message ?? "代金券退款失败，分期单未取消。");
-                }
-
-                refunds.Add(new InstallmentRefundPaymentCommandDto(
-                    Guid.NewGuid(),
-                    payment.Method,
-                    authorization.AuthorizedAmount ?? payment.Amount,
-                    authorization.Reference ?? payment.Reference,
-                    authorization.CardTransactions ?? payment.CardTransactions,
-                    idempotencyKey));
-                continue;
-            }
-
-            refunds.Add(new InstallmentRefundPaymentCommandDto(Guid.NewGuid(), payment.Method, payment.Amount, payment.Reference, payment.CardTransactions, idempotencyKey));
-        }
-        var result = await CancelWithRefundAsync(
-            session,
-            new InstallmentCancelRequest(local.InstallmentGuid, session.StoreCode, session.DeviceCode, session.CashierId, session.CashierName, DateTimeOffset.Now, refunds, "取消分期并退款", $"{local.InstallmentGuid:D}:cancel"),
-            cancellationToken);
-        return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? "分期单已取消并退款。", result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
+        return new InstallmentOrderActionResult(false, "安全取消服务未配置，已在退款 provider 调用前停止。", RequiresReview: true);
     }
 
     public Task<InstallmentOrderActionResult> CancelWithRefundAsync(Guid orderId, PosSessionState session, string? reason, CancellationToken cancellationToken = default)
@@ -547,6 +533,39 @@ public sealed class InstallmentApiClient(HttpClient httpClient) : IInstallmentAp
 
     public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => PostAsync<InstallmentCreateRequest, InstallmentCreateResponse>("api/v1/installments", request, cancellationToken);
 
+    public Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
+        GetAsync<InstallmentRepaymentCapabilitiesResponse>("api/v1/installments/capabilities", cancellationToken);
+
+    public Task<InstallmentRepaymentClaimDto> CreateRepaymentClaimAsync(Guid installmentGuid, InstallmentRepaymentClaimCreateRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentRepaymentClaimCreateRequest, InstallmentRepaymentClaimDto>($"api/v1/installments/{installmentGuid:D}/repayment-claims", request, cancellationToken);
+
+    public Task<InstallmentRepaymentClaimDto> BeginRepaymentProviderAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimBeginProviderRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentRepaymentClaimBeginProviderRequest, InstallmentRepaymentClaimDto>($"api/v1/installments/{installmentGuid:D}/repayment-claims/{operationGuid:D}/begin-provider", request, cancellationToken);
+
+    public Task<InstallmentRepaymentClaimDto> GetRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        GetAsync<InstallmentRepaymentClaimDto>($"api/v1/installments/{installmentGuid:D}/repayment-claims/{operationGuid:D}", cancellationToken);
+
+    public Task<InstallmentRepaymentClaimDto> ResolveRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimResolveRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentRepaymentClaimResolveRequest, InstallmentRepaymentClaimDto>($"api/v1/installments/{installmentGuid:D}/repayment-claims/{operationGuid:D}/resolve", request, cancellationToken);
+
+    public Task<InstallmentRepaymentClaimDto> CommitRepaymentClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimCommitRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentRepaymentClaimCommitRequest, InstallmentRepaymentClaimDto>($"api/v1/installments/{installmentGuid:D}/repayment-claims/{operationGuid:D}/commit", request, cancellationToken);
+
+    public Task<InstallmentCancelClaimDto> CreateCancelClaimAsync(Guid installmentGuid, InstallmentCancelClaimCreateRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentCancelClaimCreateRequest, InstallmentCancelClaimDto>($"api/v1/installments/{installmentGuid:D}/cancel-claims", request, cancellationToken);
+
+    public Task<InstallmentCancelClaimDto> BeginCancelRefundAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentCancelClaimDto>($"api/v1/installments/{installmentGuid:D}/cancel-claims/{operationGuid:D}/begin-refund", cancellationToken);
+
+    public Task<InstallmentCancelClaimDto> GetCancelClaimAsync(Guid installmentGuid, Guid operationGuid, CancellationToken cancellationToken = default) =>
+        GetAsync<InstallmentCancelClaimDto>($"api/v1/installments/{installmentGuid:D}/cancel-claims/{operationGuid:D}", cancellationToken);
+
+    public Task<InstallmentCancelClaimDto> ResolveCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimResolveRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentCancelClaimResolveRequest, InstallmentCancelClaimDto>($"api/v1/installments/{installmentGuid:D}/cancel-claims/{operationGuid:D}/resolve", request, cancellationToken);
+
+    public Task<InstallmentCancelClaimDto> CommitCancelClaimAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimCommitRequest request, CancellationToken cancellationToken = default) =>
+        PostAsync<InstallmentCancelClaimCommitRequest, InstallmentCancelClaimDto>($"api/v1/installments/{installmentGuid:D}/cancel-claims/{operationGuid:D}/commit", request, cancellationToken);
+
     public Task<InstallmentAppendPaymentResponse> AppendPaymentAsync(InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default) => PostAsync<InstallmentAppendPaymentRequest, InstallmentAppendPaymentResponse>($"api/v1/installments/{request.InstallmentGuid:D}/payments", request, cancellationToken);
 
     public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) => PostAsync<InstallmentConfirmPickupRequest, InstallmentConfirmPickupResponse>($"api/v1/installments/{request.InstallmentGuid:D}/pickup", request, cancellationToken);
@@ -555,9 +574,27 @@ public sealed class InstallmentApiClient(HttpClient httpClient) : IInstallmentAp
 
     public Task<InstallmentVoidResponse> VoidAsync(InstallmentVoidRequest request, CancellationToken cancellationToken = default) => PostAsync<InstallmentVoidRequest, InstallmentVoidResponse>($"api/v1/installments/{request.InstallmentGuid:D}/void", request, cancellationToken);
 
+    private async Task<TResponse> GetAsync<TResponse>(string path, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(path, cancellationToken);
+        return await ReadResponseAsync<TResponse>(response, cancellationToken);
+    }
+
     private async Task<TResponse> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken cancellationToken)
     {
         using var response = await httpClient.PostAsJsonAsync(path, request, JsonOptions, cancellationToken);
+        return await ReadResponseAsync<TResponse>(response, cancellationToken);
+    }
+
+    private async Task<TResponse> PostAsync<TResponse>(string path, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        return await ReadResponseAsync<TResponse>(response, cancellationToken);
+    }
+
+    private static async Task<TResponse> ReadResponseAsync<TResponse>(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
         var payload = await response.Content.ReadFromJsonAsync<ApiResult<TResponse>>(JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode || payload?.Success != true || payload.Data is null)
         {

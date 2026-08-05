@@ -201,6 +201,7 @@ test("重打能力严格要求原始权限、在线当前详情、非忙碌且 P
   const subject = presenter(workflow, { reprintPort });
 
   assert.equal(subject.capabilities.reprint, false);
+  await subject.load();
   await subject.select(GUID_ACTIVE);
   assert.equal(subject.capabilities.reprint, true);
 
@@ -364,6 +365,7 @@ test("重打期间阻断全部分期写入口，写动作期间也不能开始�
   workflow.nextRepayment = pendingRepayment.promise;
   const reprintPort = new FakeReprintPort();
   const subject = presenter(workflow, { reprintPort });
+  await subject.load();
   await subject.select(GUID_ACTIVE);
   subject.setRepaymentAmount("10.00");
 
@@ -375,7 +377,7 @@ test("重打期间阻断全部分期写入口，写动作期间也不能开始�
   await repayment;
 });
 
-test("同店跨终端详情保持只读，所有既有分期写动作与重打均失败关闭", async () => {
+test("跨终端续付 capability 未启用时，所有既有分期写动作与重打均失败关闭", async () => {
   const scenarios = [
     {
       name: "repayment",
@@ -429,10 +431,12 @@ test("同店跨终端详情保持只读，所有既有分期写动作与重打�
       reprintPort,
       trustedDeviceCode: "IPAD-1",
     });
+    await subject.load();
     await subject.select(installmentGuid);
     scenario.prepare(subject);
 
     assert.equal(subject.capabilities.selectedDetailsWritable, false);
+    assert.equal(subject.capabilities.selectedDetailsRepayable, false);
     assert.equal(subject.capabilities.reprint, false);
     await scenario.invoke(subject);
     await subject.reprintSelected();
@@ -445,6 +449,134 @@ test("同店跨终端详情保持只读，所有既有分期写动作与重打�
     assert.deepEqual(reprintPort.calls, []);
     assert.equal(subject.getState().statusCode, "conflict");
   }
+});
+
+test("同店跨终端 capability 启用后仅允许 Active 续付，高风险动作仍失败关闭", async () => {
+  const workflow = new FakeWorkflow();
+  workflow.crossDeviceRepaymentEnabled = true;
+  workflow.repaymentClaimsRequired = false;
+  workflow.detailResults.set(
+    GUID_ACTIVE,
+    Promise.resolve({ ...details("Active"), deviceCode: "IPAD-2" }),
+  );
+  const reprintPort = new FakeReprintPort();
+  const subject = presenter(workflow, { reprintPort });
+
+  await subject.load();
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  assert.equal(subject.capabilities.selectedDetailsRepayable, true);
+  assert.equal(subject.capabilities.selectedDetailsWritable, false);
+  assert.equal(subject.capabilities.reprint, false);
+
+  subject.setRepaymentAmount("5.00");
+  await subject.addRepayment();
+
+  assert.equal(
+    workflow.writeCalls.filter((call) => call.kind === "repayment").length,
+    1,
+  );
+  assert.deepEqual(reprintPort.calls, []);
+
+  const highRiskWorkflow = new FakeWorkflow();
+  highRiskWorkflow.crossDeviceRepaymentEnabled = true;
+  highRiskWorkflow.detailResults.set(
+    GUID_ACTIVE,
+    Promise.resolve({ ...details("Active"), deviceCode: "IPAD-2" }),
+  );
+  const highRiskSubject = presenter(highRiskWorkflow, { reprintPort });
+  await highRiskSubject.load();
+  await highRiskSubject.select(GUID_ACTIVE);
+  await highRiskSubject.cancelWithRefund();
+  await highRiskSubject.voidSelected();
+  await highRiskSubject.reprintSelected();
+
+  assert.deepEqual(highRiskWorkflow.writeCalls, []);
+  assert.deepEqual(reprintPort.calls, []);
+  assert.equal(highRiskSubject.getState().statusCode, "conflict");
+
+  const pickupWorkflow = new FakeWorkflow();
+  pickupWorkflow.crossDeviceRepaymentEnabled = true;
+  pickupWorkflow.detailResults.set(
+    GUID_PAID,
+    Promise.resolve({ ...details("PaidOff"), deviceCode: "IPAD-2" }),
+  );
+  const pickupSubject = presenter(pickupWorkflow, { reprintPort });
+  await pickupSubject.load();
+  await pickupSubject.select(GUID_PAID);
+  await pickupSubject.confirmPickup();
+  await pickupSubject.reprintSelected();
+
+  assert.deepEqual(pickupWorkflow.writeCalls, []);
+  assert.deepEqual(reprintPort.calls, []);
+  assert.equal(pickupSubject.getState().statusCode, "conflict");
+});
+
+test("capability 每轮 load 先失败关闭，GET 失败不阻断只读历史", async () => {
+  const workflow = new FakeWorkflow();
+  workflow.crossDeviceRepaymentEnabled = true;
+  workflow.detailResults.set(
+    GUID_ACTIVE,
+    Promise.resolve({ ...details("Active"), deviceCode: "IPAD-2" }),
+  );
+  const subject = presenter(workflow);
+
+  await subject.load();
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+  assert.equal(subject.getState().kind, "ready");
+  assert.equal(subject.capabilities.selectedDetailsRepayable, true);
+
+  workflow.capabilityError = new Error("capabilities unavailable");
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  assert.equal(subject.getState().kind, "ready");
+  assert.equal(subject.capabilities.selectedDetailsRepayable, false);
+});
+
+test("同机续付也要求服务端 claim supported，失败关闭不影响历史与详情", async () => {
+  const workflow = new FakeWorkflow();
+  workflow.repaymentClaimsSupported = false;
+  const subject = presenter(workflow);
+
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  assert.equal(subject.getState().kind, "ready");
+  assert.ok(subject.getState().details);
+  assert.equal(subject.capabilities.selectedDetailsRepayable, false);
+  subject.setRepaymentAmount("5.00");
+  await subject.addRepayment();
+  assert.deepEqual(workflow.writeCalls, []);
+  assert.equal(subject.getState().statusCode, "conflict");
+});
+
+test("跨店详情即使设备相同且 capability 启用也不得续付或执行高风险动作", async () => {
+  const workflow = new FakeWorkflow();
+  workflow.crossDeviceRepaymentEnabled = true;
+  workflow.detailResults.set(
+    GUID_ACTIVE,
+    Promise.resolve({
+      ...details("Active"),
+      storeCode: "S2",
+      deviceCode: "IPAD-1",
+    }),
+  );
+  const subject = presenter(workflow, { trustedStoreCode: "S1" });
+
+  await subject.load();
+  await subject.select(GUID_ACTIVE);
+
+  assert.equal(subject.capabilities.selectedDetailsRepayable, false);
+  assert.equal(subject.capabilities.selectedDetailsWritable, false);
+  subject.setRepaymentAmount("5.00");
+  await subject.addRepayment();
+  await subject.cancelWithRefund();
+
+  assert.deepEqual(workflow.writeCalls, []);
+  assert.equal(subject.getState().statusCode, "conflict");
 });
 
 test("无资格重打 fail-closed，切换选择后旧打印结果不得覆盖当前状态", async () => {
@@ -583,6 +715,7 @@ test("券首付和补款只接收券码，workflow token 固定为 null 且公�
   );
   assert.equal("setCreateVoucherReservationToken" in subject, false);
 
+  await subject.load();
   await subject.select(GUID_ACTIVE);
   subject.setRepaymentAmount("10.00");
   subject.setRepaymentMethod("voucher");
@@ -625,6 +758,7 @@ test("券码在 workflow 开始前从公开状态清空，失败后也不恢复"
   createResult.resolve(details("Active"));
   await pendingCreate;
 
+  await subject.load();
   await subject.select(GUID_ACTIVE);
   subject.setRepaymentAmount("10.00");
   subject.setRepaymentMethod("voucher");
@@ -644,6 +778,7 @@ test("补款仅允许 Active 且金额不超过余额；重复点击只产生一
   const repayment = deferred<InstallmentDetails>();
   workflow.nextRepayment = repayment.promise;
   const subject = presenter(workflow);
+  await subject.load();
   await subject.select(GUID_ACTIVE);
   subject.setRepaymentAmount("80.01");
 
@@ -789,6 +924,20 @@ class FakeWorkflow implements InstallmentWorkflowPort {
   public repaymentError: Error | null = null;
   public listError: Error | null = null;
   public detailError: Error | null = null;
+  public capabilityError: Error | null = null;
+  public crossDeviceRepaymentEnabled = false;
+  public repaymentClaimsSupported = true;
+  public repaymentClaimsRequired = true;
+
+  public async getRepaymentCapabilities() {
+    if (this.capabilityError) throw this.capabilityError;
+    return {
+      repaymentClaimsSupported: this.repaymentClaimsSupported,
+      repaymentClaimsRequired: this.repaymentClaimsRequired,
+      crossDeviceRepaymentEnabled: this.crossDeviceRepaymentEnabled,
+      preparedClaimTtlSeconds: 300,
+    };
+  }
 
   public async list(
     input: Parameters<InstallmentWorkflowPort["list"]>[0],
@@ -896,6 +1045,7 @@ function presenter(
     permissions: readonly string[];
     reprintPort: InstallmentReprintPort | null;
     trustedDeviceCode: string;
+    trustedStoreCode: string;
   }> = {},
 ) {
   return new InstallmentPresenter({
@@ -903,6 +1053,7 @@ function presenter(
     initialOnline: true,
     permissions: overrides.permissions ?? allPermissions,
     trustedDeviceCode: overrides.trustedDeviceCode ?? "IPAD-1",
+    trustedStoreCode: overrides.trustedStoreCode ?? "S1",
     ...(overrides.reprintPort !== undefined
       ? { reprintPort: overrides.reprintPort }
       : {}),

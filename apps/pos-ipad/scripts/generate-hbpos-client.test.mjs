@@ -23,6 +23,17 @@ for (const route of [
   "/api/v1/linkly/cloud-backend/transactions",
   "/api/v1/vouchers/lock",
   "/api/v1/installments",
+  "/api/v1/installments/capabilities",
+  "/api/v1/installments/{installmentGuid}/repayment-claims",
+  "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}",
+  "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/begin-provider",
+  "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/resolve",
+  "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/commit",
+  "/api/v1/installments/{installmentGuid}/cancel-claims",
+  "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}",
+  "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/begin-refund",
+  "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/resolve",
+  "/api/v1/installments/{installmentGuid}/cancel-claims/{operationGuid}/commit",
   "/api/v1/operation-audits",
   "/api/v1/operation-audits/{eventId}",
   "/api/v1/operation-audits/batch"
@@ -95,11 +106,329 @@ assert.deepEqual(
   "远程审计合同只能暴露白名单安全投影"
 );
 
+const claimPath = "/api/v1/installments/{installmentGuid}/repayment-claims";
+const claimOperationPath = `${claimPath}/{operationGuid}`;
+const cancelClaimPath = "/api/v1/installments/{installmentGuid}/cancel-claims";
+const cancelClaimOperationPath = `${cancelClaimPath}/{operationGuid}`;
+assert.ok(document.paths?.["/api/v1/installments/capabilities"]?.get);
+assert.ok(document.paths?.[claimPath]?.post);
+assert.ok(document.paths?.[claimOperationPath]?.get);
+assert.ok(document.paths?.[`${claimOperationPath}/begin-provider`]?.post);
+assert.ok(document.paths?.[`${claimOperationPath}/resolve`]?.post);
+assert.ok(document.paths?.[`${claimOperationPath}/commit`]?.post);
+assert.equal(
+  document.paths?.["/api/v1/installments/capabilities"]?.get?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  "#/components/schemas/InstallmentRepaymentCapabilitiesResponseApiResult"
+);
+assert.equal(
+  document.paths?.[claimOperationPath]?.get?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  "#/components/schemas/InstallmentRepaymentClaimDtoApiResult"
+);
+assert.ok(document.paths?.[cancelClaimPath]?.post);
+assert.ok(document.paths?.[cancelClaimOperationPath]?.get);
+assert.ok(document.paths?.[`${cancelClaimOperationPath}/begin-refund`]?.post);
+assert.ok(document.paths?.[`${cancelClaimOperationPath}/resolve`]?.post);
+assert.ok(document.paths?.[`${cancelClaimOperationPath}/commit`]?.post);
+assert.equal(
+  document.paths?.[cancelClaimOperationPath]?.get?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  "#/components/schemas/InstallmentCancelClaimDtoApiResult"
+);
+
+for (const [route, method, requestSchema] of [
+  [claimPath, "post", "InstallmentRepaymentClaimCreateRequest"],
+  [`${claimOperationPath}/begin-provider`, "post", "InstallmentRepaymentClaimBeginProviderRequest"],
+  [`${claimOperationPath}/resolve`, "post", "InstallmentRepaymentClaimResolveRequest"],
+  [`${claimOperationPath}/commit`, "post", "InstallmentRepaymentClaimCommitRequest"]
+]) {
+  assert.equal(
+    document.paths?.[route]?.[method]?.requestBody?.content?.["application/json"]?.schema?.$ref,
+    `#/components/schemas/${requestSchema}`,
+    `${route} 必须使用 ${requestSchema}`
+  );
+  assert.equal(
+    document.paths?.[route]?.[method]?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref,
+    "#/components/schemas/InstallmentRepaymentClaimDtoApiResult",
+    `${route} 必须返回 claim DTO 包装`
+  );
+}
+
+for (const [route, method, requestSchema] of [
+  [cancelClaimPath, "post", "InstallmentCancelClaimCreateRequest"],
+  [`${cancelClaimOperationPath}/resolve`, "post", "InstallmentCancelClaimResolveRequest"],
+  [`${cancelClaimOperationPath}/commit`, "post", "InstallmentCancelClaimCommitRequest"]
+]) {
+  assert.equal(
+    document.paths?.[route]?.[method]?.requestBody?.content?.["application/json"]?.schema?.$ref,
+    `#/components/schemas/${requestSchema}`,
+    `${route} 必须使用 ${requestSchema}`
+  );
+  assert.equal(
+    document.paths?.[route]?.[method]?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref,
+    "#/components/schemas/InstallmentCancelClaimDtoApiResult",
+    `${route} 必须返回取消 claim DTO 包装`
+  );
+}
+assert.equal(
+  document.paths?.[`${cancelClaimOperationPath}/begin-refund`]?.post?.requestBody,
+  undefined,
+  "begin-refund 不得接受可伪造的 body 身份或退款结果"
+);
+assert.equal(
+  document.paths?.[`${cancelClaimOperationPath}/begin-refund`]?.post?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  "#/components/schemas/InstallmentCancelClaimDtoApiResult"
+);
+
+assert.deepEqual(
+  document.paths?.[claimPath]?.post?.parameters?.map(parameter => [
+    parameter.name,
+    parameter.required,
+    parameter.schema?.format
+  ]),
+  [["installmentGuid", true, "uuid"]],
+  `${claimPath} 必须使用 installmentGuid 路由身份`
+);
+for (const route of [claimOperationPath, `${claimOperationPath}/begin-provider`, `${claimOperationPath}/resolve`, `${claimOperationPath}/commit`]) {
+  const method = route === claimOperationPath ? "get" : "post";
+  const parameters = document.paths?.[route]?.[method]?.parameters ?? [];
+  assert.deepEqual(
+    parameters.map(parameter => [parameter.name, parameter.required, parameter.schema?.format]),
+    [
+      ["installmentGuid", true, "uuid"],
+      ["operationGuid", true, "uuid"]
+    ],
+    `${route} 必须固定 installmentGuid 与 operationGuid 路由身份`
+  );
+}
+assert.deepEqual(
+  document.paths?.[cancelClaimPath]?.post?.parameters?.map(parameter => [
+    parameter.name,
+    parameter.required,
+    parameter.schema?.format
+  ]),
+  [["installmentGuid", true, "uuid"]],
+  `${cancelClaimPath} 必须使用 installmentGuid 路由身份`
+);
+for (const route of [
+  cancelClaimOperationPath,
+  `${cancelClaimOperationPath}/begin-refund`,
+  `${cancelClaimOperationPath}/resolve`,
+  `${cancelClaimOperationPath}/commit`
+]) {
+  const method = route === cancelClaimOperationPath ? "get" : "post";
+  const parameters = document.paths?.[route]?.[method]?.parameters ?? [];
+  assert.deepEqual(
+    parameters.map(parameter => [parameter.name, parameter.required, parameter.schema?.format]),
+    [
+      ["installmentGuid", true, "uuid"],
+      ["operationGuid", true, "uuid"]
+    ],
+    `${route} 必须固定 installmentGuid 与 operationGuid 路由身份`
+  );
+}
+
+const schemas = document.components?.schemas ?? {};
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentCapabilitiesResponse?.properties ?? {}),
+  [
+    "repaymentClaimsSupported",
+    "repaymentClaimsRequired",
+    "crossDeviceRepaymentEnabled",
+    "preparedClaimTtlSeconds",
+    "cancelClaimsSupported",
+    "cancelClaimsRequired",
+    "cancelPreparedClaimTtlSeconds"
+  ]
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentCapabilitiesResponse?.properties?.preparedClaimTtlSeconds,
+  { type: "integer", format: "int32" }
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentCapabilitiesResponse?.properties?.cancelPreparedClaimTtlSeconds,
+  { type: "integer", format: "int32" }
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentClaimCreateRequest?.properties ?? {}),
+  ["operationGuid", "paymentGuid", "amount", "method", "idempotencyKey"]
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimCreateRequest?.properties?.operationGuid,
+  { type: "string", format: "uuid" }
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimCreateRequest?.properties?.paymentGuid,
+  { type: "string", format: "uuid" }
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimCreateRequest?.properties?.amount,
+  { type: "number", format: "double" }
+);
+assert.equal(
+  schemas.InstallmentRepaymentClaimCreateRequest?.properties?.method?.$ref,
+  "#/components/schemas/PaymentMethodKind"
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentClaimBeginProviderRequest?.properties ?? {}),
+  ["provider", "providerAttemptId"]
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentClaimResolveRequest?.properties ?? {}),
+  ["outcome"]
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentClaimCommitRequest?.properties ?? {}),
+  ["reference", "reservationToken", "cardTransactions"]
+);
+assert.equal(
+  schemas.InstallmentRepaymentClaimCommitRequest?.properties?.cardTransactions?.items?.$ref,
+  "#/components/schemas/CardTransactionDto"
+);
+assert.deepEqual(schemas.InstallmentRepaymentClaimResolveOutcome?.enum, [1, 2, 3]);
+assert.deepEqual(schemas.InstallmentRepaymentClaimStatus?.enum, [1, 2, 3, 4, 5, 6]);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentRepaymentClaimDto?.properties ?? {}),
+  [
+    "installmentGuid",
+    "operationGuid",
+    "paymentGuid",
+    "amount",
+    "method",
+    "idempotencyKey",
+    "status",
+    "provider",
+    "providerAttemptId",
+    "createdAtUtc",
+    "updatedAtUtc",
+    "expiresAtUtc",
+    "commit",
+    "alreadyExists"
+  ]
+);
+assert.equal(
+  schemas.InstallmentRepaymentClaimDto?.properties?.commit?.$ref,
+  "#/components/schemas/InstallmentAppendPaymentResponse"
+);
+for (const guidField of ["installmentGuid", "operationGuid", "paymentGuid"]) {
+  assert.deepEqual(
+    schemas.InstallmentRepaymentClaimDto?.properties?.[guidField],
+    { type: "string", format: "uuid" }
+  );
+}
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimDto?.properties?.amount,
+  { type: "number", format: "double" }
+);
+for (const requestSchema of [
+  "InstallmentRepaymentClaimCreateRequest",
+  "InstallmentRepaymentClaimBeginProviderRequest",
+  "InstallmentRepaymentClaimResolveRequest",
+  "InstallmentRepaymentClaimCommitRequest"
+]) {
+  const requestProperties = schemas[requestSchema]?.properties ?? {};
+  for (const untrustedIdentityField of ["storeCode", "deviceCode", "cashierId", "cashierName"]) {
+    assert.equal(
+      Object.hasOwn(requestProperties, untrustedIdentityField),
+      false,
+      `${requestSchema} 不得接受 body 身份字段 ${untrustedIdentityField}`
+    );
+  }
+}
+
+assert.deepEqual(
+  Object.keys(schemas.InstallmentCancelClaimCreateRequest?.properties ?? {}),
+  ["operationGuid", "idempotencyKey", "reason", "refundPlanFingerprint"]
+);
+assert.deepEqual(
+  schemas.InstallmentCancelClaimCreateRequest?.properties?.operationGuid,
+  { type: "string", format: "uuid" }
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentCancelClaimResolveRequest?.properties ?? {}),
+  ["outcome", "approvedRefunds"]
+);
+assert.equal(
+  schemas.InstallmentCancelClaimResolveRequest?.properties?.approvedRefunds?.items?.$ref,
+  "#/components/schemas/InstallmentRefundPaymentCommandDto"
+);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentCancelClaimCommitRequest?.properties ?? {}),
+  ["refunds"]
+);
+assert.equal(
+  schemas.InstallmentCancelClaimCommitRequest?.properties?.refunds?.items?.$ref,
+  "#/components/schemas/InstallmentRefundPaymentCommandDto"
+);
+assert.deepEqual(
+  schemas.InstallmentRefundPaymentCommandDto?.properties?.originalPaymentGuid,
+  { type: "string", format: "uuid" }
+);
+assert.deepEqual(schemas.InstallmentCancelClaimResolveOutcome?.enum, [1, 2, 3]);
+assert.deepEqual(schemas.InstallmentCancelClaimStatus?.enum, [1, 2, 3, 4, 5, 6]);
+assert.deepEqual(
+  Object.keys(schemas.InstallmentCancelClaimDto?.properties ?? {}),
+  [
+    "installmentGuid",
+    "operationGuid",
+    "idempotencyKey",
+    "refundPlanFingerprint",
+    "status",
+    "createdAtUtc",
+    "updatedAtUtc",
+    "expiresAtUtc",
+    "commit",
+    "alreadyExists"
+  ]
+);
+for (const guidField of ["installmentGuid", "operationGuid"]) {
+  assert.deepEqual(
+    schemas.InstallmentCancelClaimDto?.properties?.[guidField],
+    { type: "string", format: "uuid" }
+  );
+}
+assert.equal(
+  schemas.InstallmentCancelClaimDto?.properties?.commit?.$ref,
+  "#/components/schemas/InstallmentCancelClaimCommitResponse"
+);
+assert.equal(
+  schemas.InstallmentCancelClaimCommitResponse?.properties?.details?.$ref,
+  "#/components/schemas/InstallmentDetailsDto"
+);
+for (const requestSchema of [
+  "InstallmentCancelClaimCreateRequest",
+  "InstallmentCancelClaimResolveRequest",
+  "InstallmentCancelClaimCommitRequest"
+]) {
+  const requestProperties = schemas[requestSchema]?.properties ?? {};
+  for (const untrustedIdentityField of ["storeCode", "deviceCode", "cashierId", "cashierName"]) {
+    assert.equal(
+      Object.hasOwn(requestProperties, untrustedIdentityField),
+      false,
+      `${requestSchema} 不得接受 body 身份字段 ${untrustedIdentityField}`
+    );
+  }
+}
+
 const generated = readFileSync(generatedPath, "utf8");
 assert.match(generated, /AUTO-GENERATED/);
 assert.match(generated, /LinklyCloudBackendCardTransactionDto:/);
 assert.match(generated, /OperationAuditReadListDto:/);
 assert.match(generated, /OperationAuditReadRecordDto:/);
+assert.match(generated, /"\/api\/v1\/installments\/capabilities":/);
+assert.match(generated, /"\/api\/v1\/installments\/\{installmentGuid\}\/repayment-claims":/);
+assert.match(generated, /"\/api\/v1\/installments\/\{installmentGuid\}\/cancel-claims":/);
+assert.match(generated, /InstallmentRepaymentCapabilitiesResponse:/);
+assert.match(generated, /InstallmentRepaymentClaimCreateRequest:/);
+assert.match(generated, /InstallmentRepaymentClaimDto:/);
+assert.match(generated, /InstallmentCancelClaimCreateRequest:/);
+assert.match(generated, /InstallmentCancelClaimDto:/);
+assert.match(generated, /InstallmentRepaymentClaimResolveOutcome: 1 \| 2 \| 3;/);
+assert.match(generated, /InstallmentRepaymentClaimStatus: 1 \| 2 \| 3 \| 4 \| 5 \| 6;/);
+assert.match(generated, /InstallmentCancelClaimResolveOutcome: 1 \| 2 \| 3;/);
+assert.match(generated, /InstallmentCancelClaimStatus: 1 \| 2 \| 3 \| 4 \| 5 \| 6;/);
 assert.match(
   generated,
   /cardTransaction\?: components\["schemas"\]\["LinklyCloudBackendCardTransactionDto"\]/

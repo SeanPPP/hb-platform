@@ -122,7 +122,7 @@ public sealed class InstallmentService(
             balanceAmount,
             status,
             normalized.Lines,
-            [MapPayment(normalized.DownPayment, normalized.CashierId, normalized.DeviceCode, createdAt)],
+            [MapPayment(normalized.DownPayment, normalized.CashierId, normalized.CashierName, normalized.DeviceCode, createdAt)],
             PickupInfo: null,
             CancellationInfo: null,
             normalized.Note);
@@ -250,7 +250,8 @@ public sealed class InstallmentService(
             normalized.DeviceCode,
             normalized.CardTransactions,
             normalized.IdempotencyKey,
-            normalized.ReservationToken);
+            normalized.ReservationToken,
+            normalized.CashierName);
 
         var updated = await repository.AppendPaymentAsync(
             details.InstallmentGuid,
@@ -362,7 +363,7 @@ public sealed class InstallmentService(
             normalized.IdempotencyKey);
         var updated = await repository.CancelWithRefundAsync(
             normalized.InstallmentGuid,
-            refunds.Select(refund => MapRefundPayment(refund, normalized.CashierId, normalized.DeviceCode, cancelledAt)).ToList(),
+            refunds.Select(refund => MapRefundPayment(refund, normalized.CashierId, normalized.CashierName, normalized.DeviceCode, cancelledAt)).ToList(),
             cancellationInfo,
             cancellationToken);
         logger?.LogInformation(
@@ -620,11 +621,12 @@ public sealed class InstallmentService(
         }
     }
 
-    private static IReadOnlyList<InstallmentRefundPaymentCommandDto> NormalizeAndValidateRefunds(
+    internal static IReadOnlyList<InstallmentRefundPaymentCommandDto> NormalizeAndValidateRefunds(
         InstallmentDetailsDto details,
         InstallmentCancelRequest request)
     {
-        if (request.Refunds.Count == 0)
+        var refunds = request.Refunds.Select(NormalizeRefund).ToArray();
+        if (refunds.Length == 0)
         {
             throw new InvalidOperationException("Refund payments are required when cancelling an installment.");
         }
@@ -633,7 +635,7 @@ public sealed class InstallmentService(
             .Where(payment => payment.Status == InstallmentPaymentStatus.Recorded && payment.Amount > 0m)
             .GroupBy(payment => payment.Method)
             .ToDictionary(group => group.Key, group => RoundCurrency(group.Sum(payment => payment.Amount)));
-        var refundByMethod = request.Refunds
+        var refundByMethod = refunds
             .GroupBy(refund => refund.Method)
             .ToDictionary(group => group.Key, group => RoundCurrency(group.Sum(refund => refund.Amount)));
         if (paidByMethod.Count != refundByMethod.Count ||
@@ -642,7 +644,7 @@ public sealed class InstallmentService(
             throw new InvalidOperationException("Refund payments must cover all recorded installment payments by method.");
         }
 
-        return request.Refunds;
+        return refunds;
     }
 
     private async Task ValidateVoucherPaymentAsync(
@@ -710,6 +712,7 @@ public sealed class InstallmentService(
     private static InstallmentPaymentDto MapPayment(
         InstallmentPaymentCommandDto payment,
         string cashierId,
+        string cashierName,
         string deviceCode,
         DateTimeOffset recordedAt)
     {
@@ -724,12 +727,14 @@ public sealed class InstallmentService(
             deviceCode,
             payment.CardTransactions,
             payment.IdempotencyKey,
-            payment.ReservationToken);
+            payment.ReservationToken,
+            cashierName);
     }
 
-    private static InstallmentPaymentDto MapRefundPayment(
+    internal static InstallmentPaymentDto MapRefundPayment(
         InstallmentRefundPaymentCommandDto payment,
         string cashierId,
+        string cashierName,
         string deviceCode,
         DateTimeOffset recordedAt)
     {
@@ -744,7 +749,8 @@ public sealed class InstallmentService(
             deviceCode,
             payment.CardTransactions,
             payment.IdempotencyKey,
-            ReservationToken: null);
+            ReservationToken: null,
+            CashierName: cashierName);
     }
 
     private static string CreateInstallmentNumber(string storeCode, Guid installmentGuid)
@@ -935,40 +941,61 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
+        await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
+            installmentGuid,
+            cancellationToken);
         await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         var paymentGuidText = payment.PaymentGuid.ToString("D");
-        await db.Ado.BeginTranAsync();
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
         {
+            await InstallmentMutationLock.AcquireDatabaseAsync(db, installmentGuid);
+            var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
+                ?? throw new InvalidOperationException("Installment was not found.");
+            await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
+            if (lockedOrder.Status is (int)InstallmentStatus.PickedUp or (int)InstallmentStatus.Cancelled ||
+                lockedOrder.BalanceAmount <= 0m)
+            {
+                throw new InvalidOperationException("Installment cannot accept another payment.");
+            }
+
+            if (payment.Method != PaymentMethodKind.Cash && payment.Amount > lockedOrder.BalanceAmount)
+            {
+                throw new InvalidOperationException("Non-cash payment cannot exceed the current balance amount.");
+            }
+
+            var paymentToRecord = payment.Method == PaymentMethodKind.Cash
+                ? payment with { Amount = RoundCurrency(Math.Min(payment.Amount, lockedOrder.BalanceAmount)) }
+                : payment;
             var current = await GetDetailsInsideTransactionAsync(db, installmentGuid, cancellationToken)
                 ?? throw new InvalidOperationException("Installment was not found.");
             var existingPayment = await db.Queryable<InstallmentPaymentEntity>()
                 .AnyAsync(x => x.PaymentGuid == paymentGuidText, cancellationToken);
             if (!existingPayment)
             {
-                if (payment.Method == PaymentMethodKind.Voucher)
+                if (paymentToRecord.Method == PaymentMethodKind.Voucher)
                 {
                     // 补款用券同样通过 reservation claim 做一次性闸门。
                     await SqlSugarStoreVoucherReservationService.ClaimInsideTransactionAsync(
                         db,
-                        payment.ReservationToken ?? string.Empty,
+                        paymentToRecord.ReservationToken ?? string.Empty,
                         current.StoreCode,
-                        payment.Reference ?? string.Empty,
-                        payment.Amount,
-                        payment.PaymentGuid.ToString("D"),
-                        payment.RecordedAt,
+                        paymentToRecord.Reference ?? string.Empty,
+                        paymentToRecord.Amount,
+                        paymentToRecord.PaymentGuid.ToString("D"),
+                        paymentToRecord.RecordedAt,
                         cancellationToken);
                     await SqlSugarStoreVoucherRepository.RedeemInsideTransactionAsync(
                         db,
                         current.StoreCode,
-                        payment.Reference ?? string.Empty,
-                        payment.Amount,
-                        payment.CashierId,
+                        paymentToRecord.Reference ?? string.Empty,
+                        paymentToRecord.Amount,
+                        paymentToRecord.CashierId,
                         cancellationToken);
                 }
 
-                await db.Insertable(MapPayment(installmentGuid, payment)).ExecuteCommandAsync(cancellationToken);
+                await db.Insertable(MapPayment(installmentGuid, paymentToRecord)).ExecuteCommandAsync(cancellationToken);
             }
 
             var paidAmount = RoundCurrency(await db.Queryable<InstallmentPaymentEntity>()
@@ -1002,16 +1029,43 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
+        await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
+            installmentGuid,
+            cancellationToken);
         await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
-        await db.Updateable<InstallmentOrderEntity>()
-            .SetColumns(x => x.Status == (int)InstallmentStatus.PickedUp)
-            .SetColumns(x => x.PickedUpAt == pickedUpAt.UtcDateTime)
-            .SetColumns(x => x.PickedUpBy == pickedUpBy)
-            .SetColumns(x => x.PickupNote == note)
-            .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-            .Where(x => x.InstallmentGuid == installmentGuidText)
-            .ExecuteCommandAsync(cancellationToken);
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
+        try
+        {
+            await InstallmentMutationLock.AcquireDatabaseAsync(db, installmentGuid);
+            var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
+                ?? throw new InvalidOperationException("Installment was not found.");
+            await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
+            if (lockedOrder.Status != (int)InstallmentStatus.PickedUp)
+            {
+                if (lockedOrder.Status != (int)InstallmentStatus.PaidOff || lockedOrder.BalanceAmount != 0m)
+                {
+                    throw new InvalidOperationException("Installment must be paid off before pickup.");
+                }
+
+                await db.Updateable<InstallmentOrderEntity>()
+                    .SetColumns(x => x.Status == (int)InstallmentStatus.PickedUp)
+                    .SetColumns(x => x.PickedUpAt == pickedUpAt.UtcDateTime)
+                    .SetColumns(x => x.PickedUpBy == pickedUpBy)
+                    .SetColumns(x => x.PickupNote == note)
+                    .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
+                    .Where(x => x.InstallmentGuid == installmentGuidText)
+                    .ExecuteCommandAsync(cancellationToken);
+            }
+
+            await db.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await db.Ado.RollbackTranAsync();
+            throw;
+        }
+
         return await GetDetailsAsync(installmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
     }
@@ -1023,11 +1077,23 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
+        await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
+            installmentGuid,
+            cancellationToken);
         await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
-        await db.Ado.BeginTranAsync();
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
         {
+            await InstallmentMutationLock.AcquireDatabaseAsync(db, installmentGuid);
+            var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
+                ?? throw new InvalidOperationException("Installment was not found.");
+            await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
+            if (lockedOrder.Status != (int)InstallmentStatus.Active || lockedOrder.BalanceAmount <= 0m)
+            {
+                throw new InvalidOperationException("Only active unpaid installments can be cancelled.");
+            }
+
             foreach (var refund in refunds)
             {
                 var refundPaymentGuidText = refund.PaymentGuid.ToString("D");
@@ -1071,18 +1137,41 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
+        await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
+            installmentGuid,
+            cancellationToken);
         await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
-        await db.Updateable<InstallmentOrderEntity>()
-            .SetColumns(x => x.Status == (int)InstallmentStatus.Cancelled)
-            .SetColumns(x => x.CancellationKind == (int)cancellationInfo.Kind)
-            .SetColumns(x => x.CancelledAt == cancellationInfo.CancelledAt.UtcDateTime)
-            .SetColumns(x => x.CancelledBy == cancellationInfo.CancelledBy)
-            .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
-            .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
-            .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-            .Where(x => x.InstallmentGuid == installmentGuidText)
-            .ExecuteCommandAsync(cancellationToken);
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
+        try
+        {
+            await InstallmentMutationLock.AcquireDatabaseAsync(db, installmentGuid);
+            var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
+                ?? throw new InvalidOperationException("Installment was not found.");
+            await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
+            if (lockedOrder.Status != (int)InstallmentStatus.Active || lockedOrder.BalanceAmount <= 0m)
+            {
+                throw new InvalidOperationException("Only active unpaid installments can be voided.");
+            }
+
+            await db.Updateable<InstallmentOrderEntity>()
+                .SetColumns(x => x.Status == (int)InstallmentStatus.Cancelled)
+                .SetColumns(x => x.CancellationKind == (int)cancellationInfo.Kind)
+                .SetColumns(x => x.CancelledAt == cancellationInfo.CancelledAt.UtcDateTime)
+                .SetColumns(x => x.CancelledBy == cancellationInfo.CancelledBy)
+                .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
+                .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
+                .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
+                .Where(x => x.InstallmentGuid == installmentGuidText)
+                .ExecuteCommandAsync(cancellationToken);
+            await db.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await db.Ado.RollbackTranAsync();
+            throw;
+        }
+
         return await GetDetailsAsync(installmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
     }
@@ -1263,6 +1352,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             RecordedAt = payment.RecordedAt.UtcDateTime,
             CashierId = payment.CashierId,
             DeviceCode = payment.DeviceCode,
+            CashierName = payment.CashierName,
             CardTransactionsJson = payment.CardTransactions is null ? null : JsonSerializer.Serialize(payment.CardTransactions, JsonOptions),
             IdempotencyKey = payment.IdempotencyKey
         };
@@ -1362,7 +1452,9 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             payment.CashierId,
             payment.DeviceCode,
             cardTransactions,
-            payment.IdempotencyKey);
+            payment.IdempotencyKey,
+            ReservationToken: null,
+            CashierName: payment.CashierName);
     }
 
     private static DateTimeOffset ToDateTimeOffset(DateTime value)
@@ -1504,6 +1596,9 @@ public sealed class InstallmentPaymentEntity
 
     [SugarColumn(Length = 50)]
     public string CashierId { get; set; } = string.Empty;
+
+    [SugarColumn(Length = 100, IsNullable = true)]
+    public string? CashierName { get; set; }
 
     [SugarColumn(Length = 50)]
     public string DeviceCode { get; set; } = string.Empty;

@@ -105,6 +105,8 @@ export type PaymentCheckoutPresentation = Readonly<{
 export type PaymentPresenterState = Readonly<{
   phase: PaymentUiPhase;
   busy: boolean;
+  /** Square 后台轮询单独公开，避免把全局 busy 语义扩散到其他支付动作。 */
+  recoveryInFlight?: boolean;
   initialized: boolean;
   providers: readonly PaymentProviderAvailability[];
   selectedMethod: PaymentUiMethod | null;
@@ -144,7 +146,7 @@ export interface PaymentScreenPresenter {
   setVoucherCode(value: string): void;
   dismissError(): void;
   submitSelected(): Promise<boolean>;
-  recover(): Promise<boolean>;
+  recover(options?: PaymentRecoverOptions): Promise<boolean>;
   cancel(): Promise<boolean>;
   removeTender(tenderGuid: string): Promise<boolean>;
   sendLinklyKey(key: LinklySafeOperatorKey): Promise<boolean>;
@@ -160,6 +162,10 @@ export interface PaymentScreenPresenter {
 
 export type PaymentConfirmOptions = Readonly<{
   acknowledgeFullInstallmentPayment?: boolean;
+}>;
+
+export type PaymentRecoverOptions = Readonly<{
+  background?: boolean;
 }>;
 
 export type PaymentCheckoutEntryContext = Readonly<{
@@ -255,6 +261,7 @@ export class PaymentPresenter {
     this.state = {
       phase: "loading",
       busy: false,
+      recoveryInFlight: false,
       initialized: false,
       providers,
       selectedMethod,
@@ -517,7 +524,7 @@ export class PaymentPresenter {
     });
   }
 
-  public recover(): Promise<boolean> {
+  public recover(options: PaymentRecoverOptions = {}): Promise<boolean> {
     const orderGuid = this.state.orderGuid;
     const tenderReversalRecovery = this.state.tenderReversalRecovery;
     const retryTenderReversal =
@@ -533,10 +540,12 @@ export class PaymentPresenter {
       return Promise.resolve(false);
     }
     return this.runExclusive(async (revision) => {
-      this.patchIfCurrent(revision, {
-        phase: "submitting",
-        runtimeErrorCode: null,
-      });
+      if (!options.background) {
+        this.patchIfCurrent(revision, {
+          phase: "submitting",
+          runtimeErrorCode: null,
+        });
+      }
       const snapshot = tenderReversalRecovery
         ? await retryTenderReversal!({
             orderGuid,
@@ -551,7 +560,7 @@ export class PaymentPresenter {
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
       return snapshot.status === "completed" || snapshot.status === "partial";
-    });
+    }, { background: options.background === true });
   }
 
   public cancel(): Promise<boolean> {
@@ -754,11 +763,16 @@ export class PaymentPresenter {
 
   private runExclusive(
     operation: (revision: number) => Promise<boolean>,
+    options: Readonly<{ background?: boolean }> = {},
   ): Promise<boolean> {
     if (this.destroyed) return Promise.resolve(false);
     if (this.actionInFlight) return this.actionInFlight;
     const revision = ++this.lifecycleRevision;
-    this.patch({ busy: true });
+    if (options.background) {
+      this.patch({ recoveryInFlight: true });
+    } else {
+      this.patch({ busy: true });
+    }
     const pending = Promise.resolve()
       .then(() => operation(revision))
       .catch((error: unknown) => {
@@ -772,7 +786,13 @@ export class PaymentPresenter {
       .finally(() => {
         if (this.actionInFlight === pending) {
           this.actionInFlight = null;
-          if (this.isCurrent(revision)) this.patch({ busy: false });
+          if (this.isCurrent(revision)) {
+            this.patch(
+              options.background
+                ? { recoveryInFlight: false }
+                : { busy: false },
+            );
+          }
         }
       });
     this.actionInFlight = pending;

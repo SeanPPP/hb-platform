@@ -228,6 +228,107 @@ export class SqliteInstallmentActionStore
     );
   }
 
+  public async finalizeCreatedFailure(
+    input: Parameters<
+      NonNullable<InstallmentActionStorePort["finalizeCreatedFailure"]>
+    >[0],
+  ): Promise<void> {
+    if (
+      input.reason !== "ClaimBusy" &&
+      input.reason !== "ClaimMismatch" &&
+      input.reason !== "ClaimReleased"
+    ) {
+      throw new TypeError("Installment created failure reason is invalid.");
+    }
+    const scope = normalizeTerminal(input.terminal);
+    const actionId = uuid(input.actionId, "installment action ID");
+    const timestamp = strictIso(
+      this.nowIso(),
+      "installment action resolution time",
+    );
+    await this.connection.withExclusiveTransaction(
+      async (transaction) => {
+        const current = await this.requireBlocking(
+          transaction,
+          scope,
+          actionId,
+        );
+        if (current.state !== "Created") {
+          throw new Error(
+            "Installment created failure state CAS failed.",
+          );
+        }
+
+        // 中文注释：既有 schema 只允许 ProviderPending 被 Declined。两次写入处于
+        // 同一 BEGIN IMMEDIATE 事务，外部永远观察不到 ProviderPending 中间态；
+        // 此路径也从未绑定或调用 provider，只用于保留不可删除的终态事实。
+        const transitioned = await transaction.run(
+          `UPDATE installment_actions
+           SET state = 'ProviderPending', updated_at_iso = ?
+           WHERE action_id = ? AND store_code = ? AND device_code = ?
+             AND state = 'Created' AND resolution IS NULL`,
+          [
+            timestamp,
+            actionId,
+            scope.storeCode,
+            scope.deviceCode,
+          ],
+        );
+        if (transitioned.changes !== 1) {
+          throw new Error(
+            "Installment created failure state CAS failed.",
+          );
+        }
+        const resolved = await transaction.run(
+          `UPDATE installment_actions
+           SET resolution = 'Declined', resolved_at_iso = ?, updated_at_iso = ?
+           WHERE action_id = ? AND store_code = ? AND device_code = ?
+             AND state = 'ProviderPending' AND resolution IS NULL`,
+          [
+            timestamp,
+            timestamp,
+            actionId,
+            scope.storeCode,
+            scope.deviceCode,
+          ],
+        );
+        if (resolved.changes !== 1) {
+          throw new Error(
+            "Installment created failure resolution CAS failed.",
+          );
+        }
+
+        if (input.reason === "ClaimMismatch") {
+          const audit = await transaction.run(
+            `INSERT INTO audit_events (
+               event_id, event_type, occurred_at_iso, order_guid,
+               correlation_id, payload_json, uploaded_at_iso,
+               scope_store_code, scope_device_code, external_order_guid
+             ) VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, NULL)`,
+            [
+              actionId,
+              "INSTALLMENT_REPAYMENT_CLAIM_REVIEW",
+              timestamp,
+              actionId,
+              JSON.stringify({
+                outcome: "RequiresReview",
+                reason: "Repayment claim provider binding mismatch.",
+                status: "Failed",
+              }),
+              scope.storeCode,
+              scope.deviceCode,
+            ],
+          );
+          if (audit.changes !== 1) {
+            throw new Error(
+              "Installment claim review audit write failed.",
+            );
+          }
+        }
+      },
+    );
+  }
+
   public complete(
     input: Parameters<InstallmentActionStorePort["complete"]>[0],
   ): Promise<void> {
@@ -583,18 +684,21 @@ function normalizeCommand(
         : {}),
     });
   }
-  if (
-    !exact(value, [
-      "deviceCode",
-      "cashierId",
-      "cashierName",
-      "kind",
-      "installmentGuid",
-      "cancelledAtIso",
-      "reason",
-      "idempotencyKey",
-    ])
-  ) {
+  const legacyKeys = [
+    "deviceCode",
+    "cashierId",
+    "cashierName",
+    "kind",
+    "installmentGuid",
+    "cancelledAtIso",
+    "reason",
+    "idempotencyKey",
+  ] as const;
+  const hasRefundPlanFingerprint = exact(value, [
+    ...legacyKeys,
+    "refundPlanFingerprint",
+  ]);
+  if (!exact(value, legacyKeys) && !hasRefundPlanFingerprint) {
     throw new TypeError("Installment cancel command is invalid.");
   }
   const idempotencyKey = uuid(value.idempotencyKey, "idempotency key");
@@ -608,6 +712,14 @@ function normalizeCommand(
     cancelledAtIso: strictIso(value.cancelledAtIso, "cancellation time"),
     reason: nullableConfidential(value.reason, "reason", 1_000),
     idempotencyKey,
+    ...(hasRefundPlanFingerprint
+      ? {
+          refundPlanFingerprint: sha256Fingerprint(
+            value.refundPlanFingerprint,
+            "refund plan fingerprint",
+          ),
+        }
+      : {}),
   });
 }
 
@@ -938,6 +1050,16 @@ function strictIso(value: unknown, label: string): string {
     typeof value !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
     new Date(value).toISOString() !== value
+  ) {
+    throw new TypeError(`Installment ${label} is invalid.`);
+  }
+  return value;
+}
+
+function sha256Fingerprint(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(value)
   ) {
     throw new TypeError(`Installment ${label} is invalid.`);
   }
