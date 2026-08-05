@@ -112,6 +112,16 @@ const copy: Record<"en" | "zh", LoginCopy> = {
   },
 };
 
+export type CashierLoginVersionInfo = Readonly<{
+  runtimeVersion: string;
+  otaVersion: string;
+}>;
+
+const DEFAULT_VERSION_INFO: CashierLoginVersionInfo = Object.freeze({
+  runtimeVersion: "unknown",
+  otaVersion: "embedded",
+});
+
 export function CashierLoginScreen({
   controller,
   language = "zh",
@@ -119,6 +129,7 @@ export function CashierLoginScreen({
   onSwitchLanguage,
   onSuccess,
   runtime,
+  versionInfo = DEFAULT_VERSION_INFO,
 }: Readonly<{
   controller?: CashierLoginController;
   language?: string;
@@ -126,6 +137,7 @@ export function CashierLoginScreen({
   onSwitchLanguage?: () => void;
   onSuccess(): void;
   runtime: CashierLoginRuntime;
+  versionInfo?: CashierLoginVersionInfo;
 }>) {
   const store = useCashierLoginStore;
   const defaultController = useMemo(
@@ -260,7 +272,7 @@ export function CashierLoginScreen({
         language={locale}
         {...(onSwitchLanguage ? { onSwitchLanguage } : {})}
       />
-      <View style={styles.page}>
+      <View style={styles.page} testID="cashier-login-page">
         <View style={styles.contextPanel}>
           <View style={styles.brandMark}>
             <Text style={styles.brandLetters}>HB</Text>
@@ -378,6 +390,15 @@ export function CashierLoginScreen({
             <Text style={styles.offlineText}>{text.offline}</Text>
           </View>
         </PosKeyboardAwareScrollView>
+        <Text
+          numberOfLines={1}
+          pointerEvents="none"
+          selectable={false}
+          style={styles.versionInfo}
+          testID="cashier-login-version-info"
+        >
+          {`Runtime: ${versionInfo.runtimeVersion} · OTA: ${versionInfo.otaVersion}`}
+        </Text>
       </View>
     </SafeAreaView>
   );
@@ -431,7 +452,12 @@ function errorText(error: unknown, text: LoginCopy): string {
 
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: posColors.canvas, flex: 1 },
-  page: { flex: 1, flexDirection: "row", gap: 28, padding: 34 },
+  page: {
+    flex: 1,
+    flexDirection: "row",
+    gap: 28,
+    padding: 34,
+  },
   contextPanel: {
     backgroundColor: posColors.ink,
     flex: 1.12,
@@ -559,5 +585,13 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     lineHeight: 20,
+  },
+  versionInfo: {
+    bottom: 20,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    position: "absolute",
+    right: 84,
+    textAlign: "right",
   },
 });

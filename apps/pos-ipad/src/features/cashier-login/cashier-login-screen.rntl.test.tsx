@@ -11,6 +11,7 @@ import { CashierLoginScreen } from "./cashier-login-screen";
 
 import { HbposApiError } from "@/core/api/hbpos-api";
 import type { PosCashierSummary } from "@/core/runtime/production-pos-service-composition";
+import { posColors } from "@/ui/theme";
 
 let mockStatusStripProps: any;
 
@@ -49,6 +50,35 @@ function cashier(): PosCashierSummary {
 function store(): CashierLoginStorePort {
   return { clearActiveCashier: jest.fn(), setActiveCashier: jest.fn() };
 }
+
+test("登录页右下角以弱提示单行显示 Runtime 和 OTA 版本且不可交互", async () => {
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+      versionInfo={{ runtimeVersion: "0.2.0", otaVersion: "a1b2c3d4" }}
+    />,
+  );
+
+  const versionInfo = screen.getByTestId("cashier-login-version-info");
+  expect(versionInfo.props.children).toBe("Runtime: 0.2.0 · OTA: a1b2c3d4");
+  expect(versionInfo.props.numberOfLines).toBe(1);
+  expect(versionInfo.props.pointerEvents).toBe("none");
+  expect(versionInfo.props.selectable).toBe(false);
+  expect(versionInfo.props.accessible).toBeUndefined();
+  expect(StyleSheet.flatten(versionInfo.props.style)).toMatchObject({
+    bottom: 20,
+    color: posColors.mutedInk,
+    position: "absolute",
+    right: 84,
+  });
+  const pageStyle = StyleSheet.flatten(
+    screen.getByTestId("cashier-login-page").props.style,
+  );
+  expect(pageStyle).toMatchObject({ padding: 34 });
+  expect(pageStyle).not.toHaveProperty("paddingBottom");
+});
 
 test("登录屏把当前语言和切换回调传给状态条", async () => {
   const onSwitchLanguage = jest.fn();

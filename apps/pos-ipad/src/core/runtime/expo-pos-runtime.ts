@@ -137,6 +137,12 @@ type HbposExtraConfig = Readonly<{
   payments?: PosPaymentPublicExtra;
 }>;
 
+export type ExpoPosUpdateIdentity = Readonly<{
+  runtimeVersion: string;
+  updateId: string | null;
+  isEmbeddedLaunch: boolean;
+}>;
+
 export type ExpoPosRuntimeServices = PosRuntimeServices &
   ProductionPosRuntimeServices &
   Readonly<{
@@ -149,6 +155,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     serverConnection: PreloginServerConnectionControl;
     scanner: Readonly<{ router: HidScannerRouter }>;
     applicationLog: ApplicationLogRuntime;
+    updateIdentity: ExpoPosUpdateIdentity;
   }>;
 
 type ExpoSettingsDevicePresentation = Readonly<{
@@ -542,6 +549,11 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       Updates.runtimeVersion,
       appVersion,
     );
+    const updateIdentity = Object.freeze({
+      runtimeVersion,
+      updateId: Updates.updateId,
+      isEmbeddedLaunch: Updates.isEmbeddedLaunch,
+    });
     let appUpdateSafety:
       | ProductionPosRuntimeServices["appUpdateSafety"]
       | null = null;
@@ -904,6 +916,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       }),
       scanner: Object.freeze({ router: scannerRouter }),
       applicationLog: activeApplicationLog,
+      updateIdentity,
       shutdown: async () => {
         // 先覆盖公共外屏，再与 401/403/手动锁屏使用同一可信桥撤销可信会话。
         if (services.customerDisplay.status === "available") {

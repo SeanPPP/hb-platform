@@ -2,8 +2,10 @@ import { router, type Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import type { ExpoPosUpdateIdentity } from "@/core/runtime/expo-pos-runtime";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
+  type CashierLoginVersionInfo,
   CashierLoginController,
   CashierLoginScreen,
   useCashierLoginStore,
@@ -13,6 +15,9 @@ import { RouteHidScannerCapture } from "@/ui/scanner/scanner-route-bridge";
 
 export default function LoginRoute() {
   const runtime = usePosRuntime();
+  const versionInfo = toCashierLoginVersionInfo(
+    runtime.services?.updateIdentity,
+  );
   const { i18n } = useTranslation();
   const scanInFlight = useRef(false);
   // 可见条码框会 autoFocus，首帧先禁用隐藏输入，避免两者竞争焦点。
@@ -86,7 +91,22 @@ export default function LoginRoute() {
         onSuccess={() => router.replace("/sales" as Href)}
         // 登录屏幕只得到受限 runtime facade；不从路由注入门店、设备或授权票据。
         runtime={runtime}
+        versionInfo={versionInfo}
       />
     </>
   );
+}
+
+function toCashierLoginVersionInfo(
+  identity: ExpoPosUpdateIdentity | null | undefined,
+): CashierLoginVersionInfo {
+  const runtimeVersion = identity?.runtimeVersion.trim() || "unknown";
+  const updateId = identity?.updateId?.trim().toLowerCase();
+  return Object.freeze({
+    runtimeVersion,
+    otaVersion:
+      identity?.isEmbeddedLaunch === false && updateId
+        ? updateId.slice(0, 8)
+        : "embedded",
+  });
 }

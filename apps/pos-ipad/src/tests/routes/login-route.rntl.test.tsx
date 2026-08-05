@@ -58,7 +58,14 @@ jest.mock("@/ui/scanner/scanner-route-bridge", () => {
 test("登录路由只传受限 runtime facade，成功后替换为销售页", async () => {
   mockRuntime = {
     state: { phase: "ready", device: "authorized-online" },
-    services: { cashierSession: { signIn: jest.fn() } },
+    services: {
+      cashierSession: { signIn: jest.fn() },
+      updateIdentity: {
+        runtimeVersion: "0.2.0",
+        updateId: "A1B2C3D4-E5F6-7890",
+        isEmbeddedLaunch: false,
+      },
+    },
   };
   mockRouteCaptureProps = null;
   mockScreenProps = null;
@@ -71,6 +78,7 @@ test("登录路由只传受限 runtime facade，成功后替换为销售页", as
   expect(mockScreenProps).toMatchObject({
     language: "en",
     runtime: mockRuntime,
+    versionInfo: { runtimeVersion: "0.2.0", otaVersion: "a1b2c3d4" },
   });
   expect(mockScreenProps).not.toHaveProperty("storeCode");
   expect(mockScreenProps).not.toHaveProperty("deviceCode");
@@ -89,6 +97,53 @@ test("登录路由只传受限 runtime facade，成功后替换为销售页", as
 
   mockScreenProps.onSuccess();
   expect(mockRouterReplace).toHaveBeenCalledWith("/sales");
+});
+
+test.each([
+  {
+    name: "embedded launch",
+    identity: {
+      runtimeVersion: "0.2.0",
+      updateId: "A1B2C3D4-E5F6-7890",
+      isEmbeddedLaunch: true,
+    },
+  },
+  {
+    name: "缺少 update id",
+    identity: {
+      runtimeVersion: "0.2.0",
+      updateId: null,
+      isEmbeddedLaunch: false,
+    },
+  },
+])("$name 时 OTA 显示 embedded", async ({ identity }) => {
+  mockRuntime = {
+    state: { phase: "ready", device: "authorized-online" },
+    services: { updateIdentity: identity },
+  };
+  mockScreenProps = null;
+  const screen = await render(<LoginRoute />);
+
+  expect(mockScreenProps.versionInfo).toEqual({
+    runtimeVersion: "0.2.0",
+    otaVersion: "embedded",
+  });
+  await screen.unmount();
+});
+
+test("更新身份缺失时 Runtime 回退 unknown 且 OTA 显示 embedded", async () => {
+  mockRuntime = {
+    state: { phase: "starting", device: "unknown" },
+    services: null,
+  };
+  mockScreenProps = null;
+  const screen = await render(<LoginRoute />);
+
+  expect(mockScreenProps.versionInfo).toEqual({
+    runtimeVersion: "unknown",
+    otaVersion: "embedded",
+  });
+  await screen.unmount();
 });
 
 test("可见输入失焦后延迟恢复 HID，快速重新聚焦会取消恢复", async () => {
