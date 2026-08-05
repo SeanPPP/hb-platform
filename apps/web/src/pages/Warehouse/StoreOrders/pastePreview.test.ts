@@ -453,6 +453,65 @@ async function main() {
   })
   if (optimisticInnerQuantityFailure) failures.push(optimisticInnerQuantityFailure)
 
+  const optimisticOrderInnerQuantityFailure = await runTest('订货数量按 inner 的预览、提交和乐观行应保持一致', () => {
+    const parsedRows = parseStoreOrderPasteRows('HB-INNER\t2', {
+      itemNumber: 0,
+      quantity: 1,
+      price: -1,
+    }, 'inner')
+    const preview = createPastePreviewItems(
+      parsedRows,
+      [
+        {
+          lookupCode: 'HB-INNER',
+          product: {
+            productCode: 'P-INNER',
+            itemNumber: 'HB-INNER',
+            productName: 'Inner Product',
+            minOrderQuantity: 12,
+            stockQuantity: 0,
+            isInStock: false,
+          },
+        },
+      ],
+      [
+        {
+          productCode: 'P-INNER',
+          quantity: 3,
+          allocQuantity: 5,
+        },
+      ],
+    )
+    const rows = buildPasteOptimisticRows({
+      currentItems: [
+        {
+          detailGUID: 'detail-inner',
+          productCode: 'P-INNER',
+          itemNumber: 'HB-INNER',
+          productName: 'Inner Product',
+          quantity: 3,
+          allocQuantity: 5,
+          price: 9,
+          amount: 27,
+          importPrice: 1,
+          importAmount: 5,
+          minOrderQuantity: 12,
+          isActive: true,
+        },
+      ],
+      previewItems: preview,
+      targetField: 'quantity',
+      quantityMode: 'inner',
+    })
+    const [submitItem] = buildPasteSubmitItems(preview, { quantityMode: 'inner' })
+
+    assertEqual(submitItem.quantity, 24, '提交订货数量应使用 Excel 数量乘中包数')
+    assertEqual(formatPastePreviewQuantity(preview[0], 'inner'), submitItem.quantity, '预览订货数量应和提交 payload 一致')
+    assertEqual(rows[0].quantity, submitItem.quantity, '乐观行订货数量应和提交 payload 一致')
+    assertEqual(rows[0].allocQuantity, 5, '写入订货数量时不应改发货数量')
+  })
+  if (optimisticOrderInnerQuantityFailure) failures.push(optimisticOrderInnerQuantityFailure)
+
   const optimisticDetailTotalsFailure = await runTest('乐观预览只替换表格行不覆盖服务器整单合计', () => {
     const originalDetail: StoreOrderDetail = {
       orderGUID: 'order-1',
@@ -547,21 +606,25 @@ async function main() {
   })
   if (detailUiFailure) failures.push(detailUiFailure)
 
-  const innerTargetUiFailure = await runTest('详情页应提供发货数量按 inner 写入目标并映射回后端发货字段', () => {
-    assert(detailSource.includes("type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'"), '详情页应使用本地 UI 写入目标扩展 inner 选项')
+  const innerTargetUiFailure = await runTest('详情页应提供按 inner 写入目标并映射回对应后端字段', () => {
+    assert(detailSource.includes("type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner' | 'quantityByInner'"), '详情页应使用本地 UI 写入目标扩展两种 inner 选项')
     assert(detailSource.includes('resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField'), '详情页应把 UI 写入目标转换成后端目标字段')
-    assert(detailSource.includes("writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget"), 'inner 写入目标应映射为后端 allocQuantity')
-    assert(detailSource.includes("writeTarget === 'allocQuantityByInner' ? 'inner' : 'direct'"), 'inner 写入目标应启用提交数量换算')
+    assert(detailSource.includes("writeTarget === 'allocQuantityByInner'\n    ? 'allocQuantity'\n    : writeTarget === 'quantityByInner'\n      ? 'quantity'"), '两种 inner 写入目标应映射为对应后端字段')
+    assert(detailSource.includes("writeTarget === 'allocQuantityByInner' || writeTarget === 'quantityByInner' ? 'inner' : 'direct'"), '两种 inner 写入目标应启用提交数量换算')
     assert(detailSource.includes('<Radio value="allocQuantityByInner">'), '弹窗写入目标应展示按 inner 的发货数量选项')
+    assert(detailSource.includes('<Radio value="quantityByInner">'), '弹窗写入目标应在现有选项后展示按 inner 的订货数量选项')
     assert(detailSource.includes("t('storeOrders.detail.allocQuantityByInnerHelp')"), '按 inner 选项应有友好说明')
+    assert(detailSource.includes("t('storeOrders.detail.orderQuantityByInnerHelp')"), '订货数量按 inner 选项应有独立说明')
   })
   if (innerTargetUiFailure) failures.push(innerTargetUiFailure)
 
   const defaultQuantityCopyFailure = await runTest('中英文粘贴文案应说明普通空数量写入 0 且 inner 空数量默认 1', () => {
     assert(zhLocaleSource.includes('数量列为空写入 0'), '中文文案应说明普通空数量写入 0')
     assert(zhLocaleSource.includes('数量列为空时按 1 再乘商品中包数'), '中文文案应说明 inner 空数量默认 1 后换算')
+    assert(zhLocaleSource.includes('结果写入订货数量'), '中文文案应说明订货数量按 inner 的写入字段')
     assert(enLocaleSource.includes('blank cells in the quantity column write 0'), '英文文案应说明 blank cells write 0')
     assert(enLocaleSource.includes('default to 1 before multiplying'), '英文文案应说明 inner blank cells default to 1 before multiplying')
+    assert(enLocaleSource.includes('result is written to order quantity'), '英文文案应说明订货数量按 inner 的写入字段')
   })
   if (defaultQuantityCopyFailure) failures.push(defaultQuantityCopyFailure)
 

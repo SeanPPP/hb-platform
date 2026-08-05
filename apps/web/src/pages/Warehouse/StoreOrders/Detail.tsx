@@ -161,7 +161,7 @@ function formatCurrencyAmount(value?: number) {
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
-type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'
+type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner' | 'quantityByInner'
 type BatchEditType = 'allocQuantity' | 'importPrice' | 'status' | 'copyOrderQuantityToAllocQuantity'
 type StoreOrderDetailTextFilterKey = 'itemNumber' | 'productName' | 'barcode' | 'locationCode'
 type StoreOrderDetailNumberFilterKey =
@@ -194,11 +194,16 @@ function isStoreOrderDetailSortField(field: unknown): field is StoreOrderDetailS
 }
 
 function resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField {
-  return writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget
+  // inner 仅影响 Excel 数量换算；提交接口仍使用既有的订货或发货字段。
+  return writeTarget === 'allocQuantityByInner'
+    ? 'allocQuantity'
+    : writeTarget === 'quantityByInner'
+      ? 'quantity'
+      : writeTarget
 }
 
 function resolvePasteQuantityMode(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteQuantityMode {
-  return writeTarget === 'allocQuantityByInner' ? 'inner' : 'direct'
+  return writeTarget === 'allocQuantityByInner' || writeTarget === 'quantityByInner' ? 'inner' : 'direct'
 }
 
 interface EditedLinePayload {
@@ -3568,11 +3573,14 @@ export default function StoreOrderDetailPage() {
                       <Radio value="allocQuantity">{t('storeOrders.detail.allocQuantityDefault')}</Radio>
                       <Radio value="allocQuantityByInner">{t('storeOrders.detail.allocQuantityByInner')}</Radio>
                       <Radio value="quantity">{t('storeOrders.detail.orderQuantity')}</Radio>
+                      <Radio value="quantityByInner">{t('storeOrders.detail.orderQuantityByInner')}</Radio>
                     </Radio.Group>
                   </div>
                   <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
                     {pasteTargetField === 'allocQuantityByInner'
                       ? t('storeOrders.detail.allocQuantityByInnerHelp')
+                      : pasteTargetField === 'quantityByInner'
+                        ? t('storeOrders.detail.orderQuantityByInnerHelp')
                       : t('storeOrders.detail.writeTargetHelp')}
                   </Typography.Text>
                 </div>
