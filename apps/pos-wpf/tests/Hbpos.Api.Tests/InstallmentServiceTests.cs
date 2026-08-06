@@ -267,6 +267,25 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
+    public async Task Confirm_pickup_rejects_same_device_idempotency_key_without_operation_guid()
+    {
+        var service = CreateService();
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 50m, downPaymentAmount: 50m),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ConfirmPickupAsync(
+                CreatePickup(created.InstallmentGuid) with
+                {
+                    IdempotencyKey = $"{created.InstallmentGuid:D}:pickup"
+                },
+                CancellationToken.None));
+
+        Assert.Contains("provided together", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Confirm_pickup_allows_enabled_same_store_cross_device_with_operation_identity()
     {
         var service = new InstallmentService(
@@ -747,6 +766,54 @@ public sealed class InstallmentServiceTests
         Assert.Equal(20m, response.Details.PaidAmount);
         Assert.Single(response.Details.Payments);
         Assert.True(duplicate.AlreadyVoided);
+    }
+
+    [Fact]
+    public async Task Void_allows_legacy_same_device_request_with_idempotency_key_only()
+    {
+        var service = CreateService();
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 80m, downPaymentAmount: 20m),
+            CancellationToken.None);
+
+        var response = await service.VoidAsync(
+            CreateVoid(created.InstallmentGuid) with
+            {
+                OperationGuid = Guid.Empty,
+                IdempotencyKey = $"{created.InstallmentGuid:D}:void"
+            },
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.Cancelled, response.Status);
+        Assert.Equal(InstallmentCancellationKind.VoidCancel, response.Details.CancellationInfo?.Kind);
+    }
+
+    [Fact]
+    public async Task Void_rejects_incomplete_lifecycle_identity_outside_legacy_same_device_key_only()
+    {
+        var service = new InstallmentService(
+            new InMemoryInstallmentRepository(),
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { VoidEnabled = true }));
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 80m, downPaymentAmount: 20m),
+            CancellationToken.None);
+
+        var crossDeviceKeyOnly = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.VoidAsync(
+                CreateVoid(created.InstallmentGuid) with
+                {
+                    DeviceCode = "POS02",
+                    IdempotencyKey = $"{created.InstallmentGuid:D}:void"
+                },
+                CancellationToken.None));
+        var sameDeviceGuidOnly = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.VoidAsync(
+                CreateVoid(created.InstallmentGuid) with { OperationGuid = Guid.NewGuid() },
+                CancellationToken.None));
+
+        Assert.Contains("provided together", crossDeviceKeyOnly.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("provided together", sameDeviceGuidOnly.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -612,6 +612,16 @@ public sealed class InstallmentService(
         var hasIdempotencyKey = !string.IsNullOrWhiteSpace(idempotencyKey);
         if (hasOperationGuid != hasIdempotencyKey)
         {
+            // 旧版同机作废客户端只发送 idempotencyKey；继续走原有非生命周期操作路径，
+            // 跨设备请求及仅发送 operationGuid 的请求仍必须提供完整操作身份。
+            if (string.Equals(action, "void", StringComparison.Ordinal) &&
+                !crossDevice &&
+                !hasOperationGuid &&
+                hasIdempotencyKey)
+            {
+                return null;
+            }
+
             throw new InvalidOperationException("Lifecycle operationGuid and idempotencyKey must be provided together.");
         }
 
