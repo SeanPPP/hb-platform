@@ -21,6 +21,8 @@ public interface IConfirmationDialogService
 
     Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync();
 
+    Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate);
+
     Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,
         int batchCount,
@@ -182,6 +184,14 @@ public sealed class WpfConfirmationDialogService :
             "payment.installment.confirmPickupAfterPaidOff.message",
             "common.confirm",
             isDestructive: false);
+
+    public Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate) =>
+        ShowAsync(
+            "dailyClose.linklySettlement.confirm.title",
+            "dailyClose.linklySettlement.confirm.message",
+            "dailyClose.linklySettlement.settleAndPrint",
+            isDestructive: true,
+            messageFormatArguments: [businessDate]);
 
     public Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,

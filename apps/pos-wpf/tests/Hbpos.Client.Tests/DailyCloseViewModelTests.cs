@@ -278,7 +278,8 @@ public sealed class DailyCloseViewModelTests
             new FakeDailyClosePrintService(),
             CreateSession(),
             operationAuditLogger: logger,
-            linklySettlementService: settlementService);
+            linklySettlementService: settlementService,
+            confirmLinklySettlementAsync: _ => Task.FromResult(true));
 
         await viewModel.LoadAsync();
         await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
@@ -318,7 +319,8 @@ public sealed class DailyCloseViewModelTests
             new FakeDailyClosePrintService(),
             CreateSession(),
             operationAuditLogger: logger,
-            linklySettlementService: settlementService);
+            linklySettlementService: settlementService,
+            confirmLinklySettlementAsync: _ => Task.FromResult(true));
 
         await viewModel.LoadAsync();
         await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
@@ -327,6 +329,24 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal("LINKLY_SETTLEMENT", auditEvent.OperationType);
         Assert.Equal("Failed", auditEvent.Outcome);
         Assert.Equal("SETTLEMENT_BLOCKED", auditEvent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task Linkly_settlement_cancelled_at_confirmation_does_not_submit()
+    {
+        var settlementService = new FakeLinklySettlementService();
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            linklySettlementService: settlementService,
+            confirmLinklySettlementAsync: _ => Task.FromResult(false));
+
+        await viewModel.LoadAsync();
+        await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, settlementService.SettleCallCount);
+        Assert.False(viewModel.IsBusy);
     }
 
     [Fact]

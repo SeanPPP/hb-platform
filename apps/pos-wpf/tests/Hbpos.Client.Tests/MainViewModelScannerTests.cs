@@ -6826,6 +6826,11 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult(ConfirmInstallmentPickupAfterPaidOffResult);
         }
 
+        public Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate)
+        {
+            return Task.FromResult(false);
+        }
+
         public Task<bool> ConfirmOrderDateRangeReuploadAsync(
             int orderCount,
             int batchCount,

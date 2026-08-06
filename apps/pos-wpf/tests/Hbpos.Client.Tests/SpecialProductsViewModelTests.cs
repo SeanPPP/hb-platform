@@ -837,6 +837,92 @@ public sealed class SpecialProductsViewModelTests
     }
 
     [Fact]
+    public async Task Online_add_successfully_clears_scanned_candidate_without_researching()
+    {
+        var existingItem = CreateItem("SKU-001", "Existing", "930001", isSpecialProduct: true);
+        var scannedItem = CreateItem("SKU-002", "Scanned", "930002");
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            LoadResult = new SpecialProductsLoadResult("S001", [existingItem]),
+            SearchItems = [scannedItem],
+            MarkResultFactory = (_, _, isSpecialProduct) => new SpecialProductsMutationWorkflowResult(
+                "S001",
+                scannedItem.ProductCode,
+                isSpecialProduct,
+                [existingItem, scannedItem with { IsSpecialProduct = true }])
+        };
+        var viewModel = CreateViewModel(workflow: workflow);
+        await viewModel.LoadAsync();
+        viewModel.ToggleEditModeCommand.Execute(null);
+        viewModel.SearchText = scannedItem.LookupCode;
+        await viewModel.SearchCommand.ExecuteAsync(null);
+
+        await viewModel.AddSpecialProductCommand.ExecuteAsync(scannedItem);
+
+        Assert.Contains(viewModel.SpecialItems, item => item.ProductCode == scannedItem.ProductCode && item.IsSpecialProduct);
+        Assert.Empty(viewModel.SearchResults);
+        Assert.Null(viewModel.SelectedSearchResult);
+        Assert.Equal(string.Empty, viewModel.SearchText);
+        Assert.Equal(1, workflow.SearchCallCount);
+        Assert.Contains("Scanned is now a special product.", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Failed_add_preserves_special_selection_and_scanned_candidate_with_error_status()
+    {
+        var existingItem = CreateItem("SKU-001", "Existing", "930001", isSpecialProduct: true);
+        var scannedItem = CreateItem("SKU-002", "Scanned", "930002");
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            LoadResult = new SpecialProductsLoadResult("S001", [existingItem]),
+            SearchItems = [scannedItem],
+            MarkAsyncOverride = (_, _) => Task.FromException<SpecialProductsMutationWorkflowResult>(
+                new InvalidOperationException("network unavailable"))
+        };
+        var viewModel = CreateViewModel(workflow: workflow);
+        await viewModel.LoadAsync();
+        viewModel.ToggleEditModeCommand.Execute(null);
+        viewModel.SpecialItemCardCommand.Execute(existingItem);
+        viewModel.SearchText = scannedItem.LookupCode;
+        await viewModel.SearchCommand.ExecuteAsync(null);
+
+        await viewModel.AddSpecialProductCommand.ExecuteAsync(scannedItem);
+
+        Assert.Equal(existingItem.ProductCode, Assert.Single(viewModel.SpecialItems).ProductCode);
+        Assert.Equal(existingItem.ProductCode, viewModel.SelectedSpecialItem?.ProductCode);
+        Assert.Equal(scannedItem.LookupCode, viewModel.SearchText);
+        Assert.Equal(scannedItem.ProductCode, Assert.Single(viewModel.SearchResults).ProductCode);
+        Assert.Equal(scannedItem.ProductCode, viewModel.SelectedSearchResult?.ProductCode);
+        Assert.Contains("network unavailable", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Failed_remove_preserves_special_list_page_and_selection_with_error_status()
+    {
+        var specialItems = CreateSpecialItems(2);
+        var workflow = new FakeSpecialProductsWorkflowService
+        {
+            LoadResult = new SpecialProductsLoadResult("S001", specialItems),
+            MarkAsyncOverride = (_, _) => Task.FromException<SpecialProductsMutationWorkflowResult>(
+                new InvalidOperationException("network unavailable"))
+        };
+        var viewModel = CreateViewModel(workflow: workflow);
+        await viewModel.LoadAsync();
+        viewModel.ToggleEditModeCommand.Execute(null);
+        var selectedItem = viewModel.PagedSpecialItems.Last();
+        viewModel.SpecialItemCardCommand.Execute(selectedItem);
+        var specialItemCodes = viewModel.SpecialItems.Select(item => item.ProductCode).ToArray();
+        var pagedItemCodes = viewModel.PagedSpecialItems.Select(item => item.ProductCode).ToArray();
+
+        await viewModel.RemoveSpecialProductCommand.ExecuteAsync(selectedItem);
+
+        Assert.Equal(specialItemCodes, viewModel.SpecialItems.Select(item => item.ProductCode));
+        Assert.Equal(pagedItemCodes, viewModel.PagedSpecialItems.Select(item => item.ProductCode));
+        Assert.Equal(selectedItem.ProductCode, viewModel.SelectedSpecialItem?.ProductCode);
+        Assert.Contains("network unavailable", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Online_add_writes_mark_diagnostic_log()
     {
         var item = CreateItem("SKU-001", "Alpha", "930001");
@@ -880,6 +966,7 @@ public sealed class SpecialProductsViewModelTests
         viewModel.ToggleEditModeCommand.Execute(null);
         viewModel.NextPageCommand.Execute(null);
         var lastPageItem = Assert.Single(viewModel.PagedSpecialItems);
+        viewModel.SpecialItemCardCommand.Execute(lastPageItem);
 
         await viewModel.RemoveSpecialProductCommand.ExecuteAsync(lastPageItem);
 
@@ -887,6 +974,7 @@ public sealed class SpecialProductsViewModelTests
         Assert.Equal(1, viewModel.TotalPages);
         Assert.Equal(20, viewModel.PagedSpecialItems.Count());
         Assert.DoesNotContain(viewModel.PagedSpecialItems, item => item.ProductCode == "SKU-021");
+        Assert.Null(viewModel.SelectedSpecialItem);
     }
 
     [Fact]

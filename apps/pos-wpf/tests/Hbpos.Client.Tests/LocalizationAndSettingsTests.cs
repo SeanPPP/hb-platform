@@ -99,6 +99,12 @@ public sealed class LocalizationAndSettingsTests
             "settings.linkly.sop.local.title",
             "settings.linkly.sop.local.step6",
             "settings.linkly.sop.local.step10",
+            "settings.linkly.sop.manual.title",
+            "settings.linkly.sop.manual.steps",
+            "settings.linkly.sop.manual.warning",
+            "settings.linkly.sop.ip.title",
+            "settings.linkly.sop.ip.steps",
+            "settings.linkly.sop.ip.note",
             "settings.linkly.sop.mode.title",
             "settings.linkly.sop.mode.localIp",
             "settings.linkly.sop.mode.cloudDirectSync",
@@ -132,6 +138,9 @@ public sealed class LocalizationAndSettingsTests
 
         Assert.Contains("Terminal setup steps", localization.T("settings.linkly.sop.title"), StringComparison.Ordinal);
         Assert.Contains("Async DLE 9600", localization.T("settings.linkly.sop.local.step6"), StringComparison.Ordinal);
+        Assert.Contains("standalone", localization.T("settings.linkly.sop.manual.steps"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TCPIP", localization.T("settings.linkly.sop.ip.steps"), StringComparison.Ordinal);
+        Assert.Contains("2011", localization.T("settings.linkly.sop.ip.steps"), StringComparison.Ordinal);
 
         localization.SetCulture("zh-CN");
 
@@ -146,6 +155,9 @@ public sealed class LocalizationAndSettingsTests
 
         Assert.Contains("\u5237\u5361\u673A\u64CD\u4F5C\u6B65\u9AA4", localization.T("settings.linkly.sop.title"), StringComparison.Ordinal);
         Assert.Contains("Async DLE 9600", localization.T("settings.linkly.sop.local.step6"), StringComparison.Ordinal);
+        Assert.Contains("standalone", localization.T("settings.linkly.sop.manual.steps"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TCPIP", localization.T("settings.linkly.sop.ip.steps"), StringComparison.Ordinal);
+        Assert.Contains("2011", localization.T("settings.linkly.sop.ip.steps"), StringComparison.Ordinal);
     }
 
     [Fact]

@@ -328,7 +328,8 @@ internal sealed class MainChildViewModelFactory
 
     public DailyCloseViewModel CreateDailyCloseViewModel(
         PosSessionState session,
-        Action? returnToPos = null)
+        Action? returnToPos = null,
+        Func<DateTime, Task<bool>>? confirmLinklySettlementAsync = null)
     {
         return new DailyCloseViewModel(
             _dailyCloseService,
@@ -340,7 +341,8 @@ internal sealed class MainChildViewModelFactory
             _enforceCashierPermissions,
             _operationAuditLogger,
             _operationAuthorizationService,
-            _linklySettlementService);
+            _linklySettlementService,
+            confirmLinklySettlementAsync);
     }
 
     public SettingsViewModel CreateSettingsViewModel(

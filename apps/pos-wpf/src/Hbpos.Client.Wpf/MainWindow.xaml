@@ -315,11 +315,9 @@
                             Visibility="{Binding IsFallbackScreenActive, Converter={StaticResource BoolToVis}}" />
 
             <Border Visibility="{Binding IsSyncCenterExpanded, Converter={StaticResource BoolToVis}}"
-                    VerticalAlignment="Bottom"
-                    HorizontalAlignment="Right"
-                    Margin="0,0,16,12"
-                    Width="540"
-                    MaxHeight="330"
+                    VerticalAlignment="Stretch"
+                    HorizontalAlignment="Stretch"
+                    Margin="16"
                     Background="White"
                     BorderBrush="#FFD9DCE5"
                     BorderThickness="1"

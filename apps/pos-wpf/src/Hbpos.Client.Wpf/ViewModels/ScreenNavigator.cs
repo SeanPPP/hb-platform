@@ -279,7 +279,8 @@ internal sealed class ScreenNavigator
     {
         DailyClose ??= _factory.CreateDailyCloseViewModel(
             Session,
-            ShowPos);
+            ShowPos,
+            _confirmationDialogService.ConfirmLinklySettlementAsync);
         DailyClose.Session = Session;
         await DailyClose.LoadAsync();
         SetCurrentScreen(DailyClose);

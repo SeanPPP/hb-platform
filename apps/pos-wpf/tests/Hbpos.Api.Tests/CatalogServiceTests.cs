@@ -838,6 +838,213 @@ public sealed class CatalogServiceTests
         Assert.NotNull(plan.DownloadLeaseId);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MarkSpecialProductAsync_updates_all_product_codes_without_rebuilding_the_store_catalog(
+        bool isSpecialProduct)
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-SPECIAL-UUID",
+            ProductCode = "P-SPECIAL",
+            ProductName = "Special product",
+            ItemNumber = "SPECIAL-ITEM",
+            Barcode = "SPECIAL-BARCODE",
+            RetailPrice = 12m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        if (!isSpecialProduct)
+        {
+            await fixture.SeedStoreRetailPriceAsync(
+                "S01", "P-SPECIAL", 13m, "RETAIL-SPECIAL-UUID", isSpecialProduct: true);
+        }
+        await fixture.SeedStoreMultiCodeProductAsync(
+            "S01", "P-SPECIAL", "SPECIAL-MULTI", "SPECIAL-MULTI-BARCODE", 14m, "MULTI-SPECIAL-UUID");
+        await fixture.SeedStoreMultiCodeProductAsync(
+            "S01", "P-SPECIAL", "SPECIAL-SET", null, 15m, "SET-OVERRIDE-UUID");
+        await fixture.SeedStoreClearancePriceAsync(
+            "S01", "P-SPECIAL", "SPECIAL-CLEARANCE-BARCODE", 8m, "CLEARANCE-SPECIAL-UUID");
+        await fixture.SeedProductSetCodeAsync(
+            "P-SPECIAL", "SPECIAL-SET", "SPECIAL-SET-BARCODE", 16m, "SET-SPECIAL-UUID");
+        var cache = new RecordingCatalogIndexCache();
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), cache);
+
+        var result = await service.MarkSpecialProductAsync(
+            new CatalogSpecialProductMarkRequest("S01", "P-SPECIAL", isSpecialProduct),
+            "test-user",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        var response = Assert.IsType<CatalogSpecialProductMarkResponse>(result.Response);
+        Assert.Equal(isSpecialProduct, response.IsSpecialProduct);
+        Assert.Equal("S01", response.StoreCode);
+        Assert.Equal("P-SPECIAL", response.ProductCode);
+        Assert.Equal(
+            new[]
+            {
+                "SPECIAL-BARCODE",
+                "SPECIAL-ITEM",
+                "SPECIAL-MULTI-BARCODE",
+                "SPECIAL-CLEARANCE-BARCODE",
+                "SPECIAL-SET-BARCODE"
+            }.OrderBy(code => code, StringComparer.Ordinal),
+            response.Items.Select(item => item.LookupCode).OrderBy(code => code, StringComparer.Ordinal));
+        Assert.All(response.Items, item =>
+        {
+            Assert.Equal("P-SPECIAL", item.ProductCode);
+            Assert.Equal(isSpecialProduct, item.IsSpecialProduct);
+        });
+
+        var storeRetailPrice = Assert.Single(await fixture.LoadStoreRetailPricesAsync());
+        Assert.Equal(isSpecialProduct, storeRetailPrice.IsSpecialProduct);
+        Assert.Equal("test-user", storeRetailPrice.UpdatedBy);
+        Assert.Equal(["S01"], cache.InvalidatedStores);
+        Assert.Equal(0, cache.GetOrBuildAsyncCallCount);
+        Assert.Equal(0, cache.GetOrBuildFreshAsyncCallCount);
+    }
+
+    [Fact]
+    public async Task MarkSpecialProductAsync_returns_only_target_lookup_winners_when_codes_collide()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-TARGET-UUID",
+            ProductCode = "P-TARGET",
+            ProductName = "Target product",
+            ItemNumber = "TARGET-ONLY-ITEM",
+            Barcode = "SHARED-LOOKUP",
+            RetailPrice = 12m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-OTHER-UUID",
+            ProductCode = "P-OTHER",
+            ProductName = "Other product",
+            Barcode = "OTHER-BARCODE",
+            RetailPrice = 18m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreMultiCodeProductAsync(
+            "S01", "P-OTHER", "OTHER-MULTI", "SHARED-LOOKUP", 9m, "OTHER-MULTI-UUID");
+        await fixture.SeedStoreClearancePriceAsync(
+            "S01", "P-OTHER", "SHARED-LOOKUP", 7m, "OTHER-CLEARANCE-UUID");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var result = await service.MarkSpecialProductAsync(
+            new CatalogSpecialProductMarkRequest("S01", "P-TARGET", true),
+            "test-user",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        var response = Assert.IsType<CatalogSpecialProductMarkResponse>(result.Response);
+        Assert.DoesNotContain(response.Items, item => item.LookupCode == "SHARED-LOOKUP");
+        var returnedTargetItem = Assert.Single(response.Items, item => item.LookupCode == "TARGET-ONLY-ITEM");
+        Assert.True(returnedTargetItem.IsSpecialProduct);
+
+        var fullCatalog = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+        var fullWinner = Assert.Single(fullCatalog!.Items, item => item.LookupCode == "SHARED-LOOKUP");
+        Assert.Equal("P-OTHER", fullWinner.ProductCode);
+        Assert.Equal(PriceSourceKind.StoreClearancePrice, fullWinner.PriceSource);
+        Assert.Equal(7m, fullWinner.RetailPrice);
+        Assert.Equal("OTHER-CLEARANCE-UUID", fullWinner.ReferenceCode);
+
+        var fullTargetItem = Assert.Single(fullCatalog.Items, item => item.LookupCode == "TARGET-ONLY-ITEM");
+        Assert.Equal(fullTargetItem.PriceSource, returnedTargetItem.PriceSource);
+        Assert.Equal(fullTargetItem.RetailPrice, returnedTargetItem.RetailPrice);
+        Assert.Equal(fullTargetItem.ReferenceCode, returnedTargetItem.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task MarkSpecialProductAsync_restores_inactive_store_price_before_returning_item()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-INACTIVE-UUID",
+            ProductCode = "P-INACTIVE",
+            ProductName = "Inactive price product",
+            Barcode = "INACTIVE-PRICE-BARCODE",
+            RetailPrice = 12m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreRetailPriceAsync(
+            "S01", "P-INACTIVE", 1m, "INACTIVE-PRICE-UUID", isActive: false);
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var result = await service.MarkSpecialProductAsync(
+            new CatalogSpecialProductMarkRequest("S01", "P-INACTIVE", true),
+            "test-user",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        var storeRetailPrice = Assert.Single(await fixture.LoadStoreRetailPricesAsync());
+        Assert.True(storeRetailPrice.IsActive);
+        Assert.True(storeRetailPrice.IsSpecialProduct);
+        Assert.Equal(12m, storeRetailPrice.StoreRetailPriceValue);
+
+        var fullCatalog = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+        var item = Assert.Single(fullCatalog!.Items, item => item.LookupCode == "INACTIVE-PRICE-BARCODE");
+        Assert.Equal(PriceSourceKind.StoreRetailPrice, item.PriceSource);
+        Assert.True(item.IsSpecialProduct);
+    }
+
+    [Fact]
+    public async Task MarkSpecialProductAsync_clears_the_flag_on_all_store_prices_for_the_product()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-MULTI-RETAIL-UUID",
+            ProductCode = "P-MULTI-RETAIL",
+            ProductName = "Multiple store prices",
+            Barcode = "MULTI-RETAIL-BARCODE",
+            RetailPrice = 12m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreRetailPriceAsync(
+            "S01", "P-MULTI-RETAIL", 11m, "MULTI-RETAIL-FIRST", isSpecialProduct: true,
+            updatedAt: new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        await fixture.SeedStoreRetailPriceAsync(
+            "S01", "P-MULTI-RETAIL", 12m, "MULTI-RETAIL-SECOND", isSpecialProduct: true,
+            updatedAt: new DateTime(2026, 1, 1, 0, 1, 0, DateTimeKind.Utc));
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var result = await service.MarkSpecialProductAsync(
+            new CatalogSpecialProductMarkRequest("S01", "P-MULTI-RETAIL", false),
+            "test-user",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        var storeRetailPrices = (await fixture.LoadStoreRetailPricesAsync())
+            .Where(item => item.ProductCode == "P-MULTI-RETAIL")
+            .ToArray();
+        Assert.Equal(2, storeRetailPrices.Length);
+        Assert.All(storeRetailPrices, item => Assert.False(item.IsSpecialProduct));
+        var primaryStoreRetailPrice = Assert.Single(storeRetailPrices, item => item.UUID == "MULTI-RETAIL-SECOND");
+        Assert.Equal("test-user", primaryStoreRetailPrice.UpdatedBy);
+        var secondaryStoreRetailPrice = Assert.Single(storeRetailPrices, item => item.UUID == "MULTI-RETAIL-FIRST");
+        Assert.NotEqual("test-user", secondaryStoreRetailPrice.UpdatedBy);
+
+        var fullCatalog = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+        var item = Assert.Single(fullCatalog!.Items, item => item.LookupCode == "MULTI-RETAIL-BARCODE");
+        Assert.Equal(PriceSourceKind.StoreRetailPrice, item.PriceSource);
+        Assert.Equal(12m, item.RetailPrice);
+        Assert.Equal("MULTI-RETAIL-SECOND", item.ReferenceCode);
+    }
+
     private static SellableItemDto CreateSellableItem(
         string productCode,
         string lookupCode,
@@ -993,8 +1200,11 @@ public sealed class CatalogServiceTests
             decimal retailPrice,
             string uuid,
             decimal? discountRate = null,
-            bool isSpecialProduct = false)
+            bool isSpecialProduct = false,
+            bool isActive = true,
+            DateTime? updatedAt = null)
         {
+            var timestamp = updatedAt ?? DateTime.UtcNow;
             await client.Insertable(new StoreRetailPrice
             {
                 UUID = uuid,
@@ -1004,10 +1214,10 @@ public sealed class CatalogServiceTests
                 StoreRetailPriceValue = retailPrice,
                 DiscountRate = discountRate,
                 IsSpecialProduct = isSpecialProduct,
-                IsActive = true,
+                IsActive = isActive,
                 IsDeleted = false,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
+                CreatedAt = timestamp,
+                UpdatedAt = timestamp
             }).ExecuteCommandAsync();
         }
 
@@ -1207,6 +1417,77 @@ public sealed class CatalogServiceTests
         {
             Inputs.Add(input);
             return inner.Build(storeCode, input);
+        }
+    }
+
+    private sealed class RecordingCatalogIndexCache : ICatalogIndexCache
+    {
+        public int GetOrBuildAsyncCallCount { get; private set; }
+
+        public int GetOrBuildFreshAsyncCallCount { get; private set; }
+
+        public List<string> InvalidatedStores { get; } = [];
+
+        public CatalogDownloadLeaseRegistry DownloadLeases { get; } = new();
+
+        public Task<CatalogIndexBuildResult?> GetOrBuildAsync(
+            string storeCode,
+            DateTimeOffset? since,
+            Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
+            CancellationToken cancellationToken)
+        {
+            GetOrBuildAsyncCallCount++;
+            throw new InvalidOperationException("特殊商品标记不应重建整店目录。");
+        }
+
+        public Task<CatalogIndexBuildResult?> GetOrBuildFreshAsync(
+            string storeCode,
+            DateTimeOffset? since,
+            Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
+            CancellationToken cancellationToken)
+        {
+            GetOrBuildFreshAsyncCallCount++;
+            throw new InvalidOperationException("特殊商品标记不应等待整店目录刷新。");
+        }
+
+        public Task<CatalogIndexBuildResult?> ForceRefreshAndPublishAsync(
+            string storeCode,
+            DateTimeOffset? since,
+            Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public CatalogIndexBuildResult? GetByVersion(
+            string storeCode,
+            DateTimeOffset? since,
+            string catalogVersion)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void InvalidateStore(string storeCode)
+        {
+            InvalidatedStores.Add(storeCode);
+        }
+
+        public void EnsurePlanCapacity(CatalogIndexBuildResult target)
+        {
+            throw new NotSupportedException();
+        }
+
+        public CatalogDownloadLease CreateFullLease(CatalogIndexBuildResult target)
+        {
+            throw new NotSupportedException();
+        }
+
+        public CatalogDownloadLease CreateDeltaLease(
+            CatalogIndexBuildResult baseline,
+            CatalogIndexBuildResult target,
+            IReadOnlyList<CatalogDeltaOperation> operations)
+        {
+            throw new NotSupportedException();
         }
     }
 }

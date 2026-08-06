@@ -64,6 +64,33 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
+    public void Sync_center_fills_main_content_area_without_fixed_size_limits()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var syncCenter = Assert.Single(document.Descendants(presentation + "Border").Where(
+            element => string.Equals(
+                (string?)element.Attribute("Visibility"),
+                "{Binding IsSyncCenterExpanded, Converter={StaticResource BoolToVis}}",
+                StringComparison.Ordinal)));
+
+        Assert.Equal("Stretch", (string?)syncCenter.Attribute("HorizontalAlignment"));
+        Assert.Equal("Stretch", (string?)syncCenter.Attribute("VerticalAlignment"));
+        Assert.Equal("16", (string?)syncCenter.Attribute("Margin"));
+        Assert.Null(syncCenter.Attribute("Width"));
+        Assert.Null(syncCenter.Attribute("Height"));
+        Assert.Null(syncCenter.Attribute("MaxWidth"));
+        Assert.Null(syncCenter.Attribute("MaxHeight"));
+    }
+
+    [Fact]
     public void Footer_versions_bind_current_and_conditionally_show_upgrade_or_rollback_target()
     {
         var repoRoot = FindRepoRoot();

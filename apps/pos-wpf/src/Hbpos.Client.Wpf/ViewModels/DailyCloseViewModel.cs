@@ -21,6 +21,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly Action? _returnToPos;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly Func<DateTime, Task<bool>>? _confirmLinklySettlementAsync;
     private DailyCloseReport? _currentReport;
     private int _archivePreviewVersion;
 
@@ -74,7 +75,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         IOperationAuditLogger? operationAuditLogger = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        ILinklySettlementService? linklySettlementService = null)
+        ILinklySettlementService? linklySettlementService = null,
+        Func<DateTime, Task<bool>>? confirmLinklySettlementAsync = null)
     {
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
@@ -85,6 +87,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
         _linklySettlementService = linklySettlementService;
+        _confirmLinklySettlementAsync = confirmLinklySettlementAsync;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -511,6 +514,13 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
             return;
         }
         using var authorizationActivation = authorization.Activate();
+
+        // 刷卡机日结会向支付终端提交当日结算，必须由收银员再次明确确认。
+        if (_confirmLinklySettlementAsync is null ||
+            !await _confirmLinklySettlementAsync(BusinessDate))
+        {
+            return;
+        }
 
         IsBusy = true;
         StatusMessage = T("dailyClose.linklySettlement.sending", "Sending Linkly settlement...");

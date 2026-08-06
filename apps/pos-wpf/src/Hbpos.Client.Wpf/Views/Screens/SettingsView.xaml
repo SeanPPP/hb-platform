@@ -935,6 +935,33 @@
                                                    TextWrapping="Wrap"
                                                    Margin="0,0,0,10" />
 
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.manual.title}"
+                                                   Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.manual.steps}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,4" />
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.manual.warning}"
+                                                   FontSize="11"
+                                                   FontWeight="Bold"
+                                                   Foreground="{StaticResource PosDangerBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,10" />
+
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.ip.title}"
+                                                   Style="{StaticResource SettingsLabelStyle}" />
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.ip.steps}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,4" />
+                                        <TextBlock Text="{loc:Loc settings.linkly.sop.ip.note}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,10" />
+
                                         <TextBlock Text="{loc:Loc settings.linkly.sop.mode.title}"
                                                    Style="{StaticResource SettingsLabelStyle}" />
                                         <TextBlock Text="{loc:Loc settings.linkly.sop.mode.localIp}"
@@ -1763,6 +1790,33 @@
                                            TextWrapping="Wrap"
                                            Margin="0,0,0,5" />
                                 <TextBlock Text="{loc:Loc settings.linkly.sop.local.step11}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,16" />
+
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.manual.title}"
+                                           Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.manual.steps}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,5" />
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.manual.warning}"
+                                           FontSize="12"
+                                           FontWeight="Bold"
+                                           Foreground="{StaticResource PosDangerBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,16" />
+
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.ip.title}"
+                                           Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.ip.steps}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,5" />
+                                <TextBlock Text="{loc:Loc settings.linkly.sop.ip.note}"
                                            FontSize="12"
                                            Foreground="{StaticResource PosMutedForegroundBrush}"
                                            TextWrapping="Wrap"

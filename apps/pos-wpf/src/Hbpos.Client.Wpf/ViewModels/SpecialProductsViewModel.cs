@@ -657,8 +657,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             return;
         }
 
-        await MarkSpecialProductAsync(itemSnapshot, true, cancellationToken);
-        await SearchCatalogAsync();
+        if (await MarkSpecialProductAsync(itemSnapshot, true, cancellationToken))
+        {
+            // 标记成功后立即收起扫码候选，避免二次搜索覆盖成功提示或遮挡已更新的特殊商品列表。
+            ClearSearch();
+        }
     }
 
     private async Task RemoveSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
@@ -676,10 +679,20 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             return;
         }
 
-        await MarkSpecialProductAsync(itemSnapshot, false, cancellationToken);
+        if (await MarkSpecialProductAsync(itemSnapshot, false, cancellationToken))
+        {
+            // 删除成功后仅清除已从列表移除的编辑选中项，保留其他商品的编辑选择。
+            if (string.Equals(
+                    NormalizeProductCode(SelectedSpecialItem?.ProductCode),
+                    NormalizeProductCode(itemSnapshot.ProductCode),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedSpecialItem = null;
+            }
+        }
     }
 
-    private async Task MarkSpecialProductAsync(
+    private async Task<bool> MarkSpecialProductAsync(
         SellableItemDto item,
         bool isSpecialProduct,
         CancellationToken cancellationToken)
@@ -708,12 +721,15 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
                 item.DisplayName);
             totalStopwatch.Stop();
             Log($"operation=mark store={Session.StoreCode} productCode={item.ProductCode} isSpecialProduct={isSpecialProduct} stage=completed items={result.SpecialItems.Count} serviceElapsedMs={serviceStopwatch.ElapsedMilliseconds} replaceElapsedMs={replaceStopwatch.ElapsedMilliseconds} pageRefreshElapsedMs=0 totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+            return true;
         }
         catch (Exception ex)
         {
             totalStopwatch.Stop();
             Log($"operation=mark store={Session.StoreCode} productCode={item.ProductCode} isSpecialProduct={isSpecialProduct} stage=failed totalElapsedMs={totalStopwatch.ElapsedMilliseconds} error={ex.Message}");
             SetStatusText(string.Format(_localization.CurrentCulture, T("specialProducts.status.markFailed"), ex.Message));
+            // 失败或取消时不更新页面集合，让调用方保留当前候选和选中项供收银员重试。
+            return false;
         }
         finally
         {

@@ -10,6 +10,7 @@ public sealed class ConfirmationDialogServiceTests
     [InlineData("reset", "Reset test sales data", "Delete all test sales data? This action cannot be undone.", "Reset", true)]
     [InlineData("full-first-payment", "Confirm installment order", "The first installment payment covers the full order amount. Continue creating an installment order?", "Confirm", false)]
     [InlineData("pickup", "Confirm pickup", "This installment order is fully paid. Confirm customer pickup now?", "Confirm", false)]
+    [InlineData("linkly-settlement", "Confirm Linkly settlement", "Submit the Linkly settlement for 8/3/2026 to the card terminal and print the bank receipt?", "Settle & Print", true)]
     public async Task Confirmation_scenarios_publish_expected_english_content(
         string scenario,
         string expectedTitle,
@@ -147,6 +148,7 @@ public sealed class ConfirmationDialogServiceTests
             "reset" => service.ConfirmResetTestSalesDataAsync(),
             "full-first-payment" => service.ConfirmInstallmentFullFirstPaymentAsync(),
             "pickup" => service.ConfirmInstallmentPickupAfterPaidOffAsync(),
+            "linkly-settlement" => service.ConfirmLinklySettlementAsync(new DateTime(2026, 8, 3)),
             _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null)
         };
 }

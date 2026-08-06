@@ -1254,6 +1254,8 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync() => throw new NotSupportedException();
 
+        public Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate) => throw new NotSupportedException();
+
         public Task<bool> ConfirmOrderDateRangeReuploadAsync(
             int orderCount,
             int batchCount,

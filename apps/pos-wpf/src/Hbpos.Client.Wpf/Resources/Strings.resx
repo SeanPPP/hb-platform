@@ -675,6 +675,8 @@
   <data name="dailyClose.linklySettlement.hint" xml:space="preserve"><value>Only the current business date can be settled; historical records can only be reprinted.</value></data>
   <data name="dailyClose.linklySettlement.refresh" xml:space="preserve"><value>Refresh</value></data>
   <data name="dailyClose.linklySettlement.settleAndPrint" xml:space="preserve"><value>Settle &amp; Print</value></data>
+  <data name="dailyClose.linklySettlement.confirm.title" xml:space="preserve"><value>Confirm Linkly settlement</value></data>
+  <data name="dailyClose.linklySettlement.confirm.message" xml:space="preserve"><value>Submit the Linkly settlement for {0:d} to the card terminal and print the bank receipt?</value></data>
   <data name="dailyClose.linklySettlement.time" xml:space="preserve"><value>Time</value></data>
   <data name="dailyClose.linklySettlement.mode" xml:space="preserve"><value>Mode</value></data>
   <data name="dailyClose.linklySettlement.result" xml:space="preserve"><value>Result</value></data>

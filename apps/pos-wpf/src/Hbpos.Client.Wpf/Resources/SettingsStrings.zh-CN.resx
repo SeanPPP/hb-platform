@@ -141,8 +141,14 @@
   <data name="settings.linkly.sop.local.step9" xml:space="preserve"><value>POS 设置页取消勾选 Use Linkly Cloud。</value></data>
   <data name="settings.linkly.sop.local.step10" xml:space="preserve"><value>Host 通常使用 127.0.0.1，Port 通常使用 2011。</value></data>
   <data name="settings.linkly.sop.local.step11" xml:space="preserve"><value>点击“测试 Linkly”，成功后点击“启用 Linkly”。</value></data>
+  <data name="settings.linkly.sop.manual.title" xml:space="preserve"><value>刷卡机手动输入金额（standalone）</value></data>
+  <data name="settings.linkly.sop.manual.steps" xml:space="preserve"><value>1. 仅在 ANZ Worldline 已把刷卡机配置为 standalone 模式时使用。Standalone 交易不是由 HB POS 发起。&#xA;2. 在刷卡机主界面输入消费金额，然后按 OK 或 ENTER。&#xA;3. 请顾客 Tap、Insert 或 Swipe，并按提示选择账户和输入 PIN。</value></data>
+  <data name="settings.linkly.sop.manual.warning" xml:space="preserve"><value>如果 integrated 模式的刷卡机不能输入金额，请联系 ANZ Worldline 1800 039 025 或安装人员更改配置。不要尝试未经确认的 Func 功能码。</value></data>
+  <data name="settings.linkly.sop.ip.title" xml:space="preserve"><value>切换 HB POS 到 Linkly EFT-Client IP 直连</value></data>
+  <data name="settings.linkly.sop.ip.steps" xml:space="preserve"><value>1. 先确认 ANZ Worldline 或安装人员已把刷卡机配置为 integrated 模式。只改 PC 设置不能把 standalone 刷卡机切成 integrated。&#xA;2. 在 Windows PC 打开 Linkly Configuration Wizard。Pinpad port 必须与刷卡机实际连接方式一致。只有刷卡机本身通过 IP 连接时才选择 TCPIP，然后应用设置。&#xA;3. 在 HB POS 选择“本地 IP / 端口”，并取消勾选 Use Linkly Cloud。&#xA;4. Host 填运行 Linkly EFT-Client 的 PC。同一台 PC 使用 127.0.0.1。EFT-Client 默认 TCP 端口为 2011。&#xA;5. 如果 HB POS 在另一台 PC，Host 填 EFT-Client PC 的局域网 IP；Windows 防火墙放行 TCP 2011；如启用了 EFT-Client access list，还要加入 POS 的 IP。&#xA;6. 点击“测试 Linkly”，成功后点击“启用 Linkly”。</value></data>
+  <data name="settings.linkly.sop.ip.note" xml:space="preserve"><value>Linkly IP Gateway 是 EFT-Server 到银行的连接，不等同于 HB POS 到 EFT-Client 的 TCP 2011 连接。</value></data>
   <data name="settings.linkly.sop.mode.title" xml:space="preserve"><value>如何判断当前模式</value></data>
-  <data name="settings.linkly.sop.mode.localIp" xml:space="preserve"><value>本地 IP / 端口：当 Windows Linkly EFT-Client 跑在本机或局域网主机上，POS 通过 IP Gateway 连接时使用。</value></data>
+  <data name="settings.linkly.sop.mode.localIp" xml:space="preserve"><value>本地 IP / 端口：当 Linkly EFT-Client 运行在本机或另一台局域网 PC，HB POS 通过 TCP/IP 连接它时使用。</value></data>
   <data name="settings.linkly.sop.mode.cloudDirectSync" xml:space="preserve"><value>Cloud 直连同步：当终端已配对 Linkly Cloud，但 POS 只需要交易状态结果时使用。</value></data>
   <data name="settings.linkly.sop.mode.cloudBackendAsync" xml:space="preserve"><value>Cloud 后端异步：当终端已配对 Linkly Cloud，且 POS 需要 display、receipt、sendkey 或签名授权能力时使用。</value></data>
   <data name="settings.receiptPrinter.title" xml:space="preserve"><value>&#x5C0F;&#x7968;&#x6253;&#x5370;&#x673A;</value></data>
