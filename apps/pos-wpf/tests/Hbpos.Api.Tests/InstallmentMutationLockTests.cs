@@ -221,6 +221,173 @@ public sealed class InstallmentMutationLockTests
         Assert.NotEqual(repaymentWon, cancelWon);
     }
 
+    [Fact]
+    public async Task Cross_device_void_replay_is_atomic_and_rejects_changed_fingerprint()
+    {
+        await using var fixture = new MutationFixture();
+        var operation = new InstallmentLifecycleOperationFacts(
+            Guid.NewGuid(),
+            "void-cross-device",
+            $"sha256:{new string('a', 64)}",
+            "POS-02",
+            "C02");
+        var cancellation = new InstallmentCancellationInfoDto(
+            InstallmentCancellationKind.VoidCancel,
+            Now,
+            "Cashier Two",
+            "Customer changed mind",
+            operation.IdempotencyKey);
+
+        var first = await fixture.Installments.VoidIdempotentAsync(
+            fixture.InstallmentGuid,
+            cancellation,
+            operation,
+            CancellationToken.None);
+        var recoveryOperation = operation with { CashierId = "C03" };
+        var replay = await fixture.Installments.VoidIdempotentAsync(
+            fixture.InstallmentGuid,
+            cancellation with { CancelledBy = "Cashier Three" },
+            recoveryOperation,
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.Cancelled, first.Status);
+        Assert.Equal(InstallmentStatus.Cancelled, replay.Status);
+        var stored = await fixture.ReadOrderAsync();
+        Assert.Equal(operation.OperationGuid.ToString("D"), stored.CancellationOperationGuid);
+        Assert.Equal(operation.Fingerprint, stored.CancellationFingerprint);
+        Assert.Equal("POS-02", stored.CancellationExecutingDeviceCode);
+        Assert.Equal("C02", stored.CancellationCashierId);
+        Assert.Equal("Cashier Two", replay.CancellationInfo?.CancelledBy);
+
+        var changed = operation with { Fingerprint = $"sha256:{new string('b', 64)}" };
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Installments.VoidIdempotentAsync(
+                fixture.InstallmentGuid,
+                cancellation,
+                changed,
+                CancellationToken.None));
+        Assert.Contains("idempotency", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Cross_device_pickup_replay_is_atomic_and_rejects_changed_execution_identity()
+    {
+        await using var fixture = new MutationFixture();
+        await fixture.MarkPaidOffAsync();
+        var operation = new InstallmentLifecycleOperationFacts(
+            Guid.NewGuid(),
+            "pickup-cross-device",
+            $"sha256:{new string('c', 64)}",
+            "POS-02",
+            "C02");
+
+        var first = await fixture.Installments.ConfirmPickupIdempotentAsync(
+            fixture.InstallmentGuid,
+            Now,
+            "Cashier Two",
+            "Collected at service desk",
+            operation,
+            CancellationToken.None);
+        var recoveryOperation = operation with { CashierId = "C03" };
+        var replay = await fixture.Installments.ConfirmPickupIdempotentAsync(
+            fixture.InstallmentGuid,
+            Now,
+            "Cashier Three",
+            "Collected at service desk",
+            recoveryOperation,
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.PickedUp, first.Status);
+        Assert.Equal(InstallmentStatus.PickedUp, replay.Status);
+        var stored = await fixture.ReadOrderAsync();
+        Assert.Equal(operation.OperationGuid.ToString("D"), stored.PickupOperationGuid);
+        Assert.Equal(operation.IdempotencyKey, stored.PickupIdempotencyKey);
+        Assert.Equal(operation.Fingerprint, stored.PickupFingerprint);
+        Assert.Equal("POS-02", stored.PickupExecutingDeviceCode);
+        Assert.Equal("C02", stored.PickupCashierId);
+        Assert.Equal("Cashier Two", replay.PickupInfo?.PickedUpBy);
+
+        var changed = operation with { ExecutingDeviceCode = "POS-03" };
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Installments.ConfirmPickupIdempotentAsync(
+                fixture.InstallmentGuid,
+                Now,
+                "Cashier Two",
+                "Collected at service desk",
+                changed,
+                CancellationToken.None));
+        Assert.Contains("idempotency", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Legacy_void_without_new_operation_facts_replays_only_for_the_same_idempotency_key()
+    {
+        await using var fixture = new MutationFixture();
+        await fixture.MarkLegacyVoidedAsync("legacy-void");
+        var operation = new InstallmentLifecycleOperationFacts(
+            Guid.NewGuid(),
+            "legacy-void",
+            $"sha256:{new string('d', 64)}",
+            "POS-02",
+            "C02");
+        var cancellation = new InstallmentCancellationInfoDto(
+            InstallmentCancellationKind.VoidCancel,
+            Now,
+            "Cashier Two",
+            "Legacy replay",
+            operation.IdempotencyKey);
+
+        var replay = await fixture.Installments.VoidIdempotentAsync(
+            fixture.InstallmentGuid,
+            cancellation,
+            operation,
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.Cancelled, replay.Status);
+
+        var changed = operation with { IdempotencyKey = "different-void" };
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Installments.VoidIdempotentAsync(
+                fixture.InstallmentGuid,
+                cancellation with { IdempotencyKey = changed.IdempotencyKey },
+                changed,
+                CancellationToken.None));
+        Assert.Contains("idempotency", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Legacy_pickup_without_any_operation_facts_replays_but_partial_facts_still_conflict()
+    {
+        await using var fixture = new MutationFixture();
+        await fixture.MarkLegacyPickedUpAsync();
+        var operation = new InstallmentLifecycleOperationFacts(
+            Guid.NewGuid(),
+            "legacy-pickup",
+            $"sha256:{new string('e', 64)}",
+            "POS-02",
+            "C02");
+
+        var replay = await fixture.Installments.ConfirmPickupIdempotentAsync(
+            fixture.InstallmentGuid,
+            Now,
+            "Cashier Two",
+            "Legacy replay",
+            operation,
+            CancellationToken.None);
+        Assert.Equal(InstallmentStatus.PickedUp, replay.Status);
+
+        await fixture.SetPickupOperationGuidAsync(Guid.NewGuid().ToString("D"));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Installments.ConfirmPickupIdempotentAsync(
+                fixture.InstallmentGuid,
+                Now,
+                "Cashier Two",
+                "Legacy replay",
+                operation,
+                CancellationToken.None));
+        Assert.Contains("idempotency", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class MutationFixture : IAsyncDisposable
     {
         private readonly string databasePath = Path.Combine(
@@ -383,6 +550,49 @@ public sealed class InstallmentMutationLockTests
                 .CountAsync();
             return new MutationState(order, claim, paymentCount);
         }
+
+        public Task<InstallmentOrderEntity> ReadOrderAsync()
+        {
+            var guid = InstallmentGuid.ToString("D");
+            return client.Queryable<InstallmentOrderEntity>()
+                .FirstAsync(entity => entity.InstallmentGuid == guid);
+        }
+
+        public Task<int> MarkPaidOffAsync() =>
+            client.Ado.ExecuteCommandAsync(
+                "UPDATE InstallmentOrder SET Status = @status, PaidAmount = @paid, BalanceAmount = @balance WHERE InstallmentGuid = @guid",
+                new SugarParameter("@status", (int)InstallmentStatus.PaidOff),
+                new SugarParameter("@paid", 100m),
+                new SugarParameter("@balance", 0m),
+                new SugarParameter("@guid", InstallmentGuid.ToString("D")));
+
+        public Task<int> MarkLegacyVoidedAsync(string idempotencyKey) =>
+            client.Ado.ExecuteCommandAsync(
+                "UPDATE InstallmentOrder SET Status = @status, CancellationKind = @kind, CancelledAt = @cancelledAt, CancelledBy = @cancelledBy, CancellationReason = @reason, CancellationIdempotencyKey = @idempotencyKey WHERE InstallmentGuid = @guid",
+                new SugarParameter("@status", (int)InstallmentStatus.Cancelled),
+                new SugarParameter("@kind", (int)InstallmentCancellationKind.VoidCancel),
+                new SugarParameter("@cancelledAt", Now.UtcDateTime),
+                new SugarParameter("@cancelledBy", "Legacy Cashier"),
+                new SugarParameter("@reason", "Legacy replay"),
+                new SugarParameter("@idempotencyKey", idempotencyKey),
+                new SugarParameter("@guid", InstallmentGuid.ToString("D")));
+
+        public Task<int> MarkLegacyPickedUpAsync() =>
+            client.Ado.ExecuteCommandAsync(
+                "UPDATE InstallmentOrder SET Status = @status, PaidAmount = @paid, BalanceAmount = @balance, PickedUpAt = @pickedUpAt, PickedUpBy = @pickedUpBy, PickupNote = @note WHERE InstallmentGuid = @guid",
+                new SugarParameter("@status", (int)InstallmentStatus.PickedUp),
+                new SugarParameter("@paid", 100m),
+                new SugarParameter("@balance", 0m),
+                new SugarParameter("@pickedUpAt", Now.UtcDateTime),
+                new SugarParameter("@pickedUpBy", "Legacy Cashier"),
+                new SugarParameter("@note", "Legacy replay"),
+                new SugarParameter("@guid", InstallmentGuid.ToString("D")));
+
+        public Task<int> SetPickupOperationGuidAsync(string operationGuid) =>
+            client.Ado.ExecuteCommandAsync(
+                "UPDATE InstallmentOrder SET PickupOperationGuid = @operationGuid WHERE InstallmentGuid = @guid",
+                new SugarParameter("@operationGuid", operationGuid),
+                new SugarParameter("@guid", InstallmentGuid.ToString("D")));
 
         public ValueTask DisposeAsync()
         {

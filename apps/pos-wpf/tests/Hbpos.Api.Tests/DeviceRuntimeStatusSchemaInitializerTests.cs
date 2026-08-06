@@ -108,6 +108,9 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
                 services.RemoveAll<IInstallmentCancelClaimSchemaInitializer>();
                 services.AddSingleton<IInstallmentCancelClaimSchemaInitializer>(
                     new TestNoOpInstallmentCancelClaimSchemaInitializer());
+                services.RemoveAll<IInstallmentSchemaInitializer>();
+                services.AddSingleton<IInstallmentSchemaInitializer>(
+                    new TestNoOpInstallmentSchemaInitializer());
             });
         }
     }

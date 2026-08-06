@@ -51,6 +51,7 @@ public static class ServiceRegistration
         services.AddOptions<CatalogDailyPrebuildOptions>();
         services.AddOptions<InstallmentRepaymentClaimOptions>();
         services.AddOptions<InstallmentCancelClaimOptions>();
+        services.AddOptions<InstallmentCrossDeviceLifecycleOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -76,6 +77,7 @@ public static class ServiceRegistration
             services.Configure<CatalogDailyPrebuildOptions>(configuration.GetSection("CatalogDailyPrebuild"));
             services.Configure<InstallmentRepaymentClaimOptions>(configuration.GetSection("InstallmentRepaymentClaims"));
             services.Configure<InstallmentCancelClaimOptions>(configuration.GetSection("InstallmentCancelClaims"));
+            services.Configure<InstallmentCrossDeviceLifecycleOptions>(configuration.GetSection("InstallmentCrossDeviceLifecycle"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -106,6 +108,10 @@ public static class ServiceRegistration
         services.AddScoped<IOrderHistoryService, OrderHistoryService>();
         services.AddScoped<IOrderReturnRepository, SqlSugarOrderReturnRepository>();
         services.AddScoped<IOrderReturnService, OrderReturnService>();
+        services.AddSingleton<InstallmentSchemaInitializationState>();
+        services.AddSingleton<IInstallmentSchemaSqlExecutor, SqlSugarInstallmentSchemaSqlExecutor>();
+        services.AddSingleton<IInstallmentSchemaInitializer, SqlSugarInstallmentSchemaInitializer>();
+        services.AddHostedService<InstallmentSchemaStartupService>();
         services.AddScoped<IInstallmentRepository, SqlSugarInstallmentRepository>();
         services.AddScoped<InstallmentService>();
         services.AddScoped<IInstallmentService>(sp => sp.GetRequiredService<InstallmentService>());

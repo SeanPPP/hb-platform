@@ -10,6 +10,7 @@ const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
 const mockRouterDismissTo = jest.fn();
+const mockRouterPush = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -18,7 +19,10 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
+    useRouter: () => ({
+      dismissTo: mockRouterDismissTo,
+      push: mockRouterPush,
+    }),
   };
 });
 
@@ -98,7 +102,10 @@ beforeEach(() => {
     cashierName: "Cashier",
     storeCode: "S1",
     deviceCode: "IPAD-1",
-    permissions: ["Permissions.PosTerminal.History.View"],
+    permissions: [
+      "Permissions.PosTerminal.History.View",
+      "Permissions.PosTerminal.Returns.View",
+    ],
     source: "online",
   };
   mockCreatePresenter.mockReturnValue({
@@ -117,6 +124,13 @@ test("复核设备后以可信身份创建 presenter，返回销售并在卸载�
 
   mockScreenProps.onBack();
   expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
+  mockScreenProps.onRefund("10000000-0000-4000-8000-000000000001");
+  expect(mockRouterPush).toHaveBeenCalledWith({
+    pathname: "/returns",
+    params: {
+      orderRef: "10000000-0000-4000-8000-000000000001",
+    },
+  });
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
@@ -143,6 +157,29 @@ test("缺 View 权限时返回销售且不创建 presenter", async () => {
 
   expect(screen.getByTestId("redirect").props.children).toBe("/sales");
   expect(mockCreatePresenter).not.toHaveBeenCalled();
+});
+
+test("缺 Returns.View 权限时不向远程历史暴露退款入口", async () => {
+  mockActiveCashier = {
+    ...mockActiveCashier,
+    permissions: ["Permissions.PosTerminal.History.View"],
+  };
+  const screen = await render(<RemoteHistoryRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("remote-history-screen")).toBeTruthy();
+  });
+  expect(mockScreenProps.onRefund).toBeUndefined();
+});
+
+test("returns service 不可用时不向远程历史暴露退款入口", async () => {
+  mockRuntime = readyRuntime({}, undefined, true, "unavailable");
+  const screen = await render(<RemoteHistoryRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("remote-history-screen")).toBeTruthy();
+  });
+  expect(mockScreenProps.onRefund).toBeUndefined();
 });
 
 test("设备绑定不一致时清除收银会话", async () => {
@@ -179,6 +216,7 @@ function readyRuntime(
     deviceCode: "IPAD-1",
   },
   includeRemoteHistory = true,
+  returnsStatus: "available" | "unavailable" = "available",
 ) {
   return {
     state: {
@@ -195,6 +233,7 @@ function readyRuntime(
       ...(includeRemoteHistory
         ? { remoteHistory: { createPresenter: mockCreatePresenter } }
         : {}),
+      returns: { status: returnsStatus },
     },
   };
 }

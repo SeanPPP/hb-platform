@@ -5234,6 +5234,106 @@ BEGIN
 END;
 `;
 
+/**
+ * 作废/提货在远端提交前冻结完整命令；回包丢失或 App 重启后只允许回放同一身份。
+ * 明文列仅保留索引与 scope，收银员、备注、原因、原始设备等完整指纹均在认证密文内。
+ */
+const M36 = `
+CREATE TABLE installment_lifecycle_actions (
+  operation_guid TEXT PRIMARY KEY,
+  store_code TEXT NOT NULL,
+  device_code TEXT NOT NULL,
+  installment_guid TEXT NOT NULL,
+  action_kind TEXT NOT NULL CHECK (action_kind IN ('void', 'pickup')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  resolution TEXT NULL CHECK (resolution IS NULL OR resolution = 'Completed'),
+  payload_revision INTEGER NOT NULL CHECK (payload_revision = 1),
+  command_ciphertext BLOB NOT NULL,
+  created_at_iso TEXT NOT NULL,
+  updated_at_iso TEXT NOT NULL,
+  resolved_at_iso TEXT NULL,
+  CHECK (idempotency_key = operation_guid),
+  CHECK (
+    (resolution IS NULL AND resolved_at_iso IS NULL)
+    OR (resolution = 'Completed' AND resolved_at_iso IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX ux_installment_lifecycle_terminal_blocking
+  ON installment_lifecycle_actions (store_code, device_code)
+  WHERE resolution IS NULL;
+
+CREATE INDEX ix_installment_lifecycle_terminal_history
+  ON installment_lifecycle_actions (
+    store_code, device_code, created_at_iso, operation_guid
+  );
+
+CREATE TRIGGER trg_installment_lifecycle_immutable
+BEFORE UPDATE ON installment_lifecycle_actions
+FOR EACH ROW
+WHEN
+  NEW.operation_guid <> OLD.operation_guid
+  OR NEW.store_code <> OLD.store_code
+  OR NEW.device_code <> OLD.device_code
+  OR NEW.installment_guid <> OLD.installment_guid
+  OR NEW.action_kind <> OLD.action_kind
+  OR NEW.idempotency_key <> OLD.idempotency_key
+  OR NEW.payload_revision <> OLD.payload_revision
+  OR NEW.command_ciphertext <> OLD.command_ciphertext
+  OR NEW.created_at_iso <> OLD.created_at_iso
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_IMMUTABLE');
+END;
+
+CREATE TRIGGER trg_installment_lifecycle_resolution_transition
+BEFORE UPDATE OF resolution, resolved_at_iso ON installment_lifecycle_actions
+FOR EACH ROW
+WHEN NOT (
+  OLD.resolution IS NULL
+  AND OLD.resolved_at_iso IS NULL
+  AND NEW.resolution = 'Completed'
+  AND NEW.resolved_at_iso IS NOT NULL
+)
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_RESOLUTION_INVALID');
+END;
+
+CREATE TRIGGER trg_installment_lifecycle_no_delete
+BEFORE DELETE ON installment_lifecycle_actions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_DELETE_FORBIDDEN');
+END;
+`;
+
+/**
+ * Created 阶段收到服务端确定性 Card 不支持时，保留专用终结原因与审计事实。
+ * 旧 resolution 继续使用 Declined，以避免重建已被外键引用的 action 表。
+ */
+const M37 = `
+ALTER TABLE installment_actions
+ADD COLUMN resolution_code TEXT NULL CHECK (
+  resolution_code IS NULL OR resolution_code = 'PaymentMethodUnsupported'
+);
+
+CREATE TRIGGER trg_installment_actions_resolution_code_transition
+BEFORE UPDATE OF resolution_code ON installment_actions
+FOR EACH ROW
+WHEN NOT (
+  OLD.resolution_code IS NULL
+  AND NEW.resolution_code = 'PaymentMethodUnsupported'
+  AND OLD.resolution IS NULL
+  AND NEW.resolution = 'Declined'
+  AND OLD.state = 'ProviderPending'
+  AND NEW.state = 'ProviderPending'
+  AND OLD.resolved_at_iso IS NULL
+  AND NEW.resolved_at_iso IS NOT NULL
+)
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_ACTION_RESOLUTION_CODE_INVALID');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5270,6 +5370,8 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 33, name: "M33_remote_receipt_reprint_identity", sql: M33 },
   { version: 34, name: "M34_installment_receipt_reprint_identity", sql: M34 },
   { version: 35, name: "M35_installment_payment_success_external_order", sql: M35 },
+  { version: 36, name: "M36_installment_lifecycle_actions", sql: M36 },
+  { version: 37, name: "M37_installment_action_resolution_code", sql: M37 },
 ];
 
 export async function applyMigrations(

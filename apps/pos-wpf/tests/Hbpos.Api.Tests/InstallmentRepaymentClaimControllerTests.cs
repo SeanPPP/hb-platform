@@ -112,12 +112,14 @@ public sealed class InstallmentRepaymentClaimControllerTests
         AssertError(action, StatusCodes.Status403Forbidden, InstallmentRepaymentClaimErrorCodes.PermissionDenied);
     }
 
-    [Fact]
-    public async Task Boundary_validation_errors_map_to_http_400()
+    [Theory]
+    [InlineData(InstallmentRepaymentClaimErrorCodes.Invalid)]
+    [InlineData(InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported)]
+    public async Task Boundary_validation_errors_map_to_http_400(string errorCode)
     {
         var claims = new FakeClaimService
         {
-            ErrorCode = InstallmentRepaymentClaimErrorCodes.Invalid
+            ErrorCode = errorCode
         };
         var controller = CreateController(claims, new FakeIdentityResolver(TrustedIdentity));
 
@@ -126,7 +128,7 @@ public sealed class InstallmentRepaymentClaimControllerTests
             CreateRequest(),
             CancellationToken.None);
 
-        AssertError(action, StatusCodes.Status400BadRequest, InstallmentRepaymentClaimErrorCodes.Invalid);
+        AssertError(action, StatusCodes.Status400BadRequest, errorCode);
     }
 
     [Fact]

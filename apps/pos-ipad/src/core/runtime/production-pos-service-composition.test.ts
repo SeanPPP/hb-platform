@@ -1132,6 +1132,9 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
       async loadBlocking() {
         return hasBlockingAction ? { actionId: "blocking-installment" } : null;
       },
+      async loadLifecycleBlocking() {
+        return null;
+      },
     }),
     installmentPaymentPersistence: () => ({
       providerAttempts: {},

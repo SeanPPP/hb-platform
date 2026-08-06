@@ -8,7 +8,7 @@ namespace Hbpos.Api.Tests;
 public sealed class InstallmentRepaymentClaimContractsTests
 {
     [Fact]
-    public void Release_keeps_cross_device_disabled_while_development_enables_local_testing()
+    public void Release_and_development_enable_required_cross_device_claims()
     {
         var releaseConfiguration = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
@@ -25,7 +25,9 @@ public sealed class InstallmentRepaymentClaimContractsTests
         var developmentOptions = new InstallmentRepaymentClaimOptions();
         developmentConfiguration.GetSection("InstallmentRepaymentClaims").Bind(developmentOptions);
 
-        Assert.False(releaseOptions.CrossDeviceEnabled);
+        Assert.True(releaseOptions.Required);
+        Assert.True(releaseOptions.CrossDeviceEnabled);
+        Assert.True(developmentOptions.Required);
         Assert.True(developmentOptions.CrossDeviceEnabled);
     }
 
@@ -41,6 +43,7 @@ public sealed class InstallmentRepaymentClaimContractsTests
         Assert.True(capabilities.RepaymentClaimsSupported);
         Assert.False(capabilities.RepaymentClaimsRequired);
         Assert.False(capabilities.CrossDeviceRepaymentEnabled);
+        Assert.False(capabilities.CardRepaymentSupported);
         Assert.Equal(120, capabilities.PreparedClaimTtlSeconds);
     }
 

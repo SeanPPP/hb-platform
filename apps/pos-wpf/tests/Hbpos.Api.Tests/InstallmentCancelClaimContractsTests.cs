@@ -17,7 +17,7 @@ namespace Hbpos.Api.Tests;
 public sealed class InstallmentCancelClaimContractsTests
 {
     [Fact]
-    public void Release_configuration_keeps_fail_closed_default_but_exposes_optional_cancel_claims()
+    public void Release_configuration_requires_cancel_claims()
     {
         Assert.True(new InstallmentCancelClaimOptions().Required);
 
@@ -37,8 +37,8 @@ public sealed class InstallmentCancelClaimContractsTests
             Options.Create(new InstallmentRepaymentClaimOptions()),
             cancelOptions: cancelOptions);
 
-        Assert.False(cancelOptions.Value.Required);
-        Assert.False(service.GetCapabilities().CancelClaimsRequired);
+        Assert.True(cancelOptions.Value.Required);
+        Assert.True(service.GetCapabilities().CancelClaimsRequired);
     }
 
     [Fact]

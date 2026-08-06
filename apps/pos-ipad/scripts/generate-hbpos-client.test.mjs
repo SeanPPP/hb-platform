@@ -240,7 +240,11 @@ assert.deepEqual(
     "preparedClaimTtlSeconds",
     "cancelClaimsSupported",
     "cancelClaimsRequired",
-    "cancelPreparedClaimTtlSeconds"
+    "cancelPreparedClaimTtlSeconds",
+    "crossDeviceCancelRefundEnabled",
+    "crossDeviceVoidEnabled",
+    "crossDevicePickupEnabled",
+    "cardRepaymentSupported"
   ]
 );
 assert.deepEqual(
@@ -380,7 +384,9 @@ assert.deepEqual(
     "updatedAtUtc",
     "expiresAtUtc",
     "commit",
-    "alreadyExists"
+    "alreadyExists",
+    "originalDeviceCode",
+    "executingDeviceCode"
   ]
 );
 for (const guidField of ["installmentGuid", "operationGuid"]) {

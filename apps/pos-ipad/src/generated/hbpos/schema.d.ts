@@ -4259,6 +4259,8 @@ export interface components {
             expiresAtUtc?: string | null;
             commit?: components["schemas"]["InstallmentCancelClaimCommitResponse"];
             alreadyExists?: boolean;
+            originalDeviceCode?: string | null;
+            executingDeviceCode?: string | null;
         };
         InstallmentCancelClaimDtoApiResult: {
             success?: boolean;
@@ -4330,6 +4332,9 @@ export interface components {
             /** Format: date-time */
             confirmedAt?: string;
             note?: string | null;
+            /** Format: uuid */
+            operationGuid?: string;
+            idempotencyKey?: string | null;
         };
         InstallmentConfirmPickupResponse: {
             /** Format: uuid */
@@ -4505,6 +4510,10 @@ export interface components {
             cancelClaimsRequired?: boolean;
             /** Format: int32 */
             cancelPreparedClaimTtlSeconds?: number;
+            crossDeviceCancelRefundEnabled?: boolean;
+            crossDeviceVoidEnabled?: boolean;
+            crossDevicePickupEnabled?: boolean;
+            cardRepaymentSupported?: boolean;
         };
         InstallmentRepaymentCapabilitiesResponseApiResult: {
             success?: boolean;
@@ -4612,6 +4621,8 @@ export interface components {
             voidedAt?: string;
             reason?: string | null;
             idempotencyKey?: string | null;
+            /** Format: uuid */
+            operationGuid?: string;
         };
         InstallmentVoidResponse: {
             /** Format: uuid */

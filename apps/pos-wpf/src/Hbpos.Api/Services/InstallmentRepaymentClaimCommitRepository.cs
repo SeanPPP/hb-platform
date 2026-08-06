@@ -529,8 +529,7 @@ public sealed class InstallmentRepaymentClaimEntity
 
 internal static class InstallmentRepaymentClaimCommitEvidenceValidator
 {
-    // 这里只校验已认证 POS 提交证据的结构、金额与 provider 归属；不把这些字段伪装成收单方加密签名。
-    // 真正的 provider 结果恢复仍由发起设备的耐久 attempt 完成。
+    // Cash/Voucher 可由服务端权威记账；Card 在缺少 Square/Linkly 服务端绑定前一律 fail closed。
     public static void Validate(
         InstallmentRepaymentClaimRecord claim,
         InstallmentRepaymentClaimCommitRequest request)
@@ -554,16 +553,7 @@ internal static class InstallmentRepaymentClaimCommitEvidenceValidator
                 NormalizeRequired(request.ReservationToken, "reservationToken");
                 break;
             case PaymentMethodKind.Card:
-                if (provider is not ProviderFamily.Square and not ProviderFamily.Linkly)
-                {
-                    throw Invalid("Card repayment claim provider is invalid.");
-                }
-                if (!string.IsNullOrWhiteSpace(request.ReservationToken))
-                {
-                    throw Invalid("Card repayment must not contain a voucher reservation token.");
-                }
-                ValidateCardEvidence(claim, provider, request.CardTransactions);
-                break;
+                throw CardRepaymentUnavailable();
             default:
                 throw Invalid("Repayment claim method is invalid.");
         }
@@ -580,81 +570,10 @@ internal static class InstallmentRepaymentClaimCommitEvidenceValidator
             case PaymentMethodKind.Voucher:
                 RequireProvider(provider, ProviderFamily.Voucher, "voucher");
                 break;
-            case PaymentMethodKind.Card when provider is ProviderFamily.Square or ProviderFamily.Linkly:
-                break;
             case PaymentMethodKind.Card:
-                throw Invalid("Card repayment claim provider is invalid.");
+                throw CardRepaymentUnavailable();
             default:
                 throw Invalid("Repayment claim method is invalid.");
-        }
-    }
-
-    private static void ValidateCardEvidence(
-        InstallmentRepaymentClaimRecord claim,
-        ProviderFamily claimProvider,
-        IReadOnlyList<CardTransactionDto>? transactions)
-    {
-        if (transactions is not { Count: > 0 })
-        {
-            throw Invalid("Card repayment requires transaction evidence.");
-        }
-
-        decimal total = 0m;
-        foreach (var transaction in transactions)
-        {
-            var processor = ProviderFamilyOf(transaction.Processor);
-            if (processor is not ProviderFamily.Square and not ProviderFamily.Linkly)
-            {
-                throw Invalid("Card transaction processor is invalid.");
-            }
-            if (processor != claimProvider)
-            {
-                throw Invalid("Card transaction processor does not match the claim provider.");
-            }
-            if (string.IsNullOrWhiteSpace(transaction.TxnRef))
-            {
-                throw Invalid("Card transaction reference is required.");
-            }
-            if (transaction.Amount <= 0m || RoundCurrency(transaction.Amount) != transaction.Amount)
-            {
-                throw Invalid("Card transaction amount must be a positive currency amount.");
-            }
-            ValidateCardApproval(processor, transaction);
-            try
-            {
-                total += transaction.Amount;
-            }
-            catch (OverflowException)
-            {
-                throw Invalid("Card transaction amount total is invalid.");
-            }
-        }
-
-        if (RoundCurrency(total) != claim.Amount)
-        {
-            throw Invalid("Card transaction amount total does not match the claim amount.");
-        }
-    }
-
-    private static void ValidateCardApproval(ProviderFamily provider, CardTransactionDto transaction)
-    {
-        if (provider == ProviderFamily.Square)
-        {
-            // Square 的真实 WPF/iPad 合同以 COMPLETED 为批准终态，ResponseCode 可以为空。
-            if (!string.Equals(transaction.ResponseText?.Trim(), "COMPLETED", StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrWhiteSpace(transaction.ResponseCode) &&
-                 !string.Equals(transaction.ResponseCode.Trim(), "00", StringComparison.Ordinal)))
-            {
-                throw Invalid("Square card transaction evidence is not approved.");
-            }
-
-            return;
-        }
-
-        // Linkly/ANZ 必须携带共同批准码 00；空值、拒绝码和未知码一律失败。
-        if (!string.Equals(transaction.ResponseCode?.Trim(), "00", StringComparison.Ordinal))
-        {
-            throw Invalid("Linkly card transaction evidence is not approved.");
         }
     }
 
@@ -684,8 +603,6 @@ internal static class InstallmentRepaymentClaimCommitEvidenceValidator
         {
             "cash" => ProviderFamily.Cash,
             "voucher" => ProviderFamily.Voucher,
-            "square" => ProviderFamily.Square,
-            "linkly" or "linklycloud" or "anz" or "anzlinkly" => ProviderFamily.Linkly,
             _ => ProviderFamily.Unknown
         };
     }
@@ -707,12 +624,13 @@ internal static class InstallmentRepaymentClaimCommitEvidenceValidator
         InstallmentRepaymentClaimErrorCodes.Invalid,
         message);
 
+    private static InstallmentRepaymentClaimException CardRepaymentUnavailable() => Invalid(
+        "Card installment repayment is unavailable until provider evidence can be verified by the server.");
+
     private enum ProviderFamily
     {
         Unknown,
         Cash,
-        Voucher,
-        Square,
-        Linkly
+        Voucher
     }
 }

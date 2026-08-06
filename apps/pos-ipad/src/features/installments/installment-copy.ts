@@ -68,6 +68,8 @@ export const installmentEnglishCopy = {
     "Details are unavailable. Refresh the selected installment and try again.",
   "details.crossDeviceRepaymentNotice":
     "Created on another device. You can continue payment here; cancellation, void, pickup and receipt reprint remain on the original device.",
+  "details.crossDeviceActionNotice":
+    "Created on another device. Only the server-authorized actions shown here are available; receipt reprint remains on the original device.",
   "reprint.accessibility": "Reprint receipt for {{installmentNumber}}",
   "reprint.hint":
     "Prints another copy of the existing installment receipt.",
@@ -263,6 +265,8 @@ const installmentChineseCopy = {
   "details.offlineHint": "详情暂不可用，请刷新所选分期后重试。",
   "details.crossDeviceRepaymentNotice":
     "此分期单创建于另一台设备；本机可继续付款，取消、作废、提货和重打小票仍须回到原设备操作。",
+  "details.crossDeviceActionNotice":
+    "此分期单创建于另一台设备；本机仅可执行服务端已放行并显示的操作，重打小票仍须回到原设备。",
   "reprint.accessibility": "重打分期单 {{installmentNumber}} 的小票",
   "reprint.hint": "再次打印这张分期单的既有小票。",
   "reprint.succeeded": "小票已重打。",

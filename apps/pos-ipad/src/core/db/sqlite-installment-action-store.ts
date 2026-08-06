@@ -4,6 +4,7 @@ import type {
   InstallmentActionStorePort,
   InstallmentPaymentAction,
   PersistedInstallmentAction,
+  PersistedInstallmentLifecycleAction,
 } from "../runtime/production-installment-runtime";
 
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
@@ -16,6 +17,7 @@ export type {
 };
 
 export const INSTALLMENT_ACTION_PAYLOAD_REVISION = 1;
+export const INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION = 1;
 
 type TerminalScope = Parameters<
   InstallmentActionStorePort["loadBlocking"]
@@ -33,6 +35,7 @@ type ActionRow = Readonly<{
   amount_cents: unknown;
   state: unknown;
   resolution: unknown;
+  resolution_code: unknown;
   payload_revision: unknown;
   command_ciphertext: unknown;
 }>;
@@ -47,6 +50,31 @@ type ActionEnvelopeV1 = Readonly<{
   }>;
   action: InstallmentPaymentAction;
   command: InstallmentActionCommand;
+  intentFingerprint: string;
+}>;
+
+type LifecycleRow = Readonly<{
+  operation_guid: unknown;
+  store_code: unknown;
+  device_code: unknown;
+  installment_guid: unknown;
+  action_kind: unknown;
+  idempotency_key: unknown;
+  resolution: unknown;
+  payload_revision: unknown;
+  command_ciphertext: unknown;
+}>;
+
+type LifecycleEnvelopeV1 = Readonly<{
+  format: "hb-pos-installment-lifecycle-v1";
+  aad: Readonly<{
+    revision: 1;
+    storeCode: string;
+    deviceCode: string;
+    operationGuid: string;
+  }>;
+  originalDeviceCode: string;
+  command: PersistedInstallmentLifecycleAction["command"];
   intentFingerprint: string;
 }>;
 
@@ -71,6 +99,20 @@ export class SqliteInstallmentActionStore
       );
     }
     return this.readRow(rows[0]!);
+  }
+
+  public async loadLifecycleBlocking(
+    terminal: TerminalScope,
+  ): Promise<PersistedInstallmentLifecycleAction | null> {
+    const scope = normalizeTerminal(terminal);
+    const rows = await selectLifecycleBlockingRows(this.connection, scope);
+    if (rows.length === 0) return null;
+    if (rows.length !== 1) {
+      throw new Error(
+        "Persisted installment lifecycle terminal uniqueness is invalid.",
+      );
+    }
+    return this.readLifecycleRow(rows[0]!);
   }
 
   /** provider 恢复按稳定 actionId 读取；终态事实也必须继续可验证。 */
@@ -103,6 +145,11 @@ export class SqliteInstallmentActionStore
           storeCode: candidate.storeCode,
           deviceCode: candidate.deviceCode,
         };
+        if ((await selectLifecycleBlockingRows(transaction, scope)).length > 0) {
+          throw new Error(
+            "A persisted installment lifecycle action blocks payment creation.",
+          );
+        }
         const existing = await selectBlockingRows(transaction, scope);
         if (existing.length > 1) {
           throw new Error(
@@ -153,6 +200,105 @@ export class SqliteInstallmentActionStore
         return Object.freeze({ created: true, action: candidate });
       },
     );
+  }
+
+  public async createLifecycleIfNone(
+    candidateValue: PersistedInstallmentLifecycleAction,
+  ): Promise<Readonly<{
+    created: boolean;
+    action: PersistedInstallmentLifecycleAction;
+  }>> {
+    const candidate = normalizePersistedLifecycleAction(candidateValue);
+    return this.connection.withExclusiveTransaction(async (transaction) => {
+      const scope = {
+        storeCode: candidate.storeCode,
+        deviceCode: candidate.deviceCode,
+      };
+      if ((await selectBlockingRows(transaction, scope)).length > 0) {
+        throw new Error(
+          "A persisted installment payment action blocks lifecycle creation.",
+        );
+      }
+      const existing = await selectLifecycleBlockingRows(transaction, scope);
+      if (existing.length > 1) {
+        throw new Error(
+          "Persisted installment lifecycle terminal uniqueness is invalid.",
+        );
+      }
+      if (existing.length === 1) {
+        return Object.freeze({
+          created: false,
+          action: await this.readLifecycleRow(existing[0]!),
+        });
+      }
+      const ciphertext = await encryptLifecycleEnvelope(
+        this.encryptor,
+        createLifecycleEnvelope(candidate),
+      );
+      const timestamp = strictIso(
+        this.nowIso(),
+        "installment lifecycle creation time",
+      );
+      await transaction.run(
+        `INSERT INTO installment_lifecycle_actions (
+          operation_guid, store_code, device_code, installment_guid,
+          action_kind, idempotency_key, resolution, payload_revision,
+          command_ciphertext, created_at_iso, updated_at_iso, resolved_at_iso
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)`,
+        [
+          candidate.operationGuid,
+          candidate.storeCode,
+          candidate.deviceCode,
+          candidate.installmentGuid,
+          candidate.kind,
+          candidate.idempotencyKey,
+          INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION,
+          ciphertext,
+          timestamp,
+          timestamp,
+        ],
+      );
+      return Object.freeze({ created: true, action: candidate });
+    });
+  }
+
+  public async completeLifecycle(
+    input: Parameters<InstallmentActionStorePort["completeLifecycle"]>[0],
+  ): Promise<void> {
+    const scope = normalizeTerminal(input.terminal);
+    const operationGuid = uuid(input.operationGuid, "lifecycle operation GUID");
+    const timestamp = strictIso(
+      this.nowIso(),
+      "installment lifecycle resolution time",
+    );
+    await this.connection.withExclusiveTransaction(async (transaction) => {
+      const row = await selectLifecycleRow(
+        transaction,
+        scope,
+        operationGuid,
+      );
+      if (row === null) {
+        throw new Error("Installment lifecycle resolution CAS failed.");
+      }
+      // 坏密文或被换绑的 row 不能被直接标成成功。
+      await this.readLifecycleRow(row);
+      const result = await transaction.run(
+        `UPDATE installment_lifecycle_actions
+         SET resolution = 'Completed', resolved_at_iso = ?, updated_at_iso = ?
+         WHERE operation_guid = ? AND store_code = ? AND device_code = ?
+           AND resolution IS NULL`,
+        [
+          timestamp,
+          timestamp,
+          operationGuid,
+          scope.storeCode,
+          scope.deviceCode,
+        ],
+      );
+      if (result.changes !== 1) {
+        throw new Error("Installment lifecycle resolution CAS failed.");
+      }
+    });
   }
 
   public async transition(
@@ -236,7 +382,8 @@ export class SqliteInstallmentActionStore
     if (
       input.reason !== "ClaimBusy" &&
       input.reason !== "ClaimMismatch" &&
-      input.reason !== "ClaimReleased"
+      input.reason !== "ClaimReleased" &&
+      input.reason !== "PaymentMethodUnsupported"
     ) {
       throw new TypeError("Installment created failure reason is invalid.");
     }
@@ -281,10 +428,15 @@ export class SqliteInstallmentActionStore
         }
         const resolved = await transaction.run(
           `UPDATE installment_actions
-           SET resolution = 'Declined', resolved_at_iso = ?, updated_at_iso = ?
+           SET resolution = 'Declined',
+               resolution_code = ?,
+               resolved_at_iso = ?, updated_at_iso = ?
            WHERE action_id = ? AND store_code = ? AND device_code = ?
              AND state = 'ProviderPending' AND resolution IS NULL`,
           [
+            input.reason === "PaymentMethodUnsupported"
+              ? "PaymentMethodUnsupported"
+              : null,
             timestamp,
             timestamp,
             actionId,
@@ -298,7 +450,12 @@ export class SqliteInstallmentActionStore
           );
         }
 
-        if (input.reason === "ClaimMismatch") {
+        if (
+          input.reason === "ClaimMismatch" ||
+          input.reason === "PaymentMethodUnsupported"
+        ) {
+          const paymentMethodUnsupported =
+            input.reason === "PaymentMethodUnsupported";
           const audit = await transaction.run(
             `INSERT INTO audit_events (
                event_id, event_type, occurred_at_iso, order_guid,
@@ -307,12 +464,18 @@ export class SqliteInstallmentActionStore
              ) VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, NULL)`,
             [
               actionId,
-              "INSTALLMENT_REPAYMENT_CLAIM_REVIEW",
+              paymentMethodUnsupported
+                ? "INSTALLMENT_REPAYMENT_PAYMENT_METHOD_UNSUPPORTED"
+                : "INSTALLMENT_REPAYMENT_CLAIM_REVIEW",
               timestamp,
               actionId,
               JSON.stringify({
-                outcome: "RequiresReview",
-                reason: "Repayment claim provider binding mismatch.",
+                outcome: paymentMethodUnsupported
+                  ? "PaymentMethodUnsupported"
+                  : "RequiresReview",
+                reason: paymentMethodUnsupported
+                  ? "Card installment repayment is unsupported."
+                  : "Repayment claim provider binding mismatch.",
                 status: "Failed",
               }),
               scope.storeCode,
@@ -444,6 +607,60 @@ export class SqliteInstallmentActionStore
       );
     }
   }
+
+  private async readLifecycleRow(
+    row: LifecycleRow,
+  ): Promise<PersistedInstallmentLifecycleAction> {
+    try {
+      if (row.resolution !== null) throw new Error("resolved");
+      const revision = integer(row.payload_revision, "payload revision");
+      if (revision !== INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION) {
+        throw new Error("revision");
+      }
+      const operationGuid = uuid(
+        row.operation_guid,
+        "lifecycle operation GUID",
+      );
+      const storeCode = identity(row.store_code, "store code", 50);
+      const deviceCode = identity(row.device_code, "device code", 128);
+      const installmentGuid = uuid(
+        row.installment_guid,
+        "lifecycle installment GUID",
+      );
+      const kind = lifecycleKind(row.action_kind);
+      const idempotencyKey = uuid(
+        row.idempotency_key,
+        "lifecycle idempotency key",
+      );
+      const envelope = await decryptLifecycleEnvelope(
+        this.encryptor,
+        bytes(row.command_ciphertext),
+      );
+      if (
+        envelope.aad.revision !== revision ||
+        envelope.aad.storeCode !== storeCode ||
+        envelope.aad.deviceCode !== deviceCode ||
+        envelope.aad.operationGuid !== operationGuid
+      ) {
+        throw new Error("AAD");
+      }
+      return normalizePersistedLifecycleAction({
+        operationGuid,
+        idempotencyKey,
+        kind,
+        installmentGuid,
+        storeCode,
+        deviceCode,
+        originalDeviceCode: envelope.originalDeviceCode,
+        command: envelope.command,
+        intentFingerprint: envelope.intentFingerprint,
+      });
+    } catch {
+      throw new Error(
+        "Persisted installment lifecycle ciphertext or binding is invalid.",
+      );
+    }
+  }
 }
 
 async function selectBlockingRows(
@@ -471,10 +688,43 @@ async function selectActionRow(
   );
 }
 
+async function selectLifecycleBlockingRows(
+  connection: SqliteConnectionPort,
+  scope: TerminalScope,
+): Promise<readonly LifecycleRow[]> {
+  return connection.getAll<LifecycleRow>(
+    `${selectLifecycleColumns()}
+     WHERE store_code = ? AND device_code = ? AND resolution IS NULL
+     ORDER BY created_at_iso, operation_guid LIMIT 2`,
+    [scope.storeCode, scope.deviceCode],
+  );
+}
+
+async function selectLifecycleRow(
+  connection: SqliteConnectionPort,
+  scope: TerminalScope,
+  operationGuid: string,
+): Promise<LifecycleRow | null> {
+  return connection.getFirst<LifecycleRow>(
+    `${selectLifecycleColumns()}
+     WHERE operation_guid = ? AND store_code = ? AND device_code = ?
+       AND resolution IS NULL LIMIT 1`,
+    [operationGuid, scope.storeCode, scope.deviceCode],
+  );
+}
+
+function selectLifecycleColumns(): string {
+  return `SELECT operation_guid, store_code, device_code,
+    installment_guid, action_kind, idempotency_key, resolution,
+    payload_revision, command_ciphertext
+  FROM installment_lifecycle_actions`;
+}
+
 function selectColumns(): string {
   return `SELECT action_id, store_code, device_code, installment_guid,
     action_kind, idempotency_key, payment_guid, payment_method,
-    amount_cents, state, resolution, payload_revision, command_ciphertext
+    amount_cents, state, resolution, resolution_code, payload_revision,
+    command_ciphertext
   FROM installment_actions`;
 }
 
@@ -495,6 +745,23 @@ function createEnvelope(
   });
 }
 
+function createLifecycleEnvelope(
+  value: PersistedInstallmentLifecycleAction,
+): LifecycleEnvelopeV1 {
+  return Object.freeze({
+    format: "hb-pos-installment-lifecycle-v1",
+    aad: Object.freeze({
+      revision: INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION,
+      storeCode: value.storeCode,
+      deviceCode: value.deviceCode,
+      operationGuid: value.operationGuid,
+    }),
+    originalDeviceCode: value.originalDeviceCode,
+    command: value.command,
+    intentFingerprint: value.intentFingerprint,
+  });
+}
+
 async function encryptEnvelope(
   encryptor: SensitivePayloadEncryptor,
   envelope: ActionEnvelopeV1,
@@ -502,6 +769,17 @@ async function encryptEnvelope(
   const ciphertext = await encryptor.encrypt(JSON.stringify(envelope));
   if (!(ciphertext instanceof Uint8Array) || ciphertext.length === 0) {
     throw new Error("Installment action encryption failed.");
+  }
+  return ciphertext;
+}
+
+async function encryptLifecycleEnvelope(
+  encryptor: SensitivePayloadEncryptor,
+  envelope: LifecycleEnvelopeV1,
+): Promise<Uint8Array> {
+  const ciphertext = await encryptor.encrypt(JSON.stringify(envelope));
+  if (!(ciphertext instanceof Uint8Array) || ciphertext.length === 0) {
+    throw new Error("Installment lifecycle encryption failed.");
   }
   return ciphertext;
 }
@@ -553,6 +831,60 @@ async function decryptEnvelope(
   });
 }
 
+async function decryptLifecycleEnvelope(
+  encryptor: SensitivePayloadEncryptor,
+  ciphertext: Uint8Array,
+): Promise<LifecycleEnvelopeV1> {
+  const value = JSON.parse(await encryptor.decrypt(ciphertext)) as unknown;
+  if (
+    !exact(value, [
+      "format",
+      "aad",
+      "originalDeviceCode",
+      "command",
+      "intentFingerprint",
+    ]) ||
+    value.format !== "hb-pos-installment-lifecycle-v1" ||
+    !exact(value.aad, [
+      "revision",
+      "storeCode",
+      "deviceCode",
+      "operationGuid",
+    ]) ||
+    value.aad.revision !== INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION
+  ) {
+    throw new Error("Invalid installment lifecycle envelope.");
+  }
+  const operationGuid = uuid(
+    value.aad.operationGuid,
+    "lifecycle operation GUID",
+  );
+  const deviceCode = identity(value.aad.deviceCode, "device code", 128);
+  return Object.freeze({
+    format: "hb-pos-installment-lifecycle-v1",
+    aad: Object.freeze({
+      revision: INSTALLMENT_LIFECYCLE_PAYLOAD_REVISION,
+      storeCode: identity(value.aad.storeCode, "store code", 50),
+      deviceCode,
+      operationGuid,
+    }),
+    originalDeviceCode: identity(
+      value.originalDeviceCode,
+      "original device code",
+      128,
+    ),
+    command: normalizeLifecycleCommand(
+      value.command,
+      operationGuid,
+      deviceCode,
+    ),
+    intentFingerprint: sha256Fingerprint(
+      value.intentFingerprint,
+      "lifecycle intent fingerprint",
+    ),
+  });
+}
+
 function normalizePersistedAction(value: unknown): PersistedInstallmentAction {
   if (
     !exact(value, [
@@ -581,6 +913,137 @@ function normalizePersistedAction(value: unknown): PersistedInstallmentAction {
     state: state(value.state),
     storeCode,
   });
+}
+
+function normalizePersistedLifecycleAction(
+  value: unknown,
+): PersistedInstallmentLifecycleAction {
+  if (
+    !exact(value, [
+      "operationGuid",
+      "idempotencyKey",
+      "kind",
+      "installmentGuid",
+      "storeCode",
+      "deviceCode",
+      "originalDeviceCode",
+      "command",
+      "intentFingerprint",
+    ])
+  ) {
+    throw new TypeError("Persisted installment lifecycle action is invalid.");
+  }
+  const operationGuid = uuid(value.operationGuid, "lifecycle operation GUID");
+  const idempotencyKey = uuid(
+    value.idempotencyKey,
+    "lifecycle idempotency key",
+  );
+  if (idempotencyKey !== operationGuid) {
+    throw new TypeError("Installment lifecycle identity is invalid.");
+  }
+  const deviceCode = identity(value.deviceCode, "device code", 128);
+  const command = normalizeLifecycleCommand(
+    value.command,
+    operationGuid,
+    deviceCode,
+  );
+  const installmentGuid = uuid(
+    value.installmentGuid,
+    "lifecycle installment GUID",
+  );
+  if (command.installmentGuid !== installmentGuid) {
+    throw new TypeError("Installment lifecycle identity is invalid.");
+  }
+  const kind = lifecycleKind(value.kind);
+  if (
+    (kind === "void" && !("voidedAtIso" in command)) ||
+    (kind === "pickup" && !("confirmedAtIso" in command))
+  ) {
+    throw new TypeError("Installment lifecycle command kind is invalid.");
+  }
+  return Object.freeze({
+    operationGuid,
+    idempotencyKey,
+    kind,
+    installmentGuid,
+    storeCode: identity(value.storeCode, "store code", 50),
+    deviceCode,
+    originalDeviceCode: identity(
+      value.originalDeviceCode,
+      "original device code",
+      128,
+    ),
+    command,
+    intentFingerprint: sha256Fingerprint(
+      value.intentFingerprint,
+      "lifecycle intent fingerprint",
+    ),
+  });
+}
+
+function normalizeLifecycleCommand(
+  value: unknown,
+  expectedOperationGuid: string,
+  expectedDeviceCode: string,
+): PersistedInstallmentLifecycleAction["command"] {
+  if (!record(value)) {
+    throw new TypeError("Installment lifecycle command is invalid.");
+  }
+  const commonKeys = [
+    "deviceCode",
+    "cashierId",
+    "cashierName",
+    "installmentGuid",
+    "operationGuid",
+    "idempotencyKey",
+  ] as const;
+  const isVoid = Object.prototype.hasOwnProperty.call(value, "voidedAtIso");
+  if (
+    isVoid
+      ? !exact(value, [...commonKeys, "voidedAtIso", "reason"])
+      : !exact(value, [...commonKeys, "confirmedAtIso", "note"])
+  ) {
+    throw new TypeError("Installment lifecycle command is invalid.");
+  }
+  const operationGuid = uuid(value.operationGuid, "lifecycle operation GUID");
+  const idempotencyKey = uuid(
+    value.idempotencyKey,
+    "lifecycle idempotency key",
+  );
+  if (
+    operationGuid !== expectedOperationGuid ||
+    idempotencyKey !== expectedOperationGuid
+  ) {
+    throw new TypeError("Installment lifecycle command identity is invalid.");
+  }
+  const common = Object.freeze({
+    ...commandIdentity(value, expectedDeviceCode),
+    installmentGuid: uuid(
+      value.installmentGuid,
+      "lifecycle installment GUID",
+    ),
+    operationGuid,
+    idempotencyKey,
+  });
+  if (isVoid) {
+    return Object.freeze({
+      ...common,
+      voidedAtIso: strictIso(value.voidedAtIso, "void time"),
+      reason: confidential(value.reason, "void reason", 1_000),
+    });
+  }
+  return Object.freeze({
+    ...common,
+    confirmedAtIso: strictIso(value.confirmedAtIso, "pickup time"),
+    note: nullableConfidential(value.note, "pickup note", 1_000),
+  });
+}
+
+function lifecycleKind(value: unknown): "void" | "pickup" {
+  if (value !== "void" && value !== "pickup") {
+    throw new TypeError("Installment lifecycle action kind is invalid.");
+  }
+  return value;
 }
 
 function normalizeAction(value: unknown): InstallmentPaymentAction {

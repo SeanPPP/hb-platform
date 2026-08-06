@@ -1,4 +1,9 @@
-import { Redirect, type Href, useRouter } from "expo-router";
+import {
+  Redirect,
+  type Href,
+  useLocalSearchParams,
+  useRouter,
+} from "expo-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -36,6 +41,10 @@ type ReturnRouteFailure = "unavailable" | "creation";
  */
 export default function ReturnsRoute() {
   const { dismissTo } = useRouter();
+  const params = useLocalSearchParams<{
+    orderRef?: string | string[];
+  }>();
+  const initialReceiptQuery = routeOrderRef(params.orderRef);
   const runtime = usePosRuntime();
   const { i18n } = useTranslation();
   const activeCashier = useCashierLoginStore((state) => state.activeCashier);
@@ -140,10 +149,20 @@ export default function ReturnsRoute() {
 
   return (
     <ReturnScreen
+      {...(initialReceiptQuery ? { initialReceiptQuery } : {})}
       onBack={() => dismissTo("/sales" as Href)}
       presenter={presenter}
     />
   );
+}
+
+function routeOrderRef(value: string | string[] | undefined): string | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (typeof candidate !== "string") return null;
+  const normalized = candidate.trim();
+  return normalized.length > 0 && normalized.length <= 128
+    ? normalized
+    : null;
 }
 
 function ReturnRouteError({

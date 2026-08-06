@@ -205,7 +205,10 @@ export type InstallmentReprintState =
 
 export type InstallmentPresenterCapabilities = Readonly<{
   reprint: boolean;
+  selectedDetailsCancelRefundable: boolean;
+  selectedDetailsPickupConfirmable: boolean;
   selectedDetailsRepayable: boolean;
+  selectedDetailsVoidable: boolean;
   selectedDetailsWritable: boolean;
 }>;
 
@@ -233,6 +236,9 @@ export class InstallmentPresenter {
   private reprintInFlight: Promise<void> | null = null;
   private repaymentClaimsSupported = false;
   private crossDeviceRepaymentEnabled = false;
+  private crossDeviceCancelRefundEnabled = false;
+  private crossDeviceVoidEnabled = false;
+  private crossDevicePickupEnabled = false;
 
   public constructor(private readonly options: InstallmentPresenterOptions) {
     this.workflow = options.workflow;
@@ -291,7 +297,12 @@ export class InstallmentPresenter {
   public get capabilities(): InstallmentPresenterCapabilities {
     return Object.freeze({
       reprint: this.reprintableDetails() !== null,
+      selectedDetailsCancelRefundable:
+        this.selectedDetailsCancelRefundable(),
+      selectedDetailsPickupConfirmable:
+        this.selectedDetailsPickupConfirmable(),
       selectedDetailsRepayable: this.selectedDetailsRepayable(),
+      selectedDetailsVoidable: this.selectedDetailsVoidable(),
       selectedDetailsWritable: this.selectedDetailsWritable(),
     });
   }
@@ -317,6 +328,9 @@ export class InstallmentPresenter {
     if (!online) {
       this.repaymentClaimsSupported = false;
       this.crossDeviceRepaymentEnabled = false;
+      this.crossDeviceCancelRefundEnabled = false;
+      this.crossDeviceVoidEnabled = false;
+      this.crossDevicePickupEnabled = false;
       this.loadGeneration += 1;
       this.detailGeneration += 1;
       this.reprintGeneration += 1;
@@ -482,6 +496,9 @@ export class InstallmentPresenter {
     // 每一轮加载都先失败关闭；只有本轮可信服务端快照成功才开放跨机续付。
     this.repaymentClaimsSupported = false;
     this.crossDeviceRepaymentEnabled = false;
+    this.crossDeviceCancelRefundEnabled = false;
+    this.crossDeviceVoidEnabled = false;
+    this.crossDevicePickupEnabled = false;
     this.detailGeneration += 1;
     this.reprintGeneration += 1;
     this.nextSkip = 0;
@@ -509,6 +526,13 @@ export class InstallmentPresenter {
         this.crossDeviceRepaymentEnabled =
           capabilitiesResult.value.repaymentClaimsSupported &&
           capabilitiesResult.value.crossDeviceRepaymentEnabled;
+        this.crossDeviceCancelRefundEnabled =
+          capabilitiesResult.value.cancelClaimsSupported === true &&
+          capabilitiesResult.value.crossDeviceCancelRefundEnabled;
+        this.crossDeviceVoidEnabled =
+          capabilitiesResult.value.crossDeviceVoidEnabled;
+        this.crossDevicePickupEnabled =
+          capabilitiesResult.value.crossDevicePickupEnabled;
       }
       if (ordersResult.status === "rejected") throw ordersResult.reason;
       const orders = ordersResult.value;
@@ -745,7 +769,10 @@ export class InstallmentPresenter {
   }
 
   public cancelWithRefund(): Promise<void> {
-    const guard = this.guardSelectedWrite(this.state.access.canCancel);
+    const guard = this.guardSelectedAction(
+      this.state.access.canCancel,
+      this.selectedDetailsCancelRefundable(),
+    );
     if (guard) return guard;
     const details = this.state.details;
     if (
@@ -767,7 +794,10 @@ export class InstallmentPresenter {
   }
 
   public voidSelected(): Promise<void> {
-    const guard = this.guardSelectedWrite(this.state.access.canCancel);
+    const guard = this.guardSelectedAction(
+      this.state.access.canCancel,
+      this.selectedDetailsVoidable(),
+    );
     if (guard) return guard;
     const details = this.state.details;
     if (
@@ -790,8 +820,9 @@ export class InstallmentPresenter {
   }
 
   public confirmPickup(): Promise<void> {
-    const guard = this.guardSelectedWrite(
+    const guard = this.guardSelectedAction(
       this.state.access.canConfirmPickup,
+      this.selectedDetailsPickupConfirmable(),
     );
     if (guard) return guard;
     const details = this.state.details;
@@ -834,13 +865,14 @@ export class InstallmentPresenter {
     return null;
   }
 
-  private guardSelectedWrite(
+  private guardSelectedAction(
     hasPermission: boolean,
+    scopeAllowed: boolean,
   ): Promise<void> | null {
     const guard = this.guardWrite(hasPermission);
     if (guard) return guard;
-    if (this.state.details && !this.selectedDetailsWritable()) {
-      // 中文注释：本店历史允许查看他机详情，但既有分期只能由创建它的可信终端修改。
+    if (this.state.details && !scopeAllowed) {
+      // 中文注释：跨机生命周期动作必须由本轮可信 capability 逐项放行；跨店始终拒绝。
       this.patch({ statusCode: "conflict" });
       return Promise.resolve();
     }
@@ -981,6 +1013,55 @@ export class InstallmentPresenter {
       return false;
     }
     return this.selectedDetailsRepaymentScopeAllowed(details);
+  }
+
+  private selectedDetailsCancelRefundable(): boolean {
+    const details = this.state.details;
+    return Boolean(
+      details &&
+        details.status === "Active" &&
+        details.balanceCents > 0 &&
+        this.selectedDetailsActionScopeAllowed(
+          details,
+          this.crossDeviceCancelRefundEnabled,
+        ),
+    );
+  }
+
+  private selectedDetailsVoidable(): boolean {
+    const details = this.state.details;
+    return Boolean(
+      details &&
+        details.status === "Active" &&
+        details.balanceCents > 0 &&
+        this.selectedDetailsActionScopeAllowed(
+          details,
+          this.crossDeviceVoidEnabled,
+        ),
+    );
+  }
+
+  private selectedDetailsPickupConfirmable(): boolean {
+    const details = this.state.details;
+    return Boolean(
+      details &&
+        details.status === "PaidOff" &&
+        this.selectedDetailsActionScopeAllowed(
+          details,
+          this.crossDevicePickupEnabled,
+        ),
+    );
+  }
+
+  private selectedDetailsActionScopeAllowed(
+    details: InstallmentDetails,
+    crossDeviceEnabled: boolean,
+  ): boolean {
+    return (
+      this.selectedDetailsSameStore(details) &&
+      (details.deviceCode === this.options.trustedDeviceCode ||
+        crossDeviceEnabled)
+    );
   }
 
   private selectedDetailsRepaymentScopeAllowed(

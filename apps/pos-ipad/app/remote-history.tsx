@@ -38,6 +38,10 @@ export default function RemoteHistoryRoute() {
     activeCashier !== null &&
     hasRemoteHistoryViewPermission(activeCashier.permissions);
   const online = runtime.state.backend === "reachable";
+  const canOpenReturns =
+    activeCashier?.permissions.includes(
+      "Permissions.PosTerminal.Returns.View",
+    ) === true && runtime.services?.returns.status === "available";
   const [binding, setBinding] = useState<RemoteHistoryBinding | null>(null);
   const [integrationUnavailable, setIntegrationUnavailable] = useState(false);
   const presenter =
@@ -134,6 +138,15 @@ export default function RemoteHistoryRoute() {
   return (
     <RemoteHistoryScreen
       onBack={() => router.dismissTo("/sales" as Href)}
+      {...(canOpenReturns
+        ? {
+            onRefund: (orderGuid: string) =>
+              router.push({
+                pathname: "/returns",
+                params: { orderRef: orderGuid },
+              } as Href),
+          }
+        : {})}
       presenter={presenter}
     />
   );

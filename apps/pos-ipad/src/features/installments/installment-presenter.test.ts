@@ -513,6 +513,57 @@ test("同店跨终端 capability 启用后仅允许 Active 续付，高风险动
   assert.equal(pickupSubject.getState().statusCode, "conflict");
 });
 
+test("同店跨终端取消退款、作废和提货分别由独立 capability 放行", async () => {
+  const scenarios = [
+    {
+      capability: "crossDeviceCancelRefundEnabled" as const,
+      expectedCapability: "selectedDetailsCancelRefundable" as const,
+      expectedWrite: "cancel",
+      status: "Active" as const,
+      invoke: (subject: InstallmentPresenter) => subject.cancelWithRefund(),
+    },
+    {
+      capability: "crossDeviceVoidEnabled" as const,
+      expectedCapability: "selectedDetailsVoidable" as const,
+      expectedWrite: "void",
+      status: "Active" as const,
+      invoke: (subject: InstallmentPresenter) => subject.voidSelected(),
+    },
+    {
+      capability: "crossDevicePickupEnabled" as const,
+      expectedCapability: "selectedDetailsPickupConfirmable" as const,
+      expectedWrite: "pickup",
+      status: "PaidOff" as const,
+      invoke: (subject: InstallmentPresenter) => subject.confirmPickup(),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const workflow = new FakeWorkflow();
+    workflow[scenario.capability] = true;
+    const installmentGuid =
+      scenario.status === "PaidOff" ? GUID_PAID : GUID_ACTIVE;
+    workflow.detailResults.set(
+      installmentGuid,
+      Promise.resolve({
+        ...details(scenario.status),
+        deviceCode: "IPAD-2",
+      }),
+    );
+    const subject = presenter(workflow);
+
+    await subject.load();
+    await subject.select(installmentGuid);
+
+    assert.equal(subject.capabilities[scenario.expectedCapability], true);
+    await scenario.invoke(subject);
+    assert.deepEqual(
+      workflow.writeCalls.map((call) => call.kind),
+      [scenario.expectedWrite],
+    );
+  }
+});
+
 test("capability 每轮 load 先失败关闭，GET 失败不阻断只读历史", async () => {
   const workflow = new FakeWorkflow();
   workflow.crossDeviceRepaymentEnabled = true;
@@ -926,6 +977,9 @@ class FakeWorkflow implements InstallmentWorkflowPort {
   public detailError: Error | null = null;
   public capabilityError: Error | null = null;
   public crossDeviceRepaymentEnabled = false;
+  public crossDeviceCancelRefundEnabled = false;
+  public crossDeviceVoidEnabled = false;
+  public crossDevicePickupEnabled = false;
   public repaymentClaimsSupported = true;
   public repaymentClaimsRequired = true;
 
@@ -933,9 +987,14 @@ class FakeWorkflow implements InstallmentWorkflowPort {
     if (this.capabilityError) throw this.capabilityError;
     return {
       repaymentClaimsSupported: this.repaymentClaimsSupported,
+      cardRepaymentSupported: false,
       repaymentClaimsRequired: this.repaymentClaimsRequired,
       crossDeviceRepaymentEnabled: this.crossDeviceRepaymentEnabled,
+      crossDeviceCancelRefundEnabled: this.crossDeviceCancelRefundEnabled,
+      crossDeviceVoidEnabled: this.crossDeviceVoidEnabled,
+      crossDevicePickupEnabled: this.crossDevicePickupEnabled,
       preparedClaimTtlSeconds: 300,
+      cancelClaimsSupported: true,
     };
   }
 

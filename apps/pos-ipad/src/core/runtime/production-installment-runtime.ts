@@ -167,6 +167,33 @@ export type PersistedInstallmentAction = Readonly<{
   storeCode: string;
 }>;
 
+type FrozenInstallmentVoidCommand = InstallmentVoidCommand &
+  Readonly<{ operationGuid: string; idempotencyKey: string }>;
+
+type FrozenInstallmentPickupCommand = InstallmentPickupCommand &
+  Readonly<{ operationGuid: string; idempotencyKey: string }>;
+
+export type PersistedInstallmentLifecycleAction = Readonly<{
+  operationGuid: string;
+  idempotencyKey: string;
+  kind: "void" | "pickup";
+  installmentGuid: string;
+  storeCode: string;
+  /** 本次动作实际执行终端；command.deviceCode 必须与其一致。 */
+  deviceCode: string;
+  /** 服务端分期详情所属的原始终端，用于校验幂等回放结果。 */
+  originalDeviceCode: string;
+  command: FrozenInstallmentVoidCommand | FrozenInstallmentPickupCommand;
+  intentFingerprint: string;
+}>;
+
+type PersistedInstallmentBlockingOperation =
+  | Readonly<{ type: "payment"; action: PersistedInstallmentAction }>
+  | Readonly<{
+      type: "lifecycle";
+      action: PersistedInstallmentLifecycleAction;
+    }>;
+
 export interface InstallmentActionStorePort {
   loadBlocking(
     terminal: TerminalScope,
@@ -181,13 +208,30 @@ export interface InstallmentActionStorePort {
     created: boolean;
     action: PersistedInstallmentAction;
   }>>;
+  loadLifecycleBlocking(
+    terminal: TerminalScope,
+  ): Promise<PersistedInstallmentLifecycleAction | null>;
+  createLifecycleIfNone(
+    candidate: PersistedInstallmentLifecycleAction,
+  ): Promise<Readonly<{
+    created: boolean;
+    action: PersistedInstallmentLifecycleAction;
+  }>>;
+  completeLifecycle(input: Readonly<{
+    operationGuid: string;
+    terminal: TerminalScope;
+  }>): Promise<void>;
   /**
    * claim 在 provider 前确定性拒绝时，原子地终结 Created；实现必须保证不存在
    * 可观察的 ProviderPending 中间态，也不得删除审计事实。
    */
   finalizeCreatedFailure?(input: Readonly<{
     actionId: string;
-    reason: "ClaimBusy" | "ClaimMismatch" | "ClaimReleased";
+    reason:
+      | "ClaimBusy"
+      | "ClaimMismatch"
+      | "ClaimReleased"
+      | "PaymentMethodUnsupported";
     terminal: TerminalScope;
   }>): Promise<void>;
   transition(input: Readonly<{
@@ -352,9 +396,15 @@ export function createProductionInstallmentRuntime(
     async hasRecoveryRequired(): Promise<boolean> {
       const lease = input.currentCashier.createLease();
       requireScopedLease(lease, terminal);
-      const blocking = await input.actionStore.loadBlocking(terminal);
+      const [payment, lifecycle] = await Promise.all([
+        input.actionStore.loadBlocking(terminal),
+        input.actionStore.loadLifecycleBlocking(terminal),
+      ]);
       requireScopedLease(lease, terminal);
-      return blocking !== null;
+      if (payment && lifecycle) {
+        throw new Error("Multiple installment actions require recovery.");
+      }
+      return payment !== null || lifecycle !== null;
     },
   });
 }
@@ -497,9 +547,9 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     }
 
     try {
-      const blocking = await this.loadBlockingAction();
+      const blocking = await this.loadBlockingOperation();
       if (blocking) {
-        await this.recoverPersistedAction(blocking);
+        await this.recoverBlockingOperation(blocking);
       }
       const range = resolveInstallmentDateRange(
         input.dateFilter,
@@ -571,23 +621,25 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
 
   public async recoverBlocking(): Promise<InstallmentDetails> {
     await this.assertOnlineAndScoped();
-    const blocking = await this.loadBlockingAction();
+    const blocking = await this.loadBlockingOperation();
     if (!blocking) {
       throw workflowError("conflict", "No installment action requires recovery.");
     }
-    return this.recoverPersistedAction(blocking);
+    return this.recoverBlockingOperation(blocking);
   }
 
   public async hasRecoveryRequired(): Promise<boolean> {
-    return (await this.loadBlockingAction()) !== null;
+    return (await this.loadBlockingOperation()) !== null;
   }
 
   public create(input: InstallmentWorkflowCreateInput): Promise<InstallmentDetails> {
     return this.context.input.activeCart.runExclusive(async (cartLease) => {
       await this.assertOnlineAndScoped();
-      const blocking = await this.loadBlockingAction();
+      const blocking = await this.loadBlockingOperation();
       if (blocking) {
-        return this.executePersistedAction(blocking, cartLease);
+        return blocking.type === "payment" && blocking.action.action.kind === "create"
+          ? this.executePersistedAction(blocking.action, cartLease)
+          : this.recoverBlockingOperation(blocking);
       }
       this.requireCurrentPermission(INSTALLMENTS_CREATE_PERMISSION);
       this.requireTenderPermissions(input.method);
@@ -610,11 +662,17 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     input: InstallmentWorkflowRepaymentInput,
   ): Promise<InstallmentDetails> {
     await this.assertOnlineAndScoped();
-    const blocking = await this.loadBlockingAction();
-    if (blocking) return this.executePersistedAction(blocking);
+    const blocking = await this.loadBlockingOperation();
+    if (blocking) return this.recoverBlockingOperation(blocking);
     this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
     this.requireTenderPermissions(input.method);
     const capabilities = await this.getRequiredRepaymentCapabilities();
+    if (input.method === "card" && !capabilities.cardRepaymentSupported) {
+      throw workflowError(
+        "conflict",
+        "Card installment repayment is not supported by this server.",
+      );
+    }
     await this.assertInitialMutationScope(
       requiredText(input.installmentGuid, "installment guid"),
       capabilities.crossDeviceRepaymentEnabled,
@@ -629,13 +687,13 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     reason: string | null;
   }>): Promise<InstallmentDetails> {
     await this.assertOnlineAndScoped();
-    const blocking = await this.loadBlockingAction();
-    if (blocking) return this.executePersistedAction(blocking);
+    const blocking = await this.loadBlockingOperation();
+    if (blocking) return this.recoverBlockingOperation(blocking);
     this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
-    await this.getRequiredCancelClaimCapabilities();
+    const capabilities = await this.getRequiredCancelClaimCapabilities();
     const details = await this.assertInitialMutationScope(
       requiredText(input.installmentGuid, "installment guid"),
-      false,
+      capabilities.crossDeviceCancelRefundEnabled,
     );
     const candidate = await this.createCancelAction(input, details);
     const persisted = await this.persistCandidate(candidate);
@@ -646,77 +704,84 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     installmentGuid: string;
     reason: string;
   }>): Promise<InstallmentDetails> {
-    await this.assertWriteAllowed(INSTALLMENTS_CANCEL_PERMISSION);
+    await this.assertOnlineAndScoped();
+    const blocking = await this.loadBlockingOperation();
+    if (blocking) return this.recoverBlockingOperation(blocking);
+    this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
     const installmentGuid = requiredText(
       input.installmentGuid,
       "installment guid",
     );
-    // 作废不参与跨机续付 rollout，直接 workflow 调用也必须在写入前复核原终端。
-    await this.assertInitialMutationScope(installmentGuid, false);
-    const command: InstallmentVoidCommand = Object.freeze({
+    const details = await this.assertInitialMutationScope(
+      installmentGuid,
+      true,
+    );
+    if (details.deviceCode !== this.context.terminal.deviceCode) {
+      const capabilities = await this.getRepaymentCapabilities();
+      if (!capabilities.crossDeviceVoidEnabled) {
+        throw workflowError(
+          "conflict",
+          "Installment payment scope does not match the current terminal.",
+        );
+      }
+    }
+    const operationGuid = runtimeId(this.context.input);
+    const command: FrozenInstallmentVoidCommand = Object.freeze({
       ...identityFor(this.context.lease, this.context.terminal),
       installmentGuid,
       voidedAtIso: runtimeIso(this.context.input),
       reason: requiredText(input.reason, "void reason"),
-      idempotencyKey: runtimeId(this.context.input),
+      operationGuid,
+      idempotencyKey: operationGuid,
     });
-    try {
-      const details = await this.context.input.api.void(command);
-      validateNonPaymentMutationResult(
-        details,
-        command.installmentGuid,
-        this.context.terminal.storeCode,
-        "Cancelled",
-        "VoidCancel",
-      );
-      await this.cacheDetails(details);
-      return details;
-    } catch (error) {
-      throw mapRemoteError(error);
-    }
+    const persisted = await this.persistLifecycleCandidate(
+      "void",
+      details.deviceCode,
+      command,
+    );
+    return this.executePersistedLifecycleAction(persisted);
   }
 
   public async confirmPickup(input: Readonly<{
     installmentGuid: string;
     note: string | null;
   }>): Promise<InstallmentDetails> {
-    await this.assertWriteAllowed(INSTALLMENTS_CONFIRM_PICKUP_PERMISSION);
+    await this.assertOnlineAndScoped();
+    const blocking = await this.loadBlockingOperation();
+    if (blocking) return this.recoverBlockingOperation(blocking);
+    this.requireCurrentPermission(INSTALLMENTS_CONFIRM_PICKUP_PERMISSION);
     const installmentGuid = requiredText(
       input.installmentGuid,
       "installment guid",
     );
-    // 提货是原终端高风险动作；Presenter 校验不能替代 runtime 信任边界。
-    await this.assertInitialMutationScope(installmentGuid, false);
-    const command: InstallmentPickupCommand = Object.freeze({
+    const details = await this.assertInitialMutationScope(
+      installmentGuid,
+      true,
+    );
+    if (details.deviceCode !== this.context.terminal.deviceCode) {
+      const capabilities = await this.getRepaymentCapabilities();
+      if (!capabilities.crossDevicePickupEnabled) {
+        throw workflowError(
+          "conflict",
+          "Installment payment scope does not match the current terminal.",
+        );
+      }
+    }
+    const operationGuid = runtimeId(this.context.input);
+    const command: FrozenInstallmentPickupCommand = Object.freeze({
       ...identityFor(this.context.lease, this.context.terminal),
       installmentGuid,
       confirmedAtIso: runtimeIso(this.context.input),
-      note: input.note,
+      note: optionalText(input.note),
+      operationGuid,
+      idempotencyKey: operationGuid,
     });
-    try {
-      const details = await this.context.input.api.confirmPickup(command);
-      validateNonPaymentMutationResult(
-        details,
-        command.installmentGuid,
-        this.context.terminal.storeCode,
-        "PickedUp",
-        null,
-      );
-      await this.cacheDetails(details);
-      return details;
-    } catch (error) {
-      throw mapRemoteError(error);
-    }
-  }
-
-  private async assertWriteAllowed(permission: string): Promise<void> {
-    await this.assertOnlineAndScoped();
-    if (await this.loadBlockingAction()) {
-      throw paymentRecoveryError(
-        "A persisted payment action must be recovered before another mutation.",
-      );
-    }
-    this.requireCurrentPermission(permission);
+    const persisted = await this.persistLifecycleCandidate(
+      "pickup",
+      details.deviceCode,
+      command,
+    );
+    return this.executePersistedLifecycleAction(persisted);
   }
 
   private async assertOnlineAndScoped(): Promise<void> {
@@ -740,7 +805,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     return capabilities;
   }
 
-  private async getRequiredCancelClaimCapabilities(): Promise<void> {
+  private async getRequiredCancelClaimCapabilities(): Promise<InstallmentRepaymentCapabilities> {
     const capabilities = await this.getRepaymentCapabilities();
     if (capabilities.cancelClaimsSupported !== true) {
       throw workflowError(
@@ -748,6 +813,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
         "Cancellation claims are not available on this server.",
       );
     }
+    return capabilities;
   }
 
   private requireCurrentPermission(permission: string): void {
@@ -780,6 +846,40 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     return action ? validatePersistedAction(action, this.context.terminal) : null;
   }
 
+  private async loadBlockingOperation(): Promise<PersistedInstallmentBlockingOperation | null> {
+    const [payment, lifecycle] = await Promise.all([
+      this.loadBlockingAction(),
+      this.context.input.actionStore.loadLifecycleBlocking(
+        this.context.terminal,
+      ),
+    ]);
+    requireScopedLease(this.context.lease, this.context.terminal);
+    if (payment && lifecycle) {
+      throw paymentRecoveryError(
+        "Multiple persisted installment actions require recovery.",
+      );
+    }
+    if (payment) return Object.freeze({ type: "payment", action: payment });
+    if (lifecycle) {
+      return Object.freeze({
+        type: "lifecycle",
+        action: validatePersistedLifecycleAction(
+          lifecycle,
+          this.context.terminal,
+        ),
+      });
+    }
+    return null;
+  }
+
+  private recoverBlockingOperation(
+    blocking: PersistedInstallmentBlockingOperation,
+  ): Promise<InstallmentDetails> {
+    return blocking.type === "payment"
+      ? this.recoverPersistedAction(blocking.action)
+      : this.executePersistedLifecycleAction(blocking.action);
+  }
+
   private recoverPersistedAction(
     blocking: PersistedInstallmentAction,
   ): Promise<InstallmentDetails> {
@@ -789,6 +889,84 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       );
     }
     return this.executePersistedAction(blocking);
+  }
+
+  private async persistLifecycleCandidate(
+    kind: PersistedInstallmentLifecycleAction["kind"],
+    originalDeviceCode: string,
+    command: FrozenInstallmentVoidCommand | FrozenInstallmentPickupCommand,
+  ): Promise<PersistedInstallmentLifecycleAction> {
+    const candidate = Object.freeze({
+      operationGuid: command.operationGuid,
+      idempotencyKey: command.idempotencyKey,
+      kind,
+      installmentGuid: command.installmentGuid,
+      storeCode: this.context.terminal.storeCode,
+      deviceCode: this.context.terminal.deviceCode,
+      originalDeviceCode,
+      command,
+      intentFingerprint: await sha256Digest(
+        this.context.input,
+        lifecycleIntentFingerprintMaterial({
+          kind,
+          originalDeviceCode,
+          storeCode: this.context.terminal.storeCode,
+          command,
+        }),
+      ),
+    }) satisfies PersistedInstallmentLifecycleAction;
+    const result = await this.context.input.actionStore.createLifecycleIfNone(
+      candidate,
+    );
+    requireScopedLease(this.context.lease, this.context.terminal);
+    return validatePersistedLifecycleAction(
+      result.action,
+      this.context.terminal,
+    );
+  }
+
+  private async executePersistedLifecycleAction(
+    persistedInput: PersistedInstallmentLifecycleAction,
+  ): Promise<InstallmentDetails> {
+    const persisted = validatePersistedLifecycleAction(
+      persistedInput,
+      this.context.terminal,
+    );
+    this.requireCurrentPermission(
+      persisted.kind === "void"
+        ? INSTALLMENTS_CANCEL_PERMISSION
+        : INSTALLMENTS_CONFIRM_PICKUP_PERMISSION,
+    );
+    let details: InstallmentDetails;
+    try {
+      details =
+        persisted.kind === "void"
+          ? await this.context.input.api.void(
+              persisted.command as FrozenInstallmentVoidCommand,
+            )
+          : await this.context.input.api.confirmPickup(
+              persisted.command as FrozenInstallmentPickupCommand,
+            );
+    } catch (error) {
+      // 中文注释：只有真实的远程请求失败才映射为网络、授权或服务端错误。
+      throw mapRemoteError(error);
+    }
+    validateLifecycleMutationResult(details, persisted);
+    try {
+      // 中文注释：服务端已确认提交成功后，本地快照缓存与 lifecycle CAS 是恢复必需步骤。
+      // 这两步失败绝不能伪装成普通远程错误，必须标记 payment-recovery-required，
+      // 否则 presenter 不会进入 recoveryRequired，操作会永远卡住。
+      await this.cacheDetails(details);
+      await this.context.input.actionStore.completeLifecycle({
+        operationGuid: persisted.operationGuid,
+        terminal: this.context.terminal,
+      });
+    } catch {
+      throw paymentRecoveryError(
+        "Installment lifecycle committed remotely but local settlement failed; recovery is required.",
+      );
+    }
+    return details;
   }
 
   private async persistCandidate(
@@ -1364,6 +1542,8 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
             : "conflict",
           deterministic === "ClaimMismatch"
             ? "Repayment claim mismatch requires review."
+            : deterministic === "PaymentMethodUnsupported"
+              ? "Card installment repayment is not supported by this server."
             : "Another repayment claim is active.",
         );
       }
@@ -1392,7 +1572,11 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
 
   private async finalizeCreatedClaimFailure(
     persisted: PersistedInstallmentAction,
-    reason: "ClaimBusy" | "ClaimMismatch" | "ClaimReleased",
+    reason:
+      | "ClaimBusy"
+      | "ClaimMismatch"
+      | "ClaimReleased"
+      | "PaymentMethodUnsupported",
   ): Promise<void> {
     const finalize = this.context.input.actionStore.finalizeCreatedFailure;
     if (!finalize) {
@@ -1734,7 +1918,6 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (
       details.installmentGuid !== persisted.action.installmentGuid ||
       details.storeCode !== persisted.storeCode ||
-      details.deviceCode !== persisted.deviceCode ||
       details.status !== "Cancelled" ||
       details.cancellationInfo?.kind !== "RefundCancel"
     ) {
@@ -1983,6 +2166,24 @@ function actionIntentFingerprintMaterial(input: Readonly<{
   });
 }
 
+function lifecycleIntentFingerprintMaterial(input: Readonly<{
+  kind: PersistedInstallmentLifecycleAction["kind"];
+  originalDeviceCode: string;
+  storeCode: string;
+  command: FrozenInstallmentVoidCommand | FrozenInstallmentPickupCommand;
+}>): string {
+  return JSON.stringify({
+    domain: "hb-pos/installment/lifecycle-intent/v1",
+    kind: input.kind,
+    scope: {
+      storeCode: input.storeCode,
+      executingDeviceCode: input.command.deviceCode,
+      originalDeviceCode: input.originalDeviceCode,
+    },
+    command: input.command,
+  });
+}
+
 async function sha256Digest(
   input: Pick<ProductionInstallmentRuntimeDependencies, "sha256Hex">,
   material: string,
@@ -2080,6 +2281,59 @@ function validatePersistedAction(
         "Persisted payment selection is invalid.",
       );
     }
+  }
+  return persisted;
+}
+
+function validatePersistedLifecycleAction(
+  persisted: PersistedInstallmentLifecycleAction,
+  terminal: TerminalScope,
+): PersistedInstallmentLifecycleAction {
+  if (
+    persisted.storeCode !== terminal.storeCode ||
+    persisted.deviceCode !== terminal.deviceCode ||
+    persisted.command.deviceCode !== terminal.deviceCode
+  ) {
+    throw paymentRecoveryError(
+      "Persisted lifecycle action terminal scope is invalid.",
+    );
+  }
+  recoveryUuid(persisted.operationGuid, "lifecycle operation guid");
+  if (
+    persisted.idempotencyKey !== persisted.operationGuid ||
+    persisted.command.operationGuid !== persisted.operationGuid ||
+    persisted.command.idempotencyKey !== persisted.idempotencyKey ||
+    persisted.command.installmentGuid !== persisted.installmentGuid
+  ) {
+    throw paymentRecoveryError(
+      "Persisted lifecycle action identity is invalid.",
+    );
+  }
+  recoveryText(persisted.installmentGuid, "lifecycle installment guid");
+  recoveryText(persisted.originalDeviceCode, "original device code");
+  recoveryText(persisted.command.cashierId, "persisted cashier id");
+  recoveryText(persisted.command.cashierName, "persisted cashier name");
+  if (!/^sha256:[0-9a-f]{64}$/iu.test(persisted.intentFingerprint)) {
+    throw paymentRecoveryError(
+      "Persisted lifecycle action fingerprint is invalid.",
+    );
+  }
+  if (persisted.kind === "void") {
+    const command = persisted.command as FrozenInstallmentVoidCommand;
+    recoveryText(command.reason, "persisted void reason");
+    if (!Number.isFinite(Date.parse(command.voidedAtIso))) {
+      throw paymentRecoveryError("Persisted void timestamp is invalid.");
+    }
+  } else if (persisted.kind === "pickup") {
+    const command = persisted.command as FrozenInstallmentPickupCommand;
+    if (!Number.isFinite(Date.parse(command.confirmedAtIso))) {
+      throw paymentRecoveryError("Persisted pickup timestamp is invalid.");
+    }
+    if (command.note !== null) {
+      recoveryText(command.note, "persisted pickup note");
+    }
+  } else {
+    throw paymentRecoveryError("Persisted lifecycle action kind is invalid.");
   }
   return persisted;
 }
@@ -2265,7 +2519,11 @@ function validateRepaymentCapabilities(
   if (
     typeof capabilities.repaymentClaimsSupported !== "boolean" ||
     typeof capabilities.repaymentClaimsRequired !== "boolean" ||
+    typeof capabilities.cardRepaymentSupported !== "boolean" ||
     typeof capabilities.crossDeviceRepaymentEnabled !== "boolean" ||
+    typeof capabilities.crossDeviceCancelRefundEnabled !== "boolean" ||
+    typeof capabilities.crossDeviceVoidEnabled !== "boolean" ||
+    typeof capabilities.crossDevicePickupEnabled !== "boolean" ||
     !Number.isSafeInteger(capabilities.preparedClaimTtlSeconds) ||
     capabilities.preparedClaimTtlSeconds < 0
   ) {
@@ -2592,23 +2850,41 @@ function sameInstallmentLines(
   });
 }
 
-function validateNonPaymentMutationResult(
+function validateLifecycleMutationResult(
   details: InstallmentDetails,
-  installmentGuid: string,
-  storeCode: string,
-  status: InstallmentStatus,
-  cancellationKind: "VoidCancel" | null,
+  persisted: PersistedInstallmentLifecycleAction,
 ): void {
+  const commonMatches =
+    details.installmentGuid === persisted.installmentGuid &&
+    details.storeCode === persisted.storeCode &&
+    details.deviceCode === persisted.originalDeviceCode;
+  if (persisted.kind === "void") {
+    const command = persisted.command as FrozenInstallmentVoidCommand;
+    const cancellation = details.cancellationInfo;
+    if (
+      !commonMatches ||
+      details.status !== "Cancelled" ||
+      cancellation?.kind !== "VoidCancel" ||
+      cancellation.cancelledAtIso !== command.voidedAtIso ||
+      cancellation.reason !== command.reason
+    ) {
+      throw paymentRecoveryError(
+        "Void response does not match the frozen lifecycle command.",
+      );
+    }
+    return;
+  }
+
+  const command = persisted.command as FrozenInstallmentPickupCommand;
+  const pickup = details.pickupInfo;
   if (
-    details.installmentGuid !== installmentGuid ||
-    details.storeCode !== storeCode ||
-    details.status !== status ||
-    (cancellationKind !== null &&
-      details.cancellationInfo?.kind !== cancellationKind)
+    !commonMatches ||
+    details.status !== "PickedUp" ||
+    pickup?.pickedUpAtIso !== command.confirmedAtIso ||
+    pickup.note !== command.note
   ) {
-    throw workflowError(
-      "conflict",
-      "Installment mutation response does not match the command.",
+    throw paymentRecoveryError(
+      "Pickup response does not match the frozen lifecycle command.",
     );
   }
 }
@@ -2665,9 +2941,16 @@ function repaymentClaimNotFound(error: unknown): boolean {
 
 function repaymentClaimDeterministicFailure(
   error: unknown,
-): "ClaimBusy" | "ClaimMismatch" | null {
-  if (!(error instanceof HbposApiError) || error.status !== 409) return null;
+): "ClaimBusy" | "ClaimMismatch" | "PaymentMethodUnsupported" | null {
+  if (!(error instanceof HbposApiError)) return null;
   const code = error.code?.trim().toUpperCase();
+  if (
+    error.status === 400 &&
+    code === "INSTALLMENT_REPAYMENT_PAYMENT_METHOD_UNSUPPORTED"
+  ) {
+    return "PaymentMethodUnsupported";
+  }
+  if (error.status !== 409) return null;
   if (code === "INSTALLMENT_REPAYMENT_BUSY") return "ClaimBusy";
   if (code === "INSTALLMENT_REPAYMENT_CLAIM_MISMATCH") {
     return "ClaimMismatch";
@@ -2761,6 +3044,11 @@ function requiredText(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized) throw new Error(`${label} is required.`);
   return normalized;
+}
+
+function optionalText(value: string | null): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized.length === 0 ? null : normalized;
 }
 
 function positiveInteger(value: number, label: string): number {

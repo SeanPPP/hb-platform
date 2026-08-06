@@ -11,15 +11,19 @@ public sealed class InstallmentRepaymentClaimServiceTests
     private static readonly DateTimeOffset InitialNow = DateTimeOffset.Parse("2026-08-04T00:00:00Z");
 
     [Fact]
-    public void Capabilities_default_to_optional_same_device_claims_with_120_second_ttl()
+    public void Capabilities_default_to_required_repayment_claims_and_fail_closed_lifecycle_switches()
     {
-        var harness = CreateHarness();
+        var harness = CreateHarness(crossDeviceEnabled: true);
 
         var capabilities = harness.Service.GetCapabilities();
 
         Assert.True(capabilities.RepaymentClaimsSupported);
-        Assert.False(capabilities.RepaymentClaimsRequired);
-        Assert.False(capabilities.CrossDeviceRepaymentEnabled);
+        Assert.True(capabilities.RepaymentClaimsRequired);
+        Assert.True(capabilities.CrossDeviceRepaymentEnabled);
+        Assert.False(capabilities.CrossDeviceCancelRefundEnabled);
+        Assert.False(capabilities.CrossDeviceVoidEnabled);
+        Assert.False(capabilities.CrossDevicePickupEnabled);
+        Assert.False(capabilities.CardRepaymentSupported);
         Assert.Equal(120, capabilities.PreparedClaimTtlSeconds);
     }
 
@@ -54,6 +58,34 @@ public sealed class InstallmentRepaymentClaimServiceTests
     }
 
     [Fact]
+    public async Task Card_create_fails_closed_before_claim_order_or_payment_state_changes()
+    {
+        var harness = CreateHarness();
+        var before = await harness.Installments.GetDetailsAsync(
+            harness.InstallmentGuid,
+            CancellationToken.None);
+        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Card);
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.CreateAsync(
+                harness.InstallmentGuid,
+                request,
+                Identity(),
+                CancellationToken.None));
+
+        Assert.Equal(
+            InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported,
+            exception.Code);
+        Assert.Null(await harness.Repository.GetAsync(request.OperationGuid, CancellationToken.None));
+        Assert.Null(await harness.Repository.GetBlockingAsync(harness.InstallmentGuid, CancellationToken.None));
+        Assert.Equal(0, harness.Installments.AppendCount);
+        var after = await harness.Installments.GetDetailsAsync(
+            harness.InstallmentGuid,
+            CancellationToken.None);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
     public async Task Prepared_expires_after_120_seconds_but_provider_pending_and_unknown_never_auto_expire()
     {
         var harness = CreateHarness();
@@ -69,7 +101,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         await harness.Service.BeginProviderAsync(
             harness.InstallmentGuid,
             second.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-1"),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", "attempt-1"),
             Identity(),
             CancellationToken.None);
         harness.Time.UtcNow = InitialNow.AddHours(12);
@@ -140,50 +172,32 @@ public sealed class InstallmentRepaymentClaimServiceTests
         var deniedException = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
             denied.Service.CreateAsync(
                 denied.InstallmentGuid,
-                CreateRequest(),
+                CreateRequest(method: PaymentMethodKind.Cash),
                 Identity(deviceCode: "POS-02"),
                 CancellationToken.None));
         Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, deniedException.Code);
 
         var harness = CreateHarness(crossDeviceEnabled: true, installmentDeviceCode: "POS-01");
         var identity = Identity(deviceCode: "POS-02");
-        var request = CreateRequest(amount: 10m);
+        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Cash);
         await harness.Service.CreateAsync(harness.InstallmentGuid, request, identity, CancellationToken.None);
         await harness.Service.BeginProviderAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-cross-device"),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", "attempt-cross-device"),
             identity,
             CancellationToken.None);
 
         var first = await harness.Service.CommitAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimCommitRequest(
-                Reference: "APPROVED",
-                CardTransactions:
-                [
-                    new CardTransactionDto(
-                        Processor: "linkly",
-                        TxnRef: "RRN-1",
-                        AuthCode: "AUTH-1",
-                        CardType: "VISA",
-                        CardBin: 412345,
-                        MaskedCardNumber: "****1234",
-                        MerchantId: "MERCHANT",
-                        ResponseCode: "00",
-                        ResponseText: "APPROVED",
-                        Stan: "123456",
-                        BankDateTime: InitialNow,
-                        Amount: 10m,
-                        ReceiptText: "approved")
-                ]),
+            new InstallmentRepaymentClaimCommitRequest(),
             identity,
             CancellationToken.None);
         var replay = await harness.Service.CommitAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimCommitRequest(Reference: "APPROVED"),
+            new InstallmentRepaymentClaimCommitRequest(),
             identity,
             CancellationToken.None);
 
@@ -247,7 +261,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         await claimsNowOptional.BeginProviderAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-config-toggle"),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", "attempt-config-toggle"),
             renamedClaimant,
             CancellationToken.None);
     }
@@ -262,7 +276,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         await harness.Service.BeginProviderAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-unknown"),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", "attempt-unknown"),
             identity,
             CancellationToken.None);
         await harness.Service.ResolveAsync(
@@ -294,7 +308,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
             harness.Service.BeginProviderAsync(
                 harness.InstallmentGuid,
                 request.OperationGuid,
-                new InstallmentRepaymentClaimBeginProviderRequest("linkly", "different-attempt"),
+                new InstallmentRepaymentClaimBeginProviderRequest("cash", "different-attempt"),
                 identity,
                 CancellationToken.None));
         Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, wrongAttempt.Code);
@@ -302,7 +316,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         var resumed = await harness.Service.BeginProviderAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-unknown"),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", "attempt-unknown"),
             identity,
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, resumed.Status);
@@ -310,9 +324,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         var committed = await harness.Service.CommitAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            new InstallmentRepaymentClaimCommitRequest(
-                Reference: "APPROVED",
-                CardTransactions: [CardTransaction("linkly", "attempt-unknown", request.Amount)]),
+            new InstallmentRepaymentClaimCommitRequest(),
             identity,
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committed.Status);
@@ -338,7 +350,6 @@ public sealed class InstallmentRepaymentClaimServiceTests
     [InlineData(PaymentMethodKind.Cash, "card")]
     [InlineData(PaymentMethodKind.Cash, "voucher")]
     [InlineData(PaymentMethodKind.Voucher, "cash")]
-    [InlineData(PaymentMethodKind.Card, "cash")]
     public async Task Begin_rejects_provider_that_does_not_match_the_claim_method_before_provider_side_effects(
         PaymentMethodKind method,
         string provider)
@@ -362,55 +373,50 @@ public sealed class InstallmentRepaymentClaimServiceTests
     }
 
     [Fact]
-    public async Task Card_commit_requires_nonempty_exact_provider_bound_transaction_evidence()
+    public async Task Legacy_card_claim_cannot_begin_a_provider_attempt()
     {
         var harness = CreateHarness();
-        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Card);
-        await harness.Service.CreateAsync(harness.InstallmentGuid, request, Identity(), CancellationToken.None);
-        await harness.Service.BeginProviderAsync(
-            harness.InstallmentGuid,
-            request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly-cloud", "attempt-card"),
-            Identity(),
-            CancellationToken.None);
+        var claim = await SeedLegacyCardClaimAsync(harness, InstallmentRepaymentClaimStatus.Prepared);
 
-        foreach (var invalid in new[]
-        {
-            new InstallmentRepaymentClaimCommitRequest(),
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction("", "TXN-1", 10m),
-            ]),
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction("ANZ", null, 10m),
-            ]),
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction("Square", "TXN-1", 10m),
-            ]),
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction("ANZ", "TXN-1", 9.99m),
-            ]),
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction("ANZ", "TXN-1", decimal.MaxValue),
-                CardTransaction("ANZ", "TXN-2", decimal.MaxValue),
-            ]),
-        })
-        {
-            var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
-                harness.Service.CommitAsync(
-                    harness.InstallmentGuid,
-                    request.OperationGuid,
-                    invalid,
-                    Identity(),
-                    CancellationToken.None));
-            Assert.Equal(InstallmentRepaymentClaimErrorCodes.Invalid, exception.Code);
-        }
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.BeginProviderAsync(
+                harness.InstallmentGuid,
+                claim.OperationGuid,
+                new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-card"),
+                Identity(),
+                CancellationToken.None));
 
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported, exception.Code);
+        var stored = await harness.Repository.GetAsync(claim.OperationGuid, CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Prepared, stored?.Status);
+        Assert.Null(stored?.Provider);
         Assert.Equal(0, harness.Installments.AppendCount);
+    }
+
+    [Fact]
+    public async Task Legacy_provider_pending_card_claim_rejects_forged_complete_evidence_without_state_changes()
+    {
+        var harness = CreateHarness();
+        var claim = await SeedLegacyCardClaimAsync(harness, InstallmentRepaymentClaimStatus.ProviderPending);
+        var before = await harness.Installments.GetDetailsAsync(harness.InstallmentGuid, CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.CommitAsync(
+                harness.InstallmentGuid,
+                claim.OperationGuid,
+                new InstallmentRepaymentClaimCommitRequest(
+                    Reference: "APPROVED",
+                    CardTransactions: [CardTransaction("ANZ", "TXN-FORGED", claim.Amount)]),
+                Identity(),
+                CancellationToken.None));
+
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported, exception.Code);
+        Assert.Equal(0, harness.Installments.AppendCount);
+        Assert.Equal(before, await harness.Installments.GetDetailsAsync(harness.InstallmentGuid, CancellationToken.None));
+        var stored = await harness.Repository.GetAsync(claim.OperationGuid, CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, stored?.Status);
+        Assert.Null(stored?.CommittedAtUtc);
+        Assert.Null(stored?.CommitResponseJson);
     }
 
     [Theory]
@@ -429,7 +435,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
             Identity(),
             CancellationToken.None);
 
-        var invalid = ValidCommitRequest(method, provider, request.Amount) with
+        var invalid = ValidCommitRequest(method) with
         {
             CardTransactions = [CardTransaction("Square", "TXN-1", request.Amount)]
         };
@@ -463,7 +469,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         await maxHarness.Service.BeginProviderAsync(
             maxHarness.InstallmentGuid,
             maxRequest.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest("linkly-cloud", new string('a', 128)),
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", new string('a', 128)),
             Identity(
                 storeCode: maxStoreCode,
                 deviceCode: maxDeviceCode,
@@ -518,7 +524,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
     [Fact]
     public async Task Every_mutation_requires_confirm_and_the_method_specific_permission()
     {
-        foreach (var method in Enum.GetValues<PaymentMethodKind>())
+        foreach (var method in new[] { PaymentMethodKind.Cash, PaymentMethodKind.Voucher })
         {
             var requiredMethodPermission = method switch
             {
@@ -619,108 +625,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
     }
 
     [Theory]
-    [InlineData("square", "Square", null, "COMPLETED")]
-    [InlineData("Square", "square", null, "completed")]
-    [InlineData("linkly-cloud", "ANZ", "00", "APPROVED")]
-    [InlineData("Linkly", "linkly", "00", "APPROVED")]
-    [InlineData("ANZ", "Linkly", "00", "APPROVED")]
-    [InlineData("ANZ Linkly", "Linkly Cloud", "00", "APPROVED")]
-    public async Task Card_commit_accepts_ipad_and_wpf_provider_aliases(
-        string claimProvider,
-        string transactionProcessor,
-        string? responseCode,
-        string responseText)
-    {
-        var harness = CreateHarness();
-        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Card);
-        await harness.Service.CreateAsync(harness.InstallmentGuid, request, Identity(), CancellationToken.None);
-        await harness.Service.BeginProviderAsync(
-            harness.InstallmentGuid,
-            request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest(claimProvider, "attempt-alias"),
-            Identity(),
-            CancellationToken.None);
-
-        var committed = await harness.Service.CommitAsync(
-            harness.InstallmentGuid,
-            request.OperationGuid,
-            new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-            [
-                CardTransaction(transactionProcessor, "TXN-1", 4m, responseCode, responseText),
-                CardTransaction(transactionProcessor, "TXN-2", 6m, responseCode, responseText),
-            ]),
-            Identity(),
-            CancellationToken.None);
-
-        Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committed.Status);
-        Assert.Equal(10m, Assert.Single(committed.Commit!.Details.Payments).Amount);
-    }
-
-    [Fact]
-    public async Task Card_begin_rejects_generic_provider_before_provider_side_effects()
-    {
-        var harness = CreateHarness();
-        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Card);
-        await harness.Service.CreateAsync(harness.InstallmentGuid, request, Identity(), CancellationToken.None);
-
-        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
-            harness.Service.BeginProviderAsync(
-                harness.InstallmentGuid,
-                request.OperationGuid,
-                new InstallmentRepaymentClaimBeginProviderRequest("card", "attempt-generic"),
-                Identity(),
-                CancellationToken.None));
-
-        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Invalid, exception.Code);
-        var stored = await harness.Repository.GetAsync(request.OperationGuid, CancellationToken.None);
-        Assert.Equal(InstallmentRepaymentClaimStatus.Prepared, stored?.Status);
-        Assert.Null(stored?.Provider);
-    }
-
-    [Theory]
-    [InlineData("square", "card", null, "COMPLETED")]
-    [InlineData("square", "provider-id", null, "COMPLETED")]
-    [InlineData("square", "ANZ", "00", "APPROVED")]
-    [InlineData("linkly", "Square", null, "COMPLETED")]
-    [InlineData("linkly", "ANZ", null, "APPROVED")]
-    [InlineData("linkly", "ANZ", "05", "DECLINED")]
-    [InlineData("square", "Square", null, null)]
-    [InlineData("square", "Square", null, "APPROVED")]
-    [InlineData("square", "Square", "05", "COMPLETED")]
-    public async Task Card_commit_rejects_generic_unknown_mismatched_or_unapproved_evidence(
-        string claimProvider,
-        string transactionProcessor,
-        string? responseCode,
-        string? responseText)
-    {
-        var harness = CreateHarness();
-        var request = CreateRequest(amount: 10m, method: PaymentMethodKind.Card);
-        await harness.Service.CreateAsync(harness.InstallmentGuid, request, Identity(), CancellationToken.None);
-        await harness.Service.BeginProviderAsync(
-            harness.InstallmentGuid,
-            request.OperationGuid,
-            new InstallmentRepaymentClaimBeginProviderRequest(claimProvider, "attempt-evidence"),
-            Identity(),
-            CancellationToken.None);
-
-        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
-            harness.Service.CommitAsync(
-                harness.InstallmentGuid,
-                request.OperationGuid,
-                new InstallmentRepaymentClaimCommitRequest(CardTransactions:
-                [
-                    CardTransaction(transactionProcessor, "TXN-1", 10m, responseCode, responseText)
-                ]),
-                Identity(),
-                CancellationToken.None));
-
-        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Invalid, exception.Code);
-        Assert.Equal(0, harness.Installments.AppendCount);
-    }
-
-    [Theory]
     [InlineData(PaymentMethodKind.Cash)]
-    [InlineData(PaymentMethodKind.Card)]
     [InlineData(PaymentMethodKind.Voucher)]
     public async Task Begin_and_commit_recheck_the_current_cashier_permissions(PaymentMethodKind method)
     {
@@ -761,7 +666,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
             harness.Service.CommitAsync(
                 harness.InstallmentGuid,
                 request.OperationGuid,
-                ValidCommitRequest(method, provider, request.Amount),
+                ValidCommitRequest(method),
                 Identity(permissionCodes: DefaultPaymentPermissions()
                     .Where(code => code != Permissions.PosTerminal.Payment.Confirm)
                     .ToArray()),
@@ -772,7 +677,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
         var committed = await harness.Service.CommitAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            ValidCommitRequest(method, provider, request.Amount),
+            ValidCommitRequest(method),
             Identity(),
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committed.Status);
@@ -847,7 +752,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
 
     private static InstallmentRepaymentClaimCreateRequest CreateRequest(
         decimal amount = 10m,
-        PaymentMethodKind method = PaymentMethodKind.Card)
+        PaymentMethodKind method = PaymentMethodKind.Cash)
     {
         return new InstallmentRepaymentClaimCreateRequest(
             Guid.NewGuid(),
@@ -855,6 +760,42 @@ public sealed class InstallmentRepaymentClaimServiceTests
             amount,
             method,
             $"action-{Guid.NewGuid():N}");
+    }
+
+    private static async Task<InstallmentRepaymentClaimRecord> SeedLegacyCardClaimAsync(
+        Harness harness,
+        InstallmentRepaymentClaimStatus status)
+    {
+        var providerPending = status == InstallmentRepaymentClaimStatus.ProviderPending;
+        var claim = new InstallmentRepaymentClaimRecord(
+            harness.InstallmentGuid,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "S01",
+            "POS-01",
+            "C01",
+            "Cashier One",
+            10m,
+            PaymentMethodKind.Card,
+            $"legacy-card-{Guid.NewGuid():N}",
+            new string('a', 64),
+            status,
+            providerPending ? "linkly" : null,
+            providerPending ? "legacy-attempt" : null,
+            InitialNow.AddMinutes(-1),
+            InitialNow.AddMinutes(-1),
+            providerPending ? null : InitialNow.AddMinutes(1),
+            null,
+            providerPending ? 2 : 1);
+        var inserted = await harness.Repository.TryInsertAsync(
+            claim,
+            new InstallmentRepaymentClaimInsertSnapshot(
+                InstallmentStatus.Active,
+                PaidAmount: 20m,
+                BalanceAmount: 80m),
+            CancellationToken.None);
+        Assert.True(inserted);
+        return claim;
     }
 
     private static InstallmentRepaymentClaimIdentity Identity(
@@ -881,16 +822,12 @@ public sealed class InstallmentRepaymentClaimServiceTests
     ];
 
     private static InstallmentRepaymentClaimCommitRequest ValidCommitRequest(
-        PaymentMethodKind method,
-        string provider,
-        decimal amount) => method switch
+        PaymentMethodKind method) => method switch
         {
             PaymentMethodKind.Cash => new InstallmentRepaymentClaimCommitRequest(),
             PaymentMethodKind.Voucher => new InstallmentRepaymentClaimCommitRequest(
                 Reference: "VOUCHER-1",
                 ReservationToken: "reservation-1"),
-            PaymentMethodKind.Card => new InstallmentRepaymentClaimCommitRequest(
-                CardTransactions: [CardTransaction(provider, "TXN-1", amount)]),
             _ => throw new ArgumentOutOfRangeException(nameof(method))
         };
 

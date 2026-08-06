@@ -117,7 +117,12 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
             if (order.Status != (int)InstallmentStatus.Active ||
                 order.BalanceAmount <= 0m ||
                 !string.Equals(order.StoreCode, claim.StoreCode, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(order.DeviceCode, claim.ClaimantDeviceCode, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(
+                    order.DeviceCode,
+                    string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                        ? claim.ClaimantDeviceCode
+                        : claim.OriginalDeviceCode,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 throw Mismatch("Installment state or original device scope no longer matches the cancellation claim.");
             }
@@ -139,9 +144,11 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
             var cancelRequest = new InstallmentCancelRequest(
                 claim.InstallmentGuid,
                 claim.StoreCode,
-                claim.ClaimantDeviceCode,
-                claim.CashierId,
-                claim.CashierName,
+                string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                    ? claim.ClaimantDeviceCode
+                    : claim.OriginalDeviceCode,
+                identity.CashierId,
+                identity.CashierName,
                 committedAtUtc,
                 request.Refunds,
                 claim.Reason,
@@ -161,8 +168,8 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
             var refundPayments = normalizedRefunds
                 .Select(refund => InstallmentService.MapRefundPayment(
                     refund,
-                    claim.CashierId,
-                    claim.CashierName,
+                    identity.CashierId,
+                    identity.CashierName,
                     claim.ClaimantDeviceCode,
                     committedAtUtc))
                 .ToArray();
@@ -188,7 +195,7 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
                 .SetColumns(entity => entity.Status == (int)InstallmentStatus.Cancelled)
                 .SetColumns(entity => entity.CancellationKind == (int)InstallmentCancellationKind.RefundCancel)
                 .SetColumns(entity => entity.CancelledAt == committedAtUtc.UtcDateTime)
-                .SetColumns(entity => entity.CancelledBy == claim.CashierName)
+                .SetColumns(entity => entity.CancelledBy == identity.CashierName)
                 .SetColumns(entity => entity.CancellationReason == claim.Reason)
                 .SetColumns(entity => entity.CancellationIdempotencyKey == claim.IdempotencyKey)
                 .SetColumns(entity => entity.UpdatedAt == committedAtUtc.UtcDateTime)
@@ -459,6 +466,12 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
         if (actual.InstallmentGuid != expected.InstallmentGuid ||
             actual.OperationGuid != expected.OperationGuid ||
             !string.Equals(actual.StoreCode, expected.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                string.IsNullOrWhiteSpace(actual.OriginalDeviceCode) ? actual.ClaimantDeviceCode : actual.OriginalDeviceCode,
+                string.IsNullOrWhiteSpace(expected.OriginalDeviceCode)
+                    ? expected.ClaimantDeviceCode
+                    : expected.OriginalDeviceCode,
+                StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(actual.ClaimantDeviceCode, expected.ClaimantDeviceCode, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(actual.CashierId, expected.CashierId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(actual.CashierName, expected.CashierName, StringComparison.Ordinal) ||
@@ -490,7 +503,8 @@ public sealed class SqlSugarInstallmentCancelClaimCommitRepository(
         entity.LastRecoveryCashierId,
         entity.LastRecoveryCashierName,
         entity.LastRecoveryCashierUserGuid,
-        entity.RecoveredAtUtc is null ? null : ToUtc(entity.RecoveredAtUtc.Value));
+        entity.RecoveredAtUtc is null ? null : ToUtc(entity.RecoveredAtUtc.Value),
+        entity.OriginalDeviceCode);
 
     private static bool SameRecoveryIdentity(
         InstallmentCancelClaimEntity claim,

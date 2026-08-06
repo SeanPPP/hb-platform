@@ -92,7 +92,35 @@ public sealed class InstallmentCancelClaimServiceTests
     }
 
     [Fact]
-    public async Task Create_is_same_device_only_validates_the_authoritative_plan_and_expires_after_120_seconds()
+    public async Task Cross_device_create_allows_same_store_and_persists_original_and_executor()
+    {
+        var harness = CreateHarness(crossDeviceLifecycleEnabled: true);
+        var fingerprint = InstallmentCancelClaimFingerprint.Create(harness.Installments.Details);
+        var request = CreateRequest(fingerprint);
+
+        var created = await harness.Service.CreateAsync(
+            InstallmentGuid,
+            request,
+            Identity(deviceCode: "POS-02"),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentCancelClaimStatus.Prepared, created.Status);
+        Assert.Equal("POS-01", created.OriginalDeviceCode);
+        Assert.Equal("POS-02", created.ExecutingDeviceCode);
+        Assert.Equal("POS-01", harness.Repository.Records[request.OperationGuid].OriginalDeviceCode);
+        Assert.Equal("POS-02", harness.Repository.Records[request.OperationGuid].ClaimantDeviceCode);
+
+        var otherStore = await Assert.ThrowsAsync<InstallmentCancelClaimException>(() =>
+            harness.Service.CreateAsync(
+                InstallmentGuid,
+                CreateRequest(fingerprint),
+                Identity(storeCode: "S02", deviceCode: "POS-99"),
+                CancellationToken.None));
+        Assert.Equal(InstallmentCancelClaimErrorCodes.Mismatch, otherStore.Code);
+    }
+
+    [Fact]
+    public async Task Create_validates_the_authoritative_plan_and_expires_after_120_seconds()
     {
         var harness = CreateHarness();
         var fingerprint = InstallmentCancelClaimFingerprint.Create(harness.Installments.Details);
@@ -114,10 +142,6 @@ public sealed class InstallmentCancelClaimServiceTests
                 Identity(),
                 CancellationToken.None));
         Assert.Equal(InstallmentCancelClaimErrorCodes.Mismatch, mismatch.Code);
-
-        var otherDevice = await Assert.ThrowsAsync<InstallmentCancelClaimException>(() =>
-            harness.Service.CreateAsync(InstallmentGuid, CreateRequest(fingerprint), Identity(deviceCode: "POS-02"), CancellationToken.None));
-        Assert.Equal(InstallmentCancelClaimErrorCodes.Mismatch, otherDevice.Code);
 
         harness.Time.UtcNow = InitialNow.AddSeconds(121);
         await harness.Service.CreateAsync(InstallmentGuid, CreateRequest(fingerprint), Identity(), CancellationToken.None);
@@ -287,7 +311,8 @@ public sealed class InstallmentCancelClaimServiceTests
 
     private static Harness CreateHarness(
         bool required = false,
-        IReadOnlyList<InstallmentPaymentDto>? payments = null)
+        IReadOnlyList<InstallmentPaymentDto>? payments = null,
+        bool crossDeviceLifecycleEnabled = false)
     {
         var repository = new MemoryRepository();
         var installments = new FakeInstallmentRepository(Details(payments));
@@ -298,7 +323,11 @@ public sealed class InstallmentCancelClaimServiceTests
             installments,
             commitRepository,
             Options.Create(new InstallmentCancelClaimOptions { Required = required }),
-            time);
+            time,
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions
+            {
+                CancelRefundEnabled = crossDeviceLifecycleEnabled
+            }));
         return new Harness(service, repository, installments, commitRepository, time);
     }
 

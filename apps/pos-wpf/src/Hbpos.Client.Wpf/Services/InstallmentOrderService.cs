@@ -420,7 +420,16 @@ public sealed class InstallmentOrderService(
     {
         var result = await VoidCancelAsync(
             session,
-            new InstallmentVoidRequest(orderId, session.StoreCode, session.DeviceCode, session.CashierId, session.CashierName, DateTimeOffset.Now, string.IsNullOrWhiteSpace(reason) ? "作废分期单" : reason.Trim(), $"{orderId:D}:void"),
+            new InstallmentVoidRequest(
+                orderId,
+                session.StoreCode,
+                session.DeviceCode,
+                session.CashierId,
+                session.CashierName,
+                DateTimeOffset.Now,
+                string.IsNullOrWhiteSpace(reason) ? "作废分期单" : reason.Trim(),
+                $"{orderId:D}:void",
+                orderId),
             cancellationToken);
         return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? "分期单已作废。", result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
     }
@@ -432,7 +441,18 @@ public sealed class InstallmentOrderService(
 
     public async Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
     {
-        var result = await ConfirmPickupAsync(session, new InstallmentConfirmPickupRequest(orderId, session.StoreCode, session.DeviceCode, session.CashierId, session.CashierName, DateTimeOffset.Now), cancellationToken);
+        var result = await ConfirmPickupAsync(
+            session,
+            new InstallmentConfirmPickupRequest(
+                orderId,
+                session.StoreCode,
+                session.DeviceCode,
+                session.CashierId,
+                session.CashierName,
+                DateTimeOffset.Now,
+                OperationGuid: orderId,
+                IdempotencyKey: $"{orderId:D}:pickup"),
+            cancellationToken);
         return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? result.Status.ToString(), result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
     }
 

@@ -16,7 +16,7 @@ public sealed class InstallmentRepaymentClaimCommitRepositoryTests
     public async Task Commit_rolls_back_payment_order_and_claim_together_then_retries_idempotently()
     {
         await using var fixture = new CommitSqliteFixture();
-        var claim = await fixture.SeedProviderPendingClaimAsync();
+        var claim = await fixture.SeedProviderPendingClaimAsync(PaymentMethodKind.Cash);
         var installmentRepository = new SqlSugarInstallmentRepository(fixture.DbContext);
         var failingRepository = new SqlSugarInstallmentRepaymentClaimCommitRepository(
             fixture.DbContext,
@@ -26,7 +26,7 @@ public sealed class InstallmentRepaymentClaimCommitRepositoryTests
         await Assert.ThrowsAsync<InjectedCommitFailure>(() =>
             failingRepository.CommitAsync(
                 claim,
-                CardCommitRequest(claim.Amount),
+                new InstallmentRepaymentClaimCommitRequest(),
                 RecoveryIdentity(),
                 Now,
                 CancellationToken.None));
@@ -46,13 +46,13 @@ public sealed class InstallmentRepaymentClaimCommitRepositoryTests
             new NoOpInstallmentRepaymentClaimCommitFaultInjector());
         var committed = await repository.CommitAsync(
             claim,
-            CardCommitRequest(claim.Amount),
+            new InstallmentRepaymentClaimCommitRequest(),
             RecoveryIdentity(),
             Now,
             CancellationToken.None);
         var replay = await repository.CommitAsync(
             claim,
-            CardCommitRequest(claim.Amount),
+            new InstallmentRepaymentClaimCommitRequest(),
             RecoveryIdentity(),
             Now.AddSeconds(1),
             CancellationToken.None);
@@ -72,6 +72,37 @@ public sealed class InstallmentRepaymentClaimCommitRepositoryTests
         Assert.Equal("POS-02", final.Repayment.DeviceCode);
         Assert.Equal("C01", final.Repayment.CashierId);
         Assert.Equal("Claim Cashier", final.Repayment.CashierName);
+    }
+
+    [Fact]
+    public async Task Card_commit_fails_closed_before_transaction_and_leaves_all_ledgers_unchanged()
+    {
+        await using var fixture = new CommitSqliteFixture();
+        var claim = await fixture.SeedProviderPendingClaimAsync(PaymentMethodKind.Card, amount: 10m);
+        var repository = new SqlSugarInstallmentRepaymentClaimCommitRepository(
+            fixture.DbContext,
+            new SqlSugarInstallmentRepository(fixture.DbContext),
+            new NoOpInstallmentRepaymentClaimCommitFaultInjector());
+        var before = await fixture.ReadStateAsync(claim);
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            repository.CommitAsync(
+                claim,
+                CardCommitRequest(claim.Amount),
+                RecoveryIdentity(),
+                Now,
+                CancellationToken.None));
+
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Invalid, exception.Code);
+        var after = await fixture.ReadStateAsync(claim);
+        Assert.Equal(before.RepaymentCount, after.RepaymentCount);
+        Assert.Equal(before.Order.PaidAmount, after.Order.PaidAmount);
+        Assert.Equal(before.Order.BalanceAmount, after.Order.BalanceAmount);
+        Assert.Equal(before.Order.Status, after.Order.Status);
+        Assert.Equal(before.Claim.Status, after.Claim.Status);
+        Assert.Equal(before.Claim.IsBlocking, after.Claim.IsBlocking);
+        Assert.Equal(before.Claim.Revision, after.Claim.Revision);
+        Assert.Null(after.Claim.CommitResponseJson);
     }
 
     [Fact]

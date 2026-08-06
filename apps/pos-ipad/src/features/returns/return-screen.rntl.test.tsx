@@ -68,6 +68,27 @@ test("小票退货覆盖查询、数量、容量选择、Unknown 恢复和成功
   expect(execution.recoverCalls).toBe(1);
 });
 
+test("路由提供 orderRef 时只自动执行一次既有小票查询", async () => {
+  const execution = new ScreenExecution();
+  const presenter = createScreenPresenter(execution);
+  const loadReceipt = jest.spyOn(presenter, "loadReceipt");
+  const screen = await render(
+    <ReturnScreen
+      initialReceiptQuery="10000000-0000-4000-8000-000000000001"
+      locale="en"
+      presenter={presenter}
+    />,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy(),
+  );
+  expect(loadReceipt).toHaveBeenCalledTimes(1);
+  expect(loadReceipt).toHaveBeenCalledWith(
+    "10000000-0000-4000-8000-000000000001",
+  );
+});
+
 test("无小票 OPENITEM 走在线主管路径并提供中英文一致的 44pt 操作", async () => {
   const execution = new ScreenExecution();
   let authorizationCalls = 0;

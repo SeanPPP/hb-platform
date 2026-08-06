@@ -287,7 +287,7 @@ test("真实 SQLite：M32 原有本机履约事实无损升级当前外部订单
      FROM print_jobs WHERE job_id = 'print-before-m33'`,
   );
   assert.deepEqual({ ...row }, {
-    version: 35,
+    version: 37,
     orderGuid: "order-before-m33",
     externalOrderGuid: null,
   });
@@ -353,7 +353,7 @@ test("真实 SQLite：M33 升级后允许分期历史外部订单审计并恢复
   assert.equal(created?.reprintSource, "installment-history");
   assert.equal(claimed?.reprintSource, "installment-history");
   assert.deepEqual({ ...row }, {
-    version: 35,
+    version: 37,
     printExternalOrderGuid: orderGuid,
     auditExternalOrderGuid: orderGuid,
     source: "installment-history",
@@ -407,6 +407,7 @@ test("真实 SQLite：M35 只新增付款成功页分期外部订单审计", asy
   await applyMigrations(
     connection,
     () => "2026-08-04T01:01:00.000Z",
+    POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 35),
   );
 
   const created = await store.createLastReceiptReprint(input, authorization);

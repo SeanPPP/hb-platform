@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { PersistedInstallmentAction } from "../runtime/production-installment-runtime";
+import type {
+  PersistedInstallmentAction,
+  PersistedInstallmentLifecycleAction,
+} from "../runtime/production-installment-runtime";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import { PosDatabase } from "./pos-database";
@@ -140,6 +143,7 @@ test("真实 SQLite：createIfNone 原子保留 terminal 唯一 blocking，冻�
       "created_at_iso",
       "updated_at_iso",
       "resolved_at_iso",
+      "resolution_code",
     ]);
     assert.ok(row.command_ciphertext instanceof Uint8Array);
     const plainColumns = JSON.stringify(row);
@@ -200,6 +204,92 @@ test("真实 SQLite：createIfNone 原子保留 terminal 唯一 blocking，冻�
         "SELECT COUNT(*) AS count FROM installment_actions",
       ),
       2,
+    );
+  });
+});
+
+test("真实 SQLite：M36 加密冻结 lifecycle 全命令，重启读取后只允许完成且禁止删除", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const candidate = lifecycleCandidate("pickup");
+
+    assert.deepEqual(await store.createLifecycleIfNone(candidate), {
+      created: true,
+      action: candidate,
+    });
+    assert.deepEqual(
+      await store.loadLifecycleBlocking({
+        storeCode: STORE,
+        deviceCode: DEVICE,
+      }),
+      candidate,
+    );
+
+    const row = await connection.getFirst<Record<string, unknown>>(
+      "SELECT * FROM installment_lifecycle_actions WHERE operation_guid = ?",
+      [ACTION_B],
+    );
+    assert.ok(row);
+    const plaintextColumns = JSON.stringify(row);
+    assert.equal(plaintextColumns.includes("IPAD-ORIGINAL"), false);
+    assert.equal(plaintextColumns.includes("Cashier Private"), false);
+    assert.equal(plaintextColumns.includes("Private pickup note"), false);
+    const envelope = encryptor.encryptedPlaintexts[0] ?? "";
+    assert.equal(envelope.includes("IPAD-ORIGINAL"), true);
+    assert.equal(envelope.includes("Cashier Private"), true);
+    assert.equal(envelope.includes("Private pickup note"), true);
+
+    await store.completeLifecycle({
+      operationGuid: ACTION_B,
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    assert.equal(
+      await store.loadLifecycleBlocking({
+        storeCode: STORE,
+        deviceCode: DEVICE,
+      }),
+      null,
+    );
+    await assert.rejects(
+      () =>
+        connection.run(
+          "DELETE FROM installment_lifecycle_actions WHERE operation_guid = ?",
+          [ACTION_B],
+        ),
+      /INSTALLMENT_LIFECYCLE_DELETE_FORBIDDEN/,
+    );
+  });
+});
+
+test("真实 SQLite：payment 与 lifecycle ledger 在同一 terminal scope 互斥", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createLifecycleIfNone(lifecycleCandidate("void"));
+    await assert.rejects(
+      () => store.createIfNone(createCandidate()),
+      /lifecycle action blocks payment creation/,
+    );
+  });
+
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createIfNone(createCandidate());
+    await assert.rejects(
+      () => store.createLifecycleIfNone(lifecycleCandidate("pickup")),
+      /payment action blocks lifecycle creation/,
     );
   });
 });
@@ -1035,6 +1125,57 @@ test("真实 SQLite：ClaimBusy 普通终结不生成 requires-review audit", as
   });
 });
 
+test("真实 SQLite：Card unsupported 以专用 resolution code 与 audit 原子终结", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const store = new SqliteInstallmentActionStore(
+      connection,
+      new RecordingEncryptor(),
+      () => NOW,
+    );
+    await store.createIfNone(repaymentCandidate({ actionId: ACTION_C }));
+
+    await store.finalizeCreatedFailure({
+      actionId: ACTION_C,
+      reason: "PaymentMethodUnsupported",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+
+    assert.equal(
+      await store.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      null,
+    );
+    const row = await connection.getFirst<{
+      state: unknown;
+      resolution: unknown;
+      resolution_code: unknown;
+    }>(
+      "SELECT state, resolution, resolution_code FROM installment_actions WHERE action_id = ?",
+      [ACTION_C],
+    );
+    assert.deepEqual(row === null ? null : { ...row }, {
+      state: "ProviderPending",
+      resolution: "Declined",
+      resolution_code: "PaymentMethodUnsupported",
+    });
+    const audit = await connection.getFirst<{
+      event_type: unknown;
+      payload_json: unknown;
+    }>(
+      "SELECT event_type, payload_json FROM audit_events WHERE event_id = ?",
+      [ACTION_C],
+    );
+    assert.equal(
+      audit?.event_type,
+      "INSTALLMENT_REPAYMENT_PAYMENT_METHOD_UNSUPPORTED",
+    );
+    assert.deepEqual(JSON.parse(String(audit?.payload_json)), {
+      outcome: "PaymentMethodUnsupported",
+      reason: "Card installment repayment is unsupported.",
+      status: "Failed",
+    });
+  });
+});
+
 test("PosDatabase.installmentActions(encryptor) 暴露冻结 runtime Port", async () => {
   const database = await PosDatabase.open({
     databaseName: ":memory:",
@@ -1109,6 +1250,42 @@ function createCandidate(): PersistedInstallmentAction {
     intentFingerprint: '{"private":"intentFingerprint"}',
     state: "Created" as const,
     storeCode: STORE,
+  });
+}
+
+function lifecycleCandidate(
+  kind: "void" | "pickup",
+): PersistedInstallmentLifecycleAction {
+  const common = {
+    deviceCode: DEVICE,
+    cashierId: "cashier-private",
+    cashierName: "Cashier Private",
+    installmentGuid: INSTALLMENT,
+    operationGuid: ACTION_B,
+    idempotencyKey: ACTION_B,
+  } as const;
+  const command =
+    kind === "void"
+      ? Object.freeze({
+          ...common,
+          voidedAtIso: NOW,
+          reason: "Private void reason",
+        })
+      : Object.freeze({
+          ...common,
+          confirmedAtIso: NOW,
+          note: "Private pickup note",
+        });
+  return Object.freeze({
+    operationGuid: ACTION_B,
+    idempotencyKey: ACTION_B,
+    kind,
+    installmentGuid: INSTALLMENT,
+    storeCode: STORE,
+    deviceCode: DEVICE,
+    originalDeviceCode: "IPAD-ORIGINAL",
+    command,
+    intentFingerprint: `sha256:${"b".repeat(64)}`,
   });
 }
 

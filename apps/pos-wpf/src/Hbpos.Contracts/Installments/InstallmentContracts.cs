@@ -64,7 +64,11 @@ public sealed record InstallmentRepaymentCapabilitiesResponse(
     int PreparedClaimTtlSeconds,
     bool CancelClaimsSupported = true,
     bool CancelClaimsRequired = false,
-    int CancelPreparedClaimTtlSeconds = 120);
+    int CancelPreparedClaimTtlSeconds = 120,
+    bool CrossDeviceCancelRefundEnabled = false,
+    bool CrossDeviceVoidEnabled = false,
+    bool CrossDevicePickupEnabled = false,
+    bool CardRepaymentSupported = false);
 
 public sealed record InstallmentRepaymentClaimCreateRequest(
     Guid OperationGuid,
@@ -128,7 +132,9 @@ public sealed record InstallmentCancelClaimDto(
     DateTimeOffset UpdatedAtUtc,
     DateTimeOffset? ExpiresAtUtc,
     InstallmentCancelClaimCommitResponse? Commit = null,
-    bool AlreadyExists = false);
+    bool AlreadyExists = false,
+    string? OriginalDeviceCode = null,
+    string? ExecutingDeviceCode = null);
 
 public sealed record InstallmentLineDto(
     Guid InstallmentLineGuid,
@@ -207,7 +213,9 @@ public sealed record InstallmentConfirmPickupRequest(
     string CashierId,
     string CashierName,
     DateTimeOffset ConfirmedAt,
-    string? Note = null);
+    string? Note = null,
+    Guid OperationGuid = default,
+    string? IdempotencyKey = null);
 
 public sealed record InstallmentConfirmPickupResponse(
     Guid InstallmentGuid,
@@ -251,7 +259,8 @@ public sealed record InstallmentVoidRequest(
     string CashierName,
     DateTimeOffset VoidedAt,
     string? Reason = null,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null,
+    Guid OperationGuid = default);
 
 public sealed record InstallmentVoidResponse(
     Guid InstallmentGuid,

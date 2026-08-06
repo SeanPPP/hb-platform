@@ -1148,12 +1148,18 @@ function DetailsActions({
     presenter.capabilities.selectedDetailsWritable;
   const selectedDetailsRepayable =
     presenter.capabilities.selectedDetailsRepayable;
+  const selectedDetailsCancelRefundable =
+    presenter.capabilities.selectedDetailsCancelRefundable;
+  const selectedDetailsVoidable =
+    presenter.capabilities.selectedDetailsVoidable;
+  const selectedDetailsPickupConfirmable =
+    presenter.capabilities.selectedDetailsPickupConfirmable;
   if (details.status === "PickedUp" || details.status === "Cancelled") {
     return null;
   }
 
   if (details.status === "PaidOff") {
-    if (!selectedDetailsWritable) return null;
+    if (!selectedDetailsPickupConfirmable) return null;
     const blocked = actionBlockReason(
       state,
       state.access.canConfirmPickup,
@@ -1199,81 +1205,77 @@ function DetailsActions({
     );
   }
 
-  if (!selectedDetailsRepayable) return null;
+  if (
+    !selectedDetailsRepayable &&
+    !selectedDetailsCancelRefundable &&
+    !selectedDetailsVoidable
+  ) {
+    return null;
+  }
 
-  const repaymentBlocked = actionBlockReason(
-    state,
-    state.access.canAddRepayment,
-    Boolean(onStartRepayment),
-  );
-  if (!selectedDetailsWritable) {
-    return (
-      <View style={styles.actionDock} testID="installment-action-dock">
-        <ActionButton
-          disabled={Boolean(repaymentBlocked)}
-          label={installmentText(
-            locale,
-            state.busy ? "action.working" : "action.continuePayment",
-          )}
-          onPress={() => {
-            if (!onStartRepayment?.(details.installmentGuid)) {
-              onRouteFailure();
-            }
-          }}
-          testID="installment-continue-to-payment"
-          wide
-        />
+  const repaymentBlocked = selectedDetailsRepayable
+    ? actionBlockReason(
+        state,
+        state.access.canAddRepayment,
+        Boolean(onStartRepayment),
+      )
+    : null;
+  const moreAvailable =
+    selectedDetailsCancelRefundable || selectedDetailsVoidable;
+  const moreBlocked = moreAvailable
+    ? actionBlockReason(state, state.access.canCancel, true)
+    : null;
+  return (
+    <View style={styles.actionDock} testID="installment-action-dock">
+      <View style={styles.actionDockButtons}>
+        {selectedDetailsRepayable ? (
+          <View style={styles.primaryActionGrow}>
+            <ActionButton
+              disabled={Boolean(repaymentBlocked)}
+              label={installmentText(
+                locale,
+                state.busy ? "action.working" : "action.continuePayment",
+              )}
+              onPress={() => {
+                if (!onStartRepayment?.(details.installmentGuid)) {
+                  onRouteFailure();
+                }
+              }}
+              testID="installment-continue-to-payment"
+              wide
+            />
+          </View>
+        ) : null}
+        {moreAvailable ? (
+          <ActionButton
+            disabled={Boolean(moreBlocked)}
+            label={installmentText(
+              locale,
+              moreOpen ? "action.closeMore" : "action.more",
+            )}
+            onPress={() => {
+              setMoreOpen(!moreOpen);
+              setDangerMode(null);
+              setConfirmation(null);
+            }}
+            testID="installment-more-actions"
+            tone="secondary"
+          />
+        ) : null}
+      </View>
+      {!selectedDetailsWritable ? (
         <Text
           style={styles.crossDeviceNotice}
           testID="installment-cross-device-notice"
         >
-          {installmentText(locale, "details.crossDeviceRepaymentNotice")}
-        </Text>
-        {repaymentBlocked ? (
-          <ActionBlockNotice locale={locale} reason={repaymentBlocked} />
-        ) : null}
-      </View>
-    );
-  }
-  const moreBlocked = actionBlockReason(
-    state,
-    state.access.canCancel,
-    true,
-  );
-  return (
-    <View style={styles.actionDock} testID="installment-action-dock">
-      <View style={styles.actionDockButtons}>
-        <View style={styles.primaryActionGrow}>
-          <ActionButton
-            disabled={Boolean(repaymentBlocked)}
-            label={installmentText(
-              locale,
-              state.busy ? "action.working" : "action.continuePayment",
-            )}
-            onPress={() => {
-              if (!onStartRepayment?.(details.installmentGuid)) {
-                onRouteFailure();
-              }
-            }}
-            testID="installment-continue-to-payment"
-            wide
-          />
-        </View>
-        <ActionButton
-          disabled={Boolean(moreBlocked)}
-          label={installmentText(
+          {installmentText(
             locale,
-            moreOpen ? "action.closeMore" : "action.more",
+            moreAvailable
+              ? "details.crossDeviceActionNotice"
+              : "details.crossDeviceRepaymentNotice",
           )}
-          onPress={() => {
-            setMoreOpen(!moreOpen);
-            setDangerMode(null);
-            setConfirmation(null);
-          }}
-          testID="installment-more-actions"
-          tone="secondary"
-        />
-      </View>
+        </Text>
+      ) : null}
       {repaymentBlocked ? (
         <ActionBlockNotice locale={locale} reason={repaymentBlocked} />
       ) : moreBlocked ? (
@@ -1281,6 +1283,8 @@ function DetailsActions({
       ) : null}
       {moreOpen && !moreBlocked ? (
         <CancellationPanel
+          canCancel={selectedDetailsCancelRefundable}
+          canVoid={selectedDetailsVoidable}
           confirmation={confirmation}
           dangerMode={dangerMode}
           locale={locale}
@@ -1295,6 +1299,8 @@ function DetailsActions({
 }
 
 function CancellationPanel({
+  canCancel,
+  canVoid,
   confirmation,
   dangerMode,
   locale,
@@ -1303,6 +1309,8 @@ function CancellationPanel({
   setDangerMode,
   state,
 }: Readonly<{
+  canCancel: boolean;
+  canVoid: boolean;
   confirmation: ConfirmationKind | null;
   dangerMode: DangerMode;
   locale: InstallmentLocale;
@@ -1314,18 +1322,22 @@ function CancellationPanel({
   if (!dangerMode) {
     return (
       <View style={styles.moreMenu} testID="installment-more-menu">
-        <ActionButton
-          label={installmentText(locale, "action.refundCancel")}
-          onPress={() => setDangerMode("cancel")}
-          testID="installment-more-cancel"
-          tone="dangerQuiet"
-        />
-        <ActionButton
-          label={installmentText(locale, "action.void")}
-          onPress={() => setDangerMode("void")}
-          testID="installment-more-void"
-          tone="dangerQuiet"
-        />
+        {canCancel ? (
+          <ActionButton
+            label={installmentText(locale, "action.refundCancel")}
+            onPress={() => setDangerMode("cancel")}
+            testID="installment-more-cancel"
+            tone="dangerQuiet"
+          />
+        ) : null}
+        {canVoid ? (
+          <ActionButton
+            label={installmentText(locale, "action.void")}
+            onPress={() => setDangerMode("void")}
+            testID="installment-more-void"
+            tone="dangerQuiet"
+          />
+        ) : null}
       </View>
     );
   }

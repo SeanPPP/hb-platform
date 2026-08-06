@@ -11,6 +11,7 @@ import ReturnsRoute from "../../../app/returns";
 let mockRuntime: any;
 let mockActiveCashier: any;
 let mockReturnScreenProps: any;
+let mockSearchParams: Record<string, string | string[]>;
 const mockClearActiveCashier = jest.fn();
 const mockSignOut = jest.fn();
 const mockCreatePresenter = jest.fn<() => Promise<any>>();
@@ -25,6 +26,7 @@ jest.mock("expo-router", () => {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
     useRouter: () => ({ dismissTo: mockRouterDismissTo }),
+    useLocalSearchParams: () => mockSearchParams,
   };
 });
 
@@ -89,6 +91,7 @@ jest.mock("@/ui/screens/bootstrap-screen", () => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockReturnScreenProps = null;
+  mockSearchParams = {};
   mockActiveCashier = {
     cashierId: "C1",
     cashierName: "Cashier",
@@ -147,6 +150,20 @@ test("returns unavailable 时显示可恢复错误并允许返回销售", async 
   );
   await fireEvent.press(back);
   expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
+});
+
+test("orderRef 路由参数只作为既有小票查询预载值传给 ReturnScreen", async () => {
+  mockSearchParams = {
+    orderRef: "10000000-0000-4000-8000-000000000001",
+  };
+  const screen = await render(<ReturnsRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("return-screen")).toBeTruthy();
+  });
+  expect(mockReturnScreenProps.initialReceiptQuery).toBe(
+    "10000000-0000-4000-8000-000000000001",
+  );
 });
 
 test("普通创建失败可原地重试，失败期间不清空收银员", async () => {

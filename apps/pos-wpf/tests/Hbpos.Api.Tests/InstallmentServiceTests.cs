@@ -8,6 +8,7 @@ using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Hbpos.Api.Tests;
@@ -42,9 +43,13 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
-    public void Installment_order_schema_repair_makes_legacy_lifecycle_columns_nullable()
+    public void Installment_order_schema_repair_is_owned_by_startup_initializer()
     {
-        var field = typeof(SqlSugarInstallmentRepository).GetField(
+        var initializerType = typeof(SqlSugarInstallmentRepository).Assembly.GetType(
+            "Hbpos.Api.Services.SqlSugarInstallmentSchemaInitializer");
+
+        Assert.NotNull(initializerType);
+        var field = initializerType!.GetField(
             "EnsureNullableLifecycleColumnsSql",
             BindingFlags.Static | BindingFlags.NonPublic);
 
@@ -60,6 +65,18 @@ public sealed class InstallmentServiceTests
         Assert.Contains("[name] = N'CardTransactionsJson'", sql);
         Assert.Contains("[max_length] <> -1", sql);
         Assert.Contains("ALTER COLUMN [CardTransactionsJson] NVARCHAR(MAX) NULL", sql);
+    }
+
+    [Fact]
+    public async Task Sql_repository_request_path_does_not_run_code_first_or_DDL()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var statements = fixture.CaptureSql();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+
+        _ = await repository.GetDetailsAsync(Guid.NewGuid(), CancellationToken.None);
+
+        AssertNoSchemaSql(statements);
     }
 
     [Fact]
@@ -238,15 +255,138 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
-    public async Task Confirm_pickup_rejects_device_scope_mismatch()
+    public async Task Confirm_pickup_rejects_store_scope_mismatch()
     {
         var service = CreateService();
         var created = await service.CreateAsync(CreateRequest(totalAmount: 50m, downPaymentAmount: 50m), CancellationToken.None);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ConfirmPickupAsync(CreatePickup(created.InstallmentGuid) with { DeviceCode = "POS02" }, CancellationToken.None));
+            service.ConfirmPickupAsync(CreatePickup(created.InstallmentGuid) with { StoreCode = "S02" }, CancellationToken.None));
 
-        Assert.Contains("this device", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("this store", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Confirm_pickup_allows_enabled_same_store_cross_device_with_operation_identity()
+    {
+        var service = new InstallmentService(
+            new InMemoryInstallmentRepository(),
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { PickupEnabled = true }));
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 50m, downPaymentAmount: 50m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+
+        var response = await service.ConfirmPickupAsync(
+            CreatePickup(created.InstallmentGuid) with
+            {
+                DeviceCode = "POS02",
+                CashierId = "C02",
+                CashierName = "Cashier Two",
+                OperationGuid = operationGuid,
+                IdempotencyKey = operationGuid.ToString("D")
+            },
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.PickedUp, response.Status);
+        Assert.Equal("Cashier Two", response.Details.PickupInfo?.PickedUpBy);
+    }
+
+    [Fact]
+    public async Task Confirm_pickup_retry_reuses_operation_when_only_client_timestamp_changes()
+    {
+        var service = new InstallmentService(
+            new InMemoryInstallmentRepository(),
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { PickupEnabled = true }));
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 50m, downPaymentAmount: 50m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+        var firstRequest = CreatePickup(created.InstallmentGuid) with
+        {
+            DeviceCode = "POS02",
+            OperationGuid = operationGuid,
+            IdempotencyKey = $"{created.InstallmentGuid:D}:pickup"
+        };
+
+        var first = await service.ConfirmPickupAsync(firstRequest, CancellationToken.None);
+        var replay = await service.ConfirmPickupAsync(
+            firstRequest with { ConfirmedAt = firstRequest.ConfirmedAt.AddMinutes(5) },
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.PickedUp, first.Status);
+        Assert.True(replay.AlreadyConfirmed);
+    }
+
+    [Fact]
+    public async Task Cross_device_pickup_fails_closed_when_switch_is_disabled()
+    {
+        var service = new InstallmentService(
+            new InMemoryInstallmentRepository(),
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { PickupEnabled = false }));
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 50m, downPaymentAmount: 50m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ConfirmPickupAsync(
+                CreatePickup(created.InstallmentGuid) with
+                {
+                    DeviceCode = "POS02",
+                    OperationGuid = operationGuid,
+                    IdempotencyKey = operationGuid.ToString("D")
+                },
+                CancellationToken.None));
+
+        Assert.Contains("cross-device", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Cross_device_pickup_terminal_replay_ignores_recovery_cashier_and_bypasses_disabled_switch_only_for_same_operation()
+    {
+        var repository = new InMemoryInstallmentRepository();
+        var enabled = new InstallmentService(
+            repository,
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { PickupEnabled = true }));
+        var created = await enabled.CreateAsync(
+            CreateRequest(totalAmount: 50m, downPaymentAmount: 50m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+        var firstRequest = CreatePickup(created.InstallmentGuid) with
+        {
+            DeviceCode = "POS02",
+            CashierId = "C02",
+            CashierName = "Cashier Two",
+            Note = "Collected",
+            OperationGuid = operationGuid,
+            IdempotencyKey = operationGuid.ToString("D")
+        };
+        await enabled.ConfirmPickupAsync(firstRequest, CancellationToken.None);
+
+        var disabled = new InstallmentService(
+            repository,
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { PickupEnabled = false }));
+        var replay = await disabled.ConfirmPickupAsync(
+            firstRequest with { CashierId = "C03", CashierName = "Cashier Three" },
+            CancellationToken.None);
+
+        Assert.True(replay.AlreadyConfirmed);
+        Assert.Equal("Cashier Two", replay.Details.PickupInfo?.PickedUpBy);
+        var conflict = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            disabled.ConfirmPickupAsync(
+                firstRequest with
+                {
+                    OperationGuid = Guid.NewGuid(),
+                    IdempotencyKey = Guid.NewGuid().ToString("D")
+                },
+                CancellationToken.None));
+        Assert.Contains("idempotency", conflict.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -469,6 +609,7 @@ public sealed class InstallmentServiceTests
             new InMemoryInstallmentRepository(fixture.DbContext),
             reservationService,
             timeProvider);
+        var statements = fixture.CaptureSql();
 
         var response = await service.CreateAsync(
             CreateRequest(
@@ -478,6 +619,7 @@ public sealed class InstallmentServiceTests
                 reference: "V001",
                 reservationToken: reservation.Token),
             CancellationToken.None);
+        AssertNoSchemaSql(statements);
 
         var voucher = await fixture.GetVoucherAsync("V001");
         var storedReservation = await fixture.GetReservationEntityAsync(reservation.Token);
@@ -503,6 +645,7 @@ public sealed class InstallmentServiceTests
             CreateRequest(totalAmount: 60m, downPaymentAmount: 20m),
             CancellationToken.None);
         var reservation = await reservationService.ReserveAsync("S01", "V001", 30m, 50m, CancellationToken.None);
+        var statements = fixture.CaptureSql();
 
         var response = await service.AppendPaymentAsync(
             CreatePayment(
@@ -513,6 +656,7 @@ public sealed class InstallmentServiceTests
                 reference: "V001",
                 reservationToken: reservation.Token),
             CancellationToken.None);
+        AssertNoSchemaSql(statements);
 
         var voucher = await fixture.GetVoucherAsync("V001");
         var storedReservation = await fixture.GetReservationEntityAsync(reservation.Token);
@@ -606,6 +750,76 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
+    public async Task Void_allows_enabled_same_store_cross_device_with_operation_identity()
+    {
+        var service = new InstallmentService(
+            new InMemoryInstallmentRepository(),
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { VoidEnabled = true }));
+        var created = await service.CreateAsync(
+            CreateRequest(totalAmount: 80m, downPaymentAmount: 20m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+
+        var response = await service.VoidAsync(
+            CreateVoid(created.InstallmentGuid) with
+            {
+                DeviceCode = "POS02",
+                CashierId = "C02",
+                CashierName = "Cashier Two",
+                OperationGuid = operationGuid,
+                IdempotencyKey = operationGuid.ToString("D")
+            },
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentStatus.Cancelled, response.Status);
+        Assert.Equal("Cashier Two", response.Details.CancellationInfo?.CancelledBy);
+    }
+
+    [Fact]
+    public async Task Cross_device_void_terminal_replay_ignores_recovery_cashier_and_bypasses_disabled_switch_only_for_same_operation()
+    {
+        var repository = new InMemoryInstallmentRepository();
+        var enabled = new InstallmentService(
+            repository,
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { VoidEnabled = true }));
+        var created = await enabled.CreateAsync(
+            CreateRequest(totalAmount: 80m, downPaymentAmount: 20m),
+            CancellationToken.None);
+        var operationGuid = Guid.NewGuid();
+        var firstRequest = CreateVoid(created.InstallmentGuid) with
+        {
+            DeviceCode = "POS02",
+            CashierId = "C02",
+            CashierName = "Cashier Two",
+            OperationGuid = operationGuid,
+            IdempotencyKey = operationGuid.ToString("D")
+        };
+        await enabled.VoidAsync(firstRequest, CancellationToken.None);
+
+        var disabled = new InstallmentService(
+            repository,
+            new FakeReservationService(),
+            lifecycleOptions: Options.Create(new InstallmentCrossDeviceLifecycleOptions { VoidEnabled = false }));
+        var replay = await disabled.VoidAsync(
+            firstRequest with { CashierId = "C03", CashierName = "Cashier Three" },
+            CancellationToken.None);
+
+        Assert.True(replay.AlreadyVoided);
+        Assert.Equal("Cashier Two", replay.Details.CancellationInfo?.CancelledBy);
+        var conflict = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            disabled.VoidAsync(
+                firstRequest with
+                {
+                    OperationGuid = Guid.NewGuid(),
+                    IdempotencyKey = Guid.NewGuid().ToString("D")
+                },
+                CancellationToken.None));
+        Assert.Contains("idempotency", conflict.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Cancel_and_void_reject_paid_off_installment()
     {
         var service = CreateService();
@@ -653,6 +867,16 @@ public sealed class InstallmentServiceTests
             "InstallmentService.cs"));
 
         return File.ReadAllText(sourcePath);
+    }
+
+    private static void AssertNoSchemaSql(IEnumerable<string> statements)
+    {
+        Assert.NotEmpty(statements);
+        Assert.DoesNotContain(statements, sql =>
+            sql.Contains("sqlite_master", StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("PRAGMA table_info", StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("CREATE TABLE", StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("ALTER TABLE", StringComparison.OrdinalIgnoreCase));
     }
 
     private static InstallmentCreateRequest CreateRequest(
@@ -770,6 +994,8 @@ public sealed class InstallmentServiceTests
     {
         private readonly Dictionary<Guid, InstallmentDetailsDto> details = [];
         private readonly Dictionary<Guid, Guid> paymentIndex = [];
+        private readonly Dictionary<Guid, InstallmentLifecycleOperationFacts> pickupOperations = [];
+        private readonly Dictionary<Guid, InstallmentLifecycleOperationFacts> voidOperations = [];
 
         public InstallmentHistoryQueryRequest? LastHistoryQuery { get; private set; }
 
@@ -878,6 +1104,24 @@ public sealed class InstallmentServiceTests
             return Task.FromResult(current);
         }
 
+        public Task<InstallmentDetailsDto> ConfirmPickupIdempotentAsync(
+            Guid installmentGuid,
+            DateTimeOffset pickedUpAt,
+            string pickedUpBy,
+            string? note,
+            InstallmentLifecycleOperationFacts operation,
+            CancellationToken cancellationToken)
+        {
+            if (pickupOperations.TryGetValue(installmentGuid, out var existing))
+            {
+                EnsureLifecycleReplayMatches(existing, operation, "pickup");
+                return Task.FromResult(details[installmentGuid]);
+            }
+
+            pickupOperations[installmentGuid] = operation;
+            return ConfirmPickupAsync(installmentGuid, pickedUpAt, pickedUpBy, note, cancellationToken);
+        }
+
         public Task<InstallmentDetailsDto> CancelWithRefundAsync(
             Guid installmentGuid,
             IReadOnlyList<InstallmentPaymentDto> refunds,
@@ -916,6 +1160,36 @@ public sealed class InstallmentServiceTests
             };
             details[installmentGuid] = current;
             return Task.FromResult(current);
+        }
+
+        public Task<InstallmentDetailsDto> VoidIdempotentAsync(
+            Guid installmentGuid,
+            InstallmentCancellationInfoDto cancellationInfo,
+            InstallmentLifecycleOperationFacts operation,
+            CancellationToken cancellationToken)
+        {
+            if (voidOperations.TryGetValue(installmentGuid, out var existing))
+            {
+                EnsureLifecycleReplayMatches(existing, operation, "void");
+                return Task.FromResult(details[installmentGuid]);
+            }
+
+            voidOperations[installmentGuid] = operation;
+            return VoidAsync(installmentGuid, cancellationInfo, cancellationToken);
+        }
+
+        private static void EnsureLifecycleReplayMatches(
+            InstallmentLifecycleOperationFacts existing,
+            InstallmentLifecycleOperationFacts recovery,
+            string action)
+        {
+            if (existing.OperationGuid != recovery.OperationGuid ||
+                !string.Equals(existing.IdempotencyKey, recovery.IdempotencyKey, StringComparison.Ordinal) ||
+                !string.Equals(existing.Fingerprint, recovery.Fingerprint, StringComparison.Ordinal) ||
+                !string.Equals(existing.ExecutingDeviceCode, recovery.ExecutingDeviceCode, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Installment {action} idempotency facts conflict with the existing operation.");
+            }
         }
 
         public Task<InstallmentPaymentLookup?> FindPaymentAsync(Guid paymentGuid, CancellationToken cancellationToken)
@@ -1116,11 +1390,23 @@ public sealed class InstallmentServiceTests
                 InitKeyType = InitKeyType.Attribute,
                 IsAutoCloseConnection = true
             });
-            client.CodeFirst.InitTables<StoreVoucher, StoreVoucherReservationEntity>();
+            client.CodeFirst.InitTables<
+                StoreVoucher,
+                StoreVoucherReservationEntity,
+                InstallmentOrderEntity,
+                InstallmentOrderLineEntity,
+                InstallmentPaymentEntity>();
             DbContext = CreateDbContext(client);
         }
 
         public HbposSqlSugarContext DbContext { get; }
+
+        public List<string> CaptureSql()
+        {
+            var statements = new List<string>();
+            client.Aop.OnLogExecuting = (sql, _) => statements.Add(sql);
+            return statements;
+        }
 
         public static Task<InstallmentSqliteFixture> CreateAsync()
         {

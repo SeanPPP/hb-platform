@@ -1,7 +1,10 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Hbpos.Api.Services;
@@ -44,11 +47,14 @@ public sealed class InstallmentService(
     IInstallmentRepository repository,
     IStoreVoucherReservationService reservationService,
     TimeProvider? timeProvider = null,
-    ILogger<InstallmentService>? logger = null) : IInstallmentService, IInstallmentHistoryService
+    ILogger<InstallmentService>? logger = null,
+    IOptions<InstallmentCrossDeviceLifecycleOptions>? lifecycleOptions = null) : IInstallmentService, IInstallmentHistoryService
 {
     public const decimal MinimumInstallmentTotalAmount = 50m;
     public const decimal MinimumDownPaymentAmount = 20m;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly InstallmentCrossDeviceLifecycleOptions _lifecycleOptions =
+        lifecycleOptions?.Value ?? new InstallmentCrossDeviceLifecycleOptions();
 
     public async Task<InstallmentCreateResponse> CreateAsync(
         InstallmentCreateRequest request,
@@ -292,18 +298,33 @@ public sealed class InstallmentService(
         var normalized = NormalizePickupRequest(request);
         var details = await repository.GetDetailsAsync(normalized.InstallmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
-        ValidateInstallmentScope(details, normalized.StoreCode, normalized.DeviceCode);
-        if (details.Status == InstallmentStatus.PickedUp && details.PickupInfo is not null)
+        ValidateInstallmentStoreScope(details, normalized.StoreCode);
+        var crossDevice = !string.Equals(details.DeviceCode, normalized.DeviceCode, StringComparison.OrdinalIgnoreCase);
+        var alreadyConfirmed = details.Status == InstallmentStatus.PickedUp && details.PickupInfo is not null;
+        var operation = CreateLifecycleOperation(
+            action: "pickup",
+            details,
+            normalized.StoreCode,
+            normalized.DeviceCode,
+            normalized.CashierId,
+            normalized.OperationGuid,
+            normalized.IdempotencyKey,
+            normalized.ConfirmedAt,
+            normalized.Note,
+            crossDevice,
+            _lifecycleOptions.PickupEnabled,
+            allowDisabledCrossDeviceReplay: alreadyConfirmed);
+        if (alreadyConfirmed && operation is null)
         {
             return new InstallmentConfirmPickupResponse(
                 details.InstallmentGuid,
                 details.Status,
-                details.PickupInfo.PickedUpAt,
+                details.PickupInfo!.PickedUpAt,
                 details,
                 AlreadyConfirmed: true);
         }
 
-        if (details.Status != InstallmentStatus.PaidOff || details.BalanceAmount != 0m)
+        if (!alreadyConfirmed && (details.Status != InstallmentStatus.PaidOff || details.BalanceAmount != 0m))
         {
             throw new InvalidOperationException("Installment must be paid off before pickup.");
         }
@@ -311,18 +332,27 @@ public sealed class InstallmentService(
         var confirmedAt = normalized.ConfirmedAt == default
             ? _timeProvider.GetUtcNow()
             : normalized.ConfirmedAt.ToUniversalTime();
-        var updated = await repository.ConfirmPickupAsync(
-            normalized.InstallmentGuid,
-            confirmedAt,
-            normalized.CashierName,
-            normalized.Note,
-            cancellationToken);
+        var updated = operation is null
+            ? await repository.ConfirmPickupAsync(
+                normalized.InstallmentGuid,
+                confirmedAt,
+                normalized.CashierName,
+                normalized.Note,
+                cancellationToken)
+            : await repository.ConfirmPickupIdempotentAsync(
+                normalized.InstallmentGuid,
+                confirmedAt,
+                normalized.CashierName,
+                normalized.Note,
+                operation,
+                cancellationToken);
 
         return new InstallmentConfirmPickupResponse(
             updated.InstallmentGuid,
             updated.Status,
             updated.PickupInfo!.PickedUpAt,
-            updated);
+            updated,
+            AlreadyConfirmed: alreadyConfirmed);
     }
 
     public async Task<InstallmentCancelResponse> CancelAsync(
@@ -381,7 +411,25 @@ public sealed class InstallmentService(
         var normalized = NormalizeVoidRequest(request);
         var details = await repository.GetDetailsAsync(normalized.InstallmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
-        ValidateInstallmentScope(details, normalized.StoreCode, normalized.DeviceCode);
+        ValidateInstallmentStoreScope(details, normalized.StoreCode);
+        var crossDevice = !string.Equals(details.DeviceCode, normalized.DeviceCode, StringComparison.OrdinalIgnoreCase);
+        var alreadyVoided = TryCreateExistingCancellationResponse(
+            details,
+            InstallmentCancellationKind.VoidCancel,
+            out var existing);
+        var operation = CreateLifecycleOperation(
+            action: "void",
+            details,
+            normalized.StoreCode,
+            normalized.DeviceCode,
+            normalized.CashierId,
+            normalized.OperationGuid,
+            normalized.IdempotencyKey,
+            normalized.VoidedAt,
+            normalized.Reason,
+            crossDevice,
+            _lifecycleOptions.VoidEnabled,
+            allowDisabledCrossDeviceReplay: alreadyVoided);
         logger?.LogInformation(
             "Installment void start installmentGuid={InstallmentGuid} store={StoreCode} device={DeviceCode} paid={PaidAmount} balance={BalanceAmount}",
             normalized.InstallmentGuid,
@@ -389,7 +437,7 @@ public sealed class InstallmentService(
             normalized.DeviceCode,
             details.PaidAmount,
             details.BalanceAmount);
-        if (TryCreateExistingCancellationResponse(details, InstallmentCancellationKind.VoidCancel, out var existing))
+        if (alreadyVoided && operation is null)
         {
             logger?.LogInformation(
                 "Installment void skipped existing installmentGuid={InstallmentGuid} status={Status}",
@@ -398,7 +446,10 @@ public sealed class InstallmentService(
             return new InstallmentVoidResponse(details.InstallmentGuid, details.Status, details, AlreadyVoided: true, existing);
         }
 
-        ValidateCancellable(details);
+        if (!alreadyVoided)
+        {
+            ValidateCancellable(details);
+        }
         var voidedAt = normalized.VoidedAt == default
             ? _timeProvider.GetUtcNow()
             : normalized.VoidedAt.ToUniversalTime();
@@ -408,15 +459,26 @@ public sealed class InstallmentService(
             normalized.CashierName,
             normalized.Reason,
             normalized.IdempotencyKey);
-        var updated = await repository.VoidAsync(
-            normalized.InstallmentGuid,
-            cancellationInfo,
-            cancellationToken);
+        var updated = operation is null
+            ? await repository.VoidAsync(
+                normalized.InstallmentGuid,
+                cancellationInfo,
+                cancellationToken)
+            : await repository.VoidIdempotentAsync(
+                normalized.InstallmentGuid,
+                cancellationInfo,
+                operation,
+                cancellationToken);
         logger?.LogInformation(
             "Installment void completed installmentGuid={InstallmentGuid} status={Status}",
             updated.InstallmentGuid,
             updated.Status);
-        return new InstallmentVoidResponse(updated.InstallmentGuid, updated.Status, updated);
+        return new InstallmentVoidResponse(
+            updated.InstallmentGuid,
+            updated.Status,
+            updated,
+            AlreadyVoided: alreadyVoided,
+            Message: alreadyVoided ? existing : null);
     }
 
     public Task<InstallmentHistoryQueryResponse> QueryAsync(
@@ -524,6 +586,72 @@ public sealed class InstallmentService(
         }
     }
 
+    private static void ValidateInstallmentStoreScope(InstallmentDetailsDto details, string storeCode)
+    {
+        if (!string.Equals(details.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Installment does not belong to this store.");
+        }
+    }
+
+    private static InstallmentLifecycleOperationFacts? CreateLifecycleOperation(
+        string action,
+        InstallmentDetailsDto details,
+        string storeCode,
+        string executingDeviceCode,
+        string cashierId,
+        Guid operationGuid,
+        string? idempotencyKey,
+        DateTimeOffset requestedAt,
+        string? note,
+        bool crossDevice,
+        bool crossDeviceEnabled,
+        bool allowDisabledCrossDeviceReplay)
+    {
+        var hasOperationGuid = operationGuid != Guid.Empty;
+        var hasIdempotencyKey = !string.IsNullOrWhiteSpace(idempotencyKey);
+        if (hasOperationGuid != hasIdempotencyKey)
+        {
+            throw new InvalidOperationException("Lifecycle operationGuid and idempotencyKey must be provided together.");
+        }
+
+        if (crossDevice && !crossDeviceEnabled && !allowDisabledCrossDeviceReplay)
+        {
+            throw new InvalidOperationException($"Installment cross-device {action} is disabled.");
+        }
+
+        if (crossDevice && !hasOperationGuid)
+        {
+            throw new InvalidOperationException($"Installment cross-device {action} requires operation identity.");
+        }
+
+        if (!hasOperationGuid)
+        {
+            // 旧同机客户端不带新字段时继续走原有路径；跨设备始终要求完整操作身份。
+            return null;
+        }
+
+        var normalizedIdempotencyKey = idempotencyKey!.Trim();
+        var canonical = string.Join(
+            '\n',
+            action.ToLowerInvariant(),
+            details.InstallmentGuid.ToString("D"),
+            details.StoreCode.ToUpperInvariant(),
+            details.DeviceCode.ToUpperInvariant(),
+            storeCode.ToUpperInvariant(),
+            executingDeviceCode.ToUpperInvariant(),
+            operationGuid.ToString("D"),
+            normalizedIdempotencyKey,
+            note ?? string.Empty);
+        var fingerprint = $"sha256:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant()}";
+        return new InstallmentLifecycleOperationFacts(
+            operationGuid,
+            normalizedIdempotencyKey,
+            fingerprint,
+            executingDeviceCode,
+            cashierId);
+    }
+
     private static InstallmentAppendPaymentRequest NormalizePaymentRequest(InstallmentAppendPaymentRequest request)
     {
         return request with
@@ -547,7 +675,8 @@ public sealed class InstallmentService(
             DeviceCode = NormalizeRequired(request.DeviceCode, "Device code is required."),
             CashierId = NormalizeRequired(request.CashierId, "Cashier id is required."),
             CashierName = NormalizeRequired(request.CashierName, "Cashier name is required."),
-            Note = NormalizeOptional(request.Note)
+            Note = NormalizeOptional(request.Note),
+            IdempotencyKey = NormalizeOptional(request.IdempotencyKey)
         };
     }
 
@@ -787,6 +916,13 @@ public sealed class InstallmentService(
     }
 }
 
+public sealed record InstallmentLifecycleOperationFacts(
+    Guid OperationGuid,
+    string IdempotencyKey,
+    string Fingerprint,
+    string ExecutingDeviceCode,
+    string CashierId);
+
 public interface IInstallmentRepository
 {
     Task CreateAsync(InstallmentDetailsDto details, CancellationToken cancellationToken);
@@ -803,6 +939,15 @@ public interface IInstallmentRepository
         string? note,
         CancellationToken cancellationToken);
 
+    Task<InstallmentDetailsDto> ConfirmPickupIdempotentAsync(
+        Guid installmentGuid,
+        DateTimeOffset pickedUpAt,
+        string pickedUpBy,
+        string? note,
+        InstallmentLifecycleOperationFacts operation,
+        CancellationToken cancellationToken) =>
+        ConfirmPickupAsync(installmentGuid, pickedUpAt, pickedUpBy, note, cancellationToken);
+
     Task<InstallmentDetailsDto> CancelWithRefundAsync(
         Guid installmentGuid,
         IReadOnlyList<InstallmentPaymentDto> refunds,
@@ -813,6 +958,13 @@ public interface IInstallmentRepository
         Guid installmentGuid,
         InstallmentCancellationInfoDto cancellationInfo,
         CancellationToken cancellationToken);
+
+    Task<InstallmentDetailsDto> VoidIdempotentAsync(
+        Guid installmentGuid,
+        InstallmentCancellationInfoDto cancellationInfo,
+        InstallmentLifecycleOperationFacts operation,
+        CancellationToken cancellationToken) =>
+        VoidAsync(installmentGuid, cancellationInfo, cancellationToken);
 
     Task<InstallmentPaymentLookup?> FindPaymentAsync(
         Guid paymentGuid,
@@ -838,65 +990,9 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    // 兼容早期 CodeFirst 建出的旧结构：生命周期列要可空，卡交易 JSON 在 SQL Server 上保留无长度上限。
-    internal const string EnsureNullableLifecycleColumnsSql = """
-        IF OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U') IS NOT NULL
-        BEGIN
-            IF EXISTS (
-                SELECT 1
-                FROM sys.columns
-                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
-                  AND [name] = N'PickedUpAt'
-                  AND [is_nullable] = 0)
-            BEGIN
-                ALTER TABLE [dbo].[InstallmentOrder]
-                    ALTER COLUMN [PickedUpAt] DATETIME2 NULL;
-            END;
-
-            IF EXISTS (
-                SELECT 1
-                FROM sys.columns
-                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
-                  AND [name] = N'CancellationKind'
-                  AND [is_nullable] = 0)
-            BEGIN
-                ALTER TABLE [dbo].[InstallmentOrder]
-                    ALTER COLUMN [CancellationKind] INT NULL;
-            END;
-
-            IF EXISTS (
-                SELECT 1
-                FROM sys.columns
-                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
-                  AND [name] = N'CancelledAt'
-                  AND [is_nullable] = 0)
-            BEGIN
-                ALTER TABLE [dbo].[InstallmentOrder]
-                    ALTER COLUMN [CancelledAt] DATETIME2 NULL;
-            END;
-        END;
-
-        IF OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U') IS NOT NULL
-        BEGIN
-            IF EXISTS (
-                SELECT 1
-                FROM sys.columns
-                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U')
-                  AND [name] = N'CardTransactionsJson'
-                  AND ([system_type_id] <> TYPE_ID(N'nvarchar')
-                       OR [max_length] <> -1
-                       OR [is_nullable] = 0))
-            BEGIN
-                ALTER TABLE [dbo].[InstallmentPayment]
-                    ALTER COLUMN [CardTransactionsJson] NVARCHAR(MAX) NULL;
-            END;
-        END;
-        """;
-
     public async Task CreateAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
-        await EnsureTablesAsync(db, cancellationToken);
         await db.Ado.BeginTranAsync();
         try
         {
@@ -944,7 +1040,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
             installmentGuid,
             cancellationToken);
-        await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         var paymentGuidText = payment.PaymentGuid.ToString("D");
         await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
@@ -1021,18 +1116,35 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         }
     }
 
-    public async Task<InstallmentDetailsDto> ConfirmPickupAsync(
+    public Task<InstallmentDetailsDto> ConfirmPickupAsync(
         Guid installmentGuid,
         DateTimeOffset pickedUpAt,
         string pickedUpBy,
         string? note,
+        CancellationToken cancellationToken) =>
+        ConfirmPickupCoreAsync(installmentGuid, pickedUpAt, pickedUpBy, note, operation: null, cancellationToken);
+
+    public Task<InstallmentDetailsDto> ConfirmPickupIdempotentAsync(
+        Guid installmentGuid,
+        DateTimeOffset pickedUpAt,
+        string pickedUpBy,
+        string? note,
+        InstallmentLifecycleOperationFacts operation,
+        CancellationToken cancellationToken) =>
+        ConfirmPickupCoreAsync(installmentGuid, pickedUpAt, pickedUpBy, note, operation, cancellationToken);
+
+    private async Task<InstallmentDetailsDto> ConfirmPickupCoreAsync(
+        Guid installmentGuid,
+        DateTimeOffset pickedUpAt,
+        string pickedUpBy,
+        string? note,
+        InstallmentLifecycleOperationFacts? operation,
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
         await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
             installmentGuid,
             cancellationToken);
-        await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
@@ -1041,8 +1153,17 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
                 ?? throw new InvalidOperationException("Installment was not found.");
             await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
-            if (lockedOrder.Status != (int)InstallmentStatus.PickedUp)
+            if (lockedOrder.Status == (int)InstallmentStatus.PickedUp)
             {
+                ValidatePickupReplay(lockedOrder, operation);
+            }
+            else
+            {
+                var operationGuid = operation?.OperationGuid.ToString("D");
+                var idempotencyKey = operation?.IdempotencyKey;
+                var fingerprint = operation?.Fingerprint;
+                var executingDeviceCode = operation?.ExecutingDeviceCode;
+                var cashierId = operation?.CashierId;
                 if (lockedOrder.Status != (int)InstallmentStatus.PaidOff || lockedOrder.BalanceAmount != 0m)
                 {
                     throw new InvalidOperationException("Installment must be paid off before pickup.");
@@ -1053,6 +1174,11 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
                     .SetColumns(x => x.PickedUpAt == pickedUpAt.UtcDateTime)
                     .SetColumns(x => x.PickedUpBy == pickedUpBy)
                     .SetColumns(x => x.PickupNote == note)
+                    .SetColumns(x => x.PickupOperationGuid == operationGuid)
+                    .SetColumns(x => x.PickupIdempotencyKey == idempotencyKey)
+                    .SetColumns(x => x.PickupFingerprint == fingerprint)
+                    .SetColumns(x => x.PickupExecutingDeviceCode == executingDeviceCode)
+                    .SetColumns(x => x.PickupCashierId == cashierId)
                     .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
                     .Where(x => x.InstallmentGuid == installmentGuidText)
                     .ExecuteCommandAsync(cancellationToken);
@@ -1080,7 +1206,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
             installmentGuid,
             cancellationToken);
-        await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
@@ -1131,16 +1256,29 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         }
     }
 
-    public async Task<InstallmentDetailsDto> VoidAsync(
+    public Task<InstallmentDetailsDto> VoidAsync(
         Guid installmentGuid,
         InstallmentCancellationInfoDto cancellationInfo,
+        CancellationToken cancellationToken) =>
+        VoidCoreAsync(installmentGuid, cancellationInfo, operation: null, cancellationToken);
+
+    public Task<InstallmentDetailsDto> VoidIdempotentAsync(
+        Guid installmentGuid,
+        InstallmentCancellationInfoDto cancellationInfo,
+        InstallmentLifecycleOperationFacts operation,
+        CancellationToken cancellationToken) =>
+        VoidCoreAsync(installmentGuid, cancellationInfo, operation, cancellationToken);
+
+    private async Task<InstallmentDetailsDto> VoidCoreAsync(
+        Guid installmentGuid,
+        InstallmentCancellationInfoDto cancellationInfo,
+        InstallmentLifecycleOperationFacts? operation,
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
         await using var processLock = await InstallmentMutationLock.AcquireProcessAsync(
             installmentGuid,
             cancellationToken);
-        await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
         try
@@ -1149,21 +1287,40 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             var lockedOrder = await InstallmentMutationLock.LockOrderAsync(db, installmentGuid, cancellationToken)
                 ?? throw new InvalidOperationException("Installment was not found.");
             await InstallmentMutationLock.EnsureNoBlockingClaimAsync(db, installmentGuid, cancellationToken);
-            if (lockedOrder.Status != (int)InstallmentStatus.Active || lockedOrder.BalanceAmount <= 0m)
+            if (lockedOrder.Status == (int)InstallmentStatus.Cancelled)
+            {
+                if (lockedOrder.CancellationKind != (int)InstallmentCancellationKind.VoidCancel)
+                {
+                    throw new InvalidOperationException("Installment cancellation kind conflicts with the existing cancelled record.");
+                }
+
+                ValidateVoidReplay(lockedOrder, operation);
+            }
+            else if (lockedOrder.Status != (int)InstallmentStatus.Active || lockedOrder.BalanceAmount <= 0m)
             {
                 throw new InvalidOperationException("Only active unpaid installments can be voided.");
             }
-
-            await db.Updateable<InstallmentOrderEntity>()
-                .SetColumns(x => x.Status == (int)InstallmentStatus.Cancelled)
-                .SetColumns(x => x.CancellationKind == (int)cancellationInfo.Kind)
-                .SetColumns(x => x.CancelledAt == cancellationInfo.CancelledAt.UtcDateTime)
-                .SetColumns(x => x.CancelledBy == cancellationInfo.CancelledBy)
-                .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
-                .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
-                .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-                .Where(x => x.InstallmentGuid == installmentGuidText)
-                .ExecuteCommandAsync(cancellationToken);
+            else
+            {
+                var operationGuid = operation?.OperationGuid.ToString("D");
+                var fingerprint = operation?.Fingerprint;
+                var executingDeviceCode = operation?.ExecutingDeviceCode;
+                var cashierId = operation?.CashierId;
+                await db.Updateable<InstallmentOrderEntity>()
+                    .SetColumns(x => x.Status == (int)InstallmentStatus.Cancelled)
+                    .SetColumns(x => x.CancellationKind == (int)cancellationInfo.Kind)
+                    .SetColumns(x => x.CancelledAt == cancellationInfo.CancelledAt.UtcDateTime)
+                    .SetColumns(x => x.CancelledBy == cancellationInfo.CancelledBy)
+                    .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
+                    .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
+                    .SetColumns(x => x.CancellationOperationGuid == operationGuid)
+                    .SetColumns(x => x.CancellationFingerprint == fingerprint)
+                    .SetColumns(x => x.CancellationExecutingDeviceCode == executingDeviceCode)
+                    .SetColumns(x => x.CancellationCashierId == cashierId)
+                    .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
+                    .Where(x => x.InstallmentGuid == installmentGuidText)
+                    .ExecuteCommandAsync(cancellationToken);
+            }
             await db.Ado.CommitTranAsync();
         }
         catch
@@ -1176,12 +1333,89 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             ?? throw new InvalidOperationException("Installment was not found.");
     }
 
+    private static void ValidatePickupReplay(
+        InstallmentOrderEntity order,
+        InstallmentLifecycleOperationFacts? operation)
+    {
+        if (operation is null)
+        {
+            return;
+        }
+
+        if (PickupOperationFactsAreAbsent(order))
+        {
+            return;
+        }
+
+        if (!LifecycleOperationMatches(
+                order.PickupOperationGuid,
+                order.PickupIdempotencyKey,
+                order.PickupFingerprint,
+                order.PickupExecutingDeviceCode,
+                operation))
+        {
+            throw new InvalidOperationException("Installment pickup idempotency facts conflict with the existing operation.");
+        }
+    }
+
+    private static void ValidateVoidReplay(
+        InstallmentOrderEntity order,
+        InstallmentLifecycleOperationFacts? operation)
+    {
+        if (operation is null)
+        {
+            return;
+        }
+
+        if (VoidOperationFactsAreAbsent(order) &&
+            (string.IsNullOrWhiteSpace(order.CancellationIdempotencyKey) ||
+             string.Equals(order.CancellationIdempotencyKey, operation.IdempotencyKey, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        if (!LifecycleOperationMatches(
+                order.CancellationOperationGuid,
+                order.CancellationIdempotencyKey,
+                order.CancellationFingerprint,
+                order.CancellationExecutingDeviceCode,
+                operation))
+        {
+            throw new InvalidOperationException("Installment void idempotency facts conflict with the existing operation.");
+        }
+    }
+
+    private static bool LifecycleOperationMatches(
+        string? operationGuid,
+        string? idempotencyKey,
+        string? fingerprint,
+        string? executingDeviceCode,
+        InstallmentLifecycleOperationFacts operation)
+    {
+        return string.Equals(operationGuid, operation.OperationGuid.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(idempotencyKey, operation.IdempotencyKey, StringComparison.Ordinal) &&
+            string.Equals(fingerprint, operation.Fingerprint, StringComparison.Ordinal) &&
+            string.Equals(executingDeviceCode, operation.ExecutingDeviceCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool PickupOperationFactsAreAbsent(InstallmentOrderEntity order) =>
+        string.IsNullOrWhiteSpace(order.PickupOperationGuid) &&
+        string.IsNullOrWhiteSpace(order.PickupIdempotencyKey) &&
+        string.IsNullOrWhiteSpace(order.PickupFingerprint) &&
+        string.IsNullOrWhiteSpace(order.PickupExecutingDeviceCode) &&
+        string.IsNullOrWhiteSpace(order.PickupCashierId);
+
+    private static bool VoidOperationFactsAreAbsent(InstallmentOrderEntity order) =>
+        string.IsNullOrWhiteSpace(order.CancellationOperationGuid) &&
+        string.IsNullOrWhiteSpace(order.CancellationFingerprint) &&
+        string.IsNullOrWhiteSpace(order.CancellationExecutingDeviceCode) &&
+        string.IsNullOrWhiteSpace(order.CancellationCashierId);
+
     public async Task<InstallmentPaymentLookup?> FindPaymentAsync(
         Guid paymentGuid,
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
-        await EnsureTablesAsync(db, cancellationToken);
         var paymentGuidText = paymentGuid.ToString("D");
         var entity = await db.Queryable<InstallmentPaymentEntity>()
             .FirstAsync(x => x.PaymentGuid == paymentGuidText, cancellationToken);
@@ -1194,7 +1428,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
-        await EnsureTablesAsync(db, cancellationToken);
         var installmentGuidText = installmentGuid.ToString("D");
         var entity = await db.Queryable<InstallmentPaymentEntity>()
             .FirstAsync(x => x.InstallmentGuid == installmentGuidText && x.IdempotencyKey == idempotencyKey, cancellationToken);
@@ -1206,7 +1439,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
-        await EnsureTablesAsync(db, cancellationToken);
         var query = db.Queryable<InstallmentOrderEntity>()
             .Where(x => x.StoreCode == request.StoreCode);
         if (!string.IsNullOrWhiteSpace(request.DeviceCode))
@@ -1253,7 +1485,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
-        await EnsureTablesAsync(db, cancellationToken);
         return await GetDetailsInsideTransactionAsync(db, installmentGuid, cancellationToken);
     }
 
@@ -1278,18 +1509,6 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             .OrderBy(x => x.RecordedAt)
             .ToListAsync(cancellationToken);
         return MapDetails(order, lines, payments);
-    }
-
-    private static Task EnsureTablesAsync(ISqlSugarClient db, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        db.CodeFirst.InitTables<InstallmentOrderEntity, InstallmentOrderLineEntity, InstallmentPaymentEntity>();
-        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
-        {
-            db.Ado.ExecuteCommand(EnsureNullableLifecycleColumnsSql);
-        }
-
-        return Task.CompletedTask;
     }
 
     private static InstallmentOrderEntity MapOrder(InstallmentDetailsDto details)
@@ -1525,6 +1744,21 @@ public sealed class InstallmentOrderEntity
     [SugarColumn(Length = 500, IsNullable = true)]
     public string? PickupNote { get; set; }
 
+    [SugarColumn(Length = 36, IsNullable = true)]
+    public string? PickupOperationGuid { get; set; }
+
+    [SugarColumn(Length = 100, IsNullable = true)]
+    public string? PickupIdempotencyKey { get; set; }
+
+    [SugarColumn(Length = 80, IsNullable = true)]
+    public string? PickupFingerprint { get; set; }
+
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? PickupExecutingDeviceCode { get; set; }
+
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? PickupCashierId { get; set; }
+
     [SugarColumn(IsNullable = true)]
     public int? CancellationKind { get; set; }
 
@@ -1539,6 +1773,18 @@ public sealed class InstallmentOrderEntity
 
     [SugarColumn(Length = 100, IsNullable = true)]
     public string? CancellationIdempotencyKey { get; set; }
+
+    [SugarColumn(Length = 36, IsNullable = true)]
+    public string? CancellationOperationGuid { get; set; }
+
+    [SugarColumn(Length = 80, IsNullable = true)]
+    public string? CancellationFingerprint { get; set; }
+
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? CancellationExecutingDeviceCode { get; set; }
+
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? CancellationCashierId { get; set; }
 }
 
 [SugarTable("InstallmentOrderLine")]

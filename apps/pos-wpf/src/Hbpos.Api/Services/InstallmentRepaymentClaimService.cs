@@ -17,6 +17,7 @@ public static class InstallmentRepaymentClaimErrorCodes
     public const string NotFound = "INSTALLMENT_REPAYMENT_CLAIM_NOT_FOUND";
     public const string Expired = "INSTALLMENT_REPAYMENT_CLAIM_EXPIRED";
     public const string Invalid = "INSTALLMENT_REPAYMENT_CLAIM_INVALID";
+    public const string PaymentMethodUnsupported = "INSTALLMENT_REPAYMENT_PAYMENT_METHOD_UNSUPPORTED";
     public const string PermissionDenied = "INSTALLMENT_REPAYMENT_PERMISSION_DENIED";
 }
 
@@ -28,9 +29,9 @@ public sealed class InstallmentRepaymentClaimException(string code, string messa
 
 public sealed class InstallmentRepaymentClaimOptions
 {
-    public bool Required { get; set; }
+    public bool Required { get; set; } = true;
 
-    public bool CrossDeviceEnabled { get; set; }
+    public bool CrossDeviceEnabled { get; set; } = true;
 }
 
 public sealed record InstallmentRepaymentClaimIdentity(
@@ -89,12 +90,15 @@ public sealed class InstallmentRepaymentClaimService(
     IInstallmentRepaymentClaimCommitRepository commitRepository,
     IOptions<InstallmentRepaymentClaimOptions> options,
     TimeProvider? timeProvider = null,
-    IOptions<InstallmentCancelClaimOptions>? cancelOptions = null) : IInstallmentRepaymentClaimService
+    IOptions<InstallmentCancelClaimOptions>? cancelOptions = null,
+    IOptions<InstallmentCrossDeviceLifecycleOptions>? lifecycleOptions = null) : IInstallmentRepaymentClaimService
 {
     public const int PreparedClaimTtlSeconds = 120;
     private readonly InstallmentRepaymentClaimOptions _options = options.Value;
     private readonly InstallmentCancelClaimOptions _cancelOptions =
         cancelOptions?.Value ?? new InstallmentCancelClaimOptions();
+    private readonly InstallmentCrossDeviceLifecycleOptions _lifecycleOptions =
+        lifecycleOptions?.Value ?? new InstallmentCrossDeviceLifecycleOptions();
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public InstallmentRepaymentCapabilitiesResponse GetCapabilities()
@@ -102,11 +106,15 @@ public sealed class InstallmentRepaymentClaimService(
         return new InstallmentRepaymentCapabilitiesResponse(
             RepaymentClaimsSupported: true,
             RepaymentClaimsRequired: _options.Required,
+            CardRepaymentSupported: false,
             CrossDeviceRepaymentEnabled: _options.CrossDeviceEnabled,
-            PreparedClaimTtlSeconds,
+            PreparedClaimTtlSeconds: PreparedClaimTtlSeconds,
             CancelClaimsSupported: true,
             CancelClaimsRequired: _cancelOptions.Required,
-            CancelPreparedClaimTtlSeconds: InstallmentCancelClaimService.PreparedClaimTtlSeconds);
+            CancelPreparedClaimTtlSeconds: InstallmentCancelClaimService.PreparedClaimTtlSeconds,
+            CrossDeviceCancelRefundEnabled: _lifecycleOptions.CancelRefundEnabled,
+            CrossDeviceVoidEnabled: _lifecycleOptions.VoidEnabled,
+            CrossDevicePickupEnabled: _lifecycleOptions.PickupEnabled);
     }
 
     public async Task<InstallmentRepaymentClaimDto> CreateAsync(
@@ -117,6 +125,7 @@ public sealed class InstallmentRepaymentClaimService(
     {
         var normalizedIdentity = NormalizeIdentity(identity);
         var normalizedRequest = NormalizeCreateRequest(request);
+        EnsureServerVerifiablePaymentMethod(normalizedRequest.Method);
         ValidatePaymentPermissions(normalizedIdentity, normalizedRequest.Method);
         var details = await GetRequiredInstallmentAsync(installmentGuid, cancellationToken);
         ValidateInstallmentForNewClaim(details, normalizedIdentity, normalizedRequest.Amount);
@@ -201,6 +210,7 @@ public sealed class InstallmentRepaymentClaimService(
             throw Invalid("providerAttemptId must not exceed 128 characters.");
         }
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        EnsureServerVerifiablePaymentMethod(current.Method);
         current = await ExpirePreparedAsync(current, cancellationToken);
         InstallmentRepaymentClaimCommitEvidenceValidator.ValidateProviderForMethod(current.Method, provider);
         var currentIdentity = NormalizeIdentity(identity);
@@ -359,6 +369,7 @@ public sealed class InstallmentRepaymentClaimService(
         CancellationToken cancellationToken)
     {
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        EnsureServerVerifiablePaymentMethod(current.Method);
         if (current.Status == InstallmentRepaymentClaimStatus.Committed)
         {
             current = await RecordRecoveryCashierAsync(
@@ -663,6 +674,10 @@ public sealed class InstallmentRepaymentClaimService(
         InstallmentRepaymentClaimErrorCodes.Invalid,
         message);
 
+    private static InstallmentRepaymentClaimException PaymentMethodUnsupported(string message) => new(
+        InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported,
+        message);
+
     private static InstallmentRepaymentClaimException PermissionDenied(string message) => new(
         InstallmentRepaymentClaimErrorCodes.PermissionDenied,
         message);
@@ -706,6 +721,15 @@ public sealed class InstallmentRepaymentClaimService(
             !permissions.Contains(methodPermission))
         {
             throw PermissionDenied("Verified cashier lacks the required payment permissions.");
+        }
+    }
+
+    private static void EnsureServerVerifiablePaymentMethod(PaymentMethodKind method)
+    {
+        if (method == PaymentMethodKind.Card)
+        {
+            // 当前 Card 结果仅由客户端提交，服务端无法向 Square/Linkly 核验；在权威绑定完成前必须拒绝。
+            throw PaymentMethodUnsupported("Card installment repayment is unavailable until provider evidence can be verified by the server.");
         }
     }
 

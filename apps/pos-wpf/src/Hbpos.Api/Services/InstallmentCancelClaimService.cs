@@ -78,10 +78,13 @@ public sealed class InstallmentCancelClaimService(
     IInstallmentCancelClaimCommitRepository commitRepository,
     IOptions<InstallmentCancelClaimOptions> options,
     TimeProvider? timeProvider = null,
-    IInstallmentRepaymentClaimService? repaymentClaimService = null) : IInstallmentCancelClaimService
+    IInstallmentRepaymentClaimService? repaymentClaimService = null,
+    IOptions<InstallmentCrossDeviceLifecycleOptions>? lifecycleOptions = null) : IInstallmentCancelClaimService
 {
     public const int PreparedClaimTtlSeconds = 120;
     private readonly InstallmentCancelClaimOptions _options = options.Value;
+    private readonly InstallmentCrossDeviceLifecycleOptions _lifecycleOptions =
+        lifecycleOptions?.Value ?? new InstallmentCrossDeviceLifecycleOptions();
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task<InstallmentCancelClaimDto> CreateAsync(
@@ -131,7 +134,8 @@ public sealed class InstallmentCancelClaimService(
             now,
             now.AddSeconds(PreparedClaimTtlSeconds),
             CommittedAtUtc: null,
-            Revision: 1);
+            Revision: 1,
+            OriginalDeviceCode: details.DeviceCode);
         if (await claimRepository.TryInsertAsync(claim, cancellationToken))
         {
             return Map(claim, alreadyExists: false);
@@ -482,14 +486,19 @@ public sealed class InstallmentCancelClaimService(
         InstallmentCancelRefundExecutionPolicy.Validate(details);
     }
 
-    private static void ValidateInstallmentForNewClaim(
+    private void ValidateInstallmentForNewClaim(
         InstallmentDetailsDto details,
         InstallmentRepaymentClaimIdentity identity)
     {
-        if (!string.Equals(details.StoreCode, identity.StoreCode, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(details.DeviceCode, identity.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(details.StoreCode, identity.StoreCode, StringComparison.OrdinalIgnoreCase))
         {
-            throw Mismatch("Cancellation must run on the installment's original store and device.");
+            throw Mismatch("Installment does not belong to the authenticated store.");
+        }
+
+        if (!string.Equals(details.DeviceCode, identity.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+            !_lifecycleOptions.CancelRefundEnabled)
+        {
+            throw Mismatch("Cross-device installment cancellation refund is disabled.");
         }
 
         if (details.Status != InstallmentStatus.Active || details.BalanceAmount <= 0m)
@@ -622,7 +631,11 @@ public sealed class InstallmentCancelClaimService(
             claim.UpdatedAtUtc,
             claim.ExpiresAtUtc,
             commit,
-            alreadyExists);
+            alreadyExists,
+            string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                ? claim.ClaimantDeviceCode
+                : claim.OriginalDeviceCode,
+            claim.ClaimantDeviceCode);
 
     private static InstallmentCancelClaimException Busy() => new(
         InstallmentCancelClaimErrorCodes.Busy,
@@ -696,16 +709,29 @@ internal static class InstallmentCancelClaimCommitSnapshotValidator
         InstallmentCancelClaimCommitResponse response)
     {
         var details = response.Details;
-        if (details.InstallmentGuid != claim.InstallmentGuid ||
-            !string.Equals(details.StoreCode, claim.StoreCode, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(details.DeviceCode, claim.ClaimantDeviceCode, StringComparison.OrdinalIgnoreCase) ||
-            details.Status != InstallmentStatus.Cancelled ||
-            details.CancellationInfo?.Kind != InstallmentCancellationKind.RefundCancel ||
-            !string.Equals(details.CancellationInfo.IdempotencyKey, claim.IdempotencyKey, StringComparison.Ordinal))
+        var invalidReason = details.InstallmentGuid != claim.InstallmentGuid
+            ? "installment"
+            : !string.Equals(details.StoreCode, claim.StoreCode, StringComparison.OrdinalIgnoreCase)
+                ? "store"
+            : !string.Equals(
+                details.DeviceCode,
+                string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                    ? claim.ClaimantDeviceCode
+                    : claim.OriginalDeviceCode,
+                StringComparison.OrdinalIgnoreCase)
+                ? "original-device"
+            : details.Status != InstallmentStatus.Cancelled
+                ? "status"
+            : details.CancellationInfo?.Kind != InstallmentCancellationKind.RefundCancel
+                ? "cancellation-kind"
+            : !string.Equals(details.CancellationInfo.IdempotencyKey, claim.IdempotencyKey, StringComparison.Ordinal)
+                ? "idempotency-key"
+            : null;
+        if (invalidReason is not null)
         {
             throw new InstallmentCancelClaimException(
                 InstallmentCancelClaimErrorCodes.Mismatch,
-                "Persisted cancellation commit snapshot has invalid scope or status.");
+                $"Persisted cancellation commit snapshot has invalid scope or status ({invalidReason}).");
         }
 
         var originalPayments = details.Payments

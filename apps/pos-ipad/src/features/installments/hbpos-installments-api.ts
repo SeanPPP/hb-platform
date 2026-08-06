@@ -56,7 +56,11 @@ type GeneratedPayment =
 type GeneratedPaymentCommand =
   components["schemas"]["InstallmentPaymentCommandDto"];
 type GeneratedPickupRequest =
-  components["schemas"]["InstallmentConfirmPickupRequest"];
+  components["schemas"]["InstallmentConfirmPickupRequest"] &
+    Readonly<{
+      operationGuid?: string;
+      idempotencyKey?: string;
+    }>;
 type GeneratedPickupResponse =
   components["schemas"]["InstallmentConfirmPickupResponse"];
 type GeneratedRefundCommand =
@@ -64,7 +68,8 @@ type GeneratedRefundCommand =
 type GeneratedSummary =
   components["schemas"]["InstallmentSummaryDto"];
 type GeneratedVoidRequest =
-  components["schemas"]["InstallmentVoidRequest"];
+  components["schemas"]["InstallmentVoidRequest"] &
+    Readonly<{ operationGuid?: string }>;
 type GeneratedVoidResponse =
   components["schemas"]["InstallmentVoidResponse"];
 
@@ -141,9 +146,25 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
         payload.repaymentClaimsRequired,
         "capabilities.repaymentClaimsRequired",
       ),
+      cardRepaymentSupported: optionalResponseBoolean(
+        payload.cardRepaymentSupported,
+        "capabilities.cardRepaymentSupported",
+      ),
       crossDeviceRepaymentEnabled: responseBoolean(
         payload.crossDeviceRepaymentEnabled,
         "capabilities.crossDeviceRepaymentEnabled",
+      ),
+      crossDeviceCancelRefundEnabled: optionalResponseBoolean(
+        payload.crossDeviceCancelRefundEnabled,
+        "capabilities.crossDeviceCancelRefundEnabled",
+      ),
+      crossDeviceVoidEnabled: optionalResponseBoolean(
+        payload.crossDeviceVoidEnabled,
+        "capabilities.crossDeviceVoidEnabled",
+      ),
+      crossDevicePickupEnabled: optionalResponseBoolean(
+        payload.crossDevicePickupEnabled,
+        "capabilities.crossDevicePickupEnabled",
       ),
       preparedClaimTtlSeconds: responseNonNegativeInteger(
         payload.preparedClaimTtlSeconds,
@@ -510,6 +531,14 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
         "idempotencyKey",
         256,
       ),
+      ...(command.operationGuid
+        ? {
+            operationGuid: requestUuid(
+              command.operationGuid,
+              "operationGuid",
+            ),
+          }
+        : {}),
     };
     const response = await this.transport.request<
       HbposEnvelope<GeneratedVoidResponse>
@@ -539,6 +568,23 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
         "confirmedAtIso",
       ),
       note: optionalRequestText(command.note, "note", 1_000),
+      ...(command.operationGuid
+        ? {
+            operationGuid: requestUuid(
+              command.operationGuid,
+              "operationGuid",
+            ),
+          }
+        : {}),
+      ...(command.idempotencyKey
+        ? {
+            idempotencyKey: requestText(
+              command.idempotencyKey,
+              "idempotencyKey",
+              256,
+            ),
+          }
+        : {}),
     };
     const response = await this.transport.request<
       HbposEnvelope<GeneratedPickupResponse>
@@ -1085,6 +1131,10 @@ function responseCancelClaimStatus(
 function responseBoolean(value: unknown, field: string): boolean {
   if (typeof value !== "boolean") throw invalidResponse(field);
   return value;
+}
+
+function optionalResponseBoolean(value: unknown, field: string): boolean {
+  return value === undefined ? false : responseBoolean(value, field);
 }
 
 function responseNonNegativeInteger(value: unknown, field: string): number {

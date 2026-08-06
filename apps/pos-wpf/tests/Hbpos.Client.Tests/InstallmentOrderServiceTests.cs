@@ -521,6 +521,8 @@ public sealed class InstallmentOrderServiceTests
             Assert.Equal("已作废", result.Message);
             Assert.NotNull(apiClient.LastVoidRequest);
             Assert.Equal("门店作废", apiClient.LastVoidRequest!.Reason);
+            Assert.Equal(result.Order!.OrderId, apiClient.LastVoidRequest.OperationGuid);
+            Assert.Equal($"{result.Order.OrderId:D}:void", apiClient.LastVoidRequest.IdempotencyKey);
             Assert.NotNull(result.Order);
             Assert.False(result.Order!.CanVoidCancel);
 
@@ -528,6 +530,48 @@ public sealed class InstallmentOrderServiceTests
             Assert.NotNull(saved);
             Assert.Equal(InstallmentStatus.Cancelled, saved.Status);
             Assert.Equal(InstallmentCancellationKind.VoidCancel, saved.CancellationInfo?.Kind);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task ConfirmPickupAsync_builds_stable_operation_identity()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var response = CreateActiveDetails() with
+            {
+                Status = InstallmentStatus.PickedUp,
+                PickupInfo = new InstallmentPickupInfoDto(
+                    DateTimeOffset.Parse("2026-05-30T11:00:00+10:00"),
+                    "Alice",
+                    null)
+            };
+            var apiClient = new StubInstallmentApiClient
+            {
+                ConfirmPickupResponse = new InstallmentConfirmPickupResponse(
+                    response.InstallmentGuid,
+                    response.Status,
+                    response.PickupInfo.PickedUpAt,
+                    response)
+            };
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            var result = await service.ConfirmPickupAsync(response.InstallmentGuid, CreateOnlineSession());
+
+            Assert.True(result.Succeeded);
+            Assert.NotNull(apiClient.LastConfirmPickupRequest);
+            Assert.Equal(response.InstallmentGuid, apiClient.LastConfirmPickupRequest!.OperationGuid);
+            Assert.Equal($"{response.InstallmentGuid:D}:pickup", apiClient.LastConfirmPickupRequest.IdempotencyKey);
         }
         finally
         {
@@ -850,6 +894,8 @@ public sealed class InstallmentOrderServiceTests
 
         public InstallmentCancelRequest? LastCancelRequest { get; private set; }
 
+        public InstallmentConfirmPickupRequest? LastConfirmPickupRequest { get; private set; }
+
         public InstallmentVoidRequest? LastVoidRequest { get; private set; }
 
         public int CreateCallCount { get; private set; }
@@ -880,6 +926,7 @@ public sealed class InstallmentOrderServiceTests
         public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
         {
             ConfirmPickupCallCount++;
+            LastConfirmPickupRequest = request;
             return Task.FromResult(ConfirmPickupResponse ?? throw new InvalidOperationException("ConfirmPickupResponse was not configured."));
         }
 

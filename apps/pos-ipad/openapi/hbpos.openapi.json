@@ -6122,6 +6122,14 @@
           },
           "alreadyExists": {
             "type": "boolean"
+          },
+          "originalDeviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "executingDeviceCode": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -6332,6 +6340,14 @@
             "format": "date-time"
           },
           "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "operationGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotencyKey": {
             "type": "string",
             "nullable": true
           }
@@ -6858,6 +6874,18 @@
           "cancelPreparedClaimTtlSeconds": {
             "type": "integer",
             "format": "int32"
+          },
+          "crossDeviceCancelRefundEnabled": {
+            "type": "boolean"
+          },
+          "crossDeviceVoidEnabled": {
+            "type": "boolean"
+          },
+          "crossDevicePickupEnabled": {
+            "type": "boolean"
+          },
+          "cardRepaymentSupported": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -7156,6 +7184,10 @@
           "idempotencyKey": {
             "type": "string",
             "nullable": true
+          },
+          "operationGuid": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "additionalProperties": false

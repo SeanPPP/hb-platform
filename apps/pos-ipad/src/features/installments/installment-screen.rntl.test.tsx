@@ -697,6 +697,48 @@ test("同店跨终端 capability 启用后只展示继续付款与原设备动�
   await chinese.unmount();
 });
 
+test("同店跨终端高风险动作只展示服务端逐项放行的入口", async () => {
+  const active = createPresenter(
+    {
+      details: { ...details("Active"), deviceCode: "IPAD-2" },
+      orders: [{ ...summary(), deviceCode: "IPAD-2" }],
+      selectedGuid: GUID,
+    },
+    false,
+    false,
+    false,
+    {
+      selectedDetailsCancelRefundable: true,
+      selectedDetailsVoidable: false,
+    },
+  );
+  const screen = await render(
+    <InstallmentScreen presenter={active.presenter} />,
+  );
+
+  await fireEvent.press(screen.getByTestId("installment-more-actions"));
+  expect(screen.getByTestId("installment-more-cancel")).toBeTruthy();
+  expect(screen.queryByTestId("installment-more-void")).toBeNull();
+  await screen.unmount();
+
+  const paidOff = createPresenter(
+    {
+      details: { ...details("PaidOff"), deviceCode: "IPAD-2" },
+      orders: [{ ...summary(), deviceCode: "IPAD-2" }],
+      selectedGuid: GUID,
+    },
+    false,
+    false,
+    false,
+    { selectedDetailsPickupConfirmable: true },
+  );
+  const pickupScreen = await render(
+    <InstallmentScreen presenter={paidOff.presenter} />,
+  );
+  expect(pickupScreen.getByTestId("installment-confirm-pickup")).toBeTruthy();
+  await pickupScreen.unmount();
+});
+
 test("跨终端 capability 关闭或分期已付清时不呈现续付及原设备高风险动作", async () => {
   for (const scenario of [
     { status: "Active" as const, repayable: false },
@@ -770,6 +812,9 @@ function createPresenter(
   canReprint = false,
   selectedDetailsWritable = true,
   selectedDetailsRepayable = selectedDetailsWritable,
+  actionCapabilities: Partial<
+    InstallmentScreenPresenter["capabilities"]
+  > = {},
 ) {
   const state: InstallmentPresenterState = {
     access: {
@@ -834,7 +879,16 @@ function createPresenter(
     ...spies,
     capabilities: {
       reprint: canReprint,
+      selectedDetailsCancelRefundable:
+        actionCapabilities.selectedDetailsCancelRefundable ??
+        selectedDetailsWritable,
+      selectedDetailsPickupConfirmable:
+        actionCapabilities.selectedDetailsPickupConfirmable ??
+        selectedDetailsWritable,
       selectedDetailsRepayable,
+      selectedDetailsVoidable:
+        actionCapabilities.selectedDetailsVoidable ??
+        selectedDetailsWritable,
       selectedDetailsWritable,
     },
     getState: () => state,

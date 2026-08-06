@@ -5,6 +5,7 @@ using Hbpos.Api.Services;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.Installments;
+using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,6 +13,69 @@ namespace Hbpos.Api.Tests;
 
 public sealed class InstallmentsControllerTests
 {
+    [Fact]
+    public async Task Cross_device_pickup_uses_verified_identity_and_requires_current_action_permission()
+    {
+        var installmentGuid = Guid.NewGuid();
+        var installments = new CapturingInstallmentService();
+        var trusted = new InstallmentRepaymentClaimIdentity(
+            "S01",
+            "POS-02",
+            "TRUSTED-CASHIER",
+            "Trusted Cashier",
+            [Permissions.PosTerminal.Installments.ConfirmPickup],
+            "USER-01");
+        var controller = new InstallmentsController(
+            installments,
+            new FakeInstallmentHistoryService(CreateDetails(installmentGuid, "S01", "POS-01")),
+            repaymentClaimIdentityResolver: new FixedIdentityResolver(trusted),
+            cancelClaimService: new PassThroughCancelClaimService(),
+            repaymentClaimService: new PassThroughRepaymentClaimService());
+        SetAuthenticatedDevice(controller, "S01", "POS-02");
+
+        await controller.ConfirmPickup(
+            installmentGuid,
+            new InstallmentConfirmPickupRequest(
+                installmentGuid,
+                "S01",
+                "POS-02",
+                "FORGED",
+                "Forged Cashier",
+                DateTimeOffset.Parse("2026-08-05T00:00:00Z"),
+                OperationGuid: Guid.NewGuid(),
+                IdempotencyKey: "pickup-operation"),
+            CancellationToken.None);
+
+        Assert.NotNull(installments.PickupRequest);
+        Assert.Equal("TRUSTED-CASHIER", installments.PickupRequest!.CashierId);
+        Assert.Equal("Trusted Cashier", installments.PickupRequest.CashierName);
+
+        installments.PickupRequest = null;
+        controller = new InstallmentsController(
+            installments,
+            new FakeInstallmentHistoryService(CreateDetails(installmentGuid, "S01", "POS-01")),
+            repaymentClaimIdentityResolver: new FixedIdentityResolver(trusted with { PermissionCodes = [] }),
+            cancelClaimService: new PassThroughCancelClaimService(),
+            repaymentClaimService: new PassThroughRepaymentClaimService());
+        SetAuthenticatedDevice(controller, "S01", "POS-02");
+
+        var denied = await controller.ConfirmPickup(
+            installmentGuid,
+            new InstallmentConfirmPickupRequest(
+                installmentGuid,
+                "S01",
+                "POS-02",
+                "FORGED",
+                "Forged Cashier",
+                DateTimeOffset.Parse("2026-08-05T00:00:00Z"),
+                OperationGuid: Guid.NewGuid(),
+                IdempotencyKey: "pickup-denied"),
+            CancellationToken.None);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, Assert.IsType<ObjectResult>(denied.Result).StatusCode);
+        Assert.Null(installments.PickupRequest);
+    }
+
     [Fact]
     public async Task Details_allows_installment_from_another_device_in_the_same_store()
     {
@@ -115,5 +179,55 @@ public sealed class InstallmentsControllerTests
         {
             return Task.FromResult(details);
         }
+    }
+
+    private sealed class FixedIdentityResolver(InstallmentRepaymentClaimIdentity identity)
+        : IInstallmentRepaymentClaimIdentityResolver
+    {
+        public Task<InstallmentRepaymentClaimIdentity?> ResolveAsync(HttpContext httpContext, CancellationToken cancellationToken) =>
+            Task.FromResult<InstallmentRepaymentClaimIdentity?>(identity);
+    }
+
+    private sealed class CapturingInstallmentService : IInstallmentService
+    {
+        public InstallmentConfirmPickupRequest? PickupRequest { get; set; }
+
+        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken)
+        {
+            PickupRequest = request;
+            return Task.FromResult(new InstallmentConfirmPickupResponse(
+                request.InstallmentGuid,
+                InstallmentStatus.PickedUp,
+                request.ConfirmedAt,
+                CreateDetails(request.InstallmentGuid, request.StoreCode, "POS-01")));
+        }
+
+        public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentAppendPaymentResponse> AppendPaymentAsync(InstallmentAppendPaymentRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentCancelResponse> CancelAsync(InstallmentCancelRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentVoidResponse> VoidAsync(InstallmentVoidRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class PassThroughRepaymentClaimService : IInstallmentRepaymentClaimService
+    {
+        public InstallmentRepaymentCapabilitiesResponse GetCapabilities() => new(true, true, true, 120);
+        public Task EnsureNoBlockingClaimAsync(Guid installmentGuid, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnsureLegacyAppendAllowedAsync(Guid installmentGuid, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<InstallmentRepaymentClaimDto> CreateAsync(Guid installmentGuid, InstallmentRepaymentClaimCreateRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentRepaymentClaimDto> BeginProviderAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimBeginProviderRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentRepaymentClaimDto> GetAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentRepaymentClaimDto> ResolveAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimResolveRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentRepaymentClaimDto> CommitAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimCommitRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class PassThroughCancelClaimService : IInstallmentCancelClaimService
+    {
+        public Task EnsureNoBlockingClaimAsync(Guid installmentGuid, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnsureLegacyCancelAllowedAsync(Guid installmentGuid, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<InstallmentCancelClaimDto> CreateAsync(Guid installmentGuid, InstallmentCancelClaimCreateRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentCancelClaimDto> BeginRefundAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentCancelClaimDto> GetAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentCancelClaimDto> ResolveAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimResolveRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<InstallmentCancelClaimDto> CommitAsync(Guid installmentGuid, Guid operationGuid, InstallmentCancelClaimCommitRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

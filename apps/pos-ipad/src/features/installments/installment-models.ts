@@ -82,7 +82,12 @@ type CardTransaction =
 export type InstallmentRepaymentCapabilities = Readonly<{
   repaymentClaimsSupported: boolean;
   repaymentClaimsRequired: boolean;
+  /** 旧 API 缺失时适配器必须填 false，禁止假定 Card 可用。 */
+  cardRepaymentSupported: boolean;
   crossDeviceRepaymentEnabled: boolean;
+  crossDeviceCancelRefundEnabled: boolean;
+  crossDeviceVoidEnabled: boolean;
+  crossDevicePickupEnabled: boolean;
   preparedClaimTtlSeconds: number;
   /** Optional during staggered API rollout; undefined is fail-closed for cancellation. */
   cancelClaimsSupported?: boolean;
@@ -252,6 +257,7 @@ export type InstallmentVoidCommand = InstallmentIdentity &
     installmentGuid: string;
     voidedAtIso: string;
     reason: string;
+    operationGuid?: string;
     idempotencyKey: string;
   }>;
 
@@ -260,6 +266,8 @@ export type InstallmentPickupCommand = InstallmentIdentity &
     installmentGuid: string;
     confirmedAtIso: string;
     note: string | null;
+    operationGuid?: string;
+    idempotencyKey?: string;
   }>;
 
 /**

@@ -23,6 +23,8 @@ public sealed class InstallmentCancelClaimSchemaInitializerTests
         Assert.Contains("[LastRecoveryCashierUserGuid] NVARCHAR(50) NULL", sql);
         Assert.Contains("[RecoveredAtUtc] DATETIME2(7) NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_InstallmentCancelClaim', N'CommitResponseJson') IS NULL", sql);
+        Assert.Contains("EXEC(N'UPDATE [dbo].[POSM_InstallmentCancelClaim]", sql);
+        Assert.Contains("EXEC(N'ALTER TABLE [dbo].[POSM_InstallmentCancelClaim]", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_InstallmentCancelClaim', N'LastRecoveryCashierId') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_InstallmentCancelClaim', N'LastRecoveryCashierName') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_InstallmentCancelClaim', N'LastRecoveryCashierUserGuid') IS NULL", sql);

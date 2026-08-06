@@ -1,5 +1,6 @@
 using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
+using BlazorApp.Shared.Constants;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Installments;
 using Microsoft.AspNetCore.Authorization;
@@ -104,6 +105,39 @@ public sealed class InstallmentsController(
         try
         {
             await EnsureNoBlockingCancelClaimAsync(installmentGuid, cancellationToken);
+            var details = await historyService.GetDetailsAsync(installmentGuid, cancellationToken);
+            if (details is not null &&
+                !string.Equals(details.StoreCode, request.StoreCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return DeviceAuthorizationExtensions.DeviceScopeForbidden<InstallmentConfirmPickupResponse>(
+                    "Installment does not belong to this store.");
+            }
+
+            var identity = await ResolveRepaymentClaimIdentityAsync(cancellationToken);
+            var crossDevice = details is not null &&
+                !string.Equals(details.DeviceCode, request.DeviceCode, StringComparison.OrdinalIgnoreCase);
+            if (crossDevice && identity is null)
+            {
+                return CashierIdentityRequired<InstallmentConfirmPickupResponse>();
+            }
+
+            if (crossDevice && !HasPermission(identity, Permissions.PosTerminal.Installments.ConfirmPickup))
+            {
+                return CashierPermissionRequired<InstallmentConfirmPickupResponse>(
+                    "Verified cashier lacks installment pickup permission.");
+            }
+
+            if (identity is not null)
+            {
+                request = request with
+                {
+                    StoreCode = identity.StoreCode,
+                    DeviceCode = identity.DeviceCode,
+                    CashierId = identity.CashierId,
+                    CashierName = identity.CashierName
+                };
+            }
+
             await RequireRepaymentClaimService().EnsureNoBlockingClaimAsync(installmentGuid, cancellationToken);
             var response = await installmentService.ConfirmPickupAsync(request, cancellationToken);
             return Ok(ApiResult<InstallmentConfirmPickupResponse>.Ok(response));
@@ -180,6 +214,39 @@ public sealed class InstallmentsController(
         try
         {
             await EnsureNoBlockingCancelClaimAsync(installmentGuid, cancellationToken);
+            var details = await historyService.GetDetailsAsync(installmentGuid, cancellationToken);
+            if (details is not null &&
+                !string.Equals(details.StoreCode, request.StoreCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return DeviceAuthorizationExtensions.DeviceScopeForbidden<InstallmentVoidResponse>(
+                    "Installment does not belong to this store.");
+            }
+
+            var identity = await ResolveRepaymentClaimIdentityAsync(cancellationToken);
+            var crossDevice = details is not null &&
+                !string.Equals(details.DeviceCode, request.DeviceCode, StringComparison.OrdinalIgnoreCase);
+            if (crossDevice && identity is null)
+            {
+                return CashierIdentityRequired<InstallmentVoidResponse>();
+            }
+
+            if (crossDevice && !HasPermission(identity, Permissions.PosTerminal.Installments.Cancel))
+            {
+                return CashierPermissionRequired<InstallmentVoidResponse>(
+                    "Verified cashier lacks installment void permission.");
+            }
+
+            if (identity is not null)
+            {
+                request = request with
+                {
+                    StoreCode = identity.StoreCode,
+                    DeviceCode = identity.DeviceCode,
+                    CashierId = identity.CashierId,
+                    CashierName = identity.CashierName
+                };
+            }
+
             await RequireRepaymentClaimService().EnsureNoBlockingClaimAsync(installmentGuid, cancellationToken);
             var response = await installmentService.VoidAsync(request, cancellationToken);
             return Ok(ApiResult<InstallmentVoidResponse>.Ok(response));
@@ -590,12 +657,26 @@ public sealed class InstallmentsController(
         };
     }
 
+    private static bool HasPermission(InstallmentRepaymentClaimIdentity? identity, string permission) =>
+        identity?.PermissionCodes?.Contains(permission, StringComparer.OrdinalIgnoreCase) == true;
+
+    private static ActionResult<ApiResult<T>> CashierPermissionRequired<T>(string message)
+    {
+        return new ObjectResult(ApiResult<T>.Fail(
+            "INSTALLMENT_LIFECYCLE_PERMISSION_DENIED",
+            message))
+        {
+            StatusCode = StatusCodes.Status403Forbidden
+        };
+    }
+
     private static ActionResult<ApiResult<T>> ClaimError<T>(InstallmentRepaymentClaimException exception)
     {
         var statusCode = exception.Code switch
         {
             InstallmentRepaymentClaimErrorCodes.NotFound => StatusCodes.Status404NotFound,
             InstallmentRepaymentClaimErrorCodes.Invalid => StatusCodes.Status400BadRequest,
+            InstallmentRepaymentClaimErrorCodes.PaymentMethodUnsupported => StatusCodes.Status400BadRequest,
             InstallmentRepaymentClaimErrorCodes.PermissionDenied => StatusCodes.Status403Forbidden,
             _ => StatusCodes.Status409Conflict
         };

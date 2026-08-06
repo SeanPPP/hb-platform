@@ -35,6 +35,7 @@ public sealed class SqlSugarInstallmentCancelClaimSchemaInitializer(
                 [OperationGuid] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [PK_POSM_InstallmentCancelClaim] PRIMARY KEY,
                 [InstallmentGuid] UNIQUEIDENTIFIER NOT NULL,
                 [StoreCode] NVARCHAR(50) NOT NULL,
+                [OriginalDeviceCode] NVARCHAR(50) NOT NULL,
                 [ClaimantDeviceCode] NVARCHAR(50) NOT NULL,
                 [CashierId] NVARCHAR(50) NOT NULL,
                 [CashierName] NVARCHAR(100) NOT NULL,
@@ -62,6 +63,19 @@ public sealed class SqlSugarInstallmentCancelClaimSchemaInitializer(
                            ([IsBlocking] = 0 AND [Status] IN (N'Committed', N'Released', N'Declined'))),
                 CONSTRAINT [CK_POSM_InstallmentCancelClaim_Revision] CHECK ([Revision] > 0)
             );
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_InstallmentCancelClaim]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'dbo.POSM_InstallmentCancelClaim', N'OriginalDeviceCode') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_InstallmentCancelClaim]
+                ADD [OriginalDeviceCode] NVARCHAR(50) NULL;
+            -- SQL Server 会先编译整个 batch；新增列后的回填与改为 NOT NULL 必须重新编译。
+            EXEC(N'UPDATE [dbo].[POSM_InstallmentCancelClaim]
+                SET [OriginalDeviceCode] = [ClaimantDeviceCode]
+                WHERE [OriginalDeviceCode] IS NULL;');
+            EXEC(N'ALTER TABLE [dbo].[POSM_InstallmentCancelClaim]
+                ALTER COLUMN [OriginalDeviceCode] NVARCHAR(50) NOT NULL;');
         END;
 
         -- v1 可在首建或灰度期间重复执行；已存在表也必须补齐 commit 快照与恢复者审计列。

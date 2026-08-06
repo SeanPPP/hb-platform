@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -33,12 +33,14 @@ export const RETURN_MIN_TOUCH_TARGET = 44;
 type ReturnScreenProps = Readonly<{
   presenter: ReturnPresenter;
   locale?: ReturnLocale;
+  initialReceiptQuery?: string | null;
   onBack?(): void;
 }>;
 
 export function ReturnScreen({
   presenter,
   locale: localeOverride,
+  initialReceiptQuery,
   onBack,
 }: ReturnScreenProps) {
   const state = useSyncExternalStore(
@@ -54,10 +56,30 @@ export function ReturnScreen({
     key: ReturnCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ) => returnText(locale, key, values);
-  const [orderQuery, setOrderQuery] = useState("");
+  const [orderQuery, setOrderQuery] = useState(initialReceiptQuery ?? "");
   const [productQuery, setProductQuery] = useState("");
   const [openItemName, setOpenItemName] = useState("");
   const [openItemAmount, setOpenItemAmount] = useState("");
+  const initialLookupRef = useRef<Readonly<{
+    presenter: ReturnPresenter;
+    query: string;
+  }> | null>(null);
+
+  useEffect(() => {
+    const query = initialReceiptQuery?.trim();
+    if (!query || state.phase !== "search") return;
+    if (
+      initialLookupRef.current?.presenter === presenter &&
+      initialLookupRef.current.query === query
+    ) {
+      return;
+    }
+    initialLookupRef.current = { presenter, query };
+    setOrderQuery(query);
+    void presenter.loadReceipt(query).then((ok) => {
+      if (ok) setOrderQuery("");
+    });
+  }, [initialReceiptQuery, presenter, state.phase]);
 
   if (state.phase === "submitting") {
     return (

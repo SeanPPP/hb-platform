@@ -248,7 +248,7 @@ test("离线状态明确说明远程历史只在线可用", async () => {
   expect(screen.getByText(/online only/i)).toBeTruthy();
 });
 
-test("仅在详情已可信加载并获重打权限时显示重打，退款入口仍不出现", async () => {
+test("普通完成订单可从可信详情进入既有退款流程，重打权限仍独立", async () => {
   const reprintPort: RemoteHistoryReprintPort = {
     canReprint: () => true,
     reprintExistingOrder: jest.fn(async () => undefined),
@@ -265,7 +265,10 @@ test("仅在详情已可信加载并获重打权限时显示重打，退款入�
     ],
     now: () => new Date("2026-07-27T05:00:00Z"),
   });
-  const screen = await render(<RemoteHistoryScreen presenter={presenter} />);
+  const onRefund = jest.fn();
+  const screen = await render(
+    <RemoteHistoryScreen onRefund={onRefund} presenter={presenter} />,
+  );
 
   const reprint = await screen.findByTestId("remote-history-reprint");
   await fireEvent.press(reprint);
@@ -273,5 +276,8 @@ test("仅在详情已可信加载并获重打权限时显示重打，退款入�
   expect(reprintPort.reprintExistingOrder).toHaveBeenCalledWith(
     "10000000-0000-4000-8000-000000000001",
   );
-  expect(screen.queryByTestId("remote-history-refund")).toBeNull();
+  await fireEvent.press(screen.getByTestId("remote-history-refund"));
+  expect(onRefund).toHaveBeenCalledWith(
+    "10000000-0000-4000-8000-000000000001",
+  );
 });

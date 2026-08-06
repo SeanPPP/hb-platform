@@ -39,11 +39,13 @@ export const REMOTE_HISTORY_MIN_TOUCH_TARGET = 44;
 type RemoteHistoryScreenProps = Readonly<{
   presenter: RemoteHistoryPresenter;
   onBack?(): void;
+  onRefund?(orderGuid: string): void;
 }>;
 
 export function RemoteHistoryScreen({
   presenter,
   onBack,
+  onRefund,
 }: RemoteHistoryScreenProps) {
   const state = useSyncExternalStore(
     presenter.subscribe,
@@ -250,6 +252,7 @@ export function RemoteHistoryScreen({
             canReprint={presenter.capabilities.reprint}
             details={state.details}
             locale={locale}
+            onRefund={onRefund}
             onReprint={() => {
               void presenter.reprintSelected();
             }}
@@ -331,12 +334,14 @@ function DetailsPane({
   canReprint,
   details,
   locale,
+  onRefund,
   onReprint,
   reprint,
 }: Readonly<{
   canReprint: boolean;
   details: RemoteHistoryPresenter["state"]["details"];
   locale: RemoteHistoryLocale;
+  onRefund: ((orderGuid: string) => void) | undefined;
   onReprint(): void;
   reprint: RemoteHistoryPresenter["state"]["reprint"];
 }>) {
@@ -365,6 +370,7 @@ function DetailsPane({
         <RemoteOrderDetails
           canReprint={canReprint}
           locale={locale}
+          onRefund={onRefund}
           onReprint={onReprint}
           reprint={reprint}
           value={details.value}
@@ -377,17 +383,20 @@ function DetailsPane({
 function RemoteOrderDetails({
   canReprint,
   locale,
+  onRefund,
   onReprint,
   reprint,
   value,
 }: Readonly<{
   canReprint: boolean;
   locale: RemoteHistoryLocale;
+  onRefund: ((orderGuid: string) => void) | undefined;
   onReprint(): void;
   reprint: RemoteHistoryPresenter["state"]["reprint"];
   value: RemoteOrderHistoryDetails;
 }>) {
   const t = copyFor(locale);
+  const canRefund = Boolean(onRefund && isOrdinarySale(value));
   return (
     <ScrollView contentContainerStyle={styles.detailsContent}>
       <View style={styles.detailsIdentity}>
@@ -408,18 +417,30 @@ function RemoteOrderDetails({
         </View>
       </View>
 
-      {canReprint ? (
+      {canRefund || canReprint ? (
         <View style={styles.reprintAction}>
-          <ActionButton
-            disabled={reprint.kind === "submitting"}
-            label={
-              reprint.kind === "submitting"
-                ? t("action.reprinting")
-                : t("action.reprint")
-            }
-            onPress={onReprint}
-            testID="remote-history-reprint"
-          />
+          <View style={styles.detailsActionButtons}>
+            {canRefund ? (
+              <ActionButton
+                label={t("action.refund")}
+                onPress={() => onRefund?.(value.orderGuid)}
+                testID="remote-history-refund"
+              />
+            ) : null}
+            {canReprint ? (
+              <ActionButton
+                disabled={reprint.kind === "submitting"}
+                label={
+                  reprint.kind === "submitting"
+                    ? t("action.reprinting")
+                    : t("action.reprint")
+                }
+                onPress={onReprint}
+                testID="remote-history-reprint"
+                tone="secondary"
+              />
+            ) : null}
+          </View>
           {reprint.kind === "succeeded" ? (
             <Text style={styles.reprintSuccess} testID="remote-history-reprint-succeeded">
               {t("reprint.succeeded")}
@@ -506,6 +527,15 @@ function RemoteOrderDetails({
         />
       </View>
     </ScrollView>
+  );
+}
+
+function isOrdinarySale(value: RemoteOrderHistoryDetails): boolean {
+  return (
+    value.actualAmountCents > 0 &&
+    value.lines.length > 0 &&
+    value.lines.every((line) => line.kind === "sale") &&
+    value.payments.some((payment) => payment.amountCents > 0)
   );
 }
 
@@ -972,6 +1002,11 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 6,
     marginTop: 14,
+  },
+  detailsActionButtons: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
   reprintSuccess: {
     color: "#18794E",

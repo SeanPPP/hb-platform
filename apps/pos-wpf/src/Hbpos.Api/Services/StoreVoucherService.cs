@@ -718,7 +718,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var normalizedToken = NormalizeRequired(token, nameof(token));
-        await EnsureTableAsync(cancellationToken);
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var entity = await dbContext.PosmDb.Queryable<StoreVoucherReservationEntity>()
@@ -743,7 +742,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await EnsureTableAsync(cancellationToken);
         logger?.LogInformation(
             "Voucher reservation claim start token={ReservationToken} store={StoreCode} voucher={VoucherCode} amount={Amount} reference={Reference}",
             ShortToken(token),
@@ -785,7 +783,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
             throw new InvalidOperationException("Requested amount must be greater than zero.");
         }
 
-        await EnsureTableAsync(cancellationToken);
         var db = dbContext.PosmDb;
         await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
         try
@@ -912,7 +909,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var normalizedToken = NormalizeRequired(token, nameof(token));
-        await EnsureTableAsync(cancellationToken);
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         await dbContext.PosmDb.Updateable<StoreVoucherReservationEntity>()
@@ -936,7 +932,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
         var normalizedToken = NormalizeRequired(token, nameof(token));
         var normalizedStoreCode = NormalizeRequired(storeCode, nameof(storeCode));
         var normalizedVoucherCode = NormalizeRequired(voucherCode, nameof(voucherCode));
-        await EnsureTableAsync(cancellationToken);
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         // release 只回退仍在 pending 的匹配 reservation，避免误释放已核销或其他门店的锁定。
@@ -962,14 +957,6 @@ public sealed class SqlSugarStoreVoucherReservationService(
             normalizedVoucherCode,
             released);
         return released;
-    }
-
-    private async Task EnsureTableAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await Task.Run(
-            () => dbContext.PosmDb.CodeFirst.InitTables<StoreVoucherReservationEntity>(),
-            cancellationToken);
     }
 
     private static StoreVoucherReservation Map(StoreVoucherReservationEntity entity)

@@ -24,7 +24,8 @@ public sealed record InstallmentCancelClaimRecord(
     string? LastRecoveryCashierId = null,
     string? LastRecoveryCashierName = null,
     string? LastRecoveryCashierUserGuid = null,
-    DateTimeOffset? RecoveredAtUtc = null)
+    DateTimeOffset? RecoveredAtUtc = null,
+    string? OriginalDeviceCode = null)
 {
     public static bool IsBlocking(InstallmentCancelClaimStatus status) =>
         status is InstallmentCancelClaimStatus.Prepared
@@ -57,7 +58,7 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
     IInstallmentRepository installmentRepository) : IInstallmentCancelClaimRepository
 {
     private const string SelectColumns = """
-        [InstallmentGuid], [OperationGuid], [StoreCode], [ClaimantDeviceCode], [CashierId], [CashierName],
+        [InstallmentGuid], [OperationGuid], [StoreCode], [OriginalDeviceCode], [ClaimantDeviceCode], [CashierId], [CashierName],
         [IdempotencyKey], [Reason], [RefundPlanFingerprint], [Status], [CreatedAtUtc], [UpdatedAtUtc],
         [ExpiresAtUtc], [CommittedAtUtc], [Revision], [CommitResponseJson], [LastRecoveryCashierId],
         [LastRecoveryCashierName], [LastRecoveryCashierUserGuid], [RecoveredAtUtc]
@@ -113,7 +114,12 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
             var order = await InstallmentMutationLock.LockOrderAsync(db, claim.InstallmentGuid, cancellationToken);
             if (order is null ||
                 !string.Equals(order.StoreCode, claim.StoreCode, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(order.DeviceCode, claim.ClaimantDeviceCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    order.DeviceCode,
+                    string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                        ? claim.ClaimantDeviceCode
+                        : claim.OriginalDeviceCode,
+                    StringComparison.OrdinalIgnoreCase) ||
                 order.Status != (int)InstallmentStatus.Active ||
                 order.BalanceAmount <= 0m)
             {
@@ -198,6 +204,9 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
         InstallmentGuid = claim.InstallmentGuid,
         OperationGuid = claim.OperationGuid,
         StoreCode = claim.StoreCode,
+        OriginalDeviceCode = string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+            ? claim.ClaimantDeviceCode
+            : claim.OriginalDeviceCode,
         ClaimantDeviceCode = claim.ClaimantDeviceCode,
         CashierId = claim.CashierId,
         CashierName = claim.CashierName,
@@ -223,6 +232,11 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
         new("@InstallmentGuid", claim.InstallmentGuid),
         new("@OperationGuid", claim.OperationGuid),
         new("@StoreCode", claim.StoreCode),
+        new(
+            "@OriginalDeviceCode",
+            string.IsNullOrWhiteSpace(claim.OriginalDeviceCode)
+                ? claim.ClaimantDeviceCode
+                : claim.OriginalDeviceCode),
         new("@ClaimantDeviceCode", claim.ClaimantDeviceCode),
         new("@CashierId", claim.CashierId),
         new("@CashierName", claim.CashierName),
@@ -263,7 +277,8 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
         row.LastRecoveryCashierId,
         row.LastRecoveryCashierName,
         row.LastRecoveryCashierUserGuid,
-        row.RecoveredAtUtc is null ? null : ToUtc(row.RecoveredAtUtc.Value));
+        row.RecoveredAtUtc is null ? null : ToUtc(row.RecoveredAtUtc.Value),
+        row.OriginalDeviceCode);
 
     private static DateTimeOffset ToUtc(DateTime value) =>
         new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
@@ -282,6 +297,7 @@ public sealed class SqlSugarInstallmentCancelClaimRepository(
         public Guid InstallmentGuid { get; set; }
         public Guid OperationGuid { get; set; }
         public string StoreCode { get; set; } = string.Empty;
+        public string OriginalDeviceCode { get; set; } = string.Empty;
         public string ClaimantDeviceCode { get; set; } = string.Empty;
         public string CashierId { get; set; } = string.Empty;
         public string CashierName { get; set; } = string.Empty;
@@ -310,6 +326,8 @@ public sealed class InstallmentCancelClaimEntity
     public Guid InstallmentGuid { get; set; }
     [SugarColumn(Length = 50)]
     public string StoreCode { get; set; } = string.Empty;
+    [SugarColumn(Length = 50)]
+    public string OriginalDeviceCode { get; set; } = string.Empty;
     [SugarColumn(Length = 50)]
     public string ClaimantDeviceCode { get; set; } = string.Empty;
     [SugarColumn(Length = 50)]

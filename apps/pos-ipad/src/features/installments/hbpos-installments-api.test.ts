@@ -60,7 +60,11 @@ test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operatio
       data: {
         repaymentClaimsSupported: true,
         repaymentClaimsRequired: true,
+        cardRepaymentSupported: false,
         crossDeviceRepaymentEnabled: true,
+        crossDeviceCancelRefundEnabled: true,
+        crossDeviceVoidEnabled: false,
+        crossDevicePickupEnabled: true,
         preparedClaimTtlSeconds: 300,
         cancelClaimsSupported: true,
         cancelClaimsRequired: false,
@@ -78,7 +82,11 @@ test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operatio
   assert.deepEqual(await api.getCapabilities(), {
     repaymentClaimsSupported: true,
     repaymentClaimsRequired: true,
+    cardRepaymentSupported: false,
     crossDeviceRepaymentEnabled: true,
+    crossDeviceCancelRefundEnabled: true,
+    crossDeviceVoidEnabled: false,
+    crossDevicePickupEnabled: true,
     preparedClaimTtlSeconds: 300,
     cancelClaimsSupported: true,
     cancelClaimsRequired: false,
@@ -224,7 +232,7 @@ test("repayment claim 字段长度在客户端精确对齐服务端 100/32/128",
   );
 });
 
-test("旧 capabilities payload 缺少 cancel claim 字段时保持兼容，调用方可 fail-closed", async () => {
+test("旧 capabilities payload 缺少取消 claim 与跨机动作字段时保持兼容并 fail-closed", async () => {
   const api = new HbposInstallmentsApi(
     new QueueTransport([
       {
@@ -243,7 +251,11 @@ test("旧 capabilities payload 缺少 cancel claim 字段时保持兼容，调�
   assert.deepEqual(capabilities, {
     repaymentClaimsSupported: true,
     repaymentClaimsRequired: false,
+    cardRepaymentSupported: false,
     crossDeviceRepaymentEnabled: false,
+    crossDeviceCancelRefundEnabled: false,
+    crossDeviceVoidEnabled: false,
+    crossDevicePickupEnabled: false,
     preparedClaimTtlSeconds: 120,
   });
   assert.equal(capabilities.cancelClaimsSupported, undefined);
@@ -569,6 +581,7 @@ test("创建、补款、退款取消、作废和取货使用固定 v1 路由", a
     installmentGuid,
     voidedAtIso: "2026-07-27T03:00:00Z",
     reason: "Incorrect order",
+    operationGuid,
     idempotencyKey: "void-key",
   });
   await api.confirmPickup({
@@ -576,6 +589,8 @@ test("创建、补款、退款取消、作废和取货使用固定 v1 路由", a
     installmentGuid,
     confirmedAtIso: "2026-07-27T03:00:00Z",
     note: "ID checked",
+    operationGuid,
+    idempotencyKey: "pickup-key",
   });
 
   assert.deepEqual(
@@ -635,6 +650,28 @@ test("创建、补款、退款取消、作废和取货使用固定 v1 路由", a
     customerName: "Bob",
     customerPhone: "0400000000",
     note: "Friday",
+  });
+  assert.deepEqual(transport.requests[3]?.data, {
+    installmentGuid,
+    storeCode: "S1",
+    deviceCode: "IPAD-1",
+    cashierId: "C1",
+    cashierName: "Alice",
+    voidedAt: "2026-07-27T03:00:00.000Z",
+    reason: "Incorrect order",
+    operationGuid,
+    idempotencyKey: "void-key",
+  });
+  assert.deepEqual(transport.requests[4]?.data, {
+    installmentGuid,
+    storeCode: "S1",
+    deviceCode: "IPAD-1",
+    cashierId: "C1",
+    cashierName: "Alice",
+    confirmedAt: "2026-07-27T03:00:00.000Z",
+    note: "ID checked",
+    operationGuid,
+    idempotencyKey: "pickup-key",
   });
 });
 
