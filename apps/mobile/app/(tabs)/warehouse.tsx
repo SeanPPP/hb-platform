@@ -1954,7 +1954,7 @@ export default function WarehouseScreen() {
           </>
         ) : (
           <>
-            <View style={styles.searchRow}>
+            <View style={[styles.locationSearchRow, isPdaProductLayout ? styles.locationSearchRowCompact : null]}>
               <Searchbar
                 placeholder={t("location.searchPlaceholder")}
                 value={locationKeyword}
@@ -1962,24 +1962,26 @@ export default function WarehouseScreen() {
                 onFocus={pauseHiddenScannerFocus}
                 onBlur={resumeHiddenScannerFocusLater}
                 onSubmitEditing={() => void handleLookupLocations()}
-                style={styles.search}
+                style={[styles.search, isPdaProductLayout ? styles.locationSearchCompact : null]}
               />
-              <IconButton
-                accessibilityLabel={t("common:actions.search")}
-                icon="magnify"
-                mode="contained"
-                onPress={() => void handleLookupLocations()}
-              />
-              <IconButton
-                icon="barcode-scan"
-                mode="contained-tonal"
-                onPress={() => openCameraScanner("location")}
-              />
-              {canMaintainLocations ? (
-                <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
-                  {t("location.newLocation")}
-                </Button>
-              ) : null}
+              <View style={styles.locationSearchActions}>
+                <IconButton
+                  accessibilityLabel={t("common:actions.search")}
+                  icon="magnify"
+                  mode="contained"
+                  onPress={() => void handleLookupLocations()}
+                />
+                <IconButton
+                  icon="barcode-scan"
+                  mode="contained-tonal"
+                  onPress={() => openCameraScanner("location")}
+                />
+                {canMaintainLocations ? (
+                  <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
+                    {t("location.newLocation")}
+                  </Button>
+                ) : null}
+              </View>
             </View>
             {cameraScanMode === "continuous" && scannerTarget === "location" ? renderInlineCameraScanner() : null}
 
@@ -2702,6 +2704,25 @@ const styles = StyleSheet.create({
   },
   search: {
     flex: 1,
+  },
+  locationSearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  locationSearchRowCompact: {
+    flexDirection: "column",
+    alignItems: "stretch",
+  },
+  locationSearchCompact: {
+    flex: 0,
+    width: "100%",
+  },
+  locationSearchActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
   },
   card: {
     backgroundColor: "#fff",
