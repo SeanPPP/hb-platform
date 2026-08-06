@@ -151,6 +151,87 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public void ProductCacheKey_SeparatesLocationLookupCapability()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var filter = new StoreOrderFilterDto
+        {
+            ItemNumber = "LOCATION-CACHE",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        };
+
+        var disabledKey = StoreOrderCacheKeys.Products(filter);
+        var enabledKey = StoreOrderCacheKeys.Products(filter, locationLookupEnabled: true);
+
+        Assert.NotEqual(disabledKey, enabledKey);
+        Assert.Equal(disabledKey, StoreOrderCacheKeys.Products(filter, locationLookupEnabled: false));
+    }
+
+    [Theory]
+    [InlineData("Admin", true)]
+    [InlineData("管理员", true)]
+    [InlineData("SuperAdmin", true)]
+    [InlineData("超级管理员", true)]
+    [InlineData("WarehouseManager", true)]
+    [InlineData("仓库经理", true)]
+    [InlineData("Warehouse", true)]
+    [InlineData("仓库管理员", true)]
+    [InlineData("WarehouseAdmin", true)]
+    [InlineData("WarehouseStaff", true)]
+    [InlineData("仓库员工", true)]
+    [InlineData("StoreManager", false)]
+    [InlineData("StoreStaff", false)]
+    [InlineData("Order", false)]
+    [InlineData("User", false)]
+    public async Task GetProducts_缓存范围只由可信角色Claims决定(
+        string roleName,
+        bool locationLookupEnabled
+    )
+    {
+        var filter = new StoreOrderFilterDto
+        {
+            StoreCode = "S001",
+            ItemNumber = "LOCATION-CACHE",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetPagedListAsync(filter))
+            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
+        var cache = new MemoryCache(new MemoryCacheOptions());
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.OrderFront.View, Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { roleName },
+            cache: cache
+        );
+
+        var result = await controller.GetProducts(filter);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetPagedListAsync(filter), Times.Once);
+        Assert.True(
+            cache.TryGetValue(
+                StoreOrderCacheKeys.Products(filter, locationLookupEnabled),
+                out _
+            )
+        );
+        Assert.False(
+            cache.TryGetValue(
+                StoreOrderCacheKeys.Products(filter, !locationLookupEnabled),
+                out _
+            )
+        );
+    }
+
+    [Fact]
     public async Task ProductCacheClear_KeepsBothWebAndExpoHomePageKeys()
     {
         StoreOrderCacheKeys.ClearActiveKeys();
@@ -229,6 +310,35 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Assert.True(cache.TryGetValue(warmExpoKey, out _));
         Assert.Equal(1050, normalWeb!.Total);
         Assert.Equal(1018, normalExpo!.Total);
+    }
+
+    [Fact]
+    public async Task WarmUpHomePageAsync_只预热普通商品缓存范围()
+    {
+        StoreOrderCacheKeys.ClearActiveKeys();
+
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
+            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
+
+        await warmer.WarmUpHomePageAsync();
+
+        var normalKey = StoreOrderCacheKeys.GetHomePageCacheKey(50);
+        var enabledKey = StoreOrderCacheKeys.Products(
+            new StoreOrderFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "Default",
+            },
+            locationLookupEnabled: true
+        );
+
+        Assert.True(cache.TryGetValue(normalKey, out _));
+        Assert.False(cache.TryGetValue(enabledKey, out _));
     }
 
     [Fact]

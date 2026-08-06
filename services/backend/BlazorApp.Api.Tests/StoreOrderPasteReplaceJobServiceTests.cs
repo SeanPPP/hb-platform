@@ -66,7 +66,8 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
                 Mock.Of<IOrderNumberGenerator>(),
                 new ConfigurationBuilder().Build(),
                 Mock.Of<IMapper>(),
-                Mock.Of<IInvoiceEmailService>()
+                Mock.Of<IInvoiceEmailService>(),
+                Mock.Of<IStoreOrderLocationProductLookupService>()
             )
         );
         services.AddSingleton<IStoreOrderPasteReplaceJobService, StoreOrderPasteReplaceJobService>();

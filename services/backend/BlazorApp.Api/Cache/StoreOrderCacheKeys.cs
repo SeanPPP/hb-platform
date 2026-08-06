@@ -42,14 +42,14 @@ namespace BlazorApp.Api.Cache
         /// <summary>
         /// 生成商品列表缓存键
         /// </summary>
-        public static string Products(StoreOrderFilterDto filter)
+        public static string Products(StoreOrderFilterDto filter, bool locationLookupEnabled = false)
         {
-            var key = $"{PREFIX}:Products:{Hash(filter)}";
+            var key = $"{PREFIX}:Products:{Hash(filter, locationLookupEnabled)}";
             lock (_activeKeysLock)
             {
                 _activeKeys.Add(key);
             }
-            LogKeyGenerated("Products", key, filter);
+            LogKeyGenerated("Products", key, filter, locationLookupEnabled);
             return key;
         }
 
@@ -91,7 +91,7 @@ namespace BlazorApp.Api.Cache
                 Grade = null,
                 ColumnFilters = null,
             };
-            return Products(filter);
+            return Products(filter, locationLookupEnabled: false);
         }
 
         /// <summary>
@@ -128,9 +128,9 @@ namespace BlazorApp.Api.Cache
         /// 使用 SHA256 生成缓存键哈希值
         /// 基于 StoreOrderFilterDto 的所有字段生成唯一键
         /// </summary>
-        private static string Hash(StoreOrderFilterDto filter)
+        private static string Hash(StoreOrderFilterDto filter, bool locationLookupEnabled)
         {
-            var parts = new[]
+            var parts = new List<string>
             {
                 "store-scope-checked-before-cache",
                 filter.ItemNumber ?? "null",
@@ -147,6 +147,12 @@ namespace BlazorApp.Api.Cache
                 filter.SortDescending ? "sort-desc" : "sort-asc",
                 BuildColumnFiltersKey(filter.ColumnFilters)
             };
+
+            // 货位解析结果依赖可信角色；只有启用能力的请求才追加独立缓存维度。
+            if (locationLookupEnabled)
+            {
+                parts.Add("location-lookup-enabled");
+            }
 
             var combined = string.Join("|", parts);
             using var sha256 = SHA256.Create();

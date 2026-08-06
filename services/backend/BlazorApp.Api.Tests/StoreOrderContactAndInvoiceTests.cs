@@ -1268,7 +1268,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            invoiceEmailService ?? Mock.Of<IInvoiceEmailService>()
+            invoiceEmailService ?? Mock.Of<IInvoiceEmailService>(),
+            Mock.Of<IStoreOrderLocationProductLookupService>()
         );
     }
 

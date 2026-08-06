@@ -27,6 +27,8 @@ public sealed class StoreOrderProductListTests : IDisposable
     private readonly SqliteConnection _sqliteConnection;
     private readonly SqlSugarClient _db;
     private readonly List<string> _sqlLogs = new();
+    private IStoreOrderLocationProductLookupService _locationLookupService =
+        Mock.Of<IStoreOrderLocationProductLookupService>();
 
     public StoreOrderProductListTests()
     {
@@ -1402,6 +1404,96 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(new[] { "P-HIGH", "P-MID" }, result.Items.Select(item => item.ProductCode));
     }
 
+    [Theory]
+    [InlineData("Admin", true)]
+    [InlineData("管理员", true)]
+    [InlineData("SuperAdmin", true)]
+    [InlineData("超级管理员", true)]
+    [InlineData("WarehouseManager", true)]
+    [InlineData("仓库经理", true)]
+    [InlineData("Warehouse", true)]
+    [InlineData("仓库管理员", true)]
+    [InlineData("WarehouseAdmin", true)]
+    [InlineData("WarehouseStaff", true)]
+    [InlineData("仓库员工", true)]
+    [InlineData("StoreManager", false)]
+    [InlineData("StoreStaff", false)]
+    [InlineData("Order", false)]
+    [InlineData("User", false)]
+    public async Task GetPagedListAsync_货位解析只接受可信角色(string roleName, bool shouldLookup)
+    {
+        await SeedProductAsync("P-ROLE-LOCATION", "UNRELATED-ROLE-ITEM");
+        await SeedWarehouseProductAsync("P-ROLE-LOCATION");
+
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        lookup
+            .Setup(item => item.LookupAsync("ROLE-LOCATION", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new StoreOrderLocationProductLookupResult
+                {
+                    MatchType = "locationCode",
+                    ProductCodes = new[] { "P-ROLE-LOCATION" },
+                }
+            );
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("user-role", roleName).GetPagedListAsync(
+            new StoreOrderFilterDto
+            {
+                ItemNumber = "ROLE-LOCATION",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.Equal(shouldLookup ? 1 : 0, result.Total);
+        Assert.Equal(shouldLookup, result.Items.Any(item => item.ProductCode == "P-ROLE-LOCATION"));
+        lookup.Verify(
+            item => item.LookupAsync("ROLE-LOCATION", It.IsAny<CancellationToken>()),
+            shouldLookup ? Times.Once : Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_货位编码与原商品条件使用OR且保留商品筛选条件()
+    {
+        await SeedProductAsync("P-ORIGINAL", "LOCATION-OR");
+        await SeedWarehouseProductAsync("P-ORIGINAL");
+        await SeedProductAsync("P-LOCATION-OR", "NOT-LOCATION-OR");
+        await SeedWarehouseProductAsync("P-LOCATION-OR");
+
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        lookup
+            .Setup(item => item.LookupAsync("LOCATION-OR", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new StoreOrderLocationProductLookupResult
+                {
+                    MatchType = "locationCode",
+                    ProductCodes = new[] { "P-LOCATION-OR" },
+                }
+            );
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("warehouse-admin", "WarehouseAdmin").GetPagedListAsync(
+            new StoreOrderFilterDto
+            {
+                ItemNumber = "LOCATION-OR",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(
+            new[] { "P-ORIGINAL", "P-LOCATION-OR" }.OrderBy(code => code),
+            result.Items.Select(item => item.ProductCode).OrderBy(code => code)
+        );
+        lookup.Verify(
+            item => item.LookupAsync("LOCATION-OR", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
     [Fact]
     public async Task ScanLookupProductsAsync_UsesSingleFieldLookupWhenBarcodeMatches()
     {
@@ -1423,6 +1515,161 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.DoesNotContain(
             _sqlLogs,
             sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task ScanLookupAndAddToCartMutationAsync_商品未命中后货位去重补Grade并保留多候选()
+    {
+        await SeedProductAsync("P-LOCATION-A", "ITEM-LOCATION-A");
+        await SeedWarehouseProductAsync("P-LOCATION-A");
+        await SeedProductGradeAsync("P-LOCATION-A", "A");
+        await SeedProductAsync("P-LOCATION-B", "ITEM-LOCATION-B");
+        await SeedWarehouseProductAsync("P-LOCATION-B");
+
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        lookup
+            .Setup(item => item.LookupAsync("LOCATION-SCAN", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new StoreOrderLocationProductLookupResult
+                {
+                    MatchType = "locationCode",
+                    ProductCodes = new[]
+                    {
+                        "P-LOCATION-A",
+                        "p-location-a",
+                        "P-LOCATION-B",
+                        "P-NOT-ORDERABLE",
+                    },
+                }
+            );
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("warehouse-staff", "WarehouseStaff")
+            .ScanLookupAndAddToCartMutationAsync(
+                new StoreOrderScanLookupAddRequestDto
+                {
+                    StoreCode = "S001",
+                    Barcode = "LOCATION-SCAN",
+                }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal("locationCode", result.Data!.MatchType);
+        Assert.False(result.Data.Added);
+        Assert.Null(result.Data.Cart);
+        Assert.Equal(2, result.Data.Items.Count);
+        Assert.Equal("A", result.Data.Items.Single(item => item.ProductCode == "P-LOCATION-A").Grade);
+        lookup.Verify(
+            item => item.LookupAsync("LOCATION-SCAN", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        Assert.Empty(await _db.Queryable<WareHouseOrderDetails>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task ScanLookupProductsAsync_商品命中优先且不调用货位解析()
+    {
+        await SeedProductAsync("P-PRODUCT-FIRST", "ITEM-PRODUCT-FIRST", barcode: "CONFLICT-SCAN");
+        await SeedWarehouseProductAsync("P-PRODUCT-FIRST");
+
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("warehouse-admin", "WarehouseAdmin").ScanLookupProductsAsync(
+            new StoreOrderScanLookupRequestDto
+            {
+                Barcode = "CONFLICT-SCAN",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("barcode", result.Data!.MatchType);
+        Assert.Equal("P-PRODUCT-FIRST", Assert.Single(result.Data.Items).ProductCode);
+        lookup.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData("StoreManager")]
+    [InlineData("StoreStaff")]
+    [InlineData("Order")]
+    [InlineData("User")]
+    public async Task ScanLookupProductsAsync_普通角色三种商品键均未命中时不调用货位解析(
+        string roleName
+    )
+    {
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("ordinary-scan-user", roleName).ScanLookupProductsAsync(
+            new StoreOrderScanLookupRequestDto
+            {
+                Barcode = "NO-PRODUCT-KEY-MATCH",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data!.Items);
+        Assert.Null(result.Data.MatchType);
+        lookup.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData("WarehouseStaff")]
+    [InlineData("WarehouseAdmin")]
+    public async Task ScanLookupAndAddToCartMutationAsync_唯一货位商品自动按MOQ加购(
+        string roleName
+    )
+    {
+        await SeedProductAsync("P-LOCATION-UNIQUE", "ITEM-LOCATION-UNIQUE");
+        await SeedWarehouseProductAsync("P-LOCATION-UNIQUE", minOrderQuantity: 4);
+
+        var lookup = new Mock<IStoreOrderLocationProductLookupService>(MockBehavior.Strict);
+        lookup
+            .Setup(item => item.LookupAsync("LOCATION-UNIQUE", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new StoreOrderLocationProductLookupResult
+                {
+                    MatchType = "locationBarcode",
+                    ProductCodes = new[] { "P-LOCATION-UNIQUE" },
+                }
+            );
+        _locationLookupService = lookup.Object;
+
+        var result = await CreateService("warehouse-scan-user", roleName)
+            .ScanLookupAndAddToCartMutationAsync(
+                new StoreOrderScanLookupAddRequestDto
+                {
+                    StoreCode = "S001",
+                    Barcode = "LOCATION-UNIQUE",
+                }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal("locationBarcode", result.Data!.MatchType);
+        Assert.True(result.Data.Added);
+        Assert.NotNull(result.Data.Cart);
+        Assert.Equal("P-LOCATION-UNIQUE", result.Data.Cart!.ProductCode);
+        Assert.Equal(4, result.Data.Cart.Summary.TotalQuantity);
+        Assert.NotNull(result.Data.Cart.ChangedItem);
+        Assert.Equal(4m, result.Data.Cart.ChangedItem!.Quantity);
+
+        var detail = Assert.Single(
+            await _db.Queryable<WareHouseOrderDetails>()
+                .Where(row =>
+                    row.OrderGUID == result.Data.Cart.Summary.OrderGUID
+                    && row.ProductCode == "P-LOCATION-UNIQUE"
+                    && !row.IsDeleted
+                )
+                .ToListAsync()
+        );
+        Assert.Equal(4m, detail.Quantity);
+        lookup.Verify(
+            item => item.LookupAsync("LOCATION-UNIQUE", It.IsAny<CancellationToken>()),
+            Times.Once
         );
     }
 
@@ -2290,6 +2537,44 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(3, storeCart.Data?.TotalQuantity);
         Assert.Equal(1, staffACart.Data?.TotalQuantity);
         Assert.Equal(2, staffBCart.Data?.TotalQuantity);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    [InlineData("WarehouseManager")]
+    [InlineData("仓库经理")]
+    [InlineData("Warehouse")]
+    [InlineData("仓库管理员")]
+    [InlineData("WarehouseAdmin")]
+    public async Task WarehouseStaffWithManagementRole_使用管理角色共享购物车(
+        string managementRole
+    )
+    {
+        await SeedProductAsync("P-MANAGER-SCOPE", "ITEM-MANAGER-SCOPE");
+        await SeedWarehouseProductAsync("P-MANAGER-SCOPE", oemPrice: 3m, importPrice: 2m);
+
+        var result = await CreateService(
+                "warehouse-manager",
+                "WarehouseStaff",
+                managementRole
+            )
+            .AddToCartMutationAsync(new AddToCartRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P-MANAGER-SCOPE",
+                Quantity = 1,
+            });
+
+        Assert.True(result.Success, result.Message);
+        var activeCart = Assert.Single(
+            await _db.Queryable<WareHouseOrder>()
+                .Where(item => item.StoreCode == "S001" && item.FlowStatus == 0 && !item.IsDeleted)
+                .ToListAsync()
+        );
+        Assert.True(string.IsNullOrWhiteSpace(activeCart.CartOwnerUserGuid));
     }
 
     [Fact]
@@ -4690,7 +4975,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             orderNumberGenerator.Object,
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            Mock.Of<IInvoiceEmailService>()
+            Mock.Of<IInvoiceEmailService>(),
+            _locationLookupService
         );
 
         var hqField = typeof(StoreOrderReactService).GetField(

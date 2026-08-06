@@ -20,6 +20,7 @@ import {
   rememberScanLookupProduct,
   runScanLookupInFlight,
 } from "@/modules/scanner/scan-lookup-cache";
+import { rememberScanLookupProductForMatch } from "@/modules/scanner/scan-lookup-policy";
 import {
   canUpdateAddScanFeedback,
   shouldFlushCartSyncImmediately,
@@ -826,12 +827,13 @@ export function useScanResult({
         const items = result.items ?? [];
 
         if (isAddMode && items.length === 1) {
-          rememberScanLookupProduct(
+          rememberScanLookupProductForMatch(
             lookupCacheRef.current,
             activeStoreCode,
             result.barcode,
             items[0],
-            getScanPerformanceTimestamp()
+            getScanPerformanceTimestamp(),
+            result.matchType,
           );
           await addMatchedProduct(items[0], result.barcode, source, scanTraceId, activeStoreCode, jobGeneration);
           logScanPerformance("scan.add-flow.local-done", {

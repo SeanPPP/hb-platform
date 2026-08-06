@@ -786,7 +786,8 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            Mock.Of<IInvoiceEmailService>()
+            Mock.Of<IInvoiceEmailService>(),
+            Mock.Of<IStoreOrderLocationProductLookupService>()
         );
     }
 

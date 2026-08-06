@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -21,6 +22,11 @@ namespace BlazorApp.Api.Services.React
         private const int HomePageWarmUpCommandTimeoutSeconds = 30;
         private const int OrderListAggregateChunkSize = 500;
         private const int ImportPriceVarianceWarehouseImportPriceBatchLimit = 500;
+        private static readonly string[] LocationProductLookupRoleNames = Permissions.SuperAdminRoleNames
+            .Concat(Permissions.WarehouseManagerRoleNames)
+            .Concat(new[] { "WarehouseStaff", "仓库员工" })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> CartMutationLocks = new();
         private static readonly AsyncLocal<HashSet<string>?> CartMutationLockScope = new();
         private readonly ISqlSugarClient _db;
@@ -30,6 +36,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
         private readonly IInvoiceEmailService _invoiceEmailService;
+        private readonly IStoreOrderLocationProductLookupService _locationProductLookupService;
         private Func<ISqlSugarClient> _createHqConnection;
 
         private sealed class StoreOrderDynamicHistoryRow
@@ -260,7 +267,8 @@ namespace BlazorApp.Api.Services.React
             IOrderNumberGenerator orderNumberGenerator,
             IConfiguration configuration,
             IMapper mapper,
-            IInvoiceEmailService invoiceEmailService
+            IInvoiceEmailService invoiceEmailService,
+            IStoreOrderLocationProductLookupService locationProductLookupService
         )
         {
             _db = context.Db;
@@ -270,6 +278,7 @@ namespace BlazorApp.Api.Services.React
             _configuration = configuration;
             _mapper = mapper;
             _invoiceEmailService = invoiceEmailService;
+            _locationProductLookupService = locationProductLookupService;
             _createHqConnection = () => HqSqlSugarContext.CreateConcurrentConnection(_configuration);
         }
 
@@ -297,11 +306,52 @@ namespace BlazorApp.Api.Services.React
             return roles.Any(HasRole);
         }
 
+        private bool CanUseLocationProductLookup()
+        {
+            // 货位解析能力只由服务端 Claims 决定，不能信任客户端传入的布尔值或角色展示状态。
+            return HasAnyRole(LocationProductLookupRoleNames);
+        }
+
+        private static string? GetManualLocationLookupIdentifier(StoreOrderFilterDto filter)
+        {
+            // ItemNumber 是订货页主搜索框的首选字段；兼容仅传商品名称的旧调用。
+            foreach (var candidate in new[] { filter.ItemNumber, filter.ProductName })
+            {
+                var normalized = candidate?.Trim();
+                if (!string.IsNullOrWhiteSpace(normalized))
+                {
+                    return normalized;
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<List<string>> LookupManualLocationProductCodesAsync(
+            StoreOrderFilterDto filter
+        )
+        {
+            var identifier = GetManualLocationLookupIdentifier(filter);
+            if (identifier == null || !CanUseLocationProductLookup())
+            {
+                return new List<string>();
+            }
+
+            var lookupResult = await _locationProductLookupService.LookupAsync(identifier);
+            return lookupResult?.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                ?? new List<string>();
+        }
+
         private bool IsWarehouseStaffOnly()
         {
+            // 混合持有管理角色时必须沿用管理端共享购物车，历史别名也要完整排除。
             return HasAnyRole("WarehouseStaff", "仓库员工")
-                && !HasAnyRole("Admin", "管理员")
-                && !HasAnyRole("WarehouseManager", "仓库经理");
+                && !HasAnyRole(Permissions.SuperAdminRoleNames)
+                && !HasAnyRole(Permissions.WarehouseManagerRoleNames);
         }
 
         private string ResolveCurrentUserGuid()
@@ -463,7 +513,8 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            q = ApplyWarehouseProductSearch(q, searchFilter);
+            var locationProductCodes = await LookupManualLocationProductCodesAsync(filter);
+            q = ApplyWarehouseProductSearch(q, searchFilter, locationProductCodes);
 
             if (normalizedGrades.Count > 0)
             {
@@ -1775,9 +1826,72 @@ namespace BlazorApp.Api.Services.React
         private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
             ApplyWarehouseProductSearch(
                 ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier> query,
-                ProductSearchFilter search
+                ProductSearchFilter search,
+                List<string>? locationProductCodes = null
             )
         {
+            if (locationProductCodes is { Count: > 0 })
+            {
+                if (!string.IsNullOrWhiteSpace(search.UnifiedKeyword))
+                {
+                    var keyword = search.UnifiedKeyword;
+                    return query.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ProductCode != null && locationProductCodes.Contains(p.ProductCode))
+                            || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                            || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (
+                    !string.IsNullOrWhiteSpace(search.ItemOrBarcodeKeyword)
+                    && !string.IsNullOrWhiteSpace(search.ProductNameKeyword)
+                )
+                {
+                    var itemOrBarcodeKeyword = search.ItemOrBarcodeKeyword;
+                    var productNameKeyword = search.ProductNameKeyword;
+                    return query.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ProductCode != null && locationProductCodes.Contains(p.ProductCode))
+                            || (
+                                (
+                                    (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(itemOrBarcodeKeyword))
+                                    || (p.Barcode != null && p.Barcode.ToLower().Contains(itemOrBarcodeKeyword))
+                                )
+                                && p.ProductName != null
+                                && p.ProductName.ToLower().Contains(productNameKeyword)
+                            )
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(search.ItemOrBarcodeKeyword))
+                {
+                    var keyword = search.ItemOrBarcodeKeyword;
+                    return query.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ProductCode != null && locationProductCodes.Contains(p.ProductCode))
+                            || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(search.ProductNameKeyword))
+                {
+                    var keyword = search.ProductNameKeyword;
+                    return query.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ProductCode != null && locationProductCodes.Contains(p.ProductCode))
+                            || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                    );
+                }
+
+                return query.Where(
+                    (p, wp, wc, ls) =>
+                        p.ProductCode != null && locationProductCodes.Contains(p.ProductCode)
+                );
+            }
+
             if (!string.IsNullOrWhiteSpace(search.UnifiedKeyword))
             {
                 var keyword = search.UnifiedKeyword;
@@ -2389,6 +2503,35 @@ namespace BlazorApp.Api.Services.React
                 );
                 matchType = allMatches.Count > 0 ? "fallback" : null;
             }
+
+            if (allMatches.Count == 0 && CanUseLocationProductLookup())
+            {
+                // 严格保持商品条码 -> 商品编号 -> 商品编码顺序；只有三者都未命中才解析货位。
+                var locationLookupResult = await _locationProductLookupService.LookupAsync(barcode);
+                var locationProductCodes = locationLookupResult?.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                    ?? new List<string>();
+
+                if (locationLookupResult != null)
+                {
+                    matchType = locationLookupResult.MatchType;
+                }
+
+                if (locationProductCodes.Count > 0)
+                {
+                    // 货位服务只返回编码；展示数据仍必须来自既有可订仓库商品查询。
+                    allMatches = await QueryScanLookupMatchesAsync(
+                        barcode,
+                        lookupCodes,
+                        "productCodes",
+                        useSqlServerCaseInsensitiveCollation,
+                        locationProductCodes
+                    );
+                }
+            }
             exactQuerySw.Stop();
 
             var buildSw = Stopwatch.StartNew();
@@ -2415,9 +2558,11 @@ namespace BlazorApp.Api.Services.React
             string barcode,
             List<string> lookupCodes,
             string matchField,
-            bool useSqlServerCaseInsensitiveCollation
+            bool useSqlServerCaseInsensitiveCollation,
+            List<string>? productCodes = null
         )
         {
+            var locationProductCodes = productCodes ?? new List<string>();
             var query = _db.Queryable<Product>()
                 .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
                 .LeftJoin<WarehouseCategory>(
@@ -2462,6 +2607,10 @@ namespace BlazorApp.Api.Services.React
                         (p, wp, wc) =>
                             p.ProductCode != null && lookupCodes.Contains(p.ProductCode)
                     ),
+                "productCodes" => query.Where(
+                    (p, wp, wc) =>
+                        p.ProductCode != null && locationProductCodes.Contains(p.ProductCode)
+                ),
                 _ => throw new ArgumentOutOfRangeException(nameof(matchField), matchField, null),
             };
 

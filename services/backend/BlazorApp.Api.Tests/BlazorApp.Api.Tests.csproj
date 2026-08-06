@@ -60,6 +60,7 @@
     <Compile Include="ReactLocalSupplierInvoiceAuthorizationTests.cs" />
     <Compile Include="LocalSupplierInvoiceImportTests.cs" />
     <Compile Include="LocationReactServiceTests.cs" />
+    <Compile Include="StoreOrderLocationProductLookupServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="ProductGradeReactServiceTests.cs" />
     <Compile Include="ReactImageProxyControllerTests.cs" />

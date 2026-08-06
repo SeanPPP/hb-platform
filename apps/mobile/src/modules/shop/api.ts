@@ -15,6 +15,7 @@ import type {
   StoreOrderCart,
   StoreOrderCartMutationResult,
 } from "@/modules/shop/types";
+import type { StoreOrderScanMatchType } from "@/modules/orders/types";
 import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import { buildScanLookupPayload } from "@/modules/shop/scan-lookup-payload";
 import { normalizeShopStores, normalizeShopStoresApiResponse } from "@/modules/shop/store-normalization";
@@ -323,6 +324,20 @@ function normalizeScanLookupItems(data: ApiItem | null | undefined) {
     : [];
 }
 
+export function normalizeStoreOrderScanLookupResult(
+  data: unknown,
+  fallbackBarcode: string,
+): StoreOrderScanLookupResult {
+  const payload = (data && typeof data === "object" ? data : {}) as ApiItem;
+
+  return {
+    barcode: getStringValue(payload.barcode, payload.Barcode) ?? fallbackBarcode,
+    // 兼容旧版 barcode/fallback 与新版商品/货位细分 matchType，原值不改写。
+    matchType: getStringValue(payload.matchType, payload.MatchType) as StoreOrderScanMatchType | undefined,
+    items: normalizeScanLookupItems(payload),
+  };
+}
+
 export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
   const stores = await getUserStoresApi(userGuid);
 
@@ -454,12 +469,7 @@ export async function lookupProductsByBarcode(
     buildScanTraceHeaders(scanTraceId)
   );
 
-  const data = response.data as Partial<StoreOrderScanLookupResult> | null | undefined;
-
-  return {
-    barcode: data?.barcode ?? (data as { Barcode?: string } | null | undefined)?.Barcode ?? barcode,
-    items: normalizeScanLookupItems(data as ApiItem | null | undefined),
-  };
+  return normalizeStoreOrderScanLookupResult(response.data, barcode);
 }
 
 export async function scanLookupAndAddToCart(
@@ -476,7 +486,7 @@ export async function scanLookupAndAddToCart(
 
   return {
     barcode: getStringValue(data?.barcode, data?.Barcode) ?? barcode,
-    matchType: getStringValue(data?.matchType, data?.MatchType),
+    matchType: getStringValue(data?.matchType, data?.MatchType) as StoreOrderScanMatchType | undefined,
     items: normalizeScanLookupItems(data),
     added: Boolean(data?.added ?? data?.Added ?? false),
     cart: normalizeCartMutationResult((data?.cart ?? data?.Cart) as ApiItem | null | undefined),

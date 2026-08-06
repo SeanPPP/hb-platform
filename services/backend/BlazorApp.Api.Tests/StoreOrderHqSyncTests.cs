@@ -1012,7 +1012,8 @@ public sealed class StoreOrderHqSyncTests : IDisposable
             new StubOrderNumberGenerator(),
             CreateHqConfiguration(_hqConnection.ConnectionString),
             _mapper,
-            Mock.Of<IInvoiceEmailService>()
+            Mock.Of<IInvoiceEmailService>(),
+            Mock.Of<IStoreOrderLocationProductLookupService>()
         );
 
         var factoryField = typeof(StoreOrderReactService).GetField(

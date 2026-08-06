@@ -32,6 +32,7 @@ import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-stat
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
 import { useProductGrades } from "@/modules/shop/use-product-grades";
+import { isLocationLookupEnabled } from "@/modules/shop/location-lookup";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
@@ -85,6 +86,7 @@ export default function Home() {
   } = useStores();
   const cartSummary = useCartStore((state) => state.cartSummary);
   const access = useAuthStore((state) => state.access);
+  const locationLookupEnabled = isLocationLookupEnabled(access);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
   const [storePickerVisible, setStorePickerVisible] = useState(false);
@@ -326,7 +328,7 @@ export default function Home() {
       }),
     [keyword, pageNumber, selectedCategoryGUID, selectedGrade, selectedStoreCode]
   );
-  const productsQuery = useProducts(productQuery);
+  const productsQuery = useProducts(productQuery, locationLookupEnabled);
 
   useEffect(() => {
     setPageNumber(1);
@@ -682,7 +684,7 @@ export default function Home() {
       <View style={[styles.searchRow, isCompactLayout ? styles.searchRowCompact : null]}>
         <View style={styles.searchInputWrap}>
           <Searchbar
-            placeholder={t("searchPlaceholder")}
+            placeholder={t(locationLookupEnabled ? "locationSearchPlaceholder" : "searchPlaceholder")}
             value={searchInput}
             onChangeText={(value) => {
               setSearchInput(value);

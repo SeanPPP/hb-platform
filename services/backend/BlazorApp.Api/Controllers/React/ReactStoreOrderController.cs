@@ -97,6 +97,11 @@ namespace BlazorApp.Api.Controllers.React
             "店长",
             "经理",
         };
+        private static readonly string[] LocationProductLookupRoleNames = Permissions.SuperAdminRoleNames
+            .Concat(Permissions.WarehouseManagerRoleNames)
+            .Concat(new[] { "WarehouseStaff", "仓库员工" })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
         private string GetScanTraceId()
         {
@@ -509,6 +514,12 @@ namespace BlazorApp.Api.Controllers.React
         private bool IsRealAdmin()
         {
             return HasAnyRole("Admin", "管理员");
+        }
+
+        private bool IsLocationProductLookupEnabled()
+        {
+            // 缓存维度只接受服务端 Claims，绝不读取客户端请求中的能力布尔值。
+            return HasAnyRole(LocationProductLookupRoleNames);
         }
 
         private async Task<bool> HasGlobalWarehouseOrderScopeAsync()
@@ -966,7 +977,10 @@ namespace BlazorApp.Api.Controllers.React
                 string? cacheKey = null;
                 if (shouldUseProductCache)
                 {
-                    cacheKey = StoreOrderCacheKeys.Products(filter);
+                    cacheKey = StoreOrderCacheKeys.Products(
+                        filter,
+                        locationLookupEnabled: IsLocationProductLookupEnabled()
+                    );
                 }
 
                 //// 尝试从缓存获取

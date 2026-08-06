@@ -112,7 +112,11 @@ namespace BlazorApp.Api.Cache
             var homePageResult = _service is StoreOrderReactService fullCacheService
                 ? await fullCacheService.GetHomePageCachePageAsync(pageSize, cancellationToken)
                 : await _service.GetPagedListAsync(filter);
-            var homePageCacheKey = StoreOrderCacheKeys.Products(filter);
+            // 后台预热没有用户 Claims，固定写入普通范围，避免污染带货位解析能力的缓存。
+            var homePageCacheKey = StoreOrderCacheKeys.Products(
+                filter,
+                locationLookupEnabled: false
+            );
             var homePageCacheOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(CACHE_DURATION)
                 .SetPriority(Microsoft.Extensions.Caching.Memory.CacheItemPriority.High);

@@ -733,6 +733,10 @@ builder.Services.AddScoped<
     StoreOrderInvoiceEmailTextTranslationService
 >();
 builder.Services.AddScoped<IStoreOrderHqSyncService, StoreOrderHqSyncService>();
+builder.Services.AddScoped<
+    IStoreOrderLocationProductLookupService,
+    StoreOrderLocationProductLookupService
+>();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<PreorderReactService>();
 builder.Services.AddScoped<IPreorderReactService>(provider =>

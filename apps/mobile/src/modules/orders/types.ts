@@ -167,8 +167,18 @@ export interface StoreOrderCart {
   items: StoreOrderCartItem[];
 }
 
+export type StoreOrderScanMatchType =
+  | "barcode"
+  | "fallback"
+  | "productBarcode"
+  | "itemNumber"
+  | "productCode"
+  | "locationBarcode"
+  | "locationCode";
+
 export interface StoreOrderScanLookupResult {
   barcode: string;
+  matchType?: StoreOrderScanMatchType;
   items: StoreOrderProductItem[];
 }
 
