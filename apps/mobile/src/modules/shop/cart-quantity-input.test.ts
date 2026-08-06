@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  canDismissCartQuantityEditor,
   canSubmitCartQuantityEdit,
   parseCartQuantityInput,
+  resolveCurrentCartQuantityItem,
   shouldSubmitCartQuantityUpdate,
 } from "./cart-quantity-input";
 
@@ -67,6 +69,57 @@ function run() {
     }),
     false,
     "已有数量更新 pending 时不能重复提交编辑数量"
+  );
+
+  const emptyGuidItems = [
+    { detailGUID: "", productCode: "P001" },
+    { detailGUID: "", productCode: "P002" },
+  ];
+  assert.equal(
+    resolveCurrentCartQuantityItem(emptyGuidItems, emptyGuidItems[1]),
+    emptyGuidItems[1],
+    "多个空明细 GUID 时必须按商品编码找到正在编辑的商品"
+  );
+  const currentGuidItem = { detailGUID: " detail-2 ", productCode: "P002" };
+  assert.equal(
+    resolveCurrentCartQuantityItem(
+      [
+        { detailGUID: "detail-1", productCode: "P002" },
+        currentGuidItem,
+      ],
+      { detailGUID: "detail-2", productCode: "P002" }
+    ),
+    currentGuidItem,
+    "非空明细 GUID 优先匹配当前购物车明细"
+  );
+  assert.equal(
+    resolveCurrentCartQuantityItem(emptyGuidItems, { detailGUID: "", productCode: "P404" }),
+    null,
+    "购物车中不存在目标商品时返回 null"
+  );
+  const refreshedGuidItem = { detailGUID: "detail-new", productCode: "P003" };
+  assert.equal(
+    resolveCurrentCartQuantityItem(
+      [refreshedGuidItem],
+      { detailGUID: "detail-old", productCode: "P003" }
+    ),
+    refreshedGuidItem,
+    "原明细 GUID 已失效时必须按商品编码回退到当前商品"
+  );
+  assert.equal(
+    canDismissCartQuantityEditor({ isPending: false, isSubmitting: false }),
+    true,
+    "没有请求和同步提交锁时允许关闭数量编辑器"
+  );
+  assert.equal(
+    canDismissCartQuantityEditor({ isPending: true, isSubmitting: false }),
+    false,
+    "数量请求 pending 时禁止关闭数量编辑器"
+  );
+  assert.equal(
+    canDismissCartQuantityEditor({ isPending: false, isSubmitting: true }),
+    false,
+    "同步提交锁置位后禁止关闭数量编辑器"
   );
 
   console.log("cart-quantity-input.test.ts: ok");

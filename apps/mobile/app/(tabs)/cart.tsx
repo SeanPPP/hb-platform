@@ -41,6 +41,13 @@ import { useRemoveCartLine } from "@/modules/shop/use-remove-cart-line";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
 import {
+  canDismissCartQuantityEditor,
+  canSubmitCartQuantityEdit,
+  parseCartQuantityInput,
+  resolveCurrentCartQuantityItem,
+  shouldSubmitCartQuantityUpdate,
+} from "@/modules/shop/cart-quantity-input";
+import {
   resolveCartSummaryScale,
   resolveCheckoutBarMaxHeight,
 } from "@/modules/shop/cart-summary-density";
@@ -76,6 +83,7 @@ interface CartListItemCardProps {
   openSwipeDetailGUID: string | null;
   t: (key: string, options?: Record<string, unknown>) => string;
   onDelete: (item: StoreOrderCartItem) => Promise<void>;
+  onEditQuantity: (item: StoreOrderCartItem) => void;
   onOpenSwipe: (detailGUID: string | null) => void;
   onUpdateQuantity: (item: StoreOrderCartItem, nextQuantity: number) => Promise<void>;
 }
@@ -88,6 +96,7 @@ function CartListItemCard({
   openSwipeDetailGUID,
   t,
   onDelete,
+  onEditQuantity,
   onOpenSwipe,
   onUpdateQuantity,
 }: CartListItemCardProps) {
@@ -255,11 +264,22 @@ function CartListItemCard({
                         onPress={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
                         style={styles.quantityButton}
                       />
-                      <View style={styles.quantityValueWrap}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t("common:labels.editCartQuantity", { quantity: item.quantity })}
+                        disabled={isBusy}
+                        hitSlop={8}
+                        onPress={() => onEditQuantity(item)}
+                        style={({ pressed }) => [
+                          styles.quantityValueWrap,
+                          !isBusy ? styles.quantityValueEditable : null,
+                          pressed && !isBusy ? styles.quantityValuePressed : null,
+                        ]}
+                      >
                         <Text variant="titleMedium" style={styles.quantityValue}>
                           {item.quantity}
                         </Text>
-                      </View>
+                      </Pressable>
                       <IconButton
                         icon="plus"
                         mode="contained"
@@ -307,6 +327,11 @@ export default function Cart() {
   const [searchInput, setSearchInput] = useState("");
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [submitDialogVisible, setSubmitDialogVisible] = useState(false);
+  const [quantityEditorItem, setQuantityEditorItem] = useState<StoreOrderCartItem | null>(null);
+  const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<string | null>(null);
+  const [quantityDraft, setQuantityDraft] = useState("");
+  const [quantityEditorError, setQuantityEditorError] = useState("");
+  const quantityEditorSubmittingRef = useRef(false);
   const [orderRemarks, setOrderRemarks] = useState("");
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
@@ -324,6 +349,10 @@ export default function Cart() {
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
   const removeCartLine = useRemoveCartLine(selectedStoreCode);
   const clearCart = useClearCart(selectedStoreCode);
+  const quantityEditorBusy = Boolean(
+    quantityEditorItem &&
+    (updateCartQuantity.isPending || quantityEditorSubmittingRef.current)
+  );
 
   const openPreorder = useCallback(() => {
     const firstActivation = preorderGate.activations[0];
@@ -399,11 +428,11 @@ export default function Cart() {
   );
 
   useEffect(() => {
-    if (!submitDialogVisible) {
+    if (!(submitDialogVisible || Boolean(quantityEditorItem))) {
       return;
     }
 
-    // 填写必填备注时暂停隐藏扫码输入，避免它定时抢走备注输入焦点。
+    // 备注或数量弹窗需要软键盘输入，期间暂停隐藏扫码输入，避免它抢走焦点。
     hidScanner.pauseHiddenInputFocus();
     return () => {
       hidScanner.resumeHiddenInputFocus();
@@ -411,6 +440,7 @@ export default function Cart() {
   }, [
     hidScanner.pauseHiddenInputFocus,
     hidScanner.resumeHiddenInputFocus,
+    quantityEditorItem,
     submitDialogVisible,
   ]);
 
@@ -422,6 +452,10 @@ export default function Cart() {
     setPriorityProductCode(null);
     setOpenSwipeDetailGUID(null);
     setSubmitDialogVisible(false);
+    setQuantityEditorItem(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
     setOrderRemarks("");
   }, [selectedStoreCode]);
 
@@ -456,6 +490,104 @@ export default function Cart() {
         setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
       }
     } finally {
+      setActiveCartItemCode(null);
+    }
+  }
+
+  function handleEditQuantity(item: StoreOrderCartItem) {
+    if (cartMutationPendingRef.current || quantityEditorSubmittingRef.current) {
+      setSnackbarMessage(t("common:loading"));
+      return;
+    }
+
+    setOpenSwipeDetailGUID(null);
+    setQuantityEditorItem(item);
+    setQuantityEditorStoreCode(selectedStoreCode ?? null);
+    setQuantityDraft(String(item.quantity));
+    setQuantityEditorError("");
+  }
+
+  function resetQuantityEditor() {
+    setQuantityEditorItem(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
+  }
+
+  function handleDismissQuantityEditor() {
+    if (!canDismissCartQuantityEditor({
+      isPending: updateCartQuantity.isPending,
+      isSubmitting: quantityEditorSubmittingRef.current,
+    })) {
+      return;
+    }
+
+    resetQuantityEditor();
+  }
+
+  async function handleConfirmQuantityEdit() {
+    if (
+      !quantityEditorItem ||
+      quantityEditorBusy ||
+      cartMutationPendingRef.current || quantityEditorSubmittingRef.current
+    ) {
+      return;
+    }
+
+    if (
+      !canSubmitCartQuantityEdit({
+        currentStoreCode: selectedStoreCode,
+        editorStoreCode: quantityEditorStoreCode,
+        isPending: updateCartQuantity.isPending,
+      })
+    ) {
+      if (!updateCartQuantity.isPending) {
+        resetQuantityEditor();
+      }
+      return;
+    }
+
+    const nextQuantity = parseCartQuantityInput(quantityDraft);
+    if (nextQuantity === null) {
+      setQuantityEditorError(t("quantityEditor.invalidQuantity"));
+      return;
+    }
+
+    const editorItem = quantityEditorItem;
+    const currentItem = resolveCurrentCartQuantityItem(cartQuery.items, editorItem);
+    if (!currentItem) {
+      resetQuantityEditor();
+      setSnackbarMessage(t("quantityEditor.itemUnavailable"));
+      return;
+    }
+
+    if (!shouldSubmitCartQuantityUpdate(currentItem.quantity, nextQuantity)) {
+      resetQuantityEditor();
+      return;
+    }
+
+    // ref 在 React 重渲染前同步置位，避免快速双击确认产生两个绝对数量写入。
+    quantityEditorSubmittingRef.current = true;
+    setQuantityEditorError("");
+    setActiveCartItemCode(currentItem.productCode);
+    try {
+      await updateCartQuantity.mutateAsync({
+        nextQuantity,
+        product: currentItem,
+      });
+      resetQuantityEditor();
+    } catch (error) {
+      if (isPreorderRequiredError(error)) {
+        resetQuantityEditor();
+        void preorderGate.refresh();
+        openPreorder();
+      } else {
+        const message = getErrorMessage(error, "messages.updateQtyFailed");
+        setQuantityEditorError(message);
+        setSnackbarMessage(message);
+      }
+    } finally {
+      quantityEditorSubmittingRef.current = false;
       setActiveCartItemCode(null);
     }
   }
@@ -593,6 +725,7 @@ export default function Cart() {
         item={item}
         t={t}
         onDelete={handleDeleteCartItem}
+        onEditQuantity={handleEditQuantity}
         onOpenSwipe={setOpenSwipeDetailGUID}
         onUpdateQuantity={handleUpdateQuantity}
         openSwipeDetailGUID={openSwipeDetailGUID}
@@ -752,6 +885,62 @@ export default function Cart() {
       {cartQuery.isLoading ? <LoadingOverlay /> : null}
 
       <Portal>
+        <Modal
+          visible={Boolean(quantityEditorItem)}
+          onDismiss={handleDismissQuantityEditor}
+          contentContainerStyle={styles.quantityEditorModal}
+        >
+          <Text variant="titleMedium" style={styles.quantityEditorTitle}>
+            {t("quantityEditor.title")}
+          </Text>
+          <Text variant="bodySmall" numberOfLines={2} style={styles.secondaryText}>
+            {quantityEditorItem
+              ? t("quantityEditor.product", {
+                  name: quantityEditorItem.productName || quantityEditorItem.productCode,
+                })
+              : ""}
+          </Text>
+          {/* 只收集覆盖数量；确认后继续走统一乐观更新与失败回滚链路。 */}
+          <PaperTextInput
+            mode="outlined"
+            label={t("quantityEditor.inputLabel")}
+            value={quantityDraft}
+            onChangeText={(value) => {
+              setQuantityDraft(value);
+              setQuantityEditorError("");
+            }}
+            keyboardType="number-pad"
+            autoFocus
+            selectTextOnFocus
+            disabled={quantityEditorBusy}
+            error={Boolean(quantityEditorError)}
+            style={styles.quantityEditorInput}
+          />
+          {quantityEditorError ? (
+            <Text
+              variant="bodySmall"
+              accessibilityLiveRegion="polite"
+              accessibilityRole="alert"
+              style={styles.quantityEditorError}
+            >
+              {quantityEditorError}
+            </Text>
+          ) : null}
+          <View style={styles.quantityEditorActions}>
+            <Button mode="contained-tonal" disabled={quantityEditorBusy} onPress={handleDismissQuantityEditor}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button
+              mode="contained"
+              loading={quantityEditorBusy}
+              disabled={quantityEditorBusy}
+              onPress={() => void handleConfirmQuantityEdit()}
+            >
+              {t("common:actions.confirm")}
+            </Button>
+          </View>
+        </Modal>
+
         <Modal
           visible={filtersVisible}
           onDismiss={() => setFiltersVisible(false)}
@@ -1027,6 +1216,29 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 14,
   },
+  quantityEditorModal: {
+    margin: 18,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 18,
+    gap: 12,
+  },
+  quantityEditorTitle: {
+    color: "#0F172A",
+    fontWeight: "800",
+  },
+  quantityEditorInput: {
+    backgroundColor: "#FFFFFF",
+  },
+  quantityEditorError: {
+    color: "#BA1A1A",
+  },
+  quantityEditorActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
+  },
   submitModal: {
     margin: 18,
     borderRadius: 16,
@@ -1230,9 +1442,17 @@ const styles = StyleSheet.create({
   },
   quantityValueWrap: {
     minWidth: 36,
+    minHeight: 28,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 2,
+    borderRadius: 6,
+  },
+  quantityValueEditable: {
+    backgroundColor: "#FFFFFF",
+  },
+  quantityValuePressed: {
+    backgroundColor: "#E7EEF8",
   },
   quantityValue: {
     color: "#171C1F",

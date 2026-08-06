@@ -39,6 +39,13 @@
     "placeholder": "可填写给仓库的备注",
     "counter": "{{count}} / {{max}}"
   },
+  "quantityEditor": {
+    "title": "编辑订货数量",
+    "product": "商品: {{name}}",
+    "inputLabel": "订货数量",
+    "invalidQuantity": "请输入 0 或正整数",
+    "itemUnavailable": "该商品已发生变化，请重新编辑数量"
+  },
   "pagination": {
     "previous": "上一页",
     "next": "下一页",

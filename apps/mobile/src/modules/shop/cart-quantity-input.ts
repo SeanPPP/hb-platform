@@ -13,10 +13,45 @@ export function shouldSubmitCartQuantityUpdate(currentQuantity: number, nextQuan
   return currentQuantity !== nextQuantity;
 }
 
+interface CartQuantityItemIdentity {
+  detailGUID?: string | null;
+  productCode: string;
+}
+
+export function resolveCurrentCartQuantityItem<T extends CartQuantityItemIdentity>(
+  items: readonly T[],
+  editorItem: CartQuantityItemIdentity
+): T | null {
+  const detailGUID = editorItem.detailGUID?.trim();
+  const detailMatch = detailGUID
+    ? items.find((item) => item.detailGUID?.trim() === detailGUID)
+    : undefined;
+  if (detailMatch) {
+    return detailMatch;
+  }
+
+  const productCode = editorItem.productCode.trim();
+  return productCode
+    ? items.find((item) => item.productCode.trim() === productCode) ?? null
+    : null;
+}
+
 interface CartQuantityEditSubmitState {
   currentStoreCode?: string | null;
   editorStoreCode?: string | null;
   isPending?: boolean;
+}
+
+interface CartQuantityEditorDismissState {
+  isPending?: boolean;
+  isSubmitting?: boolean;
+}
+
+export function canDismissCartQuantityEditor({
+  isPending = false,
+  isSubmitting = false,
+}: CartQuantityEditorDismissState) {
+  return !isPending && !isSubmitting;
 }
 
 function normalizeCartQuantityStoreCode(value?: string | null) {

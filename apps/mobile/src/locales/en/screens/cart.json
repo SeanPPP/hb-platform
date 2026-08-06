@@ -39,6 +39,13 @@
     "placeholder": "Optional remarks for warehouse",
     "counter": "{{count}} / {{max}}"
   },
+  "quantityEditor": {
+    "title": "Edit order quantity",
+    "product": "Product: {{name}}",
+    "inputLabel": "Order quantity",
+    "invalidQuantity": "Enter 0 or a whole number",
+    "itemUnavailable": "This cart item changed. Edit its quantity again."
+  },
   "pagination": {
     "previous": "Previous",
     "next": "Next",
