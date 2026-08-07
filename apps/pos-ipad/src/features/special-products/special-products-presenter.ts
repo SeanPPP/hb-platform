@@ -396,11 +396,14 @@ export class SpecialProductsPresenter {
 
       for (const item of page.items) {
         const productCode = requiredText(item.productCode, "productCode");
-        if (
-          item.storeCode !== this.storeCode ||
-          seenProductCodes.has(productCode)
-        ) {
+        if (item.storeCode !== this.storeCode) {
+          // 门店串号属于数据损坏信号，必须中止而不是静默丢弃。
           throw new Error("Special product download page is invalid.");
+        }
+        if (seenProductCodes.has(productCode)) {
+          // 后端按 lookup_code 组织商品（一商品多码），同一 productCode 可能
+          // 在列表中重复出现；本地列表按商品去重，重复条目跳过而不中断下载。
+          continue;
         }
         seenProductCodes.add(productCode);
         downloaded.push({ ...item, productCode });

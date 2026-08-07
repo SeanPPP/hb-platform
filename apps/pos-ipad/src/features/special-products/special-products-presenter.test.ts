@@ -96,6 +96,51 @@ test("跨多个 opaque cursor 完整下载后仅执行一次原子替换", async
   assert.equal(presenter.getState().statusCode, "download-complete");
 });
 
+test("下载列表含重复 productCode（一商品多码）时按商品去重且不中断", async () => {
+  const repository = new MemorySpecialProductsRepository([product("OLD")]);
+  const remote = new MemorySpecialProductsRemote();
+  remote.pages.set(
+    null,
+    page([product("A"), product("B"), product("A")], null, false, 3),
+  );
+  const presenter = createPresenter({ repository, remote, online: true });
+
+  await presenter.download();
+
+  assert.deepEqual(
+    repository.replaceCalls[0]?.map((item) => item.productCode),
+    ["A", "B"],
+  );
+  assert.deepEqual(
+    presenter.getState().items.map((item) => item.productCode),
+    ["A", "B"],
+  );
+  assert.equal(presenter.getState().statusCode, "download-complete");
+});
+
+test("跨页重复 productCode 也按商品去重且不中断下载", async () => {
+  const repository = new MemorySpecialProductsRepository([product("OLD")]);
+  const remote = new MemorySpecialProductsRemote();
+  remote.pages.set(null, page([product("A")], "cursor-A", true, 3));
+  remote.pages.set(
+    "cursor-A",
+    page([product("B"), product("A")], null, false, 3),
+  );
+  const presenter = createPresenter({ repository, remote, online: true });
+
+  await presenter.download();
+
+  assert.deepEqual(
+    repository.replaceCalls[0]?.map((item) => item.productCode),
+    ["A", "B"],
+  );
+  assert.deepEqual(
+    presenter.getState().items.map((item) => item.productCode),
+    ["A", "B"],
+  );
+  assert.equal(presenter.getState().statusCode, "download-complete");
+});
+
 test("后续游标失败时保留原缓存且错误状态不泄漏底层异常", async () => {
   const repository = new MemorySpecialProductsRepository([product("OLD")]);
   const remote = new MemorySpecialProductsRemote();

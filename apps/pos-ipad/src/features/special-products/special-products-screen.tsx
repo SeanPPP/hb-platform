@@ -1,8 +1,9 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   StyleSheet,
   Text,
   View,
@@ -169,11 +170,13 @@ export function SpecialProductsScreen({
             ) : null}
             {state.items.length > 0 ? (
               <FlatList
+                columnWrapperStyle={styles.productCardRow}
                 contentContainerStyle={styles.productList}
                 data={state.items}
                 keyExtractor={(item) => item.productCode}
+                numColumns={3}
                 renderItem={({ item, index }) => (
-                  <SpecialProductRow
+                  <SpecialProductCard
                     canAddToCart={state.access.canAddToCart}
                     canManage={state.access.canManage}
                     disabled={state.busy}
@@ -247,7 +250,7 @@ export function SpecialProductsScreen({
                         <Text numberOfLines={2} style={styles.candidateName}>
                           {item.displayName}
                         </Text>
-                        <Text numberOfLines={1} style={styles.productCode}>
+                        <Text numberOfLines={1} style={styles.candidateCode}>
                           {item.lookupCode || item.productCode}
                         </Text>
                       </View>
@@ -301,7 +304,7 @@ export function SpecialProductsUnavailableScreen({
   );
 }
 
-function SpecialProductRow({
+function SpecialProductCard({
   canAddToCart,
   canManage,
   disabled,
@@ -329,65 +332,105 @@ function SpecialProductRow({
   t: SpecialProductsTranslate;
 }>) {
   const managementDisabled = disabled || !online;
+  const addable = canAddToCart && !disabled;
   return (
-    <View
-      style={styles.productRow}
-      testID={`special-product-row-${item.productCode}`}
-    >
-      <View style={styles.orderBadge}>
-        <Text style={styles.orderBadgeText}>{index + 1}</Text>
-      </View>
-      <View style={styles.productIdentity}>
-        <Text numberOfLines={2} style={styles.productName}>
+    <View style={styles.productCard}>
+      {/* 整卡可点击 = 加购，触屏操作无需精确瞄准小按钮（与 WPF 卡片一致） */}
+      <PosPressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !addable }}
+        disabled={!addable}
+        onPress={onAddToCart}
+        sound="tap"
+        style={styles.productCardMain}
+        testID={`special-product-card-${item.productCode}`}
+      >
+        <ProductCardImage
+          imageUri={item.productImage}
+          placeholder={item.displayName.slice(0, 1).toUpperCase()}
+          testID={`special-product-card-image-${item.productCode}`}
+        />
+        <Text numberOfLines={2} style={styles.productCardName}>
           {item.displayName}
         </Text>
-        <Text numberOfLines={1} style={styles.productCode}>
+        <Text numberOfLines={1} style={styles.productCardCode}>
           {item.lookupCode || item.productCode}
         </Text>
-      </View>
-      <Text style={styles.productPrice}>
-        {formatAud(item.retailPriceCents)}
-      </Text>
-      <View style={styles.productActions}>
-        {canAddToCart ? (
+        <Text style={styles.productCardPrice}>
+          {formatAud(item.retailPriceCents)}
+        </Text>
+      </PosPressable>
+      {canManage ? (
+        <View style={styles.productCardActions}>
           <ActionButton
-            compact
-            disabled={disabled}
-            label={t("row.add")}
-            onPress={onAddToCart}
-            testID={`special-products-add-${item.productCode}`}
+            mini
+            disabled={managementDisabled || index === 0}
+            label="↑"
+            onPress={onMoveUp}
+            testID={`special-products-move-up-${item.productCode}`}
+            tone="quiet"
           />
-        ) : null}
-        {canManage ? (
-          <>
-            <ActionButton
-              compact
-              disabled={managementDisabled || index === 0}
-              label="↑"
-              onPress={onMoveUp}
-              testID={`special-products-move-up-${item.productCode}`}
-              tone="quiet"
-            />
-            <ActionButton
-              compact
-              disabled={managementDisabled || index === itemCount - 1}
-              label="↓"
-              onPress={onMoveDown}
-              testID={`special-products-move-down-${item.productCode}`}
-              tone="quiet"
-            />
-            <ActionButton
-              compact
-              danger
-              disabled={managementDisabled}
-              label={t("row.remove")}
-              onPress={onRemove}
-              testID={`special-products-remove-${item.productCode}`}
-              tone="quiet"
-            />
-          </>
-        ) : null}
-      </View>
+          <ActionButton
+            mini
+            disabled={managementDisabled || index === itemCount - 1}
+            label="↓"
+            onPress={onMoveDown}
+            testID={`special-products-move-down-${item.productCode}`}
+            tone="quiet"
+          />
+          <ActionButton
+            mini
+            danger
+            disabled={managementDisabled}
+            label={t("row.remove")}
+            onPress={onRemove}
+            testID={`special-products-remove-${item.productCode}`}
+            tone="quiet"
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function ProductCardImage({
+  imageUri,
+  placeholder,
+  testID,
+}: Readonly<{
+  imageUri: string | null;
+  placeholder: string;
+  testID: string;
+}>) {
+  // 渲染层协议白名单：仅允许 https/http 与 data:image，避免被篡改的
+  // file:// 等非预期 uri 进入 RN Image 渲染管线（纵深防御）。
+  const safeImageUri =
+    typeof imageUri === "string" && /^(https?:|data:image\/)/iu.test(imageUri)
+      ? imageUri
+      : null;
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const showImage = Boolean(safeImageUri) && failedUri !== safeImageUri;
+  return (
+    <View style={styles.productCardImageFrame} testID={testID}>
+      {showImage ? (
+        <Image
+          accessible={false}
+          onError={() => setFailedUri(safeImageUri)}
+          resizeMode="cover"
+          source={{ uri: safeImageUri as string }}
+          style={styles.productCardImage}
+          testID={`${testID}-content`}
+        />
+      ) : (
+        <Text
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={styles.productCardImagePlaceholder}
+          testID={`${testID}-placeholder`}
+        >
+          {placeholder}
+        </Text>
+      )}
     </View>
   );
 }
@@ -397,6 +440,7 @@ function ActionButton({
   danger = false,
   disabled = false,
   label,
+  mini = false,
   onPress,
   sound,
   testID,
@@ -406,6 +450,7 @@ function ActionButton({
   danger?: boolean;
   disabled?: boolean;
   label: string;
+  mini?: boolean;
   onPress(): void;
   sound?: "tap" | "navigate" | "danger";
   testID: string;
@@ -421,6 +466,7 @@ function ActionButton({
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
+        mini && styles.buttonMini,
         tone === "quiet" && styles.buttonQuiet,
         tone === "secondary" && styles.buttonSecondary,
         disabled && styles.buttonDisabled,
@@ -617,58 +663,73 @@ const styles = StyleSheet.create({
   },
   productList: {
     padding: 12,
+    paddingBottom: 16,
   },
-  productRow: {
-    alignItems: "center",
-    borderBottomColor: posColors.border,
-    borderBottomWidth: 1,
-    flexDirection: "row",
+  productCardRow: {
     gap: 12,
-    minHeight: 76,
-    paddingHorizontal: 8,
-    paddingVertical: 9,
+    marginBottom: 12,
   },
-  orderBadge: {
+  productCard: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    // 固定百分比宽度避免末行卡片被 flex 拉伸占满整行
+    flexShrink: 1,
+    overflow: "hidden",
+    width: "31.3%",
+  },
+  productCardMain: {
+    minHeight: SPECIAL_PRODUCTS_MIN_TOUCH_TARGET,
+    padding: 10,
+  },
+  productCardImageFrame: {
     alignItems: "center",
     backgroundColor: posColors.blueSoft,
-    borderRadius: 6,
-    height: 32,
+    borderRadius: 8,
+    height: 88,
     justifyContent: "center",
-    width: 32,
+    overflow: "hidden",
+    width: "100%",
   },
-  orderBadgeText: {
+  productCardImage: {
+    height: 88,
+    width: "100%",
+  },
+  productCardImagePlaceholder: {
     color: posColors.blue,
-    fontSize: 13,
+    fontSize: 32,
     fontWeight: "900",
   },
-  productIdentity: {
-    flex: 1,
-    minWidth: 120,
-  },
-  productName: {
+  productCardName: {
     color: posColors.ink,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
-    lineHeight: 21,
+    lineHeight: 18,
+    marginTop: 8,
+    minHeight: 36,
   },
-  productCode: {
+  productCardCode: {
     color: posColors.mutedInk,
     fontFamily: "Courier",
-    fontSize: 12,
-    marginTop: 3,
+    fontSize: 11,
+    marginTop: 4,
   },
-  productPrice: {
+  productCardPrice: {
     color: posColors.ink,
     fontSize: 17,
     fontVariant: ["tabular-nums"],
     fontWeight: "900",
-    minWidth: 74,
-    textAlign: "right",
+    marginTop: 6,
   },
-  productActions: {
+  productCardActions: {
     alignItems: "center",
+    borderTopColor: posColors.border,
+    borderTopWidth: 1,
     flexDirection: "row",
-    gap: 6,
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+    paddingVertical: 6,
   },
   managementHint: {
     color: posColors.mutedInk,
@@ -717,6 +778,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     lineHeight: 19,
   },
+  candidateCode: {
+    color: posColors.mutedInk,
+    fontFamily: "Courier",
+    fontSize: 11,
+    marginTop: 3,
+  },
   button: {
     alignItems: "center",
     backgroundColor: posColors.orange,
@@ -729,6 +796,10 @@ const styles = StyleSheet.create({
   buttonCompact: {
     minWidth: SPECIAL_PRODUCTS_MIN_TOUCH_TARGET,
     paddingHorizontal: 10,
+  },
+  buttonMini: {
+    minWidth: SPECIAL_PRODUCTS_MIN_TOUCH_TARGET,
+    paddingHorizontal: 0,
   },
   buttonQuiet: {
     backgroundColor: posColors.surface,

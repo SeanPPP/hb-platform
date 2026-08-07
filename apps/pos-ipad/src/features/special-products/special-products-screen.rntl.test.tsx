@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render } from "@testing-library/react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
 import {
@@ -42,23 +42,24 @@ describe("SpecialProductsScreen", () => {
       <SpecialProductsScreen onBack={onBack} presenter={presenter} />,
     );
 
-    expect(screen.getByTestId("special-product-row-A")).toBeTruthy();
+    // 卡片整卡即可加购（触屏目标），离线时管理写操作仍禁用
+    const cardA = screen.getByTestId("special-product-card-A");
+    expect(cardA).toBeTruthy();
     expect(screen.getByTestId("special-products-offline-note")).toBeTruthy();
-    const add = screen.getByTestId("special-products-add-A");
     const download = screen.getByTestId("special-products-download");
     const remove = screen.getByTestId("special-products-remove-A");
     const moveDown = screen.getByTestId("special-products-move-down-A");
-    for (const control of [add, download, remove, moveDown]) {
+    for (const control of [cardA, download, remove, moveDown]) {
       expect(StyleSheet.flatten(control.props.style).minHeight).toBeGreaterThanOrEqual(
         SPECIAL_PRODUCTS_MIN_TOUCH_TARGET,
       );
     }
-    expect(add.props.accessibilityState).toEqual({ disabled: false });
+    expect(cardA.props.accessibilityState).toEqual({ disabled: false });
     expect(download.props.accessibilityState).toEqual({ disabled: true });
     expect(remove.props.accessibilityState).toEqual({ disabled: true });
     expect(moveDown.props.accessibilityState).toEqual({ disabled: true });
 
-    await fireEvent.press(add);
+    await fireEvent.press(cardA);
     expect(presenter.addToCartCalls).toEqual(["A"]);
     await fireEvent.press(download);
     expect(presenter.downloadCalls).toBe(0);
@@ -72,7 +73,7 @@ describe("SpecialProductsScreen", () => {
     await screen.unmount();
   });
 
-  it("仅 View 权限可浏览，但不显示加购或管理面板", async () => {
+  it("仅 View 权限可浏览卡片，但不可加购且不显示管理面板", async () => {
     const presenter = new ScreenPresenter({
       items: [product("A")],
       permissions: [SPECIAL_PRODUCTS_VIEW_PERMISSION],
@@ -81,8 +82,9 @@ describe("SpecialProductsScreen", () => {
       <SpecialProductsScreen presenter={presenter} />,
     );
 
-    expect(screen.getByTestId("special-product-row-A")).toBeTruthy();
-    expect(screen.queryByTestId("special-products-add-A")).toBeNull();
+    const cardA = screen.getByTestId("special-product-card-A");
+    expect(cardA).toBeTruthy();
+    expect(cardA.props.accessibilityState).toEqual({ disabled: true });
     expect(screen.queryByTestId("special-products-management")).toBeNull();
     expect(screen.queryByTestId("special-products-remove-A")).toBeNull();
     expect(
@@ -90,6 +92,62 @@ describe("SpecialProductsScreen", () => {
         screen.getByTestId("special-products-refresh-local").props.style,
       ).minHeight,
     ).toBeGreaterThanOrEqual(SPECIAL_PRODUCTS_MIN_TOUCH_TARGET);
+    await screen.unmount();
+  });
+
+  it("卡片显示商品图片，无图或加载失败时回落文字占位", async () => {
+    const withImage: SpecialProductItem = {
+      ...product("IMG"),
+      productImage: "data:image/png;base64,iVBORw0KGgo=",
+    };
+    const fileUri: SpecialProductItem = {
+      ...product("FILE"),
+      productImage: "file:///etc/passwd",
+    };
+    const presenter = new ScreenPresenter({
+      items: [withImage, product("PLAIN"), fileUri],
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    // 有图卡片渲染图片容器且无占位；无图卡片显示商品名首字符占位
+    // （占位是装饰性文本带 accessibilityElementsHidden，需显式查询隐藏元素）
+    expect(
+      screen.getByTestId("special-product-card-image-IMG-content"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("special-product-card-image-IMG-placeholder", {
+        includeHiddenElements: true,
+      }),
+    ).toBeNull();
+    expect(
+      screen.getByTestId("special-product-card-image-PLAIN-placeholder", {
+        includeHiddenElements: true,
+      }),
+    ).toBeTruthy();
+    // 协议白名单：非 https/http/data:image 的 uri（如 file://）不进入渲染管线
+    expect(
+      screen.queryByTestId("special-product-card-image-FILE-content"),
+    ).toBeNull();
+    expect(
+      screen.getByTestId("special-product-card-image-FILE-placeholder", {
+        includeHiddenElements: true,
+      }),
+    ).toBeTruthy();
+
+    // 图片加载失败时回落为文字占位
+    fireEvent(
+      screen.getByTestId("special-product-card-image-IMG-content"),
+      "error",
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("special-product-card-image-IMG-placeholder", {
+          includeHiddenElements: true,
+        }),
+      ).toBeTruthy();
+    });
     await screen.unmount();
   });
 

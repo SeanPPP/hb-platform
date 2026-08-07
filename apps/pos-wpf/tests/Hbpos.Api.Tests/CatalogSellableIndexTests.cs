@@ -414,6 +414,22 @@ public sealed class CatalogSellableIndexTests
     }
 
     [Fact]
+    public void GetSpecialProductsPage_deduplicates_same_product_across_lookup_codes()
+    {
+        // 一个商品对应多个 lookup_code（一商品多码）时，列表必须按商品去重，
+        // 否则客户端下载校验会把重复 productCode 判为非法页而中止下载。
+        var index = CreateIndex(
+            CreateItem("P01", "a-code", "A item", 1m, isSpecialProduct: true),
+            CreateItem("P01", "b-code", "A item second barcode", 2m, isSpecialProduct: true),
+            CreateItem("P02", "c-code", "C item", 3m, isSpecialProduct: true));
+
+        var page = index.GetSpecialProductsPage(cursor: null, pageSize: 10);
+
+        Assert.Equal(2, page.TotalCount);
+        Assert.Equal(["P01", "P02"], page.Items.Select(x => x.ProductCode).ToArray());
+    }
+
+    [Fact]
     public void GetPage_allows_download_batch_larger_than_one_thousand()
     {
         var items = Enumerable.Range(1, 1001)

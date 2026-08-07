@@ -1943,8 +1943,17 @@ public sealed class CatalogSellableIndex
     {
         var normalizedCursor = NormalizeLookupCode(cursor);
         var take = Math.Clamp(pageSize, 1, MaxPageSize);
+        // 一个商品可能对应多个 lookup_code（一商品多码），Items 按 lookup_code
+        // 去重会导致特殊商品列表出现重复 productCode；这里按商品去重并保留
+        // 更新时间最新、价格来源最高的条目，避免客户端下载校验误判非法页。
         var specialItems = Items
             .Where(x => x.IsSpecialProduct)
+            .GroupBy(x => x.ProductCode, StringComparer.Ordinal)
+            .Select(x => x
+                .OrderByDescending(item => item.UpdatedAt ?? DateTimeOffset.MinValue)
+                .ThenByDescending(item => item.PriceSource)
+                .First())
+            .OrderBy(x => x.LookupCodeNormalized, StringComparer.Ordinal)
             .ToArray();
         var pageCandidates = specialItems
             .Where(x => string.IsNullOrEmpty(normalizedCursor)
