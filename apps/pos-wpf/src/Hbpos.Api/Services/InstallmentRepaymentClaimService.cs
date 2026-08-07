@@ -59,6 +59,13 @@ public interface IInstallmentRepaymentClaimService
         InstallmentRepaymentClaimIdentity identity,
         CancellationToken cancellationToken);
 
+    Task<InstallmentRepaymentClaimDto> PrepareProviderAsync(
+        Guid installmentGuid,
+        Guid operationGuid,
+        InstallmentRepaymentClaimPrepareProviderRequest request,
+        InstallmentRepaymentClaimIdentity identity,
+        CancellationToken cancellationToken);
+
     Task<InstallmentRepaymentClaimDto> GetAsync(
         Guid installmentGuid,
         Guid operationGuid,
@@ -114,7 +121,8 @@ public sealed class InstallmentRepaymentClaimService(
             CancelPreparedClaimTtlSeconds: InstallmentCancelClaimService.PreparedClaimTtlSeconds,
             CrossDeviceCancelRefundEnabled: _lifecycleOptions.CancelRefundEnabled,
             CrossDeviceVoidEnabled: _lifecycleOptions.VoidEnabled,
-            CrossDevicePickupEnabled: _lifecycleOptions.PickupEnabled);
+            CrossDevicePickupEnabled: _lifecycleOptions.PickupEnabled,
+            RepaymentClaimPrepareProviderV1: true);
     }
 
     public async Task<InstallmentRepaymentClaimDto> CreateAsync(
@@ -188,7 +196,213 @@ public sealed class InstallmentRepaymentClaimService(
             throw Mismatch("operationGuid is already bound to different repayment facts.");
         }
 
-        throw Busy();
+        throw await ClassifyInsertFailureAsync(claim, cancellationToken);
+    }
+
+    public async Task<InstallmentRepaymentClaimDto> PrepareProviderAsync(
+        Guid installmentGuid,
+        Guid operationGuid,
+        InstallmentRepaymentClaimPrepareProviderRequest request,
+        InstallmentRepaymentClaimIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizePrepareProviderRequest(operationGuid, request);
+        var normalizedIdentity = NormalizeIdentity(identity);
+        var existing = await claimRepository.GetAsync(operationGuid, cancellationToken);
+        if (existing is not null)
+        {
+            return await PrepareExistingProviderAsync(
+                existing,
+                installmentGuid,
+                normalized.CreateRequest,
+                normalized.Provider,
+                normalized.ProviderAttemptId,
+                normalizedIdentity,
+                cancellationToken);
+        }
+
+        EnsureServerVerifiablePaymentMethod(normalized.CreateRequest.Method);
+        ValidatePaymentPermissions(normalizedIdentity, normalized.CreateRequest.Method);
+        InstallmentRepaymentClaimCommitEvidenceValidator.ValidateProviderForMethod(
+            normalized.CreateRequest.Method,
+            normalized.Provider);
+        var details = await GetRequiredInstallmentAsync(installmentGuid, cancellationToken);
+        ValidateInstallmentForNewClaim(details, normalizedIdentity, normalized.CreateRequest.Amount);
+        await EnsureNoBlockingClaimAsync(installmentGuid, cancellationToken);
+
+        var now = _timeProvider.GetUtcNow();
+        // 新入口把 claim 和 provider binding 一次写入，ProviderPending 才是第一份可恢复事实。
+        var claim = new InstallmentRepaymentClaimRecord(
+            installmentGuid,
+            operationGuid,
+            normalized.CreateRequest.PaymentGuid,
+            normalizedIdentity.StoreCode,
+            normalizedIdentity.DeviceCode,
+            normalizedIdentity.CashierId,
+            normalizedIdentity.CashierName,
+            normalized.CreateRequest.Amount,
+            normalized.CreateRequest.Method,
+            normalized.CreateRequest.IdempotencyKey,
+            CreateFingerprint(installmentGuid, normalized.CreateRequest),
+            InstallmentRepaymentClaimStatus.ProviderPending,
+            normalized.Provider,
+            normalized.ProviderAttemptId,
+            now,
+            now,
+            ExpiresAtUtc: null,
+            CommittedAtUtc: null,
+            Revision: 1,
+            LastRecoveryCashierId: normalizedIdentity.CashierId,
+            LastRecoveryCashierName: normalizedIdentity.CashierName,
+            LastRecoveryCashierUserGuid: normalizedIdentity.CashierUserGuid,
+            RecoveredAtUtc: now);
+        var insertSnapshot = new InstallmentRepaymentClaimInsertSnapshot(
+            details.Status,
+            details.PaidAmount,
+            details.BalanceAmount);
+        if (await claimRepository.TryInsertAsync(claim, insertSnapshot, cancellationToken))
+        {
+            return await MapAsync(claim, alreadyExists: false);
+        }
+
+        // 竞争失败后只允许恢复同 operation 的同 binding；其他 blocking operation 仍返回 busy。
+        existing = await claimRepository.GetAsync(operationGuid, cancellationToken);
+        if (existing is not null)
+        {
+            return await PrepareExistingProviderAsync(
+                existing,
+                installmentGuid,
+                normalized.CreateRequest,
+                normalized.Provider,
+                normalized.ProviderAttemptId,
+                normalizedIdentity,
+                cancellationToken);
+        }
+
+        throw await ClassifyInsertFailureAsync(claim, cancellationToken);
+    }
+
+    private async Task<InstallmentRepaymentClaimDto> PrepareExistingProviderAsync(
+        InstallmentRepaymentClaimRecord current,
+        Guid installmentGuid,
+        InstallmentRepaymentClaimCreateRequest normalizedRequest,
+        string provider,
+        string providerAttemptId,
+        InstallmentRepaymentClaimIdentity normalizedIdentity,
+        CancellationToken cancellationToken)
+    {
+        ValidateAccess(current, installmentGuid, normalizedIdentity);
+        if (!string.Equals(
+                current.Fingerprint,
+                CreateFingerprint(installmentGuid, normalizedRequest),
+                StringComparison.Ordinal))
+        {
+            throw Mismatch("operationGuid is already bound to different repayment facts.");
+        }
+
+        EnsureServerVerifiablePaymentMethod(current.Method);
+        InstallmentRepaymentClaimCommitEvidenceValidator.ValidateProviderForMethod(current.Method, provider);
+        current = await ExpirePreparedAsync(current, cancellationToken);
+
+        // provider 事实锁定后，精确重放属于原 operation 恢复，不受后续 cashier 权限撤销影响。
+        if (current.Status is InstallmentRepaymentClaimStatus.ProviderPending
+            or InstallmentRepaymentClaimStatus.Unknown
+            or InstallmentRepaymentClaimStatus.Committed)
+        {
+            if (!ProviderBindingMatches(current, provider, providerAttemptId))
+            {
+                throw Mismatch("Provider attempt does not match the existing claim.");
+            }
+        }
+
+        switch (current.Status)
+        {
+            case InstallmentRepaymentClaimStatus.Prepared:
+                ValidatePaymentPermissions(normalizedIdentity, current.Method);
+                if (!string.Equals(current.CashierId, normalizedIdentity.CashierId, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw Mismatch("A prepared repayment claim can only begin under its creating cashier; release it before changing cashier.");
+                }
+
+                return await BindPreparedProviderAsync(
+                    current,
+                    provider,
+                    providerAttemptId,
+                    normalizedIdentity,
+                    cancellationToken);
+
+            case InstallmentRepaymentClaimStatus.ProviderPending:
+                current = await RecordRecoveryCashierAsync(current, normalizedIdentity, cancellationToken);
+                return await MapAsync(current, alreadyExists: true);
+
+            case InstallmentRepaymentClaimStatus.Unknown:
+                var resumed = current with
+                {
+                    Status = InstallmentRepaymentClaimStatus.ProviderPending,
+                    UpdatedAtUtc = _timeProvider.GetUtcNow(),
+                    LastRecoveryCashierId = normalizedIdentity.CashierId,
+                    LastRecoveryCashierName = normalizedIdentity.CashierName,
+                    LastRecoveryCashierUserGuid = normalizedIdentity.CashierUserGuid,
+                    RecoveredAtUtc = _timeProvider.GetUtcNow(),
+                    Revision = current.Revision + 1
+                };
+                if (await claimRepository.TryUpdateAsync(resumed, current.Revision, cancellationToken))
+                {
+                    return await MapAsync(resumed, alreadyExists: false);
+                }
+
+                return await MapProviderCasReplayAsync(
+                    current,
+                    provider,
+                    providerAttemptId,
+                    normalizedIdentity,
+                    cancellationToken);
+
+            case InstallmentRepaymentClaimStatus.Committed:
+                current = await RecordRecoveryCashierAsync(current, normalizedIdentity, cancellationToken);
+                return await MapAsync(current, alreadyExists: true);
+
+            case InstallmentRepaymentClaimStatus.Released:
+            case InstallmentRepaymentClaimStatus.Declined:
+                throw Mismatch("Released or declined repayment claims cannot be prepared again.");
+
+            default:
+                throw Mismatch("Repayment claim is in an unsupported state.");
+        }
+    }
+
+    private async Task<InstallmentRepaymentClaimDto> BindPreparedProviderAsync(
+        InstallmentRepaymentClaimRecord current,
+        string provider,
+        string providerAttemptId,
+        InstallmentRepaymentClaimIdentity normalizedIdentity,
+        CancellationToken cancellationToken)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var updated = current with
+        {
+            Status = InstallmentRepaymentClaimStatus.ProviderPending,
+            Provider = provider,
+            ProviderAttemptId = providerAttemptId,
+            UpdatedAtUtc = now,
+            ExpiresAtUtc = null,
+            LastRecoveryCashierId = normalizedIdentity.CashierId,
+            LastRecoveryCashierName = normalizedIdentity.CashierName,
+            LastRecoveryCashierUserGuid = normalizedIdentity.CashierUserGuid,
+            RecoveredAtUtc = now,
+            Revision = current.Revision + 1
+        };
+        if (await claimRepository.TryUpdateAsync(updated, current.Revision, cancellationToken))
+        {
+            return await MapAsync(updated, alreadyExists: false);
+        }
+
+        return await MapProviderCasReplayAsync(
+            current,
+            provider,
+            providerAttemptId,
+            normalizedIdentity,
+            cancellationToken);
     }
 
     public async Task<InstallmentRepaymentClaimDto> BeginProviderAsync(
@@ -209,11 +423,12 @@ public sealed class InstallmentRepaymentClaimService(
         {
             throw Invalid("providerAttemptId must not exceed 128 characters.");
         }
+        var currentIdentity = NormalizeIdentity(identity);
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        ValidatePaymentPermissions(currentIdentity, current.Method);
         EnsureServerVerifiablePaymentMethod(current.Method);
         current = await ExpirePreparedAsync(current, cancellationToken);
         InstallmentRepaymentClaimCommitEvidenceValidator.ValidateProviderForMethod(current.Method, provider);
-        var currentIdentity = NormalizeIdentity(identity);
         if (current.Status == InstallmentRepaymentClaimStatus.Prepared &&
             !string.Equals(current.CashierId, currentIdentity.CashierId, StringComparison.OrdinalIgnoreCase))
         {
@@ -296,6 +511,7 @@ public sealed class InstallmentRepaymentClaimService(
         CancellationToken cancellationToken)
     {
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        ValidateReadPermissions(identity, current);
         current = await ExpirePreparedAsync(current, cancellationToken);
         return await MapAsync(current, alreadyExists: true);
     }
@@ -308,6 +524,19 @@ public sealed class InstallmentRepaymentClaimService(
         CancellationToken cancellationToken)
     {
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        var requiresCashNotCollectedEvidence =
+            request.Outcome == InstallmentRepaymentClaimResolveOutcome.Released &&
+            RequiresCashNotCollectedEvidence(current);
+        if (requiresCashNotCollectedEvidence)
+        {
+            // provider 已锁定后只能由原设备显式证明“未收现”并持有取消权限；绝不自动释放现金 claim。
+            ValidateCashNotCollectedRelease(current, request, NormalizeIdentity(identity));
+        }
+        else
+        {
+            ValidateContinuationPermissions(identity, current);
+        }
+
         current = await ExpirePreparedAsync(current, cancellationToken);
         var targetStatus = request.Outcome switch
         {
@@ -326,7 +555,9 @@ public sealed class InstallmentRepaymentClaimService(
         var validTransition = request.Outcome switch
         {
             InstallmentRepaymentClaimResolveOutcome.Released =>
-                current.Status == InstallmentRepaymentClaimStatus.Prepared,
+                current.Status is InstallmentRepaymentClaimStatus.Prepared
+                    or InstallmentRepaymentClaimStatus.ProviderPending
+                    or InstallmentRepaymentClaimStatus.Unknown,
             InstallmentRepaymentClaimResolveOutcome.Declined =>
                 current.Status == InstallmentRepaymentClaimStatus.ProviderPending,
             InstallmentRepaymentClaimResolveOutcome.Unknown =>
@@ -361,6 +592,46 @@ public sealed class InstallmentRepaymentClaimService(
         return await MapAsync(updated, alreadyExists: false);
     }
 
+    private static bool RequiresCashNotCollectedEvidence(InstallmentRepaymentClaimRecord current) =>
+        current.Status is InstallmentRepaymentClaimStatus.ProviderPending
+            or InstallmentRepaymentClaimStatus.Unknown ||
+        current.Status == InstallmentRepaymentClaimStatus.Released &&
+        (!string.IsNullOrWhiteSpace(current.Provider) ||
+         !string.IsNullOrWhiteSpace(current.ProviderAttemptId));
+
+    private static void ValidateCashNotCollectedRelease(
+        InstallmentRepaymentClaimRecord current,
+        InstallmentRepaymentClaimResolveRequest request,
+        InstallmentRepaymentClaimIdentity identity)
+    {
+        if (!request.CashNotCollectedConfirmed)
+        {
+            throw Mismatch("Cash provider claims require explicit confirmation that cash was not collected before release.");
+        }
+
+        var providerAttemptId = NormalizeRequired(
+            request.ProviderAttemptId,
+            "providerAttemptId",
+            128);
+        if (current.Method != PaymentMethodKind.Cash ||
+            !string.Equals(current.Provider, "cash", StringComparison.OrdinalIgnoreCase))
+        {
+            throw Mismatch("Only a cash provider claim can use cash-not-collected release.");
+        }
+
+        if (!string.Equals(current.ProviderAttemptId, providerAttemptId, StringComparison.Ordinal))
+        {
+            throw Mismatch("Provider attempt does not match the existing claim.");
+        }
+
+        var permissions = identity.PermissionCodes?.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (permissions is null ||
+            !permissions.Contains(Permissions.PosTerminal.Installments.Cancel))
+        {
+            throw PermissionDenied("Verified cashier lacks the installment cancellation permission.");
+        }
+    }
+
     public async Task<InstallmentRepaymentClaimDto> CommitAsync(
         Guid installmentGuid,
         Guid operationGuid,
@@ -369,6 +640,7 @@ public sealed class InstallmentRepaymentClaimService(
         CancellationToken cancellationToken)
     {
         var current = await GetRequiredAccessibleClaimAsync(installmentGuid, operationGuid, identity, cancellationToken);
+        ValidateContinuationPermissions(identity, current);
         EnsureServerVerifiablePaymentMethod(current.Method);
         if (current.Status == InstallmentRepaymentClaimStatus.Committed)
         {
@@ -448,8 +720,53 @@ public sealed class InstallmentRepaymentClaimService(
                 InstallmentRepaymentClaimErrorCodes.NotFound,
                 "Repayment claim was not found.");
         ValidateAccess(current, installmentGuid, normalizedIdentity);
-        ValidatePaymentPermissions(normalizedIdentity, current.Method);
         return current;
+    }
+
+    private async Task<InstallmentRepaymentClaimDto> MapProviderCasReplayAsync(
+        InstallmentRepaymentClaimRecord expected,
+        string provider,
+        string providerAttemptId,
+        InstallmentRepaymentClaimIdentity normalizedIdentity,
+        CancellationToken cancellationToken)
+    {
+        var reloaded = await claimRepository.GetAsync(expected.OperationGuid, cancellationToken)
+            ?? throw new InstallmentRepaymentClaimException(
+                InstallmentRepaymentClaimErrorCodes.NotFound,
+                "Repayment claim disappeared during provider recovery.");
+        ValidateAccess(reloaded, expected.InstallmentGuid, normalizedIdentity);
+        if (!ImmutableFactsMatch(expected, reloaded) ||
+            reloaded.Status is not (InstallmentRepaymentClaimStatus.ProviderPending
+                or InstallmentRepaymentClaimStatus.Committed) ||
+            !ProviderBindingMatches(reloaded, provider, providerAttemptId))
+        {
+            throw Mismatch("Repayment claim changed while binding or resuming the provider attempt.");
+        }
+
+        return await MapAsync(reloaded, alreadyExists: true);
+    }
+
+    private async Task<InstallmentRepaymentClaimException> ClassifyInsertFailureAsync(
+        InstallmentRepaymentClaimRecord candidate,
+        CancellationToken cancellationToken)
+    {
+        var permanentConflict = await claimRepository.GetPermanentConflictAsync(candidate, cancellationToken);
+        if (permanentConflict is not null)
+        {
+            return Mismatch("Repayment claim payment, idempotency, or provider attempt is already bound to another operation.");
+        }
+
+        var blocking = await claimRepository.GetBlockingAsync(candidate.InstallmentGuid, cancellationToken);
+        if (blocking is not null)
+        {
+            blocking = await ExpirePreparedAsync(blocking, cancellationToken);
+            if (blocking.OperationGuid != candidate.OperationGuid && IsBlocking(blocking.Status))
+            {
+                return Busy();
+            }
+        }
+
+        return Mismatch("Repayment claim could not be created because the persisted installment facts changed.");
     }
 
     private async Task<InstallmentRepaymentClaimRecord> ExpirePreparedAsync(
@@ -624,6 +941,77 @@ public sealed class InstallmentRepaymentClaimService(
             Amount = amount,
             IdempotencyKey = NormalizeRequired(request.IdempotencyKey, "idempotencyKey", 100)
         };
+    }
+
+    private static (InstallmentRepaymentClaimCreateRequest CreateRequest, string Provider, string ProviderAttemptId)
+        NormalizePrepareProviderRequest(
+            Guid operationGuid,
+            InstallmentRepaymentClaimPrepareProviderRequest request)
+    {
+        var createRequest = NormalizeCreateRequest(new InstallmentRepaymentClaimCreateRequest(
+            operationGuid,
+            request.PaymentGuid,
+            request.Amount,
+            request.Method,
+            request.IdempotencyKey));
+        return (
+            createRequest,
+            NormalizeRequired(request.Provider, "provider", 32),
+            NormalizeRequired(request.ProviderAttemptId, "providerAttemptId", 128));
+    }
+
+    private static bool ProviderBindingMatches(
+        InstallmentRepaymentClaimRecord claim,
+        string provider,
+        string providerAttemptId) =>
+        string.Equals(claim.Provider, provider, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(claim.ProviderAttemptId, providerAttemptId, StringComparison.Ordinal);
+
+    private static bool ImmutableFactsMatch(
+        InstallmentRepaymentClaimRecord expected,
+        InstallmentRepaymentClaimRecord actual) =>
+        expected.InstallmentGuid == actual.InstallmentGuid &&
+        expected.OperationGuid == actual.OperationGuid &&
+        expected.PaymentGuid == actual.PaymentGuid &&
+        string.Equals(expected.StoreCode, actual.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(expected.ClaimantDeviceCode, actual.ClaimantDeviceCode, StringComparison.OrdinalIgnoreCase) &&
+        expected.Amount == actual.Amount &&
+        expected.Method == actual.Method &&
+        string.Equals(expected.IdempotencyKey, actual.IdempotencyKey, StringComparison.Ordinal) &&
+        string.Equals(expected.Fingerprint, actual.Fingerprint, StringComparison.Ordinal);
+
+    private static void ValidateContinuationPermissions(
+        InstallmentRepaymentClaimIdentity identity,
+        InstallmentRepaymentClaimRecord current)
+    {
+        if (current.Status is InstallmentRepaymentClaimStatus.ProviderPending
+            or InstallmentRepaymentClaimStatus.Unknown
+            or InstallmentRepaymentClaimStatus.Committed)
+        {
+            return;
+        }
+
+        ValidatePaymentPermissions(NormalizeIdentity(identity), current.Method);
+    }
+
+    private static void ValidateReadPermissions(
+        InstallmentRepaymentClaimIdentity identity,
+        InstallmentRepaymentClaimRecord current)
+    {
+        var normalizedIdentity = NormalizeIdentity(identity);
+        if (current.Status == InstallmentRepaymentClaimStatus.Released &&
+            current.Method == PaymentMethodKind.Cash &&
+            string.Equals(current.Provider, "cash", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(current.ProviderAttemptId) &&
+            normalizedIdentity.PermissionCodes?.Contains(
+                Permissions.PosTerminal.Installments.Cancel,
+                StringComparer.OrdinalIgnoreCase) == true)
+        {
+            // 仅 GET 恢复探测允许原设备的取消主管读取显式现金 release；不扩大普通 Released 或写路径权限。
+            return;
+        }
+
+        ValidateContinuationPermissions(normalizedIdentity, current);
     }
 
     private static InstallmentRepaymentClaimIdentity NormalizeIdentity(

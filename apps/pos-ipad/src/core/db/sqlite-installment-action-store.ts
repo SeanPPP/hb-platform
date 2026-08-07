@@ -1,3 +1,4 @@
+import type { InstallmentSnapshot } from "../contracts/installments";
 import type {
   InstallmentActionCommand,
   InstallmentActionState,
@@ -7,6 +8,10 @@ import type {
   PersistedInstallmentLifecycleAction,
 } from "../runtime/production-installment-runtime";
 
+import {
+  prepareCommittedInstallmentSnapshotUpsert,
+  type SqliteInstallmentSnapshotRepository,
+} from "./sqlite-installment-snapshot-repository";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
 import type { SqliteConnectionPort } from "./types";
 
@@ -508,6 +513,91 @@ export class SqliteInstallmentActionStore
     );
   }
 
+  /**
+   * committed repayment 的快照和 action resolution 必须属于同一个 SQLite exclusive
+   * transaction。快照校验、敏感字段加密由仓储在 BEGIN 前完成；任一事务内写失败都会
+   * 让 BackendPending action 保持可恢复。
+   */
+  public async completeCommittedRepaymentWithSnapshot(
+    input: Readonly<{
+      actionId: string;
+      expectedState: "BackendPending";
+      terminal: TerminalScope;
+      snapshot: InstallmentSnapshot;
+    }>,
+    snapshotRepository: SqliteInstallmentSnapshotRepository,
+  ): Promise<void> {
+    if (input.expectedState !== "BackendPending") {
+      throw new TypeError(
+        "Installment action completion state is invalid.",
+      );
+    }
+    const scope = normalizeTerminal(input.terminal);
+    const actionId = uuid(input.actionId, "installment action ID");
+    const prepared = await prepareCommittedInstallmentSnapshotUpsert(
+      snapshotRepository,
+      this.connection,
+      this.encryptor,
+      scope.storeCode,
+      input.snapshot,
+    );
+    const timestamp = strictIso(
+      this.nowIso(),
+      "installment action resolution time",
+    );
+
+    await this.connection.withExclusiveTransaction(async (transaction) => {
+      const row = await selectAnyActionRow(
+        transaction,
+        scope,
+        actionId,
+      );
+      if (row === null) {
+        throw new Error("Installment action resolution state CAS failed.");
+      }
+      const current = await this.readBoundActionRow(row);
+      if (current.state !== "BackendPending") {
+        throw new Error("Installment action resolution state CAS failed.");
+      }
+      if (
+        current.action.kind !== "repayment" ||
+        current.action.installmentGuid !== prepared.installmentGuid
+      ) {
+        throw new Error("Committed repayment action identity mismatch.");
+      }
+
+      if (row.resolution === "Completed") {
+        if (!(await prepared.matchesPersistedInTransaction(transaction))) {
+          throw new Error(
+            "Committed repayment idempotent snapshot mismatch.",
+          );
+        }
+        return;
+      }
+      if (row.resolution !== null) {
+        throw new Error("Installment action resolution state CAS failed.");
+      }
+
+      await prepared.upsertInTransaction(transaction);
+      const result = await transaction.run(
+        `UPDATE installment_actions
+         SET resolution = 'Completed', resolved_at_iso = ?, updated_at_iso = ?
+         WHERE action_id = ? AND store_code = ? AND device_code = ?
+           AND state = 'BackendPending' AND resolution IS NULL`,
+        [
+          timestamp,
+          timestamp,
+          actionId,
+          scope.storeCode,
+          scope.deviceCode,
+        ],
+      );
+      if (result.changes !== 1) {
+        throw new Error("Installment action resolution state CAS failed.");
+      }
+    });
+  }
+
   private async resolve(
     actionIdValue: string,
     terminal: TerminalScope,
@@ -522,38 +612,65 @@ export class SqliteInstallmentActionStore
     );
     await this.connection.withExclusiveTransaction(
       async (transaction) => {
-        const current = await this.requireBlocking(
+        await this.resolveInTransaction(
           transaction,
           scope,
           actionId,
+          expectedState,
+          resolution,
+          undefined,
+          timestamp,
         );
-        if (current.state !== expectedState) {
-          throw new Error(
-            "Installment action resolution state CAS failed.",
-          );
-        }
-        const result = await transaction.run(
-          `UPDATE installment_actions
-           SET resolution = ?, resolved_at_iso = ?, updated_at_iso = ?
-           WHERE action_id = ? AND store_code = ? AND device_code = ?
-             AND state = ? AND resolution IS NULL`,
-          [
-            resolution,
-            timestamp,
-            timestamp,
-            actionId,
-            scope.storeCode,
-            scope.deviceCode,
-            expectedState,
-          ],
-        );
-        if (result.changes !== 1) {
-          throw new Error(
-            "Installment action resolution state CAS failed.",
-          );
-        }
       },
     );
+  }
+
+  private async resolveInTransaction(
+    transaction: SqliteConnectionPort,
+    scope: TerminalScope,
+    actionId: string,
+    expectedState: InstallmentActionState,
+    resolution: "Declined" | "Completed",
+    expectedInstallmentGuid: string | undefined,
+    timestamp: string,
+  ): Promise<void> {
+    const current = await this.requireBlocking(
+      transaction,
+      scope,
+      actionId,
+    );
+    if (current.state !== expectedState) {
+      throw new Error(
+        "Installment action resolution state CAS failed.",
+      );
+    }
+    if (
+      expectedInstallmentGuid !== undefined &&
+      (current.action.kind !== "repayment" ||
+        current.action.installmentGuid !== expectedInstallmentGuid)
+    ) {
+      throw new Error("Committed repayment action identity mismatch.");
+    }
+    const result = await transaction.run(
+      `UPDATE installment_actions
+       SET resolution = ?, resolved_at_iso = ?, updated_at_iso = ?
+       WHERE action_id = ? AND store_code = ? AND device_code = ?
+         AND state = ? AND resolution IS NULL`,
+      [
+        resolution,
+        timestamp,
+        timestamp,
+        actionId,
+        scope.storeCode,
+        scope.deviceCode,
+        expectedState,
+      ],
+    );
+    if (result.changes !== 1) {
+      throw new Error(
+        "Installment action resolution state CAS failed.",
+      );
+    }
   }
 
   private async requireBlocking(
@@ -569,8 +686,18 @@ export class SqliteInstallmentActionStore
   }
 
   private async readRow(row: ActionRow): Promise<PersistedInstallmentAction> {
+    if (row.resolution !== null) {
+      throw new Error(
+        "Persisted installment action ciphertext or binding is invalid.",
+      );
+    }
+    return this.readBoundActionRow(row);
+  }
+
+  private async readBoundActionRow(
+    row: ActionRow,
+  ): Promise<PersistedInstallmentAction> {
     try {
-      if (row.resolution !== null) throw new Error("resolved");
       const action = actionFromRow(row);
       const persistedState = state(row.state);
       const revision = integer(row.payload_revision, "payload revision");
@@ -684,6 +811,18 @@ async function selectActionRow(
     `${selectColumns()}
      WHERE action_id = ? AND store_code = ? AND device_code = ?
        AND resolution IS NULL LIMIT 1`,
+    [actionId, scope.storeCode, scope.deviceCode],
+  );
+}
+
+async function selectAnyActionRow(
+  connection: SqliteConnectionPort,
+  scope: TerminalScope,
+  actionId: string,
+): Promise<ActionRow | null> {
+  return connection.getFirst<ActionRow>(
+    `${selectColumns()}
+     WHERE action_id = ? AND store_code = ? AND device_code = ? LIMIT 1`,
     [actionId, scope.storeCode, scope.deviceCode],
   );
 }

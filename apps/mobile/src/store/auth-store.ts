@@ -62,12 +62,7 @@ export async function waitForLocalSessionClear() {
 }
 
 function setIosReviewMenu() {
-  useAppNavigationStore.setState({
-    items: [...IOS_REVIEW_MENU_ITEMS],
-    isLoading: false,
-    isReady: true,
-    errorMessage: null,
-  });
+  useAppNavigationStore.getState().replaceMenu([...IOS_REVIEW_MENU_ITEMS]);
 }
 
 function createInvalidIosReviewCredentialsError() {

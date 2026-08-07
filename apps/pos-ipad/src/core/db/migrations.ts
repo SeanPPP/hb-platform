@@ -5334,6 +5334,79 @@ BEGIN
 END;
 `;
 
+/**
+ * 部分开发设备曾把版本 36 记录为 M36_shared_held_order_claims，导致当前 M36
+ * 被按版本号跳过。M38 以幂等 DDL 补齐分期生命周期账本，同时兼容已正确执行
+ * 当前 M36 的数据库，禁止通过清库掩盖迁移冲突。
+ */
+const M38 = `
+CREATE TABLE IF NOT EXISTS installment_lifecycle_actions (
+  operation_guid TEXT PRIMARY KEY,
+  store_code TEXT NOT NULL,
+  device_code TEXT NOT NULL,
+  installment_guid TEXT NOT NULL,
+  action_kind TEXT NOT NULL CHECK (action_kind IN ('void', 'pickup')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  resolution TEXT NULL CHECK (resolution IS NULL OR resolution = 'Completed'),
+  payload_revision INTEGER NOT NULL CHECK (payload_revision = 1),
+  command_ciphertext BLOB NOT NULL,
+  created_at_iso TEXT NOT NULL,
+  updated_at_iso TEXT NOT NULL,
+  resolved_at_iso TEXT NULL,
+  CHECK (idempotency_key = operation_guid),
+  CHECK (
+    (resolution IS NULL AND resolved_at_iso IS NULL)
+    OR (resolution = 'Completed' AND resolved_at_iso IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_installment_lifecycle_terminal_blocking
+  ON installment_lifecycle_actions (store_code, device_code)
+  WHERE resolution IS NULL;
+
+CREATE INDEX IF NOT EXISTS ix_installment_lifecycle_terminal_history
+  ON installment_lifecycle_actions (
+    store_code, device_code, created_at_iso, operation_guid
+  );
+
+CREATE TRIGGER IF NOT EXISTS trg_installment_lifecycle_immutable
+BEFORE UPDATE ON installment_lifecycle_actions
+FOR EACH ROW
+WHEN
+  NEW.operation_guid <> OLD.operation_guid
+  OR NEW.store_code <> OLD.store_code
+  OR NEW.device_code <> OLD.device_code
+  OR NEW.installment_guid <> OLD.installment_guid
+  OR NEW.action_kind <> OLD.action_kind
+  OR NEW.idempotency_key <> OLD.idempotency_key
+  OR NEW.payload_revision <> OLD.payload_revision
+  OR NEW.command_ciphertext <> OLD.command_ciphertext
+  OR NEW.created_at_iso <> OLD.created_at_iso
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_IMMUTABLE');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_installment_lifecycle_resolution_transition
+BEFORE UPDATE OF resolution, resolved_at_iso ON installment_lifecycle_actions
+FOR EACH ROW
+WHEN NOT (
+  OLD.resolution IS NULL
+  AND OLD.resolved_at_iso IS NULL
+  AND NEW.resolution = 'Completed'
+  AND NEW.resolved_at_iso IS NOT NULL
+)
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_RESOLUTION_INVALID');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_installment_lifecycle_no_delete
+BEFORE DELETE ON installment_lifecycle_actions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'INSTALLMENT_LIFECYCLE_DELETE_FORBIDDEN');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5372,6 +5445,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 35, name: "M35_installment_payment_success_external_order", sql: M35 },
   { version: 36, name: "M36_installment_lifecycle_actions", sql: M36 },
   { version: 37, name: "M37_installment_action_resolution_code", sql: M37 },
+  { version: 38, name: "M38_repair_installment_lifecycle_actions", sql: M38 },
 ];
 
 export async function applyMigrations(
@@ -5402,6 +5476,7 @@ export async function applyMigrations(
     }
     if (appliedVersions.has(17)) {
       await ensureCatalogSchemaForM17(transaction);
+      await ensureLocalSpecialProductsSchema(transaction);
     }
 
     for (const migration of migrations) {
@@ -5814,6 +5889,99 @@ async function ensureCatalogSchemaForM17(
     ${M2}
   `);
   await assertCurrentCatalogSchema(transaction);
+}
+
+/** 特殊商品本地表的权威列集（与 M17 建表保持一致，大小写不敏感比较）。 */
+const localSpecialProductsColumns = [
+  "store_code",
+  "product_code",
+  "reference_code",
+  "item_number",
+  "display_name",
+  "barcode",
+  "lookup_code",
+  "retail_price_cents",
+  "price_source",
+  "quantity_factor",
+  "product_image",
+  "discount_rate",
+  "sort_order",
+] as const;
+
+/** 与 M17 同构的建表与索引 DDL；仅用于表缺失时的幂等自愈，不迁移旧数据。 */
+const localSpecialProductsDdl = `
+CREATE TABLE IF NOT EXISTS local_special_products (
+  store_code TEXT NOT NULL,
+  product_code TEXT NOT NULL,
+  reference_code TEXT NULL,
+  item_number TEXT NULL,
+  display_name TEXT NOT NULL,
+  barcode TEXT NULL,
+  lookup_code TEXT NOT NULL,
+  retail_price_cents INTEGER NOT NULL CHECK (
+    typeof(retail_price_cents) = 'integer'
+  ),
+  price_source INTEGER NOT NULL CHECK (
+    typeof(price_source) = 'integer'
+    AND price_source IN (0, 1, 2, 3, 4)
+  ),
+  quantity_factor TEXT NOT NULL,
+  product_image TEXT NULL,
+  discount_rate TEXT NULL,
+  sort_order INTEGER NOT NULL CHECK (
+    typeof(sort_order) = 'integer' AND sort_order >= 0
+  ),
+  PRIMARY KEY (store_code, product_code),
+  UNIQUE (store_code, sort_order),
+  CHECK (TRIM(store_code) <> '' AND LENGTH(store_code) <= 128),
+  CHECK (TRIM(product_code) <> '' AND LENGTH(product_code) <= 128),
+  CHECK (TRIM(display_name) <> '' AND LENGTH(display_name) <= 512),
+  CHECK (TRIM(lookup_code) <> '' AND LENGTH(lookup_code) <= 256),
+  CHECK (TRIM(quantity_factor) <> '' AND LENGTH(quantity_factor) <= 128)
+);
+CREATE INDEX IF NOT EXISTS ix_local_special_products_store_sort
+  ON local_special_products (store_code, sort_order, product_code);
+CREATE INDEX IF NOT EXISTS ix_local_special_products_store_search
+  ON local_special_products (
+    store_code, display_name COLLATE NOCASE,
+    item_number COLLATE NOCASE, lookup_code COLLATE NOCASE
+  );
+`;
+
+/**
+ * 特殊商品本地表自愈：M17 已应用后，若 local_special_products 缺失则按当前
+ * 权威 schema 幂等重建（本地特殊商品可从远程重新下载，重建不丢失业务价值）；
+ * 若列不完整则抛出明确错误码，便于上层区分"表缺失"与"结构异常"。
+ */
+async function ensureLocalSpecialProductsSchema(
+  transaction: SqliteConnectionPort,
+): Promise<void> {
+  const table = await transaction.getFirst<{ name: unknown }>(
+    `SELECT name FROM sqlite_master
+     WHERE type = 'table' AND name = 'local_special_products'`,
+  );
+  if (table === null) {
+    await transaction.exec(localSpecialProductsDdl);
+    return;
+  }
+  const columns = await transaction.getAll<{ name: unknown }>(
+    "PRAGMA table_info('local_special_products')",
+  );
+  const present = new Set(
+    columns
+      .map((column) =>
+        typeof column.name === "string" ? column.name.toLowerCase() : "",
+      )
+      .filter(Boolean),
+  );
+  const missing = localSpecialProductsColumns.filter(
+    (name) => !present.has(name),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `LOCAL_SPECIAL_PRODUCTS_SCHEMA_INVALID:MISSING_COLUMNS=${missing.join(",")}`,
+    );
+  }
 }
 
 async function assertCurrentCatalogSchema(

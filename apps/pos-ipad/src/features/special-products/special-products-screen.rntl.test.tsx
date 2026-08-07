@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 
 import {
@@ -47,17 +47,35 @@ describe("SpecialProductsScreen", () => {
     expect(cardA).toBeTruthy();
     expect(screen.getByTestId("special-products-offline-note")).toBeTruthy();
     const download = screen.getByTestId("special-products-download");
+    const addProduct = screen.getByTestId("special-products-add-product");
     const remove = screen.getByTestId("special-products-remove-A");
     const moveDown = screen.getByTestId("special-products-move-down-A");
-    for (const control of [cardA, download, remove, moveDown]) {
+    for (const control of [cardA, download, addProduct, remove, moveDown]) {
       expect(StyleSheet.flatten(control.props.style).minHeight).toBeGreaterThanOrEqual(
         SPECIAL_PRODUCTS_MIN_TOUCH_TARGET,
       );
     }
     expect(cardA.props.accessibilityState).toEqual({ disabled: false });
     expect(download.props.accessibilityState).toEqual({ disabled: true });
+    expect(addProduct.props.accessibilityState).toEqual({ disabled: true });
     expect(remove.props.accessibilityState).toEqual({ disabled: true });
     expect(moveDown.props.accessibilityState).toEqual({ disabled: true });
+    // 每行 5 个卡片：卡片宽度按 5 列计算（(100%-4×12px gap)/5）
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("special-product-card-A-shell").props.style,
+      ).width,
+    ).toBe("18.4%");
+    // Header 三个按钮高度一致：secondary 不带 marginTop 偏移
+    for (const testID of [
+      "special-products-refresh-local",
+      "special-products-add-product",
+      "special-products-download",
+    ]) {
+      expect(
+        StyleSheet.flatten(screen.getByTestId(testID).props.style).marginTop,
+      ).toBeUndefined();
+    }
 
     await fireEvent.press(cardA);
     expect(presenter.addToCartCalls).toEqual(["A"]);
@@ -85,7 +103,7 @@ describe("SpecialProductsScreen", () => {
     const cardA = screen.getByTestId("special-product-card-A");
     expect(cardA).toBeTruthy();
     expect(cardA.props.accessibilityState).toEqual({ disabled: true });
-    expect(screen.queryByTestId("special-products-management")).toBeNull();
+    expect(screen.queryByTestId("special-products-add-product")).toBeNull();
     expect(screen.queryByTestId("special-products-remove-A")).toBeNull();
     expect(
       StyleSheet.flatten(
@@ -151,21 +169,42 @@ describe("SpecialProductsScreen", () => {
     await screen.unmount();
   });
 
-  it("在线管理把候选搜索、标记和排序交给 presenter", async () => {
+  it("在线管理通过弹窗搜索并把候选添加为特殊商品", async () => {
+    const candidateWithImage: SpecialProductItem = {
+      ...product("IMG2"),
+      productImage: "data:image/png;base64,iVBORw0KGgo=",
+    };
     const presenter = new ScreenPresenter({
-      candidates: [product("C")],
+      candidates: [product("C"), candidateWithImage],
       items: [product("A"), product("B")],
       online: true,
     });
     const screen = await render(
       <SpecialProductsScreen presenter={presenter} />,
     );
-    const keyboardScroll = screen.getByTestId(
-      "special-products-management-keyboard-scroll",
-    );
-    expect(keyboardScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
-    expect(keyboardScroll.props.keyboardDismissMode).toBe("interactive");
-    expect(keyboardScroll.props.keyboardShouldPersistTaps).toBe("handled");
+
+    // 弹窗默认关闭
+    expect(screen.queryByTestId("special-products-add-modal")).toBeNull();
+
+    // 点击「添加商品」打开弹窗，键盘滚动容器保留触控
+    await fireEvent.press(screen.getByTestId("special-products-add-product"));
+    expect(screen.getByTestId("special-products-add-modal")).toBeTruthy();
+    // 打开弹窗时清空上次搜索
+    expect(presenter.searchQueries).toContain("");
+    expect(
+      screen.getByTestId("special-products-add-modal-scroll").props
+        .keyboardShouldPersistTaps,
+    ).toBe("handled");
+
+    // 候选行同样展示商品图片：有图渲染缩略图、无图显示占位
+    expect(
+      screen.getByTestId("special-products-candidate-image-IMG2-content"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("special-products-candidate-image-C-placeholder", {
+        includeHiddenElements: true,
+      }),
+    ).toBeTruthy();
 
     await fireEvent.changeText(
       screen.getByTestId("special-products-search-input"),
@@ -173,18 +212,97 @@ describe("SpecialProductsScreen", () => {
     );
     await fireEvent.press(screen.getByTestId("special-products-search"));
     expect(presenter.searchCalls).toBe(1);
-    expect(presenter.searchQueries).toEqual(["Product C"]);
+    expect(presenter.searchQueries).toContain("Product C");
 
-    await fireEvent.press(screen.getByTestId("special-products-mark-C"));
+    // 点击候选行 = 添加为特殊商品并自动关闭弹窗
+    await fireEvent.press(screen.getByTestId("special-products-candidate-C"));
     expect(presenter.markCalls).toEqual([
       { isSpecialProduct: true, productCode: "C" },
     ]);
+    expect(screen.queryByTestId("special-products-add-modal")).toBeNull();
+
+    // 关闭按钮也能收起弹窗
+    await fireEvent.press(screen.getByTestId("special-products-add-product"));
+    await fireEvent.press(
+      screen.getByTestId("special-products-add-modal-close"),
+    );
+    expect(screen.queryByTestId("special-products-add-modal")).toBeNull();
+
     await fireEvent.press(
       screen.getByTestId("special-products-move-down-A"),
     );
     expect(presenter.reorderCalls).toEqual([
       { delta: 1, productCode: "A" },
     ]);
+    await screen.unmount();
+  });
+
+  it("长按卡片拖动到目标格后调用 moveTo 持久化排序", async () => {
+    const presenter = new ScreenPresenter({
+      items: [product("A"), product("B"), product("C"), product("D")],
+      online: true,
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    const cardA = screen.getByTestId("special-product-card-A");
+    const shellA = screen.getByTestId("special-product-card-A-shell");
+    // 卡片实测尺寸：宽 85.6（单列）、高 240 → 行高 252
+    // （shell 挂载 PanResponder 后 fireEvent 被 responder 检查拦截，手动调用）
+    await act(async () => {
+      shellA.props.onLayout({
+        nativeEvent: { layout: { height: 240, width: 85.6 } },
+      });
+    });
+    // PanResponder 从 event.touchHistory（顶层）读取手势数据
+    const moveEvent = (pageX: number, pageY: number) => ({
+      nativeEvent: {
+        changedTouches: [{ pageX, pageY }],
+        identifier: 0,
+        touches: [{ pageX, pageY }],
+      },
+      touchHistory: {
+        indexOfSingleActiveTouch: 0,
+        mostRecentTimeStamp: 100,
+        numberActiveTouches: 1,
+        touchBank: [
+          {
+            currentPageX: pageX,
+            currentPageY: pageY,
+            currentTimeStamp: 100,
+            previousPageX: 0,
+            previousPageY: 0,
+            previousTimeStamp: 0,
+            startPageX: 0,
+            startPageY: 0,
+            startTimeStamp: 0,
+            touchActive: true,
+          },
+        ],
+      },
+    });
+    // 长按抬起卡片 → 拖到 (110,80)：PanResponder dx=110 → 约 1.3 格（取整 1 格）→ 松手落位
+    await fireEvent(cardA, "longPress");
+    await act(async () => {
+      shellA.props.onResponderGrant(moveEvent(20, 80));
+      shellA.props.onResponderMove(moveEvent(110, 80));
+    });
+    // 拖拽中目标格高亮（边框加粗）
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("special-product-card-B-shell").props.style,
+      ).borderWidth,
+    ).toBe(2);
+    // 松手：重放完整手势序列（重渲染后 shell 的 handler 已更新，
+    // gestureState 按 touchHistory 帧差重新累计，dx 仍为 110）
+    await act(async () => {
+      shellA.props.onResponderGrant(moveEvent(20, 80));
+      shellA.props.onResponderMove(moveEvent(110, 80));
+      shellA.props.onResponderRelease(moveEvent(110, 80));
+    });
+
+    expect(presenter.moveToCalls).toEqual([{ productCode: "A", toIndex: 1 }]);
     await screen.unmount();
   });
 
@@ -230,6 +348,10 @@ class ScreenPresenter implements SpecialProductsScreenPresenter {
   public readonly markCalls: {
     productCode: string;
     isSpecialProduct: boolean;
+  }[] = [];
+  public readonly moveToCalls: {
+    productCode: string;
+    toIndex: number;
   }[] = [];
   public readonly reorderCalls: {
     productCode: string;
@@ -306,6 +428,10 @@ class ScreenPresenter implements SpecialProductsScreenPresenter {
     delta: -1 | 1,
   ): Promise<void> {
     this.reorderCalls.push({ productCode, delta });
+  }
+
+  public async moveTo(productCode: string, toIndex: number): Promise<void> {
+    this.moveToCalls.push({ productCode, toIndex });
   }
 
   private patch(patch: Partial<SpecialProductsState>): void {

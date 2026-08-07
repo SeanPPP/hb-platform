@@ -184,7 +184,10 @@ import {
   type InstallmentCardProvider,
 } from "./production-installment-payment-adapter";
 import { HbposInstallmentRefundProvenance } from "./production-installment-refund-provenance";
-import { createProductionInstallmentRuntime } from "./production-installment-runtime";
+import {
+  createProductionInstallmentRuntime,
+  type InstallmentPerformanceRecorder,
+} from "./production-installment-runtime";
 import {
   createProductionPaymentRuntime,
   type PosPaymentRuntimeService,
@@ -490,6 +493,7 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
   supportAppId: string;
   clock: RuntimeClock;
   systemUptimeMilliseconds?: (() => number) | undefined;
+  installmentPerformanceRecorder?: InstallmentPerformanceRecorder | undefined;
   createId(): string;
   random(): number;
   sha256Hex(material: string): Promise<string>;
@@ -1306,6 +1310,9 @@ export function createProductionPosRuntimeServices(
   const installmentActionStore = installmentConfiguration
     ? input.database.installmentActions(input.encryptor)
     : null;
+  const installmentSnapshotRepository = installmentConfiguration
+    ? input.database.installmentSnapshots(input.encryptor)
+    : null;
   const installments: PosInstallmentsRuntimeService =
     installmentConfiguration
     ? (() => {
@@ -1313,6 +1320,11 @@ export function createProductionPosRuntimeServices(
         if (!actionStore) {
           throw new Error(
             "Installment action persistence is unavailable.",
+          );
+        }
+        if (!installmentSnapshotRepository) {
+          throw new Error(
+            "Installment snapshot persistence is unavailable.",
           );
         }
         const bootstrap = installmentConfiguration.bootstrap;
@@ -1359,7 +1371,8 @@ export function createProductionPosRuntimeServices(
             input.auditMetadata.storeCode,
           ),
           snapshotCache:
-            input.database.installmentSnapshots(input.encryptor),
+            installmentSnapshotRepository,
+          snapshotRepository: installmentSnapshotRepository,
           actionStore,
           payments: installmentPayments,
           receiptReprint: {
@@ -1380,6 +1393,12 @@ export function createProductionPosRuntimeServices(
           ),
           now: input.clock.now,
           nowIso: input.clock.nowIso,
+          ...(input.systemUptimeMilliseconds
+            ? { monotonicNowMilliseconds: input.systemUptimeMilliseconds }
+            : {}),
+          ...(input.installmentPerformanceRecorder
+            ? { performanceRecorder: input.installmentPerformanceRecorder }
+            : {}),
         });
       })()
     : {

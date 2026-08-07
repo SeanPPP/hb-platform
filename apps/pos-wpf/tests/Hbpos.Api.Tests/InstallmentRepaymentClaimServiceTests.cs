@@ -24,7 +24,415 @@ public sealed class InstallmentRepaymentClaimServiceTests
         Assert.False(capabilities.CrossDeviceVoidEnabled);
         Assert.False(capabilities.CrossDevicePickupEnabled);
         Assert.False(capabilities.CardRepaymentSupported);
+        Assert.True(capabilities.RepaymentClaimPrepareProviderV1);
         Assert.Equal(120, capabilities.PreparedClaimTtlSeconds);
+    }
+
+    [Fact]
+    public async Task Prepare_provider_creates_provider_pending_without_writing_payment_and_replays_same_binding()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var request = PrepareRequest(create, provider: "cash", providerAttemptId: "attempt-prepare");
+        var before = await harness.Installments.GetDetailsAsync(harness.InstallmentGuid, CancellationToken.None);
+
+        var first = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+        var replay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, first.Status);
+        Assert.Equal("cash", first.Provider);
+        Assert.Equal("attempt-prepare", first.ProviderAttemptId);
+        Assert.False(first.AlreadyExists);
+        Assert.True(replay.AlreadyExists);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, replay.Status);
+        Assert.Equal(0, harness.Installments.AppendCount);
+        Assert.Equal(before, await harness.Installments.GetDetailsAsync(harness.InstallmentGuid, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Prepare_provider_binds_prepared_claim_and_recovers_unknown_only_for_the_same_binding()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var request = PrepareRequest(create, provider: "cash", providerAttemptId: "attempt-recover");
+        await harness.Service.CreateAsync(harness.InstallmentGuid, create, Identity(), CancellationToken.None);
+
+        var prepared = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, prepared.Status);
+
+        await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+            Identity(),
+            CancellationToken.None);
+
+        var recovered = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(cashierId: "RECOVERY", cashierName: "Recovery Cashier", cashierUserGuid: "U-RECOVERY"),
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, recovered.Status);
+
+        var wrongBinding = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                request with { ProviderAttemptId = "different-attempt" },
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, wrongBinding.Code);
+    }
+
+    [Fact]
+    public async Task Prepare_provider_returns_persisted_commit_and_rejects_released_declined_or_fact_mismatch()
+    {
+        var committedHarness = CreateHarness();
+        var committedCreate = CreateRequest(method: PaymentMethodKind.Cash);
+        var committedRequest = PrepareRequest(committedCreate, provider: "cash", providerAttemptId: "attempt-commit");
+        await committedHarness.Service.PrepareProviderAsync(
+            committedHarness.InstallmentGuid,
+            committedCreate.OperationGuid,
+            committedRequest,
+            Identity(),
+            CancellationToken.None);
+        var committed = await committedHarness.Service.CommitAsync(
+            committedHarness.InstallmentGuid,
+            committedCreate.OperationGuid,
+            new InstallmentRepaymentClaimCommitRequest(),
+            Identity(),
+            CancellationToken.None);
+
+        var committedReplay = await committedHarness.Service.PrepareProviderAsync(
+            committedHarness.InstallmentGuid,
+            committedCreate.OperationGuid,
+            committedRequest,
+            Identity(),
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committedReplay.Status);
+        Assert.Equal(
+            System.Text.Json.JsonSerializer.Serialize(committed.Commit),
+            System.Text.Json.JsonSerializer.Serialize(committedReplay.Commit));
+        Assert.True(committedReplay.AlreadyExists);
+        Assert.Equal(1, committedHarness.Installments.AppendCount);
+
+        foreach (var outcome in new[]
+        {
+            InstallmentRepaymentClaimResolveOutcome.Released,
+            InstallmentRepaymentClaimResolveOutcome.Declined
+        })
+        {
+            var harness = CreateHarness();
+            var create = CreateRequest(method: PaymentMethodKind.Cash);
+            var request = PrepareRequest(create, provider: "cash", providerAttemptId: $"attempt-{outcome}");
+            await harness.Service.CreateAsync(harness.InstallmentGuid, create, Identity(), CancellationToken.None);
+            if (outcome == InstallmentRepaymentClaimResolveOutcome.Declined)
+            {
+                await harness.Service.BeginProviderAsync(
+                    harness.InstallmentGuid,
+                    create.OperationGuid,
+                    new InstallmentRepaymentClaimBeginProviderRequest("cash", request.ProviderAttemptId),
+                    Identity(),
+                    CancellationToken.None);
+            }
+
+            await harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(outcome),
+                Identity(),
+                CancellationToken.None);
+
+            var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+                harness.Service.PrepareProviderAsync(
+                    harness.InstallmentGuid,
+                    create.OperationGuid,
+                    request,
+                    Identity(),
+                    CancellationToken.None));
+            Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, exception.Code);
+        }
+
+        var mismatchHarness = CreateHarness();
+        var mismatchCreate = CreateRequest(method: PaymentMethodKind.Cash);
+        var mismatchRequest = PrepareRequest(mismatchCreate, provider: "cash", providerAttemptId: "attempt-facts");
+        await mismatchHarness.Service.PrepareProviderAsync(
+            mismatchHarness.InstallmentGuid,
+            mismatchCreate.OperationGuid,
+            mismatchRequest,
+            Identity(),
+            CancellationToken.None);
+        var factsMismatch = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            mismatchHarness.Service.PrepareProviderAsync(
+                mismatchHarness.InstallmentGuid,
+                mismatchCreate.OperationGuid,
+                mismatchRequest with { Amount = mismatchRequest.Amount + 1m },
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, factsMismatch.Code);
+    }
+
+    [Fact]
+    public async Task Prepare_provider_maps_other_operation_to_busy_and_other_device_to_access_mismatch()
+    {
+        var harness = CreateHarness();
+        var first = CreateRequest(method: PaymentMethodKind.Cash);
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            first.OperationGuid,
+            PrepareRequest(first, provider: "cash", providerAttemptId: "attempt-first"),
+            Identity(),
+            CancellationToken.None);
+
+        var otherOperation = CreateRequest(method: PaymentMethodKind.Cash);
+        var busy = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                otherOperation.OperationGuid,
+                PrepareRequest(otherOperation, provider: "cash", providerAttemptId: "attempt-other"),
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Busy, busy.Code);
+
+        var otherDevice = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                first.OperationGuid,
+                PrepareRequest(first, provider: "cash", providerAttemptId: "attempt-first"),
+                Identity(deviceCode: "POS-99"),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, otherDevice.Code);
+    }
+
+    [Fact]
+    public async Task Prepare_prepared_CAS_loser_replays_the_same_winning_binding()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var request = PrepareRequest(create, provider: "cash", providerAttemptId: "attempt-prepared-race");
+        await harness.Service.CreateAsync(harness.InstallmentGuid, create, Identity(), CancellationToken.None);
+        harness.Repository.ConcurrentUpdateFactory = candidate => candidate;
+
+        var replay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, replay.Status);
+        Assert.Equal("attempt-prepared-race", replay.ProviderAttemptId);
+        Assert.True(replay.AlreadyExists);
+    }
+
+    [Fact]
+    public async Task Prepare_unknown_CAS_loser_replays_the_same_winning_binding()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var request = PrepareRequest(create, provider: "cash", providerAttemptId: "attempt-unknown-race");
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+        await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+            Identity(),
+            CancellationToken.None);
+        harness.Repository.ConcurrentUpdateFactory = candidate => candidate;
+
+        var replay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, replay.Status);
+        Assert.True(replay.AlreadyExists);
+    }
+
+    [Fact]
+    public async Task Prepare_CAS_loser_rejects_a_different_binding_or_changed_immutable_facts()
+    {
+        var bindingHarness = CreateHarness();
+        var bindingCreate = CreateRequest(method: PaymentMethodKind.Cash);
+        var bindingRequest = PrepareRequest(
+            bindingCreate,
+            provider: "cash",
+            providerAttemptId: "attempt-binding-race");
+        await bindingHarness.Service.CreateAsync(
+            bindingHarness.InstallmentGuid,
+            bindingCreate,
+            Identity(),
+            CancellationToken.None);
+        bindingHarness.Repository.ConcurrentUpdateFactory = candidate =>
+            candidate with { ProviderAttemptId = "different-winning-attempt" };
+
+        var bindingMismatch = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            bindingHarness.Service.PrepareProviderAsync(
+                bindingHarness.InstallmentGuid,
+                bindingCreate.OperationGuid,
+                bindingRequest,
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, bindingMismatch.Code);
+
+        var factsHarness = CreateHarness();
+        var factsCreate = CreateRequest(method: PaymentMethodKind.Cash);
+        var factsRequest = PrepareRequest(factsCreate, provider: "cash", providerAttemptId: "attempt-facts-race");
+        await factsHarness.Service.CreateAsync(
+            factsHarness.InstallmentGuid,
+            factsCreate,
+            Identity(),
+            CancellationToken.None);
+        factsHarness.Repository.ConcurrentUpdateFactory = candidate =>
+            candidate with { Fingerprint = new string('F', 64) };
+
+        var factsMismatch = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            factsHarness.Service.PrepareProviderAsync(
+                factsHarness.InstallmentGuid,
+                factsCreate.OperationGuid,
+                factsRequest,
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, factsMismatch.Code);
+    }
+
+    [Fact]
+    public async Task Permanent_insert_fact_conflicts_are_mismatch_while_only_a_live_other_operation_is_busy()
+    {
+        var paymentHarness = CreateHarness();
+        var paymentOwner = CreateRequest(method: PaymentMethodKind.Cash);
+        await paymentHarness.Service.CreateAsync(
+            paymentHarness.InstallmentGuid,
+            paymentOwner,
+            Identity(),
+            CancellationToken.None);
+        await paymentHarness.Service.ResolveAsync(
+            paymentHarness.InstallmentGuid,
+            paymentOwner.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Released),
+            Identity(),
+            CancellationToken.None);
+        var paymentConflict = CreateRequest(method: PaymentMethodKind.Cash) with
+        {
+            PaymentGuid = paymentOwner.PaymentGuid
+        };
+        var paymentException = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            paymentHarness.Service.PrepareProviderAsync(
+                paymentHarness.InstallmentGuid,
+                paymentConflict.OperationGuid,
+                PrepareRequest(paymentConflict, "cash", "attempt-payment-conflict"),
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, paymentException.Code);
+
+        var idempotencyHarness = CreateHarness();
+        var idempotencyOwner = CreateRequest(method: PaymentMethodKind.Cash);
+        await idempotencyHarness.Service.CreateAsync(
+            idempotencyHarness.InstallmentGuid,
+            idempotencyOwner,
+            Identity(),
+            CancellationToken.None);
+        await idempotencyHarness.Service.ResolveAsync(
+            idempotencyHarness.InstallmentGuid,
+            idempotencyOwner.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Released),
+            Identity(),
+            CancellationToken.None);
+        var idempotencyConflict = CreateRequest(method: PaymentMethodKind.Cash) with
+        {
+            IdempotencyKey = idempotencyOwner.IdempotencyKey
+        };
+        var idempotencyException = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            idempotencyHarness.Service.CreateAsync(
+                idempotencyHarness.InstallmentGuid,
+                idempotencyConflict,
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, idempotencyException.Code);
+
+        var providerHarness = CreateHarness();
+        var providerOwner = CreateRequest(method: PaymentMethodKind.Cash);
+        var providerOwnerRequest = PrepareRequest(providerOwner, "cash", "attempt-provider-conflict");
+        await providerHarness.Service.PrepareProviderAsync(
+            providerHarness.InstallmentGuid,
+            providerOwner.OperationGuid,
+            providerOwnerRequest,
+            Identity(),
+            CancellationToken.None);
+        await providerHarness.Service.ResolveAsync(
+            providerHarness.InstallmentGuid,
+            providerOwner.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Declined),
+            Identity(),
+            CancellationToken.None);
+        var providerConflict = CreateRequest(method: PaymentMethodKind.Cash);
+        var providerException = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            providerHarness.Service.PrepareProviderAsync(
+                providerHarness.InstallmentGuid,
+                providerConflict.OperationGuid,
+                PrepareRequest(providerConflict, "cash", providerOwnerRequest.ProviderAttemptId),
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, providerException.Code);
+
+        var busyHarness = CreateHarness();
+        var blocking = CreateRequest(method: PaymentMethodKind.Cash);
+        await busyHarness.Service.PrepareProviderAsync(
+            busyHarness.InstallmentGuid,
+            blocking.OperationGuid,
+            PrepareRequest(blocking, "cash", "attempt-blocking"),
+            Identity(),
+            CancellationToken.None);
+        var other = CreateRequest(method: PaymentMethodKind.Cash);
+        var busyException = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            busyHarness.Service.PrepareProviderAsync(
+                busyHarness.InstallmentGuid,
+                other.OperationGuid,
+                PrepareRequest(other, "cash", "attempt-other-operation"),
+                Identity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Busy, busyException.Code);
+    }
+
+    [Fact]
+    public async Task Insert_failure_without_a_permanent_conflict_or_live_operation_is_mismatch()
+    {
+        var harness = CreateHarness();
+        harness.Repository.FailNextInsert = true;
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                PrepareRequest(create, "cash", "attempt-stale-snapshot"),
+                Identity(),
+                CancellationToken.None));
+
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, exception.Code);
     }
 
     [Fact]
@@ -137,6 +545,14 @@ public sealed class InstallmentRepaymentClaimServiceTests
             Identity(),
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.Released, released.Status);
+        var releasedReplay = await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            prepared.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Released),
+            Identity(),
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Released, releasedReplay.Status);
+        Assert.True(releasedReplay.AlreadyExists);
 
         var pending = CreateRequest(method: PaymentMethodKind.Cash);
         await harness.Service.CreateAsync(harness.InstallmentGuid, pending, Identity(), CancellationToken.None);
@@ -163,6 +579,334 @@ public sealed class InstallmentRepaymentClaimServiceTests
             Identity(),
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.Declined, declined.Status);
+    }
+
+    [Theory]
+    [InlineData(InstallmentRepaymentClaimStatus.ProviderPending)]
+    [InlineData(InstallmentRepaymentClaimStatus.Unknown)]
+    public async Task Cash_provider_claim_can_be_explicitly_released_only_after_confirming_cash_was_not_collected(
+        InstallmentRepaymentClaimStatus startingStatus)
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        const string attemptId = "cash-attempt-release";
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            PrepareRequest(create, "cash", attemptId),
+            Identity(),
+            CancellationToken.None);
+        if (startingStatus == InstallmentRepaymentClaimStatus.Unknown)
+        {
+            await harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+                Identity(permissionCodes: []),
+                CancellationToken.None);
+        }
+
+        var releaseRequest = new InstallmentRepaymentClaimResolveRequest(
+            InstallmentRepaymentClaimResolveOutcome.Released,
+            CashNotCollectedConfirmed: true,
+            ProviderAttemptId: attemptId);
+        var released = await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            releaseRequest,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+        var exactReplay = await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            releaseRequest,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentRepaymentClaimStatus.Released, released.Status);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Released, exactReplay.Status);
+        Assert.True(exactReplay.AlreadyExists);
+
+        var mismatchedReplay = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                releaseRequest with { ProviderAttemptId = "another-attempt" },
+                CashReleaseIdentity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, mismatchedReplay.Code);
+    }
+
+    [Theory]
+    [InlineData(false, "cash-attempt-evidence", InstallmentRepaymentClaimErrorCodes.Mismatch)]
+    [InlineData(true, null, InstallmentRepaymentClaimErrorCodes.Invalid)]
+    [InlineData(true, "wrong-attempt", InstallmentRepaymentClaimErrorCodes.Mismatch)]
+    public async Task Cash_provider_release_rejects_missing_or_mismatched_evidence(
+        bool cashNotCollectedConfirmed,
+        string? providerAttemptId,
+        string expectedErrorCode)
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        const string attemptId = "cash-attempt-evidence";
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            PrepareRequest(create, "cash", attemptId),
+            Identity(),
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(
+                    InstallmentRepaymentClaimResolveOutcome.Released,
+                    cashNotCollectedConfirmed,
+                    providerAttemptId),
+                CashReleaseIdentity(),
+                CancellationToken.None));
+
+        Assert.Equal(expectedErrorCode, exception.Code);
+        var stored = await harness.Repository.GetAsync(create.OperationGuid, CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, stored?.Status);
+    }
+
+    [Fact]
+    public async Task Cash_provider_release_requires_cancel_permission_on_every_attempt()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        const string attemptId = "cash-attempt-permission";
+        var releaseRequest = new InstallmentRepaymentClaimResolveRequest(
+            InstallmentRepaymentClaimResolveOutcome.Released,
+            CashNotCollectedConfirmed: true,
+            ProviderAttemptId: attemptId);
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            PrepareRequest(create, "cash", attemptId),
+            Identity(),
+            CancellationToken.None);
+
+        var denied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                releaseRequest,
+                Identity(permissionCodes: []),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, denied.Code);
+
+        await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            releaseRequest,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+        var revokedReplay = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                releaseRequest,
+                Identity(permissionCodes: []),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, revokedReplay.Code);
+    }
+
+    [Fact]
+    public async Task Explicit_cash_release_can_be_read_and_replayed_by_original_device_cancel_supervisor()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        const string attemptId = "cash-attempt-supervisor-read";
+        var releaseRequest = new InstallmentRepaymentClaimResolveRequest(
+            InstallmentRepaymentClaimResolveOutcome.Released,
+            CashNotCollectedConfirmed: true,
+            ProviderAttemptId: attemptId);
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            PrepareRequest(create, "cash", attemptId),
+            Identity(),
+            CancellationToken.None);
+        await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            releaseRequest,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+
+        var recovered = await harness.Service.GetAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+        var exactReplay = await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            releaseRequest,
+            CashReleaseIdentity(),
+            CancellationToken.None);
+
+        Assert.Equal(InstallmentRepaymentClaimStatus.Released, recovered.Status);
+        Assert.True(recovered.AlreadyExists);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Released, exactReplay.Status);
+        Assert.True(exactReplay.AlreadyExists);
+
+        var crossDevice = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.GetAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                CashReleaseIdentity(deviceCode: "POS-99"),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, crossDevice.Code);
+    }
+
+    [Fact]
+    public async Task Cancel_permission_does_not_expand_get_for_ordinary_or_non_cash_released_claims()
+    {
+        var ordinaryHarness = CreateHarness();
+        var ordinaryCash = CreateRequest(method: PaymentMethodKind.Cash);
+        await ordinaryHarness.Service.CreateAsync(
+            ordinaryHarness.InstallmentGuid,
+            ordinaryCash,
+            Identity(),
+            CancellationToken.None);
+        await ordinaryHarness.Service.ResolveAsync(
+            ordinaryHarness.InstallmentGuid,
+            ordinaryCash.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Released),
+            Identity(),
+            CancellationToken.None);
+
+        var ordinaryDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            ordinaryHarness.Service.GetAsync(
+                ordinaryHarness.InstallmentGuid,
+                ordinaryCash.OperationGuid,
+                CashReleaseIdentity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, ordinaryDenied.Code);
+
+        var voucherHarness = CreateHarness();
+        var voucher = CreateRequest(method: PaymentMethodKind.Voucher);
+        await voucherHarness.Service.PrepareProviderAsync(
+            voucherHarness.InstallmentGuid,
+            voucher.OperationGuid,
+            PrepareRequest(voucher, "voucher", "voucher-attempt-released"),
+            Identity(),
+            CancellationToken.None);
+        var providerBoundVoucher = await voucherHarness.Repository.GetAsync(
+            voucher.OperationGuid,
+            CancellationToken.None);
+        Assert.NotNull(providerBoundVoucher);
+        Assert.True(await voucherHarness.Repository.TryUpdateAsync(
+            providerBoundVoucher! with
+            {
+                Status = InstallmentRepaymentClaimStatus.Released,
+                Revision = providerBoundVoucher.Revision + 1
+            },
+            providerBoundVoucher.Revision,
+            CancellationToken.None));
+
+        var nonCashDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            voucherHarness.Service.GetAsync(
+                voucherHarness.InstallmentGuid,
+                voucher.OperationGuid,
+                CashReleaseIdentity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, nonCashDenied.Code);
+    }
+
+    [Fact]
+    public async Task Cash_provider_release_rejects_cross_device_and_non_cash_claims()
+    {
+        var cashHarness = CreateHarness();
+        var cash = CreateRequest(method: PaymentMethodKind.Cash);
+        await cashHarness.Service.PrepareProviderAsync(
+            cashHarness.InstallmentGuid,
+            cash.OperationGuid,
+            PrepareRequest(cash, "cash", "cash-attempt-device"),
+            Identity(),
+            CancellationToken.None);
+        var crossDevice = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            cashHarness.Service.ResolveAsync(
+                cashHarness.InstallmentGuid,
+                cash.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(
+                    InstallmentRepaymentClaimResolveOutcome.Released,
+                    CashNotCollectedConfirmed: true,
+                    ProviderAttemptId: "cash-attempt-device"),
+                CashReleaseIdentity(deviceCode: "POS-99"),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, crossDevice.Code);
+
+        var voucherHarness = CreateHarness();
+        var voucher = CreateRequest(method: PaymentMethodKind.Voucher);
+        await voucherHarness.Service.PrepareProviderAsync(
+            voucherHarness.InstallmentGuid,
+            voucher.OperationGuid,
+            PrepareRequest(voucher, "voucher", "voucher-attempt"),
+            Identity(),
+            CancellationToken.None);
+        var nonCash = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            voucherHarness.Service.ResolveAsync(
+                voucherHarness.InstallmentGuid,
+                voucher.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(
+                    InstallmentRepaymentClaimResolveOutcome.Released,
+                    CashNotCollectedConfirmed: true,
+                    ProviderAttemptId: "voucher-attempt"),
+                CashReleaseIdentity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, nonCash.Code);
+    }
+
+    [Theory]
+    [InlineData(InstallmentRepaymentClaimStatus.Committed)]
+    [InlineData(InstallmentRepaymentClaimStatus.Declined)]
+    public async Task Cash_provider_release_rejects_terminal_payment_outcomes(
+        InstallmentRepaymentClaimStatus terminalStatus)
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        const string attemptId = "cash-attempt-terminal";
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            PrepareRequest(create, "cash", attemptId),
+            Identity(),
+            CancellationToken.None);
+        if (terminalStatus == InstallmentRepaymentClaimStatus.Committed)
+        {
+            await harness.Service.CommitAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimCommitRequest(),
+                Identity(),
+                CancellationToken.None);
+        }
+        else
+        {
+            await harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Declined),
+                Identity(),
+                CancellationToken.None);
+        }
+
+        var exception = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.ResolveAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(
+                    InstallmentRepaymentClaimResolveOutcome.Released,
+                    CashNotCollectedConfirmed: true,
+                    ProviderAttemptId: attemptId),
+                PaymentAndCancelIdentity(),
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, exception.Code);
     }
 
     [Fact]
@@ -627,7 +1371,7 @@ public sealed class InstallmentRepaymentClaimServiceTests
     [Theory]
     [InlineData(PaymentMethodKind.Cash)]
     [InlineData(PaymentMethodKind.Voucher)]
-    public async Task Begin_and_commit_recheck_the_current_cashier_permissions(PaymentMethodKind method)
+    public async Task Begin_rechecks_the_current_cashier_permissions(PaymentMethodKind method)
     {
         var requiredMethodPermission = method switch
         {
@@ -662,25 +1406,220 @@ public sealed class InstallmentRepaymentClaimServiceTests
             new InstallmentRepaymentClaimBeginProviderRequest(provider, "attempt-permission"),
             Identity(),
             CancellationToken.None);
-        var commitDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
-            harness.Service.CommitAsync(
-                harness.InstallmentGuid,
-                request.OperationGuid,
-                ValidCommitRequest(method),
-                Identity(permissionCodes: DefaultPaymentPermissions()
-                    .Where(code => code != Permissions.PosTerminal.Payment.Confirm)
-                    .ToArray()),
-                CancellationToken.None));
-        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, commitDenied.Code);
-        Assert.Equal(0, harness.Installments.AppendCount);
+    }
+
+    [Fact]
+    public async Task Provider_pending_and_committed_continuation_survive_permission_revocation_on_the_original_device()
+    {
+        var harness = CreateHarness();
+        var request = CreateRequest(method: PaymentMethodKind.Cash);
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            PrepareRequest(request, "cash", "attempt-revoked-continuation"),
+            Identity(),
+            CancellationToken.None);
+        var revoked = Identity(permissionCodes: []);
+
+        var pending = await harness.Service.GetAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, pending.Status);
 
         var committed = await harness.Service.CommitAsync(
             harness.InstallmentGuid,
             request.OperationGuid,
-            ValidCommitRequest(method),
-            Identity(),
+            new InstallmentRepaymentClaimCommitRequest(),
+            revoked,
             CancellationToken.None);
         Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committed.Status);
+
+        var replay = await harness.Service.CommitAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            new InstallmentRepaymentClaimCommitRequest(),
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Committed, replay.Status);
+        Assert.True(replay.AlreadyExists);
+        Assert.Equal(1, harness.Installments.AppendCount);
+    }
+
+    [Fact]
+    public async Task Provider_pending_resolve_and_unknown_get_survive_revocation_but_cross_device_still_fails()
+    {
+        var harness = CreateHarness();
+        var request = CreateRequest(method: PaymentMethodKind.Cash);
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            PrepareRequest(request, "cash", "attempt-revoked-resolve"),
+            Identity(),
+            CancellationToken.None);
+        var revoked = Identity(permissionCodes: []);
+
+        var unknown = await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Unknown, unknown.Status);
+
+        var recovered = await harness.Service.GetAsync(
+            harness.InstallmentGuid,
+            request.OperationGuid,
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Unknown, recovered.Status);
+
+        var crossDevice = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.GetAsync(
+                harness.InstallmentGuid,
+                request.OperationGuid,
+                revoked with { DeviceCode = "POS-99" },
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, crossDevice.Code);
+    }
+
+    [Fact]
+    public async Task Revoked_permissions_reject_new_create_prepare_and_begin_before_or_after_binding()
+    {
+        var revoked = Identity(permissionCodes: []);
+        var createHarness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var createDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            createHarness.Service.CreateAsync(
+                createHarness.InstallmentGuid,
+                create,
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, createDenied.Code);
+
+        var prepareHarness = CreateHarness();
+        var prepare = CreateRequest(method: PaymentMethodKind.Cash);
+        var prepareRequest = PrepareRequest(prepare, "cash", "attempt-permission-revoked");
+        var prepareDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            prepareHarness.Service.PrepareProviderAsync(
+                prepareHarness.InstallmentGuid,
+                prepare.OperationGuid,
+                prepareRequest,
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, prepareDenied.Code);
+
+        await prepareHarness.Service.CreateAsync(
+            prepareHarness.InstallmentGuid,
+            prepare,
+            Identity(),
+            CancellationToken.None);
+        var beginPreparedDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            prepareHarness.Service.BeginProviderAsync(
+                prepareHarness.InstallmentGuid,
+                prepare.OperationGuid,
+                new InstallmentRepaymentClaimBeginProviderRequest("cash", prepareRequest.ProviderAttemptId),
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, beginPreparedDenied.Code);
+        var preparePreparedDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            prepareHarness.Service.PrepareProviderAsync(
+                prepareHarness.InstallmentGuid,
+                prepare.OperationGuid,
+                prepareRequest,
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, preparePreparedDenied.Code);
+
+        await prepareHarness.Service.BeginProviderAsync(
+            prepareHarness.InstallmentGuid,
+            prepare.OperationGuid,
+            new InstallmentRepaymentClaimBeginProviderRequest("cash", prepareRequest.ProviderAttemptId),
+            Identity(),
+            CancellationToken.None);
+        var beginPendingDenied = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            prepareHarness.Service.BeginProviderAsync(
+                prepareHarness.InstallmentGuid,
+                prepare.OperationGuid,
+                new InstallmentRepaymentClaimBeginProviderRequest("cash", prepareRequest.ProviderAttemptId),
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.PermissionDenied, beginPendingDenied.Code);
+    }
+
+    [Fact]
+    public async Task Locked_provider_prepare_replays_survive_revocation_but_still_require_exact_facts_and_device()
+    {
+        var harness = CreateHarness();
+        var create = CreateRequest(method: PaymentMethodKind.Cash);
+        var request = PrepareRequest(create, "cash", "attempt-revoked-prepare-replay");
+        await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            Identity(),
+            CancellationToken.None);
+        var revoked = Identity(permissionCodes: []);
+
+        var pendingReplay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, pendingReplay.Status);
+        Assert.True(pendingReplay.AlreadyExists);
+
+        var factsMismatch = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                request with { Amount = request.Amount + 1m },
+                revoked,
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, factsMismatch.Code);
+
+        var crossDevice = await Assert.ThrowsAsync<InstallmentRepaymentClaimException>(() =>
+            harness.Service.PrepareProviderAsync(
+                harness.InstallmentGuid,
+                create.OperationGuid,
+                request,
+                revoked with { DeviceCode = "POS-99" },
+                CancellationToken.None));
+        Assert.Equal(InstallmentRepaymentClaimErrorCodes.Mismatch, crossDevice.Code);
+
+        await harness.Service.ResolveAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+            revoked,
+            CancellationToken.None);
+        var unknownReplay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.ProviderPending, unknownReplay.Status);
+
+        var committed = await harness.Service.CommitAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            new InstallmentRepaymentClaimCommitRequest(),
+            revoked,
+            CancellationToken.None);
+        var committedReplay = await harness.Service.PrepareProviderAsync(
+            harness.InstallmentGuid,
+            create.OperationGuid,
+            request,
+            revoked,
+            CancellationToken.None);
+        Assert.Equal(InstallmentRepaymentClaimStatus.Committed, committedReplay.Status);
+        Assert.True(committedReplay.AlreadyExists);
+        Assert.Equal(
+            System.Text.Json.JsonSerializer.Serialize(committed.Commit),
+            System.Text.Json.JsonSerializer.Serialize(committedReplay.Commit));
     }
 
     [Fact]
@@ -762,6 +1701,17 @@ public sealed class InstallmentRepaymentClaimServiceTests
             $"action-{Guid.NewGuid():N}");
     }
 
+    private static InstallmentRepaymentClaimPrepareProviderRequest PrepareRequest(
+        InstallmentRepaymentClaimCreateRequest create,
+        string provider,
+        string providerAttemptId) => new(
+        create.PaymentGuid,
+        create.Amount,
+        create.Method,
+        create.IdempotencyKey,
+        provider,
+        providerAttemptId);
+
     private static async Task<InstallmentRepaymentClaimRecord> SeedLegacyCardClaimAsync(
         Harness harness,
         InstallmentRepaymentClaimStatus status)
@@ -811,6 +1761,19 @@ public sealed class InstallmentRepaymentClaimServiceTests
             cashierName,
             permissionCodes ?? DefaultPaymentPermissions(),
             cashierUserGuid);
+
+    private static InstallmentRepaymentClaimIdentity CashReleaseIdentity(
+        string deviceCode = "POS-01") =>
+        Identity(
+            deviceCode: deviceCode,
+            permissionCodes: [Permissions.PosTerminal.Installments.Cancel]);
+
+    private static InstallmentRepaymentClaimIdentity PaymentAndCancelIdentity() =>
+        Identity(permissionCodes:
+        [
+            .. DefaultPaymentPermissions(),
+            Permissions.PosTerminal.Installments.Cancel
+        ]);
 
     private static string[] DefaultPaymentPermissions() =>
     [
@@ -907,6 +1870,11 @@ public sealed class InstallmentRepaymentClaimServiceTests
     {
         private readonly Dictionary<Guid, InstallmentRepaymentClaimRecord> claims = [];
 
+        public Func<InstallmentRepaymentClaimRecord, InstallmentRepaymentClaimRecord>?
+            ConcurrentUpdateFactory { get; set; }
+
+        public bool FailNextInsert { get; set; }
+
         public Task<InstallmentRepaymentClaimRecord?> GetAsync(Guid operationGuid, CancellationToken cancellationToken)
         {
             claims.TryGetValue(operationGuid, out var claim);
@@ -924,12 +1892,42 @@ public sealed class InstallmentRepaymentClaimServiceTests
                     or InstallmentRepaymentClaimStatus.Unknown));
         }
 
+        public Task<InstallmentRepaymentClaimRecord?> GetPermanentConflictAsync(
+            InstallmentRepaymentClaimRecord candidate,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(claims.Values.FirstOrDefault(existing =>
+                existing.OperationGuid != candidate.OperationGuid &&
+                (existing.PaymentGuid == candidate.PaymentGuid ||
+                 (existing.InstallmentGuid == candidate.InstallmentGuid &&
+                  string.Equals(existing.IdempotencyKey, candidate.IdempotencyKey, StringComparison.Ordinal)) ||
+                 (candidate.Provider is not null &&
+                  candidate.ProviderAttemptId is not null &&
+                  string.Equals(existing.Provider, candidate.Provider, StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(existing.ProviderAttemptId, candidate.ProviderAttemptId, StringComparison.Ordinal)))));
+        }
+
         public Task<bool> TryInsertAsync(
             InstallmentRepaymentClaimRecord claim,
             InstallmentRepaymentClaimInsertSnapshot snapshot,
             CancellationToken cancellationToken)
         {
+            if (FailNextInsert)
+            {
+                FailNextInsert = false;
+                return Task.FromResult(false);
+            }
+
             if (claims.ContainsKey(claim.OperationGuid) ||
+                claims.Values.Any(existing => existing.PaymentGuid == claim.PaymentGuid) ||
+                claims.Values.Any(existing =>
+                    existing.InstallmentGuid == claim.InstallmentGuid &&
+                    string.Equals(existing.IdempotencyKey, claim.IdempotencyKey, StringComparison.Ordinal)) ||
+                claims.Values.Any(existing =>
+                    claim.Provider is not null &&
+                    claim.ProviderAttemptId is not null &&
+                    string.Equals(existing.Provider, claim.Provider, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.ProviderAttemptId, claim.ProviderAttemptId, StringComparison.Ordinal)) ||
                 claims.Values.Any(existing =>
                     existing.InstallmentGuid == claim.InstallmentGuid &&
                     existing.Status is InstallmentRepaymentClaimStatus.Prepared
@@ -950,6 +1948,14 @@ public sealed class InstallmentRepaymentClaimServiceTests
         {
             if (!claims.TryGetValue(claim.OperationGuid, out var current) || current.Revision != expectedRevision)
             {
+                return Task.FromResult(false);
+            }
+
+            if (ConcurrentUpdateFactory is not null)
+            {
+                var factory = ConcurrentUpdateFactory;
+                ConcurrentUpdateFactory = null;
+                claims[claim.OperationGuid] = factory(claim);
                 return Task.FromResult(false);
             }
 

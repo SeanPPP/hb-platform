@@ -82,6 +82,8 @@ type CardTransaction =
 export type InstallmentRepaymentCapabilities = Readonly<{
   repaymentClaimsSupported: boolean;
   repaymentClaimsRequired: boolean;
+  /** 新两段式 claim provider 绑定端点；旧服务端缺失时由 API 适配为 false。 */
+  repaymentClaimPrepareProviderV1?: boolean;
   /** 旧 API 缺失时适配器必须填 false，禁止假定 Card 可用。 */
   cardRepaymentSupported: boolean;
   crossDeviceRepaymentEnabled: boolean;
@@ -165,6 +167,14 @@ export type InstallmentRepaymentClaim = Readonly<{
   alreadyExists: boolean;
 }>;
 
+export type InstallmentCashRepaymentPreparation = Readonly<{
+  installmentGuid: string;
+  amountCents: number;
+  /** 仅用于性能关联的截断 sha256 标识，不是原始 operationGuid。 */
+  operationHash: string;
+  path?: "prepare-provider-v1" | "legacy-create-begin" | "recovery";
+}>;
+
 export type InstallmentRepaymentClaimCreateCommand = Readonly<{
   installmentGuid: string;
   operationGuid: string;
@@ -186,9 +196,20 @@ export type InstallmentRepaymentClaimBeginProviderCommand =
       providerAttemptId: string;
     }>;
 
+export type InstallmentRepaymentClaimPrepareProviderCommand =
+  InstallmentRepaymentClaimCreateCommand &
+    Readonly<{
+      provider: string;
+      providerAttemptId: string;
+    }>;
+
 export type InstallmentRepaymentClaimResolveCommand =
   InstallmentRepaymentClaimIdentity &
-    Readonly<{ outcome: "Released" | "Declined" | "Unknown" }>;
+    Readonly<{
+      outcome: "Released" | "Declined" | "Unknown";
+      cashNotCollectedConfirmed?: boolean;
+      providerAttemptId?: string | null;
+    }>;
 
 export type InstallmentRepaymentClaimCommitCommand =
   InstallmentRepaymentClaimIdentity &
@@ -281,6 +302,9 @@ export interface InstallmentsRemotePort {
   ): Promise<InstallmentRepaymentClaim>;
   beginRepaymentClaimProvider(
     command: InstallmentRepaymentClaimBeginProviderCommand,
+  ): Promise<InstallmentRepaymentClaim>;
+  prepareRepaymentClaimProvider(
+    command: InstallmentRepaymentClaimPrepareProviderCommand,
   ): Promise<InstallmentRepaymentClaim>;
   getRepaymentClaim(
     identity: InstallmentRepaymentClaimIdentity,

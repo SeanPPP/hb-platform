@@ -33,6 +33,8 @@ export type PaymentUiPhase =
   | "offline-cash"
   | "unknown"
   | "recovery-required"
+  | "cash-collection-ready"
+  | "cash-confirming"
   | "partial"
   | "declined"
   | "cancelled"
@@ -56,7 +58,9 @@ export type LinklyOperatorErrorCode =
 
 export type PaymentUiRuntimeErrorCode =
   | PaymentCheckoutErrorCode
-  | LinklyOperatorErrorCode;
+  | LinklyOperatorErrorCode
+  | "INSTALLMENT_CASH_CONFIRMATION_REQUIRED"
+  | "INSTALLMENT_CASH_CANCELLATION_FAILED";
 
 export type PaymentPresenterTender = Readonly<{
   tenderGuid: string;
@@ -100,6 +104,7 @@ export type PaymentCheckoutPresentation = Readonly<{
   }>;
   canConfirm: boolean;
   fullInstallmentConfirmationRequired: boolean;
+  cashRepaymentStatus?: "idle" | "ready" | "confirming";
 }>;
 
 export type PaymentPresenterState = Readonly<{
@@ -153,6 +158,8 @@ export interface PaymentScreenPresenter {
   markLinklyReceiptPrinted(): Promise<boolean>;
   acknowledgeLinkly(): Promise<boolean>;
   confirm?(options?: PaymentConfirmOptions): Promise<boolean>;
+  /** React 已提交成功页面后通知 presenter；普通支付无需实现。 */
+  recordSuccessRendered?(): void;
   openInstallmentCustomerEditor?(): void;
   setInstallmentCustomerDraftName?(value: string): void;
   setInstallmentCustomerDraftPhone?(value: string): void;
@@ -216,6 +223,7 @@ function emptyRegularCheckout(
     }),
     canConfirm: false,
     fullInstallmentConfirmationRequired: false,
+    cashRepaymentStatus: "idle",
   });
 }
 

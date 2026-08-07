@@ -14,8 +14,10 @@ import {
 } from "./production-installment-payment-adapter";
 import {
   createProductionInstallmentRuntime,
+  type InstallmentActionState,
   type InstallmentActionStorePort,
   type InstallmentApprovedRefund,
+  type InstallmentPerformanceEvent,
   type InstallmentPaymentAction,
   type InstallmentMutationPaymentPort,
   type InstallmentReceiptReprintRuntimePort,
@@ -48,15 +50,17 @@ import type {
   InstallmentRepaymentCapabilities,
   InstallmentRepaymentClaim,
   InstallmentRepaymentClaimBeginProviderCommand,
+  InstallmentRepaymentClaimPrepareProviderCommand,
   InstallmentRepaymentClaimCommitCommand,
   InstallmentRepaymentClaimCreateCommand,
   InstallmentRepaymentClaimIdentity,
   InstallmentRepaymentClaimResolveCommand,
   InstallmentsRemotePort,
 } from "@/features/installments/installment-models";
-import type {
-  InstallmentPresenter,
-  InstallmentWorkflowPort,
+import {
+  InstallmentWorkflowError,
+  type InstallmentPresenter,
+  type InstallmentWorkflowPort,
 } from "@/features/installments/installment-presenter";
 import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
 
@@ -139,9 +143,8 @@ test("服务端 capability 快照仅放行同店跨机 Active 续付，同机续
   );
 });
 
-test("还款严格按 durable action、claim、provider、commit、本地完成排序", async () => {
+test("非现金还款严格按 durable action、claim、provider、commit、本地完成排序", async () => {
   const cases = [
-    { method: "cash" as const },
     { method: "voucher" as const },
     { method: "card" as const, cardProvider: "square" as const },
     { method: "card" as const, cardProvider: "linkly-cloud" as const },
@@ -173,7 +176,7 @@ test("还款严格按 durable action、claim、provider、commit、本地完成�
   }
 });
 
-test("真实 payment adapter 仅在 Created 为 claim 绑定计划，runtime 转 ProviderPending 后才执行现金付款", async () => {
+test("addRepayment 现金在任何 action、plan 或 claim 产生前失败关闭", async () => {
   const paymentStore: { current: RuntimeCashAttemptStore | null } = {
     current: null,
   };
@@ -209,27 +212,59 @@ test("真实 payment adapter 仅在 Created 为 claim 绑定计划，runtime 转
     },
   });
 
-  await workflowOf(harness.runtime.createPresenter()).addRepayment({
+  await assert.rejects(
+    workflowOf(harness.runtime.createPresenter()).addRepayment({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+    }),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "cash-confirmation-required",
+  );
+
+  assert.ok(paymentStore.current);
+  assert.equal(paymentStore.current.planBindings, 0);
+  assert.equal(paymentStore.current.cashApprovals, 0);
+  assert.equal(harness.actionStore.getCurrent(), null);
+  assert.equal(harness.api.createClaimCalls.length, 0);
+  assert.equal(harness.api.prepareProviderCalls.length, 0);
+  assert.equal(harness.api.beginClaimCalls.length, 0);
+  assert.equal(harness.api.commitClaimCalls.length, 0);
+  assert.deepEqual(harness.events, []);
+});
+
+test("executeRepaymentClaimAction 默认不允许遗漏调用隐式批准现金", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  await workflow.prepareCashRepayment!({
     installmentGuid: "installment-1",
     amountCents: 1_000,
     method: "cash",
     voucherReference: null,
     voucherReservationToken: null,
   });
+  const persisted = harness.actionStore.getCurrent();
+  assert.ok(persisted);
+  const getClaimCalls = harness.api.getClaimCalls.length;
+  const prepareCalls = harness.payments.prepareCalls;
 
-  assert.ok(paymentStore.current);
-  assert.equal(paymentStore.current.planBindings, 1);
-  assert.equal(paymentStore.current.cashApprovals, 1);
-  assertOrdered(harness.events, [
-    "action-create",
-    "claim-create",
-    "real-plan-bind",
-    "claim-begin",
-    "action-transition:ProviderPending",
-    "real-cash-approve",
-    "claim-commit",
-    "action-complete",
-  ]);
+  await assert.rejects(
+    executeRepaymentClaimActionForTest(workflow, persisted),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "cash-confirmation-required",
+  );
+
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+  assert.equal(harness.api.getClaimCalls.length, getClaimCalls);
+  assert.equal(harness.payments.prepareCalls, prepareCalls);
+  assert.equal(harness.payments.confirmCalls, 0);
+  assert.equal(harness.payments.authorizeCalls, 0);
+  assert.equal(harness.payments.recoverCalls, 0);
+  assert.equal(harness.api.commitClaimCalls.length, 0);
 });
 
 test("claim BUSY 在 provider plan 与授权前停止，且不接管远端 Pending", async () => {
@@ -239,7 +274,7 @@ test("claim BUSY 在 provider plan 与授权前停止，且不接管远端 Pendi
   const presenter = harness.runtime.createPresenter();
   await presenter.load();
   await presenter.select("installment-1");
-  presenter.setRepaymentAmount("10.00");
+  fillVoucherRepayment(presenter);
 
   await presenter.addRepayment();
 
@@ -277,8 +312,8 @@ test("Card capability false 在 action ledger 前失败关闭", async () => {
   assert.equal(await harness.runtime.hasRecoveryRequired(), false);
 });
 
-test("旧 capability 误放行 Card 时仅精确 unsupported 400 原子终结，随后现金或券可继续", async () => {
-  for (const method of ["cash", "voucher"] as const) {
+test("旧 capability 误放行 Card 时仅精确 unsupported 400 原子终结，随后券仍可继续", async () => {
+  for (const method of ["voucher"] as const) {
     const harness = createHarness({
       cardRepaymentSupported: true,
       claimCreateErrorCode:
@@ -355,7 +390,8 @@ test("claim MISMATCH 原子终结 Created 并返回 requires-review，不调用 
     workflow.addRepayment({
       installmentGuid: "installment-1",
       amountCents: 1_000,
-      method: "cash",
+      method: "card",
+      cardProvider: "square",
       voucherReference: null,
       voucherReservationToken: null,
     }),
@@ -385,7 +421,8 @@ test("Created 首次 GET 返回 claim MISMATCH 时原子终结 review，绝不 c
     workflow.addRepayment({
       installmentGuid: "installment-1",
       amountCents: 1_000,
-      method: "cash",
+      method: "card",
+      cardProvider: "square",
       voucherReference: null,
       voucherReservationToken: null,
     }),
@@ -419,7 +456,8 @@ test("claim unsupported、capability 失败或 begin 失败一律关闭且绝不
       workflow.addRepayment({
         installmentGuid: "installment-1",
         amountCents: 1_000,
-        method: "cash",
+        method: "card",
+        cardProvider: "square",
         voucherReference: null,
         voucherReservationToken: null,
       }),
@@ -437,7 +475,8 @@ test("claims supported 且 required=false 的 rollout 阶段仍走新 claim 同�
   await workflow.addRepayment({
     installmentGuid: "installment-1",
     amountCents: 1_000,
-    method: "cash",
+    method: "card",
+    cardProvider: "square",
     voucherReference: null,
     voucherReservationToken: null,
   });
@@ -459,16 +498,27 @@ test("claim create 网络/5xx 结果不确定时保留 Created，恢复先 GET �
       voucherReservationToken: null,
     };
 
-    await assert.rejects(workflow.addRepayment(input));
+    await assert.rejects(workflow.prepareCashRepayment!(input));
     const operationGuid =
       harness.actionStore.getCurrent()?.action.actionId;
     assert.ok(operationGuid);
     assert.equal(harness.actionStore.getCurrent()?.state, "Created");
-    assert.equal(harness.payments.prepareCalls, 0);
+    assert.equal(harness.payments.prepareCalls, 1);
     assert.equal(harness.payments.authorizeCalls, 0);
     assert.equal(harness.api.appendCalls, 0);
 
-    await workflow.recoverBlocking();
+    await assert.rejects(
+      workflow.recoverBlocking(),
+      (error) =>
+        error instanceof InstallmentWorkflowError &&
+        error.code === "cash-confirmation-required",
+    );
+    assert.equal(
+      (await workflow.inspectPreparedCashRepayment!())?.amountCents,
+      1_000,
+    );
+    assert.equal(harness.payments.authorizeCalls, 0);
+    await workflow.confirmPreparedCashRepayment!();
 
     assert.equal(harness.api.createClaimCalls.length, 2);
     assert.equal(
@@ -479,9 +529,745 @@ test("claim create 网络/5xx 结果不确定时保留 Created，恢复先 GET �
       harness.api.createClaimCalls[1]?.operationGuid,
       operationGuid,
     );
-    assert.equal(harness.payments.authorizeCalls, 1);
+    assert.equal(harness.payments.authorizeCalls, 0);
+    assert.equal(harness.payments.recoverCalls, 0);
     assert.equal(await harness.runtime.hasRecoveryRequired(), false);
   }
+});
+
+test("健康现金续付使用 prepare-provider 两请求路径，确认前不收现金且只 commit 一次", async () => {
+  const harness = createHarness({
+    capturePerformance: true,
+    repaymentClaimPrepareProviderV1: true,
+    useAtomicFinalizer: true,
+  });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  const prepared = await workflow.prepareCashRepayment?.({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+
+  assert.equal(prepared?.amountCents, 1_000);
+  assert.equal(harness.api.prepareProviderCalls.length, 1);
+  assert.equal(harness.api.createClaimCalls.length, 0);
+  assert.equal(harness.api.beginClaimCalls.length, 0);
+  assert.equal(harness.payments.confirmCalls, 0);
+  assert.equal(harness.payments.authorizeCalls, 0);
+  assert.equal(harness.api.commitClaimCalls.length, 0);
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+
+  const completed = await workflow.confirmPreparedCashRepayment?.();
+  assert.equal(completed?.installmentGuid, "installment-1");
+  assert.equal(harness.payments.confirmCalls, 1);
+  assert.equal(harness.payments.authorizeCalls, 0);
+  assert.equal(harness.payments.recoverCalls, 0);
+  assert.equal(harness.api.commitClaimCalls.length, 1);
+  assert.equal(harness.api.commitClaimCalls[0]?.operationGuid,
+    harness.api.prepareProviderCalls[0]?.operationGuid);
+  assert.equal(harness.api.claim?.paymentGuid,
+    harness.api.prepareProviderCalls[0]?.paymentGuid);
+  assert.equal(harness.api.claim?.providerAttemptId,
+    harness.api.prepareProviderCalls[0]?.providerAttemptId);
+  assert.equal(harness.actionStore.finalizerCalls.length, 1);
+  assert.equal(harness.cache.upsertCalls.length, 0);
+  assert.equal(harness.events.includes("action-complete-with-snapshot"), true);
+  assert.deepEqual(
+    harness.performanceEvents.map((event) => event.name),
+    ["prepare", "cash-durable", "commit", "local-finalize"],
+  );
+  assert.deepEqual(
+    harness.performanceEvents.map((event) => event.path),
+    [
+      "prepare-provider-v1",
+      "prepare-provider-v1",
+      "prepare-provider-v1",
+      "prepare-provider-v1",
+    ],
+  );
+  assert.equal(
+    harness.performanceEvents.every(
+      (event) =>
+        event.elapsedMs === 5 &&
+        event.operationHash.startsWith("sha256:") &&
+        !event.operationHash.includes(
+          harness.api.prepareProviderCalls[0]?.operationGuid ?? "missing",
+        ),
+    ),
+    true,
+  );
+  assert.equal(await harness.runtime.hasRecoveryRequired(), false);
+});
+
+test("原设备主管明确未收现后安全释放 ProviderPending/Unknown，且不批准、不 commit、不生成新身份", async () => {
+  for (const remoteStatus of ["ProviderPending", "Unknown"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const originalWorkflow = workflowOf(harness.runtime.createPresenter());
+    if (remoteStatus === "ProviderPending") {
+      harness.actionStore.failNextTransitionTo = "Unknown";
+    }
+    const prepare = originalWorkflow.prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+      cashTenderedCents: 1_000,
+    });
+    if (remoteStatus === "ProviderPending") {
+      await assert.rejects(prepare);
+      assert.equal(harness.actionStore.getCurrent()?.state, "ProviderPending");
+    } else {
+      await prepare;
+      assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+    }
+    const originalAttemptId = harness.api.claim?.providerAttemptId;
+    const createdIdCount = harness.createdIdCount();
+    harness.api.claim = Object.freeze({
+      ...harness.api.claim!,
+      status: remoteStatus,
+    });
+
+    harness.currentCashier.clear();
+    activateCashier(
+      harness.currentCashier,
+      [INSTALLMENTS_CANCEL_PERMISSION],
+      "SUPERVISOR-1",
+    );
+    const supervisorWorkflow = workflowOf(
+      harness.rebuildRuntime().createPresenter(),
+    );
+    await supervisorWorkflow.cancelPreparedCashRepayment!();
+
+    assert.deepEqual(harness.api.resolveClaimCalls, [
+      {
+        installmentGuid: "installment-1",
+        operationGuid:
+          harness.api.prepareProviderCalls[0]?.operationGuid,
+        outcome: "Released",
+        cashNotCollectedConfirmed: true,
+        providerAttemptId: originalAttemptId,
+      },
+    ]);
+    assert.equal(harness.actionStore.getCurrent(), null);
+    assert.equal(harness.api.claim?.status, "Released");
+    assert.equal(harness.payments.confirmCalls, 0);
+    assert.equal(harness.payments.authorizeCalls, 0);
+    assert.equal(harness.payments.recoverCalls, 0);
+    assert.equal(harness.api.commitClaimCalls.length, 0);
+    assert.equal(harness.api.prepareProviderCalls.length, 1);
+    assert.equal(harness.actionStore.createdCandidates.length, 1);
+    assert.equal(harness.createdIdCount(), createdIdCount);
+  }
+});
+
+test("只读取消检查返回原设备 ProviderPending/Unknown 的既有现金 preparation", async () => {
+  for (const remoteStatus of ["ProviderPending", "Unknown"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const originalWorkflow = workflowOf(harness.runtime.createPresenter());
+    if (remoteStatus === "ProviderPending") {
+      harness.actionStore.failNextTransitionTo = "Unknown";
+      await assert.rejects(
+        originalWorkflow.prepareCashRepayment!({
+          installmentGuid: "installment-1",
+          amountCents: 1_000,
+          method: "cash",
+          voucherReference: null,
+          voucherReservationToken: null,
+        }),
+      );
+    } else {
+      await originalWorkflow.prepareCashRepayment!({
+        installmentGuid: "installment-1",
+        amountCents: 1_000,
+        method: "cash",
+        voucherReference: null,
+        voucherReservationToken: null,
+      });
+    }
+    harness.api.claim = Object.freeze({
+      ...harness.api.claim!,
+      status: remoteStatus,
+    });
+    harness.currentCashier.clear();
+    activateCashier(
+      harness.currentCashier,
+      [INSTALLMENTS_CANCEL_PERMISSION],
+      "SUPERVISOR-1",
+    );
+    const workflow = workflowOf(harness.rebuildRuntime().createPresenter());
+    const transitionCalls = harness.actionStore.transitionCalls.length;
+    const createdIdCount = harness.createdIdCount();
+    const resolveCalls = harness.api.resolveClaimCalls.length;
+
+    const preparation =
+      await workflow.inspectCancellablePreparedCashRepayment!();
+
+    assert.deepEqual(preparation, {
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      operationHash:
+        harness.actionStore.getCurrent()!.intentFingerprint.slice(0, 23),
+      path: "recovery",
+    });
+    assert.equal(harness.actionStore.transitionCalls.length, transitionCalls);
+    assert.equal(harness.createdIdCount(), createdIdCount);
+    assert.equal(harness.api.resolveClaimCalls.length, resolveCalls);
+    assert.equal(harness.api.commitClaimCalls.length, 0);
+    assert.equal(harness.payments.confirmCalls, 0);
+    assert.equal(harness.payments.authorizeCalls, 0);
+    assert.equal(harness.payments.recoverCalls, 0);
+  }
+});
+
+test("只读取消检查精确校验远程现金事实，且不开放 Committed/Declined", async () => {
+  for (const scenario of ["amount-mismatch", "Committed", "Declined"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const workflow = workflowOf(harness.runtime.createPresenter());
+    await workflow.prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+    });
+    harness.api.claim = Object.freeze({
+      ...harness.api.claim!,
+      ...(scenario === "amount-mismatch"
+        ? { amountCents: 1_001 }
+        : { status: scenario }),
+    });
+    const transitionCalls = harness.actionStore.transitionCalls.length;
+
+    if (scenario === "amount-mismatch") {
+      await assert.rejects(
+        workflow.inspectCancellablePreparedCashRepayment!(),
+      );
+    } else {
+      assert.equal(
+        await workflow.inspectCancellablePreparedCashRepayment!(),
+        null,
+      );
+    }
+
+    assert.equal(harness.actionStore.transitionCalls.length, transitionCalls);
+    assert.equal(harness.api.resolveClaimCalls.length, 0);
+    assert.equal(harness.api.commitClaimCalls.length, 0);
+    assert.equal(harness.payments.confirmCalls, 0);
+  }
+});
+
+test("只读取消检查要求当前主管 Cancel 权限，且不读取远程 claim", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  await workflowOf(harness.runtime.createPresenter()).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  harness.currentCashier.clear();
+  activateCashier(
+    harness.currentCashier,
+    [INSTALLMENTS_VIEW_PERMISSION],
+    "SUPERVISOR-1",
+  );
+
+  await assert.rejects(
+    workflowOf(
+      harness.rebuildRuntime().createPresenter(),
+    ).inspectCancellablePreparedCashRepayment!(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "authorization-declined",
+  );
+
+  assert.equal(harness.api.getClaimCalls.length, 0);
+  assert.equal(harness.api.resolveClaimCalls.length, 0);
+});
+
+test("只读取消检查对 Approved settlement 与缺失 plan 失败关闭且不读取 binding", async () => {
+  for (const settlementState of ["Approved", "Missing"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const workflow = workflowOf(harness.runtime.createPresenter());
+    await workflow.prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+    });
+    const prepareCalls = harness.payments.prepareCalls;
+    const createdIdCount = harness.createdIdCount();
+    harness.payments.cashSettlementState = settlementState;
+
+    assert.equal(
+      await workflow.inspectCancellablePreparedCashRepayment!(),
+      null,
+    );
+
+    assert.equal(harness.payments.prepareCalls, prepareCalls);
+    assert.equal(harness.createdIdCount(), createdIdCount);
+    assert.equal(harness.api.getClaimCalls.length, 0);
+    assert.equal(harness.api.resolveClaimCalls.length, 0);
+  }
+});
+
+test("只读取消检查对跨设备或非现金 blocking action 不开放", async () => {
+  const crossDevice = createHarness({ repaymentClaimPrepareProviderV1: true });
+  await workflowOf(crossDevice.runtime.createPresenter()).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  await assert.rejects(
+    workflowOf(
+      crossDevice.rebuildRuntimeForDevice("IPAD-2").createPresenter(),
+    ).inspectCancellablePreparedCashRepayment!(),
+  );
+  assert.equal(crossDevice.api.getClaimCalls.length, 0);
+
+  const nonCash = createHarness({ paymentOutcome: "unknown" });
+  await assert.rejects(
+    workflowOf(nonCash.runtime.createPresenter()).addRepayment({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "card",
+      cardProvider: "square",
+      voucherReference: null,
+      voucherReservationToken: null,
+    }),
+  );
+  const getClaimCalls = nonCash.api.getClaimCalls.length;
+  assert.equal(
+    await workflowOf(
+      nonCash.rebuildRuntime().createPresenter(),
+    ).inspectCancellablePreparedCashRepayment!(),
+    null,
+  );
+  assert.equal(nonCash.api.getClaimCalls.length, getClaimCalls);
+});
+
+test("现金取消缺少主管权限时保留 blocking action 且不触碰远程 claim", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  await workflowOf(harness.runtime.createPresenter()).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  harness.currentCashier.clear();
+  activateCashier(harness.currentCashier, [INSTALLMENTS_VIEW_PERMISSION], "CASHIER-2");
+
+  await assert.rejects(
+    workflowOf(
+      harness.rebuildRuntime().createPresenter(),
+    ).cancelPreparedCashRepayment!(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "authorization-declined",
+  );
+
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+  assert.equal(harness.api.getClaimCalls.length, 0);
+  assert.equal(harness.api.resolveClaimCalls.length, 0);
+});
+
+test("现金取消对 Approved settlement 或缺失 plan 均失败关闭", async () => {
+  for (const settlementState of ["Approved", "Missing"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const workflow = workflowOf(harness.runtime.createPresenter());
+    await workflow.prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+    });
+    const prepareCalls = harness.payments.prepareCalls;
+    harness.payments.cashSettlementState = settlementState;
+
+    await assert.rejects(workflow.cancelPreparedCashRepayment!());
+
+    assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+    assert.equal(harness.api.resolveClaimCalls.length, 0);
+    assert.equal(harness.api.commitClaimCalls.length, 0);
+    assert.equal(harness.payments.confirmCalls, 0);
+    assert.equal(harness.payments.authorizeCalls, 0);
+    assert.equal(harness.payments.prepareCalls, prepareCalls);
+  }
+});
+
+test("现金取消对 attempt、operation 或设备不一致均拒绝且不释放本地 action", async () => {
+  const attemptMismatch = createHarness({
+    repaymentClaimPrepareProviderV1: true,
+  });
+  await workflowOf(
+    attemptMismatch.runtime.createPresenter(),
+  ).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  attemptMismatch.api.claim = Object.freeze({
+    ...attemptMismatch.api.claim!,
+    providerAttemptId: "attempt:mismatch",
+  });
+  await assert.rejects(
+    workflowOf(
+      attemptMismatch.rebuildRuntime().createPresenter(),
+    ).cancelPreparedCashRepayment!(),
+  );
+  assert.equal(attemptMismatch.api.resolveClaimCalls.length, 0);
+  assert.equal(attemptMismatch.actionStore.getCurrent()?.state, "Unknown");
+
+  const operationMismatch = createHarness({
+    repaymentClaimPrepareProviderV1: true,
+  });
+  await workflowOf(
+    operationMismatch.runtime.createPresenter(),
+  ).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  operationMismatch.api.claim = Object.freeze({
+    ...operationMismatch.api.claim!,
+    operationGuid: "f0000000-0000-4000-8000-000000000001",
+  });
+  await assert.rejects(
+    workflowOf(
+      operationMismatch.rebuildRuntime().createPresenter(),
+    ).cancelPreparedCashRepayment!(),
+  );
+  assert.equal(operationMismatch.api.resolveClaimCalls.length, 0);
+  assert.equal(operationMismatch.actionStore.getCurrent()?.state, "Unknown");
+
+  const crossDevice = createHarness({ repaymentClaimPrepareProviderV1: true });
+  await workflowOf(crossDevice.runtime.createPresenter()).prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+  await assert.rejects(
+    workflowOf(
+      crossDevice.rebuildRuntimeForDevice("IPAD-2").createPresenter(),
+    ).cancelPreparedCashRepayment!(),
+  );
+  assert.equal(crossDevice.api.getClaimCalls.length, 0);
+  assert.equal(crossDevice.api.resolveClaimCalls.length, 0);
+  assert.equal(crossDevice.actionStore.getCurrent()?.state, "Unknown");
+});
+
+test("现金 release 回包丢失时保留 action，重试 GET 已 Released 后只完成本地释放", async () => {
+  const harness = createHarness({
+    repaymentClaimPrepareProviderV1: true,
+    claimResolveTransportFailsOnce: true,
+  });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  await workflow.prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+
+  await assert.rejects(workflow.cancelPreparedCashRepayment!());
+  assert.equal(harness.api.claim?.status, "Released");
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+  assert.equal(harness.api.resolveClaimCalls.length, 1);
+
+  const retryWorkflow = workflowOf(
+    harness.rebuildRuntime().createPresenter(),
+  );
+  const preparation =
+    await retryWorkflow.inspectCancellablePreparedCashRepayment!();
+  assert.equal(preparation?.installmentGuid, "installment-1");
+  assert.equal(preparation?.amountCents, 1_000);
+  assert.equal(preparation?.path, "recovery");
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+  assert.equal(harness.api.resolveClaimCalls.length, 1);
+
+  await retryWorkflow.cancelPreparedCashRepayment!();
+  assert.equal(harness.actionStore.getCurrent(), null);
+  assert.equal(harness.api.resolveClaimCalls.length, 1);
+  assert.equal(harness.api.commitClaimCalls.length, 0);
+  assert.equal(harness.payments.confirmCalls, 0);
+});
+
+test("现金取消仅接受远程 ProviderPending、Unknown 或已 Released", async () => {
+  for (const status of ["Committed", "Declined", "Prepared"] as const) {
+    const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+    const workflow = workflowOf(harness.runtime.createPresenter());
+    await workflow.prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+    });
+    harness.api.claim = Object.freeze({
+      ...harness.api.claim!,
+      status,
+      ...(status === "Prepared"
+        ? { provider: null, providerAttemptId: null }
+        : {}),
+    });
+
+    await assert.rejects(workflow.cancelPreparedCashRepayment!());
+
+    assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+    assert.equal(harness.api.resolveClaimCalls.length, 0);
+    assert.equal(harness.api.commitClaimCalls.length, 0);
+  }
+});
+
+test("现金确认入口展示前建立耐久 fence，点击后状态写失败也不得重新开放收现", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  await workflow.prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+  harness.actionStore.failNextTransitionTo = "Approved";
+  await assert.rejects(workflow.confirmPreparedCashRepayment!());
+  assert.equal(harness.payments.cashSettlementState, "Approved");
+  assert.equal(harness.payments.confirmCalls, 1);
+  assert.equal(harness.actionStore.getCurrent()?.state, "Unknown");
+
+  const recoveredWorkflow = workflowOf(
+    harness.rebuildRuntime().createPresenter(),
+  );
+  assert.equal(await recoveredWorkflow.inspectPreparedCashRepayment!(), null);
+  const recovered = await recoveredWorkflow.recoverBlocking();
+  assert.equal(recovered.installmentGuid, "installment-1");
+  assert.equal(harness.payments.confirmCalls, 1);
+  assert.equal(harness.api.commitClaimCalls.length, 1);
+});
+
+test("两步现金续付在跨设备 capability 关闭时不写 durable action", async () => {
+  const harness = createHarness({
+    crossDeviceRepaymentEnabled: false,
+    repaymentClaimPrepareProviderV1: true,
+  });
+  harness.api.detailsResponse = details({ deviceCode: "IPAD-2" });
+
+  await assert.rejects(
+    workflowOf(harness.runtime.createPresenter()).prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+      cashTenderedCents: 1_000,
+    }),
+    (error) =>
+      error instanceof InstallmentWorkflowError && error.code === "conflict",
+  );
+
+  assert.equal(harness.actionStore.getCurrent(), null);
+  assert.equal(harness.payments.prepareCalls, 0);
+  assert.equal(harness.api.prepareProviderCalls.length, 0);
+  assert.equal(harness.api.createClaimCalls.length, 0);
+});
+
+test("现金确认入口已展示后重启只允许主管核对，Approved 才恢复同 operation commit", async () => {
+  const prepared = createHarness({
+    capturePerformance: true,
+    repaymentClaimPrepareProviderV1: true,
+  });
+  const preparedWorkflow = workflowOf(prepared.runtime.createPresenter());
+  await preparedWorkflow.prepareCashRepayment?.({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+  const preparedRecoveryRuntime = prepared.rebuildRuntime();
+  await assert.rejects(
+    workflowOf(preparedRecoveryRuntime.createPresenter()).recoverBlocking(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "payment-recovery-required",
+  );
+  assert.equal(prepared.payments.confirmCalls, 0);
+  assert.equal(prepared.api.commitClaimCalls.length, 0);
+
+  prepared.performanceEvents.length = 0;
+  prepared.payments.cashSettlementState = "Approved";
+  const recovered = await workflowOf(prepared.rebuildRuntime().createPresenter()).recoverBlocking();
+  assert.equal(recovered.installmentGuid, "installment-1");
+  assert.equal(prepared.payments.confirmCalls, 0);
+  assert.equal(prepared.payments.recoverCalls, 1);
+  assert.equal(prepared.api.commitClaimCalls.length, 1);
+  assert.deepEqual(
+    prepared.performanceEvents.map((event) => event.path),
+    ["recovery", "recovery"],
+  );
+});
+
+test("点击已收现金先耐久批准，前置网络失败后只能恢复同一 operation", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  await workflow.prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+
+  harness.online.value = false;
+  await assert.rejects(
+    workflow.confirmPreparedCashRepayment!(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "online-required",
+  );
+  assert.equal(harness.payments.cashSettlementState, "Approved");
+  assert.equal(harness.payments.confirmCalls, 1);
+  assert.equal(harness.api.commitClaimCalls.length, 0);
+
+  harness.online.value = true;
+  const recoveredWorkflow = workflowOf(
+    harness.rebuildRuntime().createPresenter(),
+  );
+  assert.equal(await recoveredWorkflow.inspectPreparedCashRepayment!(), null);
+  const recovered = await recoveredWorkflow.recoverBlocking();
+  assert.equal(recovered.installmentGuid, "installment-1");
+  assert.equal(harness.payments.confirmCalls, 1);
+  assert.equal(harness.payments.recoverCalls, 1);
+  assert.equal(harness.api.commitClaimCalls.length, 1);
+});
+
+test("Prepared 恢复 inspection 不创建缺失的本地 settlement plan", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  const workflow = workflowOf(harness.runtime.createPresenter());
+  await workflow.prepareCashRepayment!({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+  const prepareCalls = harness.payments.prepareCalls;
+  harness.payments.cashSettlementState = "Missing";
+
+  assert.equal(
+    await workflowOf(
+      harness.rebuildRuntime().createPresenter(),
+    ).inspectPreparedCashRepayment!(),
+    null,
+  );
+  assert.equal(harness.payments.prepareCalls, prepareCalls);
+  assert.equal(harness.api.prepareProviderCalls.length, 1);
+});
+
+test("Prepared 现金只允许原收银员确认，但原收银员权限变化不打断锁定 operation", async () => {
+  const harness = createHarness({ repaymentClaimPrepareProviderV1: true });
+  harness.actionStore.failNextTransitionTo = "Unknown";
+  await assert.rejects(
+    workflowOf(harness.runtime.createPresenter()).prepareCashRepayment!({
+      installmentGuid: "installment-1",
+      amountCents: 1_000,
+      method: "cash",
+      voucherReference: null,
+      voucherReservationToken: null,
+      cashTenderedCents: 1_000,
+    }),
+  );
+  assert.equal(harness.actionStore.getCurrent()?.state, "ProviderPending");
+
+  harness.currentCashier.clear();
+  activateCashier(harness.currentCashier, ALL_PERMISSIONS, "CASHIER-2");
+  const otherCashier = workflowOf(harness.rebuildRuntime().createPresenter());
+  await assert.rejects(
+    otherCashier.inspectPreparedCashRepayment!(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "authorization-declined",
+  );
+  await assert.rejects(
+    otherCashier.confirmPreparedCashRepayment!(),
+    (error) =>
+      error instanceof InstallmentWorkflowError &&
+      error.code === "authorization-declined",
+  );
+  assert.equal(harness.payments.confirmCalls, 0);
+
+  harness.currentCashier.clear();
+  activateCashier(harness.currentCashier, [], "CASHIER-1");
+  const originalCashier = workflowOf(harness.rebuildRuntime().createPresenter());
+  assert.equal(
+    (await originalCashier.inspectPreparedCashRepayment!())?.amountCents,
+    1_000,
+  );
+  const completed = await originalCashier.confirmPreparedCashRepayment!();
+  assert.equal(completed.installmentGuid, "installment-1");
+  assert.equal(harness.payments.confirmCalls, 1);
+});
+
+test("卡续付保持既有 snapshot 与 action 分离完成路径", async () => {
+  const harness = createHarness({ useAtomicFinalizer: true });
+  await workflowOf(harness.runtime.createPresenter()).addRepayment({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "card",
+    cardProvider: "square",
+    voucherReference: null,
+    voucherReservationToken: null,
+  });
+
+  assert.equal(harness.actionStore.finalizerCalls.length, 0);
+  assert.equal(harness.cache.upsertCalls.length, 1);
+  assert.equal(harness.events.includes("action-complete"), true);
+});
+
+test("生产现金续付 finalizer 失败保持 BackendPending recovery", async () => {
+  const failed = createHarness({
+    useAtomicFinalizer: true,
+    finalizerFailsOnce: true,
+    repaymentClaimPrepareProviderV1: true,
+  });
+  const workflow = workflowOf(failed.runtime.createPresenter());
+  await workflow.prepareCashRepayment?.({
+    installmentGuid: "installment-1",
+    amountCents: 1_000,
+    method: "cash",
+    voucherReference: null,
+    voucherReservationToken: null,
+    cashTenderedCents: 1_000,
+  });
+  await assert.rejects(
+    workflow.confirmPreparedCashRepayment!(),
+  );
+  assert.equal(failed.actionStore.finalizerCalls.length, 1);
+  assert.equal(failed.cache.upsertCalls.length, 0);
+  assert.equal(failed.actionStore.getCurrent()?.state, "BackendPending");
+  assert.equal(await failed.runtime.hasRecoveryRequired(), true);
 });
 
 test("Unknown 使用同一 claim binding 重开，只 recover 原 attempt 不发起新授权", async () => {
@@ -489,7 +1275,7 @@ test("Unknown 使用同一 claim binding 重开，只 recover 原 attempt 不发
   const presenter = harness.runtime.createPresenter();
   await presenter.load();
   await presenter.select("installment-1");
-  presenter.setRepaymentAmount("10.00");
+  fillVoucherRepayment(presenter);
 
   await presenter.addRepayment();
   const firstBinding = harness.api.beginClaimCalls[0];
@@ -512,7 +1298,8 @@ test("provider 抛异常先双边 Unknown，恢复只 recover 同 attempt 不重
   const input = {
     installmentGuid: "installment-1",
     amountCents: 1_000,
-    method: "cash" as const,
+    method: "card" as const,
+    cardProvider: "square" as const,
     voucherReference: null,
     voucherReservationToken: null,
   };
@@ -537,7 +1324,7 @@ test("claim commit 回包丢失后先 GET 已提交事实，不重复 provider �
   const presenter = harness.runtime.createPresenter();
   await presenter.load();
   await presenter.select("installment-1");
-  presenter.setRepaymentAmount("10.00");
+  fillVoucherRepayment(presenter);
 
   await presenter.addRepayment();
 
@@ -556,7 +1343,8 @@ test("同店跨机还款仅由实时 capability 放行并走 claim，cancel 仍�
   const repaid = await workflow.addRepayment({
     installmentGuid: "installment-1",
     amountCents: 1_000,
-    method: "cash",
+    method: "card",
+    cardProvider: "square",
     voucherReference: null,
     voucherReservationToken: null,
   });
@@ -911,7 +1699,8 @@ test("provider Declined 先 resolve claim 再释放本地 action", async () => {
     workflow.addRepayment({
       installmentGuid: "installment-1",
       amountCents: 1_000,
-      method: "cash",
+      method: "card",
+      cardProvider: "square",
       voucherReference: null,
       voucherReservationToken: null,
     }),
@@ -935,7 +1724,8 @@ test("Prepared claim 在 provider plan 无法固定时可 Released，且 provide
     workflow.addRepayment({
       installmentGuid: "installment-1",
       amountCents: 1_000,
-      method: "cash",
+      method: "card",
+      cardProvider: "square",
       voucherReference: null,
       voucherReservationToken: null,
     }),
@@ -1466,7 +2256,7 @@ test("mutation 回包必须关联冻结 action、terminal、approved payment/ref
   const repaymentPresenter = missingRepayment.runtime.createPresenter();
   await repaymentPresenter.load();
   await repaymentPresenter.select("installment-1");
-  repaymentPresenter.setRepaymentAmount("10.00");
+  fillVoucherRepayment(repaymentPresenter);
   await repaymentPresenter.addRepayment();
   assert.equal(
     repaymentPresenter.getState().statusCode,
@@ -1730,7 +2520,7 @@ test("首次还款在 provider 前重新读取详情并精确拒绝 GUID、门�
     await presenter.load();
     await presenter.select("installment-1");
     harness.api.detailsResponse = details(mismatch);
-    presenter.setRepaymentAmount("10.00");
+    fillVoucherRepayment(presenter);
 
     await presenter.addRepayment();
 
@@ -1764,7 +2554,7 @@ test("首次还款或退款的详情复核读取失败时 fail closed，provider
       }
 
       if (operation === "repayment") {
-        presenter.setRepaymentAmount("10.00");
+        fillVoucherRepayment(presenter);
         await presenter.addRepayment();
       } else {
         await presenter.cancelWithRefund();
@@ -1884,8 +2674,10 @@ class ScriptedPayments implements InstallmentMutationPaymentPort {
   public beginCalls = 0;
   public authorizeCalls = 0;
   public recoverCalls = 0;
+  public confirmCalls = 0;
   public prepareCalls = 0;
   public charges = 0;
+  public cashSettlementState: "Prepared" | "Approved" | "Missing" = "Prepared";
   public readonly actions: InstallmentPaymentAction[] = [];
   public readonly prepareBindings: {
     provider: string;
@@ -1931,11 +2723,28 @@ class ScriptedPayments implements InstallmentMutationPaymentPort {
 
   public beginOrRecover(persistedActionId: string) {
     this.authorizeCalls += 1;
+    if (this.actionStore.get(persistedActionId)?.action.method === "cash") {
+      this.cashSettlementState = "Approved";
+    }
     return this.resolve(persistedActionId);
   }
 
   public recoverBlocking(persistedActionId: string) {
     this.recoverCalls += 1;
+    return this.resolve(persistedActionId);
+  }
+
+  public async inspectCashSettlement(_persistedActionId: string) {
+    if (this.cashSettlementState === "Missing") {
+      throw new Error("cash settlement plan is missing");
+    }
+    return this.cashSettlementState;
+  }
+
+  public async confirmCashRepayment(persistedActionId: string) {
+    this.confirmCalls += 1;
+    this.events.push("payments-confirm-cash");
+    this.cashSettlementState = "Approved";
     return this.resolve(persistedActionId);
   }
 
@@ -2096,6 +2905,7 @@ class MemoryInstallmentActionStore implements InstallmentActionStorePort {
   private current: PersistedInstallmentAction | null = null;
   private lifecycleCurrent: PersistedInstallmentLifecycleAction | null = null;
   public failNextLifecycleComplete = false;
+  public failNextTransitionTo: InstallmentActionState | null = null;
   public readonly createdCandidates: PersistedInstallmentAction[] = [];
   public readonly lifecycleCandidates: PersistedInstallmentLifecycleAction[] = [];
   public readonly transitionCalls: Parameters<
@@ -2109,6 +2919,10 @@ class MemoryInstallmentActionStore implements InstallmentActionStorePort {
   )[] = [];
   public raceOnNextCreate = false;
   public raceWinner: PersistedInstallmentAction | null = null;
+  public failNextRepaymentFinalizer = false;
+  public readonly finalizerCalls: Parameters<
+    NonNullable<InstallmentActionStorePort["completeCommittedRepaymentWithSnapshot"]>
+  >[0][] = [];
 
   public constructor(private readonly events: string[]) {}
 
@@ -2209,6 +3023,10 @@ class MemoryInstallmentActionStore implements InstallmentActionStorePort {
         `state conflict: expected ${input.expectedState}, got ${current.state}`,
       );
     }
+    if (this.failNextTransitionTo === input.nextState) {
+      this.failNextTransitionTo = null;
+      throw new Error("installment action transition failed");
+    }
     this.current = Object.freeze({
       ...current,
       state: input.nextState,
@@ -2231,6 +3049,29 @@ class MemoryInstallmentActionStore implements InstallmentActionStorePort {
       throw new Error("complete state conflict");
     }
     this.events.push("action-complete");
+    this.current = null;
+  }
+
+  public async completeCommittedRepaymentWithSnapshot(
+    input: Parameters<
+      NonNullable<InstallmentActionStorePort["completeCommittedRepaymentWithSnapshot"]>
+    >[0],
+    snapshotRepository: Parameters<
+      NonNullable<InstallmentActionStorePort["completeCommittedRepaymentWithSnapshot"]>
+    >[1],
+  ) {
+    this.finalizerCalls.push(input);
+    if (this.failNextRepaymentFinalizer) {
+      this.failNextRepaymentFinalizer = false;
+      throw new Error("atomic repayment finalizer failed");
+    }
+    const current = this.requireCurrent(input.actionId);
+    if (current.state !== input.expectedState) {
+      throw new Error("atomic repayment finalizer state conflict");
+    }
+    // 只证明 runtime 把生产 snapshot repository 交给原子 finalizer；不模拟事务内部写入。
+    void snapshotRepository;
+    this.events.push("action-complete-with-snapshot");
     this.current = null;
   }
 
@@ -2350,6 +3191,7 @@ class ScriptedApi {
   public appendCalls = 0;
   public readonly createClaimCalls: InstallmentRepaymentClaimCreateCommand[] = [];
   public readonly beginClaimCalls: InstallmentRepaymentClaimBeginProviderCommand[] = [];
+  public readonly prepareProviderCalls: InstallmentRepaymentClaimPrepareProviderCommand[] = [];
   public readonly getClaimCalls: InstallmentRepaymentClaimIdentity[] = [];
   public readonly resolveClaimCalls: InstallmentRepaymentClaimResolveCommand[] = [];
   public readonly commitClaimCalls: InstallmentRepaymentClaimCommitCommand[] = [];
@@ -2364,6 +3206,7 @@ class ScriptedApi {
   public claimCreateErrorCode: string | null;
   public claimCreateErrorStatus: number;
   private claimCommitTransportFailsOnce: boolean;
+  private claimResolveTransportFailsOnce: boolean;
   private capabilityErrorStatus: number | null;
   private claimBeginErrorCode: string | null;
   private claimCreateFailsOnce: "server" | "transport" | null;
@@ -2384,6 +3227,7 @@ class ScriptedApi {
       crossDeviceRepaymentEnabled: boolean;
       repaymentClaimsSupported: boolean;
       repaymentClaimsRequired: boolean;
+      repaymentClaimPrepareProviderV1?: boolean;
       capabilityErrorStatus: number | null;
       claimCreateErrorCode: string | null;
       claimCreateErrorStatus: number;
@@ -2392,6 +3236,7 @@ class ScriptedApi {
       claimCreateFailsOnce: "server" | "transport" | null;
       claimGetErrorCode: string | null;
       claimCommitTransportFailsOnce: boolean;
+      claimResolveTransportFailsOnce: boolean;
       cancelClaimCreateErrorCode?: string | null;
       cancelClaimCommitTransportFailsOnce?: boolean;
     }>,
@@ -2399,6 +3244,8 @@ class ScriptedApi {
     this.capabilities = {
       repaymentClaimsSupported: options.repaymentClaimsSupported,
       repaymentClaimsRequired: options.repaymentClaimsRequired,
+      repaymentClaimPrepareProviderV1:
+        options.repaymentClaimPrepareProviderV1 ?? false,
       cardRepaymentSupported: options.cardRepaymentSupported,
       crossDeviceRepaymentEnabled: options.crossDeviceRepaymentEnabled,
       crossDeviceCancelRefundEnabled: false,
@@ -2417,6 +3264,8 @@ class ScriptedApi {
     this.capabilityErrorStatus = options.capabilityErrorStatus;
     this.claimCommitTransportFailsOnce =
       options.claimCommitTransportFailsOnce;
+    this.claimResolveTransportFailsOnce =
+      options.claimResolveTransportFailsOnce;
     this.cancelClaimCreateErrorCode = options.cancelClaimCreateErrorCode ?? null;
     this.cancelClaimCommitTransportFailsOnce =
       options.cancelClaimCommitTransportFailsOnce ?? false;
@@ -2500,6 +3349,48 @@ class ScriptedApi {
     return this.claim;
   }
 
+  public async prepareRepaymentClaimProvider(
+    command: InstallmentRepaymentClaimPrepareProviderCommand,
+  ) {
+    this.events.push("claim-prepare-provider");
+    this.prepareProviderCalls.push(command);
+    if (!this.claim) {
+      const created = claimFrom(
+        {
+          installmentGuid: command.installmentGuid,
+          operationGuid: command.operationGuid,
+          paymentGuid: command.paymentGuid,
+          amountCents: command.amountCents,
+          method: command.method,
+          idempotencyKey: command.idempotencyKey,
+        },
+        "ProviderPending",
+      );
+      this.claim = Object.freeze({
+        ...created,
+        provider: command.provider,
+        providerAttemptId: command.providerAttemptId,
+      });
+      this.claimCreateCommand = {
+        installmentGuid: command.installmentGuid,
+        operationGuid: command.operationGuid,
+        paymentGuid: command.paymentGuid,
+        amountCents: command.amountCents,
+        method: command.method,
+        idempotencyKey: command.idempotencyKey,
+      };
+      return this.claim;
+    }
+    const current = this.requireClaim(command);
+    this.claim = Object.freeze({
+      ...current,
+      provider: command.provider,
+      providerAttemptId: command.providerAttemptId,
+      status: "ProviderPending",
+    });
+    return this.claim;
+  }
+
   public async getRepaymentClaim(identity: InstallmentRepaymentClaimIdentity) {
     this.events.push("claim-get");
     this.getClaimCalls.push(identity);
@@ -2520,6 +3411,12 @@ class ScriptedApi {
     this.resolveClaimCalls.push(command);
     const current = this.requireClaim(command);
     this.claim = Object.freeze({ ...current, status: command.outcome });
+    if (this.claimResolveTransportFailsOnce) {
+      this.claimResolveTransportFailsOnce = false;
+      throw new HbposApiError("claim resolve response lost", {
+        kind: "transport",
+      });
+    }
     return this.claim;
   }
 
@@ -2784,11 +3681,13 @@ function createHarness(options: Readonly<{
   claimGetErrorCode?: string;
   claimBeginErrorCode?: string;
   claimCommitTransportFailsOnce?: boolean;
+  claimResolveTransportFailsOnce?: boolean;
   cancelClaimCreateErrorCode?: string;
   cancelClaimCommitTransportFailsOnce?: boolean;
   capabilityErrorStatus?: number;
   repaymentClaimsSupported?: boolean;
   repaymentClaimsRequired?: boolean;
+  repaymentClaimPrepareProviderV1?: boolean;
   createFailsOnce?: boolean;
   createResult?: InstallmentDetails;
   paymentOutcome?: "approved" | "declined" | "throw" | "unknown";
@@ -2803,6 +3702,9 @@ function createHarness(options: Readonly<{
   receiptReprint?: InstallmentReceiptReprintRuntimePort;
   cacheUpsertFailsOnce?: boolean;
   lifecycleCompleteFailsOnce?: boolean;
+  useAtomicFinalizer?: boolean;
+  finalizerFailsOnce?: boolean;
+  capturePerformance?: boolean;
 }> = {}) {
   const currentCashier = new CurrentCashierSession();
   activateCashier(currentCashier, options.permissions ?? ALL_PERMISSIONS);
@@ -2822,6 +3724,8 @@ function createHarness(options: Readonly<{
         options.repaymentClaimsSupported ?? true,
       repaymentClaimsRequired:
         options.repaymentClaimsRequired ?? true,
+      repaymentClaimPrepareProviderV1:
+        options.repaymentClaimPrepareProviderV1 ?? false,
       capabilityErrorStatus: options.capabilityErrorStatus ?? null,
       claimCreateErrorCode: options.claimCreateErrorCode ?? null,
       claimCreateErrorStatus: options.claimCreateErrorStatus ?? 409,
@@ -2831,6 +3735,8 @@ function createHarness(options: Readonly<{
       claimBeginErrorCode: options.claimBeginErrorCode ?? null,
       claimCommitTransportFailsOnce:
         options.claimCommitTransportFailsOnce ?? false,
+      claimResolveTransportFailsOnce:
+        options.claimResolveTransportFailsOnce ?? false,
       cancelClaimCreateErrorCode: options.cancelClaimCreateErrorCode ?? null,
       cancelClaimCommitTransportFailsOnce:
         options.cancelClaimCommitTransportFailsOnce ?? false,
@@ -2838,12 +3744,17 @@ function createHarness(options: Readonly<{
   );
   const cache = new MemorySnapshotCache(options.cached ?? []);
   const hashMaterials: string[] = [];
+  const performanceEvents: InstallmentPerformanceEvent[] = [];
+  let monotonicMilliseconds = 0;
   const actionStore = new MemoryInstallmentActionStore(events);
   if (options.cacheUpsertFailsOnce) {
     cache.failNextUpsert = true;
   }
   if (options.lifecycleCompleteFailsOnce) {
     actionStore.failNextLifecycleComplete = true;
+  }
+  if (options.finalizerFailsOnce) {
+    actionStore.failNextRepaymentFinalizer = true;
   }
   const voucherIntents = new RecordingVoucherIntentVault(events);
   const scriptedPayments = new ScriptedPayments(
@@ -2862,6 +3773,9 @@ function createHarness(options: Readonly<{
     connectivity: { isOnline: async () => online.value },
     api: api as unknown as InstallmentsRemotePort,
     snapshotCache: cache,
+    ...(options.useAtomicFinalizer
+      ? { snapshotRepository: cache as never }
+      : {}),
     actionStore,
     payments,
     ...(options.receiptReprint
@@ -2876,6 +3790,19 @@ function createHarness(options: Readonly<{
     businessTimeZone: "Australia/Brisbane",
     now: () => new Date("2026-07-28T08:00:00.000Z"),
     nowIso: () => "2026-07-28T08:00:00.000Z",
+    ...(options.capturePerformance
+      ? {
+          monotonicNowMilliseconds: () => {
+            monotonicMilliseconds += 5;
+            return monotonicMilliseconds;
+          },
+          performanceRecorder: {
+            record(event: InstallmentPerformanceEvent) {
+              performanceEvents.push(event);
+            },
+          },
+        }
+      : {}),
   };
   return {
     currentCashier,
@@ -2887,25 +3814,45 @@ function createHarness(options: Readonly<{
     actionStore,
     events,
     hashMaterials,
+    performanceEvents,
     voucherIntents,
+    createdIdCount: () => id,
     runtime: createProductionInstallmentRuntime(dependencies),
     rebuildRuntime: () => createProductionInstallmentRuntime(dependencies),
+    rebuildRuntimeForDevice: (deviceCode: string) => {
+      currentCashier.clear();
+      activateCashier(
+        currentCashier,
+        ALL_PERMISSIONS,
+        "SUPERVISOR-DEVICE",
+        deviceCode,
+      );
+      return createProductionInstallmentRuntime({
+        ...dependencies,
+        terminal: { storeCode: STORE_CODE, deviceCode },
+      });
+    },
   };
 }
 
-function activateCashier(session: CurrentCashierSession, permissions: readonly string[]): void {
+function activateCashier(
+  session: CurrentCashierSession,
+  permissions: readonly string[],
+  cashierId = "CASHIER-1",
+  deviceCode = DEVICE_CODE,
+): void {
   const epoch = session.beginAuthentication();
   session.activate(epoch, {
     source: "online",
     session: {
-      cashierId: "CASHIER-1",
+      cashierId,
       userGuid: null,
       cashierName: "Cashier One",
       storeCode: STORE_CODE,
-      deviceCode: DEVICE_CODE,
+      deviceCode,
       permissionCodes: [...permissions],
     },
-  } satisfies CashierLoginResult, { storeCode: STORE_CODE, deviceCode: DEVICE_CODE });
+  } satisfies CashierLoginResult, { storeCode: STORE_CODE, deviceCode });
 }
 
 function fillCreate(presenter: InstallmentPresenter): void {
@@ -2936,6 +3883,17 @@ function workflowOf(presenter: InstallmentPresenter): InstallmentWorkflowPort {
       workflow: InstallmentWorkflowPort;
     }>
   ).workflow;
+}
+
+function executeRepaymentClaimActionForTest(
+  workflow: InstallmentWorkflowPort,
+  persisted: PersistedInstallmentAction,
+): Promise<InstallmentDetails> {
+  const execute = Reflect.get(workflow, "executeRepaymentClaimAction");
+  if (typeof execute !== "function") {
+    throw new Error("executeRepaymentClaimAction is unavailable");
+  }
+  return Reflect.apply(execute, workflow, [persisted]) as Promise<InstallmentDetails>;
 }
 
 function claimFrom(

@@ -391,6 +391,18 @@ test("密文与行 scope 绑定，且分页参数不接受非安全整数", asyn
   });
 });
 
+test("committed snapshot 不暴露可伪造的 prepared batch 写入 API", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const repository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      new ReversingEncryptor(),
+    );
+
+    assert.equal("prepareUpsertForStore" in repository, false);
+    assert.equal("upsertPreparedInTransaction" in repository, false);
+  });
+});
+
 test("PosDatabase 只通过 installmentSnapshots(encryptor) 暴露窄仓储", async () => {
   const driver = new SystemSqliteDriver();
   const database = await PosDatabase.open({

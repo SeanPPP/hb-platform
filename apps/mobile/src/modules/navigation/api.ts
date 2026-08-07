@@ -44,8 +44,10 @@ export function normalizeAppNavigationMenu(payload: unknown): AppNavigationMenuI
     .sort((left, right) => left.order - right.order);
 }
 
-export async function fetchAppNavigationMenu(): Promise<AppNavigationMenuItem[]> {
+export async function fetchAppNavigationMenu(
+  signal?: AbortSignal
+): Promise<AppNavigationMenuItem[]> {
   const { apiClient } = await import("@/shared/api/client");
-  const response = await apiClient.get("/navigation/app-menu");
+  const response = await apiClient.get("/navigation/app-menu", { signal });
   return normalizeAppNavigationMenu(response.data);
 }

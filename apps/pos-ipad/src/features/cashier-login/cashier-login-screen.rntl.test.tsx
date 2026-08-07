@@ -130,6 +130,51 @@ test("手动输入和 HID 回车都经同一安全 controller 成功后才进入
   });
 });
 
+test("收银员条码默认隐藏且显示按钮不改变输入值或软键盘状态", async () => {
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="zh"
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  const input = screen.getByTestId("cashier-login-barcode");
+  const visibilityButton = screen.getByTestId(
+    "cashier-login-toggle-barcode-visibility",
+  );
+  expect(input.props.secureTextEntry).toBe(true);
+  expect(input.props.showSoftInputOnFocus).toBe(false);
+  expect(visibilityButton.props.accessibilityRole).toBe("button");
+  expect(visibilityButton.props.accessibilityLabel).toBe("显示收银员条码");
+  expect(visibilityButton.props.accessibilityState).toEqual({ disabled: false });
+  expect(
+    StyleSheet.flatten(visibilityButton.props.style),
+  ).toMatchObject({ minHeight: 44, minWidth: 44 });
+
+  await fireEvent.changeText(input, "HID-SECRET");
+  await fireEvent.press(visibilityButton);
+  expect(screen.getByTestId("cashier-login-barcode").props).toMatchObject({
+    secureTextEntry: false,
+    showSoftInputOnFocus: false,
+    value: "HID-SECRET",
+  });
+  expect(
+    screen.getByTestId("cashier-login-toggle-barcode-visibility").props
+      .accessibilityLabel,
+  ).toBe("隐藏收银员条码");
+
+  await fireEvent.press(
+    screen.getByTestId("cashier-login-toggle-barcode-visibility"),
+  );
+  expect(screen.getByTestId("cashier-login-barcode").props).toMatchObject({
+    secureTextEntry: true,
+    showSoftInputOnFocus: false,
+    value: "HID-SECRET",
+  });
+});
+
 test("扫码默认不弹软键盘，常驻键盘按钮可手动开启且失焦后复位", async () => {
   const screen = await render(
     <CashierLoginScreen
@@ -290,8 +335,14 @@ test("HID Enter 登录待定时保持可见输入所有权并拒绝重复提交"
   await act(async () => {
     activeInput.props.onSubmitEditing();
     await Promise.resolve();
-    expect(signIn).toHaveBeenCalledTimes(1);
+  });
+  expect(signIn).toHaveBeenCalledTimes(1);
+  expect(
+    screen.getByTestId("cashier-login-toggle-barcode-visibility").props
+      .accessibilityState,
+  ).toEqual({ disabled: true });
 
+  await act(async () => {
     activeInput.props.onSubmitEditing();
     activeInput.props.onBlur();
     expect(signIn).toHaveBeenCalledTimes(1);
@@ -390,12 +441,16 @@ test("登录提交后清空已扫描内容，失败重试不会与下一条码�
     />,
   );
 
-  await act(async () => {
-    fireEvent.changeText(
-      screen.getByTestId("cashier-login-barcode"),
-      "HID-FIRST",
-    );
-  });
+  await fireEvent.changeText(
+    screen.getByTestId("cashier-login-barcode"),
+    "HID-FIRST",
+  );
+  await fireEvent.press(
+    screen.getByTestId("cashier-login-toggle-barcode-visibility"),
+  );
+  expect(screen.getByTestId("cashier-login-barcode").props.secureTextEntry).toBe(
+    false,
+  );
   await act(async () => {
     screen.getByTestId("cashier-login-barcode").props.onSubmitEditing();
   });
@@ -404,6 +459,9 @@ test("登录提交后清空已扫描内容，失败重试不会与下一条码�
     expect(screen.getByTestId("cashier-login-error")).toBeTruthy();
   });
   expect(screen.getByTestId("cashier-login-barcode").props.value).toBe("");
+  expect(screen.getByTestId("cashier-login-barcode").props.secureTextEntry).toBe(
+    true,
+  );
 
   await act(async () => {
     const previousValue =
@@ -468,6 +526,10 @@ test("明确拒绝显示错误且不进入 sales", async () => {
   expect(
     screen.getByText('Scanner ready; tap "Keyboard" for manual entry.'),
   ).toBeTruthy();
+  expect(
+    screen.getByTestId("cashier-login-toggle-barcode-visibility").props
+      .accessibilityLabel,
+  ).toBe("Show cashier barcode");
   await act(async () => {
     fireEvent.press(screen.getByTestId("cashier-login-show-keyboard"));
   });

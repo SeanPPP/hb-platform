@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+  INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
 } from "./installment-authorization";
 import { InstallmentCheckoutPresenter } from "./installment-checkout-presenter";
@@ -231,6 +232,645 @@ test("还款顾客只读，银行卡拒绝超付并冻结所选 Linkly provider"
   assert.equal(repaymentInputs[0]?.cashTenderedCents, undefined);
 });
 
+test("现金续付先准备再确认，重复点击不重复调用任一阶段", async () => {
+  let prepareCalls = 0;
+  let confirmCalls = 0;
+  let addRepaymentCalls = 0;
+  let monotonicMilliseconds = 100;
+  const performanceEvents: unknown[] = [];
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions(),
+    workflow: workflowStub({
+      addRepayment: async () => {
+        addRepaymentCalls += 1;
+        return details({});
+      },
+      prepareCashRepayment: async () => {
+        prepareCalls += 1;
+        return {
+          installmentGuid: INSTALLMENT_ID,
+          operationHash: "sha256:operation-1",
+          amountCents: 1_000,
+          path: "prepare-provider-v1",
+        };
+      },
+      confirmPreparedCashRepayment: async () => {
+        confirmCalls += 1;
+        monotonicMilliseconds = 145;
+        return details({ balanceCents: 2_000 });
+      },
+    }),
+    createTenderId: () => "cash-repayment-tender",
+    monotonicNowMilliseconds: () => monotonicMilliseconds,
+    performanceRecorder: {
+      record(event) {
+        performanceEvents.push(event);
+      },
+    },
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.equal(prepareCalls, 1);
+  assert.equal(addRepaymentCalls, 0);
+  assert.equal(presenter.getState().phase, "cash-collection-ready");
+  assert.equal(presenter.getState().checkout.cash.appliedCents, 1_000);
+
+  const confirmations = await Promise.all([
+    presenter.confirm(),
+    presenter.confirm(),
+  ]);
+  assert.deepEqual(confirmations, [true, false]);
+  assert.equal(confirmCalls, 1);
+  assert.equal(presenter.getState().phase, "success");
+  assert.deepEqual(performanceEvents, []);
+  presenter.recordSuccessRendered();
+  presenter.recordSuccessRendered();
+  assert.deepEqual(performanceEvents, [{
+    name: "presenter-success",
+    elapsedMs: 45,
+    operationHash: "sha256:operation-1",
+    path: "prepare-provider-v1",
+    outcome: "success",
+  }]);
+});
+
+test("现金续付准备失败且无耐久 action 时恢复 ready 并允许重试", async () => {
+  for (const error of [
+    new InstallmentWorkflowError("online-required", "offline"),
+    new InstallmentWorkflowError("conflict", "capability unavailable"),
+  ]) {
+    let recoveryChecks = 0;
+    const presenter = new InstallmentCheckoutPresenter({
+      entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+      createDrafts: {
+        getSnapshot: () => null,
+        subscribe: () => () => undefined,
+      },
+      initialOnline: true,
+      permissions: repaymentPermissions(),
+      workflow: workflowStub({
+        prepareCashRepayment: async () => {
+          throw error;
+        },
+        hasRecoveryRequired: async () => {
+          recoveryChecks += 1;
+          return false;
+        },
+      }),
+      createTenderId: () => "cash-prepare-retry-tender",
+    });
+
+    assert.equal(await presenter.initialize(), true);
+    assert.equal(presenter.selectMethod("cash"), true);
+    presenter.setAmountText("10.00");
+    assert.equal(await presenter.submitSelected(), false);
+    assert.equal(recoveryChecks, 1);
+    assert.equal(presenter.getState().phase, "ready");
+    assert.equal(presenter.getState().allowedActions.start, true);
+    assert.equal(presenter.getState().allowedActions.addCash, true);
+    assert.equal(presenter.getState().allowedActions.recover, false);
+    assert.equal(presenter.getState().checkout.canConfirm, false);
+    assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+    assert.equal(
+      presenter.getState().runtimeErrorCode,
+      error.code === "online-required"
+        ? "ONLINE_REQUIRED"
+        : "PAYMENT_CHECKOUT_FAILED",
+    );
+  }
+});
+
+test("现金续付准备失败且耐久事实为真或无法核实时强制恢复", async () => {
+  for (const hasRecoveryRequired of [
+    async () => true,
+    async (): Promise<boolean> => {
+      throw new Error("ledger unavailable");
+    },
+  ]) {
+    const presenter = new InstallmentCheckoutPresenter({
+      entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+      createDrafts: {
+        getSnapshot: () => null,
+        subscribe: () => () => undefined,
+      },
+      initialOnline: true,
+      permissions: repaymentPermissions(),
+      workflow: workflowStub({
+        prepareCashRepayment: async () => {
+          throw new InstallmentWorkflowError("conflict", "prepare failed");
+        },
+        hasRecoveryRequired,
+      }),
+      createTenderId: () => "cash-prepare-recovery-tender",
+    });
+
+    assert.equal(await presenter.initialize(), true);
+    assert.equal(presenter.selectMethod("cash"), true);
+    presenter.setAmountText("10.00");
+    assert.equal(await presenter.submitSelected(), false);
+    assert.equal(presenter.getState().phase, "recovery-required");
+    assert.equal(presenter.getState().allowedActions.recover, true);
+  }
+});
+
+test("现金续付第二步先显示专属确认中状态并锁定按钮", async () => {
+  let resolveConfirmation!: (value: InstallmentDetails) => void;
+  let confirmCalls = 0;
+  const confirmation = new Promise<InstallmentDetails>((resolve) => {
+    resolveConfirmation = resolve;
+  });
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions(),
+    workflow: workflowStub({
+      prepareCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:operation-confirming",
+        amountCents: 1_000,
+      }),
+      confirmPreparedCashRepayment: async () => {
+        confirmCalls += 1;
+        return confirmation;
+      },
+    }),
+    createTenderId: () => "cash-confirming-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  await presenter.submitSelected();
+
+  const confirming = presenter.confirm();
+  await Promise.resolve();
+  assert.equal(confirmCalls, 1);
+  assert.equal(presenter.getState().phase, "cash-confirming");
+  assert.equal(presenter.getState().busy, true);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "confirming");
+
+  resolveConfirmation(details({ balanceCents: 2_000 }));
+  assert.equal(await confirming, true);
+});
+
+test("Prepared 现金续付重启后重建 tender 并可从恢复页确认", async () => {
+  let confirmCalls = 0;
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: null,
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions(),
+    workflow: workflowStub({
+      recoverBlocking: async () => {
+        throw new InstallmentWorkflowError(
+          "cash-confirmation-required",
+          "check drawer",
+        );
+      },
+      inspectPreparedCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:recovered-operation",
+        amountCents: 1_000,
+        path: "recovery",
+      }),
+      confirmPreparedCashRepayment: async () => {
+        confirmCalls += 1;
+        return details({ balanceCents: 2_000 });
+      },
+    }),
+    createTenderId: () => "recovered-cash-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(await presenter.recover(), false);
+  assert.equal(presenter.getState().checkout.flow, "installment-repayment");
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "ready");
+  assert.equal(presenter.getState().tenders[0]?.tenderGuid, "recovered-cash-tender");
+  assert.equal(presenter.getState().tenders[0]?.amount.cents, 1_000);
+  assert.equal(await presenter.confirm(), true);
+  assert.equal(confirmCalls, 1);
+  assert.equal(presenter.getState().phase, "success");
+});
+
+test("现金已进入确认后失败只允许恢复提交，不再次显示收款确认", async () => {
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions(),
+    workflow: workflowStub({
+      prepareCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:cash-collected",
+        amountCents: 1_000,
+        path: "prepare-provider-v1",
+      }),
+      confirmPreparedCashRepayment: async () => {
+        throw new InstallmentWorkflowError(
+          "payment-recovery-required",
+          "commit timed out",
+        );
+      },
+      hasRecoveryRequired: async () => true,
+    }),
+    createTenderId: () => "cash-collected-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.equal(await presenter.confirm(), false);
+  assert.equal(presenter.getState().phase, "recovery-required");
+  assert.equal(presenter.getState().checkout.canConfirm, false);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+  assert.equal(presenter.getState().allowedActions.recover, true);
+});
+
+test("现金续付初次 prepare 仅在 Cancel 权限与 runtime 方法同时存在时开放取消", async () => {
+  for (const canCancel of [false, true]) {
+    for (const hasRuntimeMethod of [false, true]) {
+      const presenter = new InstallmentCheckoutPresenter({
+        entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+        createDrafts: {
+          getSnapshot: () => null,
+          subscribe: () => () => undefined,
+        },
+        initialOnline: true,
+        permissions: repaymentPermissions({ canCancel }),
+        workflow: workflowStub({
+          prepareCashRepayment: async () => ({
+            installmentGuid: INSTALLMENT_ID,
+            operationHash: `sha256:cash-cancel-gate-${String(canCancel)}-${String(hasRuntimeMethod)}`,
+            amountCents: 1_000,
+          }),
+          ...(hasRuntimeMethod
+            ? { cancelPreparedCashRepayment: async () => undefined }
+            : {}),
+        }),
+        createTenderId: () =>
+          `cash-cancel-gate-${String(canCancel)}-${String(hasRuntimeMethod)}-tender`,
+      });
+
+      assert.equal(await presenter.initialize(), true);
+      assert.equal(presenter.selectMethod("cash"), true);
+      presenter.setAmountText("10.00");
+      assert.equal(await presenter.submitSelected(), true);
+      assert.equal(
+        presenter.getState().allowedActions.cancel,
+        canCancel && hasRuntimeMethod,
+      );
+    }
+  }
+});
+
+test("不可确认的 Unknown 与 ProviderPending Prepared 只为主管重建取消 fence", async () => {
+  const scenarios = [
+    {
+      name: "Unknown+Prepared",
+      recoveryError: new InstallmentWorkflowError(
+        "payment-recovery-required",
+        "unknown prepared claim",
+      ),
+      confirmationInspectCalls: 0,
+    },
+    {
+      name: "ProviderPending+Prepared",
+      recoveryError: new InstallmentWorkflowError(
+        "cash-confirmation-required",
+        "original cashier required",
+      ),
+      confirmationInspectCalls: 1,
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    let inspectPreparedCalls = 0;
+    let inspectCancellableCalls = 0;
+    let confirmCalls = 0;
+    const workflow = workflowStub({
+      recoverBlocking: async () => {
+        throw scenario.recoveryError;
+      },
+      inspectPreparedCashRepayment: async () => {
+        inspectPreparedCalls += 1;
+        return null;
+      },
+      inspectCancellablePreparedCashRepayment: async () => {
+        inspectCancellableCalls += 1;
+        return {
+          installmentGuid: INSTALLMENT_ID,
+          operationHash: `sha256:${scenario.name}`,
+          amountCents: 1_000,
+          path: "recovery" as const,
+        };
+      },
+      confirmPreparedCashRepayment: async () => {
+        confirmCalls += 1;
+        return details({ balanceCents: 2_000 });
+      },
+      cancelPreparedCashRepayment: async () => undefined,
+    });
+    const presenter = new InstallmentCheckoutPresenter({
+      entry: null,
+      createDrafts: {
+        getSnapshot: () => null,
+        subscribe: () => () => undefined,
+      },
+      initialOnline: true,
+      permissions: repaymentPermissions({ canCancel: true }),
+      workflow,
+      createTenderId: () => `${scenario.name}-cancel-tender`,
+    });
+
+    assert.equal(await presenter.initialize(), true);
+    assert.equal(await presenter.recover(), false);
+    assert.equal(inspectPreparedCalls, scenario.confirmationInspectCalls);
+    assert.equal(inspectCancellableCalls, 1);
+    assert.equal(presenter.getState().phase, "recovery-required");
+    assert.equal(presenter.getState().runtimeErrorCode, "PAYMENT_RECOVERY_FAILED");
+    assert.equal(presenter.getState().checkout.canConfirm, false);
+    assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+    assert.equal(presenter.getState().tenders.length, 1);
+    assert.equal(presenter.getState().tenders[0]?.method, "cash");
+    assert.equal(presenter.getState().tenders[0]?.reversible, false);
+    assert.deepEqual(
+      Object.entries(presenter.getState().allowedActions)
+        .filter(([, enabled]) => enabled)
+        .map(([action]) => action),
+      ["cancel"],
+    );
+    assert.equal(await presenter.confirm(), false);
+    assert.equal(confirmCalls, 0);
+  }
+});
+
+test("无 Cancel 权限时不探测可取消 Prepared 且保持恢复阻断", async () => {
+  let inspectCancellableCalls = 0;
+  const workflow = workflowStub({
+    recoverBlocking: async () => {
+      throw new InstallmentWorkflowError(
+        "payment-recovery-required",
+        "unknown prepared claim",
+      );
+    },
+    inspectCancellablePreparedCashRepayment: async () => {
+      inspectCancellableCalls += 1;
+      return {
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:unauthorized-cancellable-prepared",
+        amountCents: 1_000,
+        path: "recovery" as const,
+      };
+    },
+    cancelPreparedCashRepayment: async () => undefined,
+  });
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: null,
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions(),
+    workflow,
+    createTenderId: () => "unauthorized-cancellable-prepared-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(await presenter.recover(), false);
+  assert.equal(inspectCancellableCalls, 0);
+  assert.equal(presenter.getState().phase, "recovery-required");
+  assert.equal(presenter.getState().allowedActions.cancel, false);
+  assert.equal(presenter.getState().tenders.length, 0);
+});
+
+test("尚未收现取消续付为单飞操作，成功后清空 fence 并回到可重试状态", async () => {
+  let cancelCalls = 0;
+  let resolveCancellation!: () => void;
+  const cancellation = new Promise<void>((resolve) => {
+    resolveCancellation = resolve;
+  });
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions({ canCancel: true }),
+    workflow: workflowStub({
+      prepareCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:cash-cancel-success",
+        amountCents: 1_000,
+        path: "prepare-provider-v1",
+      }),
+      cancelPreparedCashRepayment: async () => {
+        cancelCalls += 1;
+        await cancellation;
+      },
+    }),
+    createTenderId: () => "cash-cancel-success-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.equal(presenter.getState().allowedActions.cancel, true);
+
+  const firstCancellation = presenter.cancel();
+  const duplicateCancellation = presenter.cancel();
+  await Promise.resolve();
+  assert.equal(cancelCalls, 1);
+  assert.equal(presenter.getState().busy, true);
+
+  resolveCancellation();
+  assert.deepEqual(
+    await Promise.all([firstCancellation, duplicateCancellation]),
+    [true, false],
+  );
+  assert.equal(presenter.getState().phase, "ready");
+  assert.equal(presenter.getState().runtimeErrorCode, null);
+  assert.equal(presenter.getState().tenders.length, 0);
+  assert.equal(presenter.getState().remaining.cents, 3_000);
+  assert.equal(presenter.getState().checkout.canConfirm, false);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+  assert.deepEqual(presenter.getState().checkout.cash, {
+    tenderedCents: 0,
+    appliedCents: 0,
+    changeCents: 0,
+  });
+  assert.equal(presenter.getState().allowedActions.start, true);
+  assert.equal(presenter.getState().allowedActions.addCash, true);
+  assert.equal(presenter.getState().allowedActions.cancel, false);
+  assert.equal(presenter.getState().allowedActions.recover, false);
+});
+
+test("恢复出的 Prepared 现金取消成功后不显示支付成功并允许安全返回", async () => {
+  let cancelCalls = 0;
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: null,
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions({ canCancel: true }),
+    workflow: workflowStub({
+      recoverBlocking: async () => {
+        throw new InstallmentWorkflowError(
+          "cash-confirmation-required",
+          "check drawer",
+        );
+      },
+      inspectPreparedCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:recovered-cash-cancel",
+        amountCents: 1_000,
+        path: "recovery",
+      }),
+      cancelPreparedCashRepayment: async () => {
+        cancelCalls += 1;
+      },
+    }),
+    createTenderId: () => "recovered-cash-cancel-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(await presenter.recover(), false);
+  assert.equal(presenter.getState().allowedActions.cancel, true);
+  assert.equal(await presenter.cancel(), true);
+  assert.equal(cancelCalls, 1);
+  assert.equal(presenter.getState().phase, "cancelled");
+  assert.notEqual(presenter.getState().phase, "success");
+  assert.equal(presenter.getState().tenders.length, 0);
+  assert.equal(presenter.getState().allowedActions.recover, false);
+  assert.equal(presenter.getState().allowedActions.cancel, false);
+});
+
+test("尚未收现取消超时只开放同一 cancel 重放，禁止 recover 重新开放确认", async () => {
+  let cancelCalls = 0;
+  let recoverCalls = 0;
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions({ canCancel: true }),
+    workflow: workflowStub({
+      recoverBlocking: async () => {
+        recoverCalls += 1;
+        return details({ balanceCents: 2_000 });
+      },
+      prepareCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:cash-cancel-timeout",
+        amountCents: 1_000,
+      }),
+      cancelPreparedCashRepayment: async () => {
+        cancelCalls += 1;
+        if (cancelCalls === 1) throw new Error("timeout");
+      },
+    }),
+    createTenderId: () => "cash-cancel-timeout-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.equal(await presenter.cancel(), false);
+  assert.equal(presenter.getState().phase, "recovery-required");
+  assert.equal(
+    presenter.getState().runtimeErrorCode,
+    "INSTALLMENT_CASH_CANCELLATION_FAILED",
+  );
+  assert.equal(presenter.getState().tenders.length, 1);
+  assert.equal(presenter.getState().tenders[0]?.method, "cash");
+  assert.equal(presenter.getState().tenders[0]?.reversible, false);
+  assert.equal(presenter.getState().checkout.canConfirm, false);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+  assert.equal(presenter.getState().allowedActions.start, false);
+  assert.equal(presenter.getState().allowedActions.addCash, false);
+  assert.equal(presenter.getState().allowedActions.cancel, true);
+  assert.equal(presenter.getState().allowedActions.recover, false);
+  assert.deepEqual(
+    Object.entries(presenter.getState().allowedActions)
+      .filter(([, enabled]) => enabled)
+      .map(([action]) => action),
+    ["cancel"],
+  );
+
+  assert.equal(await presenter.recover(), false);
+  assert.equal(recoverCalls, 0);
+  assert.equal(presenter.getState().checkout.canConfirm, false);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "idle");
+
+  assert.equal(await presenter.cancel(), true);
+  assert.equal(cancelCalls, 2);
+  assert.equal(presenter.getState().phase, "ready");
+  assert.equal(presenter.getState().tenders.length, 0);
+});
+
+test("缺少取消 Prepared 现金方法时失败关闭且不改变原 fence", async () => {
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: installmentRepaymentPaymentEntry(INSTALLMENT_ID),
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: repaymentPermissions({ canCancel: true }),
+    workflow: workflowStub({
+      prepareCashRepayment: async () => ({
+        installmentGuid: INSTALLMENT_ID,
+        operationHash: "sha256:cash-cancel-unavailable",
+        amountCents: 1_000,
+      }),
+    }),
+    createTenderId: () => "cash-cancel-unavailable-tender",
+  });
+
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(await presenter.submitSelected(), true);
+  const before = presenter.getState();
+  assert.equal(before.allowedActions.cancel, false);
+  assert.equal(
+    await presenter.removeTender("cash-cancel-unavailable-tender"),
+    false,
+  );
+  assert.equal(presenter.getState(), before);
+  assert.equal(await presenter.cancel(), false);
+  assert.equal(presenter.getState(), before);
+  assert.equal(presenter.getState().checkout.cashRepaymentStatus, "ready");
+  assert.equal(presenter.getState().tenders[0]?.reversible, false);
+});
+
 test("确认掉线按本地耐久 action 事实区分安全重试与强制恢复", async () => {
   for (const recoveryRequired of [false, true]) {
     const workflow = Object.assign(
@@ -358,9 +998,12 @@ function createPermissions(): readonly string[] {
   ];
 }
 
-function repaymentPermissions(): readonly string[] {
+function repaymentPermissions(
+  options: Readonly<{ canCancel?: boolean }> = {},
+): readonly string[] {
   return [
     INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+    ...(options.canCancel ? [INSTALLMENTS_CANCEL_PERMISSION] : []),
     PAYMENT_PERMISSION.view,
     PAYMENT_PERMISSION.confirm,
     PAYMENT_PERMISSION.takeCash,

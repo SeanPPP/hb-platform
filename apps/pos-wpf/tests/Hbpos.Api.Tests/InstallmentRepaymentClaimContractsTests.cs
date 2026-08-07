@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
@@ -38,13 +39,60 @@ public sealed class InstallmentRepaymentClaimContractsTests
             RepaymentClaimsSupported: true,
             RepaymentClaimsRequired: false,
             CrossDeviceRepaymentEnabled: false,
-            PreparedClaimTtlSeconds: 120);
+            PreparedClaimTtlSeconds: 120,
+            RepaymentClaimPrepareProviderV1: true);
 
         Assert.True(capabilities.RepaymentClaimsSupported);
         Assert.False(capabilities.RepaymentClaimsRequired);
         Assert.False(capabilities.CrossDeviceRepaymentEnabled);
         Assert.False(capabilities.CardRepaymentSupported);
         Assert.Equal(120, capabilities.PreparedClaimTtlSeconds);
+        Assert.True(capabilities.RepaymentClaimPrepareProviderV1);
+
+        var json = JsonSerializer.Serialize(capabilities, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.Contains("\"repaymentClaimPrepareProviderV1\":true", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Prepare_provider_request_contains_only_the_locked_payment_and_provider_facts()
+    {
+        var paymentGuid = Guid.NewGuid();
+        var request = new InstallmentRepaymentClaimPrepareProviderRequest(
+            paymentGuid,
+            12.34m,
+            PaymentMethodKind.Cash,
+            "installment-action-1",
+            "cash",
+            "attempt-1");
+
+        Assert.Equal(paymentGuid, request.PaymentGuid);
+        Assert.Equal(12.34m, request.Amount);
+        Assert.Equal(PaymentMethodKind.Cash, request.Method);
+        Assert.Equal("installment-action-1", request.IdempotencyKey);
+        Assert.Equal("cash", request.Provider);
+        Assert.Equal("attempt-1", request.ProviderAttemptId);
+        Assert.DoesNotContain(
+            typeof(InstallmentRepaymentClaimPrepareProviderRequest).GetProperties(),
+            property => property.Name is "StoreCode" or "DeviceCode" or "CashierId" or "CashierName" or "OperationGuid");
+    }
+
+    [Fact]
+    public void Resolve_request_keeps_legacy_defaults_and_serializes_cash_release_evidence_in_camel_case()
+    {
+        var legacy = new InstallmentRepaymentClaimResolveRequest(
+            InstallmentRepaymentClaimResolveOutcome.Released);
+        Assert.False(legacy.CashNotCollectedConfirmed);
+        Assert.Null(legacy.ProviderAttemptId);
+
+        var request = legacy with
+        {
+            CashNotCollectedConfirmed = true,
+            ProviderAttemptId = "cash-attempt-1"
+        };
+        var json = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"cashNotCollectedConfirmed\":true", json, StringComparison.Ordinal);
+        Assert.Contains("\"providerAttemptId\":\"cash-attempt-1\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

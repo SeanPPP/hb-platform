@@ -46,6 +46,10 @@ public interface IInstallmentRepaymentClaimRepository
         Guid installmentGuid,
         CancellationToken cancellationToken);
 
+    Task<InstallmentRepaymentClaimRecord?> GetPermanentConflictAsync(
+        InstallmentRepaymentClaimRecord candidate,
+        CancellationToken cancellationToken);
+
     Task<bool> TryInsertAsync(
         InstallmentRepaymentClaimRecord claim,
         InstallmentRepaymentClaimInsertSnapshot snapshot,
@@ -99,6 +103,34 @@ public sealed class SqlSugarInstallmentRepaymentClaimRepository(
         var row = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<ClaimRow>(
             sql,
             new SugarParameter("@InstallmentGuid", installmentGuid));
+        return row is null ? null : Map(row);
+    }
+
+    public async Task<InstallmentRepaymentClaimRecord?> GetPermanentConflictAsync(
+        InstallmentRepaymentClaimRecord candidate,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var sql = $"""
+            SELECT TOP 1 {SelectColumns}
+            FROM [dbo].[POSM_InstallmentRepaymentClaim]
+            WHERE [OperationGuid] <> @OperationGuid
+              AND (
+                    [PaymentGuid] = @PaymentGuid
+                 OR ([InstallmentGuid] = @InstallmentGuid AND [IdempotencyKey] = @IdempotencyKey)
+                 OR (@Provider IS NOT NULL AND @ProviderAttemptId IS NOT NULL
+                     AND [Provider] = @Provider AND [ProviderAttemptId] = @ProviderAttemptId)
+              )
+            ORDER BY [CreatedAtUtc], [OperationGuid];
+            """;
+        var row = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<ClaimRow>(
+            sql,
+            new SugarParameter("@OperationGuid", candidate.OperationGuid),
+            new SugarParameter("@PaymentGuid", candidate.PaymentGuid),
+            new SugarParameter("@InstallmentGuid", candidate.InstallmentGuid),
+            new SugarParameter("@IdempotencyKey", candidate.IdempotencyKey),
+            new SugarParameter("@Provider", candidate.Provider),
+            new SugarParameter("@ProviderAttemptId", candidate.ProviderAttemptId));
         return row is null ? null : Map(row);
     }
 

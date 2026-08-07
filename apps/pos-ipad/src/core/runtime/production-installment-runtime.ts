@@ -12,7 +12,10 @@ import type {
   InstallmentSummary,
 } from "@/core/contracts";
 import type { CartSnapshot } from "@/core/contracts/cart";
-import { INSTALLMENT_SENSITIVE_PAYLOAD_REVISION } from "@/core/db/sqlite-installment-snapshot-repository";
+import {
+  INSTALLMENT_SENSITIVE_PAYLOAD_REVISION,
+  type SqliteInstallmentSnapshotRepository,
+} from "@/core/db/sqlite-installment-snapshot-repository";
 import type {
   FulfilmentActionResult,
   FulfilmentAuthorizationContext,
@@ -41,6 +44,7 @@ import type {
   InstallmentCardProvider,
   InstallmentPickupCommand,
   InstallmentRepaymentCapabilities,
+  InstallmentCashRepaymentPreparation,
   InstallmentRepaymentClaim,
   InstallmentCancelClaim,
   InstallmentRefundCommand,
@@ -250,6 +254,16 @@ export interface InstallmentActionStorePort {
     expectedState: "BackendPending";
     terminal: TerminalScope;
   }>): Promise<void>;
+  /** 波1 SQLCipher 实现：snapshot 与 action completion 必须同一事务提交。 */
+  completeCommittedRepaymentWithSnapshot?(
+    input: Readonly<{
+      actionId: string;
+      expectedState: "BackendPending";
+      terminal: TerminalScope;
+      snapshot: InstallmentSnapshot;
+    }>,
+    snapshotRepository: SqliteInstallmentSnapshotRepository,
+  ): Promise<void>;
 }
 
 export type InstallmentApprovedRefund = Readonly<{
@@ -275,6 +289,22 @@ export interface InstallmentMutationPaymentPort {
   prepareRepaymentClaim(
     persistedActionId: string,
   ): Promise<Readonly<{ provider: string; providerAttemptId: string }>>;
+  /** 只读现金 settlement 状态；Prepared 绝不能由恢复路径自动批准。 */
+  inspectCashSettlement(
+    persistedActionId: string,
+  ): Promise<"Prepared" | "Approved">;
+  /** 仅由用户明确确认已收现金后的第二阶段调用。 */
+  confirmCashRepayment(
+    persistedActionId: string,
+  ): Promise<
+    | Readonly<{ kind: "approved"; payment: InstallmentPaymentCommand }>
+    | Readonly<{
+        kind: "approved";
+        refunds: readonly InstallmentApprovedRefund[];
+      }>
+    | Readonly<{ kind: "unknown" }>
+    | Readonly<{ kind: "declined"; allRefundsDeclined?: boolean }>
+  >;
   beginOrRecover(
     persistedActionId: string,
   ): Promise<
@@ -312,6 +342,18 @@ export type InstallmentReceiptReprintRuntimePort = Readonly<{
   ): Promise<FulfilmentActionResult>;
 }>;
 
+export type InstallmentPerformanceEvent = Readonly<{
+  name: "prepare" | "cash-durable" | "commit" | "local-finalize" | "presenter-success";
+  elapsedMs: number;
+  operationHash: string;
+  path: "prepare-provider-v1" | "legacy-create-begin" | "recovery";
+  outcome: "success" | "recovery" | "failure";
+}>;
+
+export interface InstallmentPerformanceRecorder {
+  record(event: InstallmentPerformanceEvent): void | Promise<void>;
+}
+
 export type ProductionInstallmentRuntimeDependencies = Readonly<{
   currentCashier: CurrentCashierSession;
   terminal: TerminalScope;
@@ -319,6 +361,7 @@ export type ProductionInstallmentRuntimeDependencies = Readonly<{
   connectivity: InstallmentConnectivityPort;
   api: InstallmentsRemotePort;
   snapshotCache: InstallmentSnapshotCachePort;
+  snapshotRepository?: SqliteInstallmentSnapshotRepository;
   actionStore: InstallmentActionStorePort;
   payments: InstallmentMutationPaymentPort;
   receiptReprint?: InstallmentReceiptReprintRuntimePort | null;
@@ -328,6 +371,8 @@ export type ProductionInstallmentRuntimeDependencies = Readonly<{
   businessTimeZone: string;
   now(): Date;
   nowIso(): string;
+  monotonicNowMilliseconds?: () => number;
+  performanceRecorder?: InstallmentPerformanceRecorder;
 }>;
 
 /**
@@ -338,6 +383,31 @@ export function createProductionInstallmentRuntime(
   input: ProductionInstallmentRuntimeDependencies,
 ): InstallmentsRuntimeFactory {
   const terminal = normalizeTerminal(input.terminal);
+  const capabilityCache = new Map<
+    string,
+    Promise<InstallmentRepaymentCapabilities>
+  >();
+  const cachedCapabilities = (
+    session: TrustedCashierSession,
+  ): Promise<InstallmentRepaymentCapabilities> => {
+    const key = [
+      session.epoch,
+      session.cashierId,
+      session.storeCode,
+      session.deviceCode,
+    ].join("|");
+    const cached = capabilityCache.get(key);
+    if (cached) return cached;
+    const pending = input.api
+      .getCapabilities()
+      .then(validateRepaymentCapabilities)
+      .catch((error: unknown) => {
+        capabilityCache.delete(key);
+        throw error;
+      });
+    capabilityCache.set(key, pending);
+    return pending;
+  };
 
   return Object.freeze({
     createPresenter(): InstallmentPresenter {
@@ -347,6 +417,7 @@ export function createProductionInstallmentRuntime(
         input,
         lease,
         terminal,
+        capabilities: () => cachedCapabilities(session),
       });
       return new InstallmentPresenter({
         createDrafts: new ActiveCartInstallmentDraftPort(input.activeCart),
@@ -383,6 +454,7 @@ export function createProductionInstallmentRuntime(
         input,
         lease,
         terminal,
+        capabilities: () => cachedCapabilities(session),
       });
       return new InstallmentCheckoutPresenter({
         entry,
@@ -391,6 +463,12 @@ export function createProductionInstallmentRuntime(
         permissions: session.permissionCodes,
         workflow,
         createTenderId: input.createId,
+        ...(input.monotonicNowMilliseconds
+          ? { monotonicNowMilliseconds: input.monotonicNowMilliseconds }
+          : {}),
+        ...(input.performanceRecorder
+          ? { performanceRecorder: input.performanceRecorder }
+          : {}),
       });
     },
     async hasRecoveryRequired(): Promise<boolean> {
@@ -482,11 +560,20 @@ class ActiveCartInstallmentDraftPort implements InstallmentCreateDraftPort {
 }
 
 class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
+  private preparedCashActionId: string | null = null;
+  private preparedCashClaim: InstallmentRepaymentClaim | null = null;
+  private preparedCashPath:
+    | "prepare-provider-v1"
+    | "legacy-create-begin"
+    | "recovery"
+    | null = null;
+
   public constructor(
     private readonly context: Readonly<{
       input: ProductionInstallmentRuntimeDependencies;
       lease: TrustedCashierLease;
       terminal: TerminalScope;
+      capabilities: () => Promise<InstallmentRepaymentCapabilities>;
     }>,
   ) {}
 
@@ -495,7 +582,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     this.requireCurrentPermission(INSTALLMENTS_VIEW_PERMISSION);
     try {
       const capabilities = validateRepaymentCapabilities(
-        await this.context.input.api.getCapabilities(),
+        await this.context.capabilities(),
       );
       requireScopedLease(this.context.lease, this.context.terminal);
       return capabilities;
@@ -662,6 +749,14 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     input: InstallmentWorkflowRepaymentInput,
   ): Promise<InstallmentDetails> {
     await this.assertOnlineAndScoped();
+    // 中文注释：现金只能走 prepare + confirm 两阶段；必须在恢复旧 action、
+    // 创建新 action、绑定 plan 或访问远程 claim 前失败关闭。
+    if (input.method === "cash") {
+      throw workflowError(
+        "cash-confirmation-required",
+        "Cash repayment must use the prepared confirmation flow.",
+      );
+    }
     const blocking = await this.loadBlockingOperation();
     if (blocking) return this.recoverBlockingOperation(blocking);
     this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
@@ -680,6 +775,437 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     const candidate = await this.createRepaymentAction(input);
     const persisted = await this.persistCandidate(candidate);
     return this.executePersistedAction(persisted);
+  }
+
+  /**
+   * 现金续付第一阶段：action 先落 Created，再绑定本地 cash plan，再由 claim
+   * endpoint 进入 ProviderPending；这里绝不 approve、beginOrRecover 或 commit。
+   */
+  public async prepareCashRepayment(
+    input: InstallmentWorkflowRepaymentInput,
+  ): Promise<InstallmentCashRepaymentPreparation> {
+    const prepareStartedAt = monotonicNowMilliseconds(this.context.input);
+    await this.assertOnlineAndScoped();
+    const blocking = await this.loadBlockingOperation();
+    if (blocking) {
+      if (
+        blocking.type === "payment" &&
+        blocking.action.action.kind === "repayment" &&
+        blocking.action.action.method === "cash"
+      ) {
+        throw workflowError(
+          "cash-confirmation-required",
+          "A cash repayment is already waiting for drawer confirmation.",
+        );
+      }
+      throw paymentRecoveryError("Another installment action requires recovery.");
+    }
+    this.requireCurrentPermission(INSTALLMENTS_ADD_REPAYMENT_PERMISSION);
+    this.requireTenderPermissions("cash");
+    const installmentGuid = requiredText(input.installmentGuid, "installment guid");
+    // 中文注释：跨设备 capability 必须在任何 durable action 产生前生效；
+    // 否则被服务端拒绝后会留下永远无法恢复的 Created action。
+    const capabilities = await this.getRequiredRepaymentCapabilities();
+    if (!capabilities.repaymentClaimsSupported) {
+      throw workflowError(
+        "conflict",
+        "Cash installment repayment claims are not supported by this server.",
+      );
+    }
+    await this.assertInitialMutationScope(
+      installmentGuid,
+      capabilities.crossDeviceRepaymentEnabled,
+    );
+    const candidate = await this.createRepaymentAction({
+      ...input,
+      method: "cash",
+      installmentGuid,
+      voucherReference: null,
+      voucherReservationToken: null,
+    });
+    const persisted = await this.persistCandidate(candidate);
+    const prepared = await this.prepareCashRepaymentClaim(persisted, {
+      capabilities,
+      recovery: false,
+    });
+    if (prepared.claim.status !== "ProviderPending") {
+      throw paymentRecoveryError(
+        "Cash repayment claim was not prepared for collection.",
+      );
+    }
+    if (prepared.persisted.state !== "ProviderPending") {
+      throw paymentRecoveryError(
+        "Cash repayment action is not ready to establish the collection fence.",
+      );
+    }
+    // 中文注释：在页面开放“确认已收现金”之前先耐久写入 Unknown，作为
+    // CashCollectionStarted fence。若这一步失败，调用方不会拿到 preparation，
+    // 因而不能开始实体现金交接；一旦成功，重启后也不会重新开放确认按钮。
+    const armed = await this.transitionAction(prepared.persisted, "Unknown");
+    const operationHash = operationHashFor(armed);
+    this.preparedCashPath = capabilities.repaymentClaimPrepareProviderV1
+      ? "prepare-provider-v1"
+      : "legacy-create-begin";
+    recordInstallmentMetric(this.context.input, {
+      name: "prepare",
+      elapsedMs: elapsedMilliseconds(this.context.input, prepareStartedAt),
+      operationHash,
+      path: this.preparedCashPath,
+      outcome: "success",
+    });
+    this.preparedCashActionId = armed.action.actionId;
+    this.preparedCashClaim = prepared.claim;
+    return Object.freeze({
+      installmentGuid,
+      amountCents: armed.action.amountCents ?? input.amountCents,
+      operationHash,
+      path: this.preparedCashPath,
+    });
+  }
+
+  public async inspectPreparedCashRepayment(): Promise<
+    InstallmentCashRepaymentPreparation | null
+  > {
+    await this.assertOnlineAndScoped();
+    const blocking = await this.loadBlockingOperation();
+    if (
+      !blocking ||
+      blocking.type !== "payment" ||
+      blocking.action.action.kind !== "repayment" ||
+      blocking.action.action.method !== "cash"
+    ) {
+      return null;
+    }
+    this.requireOriginalCashier(blocking.action);
+    let settlementState: Awaited<
+      ReturnType<InstallmentMutationPaymentPort["inspectCashSettlement"]>
+    >;
+    try {
+      // 中文注释：inspection 必须先证明原 settlement plan 已存在；plan 缺失
+      // 时直接失败关闭，绝不能借恢复页面创建新的 attempt。
+      settlementState = await this.context.input.payments.inspectCashSettlement(
+        blocking.action.action.actionId,
+      );
+    } catch {
+      return null;
+    }
+    if (
+      settlementState !== "Prepared" ||
+      blocking.action.state !== "ProviderPending"
+    ) {
+      return null;
+    }
+    const prepared = await this.prepareCashRepaymentClaim(blocking.action, {
+      recovery: true,
+    });
+    if (prepared.claim.status !== "ProviderPending") return null;
+    if (prepared.persisted.state !== "ProviderPending") return null;
+    // 中文注释：遗留的 ProviderPending + Prepared 只有在先写入耐久 fence
+    // 后才重新开放原收银员确认；Unknown + Prepared 始终进入主管核对。
+    const armed = await this.transitionAction(prepared.persisted, "Unknown");
+    this.preparedCashActionId = armed.action.actionId;
+    this.preparedCashClaim = prepared.claim;
+    this.preparedCashPath = "recovery";
+    return Object.freeze({
+      installmentGuid: armed.action.installmentGuid,
+      amountCents: armed.action.amountCents!,
+      operationHash: operationHashFor(armed),
+      path: "recovery" as const,
+    });
+  }
+
+  public async confirmPreparedCashRepayment(): Promise<InstallmentDetails> {
+    const blocking = await this.loadBlockingOperation();
+    if (
+      !blocking ||
+      blocking.type !== "payment" ||
+      blocking.action.action.kind !== "repayment" ||
+      blocking.action.action.method !== "cash"
+    ) {
+      throw workflowError(
+        "conflict",
+        "No prepared cash repayment requires confirmation.",
+      );
+    }
+    this.requireOriginalCashier(blocking.action);
+    const metricPath = this.preparedCashPath ?? "recovery";
+    let persisted = blocking.action;
+    let approvedPayment: InstallmentPaymentCommand | undefined;
+    const settlementState = await this.context.input.payments.inspectCashSettlement(
+      persisted.action.actionId,
+    );
+    if (settlementState === "Prepared") {
+      if (
+        persisted.state !== "Unknown" ||
+        this.preparedCashActionId !== persisted.action.actionId ||
+        this.preparedCashClaim === null
+      ) {
+        throw paymentRecoveryError(
+          "Cash collection was already started and requires supervisor recovery.",
+        );
+      }
+      // 中文注释：Unknown fence 已在确认按钮出现前耐久落盘；点击后不再依赖
+      // 另一笔前置状态写入，现金批准失败或进程崩溃都只允许主管恢复。
+      const cashDurableStartedAt = monotonicNowMilliseconds(this.context.input);
+      let confirmation: Awaited<
+        ReturnType<InstallmentMutationPaymentPort["confirmCashRepayment"]>
+      >;
+      try {
+        confirmation = await this.context.input.payments.confirmCashRepayment(
+          persisted.action.actionId,
+        );
+      } catch {
+        throw paymentRecoveryError(
+          "Cash receipt confirmation requires supervisor recovery.",
+        );
+      }
+      if (!("payment" in confirmation)) {
+        throw paymentRecoveryError(
+          "Cash receipt confirmation did not produce a durable payment.",
+        );
+      }
+      approvedPayment = validateApprovedPayment(
+        persisted.action,
+        confirmation.payment,
+      );
+      recordInstallmentMetric(this.context.input, {
+        name: "cash-durable",
+        elapsedMs: elapsedMilliseconds(
+          this.context.input,
+          cashDurableStartedAt,
+        ),
+        operationHash: operationHashFor(persisted),
+        path: metricPath,
+        outcome: "success",
+      });
+    } else if (settlementState !== "Approved") {
+      throw paymentRecoveryError(
+        "Cash settlement state requires supervisor recovery.",
+      );
+    }
+
+    // 现金已先在原 operation 耐久批准；从这里开始即使掉线也只能恢复 commit。
+    await this.assertOnlineAndScoped();
+    const samePreparedAction =
+      persisted.action.actionId === this.preparedCashActionId
+        ? this.preparedCashClaim
+        : null;
+    const recoveredPreparation = samePreparedAction
+      ? null
+      : await this.prepareCashRepaymentClaim(persisted, { recovery: true });
+    const claim = samePreparedAction ?? recoveredPreparation!.claim;
+    const persistedForClaim = recoveredPreparation?.persisted ?? persisted;
+    if (claim.status === "Committed") {
+      return this.finishCommittedRepayment(
+        persistedForClaim,
+        claim,
+        undefined,
+        metricPath,
+      );
+    }
+    return this.executeRepaymentClaimAction(persistedForClaim, {
+      recovery: true,
+      allowCashApproval: true,
+      singleCommit: true,
+      knownClaim: claim,
+      ...(approvedPayment ? { knownApprovedPayment: approvedPayment } : {}),
+      metricPath,
+    });
+  }
+
+  public async inspectCancellablePreparedCashRepayment(): Promise<
+    InstallmentCashRepaymentPreparation | null
+  > {
+    await this.assertOnlineAndScoped();
+    this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
+    const blocking = await this.loadBlockingOperation();
+    if (
+      !blocking ||
+      blocking.type !== "payment" ||
+      blocking.action.action.kind !== "repayment" ||
+      blocking.action.action.method !== "cash"
+    ) {
+      return null;
+    }
+    const persisted = blocking.action;
+    if (persisted.state !== "ProviderPending" && persisted.state !== "Unknown") {
+      return null;
+    }
+
+    let settlementState: Awaited<
+      ReturnType<InstallmentMutationPaymentPort["inspectCashSettlement"]>
+    >;
+    try {
+      settlementState = await this.context.input.payments.inspectCashSettlement(
+        persisted.action.actionId,
+      );
+    } catch {
+      // 中文注释：plan 缺失或无法证明仍为 Prepared 时，只返回不可取消；
+      // inspection 不得补建 plan、attempt 或改变任何 action 状态。
+      return null;
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    if (settlementState !== "Prepared") return null;
+
+    let binding: Readonly<{ provider: string; providerAttemptId: string }>;
+    try {
+      // 中文注释：仅在本地状态与 settlement 双重证明安全后读取原 durable
+      // binding；生产 adapter 对缺失 binding 失败关闭，绝不生成新身份。
+      binding = await this.context.input.payments.prepareRepaymentClaim(
+        persisted.action.actionId,
+      );
+      validateClaimBinding(binding);
+    } catch {
+      return null;
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    if (binding.provider !== "cash") return null;
+
+    const identity = Object.freeze({
+      installmentGuid: persisted.action.installmentGuid,
+      operationGuid: persisted.action.actionId,
+    });
+    let claim: InstallmentRepaymentClaim;
+    try {
+      claim = await this.context.input.api.getRepaymentClaim(identity);
+    } catch (error) {
+      throw mapRemoteError(error);
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    validateRepaymentClaim(claim, persisted.action, binding);
+    if (
+      claim.status !== "ProviderPending" &&
+      claim.status !== "Unknown" &&
+      claim.status !== "Released"
+    ) {
+      return null;
+    }
+
+    // 中文注释：这里只返回 recovery 路径所需的脱敏摘要；不 transition、
+    // approve、commit、resolve 或 release，也不要求原收银员仍在班。
+    return Object.freeze({
+      installmentGuid: persisted.action.installmentGuid,
+      amountCents: persisted.action.amountCents!,
+      operationHash: operationHashFor(persisted),
+      path: "recovery" as const,
+    });
+  }
+
+  public async cancelPreparedCashRepayment(): Promise<void> {
+    await this.assertOnlineAndScoped();
+    this.requireCurrentPermission(INSTALLMENTS_CANCEL_PERMISSION);
+    const blocking = await this.loadBlockingOperation();
+    if (
+      !blocking ||
+      blocking.type !== "payment" ||
+      blocking.action.action.kind !== "repayment" ||
+      blocking.action.action.method !== "cash"
+    ) {
+      throw workflowError(
+        "conflict",
+        "No prepared cash repayment can be cancelled.",
+      );
+    }
+    const persisted = blocking.action;
+    if (persisted.state !== "ProviderPending" && persisted.state !== "Unknown") {
+      throw paymentRecoveryError(
+        "Only an unapproved cash repayment can be released.",
+      );
+    }
+
+    let settlementState: Awaited<
+      ReturnType<InstallmentMutationPaymentPort["inspectCashSettlement"]>
+    >;
+    try {
+      // 中文注释：先只读证明钱箱 settlement 仍为 Prepared；Approved 或 plan
+      // 缺失都可能代表现金事实已发生，禁止继续远程 release。
+      settlementState = await this.context.input.payments.inspectCashSettlement(
+        persisted.action.actionId,
+      );
+    } catch (error) {
+      throw paymentRecoveryError(
+        error instanceof Error
+          ? error.message
+          : "Cash repayment settlement requires supervisor recovery.",
+      );
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    if (settlementState !== "Prepared") {
+      throw paymentRecoveryError(
+        "Cash may already have been collected and cannot be released.",
+      );
+    }
+
+    let binding: Readonly<{ provider: string; providerAttemptId: string }>;
+    try {
+      // 中文注释：后续 action 只允许读取已耐久的原 binding；adapter 会在 plan
+      // 缺失时失败关闭，绝不能在取消路径生成新的 provider identity。
+      binding = await this.context.input.payments.prepareRepaymentClaim(
+        persisted.action.actionId,
+      );
+      validateClaimBinding(binding);
+    } catch (error) {
+      throw paymentRecoveryError(
+        error instanceof Error
+          ? error.message
+          : "Cash repayment provider binding requires recovery.",
+      );
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    if (binding.provider !== "cash") {
+      throw workflowError(
+        "conflict",
+        "Cash repayment provider binding is not cash.",
+      );
+    }
+
+    const identity = Object.freeze({
+      installmentGuid: persisted.action.installmentGuid,
+      operationGuid: persisted.action.actionId,
+    });
+    let claim: InstallmentRepaymentClaim;
+    try {
+      claim = await this.context.input.api.getRepaymentClaim(identity);
+    } catch (error) {
+      throw mapRemoteError(error);
+    }
+    requireScopedLease(this.context.lease, this.context.terminal);
+    validateRepaymentClaim(claim, persisted.action, binding);
+
+    if (claim.status !== "Released") {
+      if (claim.status !== "ProviderPending" && claim.status !== "Unknown") {
+        throw workflowError(
+          "conflict",
+          `Cash repayment claim cannot be released from ${claim.status}.`,
+        );
+      }
+      try {
+        claim = await this.context.input.api.resolveRepaymentClaim({
+          ...identity,
+          outcome: "Released",
+          cashNotCollectedConfirmed: true,
+          providerAttemptId: binding.providerAttemptId,
+        });
+      } catch (error) {
+        // 中文注释：resolve 回包丢失时保留 blocking action；重试必须先 GET，
+        // 若服务端其实已 Released，再仅完成本地 release。
+        throw mapRemoteError(error);
+      }
+      requireScopedLease(this.context.lease, this.context.terminal);
+      validateRepaymentClaim(claim, persisted.action, binding);
+      if (claim.status !== "Released") {
+        throw paymentRecoveryError(
+          "Cash repayment release was not confirmed by the server.",
+        );
+      }
+    }
+
+    await this.releaseUnapprovedRepayment(persisted);
+    if (this.preparedCashActionId === persisted.action.actionId) {
+      this.preparedCashActionId = null;
+      this.preparedCashClaim = null;
+      this.preparedCashPath = null;
+    }
   }
 
   public async cancelWithRefund(input: Readonly<{
@@ -875,9 +1401,51 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
   private recoverBlockingOperation(
     blocking: PersistedInstallmentBlockingOperation,
   ): Promise<InstallmentDetails> {
-    return blocking.type === "payment"
-      ? this.recoverPersistedAction(blocking.action)
-      : this.executePersistedLifecycleAction(blocking.action);
+    if (blocking.type === "lifecycle") {
+      return this.executePersistedLifecycleAction(blocking.action);
+    }
+    if (
+      blocking.action.action.kind === "repayment" &&
+      blocking.action.action.method === "cash"
+    ) {
+      return this.recoverCashRepayment(blocking.action);
+    }
+    return this.recoverPersistedAction(blocking.action);
+  }
+
+  private async recoverCashRepayment(
+    blocking: PersistedInstallmentAction,
+  ): Promise<InstallmentDetails> {
+    const prepared = await this.prepareCashRepaymentClaim(blocking, {
+      recovery: true,
+    });
+    if (prepared.claim.status === "Committed") {
+      return this.finishCommittedRepayment(
+        prepared.persisted,
+        prepared.claim,
+        undefined,
+        "recovery",
+      );
+    }
+    const settlementState = await this.context.input.payments.inspectCashSettlement(
+      blocking.action.actionId,
+    );
+    if (settlementState === "Prepared") {
+      if (prepared.persisted.state !== "ProviderPending") {
+        throw paymentRecoveryError(
+          "Cash collection may have started and requires supervisor recovery.",
+        );
+      }
+      throw workflowError(
+        "cash-confirmation-required",
+        "Cash was prepared but not confirmed. Verify the cash drawer before confirming receipt.",
+      );
+    }
+    return this.executeRepaymentClaimAction(prepared.persisted, {
+      recovery: true,
+      allowCashApproval: true,
+      knownClaim: prepared.claim,
+    });
   }
 
   private recoverPersistedAction(
@@ -1141,6 +1709,125 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     });
   }
 
+  private async prepareCashRepaymentClaim(
+    persistedInput: PersistedInstallmentAction,
+    options: Readonly<{
+      capabilities?: InstallmentRepaymentCapabilities;
+      recovery: boolean;
+    }>,
+  ): Promise<Readonly<{
+    persisted: PersistedInstallmentAction;
+    claim: InstallmentRepaymentClaim;
+    binding: Readonly<{ provider: string; providerAttemptId: string }>;
+  }>> {
+    let persisted = validatePersistedAction(
+      persistedInput,
+      this.context.terminal,
+    );
+    const action = persisted.action;
+    if (
+      action.kind !== "repayment" ||
+      action.method !== "cash" ||
+      action.paymentGuid === null ||
+      action.amountCents === null
+    ) {
+      throw paymentRecoveryError("Cash repayment action identity is incomplete.");
+    }
+    const identity = Object.freeze({
+      installmentGuid: action.installmentGuid,
+      operationGuid: action.actionId,
+    });
+    let capabilities = options.capabilities ?? null;
+    let binding: Readonly<{ provider: string; providerAttemptId: string }>;
+    try {
+      binding = await this.context.input.payments.prepareRepaymentClaim(
+        action.actionId,
+      );
+      validateClaimBinding(binding);
+    } catch (error) {
+      throw paymentRecoveryError(
+        error instanceof Error
+          ? error.message
+          : "Cash repayment provider binding requires recovery.",
+      );
+    }
+    if (binding.provider !== "cash") {
+      throw workflowError(
+        "conflict",
+        "Cash repayment provider binding is not cash.",
+      );
+    }
+
+    let claim: InstallmentRepaymentClaim | null = null;
+    if (this.preparedCashClaim && this.preparedCashActionId === action.actionId) {
+      claim = this.preparedCashClaim;
+    }
+    if (!claim && (options.recovery || persisted.state !== "Created")) {
+      try {
+        claim = await this.context.input.api.getRepaymentClaim(identity);
+        validateRepaymentClaim(claim, action);
+      } catch (error) {
+        if (!repaymentClaimNotFound(error)) throw mapRemoteError(error);
+      }
+    }
+
+    const prepareProvider = async () => {
+      capabilities ??= await this.getRequiredRepaymentCapabilities();
+      if (capabilities.repaymentClaimPrepareProviderV1) {
+        const prepared = await this.context.input.api.prepareRepaymentClaimProvider({
+            ...identity,
+            paymentGuid: action.paymentGuid as string,
+            amountCents: action.amountCents as number,
+            method: "cash",
+            idempotencyKey: action.idempotencyKey,
+            provider: binding.provider,
+            providerAttemptId: binding.providerAttemptId,
+          });
+        validateRepaymentClaim(prepared, action, binding);
+        return prepared;
+      }
+      const created = claim ??
+        (await this.context.input.api.createRepaymentClaim({
+          ...identity,
+          paymentGuid: action.paymentGuid as string,
+          amountCents: action.amountCents as number,
+          method: "cash",
+          idempotencyKey: action.idempotencyKey,
+        }));
+      if (created.status === "Prepared" || created.status === "Unknown") {
+        const begun = await this.context.input.api.beginRepaymentClaimProvider({
+            ...identity,
+            provider: binding.provider,
+            providerAttemptId: binding.providerAttemptId,
+          });
+        validateRepaymentClaim(begun, action, binding);
+        return begun;
+      }
+      validateRepaymentClaim(created, action, binding);
+      return created;
+    };
+
+    if (!claim || claim.status === "Prepared" || claim.status === "Unknown") {
+      try {
+        claim = await prepareProvider();
+      } catch (error) {
+        throw mapRemoteError(error);
+      }
+    } else {
+      validateRepaymentClaim(claim, action, binding);
+    }
+    if (!claim || (claim.status !== "ProviderPending" && claim.status !== "Committed")) {
+      throw workflowError(
+        "conflict",
+        "Cash repayment claim is not ready for confirmation.",
+      );
+    }
+    if (claim.status === "ProviderPending" && persisted.state === "Created") {
+      persisted = await this.transitionAction(persisted, "ProviderPending");
+    }
+    return Object.freeze({ persisted, claim, binding });
+  }
+
   private async executePersistedAction(
     persistedInput: PersistedInstallmentAction,
     cartLease?: ActivePricingCartLease,
@@ -1287,6 +1974,15 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
 
   private async executeRepaymentClaimAction(
     persistedInput: PersistedInstallmentAction,
+    options: Readonly<{
+      recovery?: boolean;
+      allowCashApproval?: boolean;
+      explicitCashConfirmation?: boolean;
+      singleCommit?: boolean;
+      knownClaim?: InstallmentRepaymentClaim;
+      knownApprovedPayment?: InstallmentPaymentCommand;
+      metricPath?: InstallmentPerformanceEvent["path"];
+    }> = {},
   ): Promise<InstallmentDetails> {
     let persisted = persistedInput;
     const action = persisted.action;
@@ -1298,18 +1994,35 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     ) {
       throw paymentRecoveryError("Repayment action identity is incomplete.");
     }
+    // 中文注释：现金批准默认关闭。只有 confirm/recovery 已先证明 settlement
+    // 为 Approved，或传入同 operation 的 knownApprovedPayment，才显式放行。
+    if (action.method === "cash" && options.allowCashApproval !== true) {
+      throw workflowError(
+        "cash-confirmation-required",
+        "Cash must be explicitly confirmed before approval.",
+      );
+    }
     const identity = Object.freeze({
       installmentGuid: action.installmentGuid,
       operationGuid: action.actionId,
     });
 
-    let claim = await this.loadOrCreateRepaymentClaim(
-      persisted,
-      identity,
-    );
+    let claim =
+      options.knownClaim ??
+      (await this.loadOrCreateRepaymentClaim(persisted, identity));
+    const metricPath =
+      options.metricPath ??
+      (options.recovery
+        ? "recovery"
+        : this.preparedCashPath ?? "legacy-create-begin");
 
     if (claim.status === "Committed") {
-      return this.finishCommittedRepayment(persisted, claim);
+      return this.finishCommittedRepayment(
+        persisted,
+        claim,
+        undefined,
+        metricPath,
+      );
     }
     if (claim.status === "Released" || claim.status === "Declined") {
       await this.releaseUnapprovedRepayment(persisted);
@@ -1409,10 +2122,20 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     let result: Awaited<
       ReturnType<InstallmentMutationPaymentPort["beginOrRecover"]>
     >;
+    const cashDurableStartedAt = monotonicNowMilliseconds(this.context.input);
     try {
-      result = authorize
-        ? await this.context.input.payments.beginOrRecover(action.actionId)
-        : await this.context.input.payments.recoverBlocking(action.actionId);
+      result = options.knownApprovedPayment
+        ? Object.freeze({
+            kind: "approved" as const,
+            payment: options.knownApprovedPayment,
+          })
+        : options.explicitCashConfirmation
+          ? await this.context.input.payments.confirmCashRepayment(action.actionId)
+          : options.recovery
+            ? await this.context.input.payments.recoverBlocking(action.actionId)
+            : authorize
+              ? await this.context.input.payments.beginOrRecover(action.actionId)
+              : await this.context.input.payments.recoverBlocking(action.actionId);
     } catch {
       await this.markRepaymentUnknown(
         persisted,
@@ -1425,6 +2148,18 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       );
     }
     requireScopedLease(this.context.lease, this.context.terminal);
+    if (action.method === "cash" && options.explicitCashConfirmation) {
+      recordInstallmentMetric(this.context.input, {
+        name: "cash-durable",
+        elapsedMs: elapsedMilliseconds(
+          this.context.input,
+          cashDurableStartedAt,
+        ),
+        operationHash: operationHashFor(persisted),
+        path: this.preparedCashPath ?? "recovery",
+        outcome: "success",
+      });
+    }
 
     if (result.kind === "unknown") {
       await this.markRepaymentUnknown(persisted, identity, action, binding);
@@ -1463,12 +2198,58 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       );
     }
     const payment = validateApprovedPayment(action, result.payment);
-    claim = await this.commitRepaymentClaimWithRecovery(
+    if (persisted.state === "ProviderPending" || persisted.state === "Unknown") {
+      persisted = await this.transitionAction(persisted, "Approved");
+    }
+    if (persisted.state === "Approved") {
+      persisted = await this.transitionAction(persisted, "BackendPending");
+    }
+    const commitStartedAt = monotonicNowMilliseconds(this.context.input);
+    try {
+      claim = await this.commitRepaymentClaimWithRecovery(
+        persisted,
+        payment,
+        binding,
+        options.singleCommit !== true,
+      );
+      recordInstallmentMetric(this.context.input, {
+        name: "commit",
+        elapsedMs: elapsedMilliseconds(this.context.input, commitStartedAt),
+        operationHash: operationHashFor(persisted),
+        path: metricPath,
+        outcome: "success",
+      });
+    } catch (error) {
+      recordInstallmentMetric(this.context.input, {
+        name: "commit",
+        elapsedMs: elapsedMilliseconds(this.context.input, commitStartedAt),
+        operationHash: operationHashFor(persisted),
+        path: metricPath,
+        outcome: "recovery",
+      });
+      throw error;
+    }
+    return this.finishCommittedRepayment(
       persisted,
+      claim,
       payment,
-      binding,
+      metricPath,
     );
-    return this.finishCommittedRepayment(persisted, claim, payment);
+  }
+
+  private requireOriginalCashier(
+    persisted: PersistedInstallmentAction,
+  ): void {
+    const session = requireScopedLease(
+      this.context.lease,
+      this.context.terminal,
+    );
+    if (persisted.command.cashierId !== session.cashierId) {
+      throw workflowError(
+        "authorization-declined",
+        "Prepared cash repayment belongs to the original cashier.",
+      );
+    }
   }
 
   private async loadOrCreateRepaymentClaim(
@@ -1620,6 +2401,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     persisted: PersistedInstallmentAction,
     payment: InstallmentPaymentCommand,
     binding: Readonly<{ provider: string; providerAttemptId: string }>,
+    recovery: boolean,
   ): Promise<InstallmentRepaymentClaim> {
     const command = Object.freeze({
       installmentGuid: persisted.action.installmentGuid,
@@ -1637,6 +2419,13 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
         await this.context.input.api.commitRepaymentClaim(command),
       );
     } catch (firstError) {
+      if (!recovery) {
+        throw paymentRecoveryError(
+          firstError instanceof Error
+            ? firstError.message
+            : "Repayment claim commit requires recovery.",
+        );
+      }
       let observed: InstallmentRepaymentClaim;
       try {
         observed = validate(
@@ -1676,6 +2465,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     persistedInput: PersistedInstallmentAction,
     claim: InstallmentRepaymentClaim,
     approvedPayment?: InstallmentPaymentCommand,
+    metricPath: InstallmentPerformanceEvent["path"] = "recovery",
   ): Promise<InstallmentDetails> {
     if (claim.status !== "Committed" || !claim.commit) {
       throw paymentRecoveryError(
@@ -1708,11 +2498,40 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (persisted.state !== "BackendPending") {
       throw paymentRecoveryError("Committed repayment action state is invalid.");
     }
-    await this.cacheDetails(claim.commit.details);
-    await this.context.input.actionStore.complete({
-      actionId: action.actionId,
-      expectedState: "BackendPending",
-      terminal: this.context.terminal,
+    const localFinalizeStartedAt = monotonicNowMilliseconds(this.context.input);
+    const atomicFinalize =
+      this.context.input.actionStore.completeCommittedRepaymentWithSnapshot;
+    if (
+      action.method === "cash" &&
+      atomicFinalize &&
+      this.context.input.snapshotRepository
+    ) {
+      // 中文注释：生产路径必须把 snapshot 与 action completion 交给波1同一事务；
+      // 不得先 cacheDetails 再单独 complete，否则崩溃会留下半完成事实。
+      await atomicFinalize.call(
+        this.context.input.actionStore,
+        {
+          actionId: action.actionId,
+          expectedState: "BackendPending",
+          terminal: this.context.terminal,
+          snapshot: toSnapshot(claim.commit.details),
+        },
+        this.context.input.snapshotRepository,
+      );
+    } else {
+      await this.cacheDetails(claim.commit.details);
+      await this.context.input.actionStore.complete({
+        actionId: action.actionId,
+        expectedState: "BackendPending",
+        terminal: this.context.terminal,
+      });
+    }
+    recordInstallmentMetric(this.context.input, {
+      name: "local-finalize",
+      elapsedMs: elapsedMilliseconds(this.context.input, localFinalizeStartedAt),
+      operationHash: operationHashFor(persisted),
+      path: metricPath,
+      outcome: "success",
     });
     requireScopedLease(this.context.lease, this.context.terminal);
     return claim.commit.details;
@@ -2438,6 +3257,51 @@ function toSnapshot(summary: InstallmentSummary): InstallmentSnapshot {
   });
 }
 
+function operationHashFor(persisted: PersistedInstallmentAction): string {
+  // intentFingerprint 已是 action material 的 sha256；只记录短标识，绝不记录 GUID、
+  // payment reference 或 provider material。
+  return persisted.intentFingerprint.slice(0, 23);
+}
+
+function monotonicNowMilliseconds(
+  input: Pick<ProductionInstallmentRuntimeDependencies, "monotonicNowMilliseconds">,
+): number {
+  try {
+    const injected = input.monotonicNowMilliseconds?.();
+    if (injected !== undefined && Number.isFinite(injected)) return injected;
+  } catch {
+    // 指标读取失败只能降级计时，不能改变现金操作状态机。
+  }
+  const performanceNow = globalThis.performance?.now();
+  return performanceNow !== undefined && Number.isFinite(performanceNow)
+    ? performanceNow
+    : Date.now();
+}
+
+function elapsedMilliseconds(
+  input: Pick<ProductionInstallmentRuntimeDependencies, "monotonicNowMilliseconds">,
+  startedAt: number,
+): number {
+  return Math.max(0, monotonicNowMilliseconds(input) - startedAt);
+}
+
+function recordInstallmentMetric(
+  input: Pick<
+    ProductionInstallmentRuntimeDependencies,
+    "performanceRecorder"
+  >,
+  event: InstallmentPerformanceEvent,
+): void {
+  try {
+    const result = input.performanceRecorder?.record(event);
+    if (result && typeof (result as Promise<void>).catch === "function") {
+      void (result as Promise<void>).catch(() => undefined);
+    }
+  } catch {
+    // 指标写入失败不得阻塞支付或改变 durable recovery 事实。
+  }
+}
+
 function toSummary(value: InstallmentSummary): InstallmentSummary {
   return Object.freeze({
     installmentGuid: value.installmentGuid,
@@ -2519,6 +3383,8 @@ function validateRepaymentCapabilities(
   if (
     typeof capabilities.repaymentClaimsSupported !== "boolean" ||
     typeof capabilities.repaymentClaimsRequired !== "boolean" ||
+    (capabilities.repaymentClaimPrepareProviderV1 !== undefined &&
+      typeof capabilities.repaymentClaimPrepareProviderV1 !== "boolean") ||
     typeof capabilities.cardRepaymentSupported !== "boolean" ||
     typeof capabilities.crossDeviceRepaymentEnabled !== "boolean" ||
     typeof capabilities.crossDeviceCancelRefundEnabled !== "boolean" ||
@@ -2529,7 +3395,11 @@ function validateRepaymentCapabilities(
   ) {
     throw new Error("Installment repayment capabilities are invalid.");
   }
-  return Object.freeze({ ...capabilities });
+  return Object.freeze({
+    ...capabilities,
+    repaymentClaimPrepareProviderV1:
+      capabilities.repaymentClaimPrepareProviderV1 === true,
+  });
 }
 
 async function createCancelRefundPlanFingerprint(

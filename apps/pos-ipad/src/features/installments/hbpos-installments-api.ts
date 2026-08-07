@@ -12,6 +12,7 @@ import type {
   InstallmentRepaymentCapabilities,
   InstallmentRepaymentClaim,
   InstallmentRepaymentClaimBeginProviderCommand,
+  InstallmentRepaymentClaimPrepareProviderCommand,
   InstallmentRepaymentClaimCommitCommand,
   InstallmentRepaymentClaimCreateCommand,
   InstallmentRepaymentClaimIdentity,
@@ -46,6 +47,10 @@ type GeneratedCreateRequest =
   components["schemas"]["InstallmentCreateRequest"];
 type GeneratedCreateResponse =
   components["schemas"]["InstallmentCreateResponse"];
+type GeneratedPrepareProviderRequest =
+  components["schemas"]["InstallmentRepaymentClaimPrepareProviderRequest"];
+type GeneratedResolveRequest =
+  components["schemas"]["InstallmentRepaymentClaimResolveRequest"];
 type GeneratedDetails =
   components["schemas"]["InstallmentDetailsDto"];
 type GeneratedHistoryResponse =
@@ -146,6 +151,10 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
         payload.repaymentClaimsRequired,
         "capabilities.repaymentClaimsRequired",
       ),
+      repaymentClaimPrepareProviderV1: optionalResponseBoolean(
+        payload.repaymentClaimPrepareProviderV1,
+        "capabilities.repaymentClaimPrepareProviderV1",
+      ),
       cardRepaymentSupported: optionalResponseBoolean(
         payload.cardRepaymentSupported,
         "capabilities.cardRepaymentSupported",
@@ -226,6 +235,38 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
     );
   }
 
+  public async prepareRepaymentClaimProvider(
+    command: InstallmentRepaymentClaimPrepareProviderCommand,
+  ): Promise<InstallmentRepaymentClaim> {
+    const identity = mapClaimIdentity(command);
+    const request: GeneratedPrepareProviderRequest = {
+      paymentGuid: requestUuid(command.paymentGuid, "paymentGuid"),
+      amount: centsToDollars(command.amountCents, "amountCents", false),
+      method: METHOD_TO_API[command.method],
+      idempotencyKey: requestText(
+        command.idempotencyKey,
+        "idempotencyKey",
+        100,
+      ),
+      provider: requestText(command.provider, "provider", 32),
+      providerAttemptId: requestText(
+        command.providerAttemptId,
+        "providerAttemptId",
+        128,
+      ),
+    };
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "POST",
+      url: claimUrl(identity, "/prepare-provider"),
+      data: request,
+    });
+    return this.mapRepaymentClaim(
+      unwrapHbposEnvelope(response.data),
+      identity.installmentGuid,
+      identity.operationGuid,
+    );
+  }
+
   public async getRepaymentClaim(
     input: InstallmentRepaymentClaimIdentity,
   ): Promise<InstallmentRepaymentClaim> {
@@ -245,10 +286,30 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
     command: InstallmentRepaymentClaimResolveCommand,
   ): Promise<InstallmentRepaymentClaim> {
     const identity = mapClaimIdentity(command);
+    const request: GeneratedResolveRequest = {
+      outcome: RESOLVE_OUTCOME_TO_API[command.outcome],
+      ...(command.cashNotCollectedConfirmed === undefined
+        ? {}
+        : {
+            cashNotCollectedConfirmed: command.cashNotCollectedConfirmed,
+          }),
+      ...(command.providerAttemptId === undefined
+        ? {}
+        : {
+            providerAttemptId:
+              command.providerAttemptId === null
+                ? null
+                : requestText(
+                    command.providerAttemptId,
+                    "providerAttemptId",
+                    128,
+                  ),
+          }),
+    };
     const response = await this.transport.request<HbposEnvelope<unknown>>({
       method: "POST",
       url: claimUrl(identity, "/resolve"),
-      data: { outcome: RESOLVE_OUTCOME_TO_API[command.outcome] },
+      data: request,
     });
     return this.mapRepaymentClaim(
       unwrapHbposEnvelope(response.data),

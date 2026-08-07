@@ -9,12 +9,21 @@ export interface NavigationMenuLoadOptions {
   load: () => Promise<AppNavigationMenuItem[]>;
   fallbackItems: AppNavigationMenuItem[];
   getCurrentItems: () => AppNavigationMenuItem[];
+  isCancelled?: () => boolean;
   delay?: (milliseconds: number) => Promise<void>;
   retryDelayMs?: number;
 }
 
 const MAX_LOAD_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 150;
+const NAVIGATION_RECOVERY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000] as const;
+
+export function getNavigationMenuRecoveryDelay(attempt: number): number {
+  const normalizedAttempt = Math.max(0, Math.floor(attempt));
+  return NAVIGATION_RECOVERY_DELAYS_MS[
+    Math.min(normalizedAttempt, NAVIGATION_RECOVERY_DELAYS_MS.length - 1)
+  ];
+}
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -32,23 +41,35 @@ export async function loadNavigationMenuWithRetry({
   load,
   fallbackItems,
   getCurrentItems,
+  isCancelled = () => false,
   delay = wait,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
 }: NavigationMenuLoadOptions): Promise<NavigationMenuLoadResult> {
   let lastError: unknown | null = null;
 
   for (let attempt = 0; attempt < MAX_LOAD_ATTEMPTS; attempt += 1) {
+    if (isCancelled()) {
+      return { items: getCurrentItems(), error: null };
+    }
+
     try {
       const items = await load();
+      if (isCancelled()) {
+        return { items: getCurrentItems(), error: null };
+      }
       if (items.length > 0) {
         return { items, error: null };
       }
+      lastError = new Error("App navigation menu is empty");
     } catch (error) {
       lastError = error;
     }
 
     if (attempt < MAX_LOAD_ATTEMPTS - 1) {
       await delay(retryDelayMs);
+      if (isCancelled()) {
+        return { items: getCurrentItems(), error: null };
+      }
     }
   }
 

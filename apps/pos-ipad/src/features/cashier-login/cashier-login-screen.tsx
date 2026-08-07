@@ -40,6 +40,8 @@ type LoginCopy = Readonly<{
   inputLabel: string;
   inputHint: string;
   keyboard: string;
+  showBarcode: string;
+  hideBarcode: string;
   manualEntryHint: string;
   submit: string;
   submitting: string;
@@ -65,6 +67,8 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     inputLabel: "Cashier barcode",
     inputHint: "Scan cashier barcode",
     keyboard: "Keyboard",
+    showBarcode: "Show cashier barcode",
+    hideBarcode: "Hide cashier barcode",
     manualEntryHint: 'Scanner ready; tap "Keyboard" for manual entry.',
     submit: "Sign in to checkout",
     submitting: "Checking authorization…",
@@ -94,6 +98,8 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     inputLabel: "收银员条码",
     inputHint: "扫描收银员条码",
     keyboard: "键盘",
+    showBarcode: "显示收银员条码",
+    hideBarcode: "隐藏收银员条码",
     manualEntryHint: "默认使用扫码枪；手动输入请点“键盘”。",
     submit: "进入收银",
     submitting: "正在核验授权…",
@@ -155,6 +161,7 @@ export function CashierLoginScreen({
     null,
   );
   const [barcode, setBarcode] = useState("");
+  const [barcodeVisible, setBarcodeVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restoreScannerFocusAfterFailure, setRestoreScannerFocusAfterFailure] =
     useState(false);
@@ -251,6 +258,7 @@ export function CashierLoginScreen({
     const submittedBarcode = barcode;
     // 扫码提交后立即清空可见输入，登录失败复焦时下一次 HID 从空值开始。
     setBarcode("");
+    setBarcodeVisible(false);
     submittingRef.current = true;
     setSubmitting(true);
     try {
@@ -308,28 +316,55 @@ export function CashierLoginScreen({
             </View>
           </View>
           <View style={styles.inputRow}>
-            <PosKeyboardAwareTextInput
-              ref={barcodeRef}
-              accessibilityLabel={text.inputLabel}
-              autoFocus
-              autoCapitalize="characters"
-              autoCorrect={false}
-              editable={!submitting && !blocked}
-              onBlur={handleBarcodeBlur}
-              onChangeText={setBarcode}
-              onFocus={notifyManualInputFocused}
-              onSubmitEditing={() => void submit()}
-              placeholder={text.inputHint}
-              returnKeyType="go"
-              showSoftInputOnFocus={showSoftInputOnFocus}
-              style={[
-                styles.input,
-                (submitting || blocked) && styles.inputDisabled,
-              ]}
-              submitBehavior="submit"
-              testID="cashier-login-barcode"
-              value={barcode}
-            />
+            <View style={styles.inputContainer}>
+              <PosKeyboardAwareTextInput
+                ref={barcodeRef}
+                accessibilityLabel={text.inputLabel}
+                autoFocus
+                autoCapitalize="characters"
+                autoCorrect={false}
+                editable={!submitting && !blocked}
+                onBlur={handleBarcodeBlur}
+                onChangeText={setBarcode}
+                onFocus={notifyManualInputFocused}
+                onSubmitEditing={() => void submit()}
+                placeholder={text.inputHint}
+                returnKeyType="go"
+                secureTextEntry={!barcodeVisible}
+                showSoftInputOnFocus={showSoftInputOnFocus}
+                style={[
+                  styles.input,
+                  (submitting || blocked) && styles.inputDisabled,
+                ]}
+                submitBehavior="submit"
+                testID="cashier-login-barcode"
+                value={barcode}
+              />
+              <PosPressable
+                accessibilityLabel={
+                  barcodeVisible ? text.hideBarcode : text.showBarcode
+                }
+                accessibilityRole="button"
+                accessibilityState={{ disabled: submitting || blocked }}
+                disabled={submitting || blocked}
+                onPress={() => setBarcodeVisible((visible) => !visible)}
+                sound="navigate"
+                style={({ pressed }) => [
+                  styles.visibilityButton,
+                  (pressed || submitting || blocked) &&
+                    styles.visibilityButtonPressed,
+                ]}
+                testID="cashier-login-toggle-barcode-visibility"
+              >
+                <MaterialCommunityIcons
+                  color={
+                    submitting || blocked ? posColors.mutedInk : posColors.blue
+                  }
+                  name={barcodeVisible ? "eye-off-outline" : "eye-outline"}
+                  size={23}
+                />
+              </PosPressable>
+            </View>
             <PosPressable
               accessibilityLabel={text.keyboard}
               accessibilityRole="button"
@@ -528,18 +563,28 @@ const styles = StyleSheet.create({
   formTitle: { color: posColors.ink, fontSize: 25, fontWeight: "800" },
   formHint: { color: posColors.mutedInk, fontSize: 15, marginTop: 3 },
   inputRow: { flexDirection: "row", gap: 12 },
+  inputContainer: { flex: 1, minWidth: 0, position: "relative" },
   input: {
     backgroundColor: "#FFFDF8",
     borderColor: posColors.border,
     borderWidth: 1,
     color: posColors.ink,
-    flex: 1,
     fontSize: 22,
     minHeight: 62,
-    minWidth: 0,
     paddingHorizontal: 18,
+    paddingRight: 62,
   },
   inputDisabled: { backgroundColor: "#F1F0EC", color: posColors.mutedInk },
+  visibilityButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 44,
+    position: "absolute",
+    right: 8,
+    top: 9,
+  },
+  visibilityButtonPressed: { opacity: 0.62 },
   keyboardButton: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",

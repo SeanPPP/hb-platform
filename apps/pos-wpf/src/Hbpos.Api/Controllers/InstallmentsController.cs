@@ -375,7 +375,37 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentPayment)]
+    [Authorize]
+    [HttpPost("{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/prepare-provider")]
+    public async Task<ActionResult<ApiResult<InstallmentRepaymentClaimDto>>> PrepareRepaymentProvider(
+        Guid installmentGuid,
+        Guid operationGuid,
+        [FromBody] InstallmentRepaymentClaimPrepareProviderRequest request,
+        CancellationToken cancellationToken)
+    {
+        var identity = await ResolveRepaymentClaimIdentityAsync(cancellationToken);
+        if (identity is null)
+        {
+            return CashierIdentityRequired<InstallmentRepaymentClaimDto>();
+        }
+
+        try
+        {
+            var response = await RequireRepaymentClaimService().PrepareProviderAsync(
+                installmentGuid,
+                operationGuid,
+                request,
+                identity,
+                cancellationToken);
+            return Ok(ApiResult<InstallmentRepaymentClaimDto>.Ok(response));
+        }
+        catch (InstallmentRepaymentClaimException ex)
+        {
+            return ClaimError<InstallmentRepaymentClaimDto>(ex);
+        }
+    }
+
+    [Authorize]
     [HttpGet("{installmentGuid:guid}/repayment-claims/{operationGuid:guid}")]
     public async Task<ActionResult<ApiResult<InstallmentRepaymentClaimDto>>> GetRepaymentClaim(
         Guid installmentGuid,
@@ -403,7 +433,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentPayment)]
+    [Authorize]
     [HttpPost("{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/resolve")]
     public async Task<ActionResult<ApiResult<InstallmentRepaymentClaimDto>>> ResolveRepaymentClaim(
         Guid installmentGuid,
@@ -433,7 +463,7 @@ public sealed class InstallmentsController(
         }
     }
 
-    [Authorize(Policy = CashierAuthorizationPolicies.InstallmentPayment)]
+    [Authorize]
     [HttpPost("{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/commit")]
     public async Task<ActionResult<ApiResult<InstallmentRepaymentClaimDto>>> CommitRepaymentClaim(
         Guid installmentGuid,

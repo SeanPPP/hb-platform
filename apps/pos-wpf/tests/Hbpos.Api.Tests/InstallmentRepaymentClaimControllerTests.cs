@@ -27,9 +27,10 @@ public sealed class InstallmentRepaymentClaimControllerTests
         AssertRoute(nameof(InstallmentsController.Capabilities), "capabilities", isGet: true, policy: null);
         AssertRoute(nameof(InstallmentsController.CreateRepaymentClaim), "{installmentGuid:guid}/repayment-claims", false, CashierAuthorizationPolicies.InstallmentPayment);
         AssertRoute(nameof(InstallmentsController.BeginRepaymentProvider), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/begin-provider", false, CashierAuthorizationPolicies.InstallmentPayment);
-        AssertRoute(nameof(InstallmentsController.GetRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}", true, CashierAuthorizationPolicies.InstallmentPayment);
-        AssertRoute(nameof(InstallmentsController.ResolveRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/resolve", false, CashierAuthorizationPolicies.InstallmentPayment);
-        AssertRoute(nameof(InstallmentsController.CommitRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/commit", false, CashierAuthorizationPolicies.InstallmentPayment);
+        AssertRoute(nameof(InstallmentsController.PrepareRepaymentProvider), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/prepare-provider", false, policy: null);
+        AssertRoute(nameof(InstallmentsController.GetRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}", true, policy: null);
+        AssertRoute(nameof(InstallmentsController.ResolveRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/resolve", false, policy: null);
+        AssertRoute(nameof(InstallmentsController.CommitRepaymentClaim), "{installmentGuid:guid}/repayment-claims/{operationGuid:guid}/commit", false, policy: null);
     }
 
     [Fact]
@@ -52,6 +53,19 @@ public sealed class InstallmentRepaymentClaimControllerTests
                 InstallmentGuid,
                 OperationGuid,
                 new InstallmentRepaymentClaimBeginProviderRequest("linkly", "attempt-1"),
+                CancellationToken.None),
+            data => Assert.Equal(OperationGuid, data.OperationGuid));
+        AssertOkEnvelope(
+            await controller.PrepareRepaymentProvider(
+                InstallmentGuid,
+                OperationGuid,
+                new InstallmentRepaymentClaimPrepareProviderRequest(
+                    PaymentGuid,
+                    10m,
+                    PaymentMethodKind.Card,
+                    "claim-action-1",
+                    "linkly",
+                    "attempt-1"),
                 CancellationToken.None),
             data => Assert.Equal(OperationGuid, data.OperationGuid));
         AssertOkEnvelope(
@@ -93,6 +107,27 @@ public sealed class InstallmentRepaymentClaimControllerTests
             CancellationToken.None);
 
         AssertError(action, StatusCodes.Status409Conflict, errorCode);
+    }
+
+    [Fact]
+    public async Task Prepare_provider_conflict_errors_map_to_http_409()
+    {
+        var claims = new FakeClaimService { ErrorCode = InstallmentRepaymentClaimErrorCodes.Mismatch };
+        var controller = CreateController(claims, new FakeIdentityResolver(TrustedIdentity));
+
+        var action = await controller.PrepareRepaymentProvider(
+            InstallmentGuid,
+            OperationGuid,
+            new InstallmentRepaymentClaimPrepareProviderRequest(
+                PaymentGuid,
+                10m,
+                PaymentMethodKind.Cash,
+                "claim-action-1",
+                "cash",
+                "attempt-1"),
+            CancellationToken.None);
+
+        AssertError(action, StatusCodes.Status409Conflict, InstallmentRepaymentClaimErrorCodes.Mismatch);
     }
 
     [Fact]
@@ -152,6 +187,35 @@ public sealed class InstallmentRepaymentClaimControllerTests
         Assert.DoesNotContain("deviceCode", bodyProperties);
         Assert.DoesNotContain("cashierId", bodyProperties);
         Assert.DoesNotContain("cashierName", bodyProperties);
+    }
+
+    [Fact]
+    public async Task Recovery_routes_still_require_a_verified_cashier_identity()
+    {
+        var claims = new FakeClaimService();
+        var controller = CreateController(claims, new FakeIdentityResolver(null));
+
+        AssertError(
+            await controller.GetRepaymentClaim(InstallmentGuid, OperationGuid, CancellationToken.None),
+            StatusCodes.Status401Unauthorized,
+            "CASHIER_AUTH_REQUIRED");
+        AssertError(
+            await controller.ResolveRepaymentClaim(
+                InstallmentGuid,
+                OperationGuid,
+                new InstallmentRepaymentClaimResolveRequest(InstallmentRepaymentClaimResolveOutcome.Unknown),
+                CancellationToken.None),
+            StatusCodes.Status401Unauthorized,
+            "CASHIER_AUTH_REQUIRED");
+        AssertError(
+            await controller.CommitRepaymentClaim(
+                InstallmentGuid,
+                OperationGuid,
+                new InstallmentRepaymentClaimCommitRequest(),
+                CancellationToken.None),
+            StatusCodes.Status401Unauthorized,
+            "CASHIER_AUTH_REQUIRED");
+        Assert.Null(claims.LastIdentity);
     }
 
     [Fact]
@@ -338,6 +402,8 @@ public sealed class InstallmentRepaymentClaimControllerTests
         public Task<InstallmentRepaymentClaimDto> CreateAsync(Guid installmentGuid, InstallmentRepaymentClaimCreateRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => Respond(identity);
 
         public Task<InstallmentRepaymentClaimDto> BeginProviderAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimBeginProviderRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => Respond(identity);
+
+        public Task<InstallmentRepaymentClaimDto> PrepareProviderAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimPrepareProviderRequest request, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => Respond(identity);
 
         public Task<InstallmentRepaymentClaimDto> GetAsync(Guid installmentGuid, Guid operationGuid, InstallmentRepaymentClaimIdentity identity, CancellationToken cancellationToken) => Respond(identity);
 

@@ -116,6 +116,10 @@ export function PaymentScreen({
     fullInstallmentConfirmationOpen,
     setFullInstallmentConfirmationOpen,
   ] = useState(false);
+  const [
+    preparedCashCancellationOpen,
+    setPreparedCashCancellationOpen,
+  ] = useState(false);
   const squareAutoRecovery = useRef<{
     attemptId: string | null;
     recoveryCount: number;
@@ -133,6 +137,21 @@ export function PaymentScreen({
     state.busy,
     state.checkout.fullInstallmentConfirmationRequired,
   ]);
+
+  useEffect(() => {
+    if (!canCancelPreparedCash(state)) {
+      setPreparedCashCancellationOpen(false);
+    }
+  }, [presenter, state]);
+
+  useEffect(() => {
+    if (state.phase !== "success") return;
+    try {
+      presenter.recordSuccessRendered?.();
+    } catch {
+      // 性能指标是成功页旁路，采集失败不能改变已提交的支付结果。
+    }
+  }, [presenter, state.orderGuid, state.phase]);
 
   useEffect(() => {
     const attemptId = state.attemptId;
@@ -199,6 +218,7 @@ export function PaymentScreen({
     state.phase !== "loading" &&
     state.phase !== "success" &&
     state.phase !== "submitting" &&
+    state.phase !== "cash-confirming" &&
     (state.allowedActions.start || state.allowedActions.addCash);
 
   return (
@@ -457,7 +477,10 @@ export function PaymentScreen({
                       !canSubmitPaymentMethod(state, state.selectedMethod)
                     }
                     label={
-                      state.orderGuid
+                      state.checkout.flow === "installment-repayment" &&
+                      state.selectedMethod === "cash"
+                        ? t("action.prepareCashRepayment")
+                        : state.orderGuid
                         ? t("action.addTender")
                         : t("action.pay")
                     }
@@ -474,6 +497,9 @@ export function PaymentScreen({
             <PaymentSummary
               compact={compact}
               locale={locale}
+              onCancelPreparedCash={() => {
+                setPreparedCashCancellationOpen(true);
+              }}
               onConfirm={() => {
                 const customer =
                   state.checkout.installmentCustomer;
@@ -540,6 +566,55 @@ export function PaymentScreen({
                 style={styles.confirmationAction}
                 sound="danger"
                 testID="payment-full-installment-confirm"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() =>
+          setPreparedCashCancellationOpen(false)
+        }
+        transparent
+        visible={preparedCashCancellationOpen}
+      >
+        <View
+          accessibilityViewIsModal
+          style={styles.confirmationBackdrop}
+          testID="payment-cancel-prepared-cash-confirmation"
+        >
+          <View style={styles.confirmationCard}>
+            <Text style={styles.confirmationTitle}>
+              {t("installment.cancelPreparedCash.title")}
+            </Text>
+            <Text style={styles.confirmationBody}>
+              {t("installment.cancelPreparedCash.body")}
+            </Text>
+            <View style={styles.confirmationActions}>
+              <ActionButton
+                disabled={state.busy}
+                label={t("installment.cancelPreparedCash.dismiss")}
+                onPress={() =>
+                  setPreparedCashCancellationOpen(false)
+                }
+                style={styles.confirmationAction}
+                sound="navigate"
+                testID="payment-cancel-prepared-cash-dismiss"
+                tone="quiet"
+              />
+              <ActionButton
+                disabled={state.busy}
+                label={t("installment.cancelPreparedCash.confirm")}
+                onPress={() => {
+                  setPreparedCashCancellationOpen(false);
+                  void presenter.cancel();
+                }}
+                style={styles.confirmationAction}
+                sound="danger"
+                testID="payment-cancel-prepared-cash-confirm"
+                tone="danger"
               />
             </View>
           </View>
@@ -1095,21 +1170,47 @@ function ProviderBlockers({
 }
 
 function RecoveryActions({
+  onCancelPreparedCash,
   presenter,
   state,
   t,
 }: Readonly<{
+  onCancelPreparedCash(): void;
   presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
-  if (!state.allowedActions.recover && !state.allowedActions.cancel) {
+  const preparedCashCancellation = canCancelPreparedCash(state);
+  const cashConfirmationRecovery =
+    state.checkout.flow === "installment-repayment" &&
+    state.phase === "recovery-required" &&
+    state.checkout.cashRepaymentStatus === "ready";
+  const showPreparedCashCancellation =
+    preparedCashCancellation && state.phase === "recovery-required";
+  const showGenericCancellation =
+    state.allowedActions.cancel && !preparedCashCancellation;
+  if (
+    !state.allowedActions.recover &&
+    !showGenericCancellation &&
+    !showPreparedCashCancellation &&
+    !cashConfirmationRecovery
+  ) {
     return null;
   }
   const actionDisabled = state.busy || state.recoveryInFlight === true;
   return (
     <View style={styles.recoveryActions} testID="payment-recovery-actions">
-      {state.allowedActions.recover ? (
+      {cashConfirmationRecovery ? (
+        <ActionButton
+          disabled={actionDisabled}
+          label={t("action.confirmCashReceived")}
+          onPress={() => {
+            void presenter.confirm?.();
+          }}
+          testID="payment-confirm-cash-recovery"
+          tone="primary"
+        />
+      ) : state.allowedActions.recover ? (
         <ActionButton
           disabled={actionDisabled}
           label={
@@ -1124,7 +1225,7 @@ function RecoveryActions({
           tone="primary"
         />
       ) : null}
-      {state.allowedActions.cancel ? (
+      {showGenericCancellation ? (
         <ActionButton
           disabled={actionDisabled}
           label={t("action.cancel")}
@@ -1132,6 +1233,16 @@ function RecoveryActions({
             void presenter.cancel();
           }}
           testID="payment-cancel"
+          tone="danger"
+        />
+      ) : null}
+      {showPreparedCashCancellation ? (
+        <ActionButton
+          disabled={actionDisabled}
+          label={t("action.cancelPreparedCashRepayment")}
+          onPress={onCancelPreparedCash}
+          sound="danger"
+          testID="payment-cancel-prepared-cash"
           tone="danger"
         />
       ) : null}
@@ -1206,6 +1317,7 @@ function LinklyControls({
 function PaymentSummary({
   compact,
   locale,
+  onCancelPreparedCash,
   onConfirm,
   presenter,
   state,
@@ -1213,6 +1325,7 @@ function PaymentSummary({
 }: Readonly<{
   compact: boolean;
   locale: PaymentLocale;
+  onCancelPreparedCash(): void;
   onConfirm(): void;
   presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
@@ -1222,6 +1335,16 @@ function PaymentSummary({
     0,
     state.total.cents - state.remaining.cents,
   );
+  const preparedCashCancellation = canCancelPreparedCash(state);
+  const showPreparedCashCancellationInFooter =
+    preparedCashCancellation && state.phase !== "recovery-required";
+  const showConfirmation =
+    Boolean(presenter.confirm) &&
+    state.checkout.canConfirm &&
+    !(
+      state.phase === "recovery-required" &&
+      state.checkout.cashRepaymentStatus === "ready"
+    );
   return (
     <View
       style={[
@@ -1317,23 +1440,44 @@ function PaymentSummary({
         ) : (
           <Text style={styles.emptyTenders}>{t("summary.noTenders")}</Text>
         )}
-        <RecoveryActions presenter={presenter} state={state} t={t} />
+        <RecoveryActions
+          onCancelPreparedCash={onCancelPreparedCash}
+          presenter={presenter}
+          state={state}
+          t={t}
+        />
         <LinklyControls presenter={presenter} state={state} t={t} />
       </ScrollView>
-      {presenter.confirm && state.checkout.canConfirm ? (
+      {showConfirmation || showPreparedCashCancellationInFooter ? (
         <View style={styles.summaryFooter} testID="payment-summary-footer">
-          <ActionButton
-            disabled={state.busy}
-            label={
-              locale === "zh"
-                ? "确认分期付款"
-                : "Confirm installment payment"
-            }
-            onPress={onConfirm}
-            sound="danger"
-            style={styles.confirmAction}
-            testID="payment-confirm"
-          />
+          {showConfirmation ? (
+            <ActionButton
+              disabled={state.busy}
+              label={
+                state.checkout.cashRepaymentStatus === "ready" ||
+                state.checkout.cashRepaymentStatus === "confirming"
+                  ? t("action.confirmCashReceived")
+                  : locale === "zh"
+                    ? "确认分期付款"
+                    : "Confirm installment payment"
+              }
+              onPress={onConfirm}
+              sound="danger"
+              style={styles.confirmAction}
+              testID="payment-confirm"
+            />
+          ) : null}
+          {showPreparedCashCancellationInFooter ? (
+            <ActionButton
+              disabled={state.busy}
+              label={t("action.cancelPreparedCashRepayment")}
+              onPress={onCancelPreparedCash}
+              sound="danger"
+              style={styles.preparedCashCancelAction}
+              testID="payment-cancel-prepared-cash"
+              tone="quiet"
+            />
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -1635,12 +1779,30 @@ function statusTone(
   return "neutral";
 }
 
+function canCancelPreparedCash(state: PaymentPresenterState): boolean {
+  return (
+    state.checkout.flow === "installment-repayment" &&
+    state.allowedActions.cancel &&
+    state.tenders.some(
+      (tender) => tender.method === "cash" && !tender.reversible,
+    )
+  );
+}
+
 function canSafelyLeave(state: PaymentPresenterState): boolean {
+  const installmentCashFence =
+    state.checkout.flow === "installment-repayment" &&
+    (state.checkout.cashRepaymentStatus === "ready" ||
+      state.checkout.cashRepaymentStatus === "confirming" ||
+      state.tenders.some(
+        (tender) => tender.method === "cash" && !tender.reversible,
+      ));
   if (
     !state.initialized ||
     state.busy ||
     state.attemptId !== null ||
-    state.allowedActions.recover
+    state.allowedActions.recover ||
+    installmentCashFence
   ) {
     return false;
   }
@@ -2767,6 +2929,9 @@ const styles = StyleSheet.create({
   },
   confirmAction: {
     marginTop: 0,
+  },
+  preparedCashCancelAction: {
+    marginTop: 10,
   },
   disabled: {
     opacity: 0.42,

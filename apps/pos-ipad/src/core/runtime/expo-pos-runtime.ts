@@ -700,6 +700,22 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       },
       systemUptimeMilliseconds: () =>
         attendanceSecurity.getSystemUptimeMilliseconds(),
+      installmentPerformanceRecorder: {
+        record(event) {
+          applicationLog?.record({
+            level: "Information",
+            message: "Cash installment repayment performance stage recorded.",
+            category: "payment.installment.cash-repayment.performance",
+            traceId: event.operationHash,
+            properties: {
+              stage: event.name,
+              elapsedMs: event.elapsedMs,
+              path: event.path,
+              outcome: event.outcome,
+            },
+          });
+        },
+      },
       createId,
       random: Math.random,
       sha256Hex,

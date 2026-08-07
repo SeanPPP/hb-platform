@@ -288,32 +288,62 @@ export class SpecialProductsPresenter {
   }
 
   public reorder(productCode: string, delta: -1 | 1): Promise<void> {
+    return this.reorderWithinCurrentItems((productCodes) => {
+      const normalizedProductCode = requiredText(productCode, "productCode");
+      const currentIndex = productCodes.indexOf(normalizedProductCode);
+      const nextIndex = currentIndex + delta;
+      if (
+        currentIndex < 0 ||
+        (delta !== -1 && delta !== 1) ||
+        nextIndex < 0 ||
+        nextIndex >= productCodes.length
+      ) {
+        throw new Error("Special product reorder target is unavailable.");
+      }
+      const swapped = [...productCodes];
+      [swapped[currentIndex], swapped[nextIndex]] = [
+        swapped[nextIndex]!,
+        swapped[currentIndex]!,
+      ];
+      return swapped;
+    });
+  }
+
+  /** 拖拽排序：把商品移到任意目标索引（与 reorder 共用持久化与门禁）。 */
+  public moveTo(productCode: string, toIndex: number): Promise<void> {
+    return this.reorderWithinCurrentItems((productCodes) => {
+      const normalizedProductCode = requiredText(productCode, "productCode");
+      const currentIndex = productCodes.indexOf(normalizedProductCode);
+      const normalizedToIndex = Math.trunc(toIndex);
+      if (
+        currentIndex < 0 ||
+        !Number.isInteger(normalizedToIndex) ||
+        normalizedToIndex < 0 ||
+        normalizedToIndex >= productCodes.length
+      ) {
+        throw new Error("Special product reorder target is unavailable.");
+      }
+      if (normalizedToIndex === currentIndex) return productCodes;
+      const moved = [...productCodes];
+      const [item] = moved.splice(currentIndex, 1);
+      moved.splice(normalizedToIndex, 0, item!);
+      return moved;
+    });
+  }
+
+  /** 在当前商品列表内执行一次重排并持久化（canManage/online 门禁在 runManagement）。 */
+  private reorderWithinCurrentItems(
+    move: (productCodes: string[]) => string[],
+  ): Promise<void> {
     return this.runManagement(
       "reorder-complete",
       "reorder-failed",
       async () => {
-        const normalizedProductCode = requiredText(
-          productCode,
-          "productCode",
-        );
         const productCodes = this.state.items.map((item) => item.productCode);
-        const currentIndex = productCodes.indexOf(normalizedProductCode);
-        const nextIndex = currentIndex + delta;
-        if (
-          currentIndex < 0 ||
-          (delta !== -1 && delta !== 1) ||
-          nextIndex < 0 ||
-          nextIndex >= productCodes.length
-        ) {
-          throw new Error("Special product reorder target is unavailable.");
-        }
-        [productCodes[currentIndex], productCodes[nextIndex]] = [
-          productCodes[nextIndex]!,
-          productCodes[currentIndex]!,
-        ];
+        const reordered = move(productCodes);
         const normalizedOrder = normalizeSpecialProductOrder(
-          productCodes,
-          new Set(this.state.items.map((item) => item.productCode)),
+          reordered,
+          new Set(productCodes),
         );
         if (this.destroyed) return;
         await this.options.repository.saveOrder(

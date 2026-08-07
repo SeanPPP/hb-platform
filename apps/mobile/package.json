@@ -13,6 +13,7 @@
     "eas-build-pre-install": "node scripts/check-ios-review-build-config.mjs",
     "test:ios-review-build-config": "node scripts/check-ios-review-build-config.test.mjs",
     "test:ios-review-mode": "npm run test:ios-review-build-config && npx --yes tsx src/modules/ios-review/ios-review.test.ts && npx --yes tsx src/modules/ios-review/app-routes.test.ts && npx --yes tsx src/modules/ios-review/integration-guards.test.ts && npx --yes tsx src/modules/ios-review/side-effects.test.ts",
+    "test:navigation": "npx --yes tsx src/modules/navigation/api.test.ts && npx --yes tsx src/modules/navigation/menu-loader.test.ts && npx --yes tsx src/modules/navigation/store-recovery.test.ts && npx --yes tsx src/modules/navigation/default-route.test.ts && npx --yes tsx src/components/navigation/tab-grouping.test.ts",
     "test:ios-app-config": "node scripts/check-ios-app-config.mjs",
     "test:mobile-privacy-policy": "npx --yes tsx src/shared/legal/mobile-privacy-policy.test.ts",
     "test:ios-app-store-p0-p1": "npm run test:ios-app-config && npx --yes tsx src/modules/advertisements/advertisement-video-capture.test.ts && npx --yes tsx src/modules/scanner/camera-scan-privacy-source.test.ts && npm run test:mobile-privacy-policy",

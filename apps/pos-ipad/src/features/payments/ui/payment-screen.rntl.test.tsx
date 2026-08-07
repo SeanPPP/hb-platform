@@ -27,10 +27,16 @@ import type {
   PaymentProvider,
 } from "@/core/contracts";
 import {
+  INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+  INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
 } from "@/features/installments/installment-authorization";
 import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
-import type { InstallmentWorkflowPort } from "@/features/installments/installment-presenter";
+import type { InstallmentDetails } from "@/features/installments/installment-models";
+import {
+  InstallmentWorkflowError,
+  type InstallmentWorkflowPort,
+} from "@/features/installments/installment-presenter";
 import type {
   LinklyOperatorPublicResult,
   LinklyOperatorRuntimePort,
@@ -698,6 +704,58 @@ test("Square 后台恢复期间明确提示并禁用恢复与取消", async () =
   await screen.unmount();
 });
 
+test("现金续付确认中显示中英文专属状态并禁用重复确认", async () => {
+  const state: Partial<PaymentPresenterState> = {
+    phase: "cash-confirming",
+    busy: true,
+    selectedMethod: "cash",
+    total: aud(1_000),
+    remaining: aud(0),
+    allowedActions: actions(),
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "confirming",
+    },
+  };
+  const english = createUiPresenter(state);
+  const englishScreen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={english.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  expect(englishScreen.getByTestId("payment-status-cash-confirming")).toBeTruthy();
+  expect(englishScreen.getByText("Confirming cash repayment")).toBeTruthy();
+  expect(englishScreen.getByText("Saving the confirmed cash receipt. Keep this screen open and do not tap again.")).toBeTruthy();
+  expect(englishScreen.getByTestId("payment-confirm").props.accessibilityState).toEqual({
+    disabled: true,
+  });
+  expect(englishScreen.getByText("Confirm cash received")).toBeTruthy();
+  await englishScreen.unmount();
+
+  const chinese = createUiPresenter(state);
+  const chineseScreen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={chinese.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  expect(chineseScreen.getByText("正在确认现金续付")).toBeTruthy();
+  expect(chineseScreen.getByText("正在保存已确认的现金收款，请保持页面打开，不要重复点击。")).toBeTruthy();
+  await chineseScreen.unmount();
+});
+
 test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
   jest.useFakeTimers();
   const square = createUiPresenter({
@@ -1210,6 +1268,363 @@ test("无耐久支付事实的初始化失败仍允许返回收银", async () =>
   await screen.unmount();
 });
 
+test("分期现金 fence 建立后禁用返回且 press 不离开支付页", async () => {
+  for (const cashRepaymentStatus of ["ready", "confirming"] as const) {
+    const { presenter } = createUiPresenter({
+      phase:
+        cashRepaymentStatus === "ready"
+          ? "cash-collection-ready"
+          : "cash-confirming",
+      busy: false,
+      selectedMethod: "cash",
+      checkout: {
+        flow: "installment-repayment",
+        lines: [],
+        installmentCustomer: null,
+        cash: {
+          tenderedCents: 1_000,
+          appliedCents: 1_000,
+          changeCents: 0,
+        },
+        canConfirm: cashRepaymentStatus === "ready",
+        fullInstallmentConfirmationRequired: false,
+        cashRepaymentStatus,
+      },
+    });
+    const onBack = jest.fn();
+    const screen = await render(
+      <PaymentScreen
+        locale="zh"
+        onBack={onBack}
+        presenter={presenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    const back = screen.getByTestId("payment-back");
+    expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+    await fireEvent.press(back);
+    expect(onBack).not.toHaveBeenCalled();
+    await screen.unmount();
+  }
+});
+
+test("分期不可逆现金 tender 即使状态字段丢失也禁止返回", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "recovery-required",
+    selectedMethod: "cash",
+    tenders: [{
+      tenderGuid: "durable-cash-fence",
+      method: "cash",
+      amount: aud(1_000),
+      reversible: false,
+      provider: null,
+    }],
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: false,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "idle",
+    },
+  });
+  const onBack = jest.fn();
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const back = screen.getByTestId("payment-back");
+  expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+  await fireEvent.press(back);
+  expect(onBack).not.toHaveBeenCalled();
+  await screen.unmount();
+});
+
+test("尚未收现取消续付先显示中文主管确认 Modal，放弃时零调用", async () => {
+  const harness = createUiPresenter({
+    phase: "cash-collection-ready",
+    selectedMethod: "cash",
+    tenders: [{
+      tenderGuid: "prepared-cash-cancel-zh",
+      method: "cash",
+      amount: aud(1_000),
+      reversible: false,
+      provider: null,
+    }],
+    allowedActions: actions({ cancel: true }),
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "ready",
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const cancelPrepared = screen.getByTestId("payment-cancel-prepared-cash");
+  expect(screen.getByText("尚未收现，取消续付")).toBeTruthy();
+  expect(
+    StyleSheet.flatten(cancelPrepared.props.style).minHeight,
+  ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  await fireEvent.press(cancelPrepared);
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeTruthy();
+  expect(screen.getByText("确认本次现金尚未收取")).toBeTruthy();
+  expect(
+    screen.getByText(
+      "此操作需要主管授权。仅在核对钱箱并确认本次续付现金尚未收取时继续。若现金已收取或无法确定，请返回并由主管恢复原操作。",
+    ),
+  ).toBeTruthy();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: true,
+    });
+  });
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-dismiss").props
+      .accessibilityState,
+  ).toMatchObject({ disabled: true });
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirm").props
+      .accessibilityState,
+  ).toMatchObject({ disabled: true });
+  await fireEvent.press(
+    screen.getByTestId("payment-cancel-prepared-cash-confirm"),
+  );
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: false,
+    });
+  });
+
+  await fireEvent.press(
+    screen.getByTestId("payment-cancel-prepared-cash-dismiss"),
+  );
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+  expect(harness.spies.removeTender).not.toHaveBeenCalled();
+  expect(
+    screen.queryByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeNull();
+  await screen.unmount();
+});
+
+test("尚未收现取消续付英文 Modal 确认后只调用 presenter cancel 一次", async () => {
+  const harness = createUiPresenter({
+    phase: "cash-collection-ready",
+    selectedMethod: "cash",
+    tenders: [{
+      tenderGuid: "prepared-cash-cancel-en",
+      method: "cash",
+      amount: aud(1_000),
+      reversible: false,
+      provider: null,
+    }],
+    allowedActions: actions({ cancel: true }),
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "ready",
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByText("Cash not received — cancel repayment")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("payment-cancel-prepared-cash"));
+  expect(screen.getByText("Confirm cash was not received")).toBeTruthy();
+  expect(
+    screen.getByText(
+      "This action requires supervisor authorization. Only continue after checking the cash drawer and confirming that no cash was collected for this repayment. If cash was collected or you are unsure, go back and ask a supervisor to recover the existing operation.",
+    ),
+  ).toBeTruthy();
+  const confirm = screen.getByTestId("payment-cancel-prepared-cash-confirm");
+  expect(
+    StyleSheet.flatten(confirm.props.style).minHeight,
+  ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  await fireEvent.press(confirm);
+  expect(harness.spies.cancel).toHaveBeenCalledTimes(1);
+  expect(
+    screen.queryByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeNull();
+  await screen.unmount();
+});
+
+test("取消 Prepared 现金失败后仅保留同一取消重试，且继续禁止返回", async () => {
+  const harness = createUiPresenter({
+    phase: "recovery-required",
+    runtimeErrorCode: "INSTALLMENT_CASH_CANCELLATION_FAILED",
+    selectedMethod: "cash",
+    tenders: [{
+      tenderGuid: "prepared-cash-cancel-failed",
+      method: "cash",
+      amount: aud(1_000),
+      reversible: false,
+      provider: null,
+    }],
+    allowedActions: actions({ cancel: true }),
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: false,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "idle",
+    },
+  });
+  const onBack = jest.fn();
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.queryByTestId("payment-recover")).toBeNull();
+  expect(screen.getByTestId("payment-cancel-prepared-cash")).toBeTruthy();
+  expect(screen.queryByTestId("payment-confirm-cash-recovery")).toBeNull();
+  const back = screen.getByTestId("payment-back");
+  expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+  await fireEvent.press(back);
+  expect(onBack).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByTestId("payment-cancel-prepared-cash"));
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeTruthy();
+  await screen.unmount();
+});
+
+test("普通支付 cancel 保持直接调用且不显示现金续付 Modal", async () => {
+  const harness = createUiPresenter({
+    phase: "pending",
+    orderGuid: "ordinary-order-cancel",
+    attemptId: "ordinary-attempt-cancel",
+    allowedActions: actions({ cancel: true }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.queryByTestId("payment-cancel-prepared-cash")).toBeNull();
+  await fireEvent.press(screen.getByTestId("payment-cancel"));
+  expect(harness.spies.cancel).toHaveBeenCalledTimes(1);
+  expect(
+    screen.queryByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeNull();
+  await screen.unmount();
+});
+
+test("成功状态由 React commit 后通知 presenter 且重复 render 不重复通知", async () => {
+  const harness = createUiPresenter();
+  const recordSuccessRendered = jest.fn();
+  Object.assign(harness.presenter, { recordSuccessRendered });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  expect(recordSuccessRendered).not.toHaveBeenCalled();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      phase: "success",
+      orderGuid: "installment-success-operation",
+    });
+  });
+  expect(screen.getByTestId("payment-status-success")).toBeTruthy();
+  expect(recordSuccessRendered).toHaveBeenCalledTimes(1);
+
+  await screen.rerender(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  expect(recordSuccessRendered).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("成功指标 hook 抛错不影响成功页面", async () => {
+  const harness = createUiPresenter({
+    phase: "success",
+    orderGuid: "installment-success-metric-failure",
+  });
+  Object.assign(harness.presenter, {
+    recordSuccessRendered: () => {
+      throw new Error("metrics unavailable");
+    },
+  });
+
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+  expect(screen.getByTestId("payment-status-success")).toBeTruthy();
+  await screen.unmount();
+});
+
 test("分期开关保持 44pt、switch 语义和稳定失败提示", async () => {
   const { presenter } = createUiPresenter();
   const onToggle = jest.fn();
@@ -1564,6 +1979,263 @@ test("真实分期 presenter 点击客户编辑仍保留实例上下文", async 
   await fireEvent.press(screen.getByTestId("payment-customer-save"));
   expect(screen.getByText("顾客乙")).toBeTruthy();
   expect(screen.getByText("0412345678")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("真实分期恢复 presenter 可从 Prepared 状态确认原现金 operation", async () => {
+  let confirmCalls = 0;
+  const unusedWorkflowOperation = async (): Promise<never> => {
+    throw new Error("本测试不应执行其他分期写操作");
+  };
+  const workflow: InstallmentWorkflowPort = {
+    listPaymentProviderAvailability: async () => [],
+    list: async () => [],
+    getDetails: async () => null,
+    recoverBlocking: async () => {
+      throw new InstallmentWorkflowError(
+        "cash-confirmation-required",
+        "check drawer",
+      );
+    },
+    inspectPreparedCashRepayment: async () => ({
+      installmentGuid: "22222222-2222-4222-8222-222222222222",
+      operationHash: "sha256:recovered-operation",
+      amountCents: 1_000,
+      path: "recovery",
+    }),
+    confirmPreparedCashRepayment: async () => {
+      confirmCalls += 1;
+      return {
+        installmentGuid: "22222222-2222-4222-8222-222222222222",
+        totalCents: 5_000,
+        balanceCents: 2_000,
+      } as InstallmentDetails;
+    },
+    cancelPreparedCashRepayment: async () => undefined,
+    create: unusedWorkflowOperation,
+    addRepayment: unusedWorkflowOperation,
+    cancelWithRefund: unusedWorkflowOperation,
+    void: unusedWorkflowOperation,
+    confirmPickup: unusedWorkflowOperation,
+  };
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: null,
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: [
+      INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+      PAYMENT_PERMISSION.view,
+      PAYMENT_PERMISSION.confirm,
+      PAYMENT_PERMISSION.takeCash,
+    ],
+    workflow,
+    createTenderId: () => "recovered-cash-tender",
+  });
+  const screen = await render(
+    <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("payment-recover")).toBeTruthy());
+  await fireEvent.press(screen.getByTestId("payment-recover"));
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-confirm-cash-recovery")).toBeTruthy(),
+  );
+  expect(screen.queryByTestId("payment-cancel-prepared-cash")).toBeNull();
+  expect(screen.getByText("确认已收现金")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("payment-confirm-cash-recovery"));
+  await waitFor(() => expect(confirmCalls).toBe(1));
+  expect(screen.getByTestId("payment-status-success")).toBeTruthy();
+  await screen.unmount();
+});
+
+test.each([
+  ["Unknown+Prepared", "payment-recovery-required"],
+  ["ProviderPending+Prepared", "cash-confirmation-required"],
+] as const)(
+  "%s 切换主管或重启后只显示显式取消 Modal",
+  async (scenario, recoveryErrorCode) => {
+    let cancelCalls = 0;
+    let inspectCancellableCalls = 0;
+    const onBack = jest.fn();
+    const unusedWorkflowOperation = async (): Promise<never> => {
+      throw new Error("本测试不应执行其他分期写操作");
+    };
+    const workflow: InstallmentWorkflowPort = {
+      listPaymentProviderAvailability: async () => [],
+      list: async () => [],
+      getDetails: async () => null,
+      recoverBlocking: async () => {
+        throw new InstallmentWorkflowError(
+          recoveryErrorCode,
+          scenario,
+        );
+      },
+      inspectPreparedCashRepayment: async () => null,
+      inspectCancellablePreparedCashRepayment: async () => {
+        inspectCancellableCalls += 1;
+        return {
+          installmentGuid: "22222222-2222-4222-8222-222222222222",
+          operationHash: `sha256:${scenario}`,
+          amountCents: 1_000,
+          path: "recovery",
+        };
+      },
+      cancelPreparedCashRepayment: async () => {
+        cancelCalls += 1;
+      },
+      create: unusedWorkflowOperation,
+      addRepayment: unusedWorkflowOperation,
+      cancelWithRefund: unusedWorkflowOperation,
+      void: unusedWorkflowOperation,
+      confirmPickup: unusedWorkflowOperation,
+    };
+    const presenter = new InstallmentCheckoutPresenter({
+      entry: null,
+      createDrafts: {
+        getSnapshot: () => null,
+        subscribe: () => () => undefined,
+      },
+      initialOnline: true,
+      permissions: [
+        INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+        INSTALLMENTS_CANCEL_PERMISSION,
+        PAYMENT_PERMISSION.view,
+        PAYMENT_PERMISSION.confirm,
+        PAYMENT_PERMISSION.takeCash,
+      ],
+      workflow,
+      createTenderId: () => `${scenario}-cancel-tender`,
+    });
+    const screen = await render(
+      <PaymentScreen
+        locale="zh"
+        onBack={onBack}
+        presenter={presenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("payment-recover")).toBeTruthy(),
+    );
+    await fireEvent.press(screen.getByTestId("payment-recover"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("payment-cancel-prepared-cash"),
+      ).toBeTruthy(),
+    );
+    expect(inspectCancellableCalls).toBe(1);
+    expect(screen.queryByTestId("payment-recover")).toBeNull();
+    expect(
+      screen.queryByTestId("payment-confirm-cash-recovery"),
+    ).toBeNull();
+    expect(screen.queryByTestId("payment-confirm")).toBeNull();
+    const back = screen.getByTestId("payment-back");
+    expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+    await fireEvent.press(back);
+    expect(onBack).not.toHaveBeenCalled();
+
+    await fireEvent.press(
+      screen.getByTestId("payment-cancel-prepared-cash"),
+    );
+    expect(cancelCalls).toBe(0);
+    expect(
+      screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+    ).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("payment-cancel-prepared-cash-dismiss"),
+    );
+    expect(cancelCalls).toBe(0);
+
+    await fireEvent.press(
+      screen.getByTestId("payment-cancel-prepared-cash"),
+    );
+    await fireEvent.press(
+      screen.getByTestId("payment-cancel-prepared-cash-confirm"),
+    );
+    await waitFor(() => expect(cancelCalls).toBe(1));
+    expect(
+      screen.queryByTestId("payment-cancel-prepared-cash-confirmation"),
+    ).toBeNull();
+    expect(screen.queryByTestId("payment-status-success")).toBeNull();
+    await screen.unmount();
+  },
+);
+
+test("无 Cancel 权限时不可确认 Prepared 保持恢复阻断且不显示取消", async () => {
+  let inspectCancellableCalls = 0;
+  const onBack = jest.fn();
+  const unusedWorkflowOperation = async (): Promise<never> => {
+    throw new Error("本测试不应执行其他分期写操作");
+  };
+  const workflow: InstallmentWorkflowPort = {
+    listPaymentProviderAvailability: async () => [],
+    list: async () => [],
+    getDetails: async () => null,
+    recoverBlocking: async () => {
+      throw new InstallmentWorkflowError(
+        "payment-recovery-required",
+        "unknown prepared claim",
+      );
+    },
+    inspectCancellablePreparedCashRepayment: async () => {
+      inspectCancellableCalls += 1;
+      return {
+        installmentGuid: "22222222-2222-4222-8222-222222222222",
+        operationHash: "sha256:unauthorized-cancellable",
+        amountCents: 1_000,
+        path: "recovery",
+      };
+    },
+    cancelPreparedCashRepayment: async () => undefined,
+    create: unusedWorkflowOperation,
+    addRepayment: unusedWorkflowOperation,
+    cancelWithRefund: unusedWorkflowOperation,
+    void: unusedWorkflowOperation,
+    confirmPickup: unusedWorkflowOperation,
+  };
+  const presenter = new InstallmentCheckoutPresenter({
+    entry: null,
+    createDrafts: {
+      getSnapshot: () => null,
+      subscribe: () => () => undefined,
+    },
+    initialOnline: true,
+    permissions: [
+      INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+      PAYMENT_PERMISSION.view,
+      PAYMENT_PERMISSION.confirm,
+      PAYMENT_PERMISSION.takeCash,
+    ],
+    workflow,
+    createTenderId: () => "unauthorized-cancellable-tender",
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-recover")).toBeTruthy(),
+  );
+  await fireEvent.press(screen.getByTestId("payment-recover"));
+  await waitFor(() =>
+    expect(screen.getByText("支付恢复尚未完成。")).toBeTruthy(),
+  );
+  expect(inspectCancellableCalls).toBe(0);
+  expect(screen.queryByTestId("payment-cancel-prepared-cash")).toBeNull();
+  expect(screen.queryByTestId("payment-confirm-cash-recovery")).toBeNull();
+  const back = screen.getByTestId("payment-back");
+  expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+  await fireEvent.press(back);
+  expect(onBack).not.toHaveBeenCalled();
   await screen.unmount();
 });
 

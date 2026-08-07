@@ -29,6 +29,9 @@ const mockGetDeviceIdentity = jest.fn<
   }> | null>
 >();
 const mockRouterDismissTo = jest.fn();
+// 模块级单例：声明在 jest.mock 之前（仓库既有模式），工厂引用无 TDZ 风险；
+// router 引用稳定，避免重渲染触发 SoundBridge 重订阅
+const mockRouter = { dismissTo: mockRouterDismissTo };
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({
   usePosSound: () => ({ play: mockPlaySound }),
@@ -41,7 +44,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
+    useRouter: () => mockRouter,
   };
 });
 
@@ -189,6 +192,9 @@ test("特殊商品反馈逐项映射声音 cue，并在路由卸载时解除订�
   expect(mockPlaySound.mock.calls).toEqual(
     cases.map(([, cue]) => [cue]),
   );
+  // 加购成功（added）自动返回收银页，一次性守卫拦截连点重复跳转
+  expect(mockRouterDismissTo).toHaveBeenCalledTimes(1);
+  expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
   await screen.unmount();
   expect(mockUnsubscribeSpecialProductsFeedback).toHaveBeenCalledTimes(1);
 });

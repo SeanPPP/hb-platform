@@ -650,6 +650,34 @@ test("真实 SQLite 可完整执行 M1-M10；履约列存在且同目录版本�
   assert.match(rejected.stderr, /UNIQUE constraint failed: catalog_snapshots\.state/);
 });
 
+test("M38 修复旧 M36 版本冲突并补建分期生命周期恢复表", () => {
+  const throughM35 = POS_DATABASE_MIGRATIONS
+    .filter((migration) => migration.version <= 35)
+    .map((migration) => migration.sql)
+    .join("\n");
+  const m37 =
+    POS_DATABASE_MIGRATIONS.find((migration) => migration.version === 37)?.sql ??
+    "";
+  const repair =
+    POS_DATABASE_MIGRATIONS.find((migration) => migration.version === 38)?.sql ??
+    "";
+  const result = runSqlite(`${throughM35}
+    INSERT INTO schema_migrations (version, name, applied_at_iso)
+      VALUES (36, 'M36_shared_held_order_claims', '2026-08-05T09:18:48.280Z');
+    ${m37}
+    INSERT INTO schema_migrations (version, name, applied_at_iso)
+      VALUES (37, 'M37_installment_action_resolution_code', '2026-08-06T04:42:07.698Z');
+    ${repair}
+    SELECT
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'installment_lifecycle_actions') || '|' ||
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ux_installment_lifecycle_terminal_blocking');
+  `);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "1|1");
+  assert.match(repair, /CREATE TABLE IF NOT EXISTS installment_lifecycle_actions/);
+});
+
 function runSqlite(input: string): Readonly<{ status: number | null; stdout: string; stderr: string }> {
   const result = spawnSync(process.env.SQLITE3_BINARY ?? "sqlite3", [":memory:"], {
     input,

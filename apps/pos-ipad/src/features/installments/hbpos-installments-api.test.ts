@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HbposInstallmentsApi } from "./hbpos-installments-api";
+import type { InstallmentRepaymentCapabilities } from "./installment-models";
 
 import type {
   HbposTransport,
@@ -61,6 +62,7 @@ test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operatio
         repaymentClaimsSupported: true,
         repaymentClaimsRequired: true,
         cardRepaymentSupported: false,
+        repaymentClaimPrepareProviderV1: true,
         crossDeviceRepaymentEnabled: true,
         crossDeviceCancelRefundEnabled: true,
         crossDeviceVoidEnabled: false,
@@ -83,6 +85,7 @@ test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operatio
     repaymentClaimsSupported: true,
     repaymentClaimsRequired: true,
     cardRepaymentSupported: false,
+    repaymentClaimPrepareProviderV1: true,
     crossDeviceRepaymentEnabled: true,
     crossDeviceCancelRefundEnabled: true,
     crossDeviceVoidEnabled: false,
@@ -153,6 +156,60 @@ test("repayment claim 使用稳定 v1 路由、整数分映射和同一 operatio
   );
   assert.equal(committed.status, "Committed");
   assert.equal(committed.commit?.details.status, "PaidOff");
+});
+
+test("显式确认尚未收现时 resolve 携带原 provider attempt，普通 resolve 保持兼容", async () => {
+  const releasedPayload = {
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amount: 80,
+    method: 1,
+    idempotencyKey: operationGuid,
+    status: 4,
+    provider: "cash",
+    providerAttemptId: "cash-attempt-1",
+    createdAtUtc: "2026-08-04T01:00:00Z",
+    updatedAtUtc: "2026-08-04T01:01:00Z",
+    expiresAtUtc: null,
+    commit: null,
+    alreadyExists: false,
+  };
+  const transport = new QueueTransport([
+    { success: true, data: releasedPayload },
+    { success: true, data: { ...releasedPayload, status: 6 } },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+
+  await api.resolveRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    outcome: "Released",
+    cashNotCollectedConfirmed: true,
+    providerAttemptId: "cash-attempt-1",
+  });
+  await api.resolveRepaymentClaim({
+    installmentGuid,
+    operationGuid,
+    outcome: "Unknown",
+  });
+
+  assert.deepEqual(transport.requests, [
+    {
+      method: "POST",
+      url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/resolve`,
+      data: {
+        outcome: 1,
+        cashNotCollectedConfirmed: true,
+        providerAttemptId: "cash-attempt-1",
+      },
+    },
+    {
+      method: "POST",
+      url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/resolve`,
+      data: { outcome: 3 },
+    },
+  ]);
 });
 
 test("repayment claim 字段长度在客户端精确对齐服务端 100/32/128", async () => {
@@ -232,6 +289,54 @@ test("repayment claim 字段长度在客户端精确对齐服务端 100/32/128",
   );
 });
 
+test("新 prepare-provider 只发送六个绑定字段，并返回 ProviderPending claim", async () => {
+  const payload = {
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amount: 80,
+    method: 1,
+    idempotencyKey: operationGuid,
+    status: 2,
+    provider: "cash",
+    providerAttemptId: "cash-attempt-1",
+    createdAtUtc: "2026-08-04T01:00:00Z",
+    updatedAtUtc: "2026-08-04T01:01:00Z",
+    expiresAtUtc: null,
+    commit: null,
+    alreadyExists: false,
+  };
+  const transport = new QueueTransport([{ success: true, data: payload }]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+
+  const claim = await api.prepareRepaymentClaimProvider({
+    installmentGuid,
+    operationGuid,
+    paymentGuid,
+    amountCents: 8_000,
+    method: "cash",
+    idempotencyKey: operationGuid,
+    provider: "cash",
+    providerAttemptId: "cash-attempt-1",
+  });
+
+  assert.equal(claim.status, "ProviderPending");
+  assert.deepEqual(transport.requests, [
+    {
+      method: "POST",
+      url: `/api/v1/installments/${installmentGuid}/repayment-claims/${operationGuid}/prepare-provider`,
+      data: {
+        paymentGuid,
+        amount: 80,
+        method: 1,
+        idempotencyKey: operationGuid,
+        provider: "cash",
+        providerAttemptId: "cash-attempt-1",
+      },
+    },
+  ]);
+});
+
 test("旧 capabilities payload 缺少取消 claim 与跨机动作字段时保持兼容并 fail-closed", async () => {
   const api = new HbposInstallmentsApi(
     new QueueTransport([
@@ -239,7 +344,8 @@ test("旧 capabilities payload 缺少取消 claim 与跨机动作字段时保持
         success: true,
         data: {
           repaymentClaimsSupported: true,
-          repaymentClaimsRequired: false,
+        repaymentClaimsRequired: false,
+          repaymentClaimPrepareProviderV1: undefined,
           crossDeviceRepaymentEnabled: false,
           preparedClaimTtlSeconds: 120,
         },
@@ -247,10 +353,12 @@ test("旧 capabilities payload 缺少取消 claim 与跨机动作字段时保持
     ]),
     "S1",
   );
-  const capabilities = await api.getCapabilities();
+  const capabilities: InstallmentRepaymentCapabilities =
+    await api.getCapabilities();
   assert.deepEqual(capabilities, {
     repaymentClaimsSupported: true,
     repaymentClaimsRequired: false,
+    repaymentClaimPrepareProviderV1: false,
     cardRepaymentSupported: false,
     crossDeviceRepaymentEnabled: false,
     crossDeviceCancelRefundEnabled: false,
@@ -258,9 +366,6 @@ test("旧 capabilities payload 缺少取消 claim 与跨机动作字段时保持
     crossDevicePickupEnabled: false,
     preparedClaimTtlSeconds: 120,
   });
-  assert.equal(capabilities.cancelClaimsSupported, undefined);
-  assert.equal(capabilities.cancelClaimsRequired, undefined);
-  assert.equal(capabilities.cancelPreparedClaimTtlSeconds, undefined);
 });
 
 test("cancel claim 不携带门店或收银员身份，并复用同一 durable operation", async () => {

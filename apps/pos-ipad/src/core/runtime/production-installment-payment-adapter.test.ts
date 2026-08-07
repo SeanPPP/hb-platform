@@ -41,7 +41,10 @@ test("claim provider 绑定对现金、券、Square、Linkly 可耐久重放且�
 
   for (const entry of cases) {
     const store = new MemoryAttemptStore(
-      paymentAction(entry.method, entry.cardProvider),
+      Object.freeze({
+        ...paymentAction(entry.method, entry.cardProvider),
+        state: "Created" as const,
+      }),
     );
     const square = new ScriptedProvider("square");
     const linkly = new ScriptedProvider("linkly-cloud");
@@ -87,6 +90,105 @@ test("Created 还款 action 只能为 claim 耐久绑定 provider，未经 runti
   store.action = Object.freeze({ ...store.action, state: "ProviderPending" });
   assert.equal((await adapter.beginOrRecover(ACTION_ID)).kind, "approved");
   assert.equal(store.cashApprovalCalls, 1);
+});
+
+test("恢复阶段缺失 provider plan 必须失败关闭且不得重建 identity", async () => {
+  const states = [
+    "ProviderPending",
+    "Unknown",
+    "Approved",
+    "BackendPending",
+  ] as const;
+  const observations = [];
+
+  for (const state of states) {
+    const store = new MemoryAttemptStore(
+      Object.freeze({
+        ...paymentAction("cash"),
+        state,
+      }),
+    );
+    const ids = new StableIds();
+    const adapter = createAdapter({ store, ids });
+    let errorCode: string | null = null;
+
+    try {
+      await adapter.prepareRepaymentClaim(ACTION_ID);
+    } catch (error) {
+      errorCode =
+        error instanceof InstallmentPaymentAdapterError
+          ? error.code
+          : "UNEXPECTED_ERROR";
+    }
+
+    observations.push({
+      state,
+      errorCode,
+      createIdCalls: ids.calls,
+      bindPlanCalls: store.events.filter((event) => event === "bind-plan").length,
+      persistedPlans: store.plans.size,
+    });
+  }
+
+  assert.deepEqual(
+    observations,
+    states.map((state) => ({
+      state,
+      errorCode: "INSTALLMENT_ATTEMPT_DURABILITY_REQUIRED",
+      createIdCalls: 0,
+      bindPlanCalls: 0,
+      persistedPlans: 0,
+    })),
+  );
+});
+
+test("恢复阶段已有 provider plan 时所有后续状态精确复用原 identity", async () => {
+  const store = new MemoryAttemptStore(
+    Object.freeze({
+      ...paymentAction("cash"),
+      state: "Created" as const,
+    }),
+  );
+  const ids = new StableIds();
+  const adapter = createAdapter({ store, ids });
+  const original = await adapter.prepareRepaymentClaim(ACTION_ID);
+  const createdIdCalls = ids.calls;
+
+  for (const state of [
+    "ProviderPending",
+    "Unknown",
+    "Approved",
+    "BackendPending",
+  ] as const) {
+    store.action = Object.freeze({ ...store.action, state });
+    assert.deepEqual(await adapter.prepareRepaymentClaim(ACTION_ID), original);
+  }
+
+  assert.equal(ids.calls, createdIdCalls);
+  assert.equal(
+    store.events.filter((event) => event === "bind-plan").length,
+    1,
+  );
+});
+
+test("现金续付确认分两段：inspect 不批准，显式 confirm 才耐久批准", async () => {
+  const store = new MemoryAttemptStore(
+    Object.freeze({
+      ...paymentAction("cash"),
+      state: "Created" as const,
+    }),
+  );
+  const adapter = createAdapter({ store });
+
+  await adapter.prepareRepaymentClaim(ACTION_ID);
+  store.action = Object.freeze({ ...store.action, state: "ProviderPending" });
+  assert.equal(await adapter.inspectCashSettlement(ACTION_ID), "Prepared");
+  assert.equal(store.cashApprovalCalls, 0);
+
+  const approved = await adapter.confirmCashRepayment(ACTION_ID);
+  assert.equal(approved.kind, "approved");
+  assert.equal(store.cashApprovalCalls, 1);
+  assert.equal(store.plans.get(ACTION_ID)?.cashSettlements[0]?.state, "Approved");
 });
 
 test("现金首付/续付先耐久批准并建立原付款证据，恢复返回同一 paymentGuid", async () => {

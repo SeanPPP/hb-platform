@@ -27,6 +27,7 @@ for (const route of [
   "/api/v1/installments/{installmentGuid}/repayment-claims",
   "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}",
   "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/begin-provider",
+  "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/prepare-provider",
   "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/resolve",
   "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/commit",
   "/api/v1/installments/{installmentGuid}/cancel-claims",
@@ -114,6 +115,7 @@ assert.ok(document.paths?.["/api/v1/installments/capabilities"]?.get);
 assert.ok(document.paths?.[claimPath]?.post);
 assert.ok(document.paths?.[claimOperationPath]?.get);
 assert.ok(document.paths?.[`${claimOperationPath}/begin-provider`]?.post);
+assert.ok(document.paths?.[`${claimOperationPath}/prepare-provider`]?.post);
 assert.ok(document.paths?.[`${claimOperationPath}/resolve`]?.post);
 assert.ok(document.paths?.[`${claimOperationPath}/commit`]?.post);
 assert.equal(
@@ -140,6 +142,7 @@ assert.equal(
 for (const [route, method, requestSchema] of [
   [claimPath, "post", "InstallmentRepaymentClaimCreateRequest"],
   [`${claimOperationPath}/begin-provider`, "post", "InstallmentRepaymentClaimBeginProviderRequest"],
+  [`${claimOperationPath}/prepare-provider`, "post", "InstallmentRepaymentClaimPrepareProviderRequest"],
   [`${claimOperationPath}/resolve`, "post", "InstallmentRepaymentClaimResolveRequest"],
   [`${claimOperationPath}/commit`, "post", "InstallmentRepaymentClaimCommitRequest"]
 ]) {
@@ -154,6 +157,19 @@ for (const [route, method, requestSchema] of [
     `${route} 必须返回 claim DTO 包装`
   );
 }
+assert.ok(
+  document.components?.schemas?.InstallmentRepaymentCapabilitiesResponse?.properties
+    ?.repaymentClaimPrepareProviderV1,
+  "capabilities 必须暴露 prepare-provider capability"
+);
+assert.deepEqual(
+  Object.keys(
+    document.components?.schemas?.InstallmentRepaymentClaimPrepareProviderRequest
+      ?.properties ?? {}
+  ),
+  ["paymentGuid", "amount", "method", "idempotencyKey", "provider", "providerAttemptId"],
+  "prepare-provider body 只能包含六个绑定字段"
+);
 
 for (const [route, method, requestSchema] of [
   [cancelClaimPath, "post", "InstallmentCancelClaimCreateRequest"],
@@ -244,7 +260,8 @@ assert.deepEqual(
     "crossDeviceCancelRefundEnabled",
     "crossDeviceVoidEnabled",
     "crossDevicePickupEnabled",
-    "cardRepaymentSupported"
+    "cardRepaymentSupported",
+    "repaymentClaimPrepareProviderV1"
   ]
 );
 assert.deepEqual(
@@ -281,7 +298,27 @@ assert.deepEqual(
 );
 assert.deepEqual(
   Object.keys(schemas.InstallmentRepaymentClaimResolveRequest?.properties ?? {}),
-  ["outcome"]
+  ["outcome", "cashNotCollectedConfirmed", "providerAttemptId"]
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimResolveRequest?.properties?.outcome,
+  { $ref: "#/components/schemas/InstallmentRepaymentClaimResolveOutcome" },
+  "resolve outcome 必须存在并保持非 nullable enum 引用"
+);
+assert.equal(
+  schemas.InstallmentRepaymentClaimResolveRequest?.required,
+  undefined,
+  "兼容契约不得把 cash-not-collected 证据字段升级为 required"
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimResolveRequest?.properties
+    ?.cashNotCollectedConfirmed,
+  { type: "boolean" }
+);
+assert.deepEqual(
+  schemas.InstallmentRepaymentClaimResolveRequest?.properties
+    ?.providerAttemptId,
+  { type: "string", nullable: true }
 );
 assert.deepEqual(
   Object.keys(schemas.InstallmentRepaymentClaimCommitRequest?.properties ?? {}),

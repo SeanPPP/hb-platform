@@ -89,6 +89,29 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// 临时诊断：记录所有请求路径与状态码，定位"特殊商品下载未完成"根因，定位后移除。
+app.Use(async (context, next) =>
+{
+    var diagnoseStopwatch = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        await next();
+    }
+    finally
+    {
+        diagnoseStopwatch.Stop();
+        var diagnoseLogger = context.RequestServices
+            .GetRequiredService<ILogger<Program>>();
+        diagnoseLogger.LogInformation(
+            "[RequestDiagnose] {Method} {Path}{Query} => {StatusCode} {ElapsedMs}ms",
+            context.Request.Method,
+            context.Request.Path,
+            context.Request.QueryString,
+            context.Response.StatusCode,
+            diagnoseStopwatch.ElapsedMilliseconds);
+    }
+});
+
 app.UseAuthentication();
 app.UseAuthorization();
 

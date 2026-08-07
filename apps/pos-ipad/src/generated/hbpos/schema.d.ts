@@ -1347,6 +1347,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/prepare-provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    installmentGuid: string;
+                    operationGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["InstallmentRepaymentClaimPrepareProviderRequest"];
+                    "text/json": components["schemas"]["InstallmentRepaymentClaimPrepareProviderRequest"];
+                    "application/*+json": components["schemas"]["InstallmentRepaymentClaimPrepareProviderRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "application/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                        "text/json": components["schemas"]["InstallmentRepaymentClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}": {
         parameters: {
             query?: never;
@@ -4514,6 +4560,7 @@ export interface components {
             crossDeviceVoidEnabled?: boolean;
             crossDevicePickupEnabled?: boolean;
             cardRepaymentSupported?: boolean;
+            repaymentClaimPrepareProviderV1?: boolean;
         };
         InstallmentRepaymentCapabilitiesResponseApiResult: {
             success?: boolean;
@@ -4569,6 +4616,16 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        InstallmentRepaymentClaimPrepareProviderRequest: {
+            /** Format: uuid */
+            paymentGuid?: string;
+            /** Format: double */
+            amount?: number;
+            method?: components["schemas"]["PaymentMethodKind"];
+            idempotencyKey?: string | null;
+            provider?: string | null;
+            providerAttemptId?: string | null;
+        };
         /**
          * Format: int32
          * @enum {integer}
@@ -4576,6 +4633,8 @@ export interface components {
         InstallmentRepaymentClaimResolveOutcome: 1 | 2 | 3;
         InstallmentRepaymentClaimResolveRequest: {
             outcome?: components["schemas"]["InstallmentRepaymentClaimResolveOutcome"];
+            cashNotCollectedConfirmed?: boolean;
+            providerAttemptId?: string | null;
         };
         /**
          * Format: int32

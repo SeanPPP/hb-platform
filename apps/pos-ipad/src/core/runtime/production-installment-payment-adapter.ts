@@ -271,6 +271,53 @@ export class ProductionInstallmentPaymentAdapter
     return this.run(persistedActionId);
   }
 
+  /**
+   * 现金恢复只读检查：Prepared 代表钱箱仍需人工核对，不能借由 recovery
+   * 路径隐式批准。若 plan 尚未落盘则直接失败关闭，不在 inspection 中绑定新 plan。
+   */
+  public async inspectCashSettlement(
+    persistedActionId: string,
+  ): Promise<InstallmentCashSettlement["state"]> {
+    const actionId = requiredText(persistedActionId, "persisted action id");
+    const rawAction = await this.options.store.loadAction(actionId);
+    if (!rawAction) {
+      throw adapterError(
+        "INSTALLMENT_ACTION_NOT_FOUND",
+        "Persisted installment action was not found.",
+      );
+    }
+    const action = validateAction(rawAction, actionId, { allowCreated: true });
+    if (action.action.kind !== "repayment" || action.action.method !== "cash") {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+        "Cash settlement inspection requires a cash repayment action.",
+      );
+    }
+    const rawPlan = await this.options.store.loadPlan(actionId);
+    if (!rawPlan) {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_DURABILITY_REQUIRED",
+        "Cash repayment plan is not durably prepared.",
+      );
+    }
+    const plan = validatePlan(rawPlan, action);
+    const settlement = plan.cashSettlements[0];
+    if (!settlement || plan.cashSettlements.length !== 1) {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_PLAN_CONFLICT",
+        "Cash repayment plan is incomplete.",
+      );
+    }
+    return settlement.state;
+  }
+
+  /** 只有 runtime 已明确取得现金确认后才能调用此入口。 */
+  public confirmCashRepayment(
+    persistedActionId: string,
+  ): Promise<PaymentAdapterResult> {
+    return this.run(persistedActionId);
+  }
+
   public async prepareRepaymentClaim(
     persistedActionId: string,
   ): Promise<Readonly<{ provider: string; providerAttemptId: string }>> {
@@ -291,7 +338,17 @@ export class ProductionInstallmentPaymentAdapter
         "Repayment claim binding requires a repayment action.",
       );
     }
-    const plan = await this.loadOrBindPlan(action);
+    const existingPlan = await this.options.store.loadPlan(actionId);
+    if (!existingPlan && action.state !== "Created") {
+      // 恢复阶段必须复用首次准备时落盘的 provider identity，绝不能重建 attempt。
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_DURABILITY_REQUIRED",
+        "Repayment provider plan is not durably prepared.",
+      );
+    }
+    const plan = existingPlan
+      ? validatePlan(existingPlan, action)
+      : await this.loadOrBindPlan(action);
     if (plan.cashSettlements.length === 1 && plan.attempts.length === 0) {
       const settlement = plan.cashSettlements[0];
       if (!settlement) {

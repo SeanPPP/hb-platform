@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { loadNavigationMenuWithRetry } from "./menu-loader";
+import {
+  getNavigationMenuRecoveryDelay,
+  loadNavigationMenuWithRetry,
+} from "./menu-loader";
 import type { AppNavigationMenuItem } from "./types";
 
 const settingsOnlyMenu: AppNavigationMenuItem[] = [
@@ -79,6 +82,28 @@ async function main() {
     delay: async () => undefined,
   });
   assert.equal(finalFallback.items, settingsOnlyMenu, "最终失败且无旧菜单时应退化为设置页");
+  assert.ok(finalFallback.error instanceof Error, "连续空菜单必须保留错误状态以触发后台恢复");
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map(getNavigationMenuRecoveryDelay),
+    [2_000, 5_000, 15_000, 30_000, 30_000],
+    "后台恢复应指数退避并限制在 30 秒"
+  );
+
+  let cancelledAttempt = 0;
+  let cancelled = false;
+  await loadNavigationMenuWithRetry({
+    load: async () => {
+      cancelledAttempt += 1;
+      throw new Error("session changed");
+    },
+    fallbackItems: settingsOnlyMenu,
+    getCurrentItems: () => settingsOnlyMenu,
+    isCancelled: () => cancelled,
+    delay: async () => {
+      cancelled = true;
+    },
+  });
+  assert.equal(cancelledAttempt, 1, "会话失效后不得发起第二次菜单请求");
 }
 
 void main();

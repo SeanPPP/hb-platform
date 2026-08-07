@@ -66,7 +66,16 @@ export function createAxiosHbposTransport(
           throw error;
         }
         if (!isAxiosError(error)) {
-          throw new HbposApiError("Hbpos transport failed.", { kind: "transport" });
+          // 临时诊断：定位"下载未完成"根因（interceptor 凭证/地址校验抛错会走到这里），定位后移除。
+          console.error("[hbpos-transport-diagnose] non-axios failure", {
+            baseUrl,
+            url: request.url,
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+          });
+          throw new HbposApiError("Hbpos transport failed.", {
+            kind: "transport",
+          });
         }
 
         if (error.code === "ERR_CANCELED") {
@@ -77,7 +86,16 @@ export function createAxiosHbposTransport(
         }
         const payload = error.response?.data as { errorCode?: string; message?: string } | undefined;
         if (!error.response) {
-          throw new HbposApiError("Hbpos transport failed.", { kind: "transport" });
+          // 临时诊断：定位"下载未完成"根因（无 HTTP 响应：超时/连接拒绝/网络断开），定位后移除。
+          console.error("[hbpos-transport-diagnose] no http response", {
+            baseUrl: error.config?.baseURL ?? baseUrl,
+            url: error.config?.url ?? request.url,
+            message: error.message,
+            code: error.code,
+          });
+          throw new HbposApiError("Hbpos transport failed.", {
+            kind: "transport",
+          });
         }
         const code = payload?.errorCode;
         const apiError = new HbposApiError(

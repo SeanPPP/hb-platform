@@ -232,6 +232,25 @@ test("在线 Manage 才能标记、取消和保存完整本地排序", async () 
   assert.deepEqual(repository.saveOrderCalls, [["B", "A"]]);
 });
 
+test("moveTo 把商品移到任意目标索引并持久化完整排列", async () => {
+  const repository = new MemorySpecialProductsRepository([
+    product("A"),
+    product("B"),
+    product("C"),
+    product("D"),
+  ]);
+  const presenter = createPresenter({ repository, online: true });
+  await presenter.load();
+
+  await presenter.moveTo("A", 2);
+  assert.deepEqual(repository.saveOrderCalls, [["B", "C", "A", "D"]]);
+
+  // 目标索引越界时拒绝并保留原排列
+  await presenter.moveTo("D", 99);
+  assert.equal(presenter.getState().statusCode, "reorder-failed");
+  assert.equal(repository.saveOrderCalls.length, 1);
+});
+
 test("搜索候选的陈旧响应不会覆盖最新查询", async () => {
   const repository = new MemorySpecialProductsRepository([]);
   const first = deferred<readonly SpecialProductItem[]>();

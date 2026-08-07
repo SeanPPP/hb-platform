@@ -68,7 +68,9 @@ public sealed record InstallmentRepaymentCapabilitiesResponse(
     bool CrossDeviceCancelRefundEnabled = false,
     bool CrossDeviceVoidEnabled = false,
     bool CrossDevicePickupEnabled = false,
-    bool CardRepaymentSupported = false);
+    bool CardRepaymentSupported = false,
+    [property: JsonPropertyName("repaymentClaimPrepareProviderV1")]
+    bool RepaymentClaimPrepareProviderV1 = false);
 
 public sealed record InstallmentRepaymentClaimCreateRequest(
     Guid OperationGuid,
@@ -81,8 +83,18 @@ public sealed record InstallmentRepaymentClaimBeginProviderRequest(
     string Provider,
     string ProviderAttemptId);
 
+public sealed record InstallmentRepaymentClaimPrepareProviderRequest(
+    Guid PaymentGuid,
+    decimal Amount,
+    PaymentMethodKind Method,
+    string IdempotencyKey,
+    string Provider,
+    string ProviderAttemptId);
+
 public sealed record InstallmentRepaymentClaimResolveRequest(
-    InstallmentRepaymentClaimResolveOutcome Outcome);
+    InstallmentRepaymentClaimResolveOutcome Outcome,
+    bool CashNotCollectedConfirmed = false,
+    string? ProviderAttemptId = null);
 
 public sealed record InstallmentRepaymentClaimCommitRequest(
     string? Reference = null,

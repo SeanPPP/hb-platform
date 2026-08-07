@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
+import type { InstallmentSnapshot } from "../contracts/installments";
 import type {
   PersistedInstallmentAction,
   PersistedInstallmentLifecycleAction,
@@ -13,6 +14,10 @@ import type {
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import { PosDatabase } from "./pos-database";
 import { SqliteInstallmentActionStore } from "./sqlite-installment-action-store";
+import {
+  INSTALLMENT_SENSITIVE_PAYLOAD_REVISION,
+  SqliteInstallmentSnapshotRepository,
+} from "./sqlite-installment-snapshot-repository";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
 import type {
   SqliteConnectionPort,
@@ -28,9 +33,11 @@ const ACTION_A = "10000000-0000-4000-8000-000000000001";
 const ACTION_B = "10000000-0000-4000-8000-000000000002";
 const ACTION_C = "10000000-0000-4000-8000-000000000003";
 const INSTALLMENT = "20000000-0000-4000-8000-000000000001";
+const OTHER_INSTALLMENT = "20000000-0000-4000-8000-000000000002";
 const PAYMENT = "30000000-0000-4000-8000-000000000001";
 const LINE = "40000000-0000-4000-8000-000000000001";
 const REFUND_PLAN_FINGERPRINT = `sha256:${"a".repeat(64)}`;
+const LATER = "2026-07-29T01:00:00.000Z";
 
 test("M20/M21 分段建立耐久 action ledger 与不可变 CAS triggers，失败不推进版本", async () => {
   await withDatabase(async (connection) => {
@@ -933,6 +940,608 @@ test("真实 SQLite：transition/complete 按 scope+expectedState CAS，resolved
   });
 });
 
+test("真实 SQLite：committed repayment 快照与 action 完成共用一个 exclusive transaction", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    await actionStore.createIfNone(repaymentCandidate({ actionId: ACTION_A }));
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Created",
+      nextState: "ProviderPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "ProviderPending",
+      nextState: "Approved",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Approved",
+      nextState: "BackendPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+
+    const transactionsBefore = connection.transactionCount;
+    await actionStore.completeCommittedRepaymentWithSnapshot(
+      {
+        actionId: ACTION_A,
+        expectedState: "BackendPending",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+        snapshot: committedRepaymentSnapshot(),
+      },
+      snapshotRepository,
+    );
+
+    assert.equal(connection.transactionCount - transactionsBefore, 1);
+    assert.deepEqual(
+      await snapshotRepository.get(STORE, INSTALLMENT),
+      committedRepaymentSnapshot(),
+    );
+    assert.equal(
+      await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }),
+      null,
+    );
+    const resolved = await connection.getFirst<{
+      state: unknown;
+      resolution: unknown;
+    }>(
+      "SELECT state, resolution FROM installment_actions WHERE action_id = ?",
+      [ACTION_A],
+    );
+    assert.deepEqual(resolved === null ? null : { ...resolved }, {
+      state: "BackendPending",
+      resolution: "Completed",
+    });
+  });
+});
+
+test("committed repayment 快照加密失败发生在事务前，action 仍保持 BackendPending", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    await actionStore.createIfNone(repaymentCandidate({ actionId: ACTION_A }));
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Created",
+      nextState: "ProviderPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "ProviderPending",
+      nextState: "Approved",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Approved",
+      nextState: "BackendPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    const transactionsBefore = connection.transactionCount;
+    encryptor.failEncryption = true;
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        snapshotRepository,
+      ),
+      /TEST_ENCRYPTION_FAILURE/,
+    );
+
+    assert.equal(connection.transactionCount, transactionsBefore);
+    assert.equal(
+      (await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }))
+        ?.state,
+      "BackendPending",
+    );
+    assert.equal(await snapshotRepository.get(STORE, INSTALLMENT), null);
+  });
+});
+
+test("committed repayment action CAS 写失败时快照与 action 一起回滚", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    await actionStore.createIfNone(repaymentCandidate({ actionId: ACTION_A }));
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Created",
+      nextState: "ProviderPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "ProviderPending",
+      nextState: "Approved",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await actionStore.transition({
+      actionId: ACTION_A,
+      expectedState: "Approved",
+      nextState: "BackendPending",
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+    });
+    await connection.exec(`
+      CREATE TRIGGER fail_committed_repayment_action_resolution
+      BEFORE UPDATE OF resolution ON installment_actions
+      WHEN NEW.resolution = 'Completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'COMMITTED_REPAYMENT_ACTION_CAS_FAILURE');
+      END;
+    `);
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        snapshotRepository,
+      ),
+      /COMMITTED_REPAYMENT_ACTION_CAS_FAILURE/,
+    );
+
+    assert.equal(await snapshotRepository.get(STORE, INSTALLMENT), null);
+    assert.equal(
+      (await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }))
+        ?.state,
+      "BackendPending",
+    );
+    const resolved = await connection.getFirst<{ resolution: unknown }>(
+      "SELECT resolution FROM installment_actions WHERE action_id = ?",
+      [ACTION_A],
+    );
+    assert.deepEqual(resolved === null ? null : { ...resolved }, {
+      resolution: null,
+    });
+  });
+});
+
+test("committed repayment 拒绝伪造、跨 connection 或跨 encryptor 的 snapshot repository", async () => {
+  const outcomes: {
+    result: PromiseSettledResult<void>;
+    startedTransactions: number;
+  }[] = [];
+
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    const transactionsBefore = connection.transactionCount;
+    const fakeRepository = {
+      async prepareUpsertForStore(
+        _storeCode: string,
+        snapshots: readonly InstallmentSnapshot[],
+      ) {
+        return Object.freeze([
+          Object.freeze({
+            snapshot: snapshots[0]!,
+            ciphertext: Uint8Array.of(1),
+          }),
+        ]);
+      },
+      async upsertPreparedInTransaction() {
+        // 审查复现：旧实现会信任这个空写入并把 action 标成 Completed。
+      },
+    } as unknown as SqliteInstallmentSnapshotRepository;
+    const [result] = await Promise.allSettled([
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        fakeRepository,
+      ),
+    ]);
+    assert.ok(result);
+    outcomes.push({
+      result,
+      startedTransactions: connection.transactionCount - transactionsBefore,
+    });
+  });
+
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    const transactionsBefore = connection.transactionCount;
+    const wrongEncryptorRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      new RecordingEncryptor(),
+    );
+    const [result] = await Promise.allSettled([
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        wrongEncryptorRepository,
+      ),
+    ]);
+    assert.ok(result);
+    outcomes.push({
+      result,
+      startedTransactions: connection.transactionCount - transactionsBefore,
+    });
+  });
+
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    const transactionsBefore = connection.transactionCount;
+    await withMigratedDatabase(async (otherConnection) => {
+      const wrongConnectionRepository =
+        new SqliteInstallmentSnapshotRepository(otherConnection, encryptor);
+      const [result] = await Promise.allSettled([
+        actionStore.completeCommittedRepaymentWithSnapshot(
+          {
+            actionId: ACTION_A,
+            expectedState: "BackendPending",
+            terminal: { storeCode: STORE, deviceCode: DEVICE },
+            snapshot: committedRepaymentSnapshot(),
+          },
+          wrongConnectionRepository,
+        ),
+      ]);
+      assert.ok(result);
+      outcomes.push({
+        result,
+        startedTransactions:
+          connection.transactionCount - transactionsBefore,
+      });
+    });
+  });
+
+  assert.deepEqual(
+    outcomes.map((outcome) => outcome.result.status),
+    ["rejected", "rejected", "rejected"],
+  );
+  assert.deepEqual(
+    outcomes.map((outcome) => outcome.startedTransactions),
+    [0, 0, 0],
+  );
+  for (const outcome of outcomes) {
+    assert.equal(outcome.result.status, "rejected");
+    assert.match(String(outcome.result.reason), /repository context/i);
+  }
+});
+
+test("真实 SQLite：committed repayment 分别覆盖 snapshot INSERT 与 UPDATE", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    await actionStore.completeCommittedRepaymentWithSnapshot(
+      {
+        actionId: ACTION_A,
+        expectedState: "BackendPending",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+        snapshot: committedRepaymentSnapshot(),
+      },
+      snapshotRepository,
+    );
+
+    await moveRepaymentToBackendPending(actionStore, ACTION_B);
+    const updatedSnapshot = committedRepaymentSnapshot({
+      customerName: "Updated Customer",
+      paidCents: 3_000,
+      balanceCents: 7_000,
+      updatedAtIso: LATER,
+    });
+    await actionStore.completeCommittedRepaymentWithSnapshot(
+      {
+        actionId: ACTION_B,
+        expectedState: "BackendPending",
+        terminal: { storeCode: STORE, deviceCode: DEVICE },
+        snapshot: updatedSnapshot,
+      },
+      snapshotRepository,
+    );
+
+    assert.deepEqual(
+      await snapshotRepository.get(STORE, INSTALLMENT),
+      updatedSnapshot,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM installment_snapshots",
+      ),
+      1,
+    );
+    assert.deepEqual(
+      (
+        await connection.getAll<{ action_id: unknown; resolution: unknown }>(
+          `SELECT action_id, resolution
+           FROM installment_actions
+           WHERE action_id IN (?, ?)
+           ORDER BY action_id`,
+          [ACTION_A, ACTION_B],
+        )
+      ).map((row) => ({ ...row })),
+      [
+        { action_id: ACTION_A, resolution: "Completed" },
+        { action_id: ACTION_B, resolution: "Completed" },
+      ],
+    );
+  });
+});
+
+test("committed repayment action identity 或 CAS 不一致时不留下 snapshot", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot({
+            installmentGuid: OTHER_INSTALLMENT,
+          }),
+        },
+        snapshotRepository,
+      ),
+      /identity mismatch/i,
+    );
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_B,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        snapshotRepository,
+      ),
+      /state CAS|state|action/i,
+    );
+
+    assert.equal(await snapshotRepository.get(STORE, INSTALLMENT), null);
+    assert.equal(
+      await snapshotRepository.get(STORE, OTHER_INSTALLMENT),
+      null,
+    );
+    assert.equal(
+      (await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }))
+        ?.state,
+      "BackendPending",
+    );
+  });
+});
+
+test("committed repayment snapshot INSERT/UPDATE SQL 失败均回滚并保留可恢复 action", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    await connection.exec(`
+      CREATE TRIGGER fail_committed_repayment_snapshot_insert
+      BEFORE INSERT ON installment_snapshots
+      BEGIN
+        SELECT RAISE(ABORT, 'COMMITTED_REPAYMENT_SNAPSHOT_INSERT_FAILURE');
+      END;
+    `);
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot(),
+        },
+        snapshotRepository,
+      ),
+      /COMMITTED_REPAYMENT_SNAPSHOT_INSERT_FAILURE/,
+    );
+    assert.equal(await snapshotRepository.get(STORE, INSTALLMENT), null);
+    assert.equal(
+      (await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }))
+        ?.state,
+      "BackendPending",
+    );
+  });
+
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    const originalSnapshot = committedRepaymentSnapshot();
+    await snapshotRepository.upsertForStore(STORE, [originalSnapshot]);
+    await moveRepaymentToBackendPending(actionStore, ACTION_A);
+    await connection.exec(`
+      CREATE TRIGGER fail_committed_repayment_snapshot_update
+      BEFORE UPDATE ON installment_snapshots
+      BEGIN
+        SELECT RAISE(ABORT, 'COMMITTED_REPAYMENT_SNAPSHOT_UPDATE_FAILURE');
+      END;
+    `);
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          actionId: ACTION_A,
+          expectedState: "BackendPending",
+          terminal: { storeCode: STORE, deviceCode: DEVICE },
+          snapshot: committedRepaymentSnapshot({
+            paidCents: 3_000,
+            balanceCents: 7_000,
+            updatedAtIso: LATER,
+          }),
+        },
+        snapshotRepository,
+      ),
+      /COMMITTED_REPAYMENT_SNAPSHOT_UPDATE_FAILURE/,
+    );
+    assert.deepEqual(
+      await snapshotRepository.get(STORE, INSTALLMENT),
+      originalSnapshot,
+    );
+    assert.equal(
+      (await actionStore.loadBlocking({ storeCode: STORE, deviceCode: DEVICE }))
+        ?.state,
+      "BackendPending",
+    );
+  });
+});
+
+test("并发重复 committed repayment 幂等成功且 Completed 始终有同一可读 snapshot", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actionStore = new SqliteInstallmentActionStore(
+      connection,
+      encryptor,
+      () => NOW,
+    );
+    const snapshotRepository = new SqliteInstallmentSnapshotRepository(
+      connection,
+      encryptor,
+    );
+    const snapshot = committedRepaymentSnapshot();
+    await moveRepaymentToBackendPending(actionStore, ACTION_C);
+    const input = {
+      actionId: ACTION_C,
+      expectedState: "BackendPending" as const,
+      terminal: { storeCode: STORE, deviceCode: DEVICE },
+      snapshot,
+    };
+
+    const results = await Promise.allSettled([
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        input,
+        snapshotRepository,
+      ),
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        input,
+        snapshotRepository,
+      ),
+    ]);
+
+    assert.deepEqual(
+      results.map((result) => result.status),
+      ["fulfilled", "fulfilled"],
+    );
+    assert.deepEqual(
+      await snapshotRepository.get(STORE, INSTALLMENT),
+      snapshot,
+    );
+    assert.deepEqual(
+      await connection.getFirst<{ resolution: unknown }>(
+        "SELECT resolution FROM installment_actions WHERE action_id = ?",
+        [ACTION_C],
+      ).then((row) => (row === null ? null : { ...row })),
+      { resolution: "Completed" },
+    );
+
+    await assert.rejects(
+      actionStore.completeCommittedRepaymentWithSnapshot(
+        {
+          ...input,
+          snapshot: committedRepaymentSnapshot({
+            paidCents: 9_000,
+            balanceCents: 1_000,
+            updatedAtIso: LATER,
+          }),
+        },
+        snapshotRepository,
+      ),
+      /snapshot.*mismatch|idempotent/i,
+    );
+    assert.deepEqual(
+      await snapshotRepository.get(STORE, INSTALLMENT),
+      snapshot,
+    );
+  });
+});
+
 test("真实 SQLite：decline 仅释放 ProviderPending/Unknown 并保留 Declined 事实", async () => {
   await withMigratedDatabase(async (connection) => {
     const store = new SqliteInstallmentActionStore(
@@ -1320,6 +1929,55 @@ function repaymentCandidate(
   });
 }
 
+function committedRepaymentSnapshot(
+  overrides: Partial<InstallmentSnapshot> = {},
+): InstallmentSnapshot {
+  return {
+    installmentGuid: INSTALLMENT,
+    installmentNumber: "INST-001",
+    storeCode: STORE,
+    deviceCode: DEVICE,
+    cashierName: "Alice",
+    customerName: "Customer",
+    customerPhone: "0400000000",
+    createdAtIso: NOW,
+    totalCents: 10_000,
+    downPaymentCents: 2_000,
+    paidCents: 2_500,
+    balanceCents: 7_500,
+    status: "Active",
+    updatedAtIso: NOW,
+    note: "Private note",
+    encryptedSensitiveRevision: INSTALLMENT_SENSITIVE_PAYLOAD_REVISION,
+    ...overrides,
+  };
+}
+
+async function moveRepaymentToBackendPending(
+  actionStore: SqliteInstallmentActionStore,
+  actionId: string,
+): Promise<void> {
+  await actionStore.createIfNone(repaymentCandidate({ actionId }));
+  await actionStore.transition({
+    actionId,
+    expectedState: "Created",
+    nextState: "ProviderPending",
+    terminal: { storeCode: STORE, deviceCode: DEVICE },
+  });
+  await actionStore.transition({
+    actionId,
+    expectedState: "ProviderPending",
+    nextState: "Approved",
+    terminal: { storeCode: STORE, deviceCode: DEVICE },
+  });
+  await actionStore.transition({
+    actionId,
+    expectedState: "Approved",
+    nextState: "BackendPending",
+    terminal: { storeCode: STORE, deviceCode: DEVICE },
+  });
+}
+
 function paymentSelectionCandidate(
   candidate: PersistedInstallmentAction,
   input: Readonly<{
@@ -1491,6 +2149,9 @@ class SystemSqliteDriver implements SqliteDriverPort {
 }
 
 class SystemSqliteConnection implements SqliteConnectionPort {
+  public transactionCount = 0;
+  private transactionTail: Promise<void> = Promise.resolve();
+
   public constructor(private readonly database: DatabaseSync) {
     this.database.exec("PRAGMA foreign_keys = ON;");
   }
@@ -1532,20 +2193,29 @@ class SystemSqliteConnection implements SqliteConnectionPort {
       .all(...parameters.map(toSqliteValue)) as T[];
   }
 
-  public async withExclusiveTransaction<T>(
+  public withExclusiveTransaction<T>(
     operation: (transaction: SqliteConnectionPort) => Promise<T>,
   ): Promise<T> {
-    this.database.exec("BEGIN IMMEDIATE;");
-    try {
-      const result = await operation(
-        new TransactionConnection(this.database),
-      );
-      this.database.exec("COMMIT;");
-      return result;
-    } catch (error) {
-      this.database.exec("ROLLBACK;");
-      throw error;
-    }
+    const execute = async (): Promise<T> => {
+      this.transactionCount += 1;
+      this.database.exec("BEGIN IMMEDIATE;");
+      try {
+        const result = await operation(
+          new TransactionConnection(this.database),
+        );
+        this.database.exec("COMMIT;");
+        return result;
+      } catch (error) {
+        this.database.exec("ROLLBACK;");
+        throw error;
+      }
+    };
+    const result = this.transactionTail.then(execute, execute);
+    this.transactionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   public async close(): Promise<void> {
@@ -1568,7 +2238,7 @@ function toSqliteValue(value: SqlValue): SQLInputValue {
 }
 
 async function withMigratedDatabase(
-  operation: (connection: SqliteConnectionPort) => Promise<void>,
+  operation: (connection: SystemSqliteConnection) => Promise<void>,
 ): Promise<void> {
   await withDatabase(async (connection) => {
     await applyMigrations(connection, () => NOW);
@@ -1577,7 +2247,7 @@ async function withMigratedDatabase(
 }
 
 async function withDatabase(
-  operation: (connection: SqliteConnectionPort) => Promise<void>,
+  operation: (connection: SystemSqliteConnection) => Promise<void>,
 ): Promise<void> {
   const connection = new SystemSqliteConnection(
     new DatabaseSync(":memory:"),

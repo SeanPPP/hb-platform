@@ -1613,6 +1613,74 @@
         }
       }
     },
+    "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}/prepare-provider": {
+      "post": {
+        "tags": [
+          "Installments"
+        ],
+        "parameters": [
+          {
+            "name": "installmentGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "operationGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallmentRepaymentClaimPrepareProviderRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallmentRepaymentClaimPrepareProviderRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallmentRepaymentClaimPrepareProviderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallmentRepaymentClaimDtoApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallmentRepaymentClaimDtoApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallmentRepaymentClaimDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/installments/{installmentGuid}/repayment-claims/{operationGuid}": {
       "get": {
         "tags": [
@@ -6886,6 +6954,9 @@
           },
           "cardRepaymentSupported": {
             "type": "boolean"
+          },
+          "repaymentClaimPrepareProviderV1": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -7049,6 +7120,35 @@
         },
         "additionalProperties": false
       },
+      "InstallmentRepaymentClaimPrepareProviderRequest": {
+        "type": "object",
+        "properties": {
+          "paymentGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "number",
+            "format": "double"
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethodKind"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerAttemptId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "InstallmentRepaymentClaimResolveOutcome": {
         "enum": [
           1,
@@ -7063,6 +7163,13 @@
         "properties": {
           "outcome": {
             "$ref": "#/components/schemas/InstallmentRepaymentClaimResolveOutcome"
+          },
+          "cashNotCollectedConfirmed": {
+            "type": "boolean"
+          },
+          "providerAttemptId": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false

@@ -12,6 +12,7 @@ import type {
   InstallmentDeviceScope,
   InstallmentPaymentMethod,
   InstallmentRepaymentCapabilities,
+  InstallmentCashRepaymentPreparation,
 } from "./installment-models";
 
 import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
@@ -108,6 +109,20 @@ export interface InstallmentWorkflowPort {
   addRepayment(
     input: InstallmentWorkflowRepaymentInput,
   ): Promise<InstallmentDetails>;
+  prepareCashRepayment?(
+    input: InstallmentWorkflowRepaymentInput,
+  ): Promise<InstallmentCashRepaymentPreparation>;
+  /** 仅恢复原设备已锁定且仍明确为 Prepared 的现金 operation。 */
+  inspectPreparedCashRepayment?(): Promise<
+    InstallmentCashRepaymentPreparation | null
+  >;
+  /** 只读确认原设备现金 operation 是否仍可由主管安全取消。 */
+  inspectCancellablePreparedCashRepayment?(): Promise<
+    InstallmentCashRepaymentPreparation | null
+  >;
+  confirmPreparedCashRepayment?(): Promise<InstallmentDetails>;
+  /** 原设备主管明确确认尚未收现后，安全释放已锁定的现金续付。 */
+  cancelPreparedCashRepayment?(): Promise<void>;
   cancelWithRefund(input: Readonly<{
     installmentGuid: string;
     reason: string | null;
@@ -125,6 +140,7 @@ export interface InstallmentWorkflowPort {
 export type InstallmentWorkflowErrorCode =
   | "authorization-declined"
   | "claim-review-required"
+  | "cash-confirmation-required"
   | "conflict"
   | "online-required"
   | "payment-recovery-required"

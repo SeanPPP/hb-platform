@@ -19,7 +19,10 @@ import {
   RECALL_LIST_PERMISSION,
   RECALL_RESTORE_PERMISSION,
 } from "../../features/held-orders/held-orders-domain";
-import { INSTALLMENTS_VIEW_PERMISSION } from "../../features/installments/installment-authorization";
+import {
+  INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+  INSTALLMENTS_VIEW_PERMISSION,
+} from "../../features/installments/installment-authorization";
 import {
   type LocalHistoryDetails,
   type LocalHistoryPage,
@@ -29,6 +32,8 @@ import {
   LOCAL_HISTORY_REPRINT_PERMISSION,
   LOCAL_HISTORY_VIEW_PERMISSION,
 } from "../../features/local-history/local-history-presenter";
+import { PAYMENT_PERMISSION } from "../../features/payments/runtime/payment-checkout-runtime";
+import { installmentRepaymentPaymentEntry } from "../../features/payments/ui/unified-payment-entry";
 import {
   REMOTE_HISTORY_REPRINT_PERMISSION,
   REMOTE_HISTORY_VIEW_PERMISSION,
@@ -81,9 +86,19 @@ import type {
 } from "../db/catalog-repository";
 import { PosDatabase } from "../db/pos-database";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
+import type { SqliteInstallmentSnapshotRepository } from "../db/sqlite-installment-snapshot-repository";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
 
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
+import type {
+  InstallmentProviderAttemptPlan,
+  InstallmentProviderAttemptStorePort,
+} from "./production-installment-payment-adapter";
+import type {
+  InstallmentActionStorePort,
+  InstallmentPerformanceEvent,
+  PersistedInstallmentAction,
+} from "./production-installment-runtime";
 import {
   createPostCommitWorkDrain,
   createPostCommitFulfilmentCashCheckout,
@@ -1224,6 +1239,325 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
     skip: 0,
     take: 51,
   });
+  presenter.destroy();
+});
+
+test("分期生产组合注入现金原子 finalizer 并在渲染前上报四阶段指标", async () => {
+  const installmentGuid = "10000000-0000-4000-8000-000000000001";
+  let persistedAction: PersistedInstallmentAction | null = null;
+  let providerPlan: InstallmentProviderAttemptPlan | null = null;
+  let snapshotUpsertCalls = 0;
+  let atomicFinalizerCalls = 0;
+  let preparedOperationGuid = "";
+  let preparedPaymentGuid = "";
+  let preparedAttemptId = "";
+  const performanceEvents: InstallmentPerformanceEvent[] = [];
+  const installmentUrls: string[] = [];
+  const durableSteps: string[] = [];
+
+  const snapshotRepository = {
+    async upsertForStore() {
+      snapshotUpsertCalls += 1;
+    },
+    async listForStore() {
+      return [];
+    },
+  } as unknown as SqliteInstallmentSnapshotRepository;
+  const actionStore: InstallmentActionStorePort = {
+    async loadBlocking() {
+      durableSteps.push("load-blocking");
+      return persistedAction;
+    },
+    async createIfNone(candidate) {
+      durableSteps.push("create-action");
+      if (persistedAction) {
+        return { created: false, action: persistedAction };
+      }
+      persistedAction = candidate;
+      return { created: true, action: candidate };
+    },
+    async loadLifecycleBlocking() {
+      durableSteps.push("load-lifecycle-blocking");
+      return null;
+    },
+    async createLifecycleIfNone() {
+      throw new Error("lifecycle action is outside this test");
+    },
+    async completeLifecycle() {
+      throw new Error("lifecycle action is outside this test");
+    },
+    async finalizeCreatedFailure() {
+      persistedAction = null;
+    },
+    async transition(input) {
+      const current = persistedAction;
+      if (
+        !current ||
+        current.action.actionId !== input.actionId ||
+        current.state !== input.expectedState
+      ) {
+        throw new Error("unexpected installment action transition");
+      }
+      persistedAction = Object.freeze({
+        ...current,
+        state: input.nextState,
+      });
+      return persistedAction;
+    },
+    async decline() {
+      persistedAction = null;
+    },
+    async complete() {
+      throw new Error("cash repayment must use the atomic finalizer");
+    },
+    async completeCommittedRepaymentWithSnapshot(input, repository) {
+      assert.strictEqual(repository, snapshotRepository);
+      assert.equal(persistedAction?.state, input.expectedState);
+      assert.equal(
+        persistedAction?.action.installmentGuid,
+        input.snapshot.installmentGuid,
+      );
+      atomicFinalizerCalls += 1;
+      persistedAction = null;
+    },
+  };
+  const providerAttempts: InstallmentProviderAttemptStorePort = {
+    async loadAction(actionId) {
+      return persistedAction?.action.actionId === actionId
+        ? persistedAction
+        : null;
+    },
+    async loadPlan(actionId) {
+      return providerPlan?.actionId === actionId ? providerPlan : null;
+    },
+    async bindPlanOrGet(candidate) {
+      providerPlan ??= candidate;
+      return providerPlan;
+    },
+    async compareAndUpdateAttempt() {
+      throw new Error("cash repayment has no card attempt");
+    },
+    async loadApprovedMaterial() {
+      return null;
+    },
+    async approveCashSettlements(actionId) {
+      if (!providerPlan || providerPlan.actionId !== actionId) {
+        throw new Error("cash settlement plan was not prepared");
+      }
+      providerPlan = Object.freeze({
+        ...providerPlan,
+        cashSettlements: Object.freeze(
+          providerPlan.cashSettlements.map((settlement) =>
+            Object.freeze({ ...settlement, state: "Approved" as const }),
+          ),
+        ),
+      });
+      return providerPlan.cashSettlements;
+    },
+  };
+  const database = databaseFor([]);
+  Object.assign(database, {
+    installmentSnapshots: () => snapshotRepository,
+    installmentActions: () => actionStore,
+    installmentPaymentPersistence: () => ({
+      providerAttempts,
+      voucherIntents: { async stage() {} },
+      voucherProtectedTokens: {},
+      voucherContextForAttempt: async () => {
+        throw new Error("voucher context is outside this test");
+      },
+      voucherMaterials: {
+        async prepare() {
+          throw new Error("voucher material is outside this test");
+        },
+        async resolveApproved() {
+          throw new Error("voucher material is outside this test");
+        },
+      },
+      refundProvenance: {},
+    }),
+  });
+  const configuredAvailability = {
+    getAvailability(provider: "square" | "linkly-cloud" | "voucher") {
+      return {
+        provider,
+        available: false,
+        blocker: "PAYMENT_PROVIDER_UNKNOWN" as const,
+      };
+    },
+    listAvailability() {
+      return [];
+    },
+  };
+  const bootstrap = {
+    providers: {
+      ...configuredAvailability,
+      get() {
+        throw new Error("cash repayment has no remote provider");
+      },
+      listAvailableProviders() {
+        return [];
+      },
+      getVoucherApprovedPurchaseReleasePort() {
+        return {
+          status: "unavailable" as const,
+          reason: "PAYMENT_PROVIDER_UNKNOWN" as const,
+        };
+      },
+    },
+    configurationAvailability: configuredAvailability,
+    bindVoucherContextProvider() {},
+    createLinklyOperator() {
+      return null;
+    },
+  } as PaymentProviderRuntimeBootstrap;
+  const initialDetails = installmentDetailsPayload({
+    installmentGuid,
+    paidAmount: 20,
+    balanceAmount: 80,
+    payments: [],
+  });
+  const services = createTestComposition(database, {
+    cashierPermissions: [
+      INSTALLMENTS_VIEW_PERMISSION,
+      INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
+      PAYMENT_PERMISSION.view,
+      PAYMENT_PERMISSION.confirm,
+      PAYMENT_PERMISSION.takeCash,
+    ],
+    installmentBootstrap: bootstrap,
+    installmentPerformanceRecorder: {
+      record(event) {
+        performanceEvents.push(event);
+      },
+    },
+    createId: uuidSequence(),
+    sha256Hex: async (material) =>
+      createHash("sha256").update(material, "utf8").digest("hex"),
+    transport: {
+      async request<T>(request: HbposTransportRequest) {
+        installmentUrls.push(request.url);
+        if (request.url === "/api/v1/installments/capabilities") {
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: {
+                repaymentClaimsSupported: true,
+                repaymentClaimsRequired: true,
+                repaymentClaimPrepareProviderV1: true,
+                cardRepaymentSupported: false,
+                crossDeviceRepaymentEnabled: false,
+                crossDeviceCancelRefundEnabled: false,
+                crossDeviceVoidEnabled: false,
+                crossDevicePickupEnabled: false,
+                preparedClaimTtlSeconds: 300,
+                cancelClaimsSupported: true,
+                cancelClaimsRequired: true,
+                cancelPreparedClaimTtlSeconds: 300,
+              },
+            } as T,
+          };
+        }
+        if (request.url === `/api/v1/installments/${installmentGuid}`) {
+          return {
+            status: 200,
+            data: { success: true, data: initialDetails } as T,
+          };
+        }
+        if (request.url.endsWith("/prepare-provider")) {
+          const payload = request.data as Readonly<Record<string, unknown>>;
+          preparedOperationGuid =
+            request.url.split("/repayment-claims/")[1]?.split("/")[0] ?? "";
+          preparedPaymentGuid = String(payload.paymentGuid ?? "");
+          preparedAttemptId = String(payload.providerAttemptId ?? "");
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: repaymentClaimPayload({
+                installmentGuid,
+                operationGuid: preparedOperationGuid,
+                paymentGuid: preparedPaymentGuid,
+                providerAttemptId: preparedAttemptId,
+                status: 2,
+                commit: null,
+              }),
+            } as T,
+          };
+        }
+        if (request.url.endsWith("/commit")) {
+          const committedDetails = installmentDetailsPayload({
+            installmentGuid,
+            paidAmount: 30,
+            balanceAmount: 70,
+            payments: [installmentPaymentPayload(preparedPaymentGuid)],
+          });
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: repaymentClaimPayload({
+                installmentGuid,
+                operationGuid: preparedOperationGuid,
+                paymentGuid: preparedPaymentGuid,
+                providerAttemptId: preparedAttemptId,
+                status: 3,
+                commit: {
+                  details: committedDetails,
+                  alreadyRecorded: false,
+                },
+              }),
+            } as T,
+          };
+        }
+        throw new Error(`Unexpected installment URL: ${request.url}`);
+      },
+    },
+  });
+
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  if (!("createCheckoutPresenter" in services.installments)) {
+    assert.fail("installment runtime should be available");
+  }
+  const presenter = services.installments.createCheckoutPresenter(
+    installmentRepaymentPaymentEntry(installmentGuid),
+  );
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("10.00");
+  assert.equal(
+    await presenter.submitSelected(),
+    true,
+    JSON.stringify({
+      state: presenter.getState(),
+      installmentUrls,
+      durableSteps,
+    }),
+  );
+  assert.equal(await presenter.confirm(), true);
+
+  assert.equal(atomicFinalizerCalls, 1);
+  assert.equal(snapshotUpsertCalls, 0);
+  assert.deepEqual(
+    performanceEvents.map((event) => event.name),
+    [
+      "prepare",
+      "cash-durable",
+      "commit",
+      "local-finalize",
+    ],
+  );
+  assert.equal(
+    performanceEvents.some((event) => event.name === "presenter-success"),
+    false,
+  );
+  assert.equal(
+    performanceEvents.every((event) =>
+      event.operationHash.startsWith("sha256:")),
+    true,
+  );
   presenter.destroy();
 });
 
@@ -3032,6 +3366,11 @@ function createTestComposition(
     waitForPrint?(): Promise<void>;
     onDrawerOpen?(actionId: string): void;
     installmentBootstrap?: PaymentProviderRuntimeBootstrap;
+    installmentPerformanceRecorder?: Readonly<{
+      record(event: InstallmentPerformanceEvent): void | Promise<void>;
+    }>;
+    createId?: () => string;
+    sha256Hex?: (material: string) => Promise<string>;
     settings?: ProductionSettingsRuntimeConfiguration;
     appUpdateTransition?: UpdateTransitionLeaseCoordinator;
   }> = {},
@@ -3054,9 +3393,16 @@ function createTestComposition(
       now: () => new Date("2026-07-28T00:00:00.000Z"),
       nowIso: () => "2026-07-28T00:00:00.000Z",
     },
-    createId: () => `test-id-${++nextId}`,
+    createId: options.createId ?? (() => `test-id-${++nextId}`),
     random: () => 0.5,
-    sha256Hex: async (material) => `sha256:${material}`,
+    sha256Hex:
+      options.sha256Hex ?? (async (material) => `sha256:${material}`),
+    ...(options.installmentPerformanceRecorder
+      ? {
+          installmentPerformanceRecorder:
+            options.installmentPerformanceRecorder,
+        }
+      : {}),
     catalogPageDigest: nodeCatalogPageDigest,
     createPrinter: () => ({
       async connect() {},
@@ -3930,6 +4276,84 @@ function reprintStore(
       options?.onFulfilmentTerminalPersisted?.("reprint");
       return true;
     },
+  };
+}
+
+function uuidSequence(): () => string {
+  let sequence = 0;
+  return () =>
+    `90000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
+}
+
+function installmentDetailsPayload(input: Readonly<{
+  installmentGuid: string;
+  paidAmount: number;
+  balanceAmount: number;
+  payments: readonly ReturnType<typeof installmentPaymentPayload>[];
+}>) {
+  return {
+    installmentGuid: input.installmentGuid,
+    installmentNumber: "INS-CASH-100",
+    storeCode: "S001",
+    deviceCode: "IPAD-1",
+    cashierId: "cashier-1",
+    cashierName: "Cashier",
+    customerName: "Cash Customer",
+    customerPhone: "0400000000",
+    createdAt: "2026-07-27T01:02:03Z",
+    updatedAt: "2026-07-28T00:00:00Z",
+    totalAmount: 100,
+    minimumDownPayment: 20,
+    downPaymentAmount: 20,
+    paidAmount: input.paidAmount,
+    balanceAmount: input.balanceAmount,
+    status: 1,
+    lines: [],
+    payments: input.payments,
+    pickupInfo: null,
+    cancellationInfo: null,
+    note: null,
+  };
+}
+
+function installmentPaymentPayload(paymentGuid: string) {
+  return {
+    paymentGuid,
+    method: 1,
+    amount: 10,
+    reference: null,
+    status: 1,
+    recordedAt: "2026-07-28T00:00:00Z",
+    cashierId: "cashier-1",
+    deviceCode: "IPAD-1",
+    idempotencyKey: paymentGuid,
+    cardTransactions: [],
+  };
+}
+
+function repaymentClaimPayload(input: Readonly<{
+  installmentGuid: string;
+  operationGuid: string;
+  paymentGuid: string;
+  providerAttemptId: string;
+  status: 2 | 3;
+  commit: unknown;
+}>) {
+  return {
+    installmentGuid: input.installmentGuid,
+    operationGuid: input.operationGuid,
+    paymentGuid: input.paymentGuid,
+    amount: 10,
+    method: 1,
+    idempotencyKey: input.operationGuid,
+    status: input.status,
+    provider: "cash",
+    providerAttemptId: input.providerAttemptId,
+    createdAtUtc: "2026-07-28T00:00:00Z",
+    updatedAtUtc: "2026-07-28T00:00:00Z",
+    expiresAtUtc: null,
+    commit: input.commit,
+    alreadyExists: false,
   };
 }
 

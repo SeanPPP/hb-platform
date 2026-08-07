@@ -1,5 +1,5 @@
 import { Redirect, type Href, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
@@ -142,7 +142,10 @@ export default function SpecialProductsRoute() {
 
   return (
     <>
-      <SpecialProductsSoundBridge presenter={presenter} />
+      <SpecialProductsSoundBridge
+        presenter={presenter}
+        router={router}
+      />
       <SpecialProductsScreen
         onBack={() => router.dismissTo("/sales" as Href)}
         presenter={presenter}
@@ -153,8 +156,15 @@ export default function SpecialProductsRoute() {
 
 function SpecialProductsSoundBridge({
   presenter,
-}: Readonly<{ presenter: SpecialProductsPresenter }>) {
+  router,
+}: Readonly<{
+  presenter: SpecialProductsPresenter;
+  router: { dismissTo(href: Href): void };
+}>) {
   const { play } = usePosSound();
+  // 一次性守卫：同一会话内连点加购（added→incremented）只跳转一次，
+  // 避免退场动画期间的重复 dismissTo
+  const returnedRef = useRef(false);
   useEffect(
     () =>
       presenter.subscribeFeedback((event) => {
@@ -166,15 +176,25 @@ function SpecialProductsSoundBridge({
             return;
           case "added":
             play("cart-added");
+            if (!returnedRef.current) {
+              returnedRef.current = true;
+              // 加购成功自动返回收银页（与 WPF 行为一致）
+              router.dismissTo("/sales" as Href);
+            }
             return;
           case "incremented":
             play("cart-incremented");
+            if (!returnedRef.current) {
+              returnedRef.current = true;
+              // 数量累加同样视为加购成功，返回收银页
+              router.dismissTo("/sales" as Href);
+            }
             return;
           case "failed-blocked":
             play("cart-failed-blocked");
         }
       }),
-    [play, presenter],
+    [play, presenter, router],
   );
   return null;
 }
