@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **hb-platform** (84273 symbols, 272192 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **hb-platform** (84291 symbols, 272359 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -46,3 +46,9 @@ This project is indexed by GitNexus as **hb-platform** (84273 symbols, 272192 re
 
 - 提交添加 reasonix
 - 涉及 UI 层、界面、视觉或交互体验的任务，自动使用全局 `taste-skill` 技能。
+
+## 个性化代理策略
+
+- 当 Codex 当前账号明确显示周额度剩余低于 20% 时，后续适合委派的纯文本任务默认使用已配置的 `DeepSeek` 原生子代理。
+- 仅在能够可靠读取周额度且 `DeepSeek` 角色已配置并可用时启用；无法确认额度或角色不可用时，继续使用现有原生代理策略，不猜测额度、不绕过配置流程。
+- 图片、视频、截图及其他视觉输入仍由主代理先识别并整理为文字事实，再按需交给 `DeepSeek`。
