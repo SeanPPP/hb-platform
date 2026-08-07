@@ -25,6 +25,7 @@ import { queryClient } from "@/shared/api/query-client";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
 import { useAuthStore } from "@/store/auth-store";
+import { NetworkRecoveryProvider } from "@/shared/network";
 import { IosReviewBanner } from "@/modules/ios-review/IosReviewBanner";
 import "@/modules/attendance/location-tracking";
 
@@ -208,27 +209,31 @@ export default function RootLayout() {
           <PaperProvider theme={theme}>
             {/* 浅色业务页面统一使用深色系统图标，避免白底白字看不清。 */}
             <StatusBar style="dark" />
-            <IosNativeUpdateBoundary
-              enabled={iosNativeUpdateEnabled}
-              initialized={iosNativeUpdate.initialized}
-              checking={iosNativeUpdate.checking}
-              decision={iosNativeUpdate.decision}
-              onOpenRequiredUpdate={iosNativeUpdate.openRequiredUpdate}
-              onRetryRequiredUpdate={() => {
-                void iosNativeUpdate.recheck();
-              }}
-            >
-              <View style={styles.appContent}>
-                <Stack screenOptions={{ headerShown: false }}>
-                  <Stack.Screen name="index" />
-                  <Stack.Screen name="(auth)" />
-                  <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="preorders" />
-                  <Stack.Screen name="employee-profile-review" />
-                </Stack>
-                {isIosReviewSession ? <IosReviewBanner /> : null}
-              </View>
-            </IosNativeUpdateBoundary>
+            {/* 网络恢复补传：启动就绪且非 iOS 审核态时启用。
+                离线期间的请求入队后，由 App 前台切换与指数退避自动补传。 */}
+            <NetworkRecoveryProvider enabled={sideEffectsEnabled}>
+              <IosNativeUpdateBoundary
+                enabled={iosNativeUpdateEnabled}
+                initialized={iosNativeUpdate.initialized}
+                checking={iosNativeUpdate.checking}
+                decision={iosNativeUpdate.decision}
+                onOpenRequiredUpdate={iosNativeUpdate.openRequiredUpdate}
+                onRetryRequiredUpdate={() => {
+                  void iosNativeUpdate.recheck();
+                }}
+              >
+                <View style={styles.appContent}>
+                  <Stack screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="index" />
+                    <Stack.Screen name="(auth)" />
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="preorders" />
+                    <Stack.Screen name="employee-profile-review" />
+                  </Stack>
+                  {isIosReviewSession ? <IosReviewBanner /> : null}
+                </View>
+              </IosNativeUpdateBoundary>
+            </NetworkRecoveryProvider>
           </PaperProvider>
         </I18nextProvider>
       </QueryClientProvider>
