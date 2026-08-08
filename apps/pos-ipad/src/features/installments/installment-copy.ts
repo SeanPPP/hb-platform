@@ -5,7 +5,7 @@ export const installmentEnglishCopy = {
   online: "Online",
   offlineShort: "Offline",
   offline:
-    "Reconnect to load installments. History, details and operations remain unavailable while offline.",
+    "Reconnect to load installments. It reloads automatically when the connection is restored. History, details and operations remain unavailable while offline.",
   "action.recover": "Recover previous action",
   "action.back": "Back",
   "action.history": "History",
@@ -203,7 +203,8 @@ const installmentChineseCopy = {
   subtitle: "分期查询和所有操作都必须连接在线服务。",
   online: "在线",
   offlineShort: "离线",
-  offline: "请恢复连接后加载分期；离线时不展示历史、详情，也不能执行任何操作。",
+  offline:
+    "请恢复连接后加载分期；连接恢复后将自动加载。离线时不展示历史、详情，也不能执行任何操作。",
   "action.recover": "恢复上一笔",
   "action.back": "返回",
   "action.history": "历史",

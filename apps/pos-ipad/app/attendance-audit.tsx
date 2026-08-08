@@ -13,6 +13,7 @@ import {
   resolveProtectedSalesRouteGate,
   useCashierLoginStore,
 } from "@/features/cashier-login";
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type AttendanceAuditBinding = Readonly<{
@@ -112,9 +113,20 @@ export default function AttendanceAuditRoute() {
     runtime.services,
   ]);
 
+  // 网络信号来源：connectivity 由 NetworkStatusBridge 后端探测驱动，
+  // 后端恢复后自动翻转为 online；runtime.state.backend 启动后不更新。
+  const connectivity = usePosShellStore(
+    (state) => state.connectivity,
+  );
+
   useEffect(() => {
-    presenter?.setOnline(runtime.state.backend === "reachable");
-  }, [presenter, runtime.state.backend]);
+    if (!presenter) return;
+    // checking 视为在线（未知时乐观）；考勤审计上传由后台调度器消费此门禁，
+    // 恢复后自动继续上传，无需手动重试。
+    presenter.setOnline(
+      connectivity === "online" || connectivity === "checking",
+    );
+  }, [connectivity, presenter]);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;

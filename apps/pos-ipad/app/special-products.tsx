@@ -15,6 +15,7 @@ import {
   type SpecialProductsPresenter,
 } from "@/features/special-products";
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type SpecialProductsBinding = Readonly<{
@@ -45,6 +46,13 @@ export default function SpecialProductsRoute() {
   const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
   const [presenterCreationFailed, setPresenterCreationFailed] =
     useState(false);
+  // 网络信号来源：connectivity 由 NetworkStatusBridge 后端探测驱动，
+  // 后端恢复后会自动翻转为 online（30s 周期 / App 前台恢复）。
+  // runtime.state.backend 在启动后不会更新，无法驱动离线→在线恢复。
+  const connectivity = usePosShellStore(
+    (state) => state.connectivity,
+  );
+  const prevOnline = useRef<boolean | null>(null);
   const presenter =
     binding?.services === runtime.services &&
     binding.cashier === activeCashier
@@ -116,9 +124,20 @@ export default function SpecialProductsRoute() {
     runtime.services,
   ]);
 
+  // 网络从离线恢复为在线时，自动刷新特殊商品数据并恢复下载可用，无需用户手动操作。
   useEffect(() => {
-    presenter?.setOnline(runtime.state.backend === "reachable");
-  }, [presenter, runtime.state.backend]);
+    if (!presenter) return;
+    // checking 视为在线（未知时乐观），仅明确 offline 才锁定管理操作。
+    const nextOnline =
+      connectivity === "online" || connectivity === "checking";
+    const wasOffline = prevOnline.current === false;
+    presenter.setOnline(nextOnline);
+    if (wasOffline && nextOnline) {
+      // 离线期间列表可能已陈旧，恢复后重新加载本地列表与在线能力。
+      void presenter.load().catch(() => undefined);
+    }
+    prevOnline.current = nextOnline;
+  }, [connectivity, presenter]);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;

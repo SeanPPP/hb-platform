@@ -1,5 +1,6 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
+import { create } from "zustand";
 
 import SpecialProductsRoute from "../../../app/special-products";
 
@@ -15,6 +16,7 @@ const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
 const mockSetOnline = jest.fn();
+const mockLoad = jest.fn(async () => undefined);
 const mockUnsubscribeSpecialProductsFeedback = jest.fn();
 const mockSubscribeSpecialProductsFeedback = jest.fn<
   (
@@ -32,6 +34,17 @@ const mockRouterDismissTo = jest.fn();
 // 模块级单例：声明在 jest.mock 之前（仓库既有模式），工厂引用无 TDZ 风险；
 // router 引用稳定，避免重渲染触发 SoundBridge 重订阅
 const mockRouter = { dismissTo: mockRouterDismissTo };
+
+// 用真实 zustand store 模拟 connectivity：setState 能驱动 React 重渲染。
+type MockShellState = Readonly<{ connectivity: string }>;
+const mockShellStore = create<MockShellState>()(() => ({
+  connectivity: "online",
+}));
+
+jest.mock("@/ui/shell/pos-shell-store", () => ({
+  usePosShellStore: (selector: (state: MockShellState) => unknown) =>
+    mockShellStore(selector),
+}));
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({
   usePosSound: () => ({ play: mockPlaySound }),
@@ -149,8 +162,10 @@ beforeEach(() => {
   mockCreatePresenter.mockReturnValue({
     destroy: mockDestroyPresenter,
     setOnline: mockSetOnline,
+    load: mockLoad,
     subscribeFeedback: mockSubscribeSpecialProductsFeedback,
   });
+  mockShellStore.setState({ connectivity: "online" });
   mockRuntime = readyRuntime();
 });
 
@@ -199,18 +214,37 @@ test("特殊商品反馈逐项映射声音 cue，并在路由卸载时解除订�
   expect(mockUnsubscribeSpecialProductsFeedback).toHaveBeenCalledTimes(1);
 });
 
-test("离线授权设备仍可进入本地列表，并把管理能力切为离线", async () => {
-  mockRuntime = readyRuntime({
-    backend: "offline",
-    device: "authorized-local",
-    phase: "ready-offline",
-  });
+test("网络离线时仍可进入本地列表，并把管理能力切为离线", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
   const screen = await render(<SpecialProductsRoute />);
 
   await waitFor(() => {
     expect(screen.getByTestId("special-products-screen")).toBeTruthy();
   });
   expect(mockSetOnline).toHaveBeenCalledWith(false);
+});
+
+test("网络从离线恢复为在线时自动刷新并恢复下载可用", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
+  const screen = await render(<SpecialProductsRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("special-products-screen")).toBeTruthy();
+  });
+  expect(mockSetOnline).toHaveBeenCalledWith(false);
+  mockLoad.mockClear();
+
+  // 后端恢复：NetworkStatusBridge 探测成功 → connectivity 翻转为 online。
+  await act(async () => {
+    mockShellStore.setState({ connectivity: "online" });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  await waitFor(() => {
+    expect(mockSetOnline).toHaveBeenCalledWith(true);
+    // 关键：恢复后自动调用 load() 刷新列表，无需用户手动操作。
+    expect(mockLoad).toHaveBeenCalledTimes(1);
+  });
+  await screen.unmount();
 });
 
 test("缺少 View 权限的直链访问返回销售页且不读取设备身份", async () => {

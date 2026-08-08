@@ -1,7 +1,14 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react-native";
+import { create } from "zustand";
 
 import AttendanceAuditRoute from "../../../app/attendance-audit";
+
+// 用真实 zustand store 模拟 connectivity：setState 能驱动 React 重渲染。
+type MockShellState = Readonly<{ connectivity: string }>;
+const mockShellStore = create<MockShellState>()(() => ({
+  connectivity: "online",
+}));
 
 let mockRuntime: any;
 let mockActiveCashier: any;
@@ -32,6 +39,11 @@ jest.mock("expo-router", () => {
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
+}));
+
+jest.mock("@/ui/shell/pos-shell-store", () => ({
+  usePosShellStore: (selector: (state: MockShellState) => unknown) =>
+    mockShellStore(selector),
 }));
 
 jest.mock("@/features/cashier-login", () => ({
@@ -117,6 +129,7 @@ beforeEach(() => {
     setOnline: mockSetOnline,
   });
   mockRuntime = readyRuntime();
+  mockShellStore.setState({ connectivity: "online" });
 });
 
 test("复核设备绑定后零参数创建 presenter，并同步后端在线状态", async () => {
@@ -135,12 +148,8 @@ test("复核设备绑定后零参数创建 presenter，并同步后端在线状�
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
 
-test("离线授权设备仍可显示已登记二维码和本机审计", async () => {
-  mockRuntime = readyRuntime({
-    backend: "offline",
-    device: "authorized-local",
-    phase: "ready-offline",
-  });
+test("网络离线时仍可显示已登记二维码和本机审计", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
   const screen = await render(<AttendanceAuditRoute />);
 
   await waitFor(() => {

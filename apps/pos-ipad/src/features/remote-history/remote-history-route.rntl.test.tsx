@@ -1,7 +1,14 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
+import { create } from "zustand";
 
 import RemoteHistoryRoute from "../../../app/remote-history";
+
+// 用真实 zustand store 模拟 connectivity：setState 能驱动 React 重渲染。
+type MockShellState = Readonly<{ connectivity: string }>;
+const mockShellStore = create<MockShellState>()(() => ({
+  connectivity: "online",
+}));
 
 let mockRuntime: any;
 let mockActiveCashier: any;
@@ -28,6 +35,11 @@ jest.mock("expo-router", () => {
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
+}));
+
+jest.mock("@/ui/shell/pos-shell-store", () => ({
+  usePosShellStore: (selector: (state: MockShellState) => unknown) =>
+    mockShellStore(selector),
 }));
 
 jest.mock("@/features/cashier-login", () => ({
@@ -112,6 +124,7 @@ beforeEach(() => {
     destroy: mockDestroyPresenter,
   });
   mockRuntime = readyRuntime();
+  mockShellStore.setState({ connectivity: "online" });
 });
 
 test("复核设备后以可信身份创建 presenter，返回销售并在卸载时销毁", async () => {
@@ -135,12 +148,8 @@ test("复核设备后以可信身份创建 presenter，返回销售并在卸载�
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
 });
 
-test("离线 runtime 仍进入只读 presenter，但明确传 online=false", async () => {
-  mockRuntime = readyRuntime({
-    phase: "ready-offline",
-    backend: "offline",
-    device: "authorized-local",
-  });
+test("网络离线时仍进入只读 presenter，但明确传 online=false", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
   const screen = await render(<RemoteHistoryRoute />);
 
   await waitFor(() => {

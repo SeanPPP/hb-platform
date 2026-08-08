@@ -1,5 +1,5 @@
 import { Redirect, type Href, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
@@ -15,6 +15,7 @@ import {
   type InstallmentPresenter,
 } from "@/features/installments";
 import { installmentRepaymentPaymentEntry } from "@/features/payments/ui";
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type InstallmentsBinding = Readonly<{
@@ -49,6 +50,13 @@ export default function InstallmentsRoute() {
   const [binding, setBinding] =
     useState<InstallmentsBinding | null>(null);
   const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  // 网络信号来源：connectivity 由 NetworkStatusBridge 后端探测驱动，
+  // 后端恢复后会自动翻转为 online（30s 周期 / App 前台恢复）。
+  // runtime.state.backend 在启动后不会更新，无法驱动离线→在线恢复。
+  const connectivity = usePosShellStore(
+    (state) => state.connectivity,
+  );
+  const prevOnline = useRef<boolean | null>(null);
   const presenter =
     binding?.services === runtime.services &&
     binding.cashier === activeCashier
@@ -119,9 +127,20 @@ export default function InstallmentsRoute() {
     runtime.services,
   ]);
 
+  // 网络从离线恢复为在线时，自动刷新分期数据，无需用户手动点击重试。
   useEffect(() => {
-    presenter?.setOnline(runtime.state.backend === "reachable");
-  }, [presenter, runtime.state.backend]);
+    if (!presenter) return;
+    // checking 视为在线（未知时乐观），仅明确 offline 才阻断分期。
+    const nextOnline =
+      connectivity === "online" || connectivity === "checking";
+    const wasOffline = prevOnline.current === false;
+    presenter.setOnline(nextOnline);
+    if (wasOffline && nextOnline) {
+      // 离线期间数据已被清空，恢复后重新加载列表与能力。
+      void presenter.load().catch(() => undefined);
+    }
+    prevOnline.current = nextOnline;
+  }, [connectivity, presenter]);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;

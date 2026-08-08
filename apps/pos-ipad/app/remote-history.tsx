@@ -15,6 +15,7 @@ import {
   resolveRemoteHistoryPresenterFactory,
   type RemoteHistoryPresenter,
 } from "@/features/remote-history";
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type RemoteHistoryBinding = Readonly<{
@@ -37,7 +38,14 @@ export default function RemoteHistoryRoute() {
   const authorized =
     activeCashier !== null &&
     hasRemoteHistoryViewPermission(activeCashier.permissions);
-  const online = runtime.state.backend === "reachable";
+  // 网络信号来源：connectivity 由 NetworkStatusBridge 后端探测驱动，后端恢复后
+  // 自动翻转为 online；其变化会触发下方 effect 重建 presenter（online 随之更新），
+  // 远程历史查询自动恢复可用，无需手动重试。
+  const connectivity = usePosShellStore(
+    (state) => state.connectivity,
+  );
+  const online =
+    connectivity === "online" || connectivity === "checking";
   const canOpenReturns =
     activeCashier?.permissions.includes(
       "Permissions.PosTerminal.Returns.View",
