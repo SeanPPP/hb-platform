@@ -50,16 +50,27 @@ export class HbposApiError extends Error {
   public readonly kind: HbposApiErrorKind;
   public readonly status: number | undefined;
   public readonly code: string | undefined;
+  /**
+   * 底层网络错误码（如 axios 的 ERR_NETWORK / ECONNREFUSED / ETIMEDOUT），
+   * 仅 transport 类错误携带，用于 UI 层区分“断网 / 服务器未启动 / 超时”等场景。
+   */
+  public readonly networkCode: string | undefined;
 
   public constructor(
     message: string,
-    details: Readonly<{ kind: HbposApiErrorKind; status?: number; code?: string }>
+    details: Readonly<{
+      kind: HbposApiErrorKind;
+      status?: number;
+      code?: string;
+      networkCode?: string;
+    }>
   ) {
     super(message);
     this.name = "HbposApiError";
     this.kind = details.kind;
     this.status = details.status;
     this.code = details.code;
+    this.networkCode = details.networkCode;
   }
 }
 

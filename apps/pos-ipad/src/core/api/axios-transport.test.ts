@@ -414,3 +414,74 @@ test("主动取消保留可识别错误且不得触发认证失效处理", async
   );
   assert.deepEqual(authenticationFailures, []);
 });
+
+test("无 HTTP 响应（ERR_NETWORK）时抛出可读中文提示并携带 networkCode", async () => {
+  const instance = create({
+    adapter: async (config) => {
+      throw new AxiosError("Network Error", "ERR_NETWORK", config);
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    async getCredentials() {
+      return {};
+    },
+  }, instance);
+
+  await assert.rejects(
+    () => transport.request({ method: "GET", url: "/api/v1/advertisements/active" }),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "transport"
+      && error.code === "NO_HTTP_RESPONSE"
+      && error.networkCode === "ERR_NETWORK"
+      && error.message.includes("网络连接失败"),
+  );
+});
+
+test("无 HTTP 响应（ECONNREFUSED）时提示服务器未启动", async () => {
+  const instance = create({
+    adapter: async (config) => {
+      throw new AxiosError(
+        "connect ECONNREFUSED 192.168.31.246:5159",
+        "ECONNREFUSED",
+        config,
+      );
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    async getCredentials() {
+      return {};
+    },
+  }, instance);
+
+  await assert.rejects(
+    () => transport.request({ method: "GET", url: "/api/v1/health" }),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.networkCode === "ECONNREFUSED"
+      && error.message.includes("无法连接服务器"),
+  );
+});
+
+test("非 axios 异常（TRANSPORT_UNEXPECTED）携带独立错误码与中性文案", async () => {
+  const instance = create({
+    adapter: async () => {
+      // 非 AxiosError（如 interceptor 凭证读取失败等内部故障）。
+      throw new Error("keychain read failed");
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    async getCredentials() {
+      return {};
+    },
+  }, instance);
+
+  await assert.rejects(
+    () => transport.request({ method: "GET", url: "/api/v1/health" }),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.kind === "transport"
+      && error.code === "TRANSPORT_UNEXPECTED"
+      && error.message.includes("请求未能完成"),
+  );
+});

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { HbposApiError } from "@/core/api/hbpos-api";
+
 import {
   createDisconnectedSalesPresenter,
   deriveCashDraft,
@@ -9,6 +11,7 @@ import {
   MIN_TOUCH_TARGET,
   parseCashInput,
   SalesPresenter,
+  transportFailureErrorCode,
   type SalesCapabilities,
   type SalesCartPort,
   type SalesCashCompletion,
@@ -1313,3 +1316,128 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+test("搜索时后端网络不可达（transport 错误）显示 network-unavailable 而非泛化搜索失败", async () => {
+  const search = deferred<SalesProductSearchItem[]>();
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-1",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      searchProducts: () => search.promise,
+    },
+  });
+
+  presenter.setQuery("tea");
+  const pending = presenter.searchProducts();
+  search.reject(
+    new HbposApiError("网络连接失败，请检查设备网络连接。", {
+      kind: "transport",
+      code: "NO_HTTP_RESPONSE",
+      networkCode: "ERR_NETWORK",
+    }),
+  );
+
+  assert.equal(await pending, false);
+  assert.equal(
+    presenter.getState().errorCode,
+    "network-unavailable",
+    "transport 错误应映射为网络不可用友好提示，而非 search-failed",
+  );
+  presenter.destroy();
+});
+
+test("请求取消（用户中止）不映射为网络不可用", async () => {
+  const search = deferred<SalesProductSearchItem[]>();
+  const { presenter } = createPresenter({
+    workflow: {
+      ...createWorkflow(async () => ({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-1",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      })),
+      searchProducts: () => search.promise,
+    },
+  });
+
+  presenter.setQuery("tea");
+  const pending = presenter.searchProducts();
+  search.reject(
+    new HbposApiError("Hbpos request was cancelled.", {
+      kind: "transport",
+      code: "REQUEST_ABORTED",
+    }),
+  );
+
+  assert.equal(await pending, false);
+  assert.equal(presenter.getState().errorCode, "search-failed");
+  presenter.destroy();
+});
+
+test("购物车编辑时后端网络不可达显示 network-unavailable", async () => {
+  const cart = new MemoryCartPort(saleCart());
+  const { presenter } = createPresenter({ cart });
+  cart.setLineQuantity = async () => {
+    throw new HbposApiError("网络连接失败，请检查设备网络连接。", {
+      kind: "transport",
+      code: "NO_HTTP_RESPONSE",
+      networkCode: "ERR_NETWORK",
+    });
+  };
+
+  assert.equal(await presenter.setLineQuantity("line-1", 3), false);
+  assert.equal(
+    presenter.getState().errorCode,
+    "network-unavailable",
+    "购物车编辑的 transport 错误也应映射为网络不可用",
+  );
+  presenter.destroy();
+});
+
+test("transportFailureErrorCode 不把配置/内部/取消错误映射为网络不可用", () => {
+  assert.equal(
+    transportFailureErrorCode(
+      new HbposApiError("origin not trusted", {
+        kind: "transport",
+        code: "UNTRUSTED_API_ORIGIN",
+      }),
+    ),
+    null,
+  );
+  assert.equal(
+    transportFailureErrorCode(
+      new HbposApiError("unexpected", {
+        kind: "transport",
+        code: "TRANSPORT_UNEXPECTED",
+      }),
+    ),
+    null,
+  );
+  assert.equal(
+    transportFailureErrorCode(
+      new HbposApiError("cancelled", {
+        kind: "transport",
+        code: "REQUEST_ABORTED",
+      }),
+    ),
+    null,
+  );
+  assert.equal(
+    transportFailureErrorCode(
+      new HbposApiError("network down", {
+        kind: "transport",
+        code: "NO_HTTP_RESPONSE",
+        networkCode: "ERR_NETWORK",
+      }),
+    ),
+    "network-unavailable",
+  );
+});

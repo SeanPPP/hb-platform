@@ -2,6 +2,7 @@ import {
   createAud,
   type CartSnapshot,
 } from "@/core/contracts";
+import { HbposApiError } from "@/core/api/hbpos-api";
 import type { CashDrawerDisposition } from "@/features/checkout/cash/cash-checkout-service";
 import {
   calculateCashSettlement,
@@ -39,7 +40,27 @@ export type SalesErrorCode =
   | "hold-failed"
   | "lock-failed"
   | "new-transactions-disabled"
-  | "runtime-unavailable";
+  | "runtime-unavailable"
+  | "network-unavailable";
+
+/**
+ * 网络传输失败（断网/服务器未启动/超时）映射为收银页友好错误码；
+ * 请求取消与 API 地址配置错误不属于“网络不可用”，不在此列。
+ */
+export function transportFailureErrorCode(
+  error: unknown,
+): SalesErrorCode | null {
+  if (
+    error instanceof HbposApiError &&
+    error.kind === "transport" &&
+    error.code !== "REQUEST_ABORTED" &&
+    error.code !== "UNTRUSTED_API_ORIGIN" &&
+    error.code !== "TRANSPORT_UNEXPECTED"
+  ) {
+    return "network-unavailable";
+  }
+  return null;
+}
 
 export type SalesProductSearchItem = Readonly<{
   productCode: string;
@@ -382,12 +403,14 @@ export class SalesPresenter {
         if (generation === this.searchGeneration) {
           this.patchState({
             searchStatus: "idle",
-            errorCode: hasErrorCode(
-              error,
-              "SALES_OPERATION_NOT_AUTHORIZED",
-            )
-              ? "authorization-denied"
-              : "search-failed",
+            errorCode:
+              transportFailureErrorCode(error) ??
+              (hasErrorCode(
+                error,
+                "SALES_OPERATION_NOT_AUTHORIZED",
+              )
+                ? "authorization-denied"
+                : "search-failed"),
           });
           this.publishFeedback({ kind: "query-error" });
         }
@@ -555,12 +578,14 @@ export class SalesPresenter {
       })
       .catch((error: unknown) => {
         this.patchState({
-          errorCode: hasErrorCode(
-            error,
-            "SALES_OPERATION_NOT_AUTHORIZED",
-          )
-            ? "authorization-denied"
-            : "cart-update-failed",
+          errorCode:
+            transportFailureErrorCode(error) ??
+            (hasErrorCode(
+              error,
+              "SALES_OPERATION_NOT_AUTHORIZED",
+            )
+              ? "authorization-denied"
+              : "cart-update-failed"),
         });
         return false;
       })
@@ -981,19 +1006,21 @@ export class SalesPresenter {
       })
       .catch((error: unknown) => {
         this.patchState({
-          errorCode: hasErrorCode(
-            error,
-            "NEW_TRANSACTIONS_DISABLED",
-          )
-            ? "new-transactions-disabled"
-            : hasErrorCode(
-                  error,
-                  "ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED",
-                )
-              ? "terminal-recovery-required"
-            : hasErrorCode(error, "SALES_OPERATION_NOT_AUTHORIZED")
-              ? "authorization-denied"
-              : "product-add-failed",
+          errorCode:
+            transportFailureErrorCode(error) ??
+            (hasErrorCode(
+              error,
+              "NEW_TRANSACTIONS_DISABLED",
+            )
+              ? "new-transactions-disabled"
+              : hasErrorCode(
+                    error,
+                    "ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED",
+                  )
+                ? "terminal-recovery-required"
+              : hasErrorCode(error, "SALES_OPERATION_NOT_AUTHORIZED")
+                ? "authorization-denied"
+                : "product-add-failed"),
         });
         return false;
       });
@@ -1092,12 +1119,14 @@ export class SalesPresenter {
       })
       .catch((error: unknown) => {
         this.patchState({
-          errorCode: hasErrorCode(
-            error,
-            "SALES_OPERATION_NOT_AUTHORIZED",
-          )
-            ? "authorization-denied"
-            : "cart-update-failed",
+          errorCode:
+            transportFailureErrorCode(error) ??
+            (hasErrorCode(
+              error,
+              "SALES_OPERATION_NOT_AUTHORIZED",
+            )
+              ? "authorization-denied"
+              : "cart-update-failed"),
         });
         return false;
       });

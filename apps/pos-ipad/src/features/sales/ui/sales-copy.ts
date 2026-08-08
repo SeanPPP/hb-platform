@@ -158,6 +158,8 @@ export const salesEnglishCopy = {
     "Cashier authentication is not connected in this phase.",
   "error.searchRequired": "Enter a barcode, item number or product name.",
   "error.searchFailed": "Product search failed. Try again.",
+  "error.networkUnavailable":
+    "Network connection failed. Check the device connection and try again.",
   "error.productAddFailed": "The product could not be added.",
   "error.terminalRecoveryRequired":
     "A held-sale recovery is still pending on this terminal. Open Held sales and recover or return it before continuing.",
@@ -333,6 +335,7 @@ const salesChineseCopy = {
   "locked.unlockPending": "本阶段尚未接入收银员解锁流程。",
   "error.searchRequired": "请输入条码、货号或商品名称。",
   "error.searchFailed": "商品搜索失败，请重试。",
+  "error.networkUnavailable": "网络连接失败，请检查网络连接后重试。",
   "error.productAddFailed": "商品无法加入购物车。",
   "error.terminalRecoveryRequired":
     "此终端仍有一笔取单恢复未完成。请前往挂单管理，选择“恢复取单”或“退回待取”后再继续收银。",

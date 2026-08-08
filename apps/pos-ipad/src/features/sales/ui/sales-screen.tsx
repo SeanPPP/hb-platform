@@ -2408,6 +2408,8 @@ function errorCopyKey(errorCode: string): SalesCopyKey {
       return "error.lockFailed";
     case "new-transactions-disabled":
       return "error.newTransactionsDisabled";
+    case "network-unavailable":
+      return "error.networkUnavailable";
     case "runtime-unavailable":
     default:
       return "error.runtimeUnavailable";
