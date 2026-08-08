@@ -378,6 +378,91 @@ test("离线选代金券代替被领域层直接拒绝，不生成携带现金�
     preferredMethod: "card",
   });
   assert.deepEqual(cardPrefPlan.allocations[0]?.method, "cash");
+
+  // installment 排序偏好同样不改变 method，离线按现金原路退回。
+  const installmentPrefPlan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: [capacity("cash", 1_000, true)],
+    online: false,
+    preferredMethod: "installment",
+  });
+  assert.deepEqual(installmentPrefPlan.allocations[0]?.method, "cash");
+});
+
+test("离线混合容量：退款额不超现金证明容量时按现金原路退回，超出则拒绝", () => {
+  // 原单 = 卡 4,000（无证明）+ 现金 6,000（有证明），离线退款 5,000：
+  // 卡容量被过滤，现金证明容量足够，按现金原路退回。
+  const context = receiptContext({
+    lines: [
+      {
+        ...receiptContext().lines[0]!,
+        availableQuantity: 1,
+        unitRefundCents: 5_000,
+        remainingAmountCents: 5_000,
+      },
+    ],
+    tenderCapacities: [
+      capacity("card", 4_000, false),
+      capacity("cash", 6_000, true),
+    ],
+  });
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(context),
+    "line-a",
+    1,
+  );
+  const cashPlan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: context.tenderCapacities,
+    online: false,
+    preferredMethod: null,
+  });
+  assert.deepEqual(
+    cashPlan.allocations.map((allocation) => [
+      allocation.method,
+      allocation.signedAmountCents,
+      allocation.originalCapacityId,
+    ]),
+    [["cash", -5_000, "capacity-cash"]],
+  );
+
+  // 退款额超过现金证明容量（7,000 > 6,000）时无剩余可退容量，拒绝。
+  const overSelected = updateReturnLineQuantity(
+    createReceiptDraftLines(
+      receiptContext({
+        lines: [
+          {
+            ...receiptContext().lines[0]!,
+            availableQuantity: 1,
+            unitRefundCents: 7_000,
+            remainingAmountCents: 7_000,
+          },
+        ],
+        tenderCapacities: [
+          capacity("card", 4_000, false),
+          capacity("cash", 6_000, true),
+        ],
+      }),
+    ),
+    "line-a",
+    1,
+  );
+  assert.throws(
+    () =>
+      buildReturnRefundPlan({
+        sourceKind: "receipt",
+        originalOrderGuid: "order-a",
+        lines: overSelected,
+        capacities: context.tenderCapacities,
+        online: false,
+        preferredMethod: null,
+      }),
+    hasCode("RETURN_ONLINE_REQUIRED"),
+  );
 });
 
 test("离线只接受带原单证明的现金容量，卡券分期均被门禁", () => {
@@ -390,6 +475,8 @@ test("离线只接受带原单证明的现金容量，卡券分期均被门禁",
     "line-a",
     1,
   );
+  // 卡容量离线被 eligible 过滤（remaining>0 但非 cash+proof），无剩余可退
+  // 容量而拒绝；与代替拦截无关（收紧意图由"离线选代金券代替"用例覆盖）。
   assert.throws(
     () =>
       buildReturnRefundPlan({
