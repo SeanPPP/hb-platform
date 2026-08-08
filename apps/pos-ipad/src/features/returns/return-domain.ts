@@ -384,13 +384,10 @@ export function buildReturnRefundPlan(input: Readonly<{
   if (!input.originalOrderGuid) {
     throw new ReturnFeatureError("RETURN_SOURCE_MISMATCH");
   }
-  // 离线仅允许带原单证明的现金退款；现金/代金券代替需要在线，
-  // 避免生成携带现金 proof 的非现金 allocation 造成预览与确认不一致。
-  if (
-    !input.online &&
-    input.preferredMethod !== null &&
-    input.preferredMethod !== "cash"
-  ) {
+  // 离线仅允许带原单证明的现金退款；代金券代替需要在线，
+  // 避免生成携带 cash proof 的 voucher allocation 造成预览与确认不一致。
+  // 现金代替或 card/installment 排序偏好不改变 method，仍按原支付方式退回，离线放行。
+  if (!input.online && input.preferredMethod === "voucher") {
     throw new ReturnFeatureError("RETURN_ONLINE_REQUIRED");
   }
   const eligible = input.capacities

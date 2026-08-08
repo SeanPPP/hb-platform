@@ -367,6 +367,17 @@ test("离线选代金券代替被领域层直接拒绝，不生成携带现金�
     preferredMethod: "cash",
   });
   assert.deepEqual(cashPlan.allocations[0]?.method, "cash");
+
+  // 离线选择 card/installment 排序偏好不改变 method，仍按原现金容量原路退回。
+  const cardPrefPlan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: [capacity("cash", 1_000, true)],
+    online: false,
+    preferredMethod: "card",
+  });
+  assert.deepEqual(cardPrefPlan.allocations[0]?.method, "cash");
 });
 
 test("离线只接受带原单证明的现金容量，卡券分期均被门禁", () => {
