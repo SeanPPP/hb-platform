@@ -16,6 +16,7 @@ let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockDestroyPresenter = jest.fn();
+const mockSetOnline = jest.fn();
 const mockRouterDismissTo = jest.fn();
 const mockRouterPush = jest.fn();
 
@@ -122,6 +123,7 @@ beforeEach(() => {
   };
   mockCreatePresenter.mockReturnValue({
     destroy: mockDestroyPresenter,
+    setOnline: mockSetOnline,
   });
   mockRuntime = readyRuntime();
   mockShellStore.setState({ connectivity: "online" });
@@ -246,3 +248,23 @@ function readyRuntime(
     },
   };
 }
+
+test("网络恢复后就地调用 presenter.setOnline 翻转在线状态（不重建）", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
+  const screen = await render(<RemoteHistoryRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("remote-history-screen")).toBeTruthy();
+  });
+  expect(mockSetOnline).toHaveBeenCalledWith(false);
+  mockSetOnline.mockClear();
+
+  // 后端恢复：connectivity 翻转，路由就地对 presenter 翻转在线状态。
+  await act(async () => {
+    mockShellStore.setState({ connectivity: "online" });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+  await waitFor(() => {
+    expect(mockSetOnline).toHaveBeenCalledWith(true);
+  });
+  await screen.unmount();
+});

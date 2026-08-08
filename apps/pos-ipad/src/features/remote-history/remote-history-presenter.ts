@@ -95,7 +95,9 @@ export class RemoteHistoryPresenter {
   private readonly trustedStoreCode: string;
   private readonly allowed: boolean;
   private readonly canReprint: boolean;
-  private readonly online: boolean;
+  private online: boolean;
+  /** 进入离线前记录的门禁状态，恢复在线后原样还原（数据不被清空）。 */
+  private kindBeforeOffline: RemoteHistoryPresenterState["kind"] | null = null;
   private listGeneration = 0;
   private detailsGeneration = 0;
   private reprintGeneration = 0;
@@ -178,6 +180,31 @@ export class RemoteHistoryPresenter {
       reprint: { kind: "idle" },
       errorCode: null,
     });
+  }
+
+  /**
+   * 网络恢复后由路由调用：就地翻转在线状态并重新计算门禁，避免重建 presenter
+   * 导致已加载列表丢失与页面闪屏；恢复在线后查询/刷新自动可用。
+   * 离线时保留已加载数据并记住离线前状态，恢复后原样还原。
+   */
+  public setOnline(online: boolean): void {
+    if (this.destroyed || this.online === online) return;
+    this.online = online;
+    if (online) {
+      // 恢复在线：还原离线前状态（如 ready/empty），不覆盖已加载列表。
+      const restored = this.kindBeforeOffline;
+      this.kindBeforeOffline = null;
+      if (this.state.kind === "offline") {
+        this.publish({
+          ...this.state,
+          kind: restored ?? this.gateKind(),
+        });
+      }
+    } else if (this.state.kind !== "offline") {
+      // 进入离线：记住离线前状态，统一翻转为 offline 门禁。
+      this.kindBeforeOffline = this.state.kind;
+      this.publish({ ...this.state, kind: "offline" });
+    }
   }
 
   public async refresh(): Promise<void> {

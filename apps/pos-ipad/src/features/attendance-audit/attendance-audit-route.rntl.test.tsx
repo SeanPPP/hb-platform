@@ -1,5 +1,5 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
 import { create } from "zustand";
 
 import AttendanceAuditRoute from "../../../app/attendance-audit";
@@ -229,3 +229,22 @@ function readyRuntime(
     },
   };
 }
+
+test("网络恢复后就地调用 presenter.setOnline 翻转在线状态", async () => {
+  mockShellStore.setState({ connectivity: "offline" });
+  const screen = await render(<AttendanceAuditRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("attendance-audit-screen")).toBeTruthy();
+  });
+  expect(mockSetOnline).toHaveBeenCalledWith(false);
+  mockSetOnline.mockClear();
+
+  await act(async () => {
+    mockShellStore.setState({ connectivity: "online" });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+  await waitFor(() => {
+    expect(mockSetOnline).toHaveBeenCalledWith(true);
+  });
+  await screen.unmount();
+});

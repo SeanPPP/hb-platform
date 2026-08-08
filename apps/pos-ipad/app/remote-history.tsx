@@ -39,8 +39,8 @@ export default function RemoteHistoryRoute() {
     activeCashier !== null &&
     hasRemoteHistoryViewPermission(activeCashier.permissions);
   // 网络信号来源：connectivity 由 NetworkStatusBridge 后端探测驱动，后端恢复后
-  // 自动翻转为 online；其变化会触发下方 effect 重建 presenter（online 随之更新），
-  // 远程历史查询自动恢复可用，无需手动重试。
+  // 自动翻转为 online；变化时下方 effect 就地调用 presenter.setOnline() 翻转
+  // 在线状态（不重建 presenter、不丢已加载列表），远程历史查询自动恢复可用。
   const connectivity = usePosShellStore(
     (state) => state.connectivity,
   );
@@ -119,9 +119,16 @@ export default function RemoteHistoryRoute() {
     authorized,
     clearActiveCashier,
     gate,
-    online,
     runtime.services,
   ]);
+
+  // 网络恢复后就地翻转 presenter 在线状态（不重建，保留已加载列表）。
+  useEffect(() => {
+    if (!presenter) return;
+    presenter.setOnline(
+      connectivity === "online" || connectivity === "checking",
+    );
+  }, [connectivity, presenter]);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;

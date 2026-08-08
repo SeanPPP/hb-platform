@@ -373,3 +373,38 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+test("setOnline 就地翻转门禁：离线恢复后 kind 从 offline 恢复，保留已加载列表", async () => {
+  const port = new MemoryPort();
+  port.listImpl = async () => [firstRow];
+  port.detailsImpl = async () => firstDetails;
+  const value = presenter(port, { online: true });
+  await value.refresh();
+  assert.equal(value.state.kind, "ready");
+  assert.equal(value.state.rows.length, 1);
+
+  // 离线：门禁翻转为 offline，但已加载 rows 保留。
+  value.setOnline(false);
+  assert.equal(value.state.kind, "offline");
+  assert.equal(value.state.rows.length, 1, "离线不应清空已加载列表");
+
+  // 恢复在线：门禁解除，无需重建 presenter。
+  value.setOnline(true);
+  assert.equal(value.state.kind, "ready");
+  assert.equal(value.state.rows.length, 1, "恢复后列表仍在");
+});
+
+test("setOnline 同值不重复通知", async () => {
+  let notifications = 0;
+  const value = presenter(null, { online: true });
+  value.subscribe(() => {
+    notifications += 1;
+  });
+  value.setOnline(true);
+  assert.equal(notifications, 0, "同值不应触发通知");
+  value.setOnline(false);
+  assert.equal(notifications, 1);
+  value.destroy();
+  value.setOnline(true);
+  assert.equal(notifications, 1, "销毁后不应通知");
+});
