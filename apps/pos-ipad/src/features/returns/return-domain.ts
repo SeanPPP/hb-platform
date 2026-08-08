@@ -384,6 +384,15 @@ export function buildReturnRefundPlan(input: Readonly<{
   if (!input.originalOrderGuid) {
     throw new ReturnFeatureError("RETURN_SOURCE_MISMATCH");
   }
+  // 离线仅允许带原单证明的现金退款；现金/代金券代替需要在线，
+  // 避免生成携带现金 proof 的非现金 allocation 造成预览与确认不一致。
+  if (
+    !input.online &&
+    input.preferredMethod !== null &&
+    input.preferredMethod !== "cash"
+  ) {
+    throw new ReturnFeatureError("RETURN_ONLINE_REQUIRED");
+  }
   const eligible = input.capacities
     .filter(
       (capacity) =>

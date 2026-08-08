@@ -332,6 +332,43 @@ test("离线代替不可用：刷卡订单离线选现金代替仍被门禁", ()
   );
 });
 
+test("离线选代金券代替被领域层直接拒绝，不生成携带现金证明的非现金分配", () => {
+  // 原单有可证明的现金容量，但用户离线选择代金券代替：必须直接拒绝，
+  // 避免生成 method=voucher 却携带 cash proof 的 allocation（预览与确认不一致）。
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(
+      receiptContext({
+        tenderCapacities: [capacity("cash", 1_000, true)],
+      }),
+    ),
+    "line-a",
+    1,
+  );
+  assert.throws(
+    () =>
+      buildReturnRefundPlan({
+        sourceKind: "receipt",
+        originalOrderGuid: "order-a",
+        lines: selected,
+        capacities: [capacity("cash", 1_000, true)],
+        online: false,
+        preferredMethod: "voucher",
+      }),
+    hasCode("RETURN_ONLINE_REQUIRED"),
+  );
+
+  // 离线选择现金代替（等于原现金容量原路退回）仍被允许。
+  const cashPlan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: [capacity("cash", 1_000, true)],
+    online: false,
+    preferredMethod: "cash",
+  });
+  assert.deepEqual(cashPlan.allocations[0]?.method, "cash");
+});
+
 test("离线只接受带原单证明的现金容量，卡券分期均被门禁", () => {
   const selected = updateReturnLineQuantity(
     createReceiptDraftLines(
