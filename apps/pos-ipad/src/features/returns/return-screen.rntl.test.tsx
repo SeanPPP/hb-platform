@@ -163,15 +163,112 @@ test("支付边界等待页隐藏确认和退款方式，避免重复操作", as
   expect(execution.executeCalls).toHaveLength(1);
 });
 
+test("刷卡订单退款方式开放现金/代金券代替，默认仍按原支付方式退回", async () => {
+  const execution = new ScreenExecution();
+  const presenter = createScreenPresenter(execution, {
+    receiptContext: {
+      ...screenReceiptContext(),
+      tenderCapacities: [
+        {
+          capacityId: "card-capacity",
+          originalOrderGuid: "order-a",
+          method: "card",
+          remainingCents: 2_000,
+          offlineCashProof: null,
+        },
+      ],
+    },
+  });
+  const screen = await render(
+    <ReturnScreen locale="en" presenter={presenter} />,
+  );
+
+  await fireEvent.changeText(
+    screen.getByTestId("return-order-query"),
+    "HB-1001",
+  );
+  await fireEvent.press(screen.getByTestId("return-order-search"));
+  await waitFor(() =>
+    expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy(),
+  );
+
+  // 代替选项：刷卡订单上同时出现现金、礼券按钮。
+  expect(screen.getByTestId("return-method-cash")).toBeTruthy();
+  expect(screen.getByTestId("return-method-card")).toBeTruthy();
+  expect(screen.getByTestId("return-method-voucher")).toBeTruthy();
+  // 默认未选择时显示按原支付方式退回的提示。
+  expect(screen.getByText(/default to the original tender/i)).toBeTruthy();
+
+  await fireEvent.press(
+    screen.getByTestId("return-increase-return-line-1"),
+  );
+  // 不点选代替方式：仍按原支付方式（银行卡）退回。
+  await fireEvent.press(screen.getByTestId("return-confirm"));
+  expect(execution.executeCalls).toHaveLength(1);
+  expect(
+    execution.executeCalls[0]?.plan.allocations[0]?.method,
+  ).toBe("card");
+  expect(
+    execution.executeCalls[0]?.plan.allocations[0]?.originalCapacityId,
+  ).toBe("card-capacity");
+});
+
+test("刷卡订单选现金代替：整单按现金退款且仍绑定原卡容量", async () => {
+  const execution = new ScreenExecution();
+  const presenter = createScreenPresenter(execution, {
+    receiptContext: {
+      ...screenReceiptContext(),
+      tenderCapacities: [
+        {
+          capacityId: "card-capacity",
+          originalOrderGuid: "order-a",
+          method: "card",
+          remainingCents: 2_000,
+          offlineCashProof: null,
+        },
+      ],
+    },
+  });
+  const screen = await render(
+    <ReturnScreen locale="en" presenter={presenter} />,
+  );
+
+  await fireEvent.changeText(
+    screen.getByTestId("return-order-query"),
+    "HB-1001",
+  );
+  await fireEvent.press(screen.getByTestId("return-order-search"));
+  await waitFor(() =>
+    expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy(),
+  );
+  await fireEvent.press(
+    screen.getByTestId("return-increase-return-line-1"),
+  );
+
+  // 选择现金代替刷卡退款。
+  await fireEvent.press(screen.getByTestId("return-method-cash"));
+  await fireEvent.press(screen.getByTestId("return-confirm"));
+  expect(execution.executeCalls).toHaveLength(1);
+  expect(
+    execution.executeCalls[0]?.plan.allocations[0]?.method,
+  ).toBe("cash");
+  // 代替退款仍绑定原卡容量，防止超额退款。
+  expect(
+    execution.executeCalls[0]?.plan.allocations[0]?.originalCapacityId,
+  ).toBe("card-capacity");
+});
+
 function createScreenPresenter(
   execution: ScreenExecution,
   options: Readonly<{
     authorize?(): Promise<{ authorizationKey: string }>;
+    receiptContext?: ReceiptReturnContext;
   }> = {},
 ): ReturnPresenter {
   const workflow = new ReturnWorkflow({
     lookup: {
-      lookupReceipt: async () => screenReceiptContext(),
+      lookupReceipt: async () =>
+        options.receiptContext ?? screenReceiptContext(),
       lookupNoReceiptProduct: async () => noReceiptItem(),
       createNoReceiptOpenItem: async (input) => ({
         ...noReceiptItem(),

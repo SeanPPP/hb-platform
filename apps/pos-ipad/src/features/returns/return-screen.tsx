@@ -136,10 +136,18 @@ export function ReturnScreen({
     );
   }
 
+  // 无单退货可自由选择现金/银行卡/礼券；
+  // 有单退货默认按原支付方式退回，同时开放现金、礼券作为代替选项。
   const methods: readonly ReturnTenderMethod[] =
     state.mode === "no-receipt"
       ? ["cash", "card", "voucher"]
-      : state.capacities.map((capacity) => capacity.method);
+      : Array.from(
+          new Set<ReturnTenderMethod>([
+            ...state.capacities.map((capacity) => capacity.method),
+            "cash",
+            "voucher",
+          ]),
+        );
 
   return (
     <SafeAreaView style={styles.safeArea} testID="return-screen">
@@ -378,7 +386,11 @@ export function ReturnScreen({
               />
             ))}
           </View>
-          <Text style={styles.rule}>{t("summary.rule")}</Text>
+          <Text style={styles.rule}>
+            {state.mode === "receipt" && state.preferredMethod === null
+              ? t("summary.ruleReceiptDefault")
+              : t("summary.rule")}
+          </Text>
           <View style={styles.confirmArea}>
             <ActionButton
               disabled={!state.canConfirm || state.busy}

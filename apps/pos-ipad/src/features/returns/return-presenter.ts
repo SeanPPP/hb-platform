@@ -46,7 +46,8 @@ export type ReturnPresenterState = Readonly<{
   returnRecordsMayBeStale: boolean;
   lines: readonly ReturnPresenterLine[];
   capacities: readonly ReturnPresenterCapacity[];
-  preferredMethod: ReturnTenderMethod;
+  /** 为 null 表示未显式选择（有单退货默认按原支付方式退回）。 */
+  preferredMethod: ReturnTenderMethod | null;
   selectedTotalCents: number;
   canConfirm: boolean;
   errorCode: ReturnErrorCode | null;
@@ -65,7 +66,7 @@ const INITIAL_STATE: ReturnPresenterState = {
   returnRecordsMayBeStale: false,
   lines: [],
   capacities: [],
-  preferredMethod: "cash",
+  preferredMethod: null,
   selectedTotalCents: 0,
   canConfirm: false,
   errorCode: null,
@@ -369,7 +370,10 @@ export class ReturnPresenter {
       returnRecordsMayBeStale: snapshot.returnRecordsMayBeStale,
       lines,
       capacities,
-      preferredMethod: snapshot.preferredMethod ?? "cash",
+      // 无单退货默认现金；有单退货未选择时保持 null（按原支付方式退回）。
+      preferredMethod:
+        snapshot.preferredMethod ??
+        (snapshot.caseKind === "no-receipt" ? "cash" : null),
       selectedTotalCents: snapshot.selectedTotalCents,
       canConfirm:
         snapshot.selectedTotalCents > 0 &&

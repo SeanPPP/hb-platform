@@ -2855,6 +2855,124 @@ test("真实 SQLite：Hbpos API attempt 先耐久再绑定，最终写失败整�
   });
 });
 
+test("真实 SQLite：代替刷卡退款允许退款方式与原 capacity 不同，额度仍从原卡容量扣减", async () => {
+  await withDatabase("durable-return-substitute", async (connection) => {
+    await migrateFresh(connection);
+    const vault = new SqliteReturnCapacityVault(
+      connection,
+      encryptor,
+      () => T0,
+    );
+    // 原订单为刷卡支付（capacity method = card）。
+    await vault.seedOrLoad({
+      capacityId: "return-capacity-card",
+      originalOrderGuid: "original-return-order",
+      method: "card",
+      originalAmountCents: 500,
+      remainingAmountCents: 500,
+      protectedContext: {
+        paymentId: "SECRET-PAYMENT-ID",
+        rfn: "SECRET-RFN",
+      },
+      observedAtIso: T0,
+    });
+    let tender = 0;
+    let audit = 0;
+    const ledger = new SqliteReturnExecutionLedger(
+      connection,
+      encryptor,
+      {
+        createTenderGuid: () => `sub-return-tender-${++tender}`,
+        createAuditEventId: () => `sub-return-audit-${++audit}`,
+      },
+      () => T2,
+    );
+    // 代替为现金：allocation.method=cash 绑定原卡 capacity（method 不一致）。
+    const draft = durableReturnDraft({
+      actionId: "sub-return-action",
+      requestFingerprint: "sub-return-fingerprint",
+      returnOrderGuid: "sub-return-order",
+      actionRecoveryToken: "sub-return-recovery",
+      returnSourceKey: "sub-return-source",
+      capacityId: "return-capacity-card",
+      onlineCashOnly: true,
+    });
+    assert.equal(draft.allocations[0]?.method, "cash");
+    assert.equal(
+      draft.allocations[0]?.capacityId,
+      "return-capacity-card",
+    );
+
+    // 原实现会因 method 不一致抛“capacity is missing or exhausted”；代替后必须成功预留。
+    const prepared = await ledger.prepareOrLoad(draft);
+    assert.equal(prepared.status, "processing");
+
+    await ledger.markAllocationSubmitted({
+      actionId: draft.actionId,
+      allocationId: "return-allocation-cash",
+    });
+    const apiAttempts = new SqliteReturnApiAttemptStore(
+      connection,
+      encryptor,
+    );
+    const apiAttempt = {
+      durableAttemptId: "sub-hbpos-api-attempt",
+      externalAttemptId: "return-external-cash",
+      returnOrderGuid: draft.returnOrderGuid,
+      actionId: draft.actionId,
+      allocationId: "return-allocation-cash",
+      externalActionId: "sub-hbpos-api-action",
+      idempotencyKey: "sub-hbpos-api-idempotency",
+      method: "cash" as const,
+      signedAmountCents: -500,
+      protectedContext: { backendRefundReference: "SECRET-BACKEND-REF" },
+      createdAtIso: T1,
+    };
+    await apiAttempts.prepareOrLoad(apiAttempt);
+    await apiAttempts.compareAndSetState({
+      durableAttemptId: apiAttempt.durableAttemptId,
+      expected: "Created",
+      next: "Submitted",
+      updatedAtIso: T1,
+    });
+    await apiAttempts.compareAndSetState({
+      durableAttemptId: apiAttempt.durableAttemptId,
+      expected: "Submitted",
+      next: "Approved",
+      updatedAtIso: T2,
+    });
+    assert.equal(
+      await ledger.bindAllocationAttempt({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        attemptKind: "hbpos-api",
+        externalActionId: apiAttempt.externalActionId,
+        durableAttemptId: apiAttempt.durableAttemptId,
+      }),
+      true,
+    );
+    assert.equal(
+      await ledger.recordAllocationOutcome({
+        actionId: draft.actionId,
+        allocationId: "return-allocation-cash",
+        expectedStatuses: ["submitted"],
+        status: "completed",
+        protectedRecoveryKey: null,
+      }),
+      true,
+    );
+    const completed = await ledger.completeAtomically(
+      durableReturnCompletion(draft),
+    );
+    assert.equal(completed.status, "completed");
+    // 代替退款仍从原卡 capacity 扣减额度，防止超额退款。
+    assert.equal(
+      (await vault.get("return-capacity-card"))?.remainingAmountCents,
+      0,
+    );
+  });
+});
+
 test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删除且旧异步支付被数据库拒绝", async () => {
   await withDatabase("draft-abandon", async (connection) => {
     await migrateFresh(connection);

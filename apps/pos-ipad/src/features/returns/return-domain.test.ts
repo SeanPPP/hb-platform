@@ -161,6 +161,177 @@ test("混合原 tender 容量按优先方式稳定拆分且从不超额", () => 
   );
 });
 
+test("刷卡订单可选现金代替退款：整单统一现金且仍绑定原卡容量防超退", () => {
+  const context = receiptContext({
+    lines: [
+      {
+        ...receiptContext().lines[0]!,
+        availableQuantity: 1,
+        unitRefundCents: 6_000,
+        remainingAmountCents: 6_000,
+      },
+    ],
+    tenderCapacities: [capacity("card", 6_000, false)],
+  });
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(context),
+    "line-a",
+    1,
+  );
+  const plan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: context.tenderCapacities,
+    online: true,
+    preferredMethod: "cash",
+  });
+
+  // 代替为现金：method 统一为 cash，但额度仍从原 card capacity 扣减。
+  assert.deepEqual(plan.allocations, [
+    {
+      method: "cash",
+      signedAmountCents: -6_000,
+      originalCapacityId: "capacity-card",
+      originalOrderGuid: "order-a",
+      offlineCashProof: null,
+    },
+  ]);
+});
+
+test("刷卡订单可选代金券代替退款：method 为 voucher 且绑定原卡容量", () => {
+  const context = receiptContext({
+    lines: [
+      {
+        ...receiptContext().lines[0]!,
+        availableQuantity: 1,
+        unitRefundCents: 5_000,
+        remainingAmountCents: 5_000,
+      },
+    ],
+    tenderCapacities: [capacity("card", 5_000, false)],
+  });
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(context),
+    "line-a",
+    1,
+  );
+  const plan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: context.tenderCapacities,
+    online: true,
+    preferredMethod: "voucher",
+  });
+
+  assert.deepEqual(
+    plan.allocations.map((allocation) => [
+      allocation.method,
+      allocation.signedAmountCents,
+      allocation.originalCapacityId,
+    ]),
+    [["voucher", -5_000, "capacity-card"]],
+  );
+});
+
+test("混合容量选现金代替：整单统一现金，容量依次扣减且总额不超", () => {
+  const context = receiptContext({
+    lines: [
+      {
+        ...receiptContext().lines[0]!,
+        availableQuantity: 1,
+        unitRefundCents: 10_000,
+        remainingAmountCents: 10_000,
+      },
+    ],
+    tenderCapacities: [
+      capacity("cash", 4_000, true),
+      capacity("card", 6_000, false),
+    ],
+  });
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(context),
+    "line-a",
+    1,
+  );
+  const plan = buildReturnRefundPlan({
+    sourceKind: "receipt",
+    originalOrderGuid: "order-a",
+    lines: selected,
+    capacities: context.tenderCapacities,
+    online: true,
+    preferredMethod: "cash",
+  });
+
+  assert.deepEqual(
+    plan.allocations.map((allocation) => [
+      allocation.method,
+      allocation.signedAmountCents,
+      allocation.originalCapacityId,
+    ]),
+    [
+      ["cash", -4_000, "capacity-cash"],
+      ["cash", -6_000, "capacity-card"],
+    ],
+  );
+});
+
+test("代替退款仍受原订单总剩余额度约束：容量不足时报容量超限", () => {
+  const context = receiptContext({
+    lines: [
+      {
+        ...receiptContext().lines[0]!,
+        availableQuantity: 1,
+        unitRefundCents: 10_000,
+        remainingAmountCents: 10_000,
+      },
+    ],
+    tenderCapacities: [capacity("card", 6_000, false)],
+  });
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(context),
+    "line-a",
+    1,
+  );
+  assert.throws(
+    () =>
+      buildReturnRefundPlan({
+        sourceKind: "receipt",
+        originalOrderGuid: "order-a",
+        lines: selected,
+        capacities: context.tenderCapacities,
+        online: true,
+        preferredMethod: "cash",
+      }),
+    hasCode("RETURN_CAPACITY_EXCEEDED"),
+  );
+});
+
+test("离线代替不可用：刷卡订单离线选现金代替仍被门禁", () => {
+  const selected = updateReturnLineQuantity(
+    createReceiptDraftLines(
+      receiptContext({
+        tenderCapacities: [capacity("card", 1_000, false)],
+      }),
+    ),
+    "line-a",
+    1,
+  );
+  assert.throws(
+    () =>
+      buildReturnRefundPlan({
+        sourceKind: "receipt",
+        originalOrderGuid: "order-a",
+        lines: selected,
+        capacities: [capacity("card", 1_000, false)],
+        online: false,
+        preferredMethod: "cash",
+      }),
+    hasCode("RETURN_ONLINE_REQUIRED"),
+  );
+});
+
 test("离线只接受带原单证明的现金容量，卡券分期均被门禁", () => {
   const selected = updateReturnLineQuantity(
     createReceiptDraftLines(

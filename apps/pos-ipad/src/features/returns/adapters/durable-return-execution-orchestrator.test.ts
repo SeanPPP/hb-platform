@@ -432,6 +432,64 @@ test("在线现金和分期绑定 Hbpos API attempt，不伪造银行卡 Payment
   }
 });
 
+test("代替刷卡：现金代替走 Hbpos API 在线现金退款，代金券代替走券退款，均绑定原卡容量", async () => {
+  // 现金代替：原卡 capacity + cash 退款方式（无离线证明）。
+  const cashHarness = createHarness();
+  const cashPlan: ReturnRefundPlan = {
+    sourceKind: "receipt",
+    totalRefundCents: 1_000,
+    online: true,
+    lines: [refundLine(-1_000)],
+    allocations: [
+      {
+        method: "cash",
+        signedAmountCents: -1_000,
+        originalCapacityId: "capacity-card",
+        originalOrderGuid: "order-original",
+        offlineCashProof: null,
+      },
+    ],
+  };
+  const cashOutcome = await cashHarness.orchestrator.execute(
+    receiptCommand(cashPlan),
+  );
+  assert.equal(cashOutcome.status, "completed");
+  assert.equal(cashHarness.cash.submitCalls.length, 0);
+  assert.equal(cashHarness.online.submitCalls[0]?.method, "cash");
+  assert.equal(cashHarness.online.submitCalls[0]?.attemptKind, "hbpos-api");
+  assert.equal(
+    cashHarness.online.submitCalls[0]?.capacityId,
+    "capacity-card",
+  );
+
+  // 代金券代替：原卡 capacity + voucher 退款方式。
+  const voucherHarness = createHarness();
+  const voucherPlan: ReturnRefundPlan = {
+    sourceKind: "receipt",
+    totalRefundCents: 1_000,
+    online: true,
+    lines: [refundLine(-1_000)],
+    allocations: [
+      {
+        method: "voucher",
+        signedAmountCents: -1_000,
+        originalCapacityId: "capacity-card",
+        originalOrderGuid: "order-original",
+        offlineCashProof: null,
+      },
+    ],
+  };
+  const voucherOutcome = await voucherHarness.orchestrator.execute(
+    receiptCommand(voucherPlan),
+  );
+  assert.equal(voucherOutcome.status, "completed");
+  assert.equal(voucherHarness.online.submitCalls[0]?.method, "voucher");
+  assert.equal(
+    voucherHarness.online.submitCalls[0]?.capacityId,
+    "capacity-card",
+  );
+});
+
 test("同一门店设备收银员可在新 session 与更名后恢复原 action，且不二次 prepare/submit", async () => {
   const harness = createHarness();
   harness.online.submitOutcomes = [

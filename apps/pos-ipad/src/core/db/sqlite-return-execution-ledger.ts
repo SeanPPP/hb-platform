@@ -1751,7 +1751,6 @@ async function reserveAndInsertAllocation(
       !capacity ||
       text(capacity.original_order_guid, "tender capacity original order") !==
         allocation.originalOrderGuid ||
-      returnTenderMethod(capacity.method) !== allocation.method ||
       nonNegativeInteger(
         capacity.remaining_amount_cents,
         "tender capacity remaining amount",
@@ -1762,6 +1761,8 @@ async function reserveAndInsertAllocation(
         ) <
         -allocation.signedAmountCents
     ) {
+      // 代替退款（现金/代金券代替原支付方式）允许 method 与原 capacity 不同，
+      // 但仍必须从原 capacity 扣减剩余额度，防止超额退款。
       throw new Error("Original tender capacity is missing or exhausted.");
     }
     if (
@@ -2828,7 +2829,7 @@ async function commitTenderCapacities(
        SET remaining_amount_cents = remaining_amount_cents - ?,
          updated_at_iso = ?
        WHERE capacity_id = ? AND original_order_guid = ?
-         AND method = ? AND remaining_amount_cents >= ?
+         AND remaining_amount_cents >= ?
          AND EXISTS (
            SELECT 1
            FROM return_action_allocations reserved
@@ -2843,7 +2844,6 @@ async function commitTenderCapacities(
         completedAtIso,
         allocation.capacityId,
         allocation.originalOrderGuid,
-        allocation.method,
         amountCents,
         action.actionId,
         allocation.allocationId,

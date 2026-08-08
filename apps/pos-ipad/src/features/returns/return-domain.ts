@@ -415,7 +415,13 @@ export function buildReturnRefundPlan(input: Readonly<{
     const amount = Math.min(remaining, capacity.remainingCents);
     if (amount <= 0) continue;
     allocations.push({
-      method: capacity.method,
+      // 用户选定代替方式（现金/代金券）时，整单统一使用该方式退款；
+      // 未选定或偏好为其他方式（card/installment）时，保持原支付方式原路退回。
+      // 代替退款仍绑定原 capacity 扣减额度，防止超额退款。
+      method:
+        input.preferredMethod === "cash" || input.preferredMethod === "voucher"
+          ? input.preferredMethod
+          : capacity.method,
       signedAmountCents: -amount,
       originalCapacityId: capacity.capacityId,
       originalOrderGuid: capacity.originalOrderGuid,
