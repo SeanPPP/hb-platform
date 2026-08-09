@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ACTIVE_PRICING_CART_BUSY,
+  ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED,
   ACTIVE_PRICING_CART_STALE_LEASE,
   ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED,
   ACTIVE_PRICING_CART_UPDATE_TRANSITION,
@@ -230,6 +231,92 @@ test("更新切换以事件等待当前 lease，并在成功或异常释放后�
   assert.equal(firstReleased, true);
   assert.equal(secondReleased, true);
   await activeCart.waitForExclusiveLeaseRelease();
+});
+
+test("设备 scope 终态失效可在 active lease 内同步执行，旧 lease 与后续写入都 fail-closed", async () => {
+  const activeCart = session(cartWithLine());
+  const release = deferred<void>();
+  let retainedLease: ActivePricingCartLease | null = null;
+  let waiterReleased = false;
+  const running = activeCart.runExclusive(async (lease) => {
+    retainedLease = lease;
+    assert.equal(activeCart.invalidateForDeviceScope(), true);
+    assert.equal(
+      activeCart.invalidateForDeviceScope(),
+      false,
+      "重复 scope 失效必须幂等，不能重复发布或改变 lease 释放语义",
+    );
+    assert.throws(
+      () => lease.read(),
+      hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+    );
+    await release.promise;
+  });
+  const waiter = activeCart.waitForExclusiveLeaseRelease().then(() => {
+    waiterReleased = true;
+  });
+
+  assert.throws(
+    () =>
+      activeCart.replace(activeCart.read().pricingState, null),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  assert.throws(
+    () => activeCart.increaseLine("line-1"),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  await assert.rejects(
+    () => activeCart.runExclusive(() => undefined),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  assert.throws(
+    () => activeCart.runUpdateTransitionExclusive(() => undefined),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  assert.equal(waiterReleased, false, "现有 waiter 仍只由原 lease 正常释放");
+
+  release.resolve();
+  await running;
+  await waiter;
+  assert.equal(waiterReleased, true);
+  assert.throws(
+    () => retainedLease?.read(),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  await assert.rejects(
+    () => activeCart.runExclusive(() => undefined),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+});
+
+test("设备 scope 失效后仅原持有 lease 可完成已提交订单清车，随后仍保持 fail-closed", async () => {
+  const activeCart = session(cartWithLine());
+  const beforeInvalidation = activeCart.read();
+  let retainedLease: ActivePricingCartLease | null = null;
+  const completed = await activeCart.runExclusive((lease) => {
+    retainedLease = lease;
+    assert.equal(activeCart.invalidateForDeviceScope(), true);
+    return lease.clearAfterCommittedOrder("durable-completed-order");
+  });
+
+  assert.equal(completed.cart.lines.length, 0);
+  assert.equal(activeCart.hasPendingExclusiveOperation(), false);
+  assert.throws(
+    () => activeCart.read(),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  assert.throws(
+    () => activeCart.replace(beforeInvalidation.pricingState, null),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  await assert.rejects(
+    () => activeCart.runExclusive(() => undefined),
+    hasCode(ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED),
+  );
+  assert.throws(
+    () => retainedLease?.clearAfterCommittedOrder("must-not-clear-again"),
+    hasCode(ACTIVE_PRICING_CART_STALE_LEASE),
+  );
 });
 
 test("可选更新 guard 仅在 transition 活跃时拒绝新 mutation，默认与 finally 恢复后行为不变", async () => {

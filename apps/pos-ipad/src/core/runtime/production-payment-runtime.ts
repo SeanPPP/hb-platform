@@ -414,6 +414,13 @@ function paymentDraftPort(
       ? publicDraft(draft, voucherReversalAvailable)
       : null;
   };
+  const readAfterDurableCompletion = async (orderGuid: string) => {
+    // 不可逆支付已提交后只能使用组合根冻结的原 scope 读取耐久真相，绝不重新读取收银员或终端身份。
+    const draft = await store.readDraft(orderGuid, scope);
+    return draft
+      ? publicDraft(draft, voucherReversalAvailable)
+      : null;
+  };
 
   return {
     async createOrReuse(request) {
@@ -445,6 +452,7 @@ function paymentDraftPort(
       return draft;
     },
     read,
+    readAfterDurableCompletion,
     async findBlockingRecovery() {
       assertActive();
       const recovery = await store.findBlockingRecovery(scope);
@@ -686,6 +694,7 @@ function withPersistedVoucherTenderReversalRecovery(
   return {
     listProviderAvailability: () =>
       options.runtime.listProviderAvailability(),
+    canTakeCash: () => options.runtime.canTakeCash?.() === true,
     async read(orderGuid) {
       return projectCurrent(await options.runtime.read(orderGuid));
     },
@@ -863,6 +872,9 @@ function paymentSessionGuard(
         );
       }
     },
+    can(code: PaymentPermissionCode): boolean {
+      return requireScopedLease(lease, terminal).permissionCodes.includes(code);
+    },
   };
 }
 
@@ -882,6 +894,7 @@ function withPostCommitFulfilment(
   return {
     listProviderAvailability: () =>
       runtime.listProviderAvailability(),
+    canTakeCash: () => runtime.canTakeCash?.() === true,
     read: (orderGuid) => runtime.read(orderGuid),
     findRecoveryRequired: () =>
       runtime.findRecoveryRequired(),

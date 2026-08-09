@@ -3,7 +3,11 @@ import test from "node:test";
 
 import { SecurityApiCredentialProvider } from "./api-credential-provider";
 import { CashierSessionInvalidationBus } from "./cashier-session-invalidation";
-import { DeviceSessionCoordinator, type DeviceSessionApi } from "./device-session";
+import {
+  DeviceSessionCoordinator,
+  subscribeDeviceScopeChange,
+  type DeviceSessionApi,
+} from "./device-session";
 import {
   CashierAuthorizationStore,
   DeviceCredentialStore,
@@ -11,7 +15,7 @@ import {
   InstallationIdentityStore,
 } from "./secure-storage";
 
-function createProvider() {
+function createProvider(apiOverrides: Partial<DeviceSessionApi> = {}) {
   const secureStore = new InMemorySecureStore();
   const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-001");
   const credentials = new DeviceCredentialStore(secureStore);
@@ -25,6 +29,7 @@ function createProvider() {
     async reregister() {
       throw new Error("not used");
     },
+    ...apiOverrides,
   };
   const invalidation = new CashierSessionInvalidationBus();
   const authorization = new CashierAuthorizationStore(secureStore);
@@ -32,6 +37,7 @@ function createProvider() {
   return {
     authorization,
     credentials,
+    secureStore,
     deviceSession,
     invalidation,
     provider: new SecurityApiCredentialProvider(
@@ -64,6 +70,89 @@ test("403 清除收银员授权并锁设备，后续不再提供设备认证头"
   assert.deepEqual(await provider.getCredentials(), {});
 });
 
+test("设备换店后先读取新 device scope，旧 scope 的 cashier bearer 不得随新设备出站", async () => {
+  const { authorization, credentials, provider } = createProvider();
+  await credentials.save({
+    deviceCode: "IPAD-2",
+    storeCode: "S2",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "device-token-2",
+  });
+  await authorization.set({
+    authorizationToken: "cashier-ticket-1",
+    expiresAtEpochMs: Date.now() + 60_000,
+    source: "online",
+    scope: { storeCode: "S1", deviceCode: "IPAD-1" },
+  });
+
+  const result = await provider.getCredentials();
+
+  assert.equal(result.device?.storeCode, "S2");
+  assert.equal(result.cashierAuthorization, undefined);
+});
+
+test("设备换店发布同步撤销：reload 失败或中止后仍只出站新 device，bus 只通知一次", async () => {
+  for (const outcome of ["reload-failed", "reload-aborted"] as const) {
+    const {
+      authorization,
+      credentials,
+      deviceSession,
+      invalidation,
+      provider,
+    } = createProvider({
+      async reregister() {
+        return {
+          deviceCode: "IPAD-2",
+          storeCode: "S2",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "device-token-2",
+        };
+      },
+    });
+    await credentials.save({
+      deviceCode: "IPAD-1",
+      storeCode: "S1",
+      hardwareId: "INSTALL-001",
+      authorizationCode: "device-token-1",
+    });
+    await authorization.set({
+      authorizationToken: "cashier-ticket-1",
+      expiresAtEpochMs: Date.now() + 60_000,
+      source: "online",
+      scope: { storeCode: "S1", deviceCode: "IPAD-1" },
+    });
+    const reasons: string[] = [];
+    invalidation.subscribe((reason) => reasons.push(reason));
+    const unsubscribe = subscribeDeviceScopeChange((change) => {
+      if (
+        change.previous.storeCode === "S1" &&
+        change.previous.deviceCode === "IPAD-1"
+      ) {
+        authorization.invalidateForDeviceScope();
+        invalidation.notify("device-scope-change");
+      }
+    });
+
+    try {
+      await deviceSession.reregister({ targetStoreCode: "S2" });
+      await assert.rejects(
+        async () => {
+          throw new Error(outcome);
+        },
+      );
+      const result = await provider.getCredentials();
+
+      assert.equal(result.device?.storeCode, "S2");
+      assert.equal(result.device?.deviceCode, "IPAD-2");
+      assert.equal(result.cashierAuthorization, undefined);
+      assert.deepEqual(reasons, ["device-scope-change"]);
+    } finally {
+      unsubscribe();
+    }
+  }
+});
+
 test("401/403 只广播无秘密失效原因，监听器异常不影响安全清理", async () => {
   const { authorization, invalidation, provider } = createProvider();
   const reasons: string[] = [];
@@ -78,7 +167,10 @@ test("401/403 只广播无秘密失效原因，监听器异常不影响安全清
   await provider.onForbidden();
 
   assert.deepEqual(reasons, ["unauthorized", "forbidden"]);
-  assert.equal(await authorization.get(), null);
+  assert.equal(
+    await authorization.get({ storeCode: "S1", deviceCode: "POS-1" }),
+    null,
+  );
 });
 
 test("401 清除收银员票据失败时仍广播失效，并保留原始异常", async () => {
@@ -117,6 +209,7 @@ function setAuthorization(
     authorizationToken,
     expiresAtEpochMs: Date.now() + 60_000,
     source: "online",
+    scope: { storeCode: "S1", deviceCode: "POS-1" },
   });
 }
 

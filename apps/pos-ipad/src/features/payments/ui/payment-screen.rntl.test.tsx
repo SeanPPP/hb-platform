@@ -628,12 +628,15 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
 
 test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async () => {
   jest.useFakeTimers();
+  const createdAtIso = "2026-08-09T00:00:00.000Z";
+  jest.setSystemTime(new Date(createdAtIso));
   const { presenter, spies } = createUiPresenter({
     phase: "pending",
     provider: "square",
     runtimeStatus: "pending",
     orderGuid: "order-square-auto-recovery",
     attemptId: "attempt-square-auto-recovery",
+    attemptCreatedAtIso: createdAtIso,
     allowedActions: actions({ recover: true, cancel: true }),
   });
   const screen = await render(
@@ -654,11 +657,23 @@ test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async 
       await jest.advanceTimersByTimeAsync(1);
     });
     expect(spies.recover).toHaveBeenCalledTimes(1);
-    expect(spies.recover).toHaveBeenCalledWith({ background: true });
+    expect(spies.recover).toHaveBeenCalledWith({
+      background: true,
+      deadlineAtMs: Date.parse(createdAtIso) + 90_000,
+      signal: expect.any(AbortSignal),
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4_000);
+    });
+    expect(spies.recover).toHaveBeenCalledTimes(3);
+    const quickSignals = spies.recover.mock.calls.map(
+      ([options]) => options?.signal,
+    );
+    expect(new Set(quickSignals).size).toBe(3);
 
     await screen.unmount();
     await jest.advanceTimersByTimeAsync(10_000);
-    expect(spies.recover).toHaveBeenCalledTimes(1);
+    expect(spies.recover).toHaveBeenCalledTimes(3);
   } finally {
     jest.useRealTimers();
   }
@@ -756,28 +771,76 @@ test("现金续付确认中显示中英文专属状态并禁用重复确认", as
   await chineseScreen.unmount();
 });
 
+test("Square 一秒恢复仍锚定 createdAt 的固定两秒 cadence", async () => {
+  jest.useFakeTimers();
+  const createdAtIso = "2026-08-09T00:30:00.000Z";
+  const createdAtMs = Date.parse(createdAtIso);
+  jest.setSystemTime(new Date(createdAtIso));
+  const square = createUiPresenter({
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: "order-square-one-second-recovery",
+    attemptId: "attempt-square-one-second-recovery",
+    attemptCreatedAtIso: createdAtIso,
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  const startedAt: number[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  square.spies.recover.mockImplementation(async () => {
+    startedAt.push(Date.now() - createdAtMs);
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+    active -= 1;
+    return false;
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={square.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(7_000);
+    });
+    expect(startedAt.slice(0, 3)).toEqual([2_000, 4_000, 6_000]);
+    expect(maximumActive).toBe(1);
+  } finally {
+    await screen.unmount();
+    jest.useRealTimers();
+  }
+});
+
 test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
   jest.useFakeTimers();
+  const createdAtIso = "2026-08-09T01:00:00.000Z";
+  const createdAtMs = Date.parse(createdAtIso);
+  jest.setSystemTime(new Date(createdAtIso));
   const square = createUiPresenter({
     phase: "pending",
     provider: "square",
     runtimeStatus: "pending",
     orderGuid: "order-square-bounded-recovery",
     attemptId: "attempt-square-bounded-recovery",
+    attemptCreatedAtIso: createdAtIso,
     allowedActions: actions({ recover: true, cancel: true }),
   });
-  square.spies.recover.mockImplementation(async () => {
-    square.publish({
-      ...square.presenter.getState(),
-      phase: "submitting",
-      busy: true,
-    });
+  const startedAt: number[] = [];
+  const recoverySignals: AbortSignal[] = [];
+  let active = 0;
+  let maximumActive = 0;
+  square.spies.recover.mockImplementation(async (options) => {
+    startedAt.push(Date.now() - createdAtMs);
+    if (options?.signal) recoverySignals.push(options.signal);
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
     await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
-    square.publish({
-      ...square.presenter.getState(),
-      phase: "pending",
-      busy: false,
-    });
+    active -= 1;
     return false;
   });
   const squareScreen = await render(
@@ -795,6 +858,12 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
     const callsAtDeadline = square.spies.recover.mock.calls.length;
     expect(callsAtDeadline).toBeGreaterThan(1);
     expect(callsAtDeadline).toBeLessThan(45);
+    expect(maximumActive).toBe(1);
+    expect(startedAt.slice(0, 3)).toEqual([2_000, 8_000, 14_000]);
+    expect(startedAt.every((value) => value % 2_000 === 0)).toBe(true);
+    expect(startedAt.every((value) => value < 90_000)).toBe(true);
+    expect(new Set(recoverySignals).size).toBe(callsAtDeadline);
+    expect(recoverySignals.at(-1)?.aborted).toBe(true);
     await act(async () => {
       await jest.advanceTimersByTimeAsync(100_000);
     });
@@ -807,6 +876,7 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
       runtimeStatus: "pending",
       orderGuid: "order-linkly-no-auto-recovery",
       attemptId: "attempt-linkly-no-auto-recovery",
+      attemptCreatedAtIso: createdAtIso,
       allowedActions: actions({ recover: true, cancel: true }),
     });
     const linklyScreen = await render(
@@ -828,12 +898,15 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
 
 test("同一 Square attempt 重挂载不会重置 90 秒恢复窗口", async () => {
   jest.useFakeTimers();
+  const createdAtIso = "2026-08-09T02:00:00.000Z";
+  jest.setSystemTime(new Date(Date.parse(createdAtIso) + 87_000));
   const pendingState: Partial<PaymentPresenterState> = {
     phase: "pending",
     provider: "square",
     runtimeStatus: "pending",
     orderGuid: "order-square-remount-deadline",
     attemptId: "attempt-square-remount-deadline",
+    attemptCreatedAtIso: createdAtIso,
     allowedActions: actions({ recover: true, cancel: true }),
   };
   const first = createUiPresenter(pendingState);
@@ -847,7 +920,11 @@ test("同一 Square attempt 重挂载不会重置 90 秒恢复窗口", async () 
 
   try {
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(89_000);
+      await jest.advanceTimersByTimeAsync(999);
+    });
+    expect(first.spies.recover).not.toHaveBeenCalled();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
     });
     expect(first.spies.recover).toHaveBeenCalledTimes(1);
     await firstScreen.unmount();
@@ -869,6 +946,120 @@ test("同一 Square attempt 重挂载不会重置 90 秒恢复窗口", async () 
     jest.useRealTimers();
   }
 });
+
+test.each([
+  { label: "null", createdAtIso: null },
+  { label: "非 canonical", createdAtIso: "2026-08-09T03:00:00Z" },
+  { label: "未来", createdAtIso: "2026-08-09T03:00:00.001Z" },
+  { label: "已过期", createdAtIso: "2026-08-09T02:58:30.000Z" },
+])("Square createdAt $label 时自动恢复 fail closed，手动恢复仍可用", async ({
+  createdAtIso,
+}) => {
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date("2026-08-09T03:00:00.000Z"));
+  const square = createUiPresenter({
+    phase: "pending",
+    provider: "square",
+    runtimeStatus: "pending",
+    orderGuid: `order-square-invalid-${String(createdAtIso)}`,
+    attemptId: `attempt-square-invalid-${String(createdAtIso)}`,
+    attemptCreatedAtIso: createdAtIso,
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={square.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10_000);
+    });
+    expect(square.spies.recover).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByTestId("payment-recover"));
+    expect(square.spies.recover).toHaveBeenCalledTimes(1);
+    expect(square.spies.recover).toHaveBeenCalledWith();
+  } finally {
+    await screen.unmount();
+    jest.useRealTimers();
+  }
+});
+
+test.each(["unmount", "attempt", "provider", "phase", "presenter"] as const)(
+  "Square 后台恢复在 %s 生命周期变化时只 abort 自己的 controller",
+  async (transition) => {
+    jest.useFakeTimers();
+    const createdAtIso = new Date("2026-08-09T04:00:00.000Z").toISOString();
+    jest.setSystemTime(new Date(createdAtIso));
+    const square = createUiPresenter({
+      phase: "pending",
+      provider: "square",
+      runtimeStatus: "pending",
+      orderGuid: `order-square-abort-${transition}`,
+      attemptId: `attempt-square-abort-${transition}`,
+      attemptCreatedAtIso: createdAtIso,
+      allowedActions: actions({ recover: true, cancel: true }),
+    });
+    let ownedSignal: AbortSignal | null = null;
+    square.spies.recover.mockImplementation(async (options) => {
+      ownedSignal = options?.signal ?? null;
+      return new Promise<boolean>((resolve) => {
+        ownedSignal?.addEventListener("abort", () => resolve(false), {
+          once: true,
+        });
+      });
+    });
+    const screen = await render(
+      <PaymentScreen
+        locale="zh"
+        presenter={square.presenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    try {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(2_000);
+      });
+      const signalAfterTick = ownedSignal as AbortSignal | null;
+      expect(signalAfterTick).toBeTruthy();
+      expect(signalAfterTick?.aborted).toBe(false);
+
+      if (transition === "unmount") {
+        await screen.unmount();
+      } else if (transition === "presenter") {
+        const replacement = createUiPresenter();
+        await screen.rerender(
+          <PaymentScreen
+            locale="zh"
+            presenter={replacement.presenter}
+            showStatusStrip={false}
+          />,
+        );
+      } else {
+        await act(async () => {
+          square.publish({
+            ...square.presenter.getState(),
+            ...(transition === "attempt"
+              ? { attemptId: `attempt-square-abort-${transition}-next` }
+              : transition === "provider"
+                ? { provider: "linkly-cloud" as const }
+                : { phase: "unknown" as const }),
+          });
+        });
+      }
+
+      expect(signalAfterTick?.aborted).toBe(true);
+    } finally {
+      if (transition !== "unmount") await screen.unmount();
+      jest.useRealTimers();
+    }
+  },
+);
 
 test.each(
   [
@@ -2255,6 +2446,8 @@ function createUiPresenter(
       providerAvailability("linkly-cloud"),
       providerAvailability("voucher"),
     ],
+    // 此夹具代表已通过 Payment.TakeCash 权限校验的收银员。
+    cashAvailable: true,
     selectedMethod: "square",
     amountText: "10.00",
     voucherCaptured: false,
@@ -2266,6 +2459,7 @@ function createUiPresenter(
     remaining: aud(1_000),
     tenders: [],
     attemptId: null,
+    attemptCreatedAtIso: null,
     provider: null,
     runtimeStatus: null,
     allowedActions: actions({
@@ -2513,6 +2707,7 @@ function snapshot(
     remaining: aud(1_000),
     tenders: [],
     attemptId: null,
+    attemptCreatedAtIso: null,
     provider: null,
     status: "draft-prepared",
     errorCode: null,

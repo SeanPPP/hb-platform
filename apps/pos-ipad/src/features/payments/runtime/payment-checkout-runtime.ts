@@ -24,6 +24,7 @@ import {
   type PaymentAttemptService,
 } from "@/features/payments/payment-attempt-service";
 import type { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
+import { calculateCashSettlement } from "@/features/sales/domain";
 
 export const PAYMENT_PERMISSION = Object.freeze({
   view: "Permissions.PosTerminal.Payment.View",
@@ -39,6 +40,8 @@ export type PaymentPermissionCode =
 
 export interface PaymentPermissionGuard {
   assert(code: PaymentPermissionCode): void | Promise<void>;
+  /** 同步、无副作用地读取当前可信会话的权限；缺失时调用方必须 fail closed。 */
+  can?(code: PaymentPermissionCode): boolean;
 }
 
 export interface PaymentTrustedSessionGuard {
@@ -154,6 +157,14 @@ export interface PaymentCheckoutDraftPort {
   read(orderGuid: string): Promise<PaymentCheckoutDraft | null>;
 
   /**
+   * 仅供 mixed coordinator 已返回 completed 后，对同一 order 与已冻结 scope 做耐久真相核验。
+   * 不得用于启动、partial、取消、普通读取，且绝不能借此绕过任何前置权限校验。
+   */
+  readAfterDurableCompletion(
+    orderGuid: string,
+  ): Promise<PaymentCheckoutDraft | null>;
+
+  /**
    * 按当前可信 store/device 找出唯一阻塞记录；同时覆盖 DraftPrepared(attemptId=null)
    * 与 Created/Submitted/Pending/Approved/Unknown attempt。
    */
@@ -247,11 +258,21 @@ export type PaymentCheckoutPublicSnapshot = Readonly<{
   remaining: Money;
   tenders: readonly PaymentCheckoutTender[];
   attemptId: string | null;
+  /** 仅投影耐久 PaymentAttempt.createdAtIso；无 attempt 时必须为 null。 */
+  attemptCreatedAtIso: string | null;
   provider: PaymentProvider | null;
   status: PaymentCheckoutStatus;
   errorCode: PaymentCheckoutErrorCode | null;
   allowedActions: PaymentCheckoutAllowedActions;
   tenderReversalRecovery?: PaymentCheckoutTenderReversalRecovery;
+  /** 仅在刚完成的现金动作中返回，数值来自持久化 cash action。 */
+  cashSettlement?: PaymentCheckoutCashSettlement;
+}>;
+
+export type PaymentCheckoutCashSettlement = Readonly<{
+  tendered: Money;
+  applied: Money;
+  change: Money;
 }>;
 
 export type StartPaymentCheckoutInput = Readonly<{
@@ -274,6 +295,8 @@ export type ResumePreparedPaymentInput = Readonly<{
 export type RecoverPaymentCheckoutInput = Readonly<{
   orderGuid: string;
   attemptId: string;
+  signal?: AbortSignal;
+  deadlineAtMs?: number;
 }>;
 
 export type CancelPaymentCheckoutInput = RecoverPaymentCheckoutInput;
@@ -301,6 +324,8 @@ export type RemovePaymentTenderInput = Readonly<{
 
 export interface PaymentCheckoutRuntimePort {
   listProviderAvailability(): readonly PaymentProviderAvailability[];
+  /** 当前可信收银员是否具备现金收款权限；缺失或异常均视为不可用。 */
+  canTakeCash?(): boolean;
   read(orderGuid: string): Promise<PaymentCheckoutPublicSnapshot>;
   findRecoveryRequired(): Promise<PaymentCheckoutPublicSnapshot | null>;
   resumeCurrent(
@@ -380,6 +405,10 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
 
   public listProviderAvailability(): readonly PaymentProviderAvailability[] {
     return this.options.providers.listAvailability();
+  }
+
+  public canTakeCash(): boolean {
+    return this.options.permissions.can?.(PAYMENT_PERMISSION.takeCash) === true;
   }
 
   public async read(orderGuid: string): Promise<PaymentCheckoutPublicSnapshot> {
@@ -507,22 +536,18 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       await this.assertExact(lease);
       assertDraftMatchesLease(draft, lease);
       assertNoActiveTenderMethod(draft, "cash");
-      const appliedAmount =
-        input.amount.cents > draft.remaining.cents
-          ? draft.remaining
-          : input.amount;
+      const cashSettlement = cashSettlementForDraft(draft, input.amount);
       const result = await this.options.mixed.addCashTender({
         actionId: input.actionId,
         orderGuid: draft.orderGuid,
-        amount: appliedAmount,
-        tenderedAmount: input.amount,
-        change: Object.freeze({
-          currency: "AUD",
-          cents: input.amount.cents - appliedAmount.cents,
-        }),
+        amount: cashSettlement.applied,
+        tenderedAmount: cashSettlement.tendered,
+        change: cashSettlement.change,
       });
-      await this.assertCashAction();
-      await this.assertExact(lease);
+      if (result.status !== "completed") {
+        await this.assertCashAction();
+        await this.assertExact(lease);
+      }
       return this.finishMixedResult(draft, lease, result, null);
     });
     const flight = { signature, promise };
@@ -546,9 +571,12 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     const mixed = await this.options.mixed.recoverOnlineAttempt({
       orderGuid: draft.orderGuid,
       attemptId: attempt.attemptId,
+      ...recoveryDeadlineFields(input),
     });
-    await this.assertProviderAction(attempt.provider);
-    await this.assertExact(lease);
+    if (mixed.status !== "completed") {
+      await this.assertProviderAction(attempt.provider);
+      await this.assertExact(lease);
+    }
     return this.finishMixedResult(draft, lease, mixed, attempt.provider);
   }
 
@@ -609,8 +637,10 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
         orderGuid: draft.orderGuid,
         attemptId: attempt.attemptId,
       });
-      await this.assertProviderAction(attempt.provider);
-      await this.assertExact(lease);
+      if (mixed.status !== "completed") {
+        await this.assertProviderAction(attempt.provider);
+        await this.assertExact(lease);
+      }
       return this.finishMixedResult(draft, lease, mixed, attempt.provider);
     }
 
@@ -699,22 +729,18 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     assertNoActiveTenderMethod(draft, "cash");
     const lease = await this.acquireDraftLease(draft);
     await this.assertExact(lease);
-    const appliedAmount =
-      input.amount.cents > draft.remaining.cents
-        ? draft.remaining
-        : input.amount;
+    const cashSettlement = cashSettlementForDraft(draft, input.amount);
     const result = await this.options.mixed.addCashTender({
       actionId: input.actionId,
       orderGuid: draft.orderGuid,
-      amount: appliedAmount,
-      tenderedAmount: input.amount,
-      change: Object.freeze({
-        currency: "AUD",
-        cents: input.amount.cents - appliedAmount.cents,
-      }),
+      amount: cashSettlement.applied,
+      tenderedAmount: cashSettlement.tendered,
+      change: cashSettlement.change,
     });
-    await this.assertCashAction();
-    await this.assertExact(lease);
+    if (result.status !== "completed") {
+      await this.assertCashAction();
+      await this.assertExact(lease);
+    }
     return this.finishMixedResult(draft, lease, result, null);
   }
 
@@ -736,8 +762,10 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       orderGuid: draft.orderGuid,
       tenderGuid: input.tenderGuid,
     });
-    await this.assertRemoveTender();
-    await this.assertExact(lease);
+    if (result.status !== "completed") {
+      await this.assertRemoveTender();
+      await this.assertExact(lease);
+    }
     return this.finishMixedResult(draft, lease, result, null);
   }
 
@@ -812,8 +840,10 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       provider: input.provider,
       amount: input.amount,
     });
-    await this.assertProviderAction(input.provider);
-    await this.assertExact(lease);
+    if (result.status !== "completed") {
+      await this.assertProviderAction(input.provider);
+      await this.assertExact(lease);
+    }
     return this.finishMixedResult(draft, lease, result, input.provider);
   }
 
@@ -823,27 +853,37 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     result: MixedPaymentResult,
     requestedProvider: PaymentProvider | null,
   ): Promise<PaymentCheckoutPublicSnapshot> {
+    const completed = result.status === "completed";
     if (result.orderGuid !== before.orderGuid) {
       throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
     }
-    const draft = await this.refreshDraft(before.orderGuid);
-    await this.assertActive();
-    await this.assertExact(lease);
+    const draft = completed
+      ? await this.readAfterDurableCompletion(before.orderGuid)
+      : await this.refreshDraft(before.orderGuid);
+    if (!completed) {
+      await this.assertActive();
+      await this.assertExact(lease);
+    }
+    const attempt = completed
+      ? await this.persistedAttemptOrNull(result.attemptId, draft.orderGuid)
+      : await this.attemptOrNull(result.attemptId, draft.orderGuid);
     if (
       draft.remaining.currency !== result.remaining.currency ||
       draft.remaining.cents !== result.remaining.cents
     ) {
       return publicSnapshot(
         draft,
-        await this.attemptOrNull(result.attemptId, draft.orderGuid),
+        attempt,
         "recovery-required",
         "APPROVED_TRUTH_MISMATCH",
       );
     }
-    const attempt = await this.attemptOrNull(result.attemptId, draft.orderGuid);
-    await this.assertActive();
-    await this.assertExact(lease);
+    if (!completed) {
+      await this.assertActive();
+      await this.assertExact(lease);
+    }
     if (
+      !completed &&
       attempt &&
       requestedProvider !== null &&
       attempt.provider !== requestedProvider
@@ -861,10 +901,34 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       stableMixedError(result.errorCode),
     );
     if (result.status === "completed") {
+      const alreadyCompleted =
+        isDurablyCompletedOrderState(before.state) &&
+        before.remaining.cents === 0;
+      // completed 后只能读取冻结 scope 的耐久投影；缺少任一证明都保留原 lease 供恢复。
+      if (
+        !matchesCompletedCheckoutScope(before, draft, lease) ||
+        !isDurablyCompletedOrderState(draft.state) ||
+        draft.remaining.cents !== 0 ||
+        (!alreadyCompleted &&
+          !matchesNewCompletedAction(
+            before,
+            draft,
+            result,
+            attempt,
+            requestedProvider,
+          ))
+      ) {
+        return publicSnapshot(
+          draft,
+          attempt,
+          "recovery-required",
+          "APPROVED_TRUTH_MISMATCH",
+        );
+      }
+      // 不可逆完成已由耐久 draft/attempt/tender 真相确认；只能沿用原 lease 清车，绝不能改用新收银员。
       await this.options.cartLease.clearAfterCompleted(lease, draft.orderGuid);
-      await this.assertActive();
     }
-    return snapshot;
+    return attachCashSettlement(snapshot, result.cashSettlement);
   }
 
   private async acquireDraftLease(
@@ -961,6 +1025,16 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     return draft;
   }
 
+  private async readAfterDurableCompletion(
+    orderGuid: string,
+  ): Promise<PaymentCheckoutDraft> {
+    const draft = await this.options.drafts.readAfterDurableCompletion(orderGuid);
+    if (!draft) throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_NOT_FOUND");
+    // completed 也必须基于耐久投影重验，不能把 coordinator 返回值当作草稿真相。
+    validateDraft(draft);
+    return draft;
+  }
+
   private async requireAttempt(
     attemptId: string,
     orderGuid: string,
@@ -986,6 +1060,25 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
   ): Promise<PaymentAttempt | null> {
     if (!attemptId) return null;
     return this.requireAttempt(attemptId, orderGuid);
+  }
+
+  private async persistedAttemptOrNull(
+    attemptId: string | null,
+    orderGuid: string,
+  ): Promise<PaymentAttempt | null> {
+    if (!attemptId) return null;
+    const attempt = await this.options.attempts.getAttempt(
+      requiredText(attemptId, "PAYMENT_ATTEMPT_NOT_FOUND"),
+    );
+    if (!attempt) {
+      throw new PaymentCheckoutRuntimeError("PAYMENT_ATTEMPT_NOT_FOUND");
+    }
+    if (attempt.orderGuid !== orderGuid) {
+      throw new PaymentCheckoutRuntimeError(
+        "PAYMENT_ATTEMPT_ORDER_MISMATCH",
+      );
+    }
+    return attempt;
   }
 
   private async attemptForRecovery(
@@ -1102,6 +1195,7 @@ function publicSnapshot(
       ),
     ),
     attemptId: attempt?.attemptId ?? null,
+    attemptCreatedAtIso: attempt?.createdAtIso ?? null,
     provider: attempt?.provider ?? preparedAction?.provider ?? null,
     status,
     errorCode: errorCode ?? null,
@@ -1132,6 +1226,23 @@ function publicSnapshot(
         draft.tenders.some((tender) => tender.reversible),
     }),
   });
+}
+
+function recoveryDeadlineFields(
+  input: Pick<RecoverPaymentCheckoutInput, "signal" | "deadlineAtMs">,
+): Readonly<{ signal: AbortSignal; deadlineAtMs: number }> | Record<string, never> {
+  if (input.signal === undefined && input.deadlineAtMs === undefined) return {};
+  if (
+    input.signal === undefined ||
+    input.deadlineAtMs === undefined ||
+    !Number.isFinite(input.deadlineAtMs)
+  ) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_RECOVERY_FAILED");
+  }
+  return {
+    signal: input.signal,
+    deadlineAtMs: input.deadlineAtMs,
+  };
 }
 
 function abandonedSnapshot(
@@ -1284,6 +1395,96 @@ function assertDraftMatchesLease(
   }
 }
 
+function isDurablyCompletedOrderState(
+  state: PaymentCheckoutDraftState,
+): boolean {
+  return (
+    state === "CompletedLocal" ||
+    state === "PendingSync" ||
+    state === "Syncing" ||
+    state === "Synced" ||
+    state === "Blocked403" ||
+    state === "Rejected"
+  );
+}
+
+function matchesCompletedCheckoutScope(
+  before: PaymentCheckoutDraft,
+  after: PaymentCheckoutDraft,
+  lease: PaymentCartLease,
+): boolean {
+  return (
+    before.checkoutIntentId === lease.checkoutIntentId &&
+    before.cartRevision === lease.revision &&
+    sameMoney(before.total, lease.total) &&
+    after.checkoutIntentId === before.checkoutIntentId &&
+    after.orderGuid === before.orderGuid &&
+    after.cartRevision === before.cartRevision &&
+    sameMoney(after.total, before.total)
+  );
+}
+
+function matchesNewCompletedAction(
+  before: PaymentCheckoutDraft,
+  after: PaymentCheckoutDraft,
+  result: MixedPaymentResult,
+  attempt: PaymentAttempt | null,
+  requestedProvider: PaymentProvider | null,
+): boolean {
+  const tender = result.tenderGuid
+    ? after.tenders.find((candidate) => candidate.tenderGuid === result.tenderGuid)
+    : undefined;
+  if (!tender) return false;
+
+  if (requestedProvider !== null) {
+    return (
+      result.attemptId !== null &&
+      attempt !== null &&
+      attempt.attemptId === result.attemptId &&
+      attempt.state === "Approved" &&
+      attempt.orderGuid === before.orderGuid &&
+      attempt.provider === requestedProvider &&
+      attempt.operation === "purchase" &&
+      tender.method === (requestedProvider === "voucher" ? "voucher" : "card") &&
+      sameMoney(tender.amount, attempt.amount)
+    );
+  }
+
+  const settlement = result.cashSettlement;
+  if (
+    tender.method !== "cash" ||
+    settlement === undefined ||
+    !isNonNegativeAud(settlement.tendered)
+  ) {
+    return false;
+  }
+  let expected: PaymentCheckoutCashSettlement;
+  try {
+    // 以冻结 draft 和顾客实收重新执行确定性五分规则，coordinator 返回值只作为待核验材料。
+    expected = cashSettlementForDraft(before, settlement.tendered);
+  } catch {
+    return false;
+  }
+  return (
+    sameMoney(settlement.tendered, expected.tendered) &&
+    sameMoney(settlement.applied, expected.applied) &&
+    sameMoney(settlement.change, expected.change) &&
+    sameMoney(tender.amount, expected.applied)
+  );
+}
+
+function sameMoney(left: Money, right: Money): boolean {
+  return left.currency === right.currency && left.cents === right.cents;
+}
+
+function isNonNegativeAud(value: Money): boolean {
+  return (
+    value.currency === "AUD" &&
+    Number.isSafeInteger(value.cents) &&
+    value.cents >= 0
+  );
+}
+
 function validateCart(cart: CartSnapshot): void {
   if (
     cart.mode !== "sale" ||
@@ -1432,6 +1633,72 @@ function assertPositiveAud(amount: Money): void {
   ) {
     throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
   }
+}
+
+function cashSettlementForDraft(
+  draft: PaymentCheckoutDraft,
+  cashTendered: Money,
+): PaymentCheckoutCashSettlement {
+  let nonCashCents = 0;
+  for (const tender of draft.tenders) {
+    // 调用方已拒绝活动现金 tender；这里再校验一次，确保舍入只基于耐久非现金事实。
+    if (tender.method === "cash") {
+      throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
+    }
+    nonCashCents = safeAdd(nonCashCents, tender.amount.cents);
+  }
+  if (nonCashCents !== draft.total.cents - draft.remaining.cents) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
+  }
+  const settlement = calculateCashSettlement({
+    actualAmount: draft.total,
+    nonCashAmount: Object.freeze({ currency: "AUD", cents: nonCashCents }),
+    cashTendered,
+  });
+  // 五分上调时，原始实收虽覆盖余额却仍不足应收，绝不能伪造为已收足或写入 partial。
+  if (
+    cashTendered.cents >= draft.remaining.cents &&
+    cashTendered.cents < settlement.cashDue.cents
+  ) {
+    throw new PaymentCheckoutRuntimeError("MIXED_CASH_COMMIT_FAILED");
+  }
+  // 现金终态以五分应收为边界；向下取整时允许实收小于账面余额但完整结清。
+  const finalCash = cashTendered.cents >= settlement.cashDue.cents;
+  const appliedCents = finalCash
+    ? draft.remaining.cents
+    : cashTendered.cents;
+  // 仅 1/2 分的最终舍入会得到 0 实收；部分现金仍必须真实地追加正数 tender。
+  if (
+    appliedCents <= 0 &&
+    !(finalCash && settlement.cashDue.cents === 0 && draft.remaining.cents > 0)
+  ) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_CONFLICT");
+  }
+  return Object.freeze({
+    tendered: copyMoney(
+      finalCash ? settlement.normalizedCashTendered : cashTendered,
+    ),
+    applied: Object.freeze({ currency: "AUD", cents: appliedCents }),
+    change: Object.freeze({
+      currency: "AUD",
+      cents: finalCash ? settlement.change.cents : 0,
+    }),
+  });
+}
+
+function attachCashSettlement(
+  snapshot: PaymentCheckoutPublicSnapshot,
+  settlement: MixedPaymentResult["cashSettlement"],
+): PaymentCheckoutPublicSnapshot {
+  if (!settlement) return snapshot;
+  return Object.freeze({
+    ...snapshot,
+    cashSettlement: Object.freeze({
+      tendered: copyMoney(settlement.tendered),
+      applied: copyMoney(settlement.applied),
+      change: copyMoney(settlement.change),
+    }),
+  });
 }
 
 function assertWithinRemaining(amount: Money, remaining: Money): void {

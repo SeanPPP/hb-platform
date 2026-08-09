@@ -1,7 +1,8 @@
 export type CashierSessionInvalidationReason =
   | "unauthorized"
   | "forbidden"
-  | "manual-lock";
+  | "manual-lock"
+  | "device-scope-change";
 
 export type CashierSessionInvalidationListener = (
   reason: CashierSessionInvalidationReason,

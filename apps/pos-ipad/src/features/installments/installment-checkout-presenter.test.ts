@@ -61,6 +61,7 @@ test("新分期只暂存一个现金 tender，并区分实收、入账和找零"
   });
 
   assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.getState().attemptCreatedAtIso, null);
   presenter.openInstallmentCustomerEditor();
   presenter.setInstallmentCustomerDraftName("顾客甲");
   presenter.setInstallmentCustomerDraftPhone("0400000000");

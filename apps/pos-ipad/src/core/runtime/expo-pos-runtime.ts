@@ -232,6 +232,65 @@ export async function recordRuntimeInitializationFailure(
   }
 }
 
+/** 初始化失败的收尾必须优先释放组合根订阅，并无条件关闭 SQLite。 */
+export async function shutdownCompositionBeforeDatabaseClose(
+  shutdownComposition: (() => Promise<void>) | null,
+  closeDatabase: () => Promise<void>,
+): Promise<void> {
+  try {
+    await shutdownComposition?.();
+  } finally {
+    // 中文注释：后台目录清理失败也不能把打开的 SQLite 句柄遗留给下一次启动。
+    await closeDatabase();
+  }
+}
+
+type ExpoPosRuntimeShutdownDependencies = Readonly<{
+  beforeShutdown?: readonly (() => void | Promise<void>)[];
+  sync: Pick<ProductionPosRuntimeServices["sync"], "shutdown">;
+  applicationLog: Pick<ApplicationLogRuntime, "logger" | "shutdown">;
+  shutdownBackgroundWork(): Promise<void>;
+  closeDatabase(): Promise<void>;
+}>;
+
+/** 正常关闭按固定顺序尽力收尾，后续清理错误不能覆盖第一个真实失败。 */
+export async function shutdownExpoPosRuntimeServices(
+  dependencies: ExpoPosRuntimeShutdownDependencies,
+): Promise<void> {
+  let firstError: unknown;
+  let hasFirstError = false;
+  const attempt = async (operation: () => void | Promise<void>) => {
+    try {
+      await operation();
+    } catch (error) {
+      if (!hasFirstError) {
+        hasFirstError = true;
+        firstError = error;
+      }
+    }
+  };
+
+  // 中文注释：SQLite 关闭前必须取消旧服务后台任务；任一步失败也继续执行后续收尾。
+  for (const operation of dependencies.beforeShutdown ?? []) {
+    await attempt(operation);
+  }
+  await attempt(() => dependencies.sync.shutdown());
+  await attempt(() =>
+    dependencies.applicationLog.logger.record({
+      level: "Information",
+      message: "POS runtime shutting down.",
+      category: "runtime.shutdown",
+    }),
+  );
+  await attempt(() => dependencies.applicationLog.shutdown());
+  await attempt(dependencies.shutdownBackgroundWork);
+  await attempt(dependencies.closeDatabase);
+
+  if (hasFirstError) {
+    throw firstError;
+  }
+}
+
 class ExpoNetworkStatus {
   private online = false;
 
@@ -429,6 +488,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     Constants.expoConfig?.version ??
     "0.0.0";
   let applicationLog: ApplicationLogRuntime | null = null;
+  let shutdownComposition: (() => Promise<void>) | null = null;
 
   try {
     // 数据库一旦可用立即创建日志器；后续任一组合步骤失败都可在关闭前持久记录。
@@ -739,6 +799,10 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       cashierSessionSecurity: {
         getDeviceIdentity: () => deviceSession.getDeviceIdentity(),
         clearAuthorization: () => cashierAuthorization.clear(),
+        invalidateAuthorizationForDeviceScope: () => {
+          cashierAuthorization.invalidateForDeviceScope();
+          cashierSessionInvalidation.notify("device-scope-change");
+        },
         subscribeSessionInvalidation: (listener) =>
           cashierSessionInvalidation.subscribe(() => listener()),
       },
@@ -843,6 +907,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         },
       },
     });
+    shutdownComposition = composition.shutdownBackgroundWork;
     const serverConnection = new PreloginServerConnectionControl({
       currentApiBaseUrl: apiBaseUrl,
       trustedApiOrigins,
@@ -934,27 +999,27 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       applicationLog: activeApplicationLog,
       updateIdentity,
       shutdown: async () => {
-        // 先覆盖公共外屏，再与 401/403/手动锁屏使用同一可信桥撤销可信会话。
-        if (services.customerDisplay.status === "available") {
-          services.customerDisplay.stopAdvertisements();
-          await services.customerDisplay
-            .clearSensitiveContent()
-            .catch(() => undefined);
-        }
-        cashierSessionInvalidation.notify("manual-lock");
-        appUpdates.dispose();
-        // 清除订单/员工审计的延迟重试，不能让旧服务在 database.close 后继续补传。
-        await services.sync.shutdown();
-        // shutdown 日志必须先落入本地 outbox；随后 ApplicationLogRuntime 会在旧单飞后重扫一次。
-        await activeApplicationLog.logger.record({
-          level: "Information",
-          message: "POS runtime shutting down.",
-          category: "runtime.shutdown",
+        await shutdownExpoPosRuntimeServices({
+          beforeShutdown: [
+            () => {
+              if (services.customerDisplay.status === "available") {
+                services.customerDisplay.stopAdvertisements();
+              }
+            },
+            () =>
+              services.customerDisplay.status === "available"
+                ? services.customerDisplay.clearSensitiveContent()
+                : undefined,
+            // 与 401/403/手动锁屏使用同一可信桥撤销可信会话。
+            () => cashierSessionInvalidation.notify("manual-lock"),
+            () => appUpdates.dispose(),
+          ],
+          sync: services.sync,
+          applicationLog: activeApplicationLog,
+          // 页面离开不会取消目录刷新；只有 runtime 关闭会先中止并等待 staging 清理。
+          shutdownBackgroundWork,
+          closeDatabase: () => database.close(),
         });
-        await activeApplicationLog.shutdown();
-        // 页面离开不会取消目录刷新；只有 runtime 关闭会先中止并等待 staging 清理。
-        await shutdownBackgroundWork();
-        await database.close();
       },
       backend: startupGate.backend,
       device:
@@ -966,7 +1031,11 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     await recordRuntimeInitializationFailure(
       applicationLog,
       error,
-      () => database.close(),
+      () =>
+        shutdownCompositionBeforeDatabaseClose(
+          shutdownComposition,
+          () => database.close(),
+        ),
     );
     throw error;
   }

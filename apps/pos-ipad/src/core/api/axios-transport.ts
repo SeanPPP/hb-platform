@@ -1,4 +1,4 @@
-import { create, isAxiosError, type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
+import { AxiosError, create, isAxiosError, type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
 
 import { isDeviceRevocationCode } from "./forbidden-response";
 import { HbposApiError, type HbposTransport, type HbposTransportRequest, type HbposTransportResponse } from "./hbpos-api";
@@ -32,6 +32,8 @@ export function createAxiosHbposTransport(
 ): HbposTransport {
   const trustedOrigin = new URL(baseUrl).origin;
   instance.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+    // 有限正超时从进入 interceptor 起只计算一次，凭据读取和 HTTP 派发共用同一预算。
+    const timeoutDeadline = freezeRequestTimeoutDeadline(config.timeout);
     const requestUrl = new URL(
       config.url ?? "",
       config.baseURL ?? baseUrl,
@@ -42,7 +44,15 @@ export function createAxiosHbposTransport(
         { kind: "transport", code: "UNTRUSTED_API_ORIGIN" },
       );
     }
-    const credentials = await credentialProvider.getCredentials();
+    const credentials = await getRequestCredentials(credentialProvider, config, timeoutDeadline);
+    const remainingTimeout = getRemainingTimeoutMs(timeoutDeadline);
+    if (timeoutDeadline !== undefined) {
+      if (remainingTimeout === undefined) {
+        throw createRequestTimeoutError(config);
+      }
+      // 适配器只能获得尚未消耗的整数毫秒，不能重新获得完整 timeout 预算。
+      config.timeout = remainingTimeout;
+    }
     config.headers.set("Accept", "application/json");
     if (credentials.device) {
       config.headers.set("Authorization", `Bearer ${credentials.device.authorizationCode}`);
@@ -110,6 +120,103 @@ export function createAxiosHbposTransport(
       }
     }
   };
+}
+
+function getRequestCredentials(
+  credentialProvider: HbposRequestCredentialProvider,
+  config: InternalAxiosRequestConfig,
+  timeoutDeadline: number | undefined,
+): Promise<HbposRequestCredentials> {
+  const { signal } = config;
+  // 已取消的请求不能再触碰 Keychain，避免恢复流程已结束后仍启动凭据读取。
+  if (signal?.aborted) {
+    return Promise.reject(new AxiosError("Hbpos request was cancelled.", "ERR_CANCELED", config));
+  }
+  if (!signal && timeoutDeadline === undefined) {
+    return credentialProvider.getCredentials();
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      settleReject(new AxiosError("Hbpos request was cancelled.", "ERR_CANCELED", config));
+    };
+    const cleanup = () => {
+      signal?.removeEventListener?.("abort", onAbort);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+    const settleResolve = (credentials: HbposRequestCredentials) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(credentials);
+    };
+    const settleReject = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+    // 注册监听后再次检查，覆盖注册期间发生取消的竞态，且仍不读取凭据。
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    const remainingTimeout = getRemainingTimeoutMs(timeoutDeadline);
+    if (timeoutDeadline !== undefined) {
+      if (remainingTimeout === undefined) {
+        settleReject(createRequestTimeoutError(config));
+        return;
+      }
+      // Axios 默认使用 ECONNABORTED 表示超时，复用既有无 HTTP 响应映射。
+      timer = setTimeout(() => {
+        settleReject(createRequestTimeoutError(config));
+      }, remainingTimeout);
+    }
+
+    try {
+      // 始终登记成功与失败处理：race 已结束后凭据晚到不会未处理，也不会继续派发请求。
+      credentialProvider.getCredentials().then((credentials) => {
+        if (timeoutDeadline !== undefined && getRemainingTimeoutMs(timeoutDeadline) === undefined) {
+          settleReject(createRequestTimeoutError(config));
+          return;
+        }
+        settleResolve(credentials);
+      }, settleReject);
+    } catch (error) {
+      settleReject(error);
+    }
+  });
+}
+
+function freezeRequestTimeoutDeadline(timeout: unknown): number | undefined {
+  if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
+    return undefined;
+  }
+  return Date.now() + timeout;
+}
+
+function getRemainingTimeoutMs(timeoutDeadline: number | undefined): number | undefined {
+  if (timeoutDeadline === undefined) {
+    return undefined;
+  }
+  const remaining = timeoutDeadline - Date.now();
+  // Date.now 精度为毫秒；只要绝对 deadline 尚未到达，就至少交给下游 1ms。
+  return remaining > 0 ? Math.ceil(remaining) : undefined;
+}
+
+function createRequestTimeoutError(config: InternalAxiosRequestConfig): AxiosError {
+  return new AxiosError("Hbpos request timed out.", "ECONNABORTED", config);
 }
 
 function suppressesCashierLoginFailure(

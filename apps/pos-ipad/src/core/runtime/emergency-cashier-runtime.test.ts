@@ -85,6 +85,7 @@ test("紧急收银运行时只公开完整 POS 权限快照并将 token 写入 K
     authorizationToken: "HBPOSE2-signed",
     expiresAtEpochMs: 10_000,
     source: "emergency-override",
+    scope: { storeCode: "S1", deviceCode: "IPAD-1" },
     systemUptimeMs: 10_000,
     trustedNowEpochMs: 6_000,
   });

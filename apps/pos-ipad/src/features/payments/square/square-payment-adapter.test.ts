@@ -218,6 +218,181 @@ test("已有 CheckoutId 的恢复只依赖 environment，不被后来缺失的�
   });
 });
 
+test("recoverWithControl 为 checkout 创建及 payment 查询逐次重算 signal/timeout", async () => {
+  const transport = new ScriptedTransport([
+    ok({
+      checkoutId: "checkout-abortable-create",
+      environment: "Sandbox",
+      status: "COMPLETED",
+      paymentIds: ["payment-abortable-create"],
+    }),
+    ok({
+      paymentId: "payment-abortable-create",
+      status: "COMPLETED",
+      approvedMoney: { amount: 1_250, currency: "AUD" },
+    }),
+  ]);
+  const controller = new AbortController();
+  const originalNow = Date.now;
+  const startedAtMs = Date.parse("2026-08-09T00:00:00.000Z");
+  const deadlineAtMs = startedAtMs + 20_000;
+  const nowValues = [startedAtMs, startedAtMs + 7_000];
+  Date.now = () => nowValues.shift() ?? startedAtMs + 7_000;
+
+  try {
+    const recovered = await createAdapter(transport).recoverWithControl(
+      attempt({ state: "Unknown" }),
+      { signal: controller.signal, deadlineAtMs },
+    );
+
+    assert.equal(recovered.state, "Approved");
+    assert.equal(transport.calls.length, 2);
+    assert.equal(transport.calls[0]?.timeoutMs, 15_000);
+    assert.equal(transport.calls[1]?.timeoutMs, 13_000);
+    for (const request of transport.calls) {
+      assert.equal(request.signal, controller.signal);
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("recoverWithControl 将 deadline 传给 checkout 状态和 refund，已取消或到期时零 transport", async () => {
+  const checkoutTransport = new ScriptedTransport([
+    ok({
+      checkoutId: "checkout-abortable-status",
+      environment: "Sandbox",
+      status: "COMPLETED",
+      paymentIds: ["payment-abortable-status"],
+    }),
+    ok({
+      paymentId: "payment-abortable-status",
+      status: "COMPLETED",
+      approvedMoney: { amount: 1_250, currency: "AUD" },
+    }),
+  ]);
+  const controller = new AbortController();
+  const deadlineAtMs = Date.now() + 10_000;
+  const checkoutRecovered = await createAdapter(checkoutTransport).recoverWithControl(
+    attempt({
+      state: "Pending",
+      references: references({ checkoutId: "checkout-abortable-status" }),
+    }),
+    { signal: controller.signal, deadlineAtMs },
+  );
+  assert.equal(checkoutRecovered.state, "Approved");
+  for (const request of checkoutTransport.calls) {
+    assert.equal(request.signal, controller.signal);
+    assert.ok((request.timeoutMs ?? 0) > 0);
+    assert.ok((request.timeoutMs ?? 0) <= 10_000);
+  }
+
+  const refundTransport = new ScriptedTransport([
+    ok({
+      refundId: "refund-abortable",
+      environment: "Sandbox",
+      status: "COMPLETED",
+      paymentId: "payment-original",
+      amountMoney: { amount: 500, currency: "AUD" },
+    }),
+  ]);
+  const refundRecovered = await createAdapter(refundTransport).recoverWithControl(
+    attempt({
+      operation: "refund",
+      amount: { currency: "AUD", cents: -500 },
+      state: "Unknown",
+      references: references({ paymentId: "payment-original" }),
+    }),
+    { signal: controller.signal, deadlineAtMs },
+  );
+  assert.equal(refundRecovered.state, "Approved");
+  assert.equal(refundTransport.calls[0]?.signal, controller.signal);
+  assert.ok((refundTransport.calls[0]?.timeoutMs ?? 0) > 0);
+
+  const aborted = new AbortController();
+  aborted.abort();
+  const cancelledTransport = new ScriptedTransport([]);
+  const cancelled = await createAdapter(cancelledTransport).recoverWithControl(
+    attempt({
+      state: "Pending",
+      references: references({ checkoutId: "checkout-cancelled" }),
+    }),
+    { signal: aborted.signal, deadlineAtMs },
+  );
+  assert.equal(cancelled.state, "Unknown");
+  assert.equal(cancelledTransport.calls.length, 0);
+
+  const expiredTransport = new ScriptedTransport([]);
+  const expired = await createAdapter(expiredTransport).recoverWithControl(
+    attempt({
+      state: "Pending",
+      references: references({ checkoutId: "checkout-expired" }),
+    }),
+    { signal: new AbortController().signal, deadlineAtMs: Date.now() },
+  );
+  assert.equal(expired.state, "Unknown");
+  assert.equal(expiredTransport.calls.length, 0);
+});
+
+test("payment 已返回 Approved 时即使 JS 越过 deadline 仍保留批准结果", async () => {
+  const originalNow = Date.now;
+  const startedAtMs = Date.parse("2026-08-09T01:00:00.000Z");
+  const deadlineAtMs = startedAtMs + 5_000;
+  let now = startedAtMs;
+  Date.now = () => now;
+  const transport = new ScriptedTransport([
+    ok({
+      checkoutId: "checkout-approved-race",
+      environment: "Sandbox",
+      status: "COMPLETED",
+      paymentIds: ["payment-approved-race"],
+    }),
+    () => {
+      now = deadlineAtMs;
+      return ok({
+        paymentId: "payment-approved-race",
+        status: "COMPLETED",
+        approvedMoney: { amount: 1_250, currency: "AUD" },
+      });
+    },
+  ]);
+
+  try {
+    const recovered = await createAdapter(transport).recoverWithControl(
+      attempt({ state: "Unknown" }),
+      { signal: new AbortController().signal, deadlineAtMs },
+    );
+    assert.equal(recovered.state, "Approved");
+    assert.equal(transport.calls.length, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("90 秒后的手动恢复不附加 signal/timeout，并复用同一 attempt 幂等键", async () => {
+  const source = attempt({
+    state: "Unknown",
+    idempotencyKey: "manual-after-deadline-key",
+  });
+  const transport = new ScriptedTransport([
+    ok({
+      checkoutId: "checkout-manual-after-deadline",
+      environment: "Sandbox",
+      status: "PENDING",
+    }),
+  ]);
+
+  await createAdapter(transport).recover(source);
+
+  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls[0]?.signal, undefined);
+  assert.equal(transport.calls[0]?.timeoutMs, undefined);
+  assert.equal(
+    (transport.calls[0]?.data as { idempotencyKey: string }).idempotencyKey,
+    source.idempotencyKey,
+  );
+});
+
 test("checkout 完成但 payment FAILED 映射 Declined，且仍保留两个 provider ID", async () => {
   const transport = new ScriptedTransport([
     ok({
@@ -672,7 +847,11 @@ class ScriptedTransport implements HbposTransport {
   public readonly calls: HbposTransportRequest[] = [];
 
   public constructor(
-    private readonly steps: (HbposTransportResponse<unknown> | Error)[],
+    private readonly steps: (
+      | HbposTransportResponse<unknown>
+      | Error
+      | (() => HbposTransportResponse<unknown>)
+    )[],
   ) {}
 
   public async request<T>(
@@ -682,6 +861,7 @@ class ScriptedTransport implements HbposTransport {
     const step = this.steps.shift();
     if (!step) throw new Error("Unexpected transport request.");
     if (step instanceof Error) throw step;
+    if (typeof step === "function") return step() as HbposTransportResponse<T>;
     return step as HbposTransportResponse<T>;
   }
 }

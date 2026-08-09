@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DeviceSessionCoordinator, type DeviceSessionApi } from "./device-session";
+import {
+  DeviceSessionCoordinator,
+  subscribeDeviceScopeChange,
+  type DeviceSessionApi,
+} from "./device-session";
 import {
   DeviceCredentialStore,
   DeviceLockStore,
@@ -51,6 +55,199 @@ test("设备验证成功后保存不可同步授权，并生成 iPad 认证头",
     /device-secret|INSTALL-001/,
   );
   assert.equal(secureStore.lastWriteOptions?.requireThisDeviceOnly, true);
+});
+
+test("换店凭据提交后才发布 scope 切换，重新注册失败不误发", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "OLD-DEVICE",
+    storeCode: "S1",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  let shouldFail = false;
+  const api: DeviceSessionApi = {
+    async register() {
+      throw new Error("not used");
+    },
+    async verify() {
+      throw new Error("not used");
+    },
+    async reregister() {
+      if (shouldFail) throw new Error("reregister failed");
+      return {
+        deviceCode: "NEW-DEVICE",
+        storeCode: "S2",
+        deviceStatus: 1,
+        isAllowed: true,
+        authorizationCode: "new-secret",
+      };
+    },
+  };
+  const coordinator = new DeviceSessionCoordinator(api, installation, credentials);
+  const published: Readonly<{
+    previousStoreCode: string;
+    nextStoreCode: string;
+    authorization: string | null;
+  }>[] = [];
+  const unsubscribe = subscribeDeviceScopeChange((change) => {
+    published.push({
+      previousStoreCode: change.previous.storeCode,
+      nextStoreCode: change.current.storeCode,
+      authorization: null,
+    });
+  });
+
+  try {
+    await coordinator.reregister({ targetStoreCode: "S2" });
+    published[0] = {
+      ...published[0]!,
+      authorization: (await coordinator.getRequestHeaders())?.Authorization ?? null,
+    };
+    shouldFail = true;
+    await assert.rejects(() => coordinator.reregister({ targetStoreCode: "S3" }));
+  } finally {
+    unsubscribe();
+  }
+
+  assert.deepEqual(published, [
+    {
+      previousStoreCode: "S1",
+      nextStoreCode: "S2",
+      authorization: "Bearer new-secret",
+    },
+  ]);
+});
+
+test("同设备 scope 重新注册轮换授权后发布一次，首次 register 与 verify 不误发", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() {
+        return {
+          deviceCode: "IPAD-NEW",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "register-secret",
+        };
+      },
+      async verify() {
+        return {
+          deviceCode: "IPAD-NEW",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "verify-secret",
+        };
+      },
+      async reregister() {
+        return {
+          deviceCode: "IPAD-1",
+          storeCode: "S001",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "rotated-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+  const changes: Readonly<{
+    previous: Readonly<{ deviceCode: string; storeCode: string }>;
+    current: Readonly<{ deviceCode: string; storeCode: string }>;
+  }>[] = [];
+  const unsubscribe = subscribeDeviceScopeChange((change) => changes.push(change));
+
+  try {
+    await coordinator.reregister({ targetStoreCode: "S001" });
+    assert.equal(
+      (await coordinator.getRequestHeaders())?.Authorization,
+      "Bearer rotated-secret",
+      "事件发布前新凭据必须已可读取",
+    );
+    await coordinator.register({ storeCode: "S002" });
+    await coordinator.verify({ deviceCode: "IPAD-NEW", storeCode: "S002" });
+  } finally {
+    unsubscribe();
+  }
+
+  assert.deepEqual(changes, [
+    {
+      previous: { deviceCode: "IPAD-1", storeCode: "S001" },
+      current: { deviceCode: "IPAD-1", storeCode: "S001" },
+    },
+  ]);
+});
+
+test("重新注册凭据保存失败时不发布 scope 变更", async () => {
+  const secureStore = new InMemorySecureStore();
+  const originalSet = secureStore.set.bind(secureStore);
+  let failWrites = false;
+  secureStore.set = async (...args) => {
+    if (failWrites) throw new Error("credential save failed");
+    await originalSet(...args);
+  };
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  await installation.getOrCreate();
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() {
+        return {
+          deviceCode: "IPAD-1",
+          storeCode: "S001",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "rotated-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+  let changes = 0;
+  const unsubscribe = subscribeDeviceScopeChange(() => { changes += 1; });
+
+  try {
+    failWrites = true;
+    await assert.rejects(
+      () => coordinator.reregister({ targetStoreCode: "S001" }),
+      /credential save failed/,
+    );
+  } finally {
+    unsubscribe();
+  }
+
+  assert.equal(changes, 0);
 });
 
 test("在线设备被禁用时锁定，即使本地仍有历史授权码", async () => {
@@ -204,6 +401,105 @@ test("旧 verify 的迟到响应不能覆盖已完成换绑的凭据、展示名
     deviceCode: "NEW",
     storeCode: "S2",
     storeName: "New Store",
+  });
+});
+
+test("连续换绑在前次保存后变 stale 时仍按 durable 顺序发布并保留最终状态", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  await installation.getOrCreate();
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-0",
+    storeCode: "S0",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "secret-0",
+  });
+  const originalSave = credentials.save.bind(credentials);
+  let saveCalls = 0;
+  let notifyFirstSaveStarted: (() => void) | undefined;
+  let releaseFirstSave: (() => void) | undefined;
+  const firstSaveStarted = new Promise<void>((resolve) => {
+    notifyFirstSaveStarted = resolve;
+  });
+  const firstSaveRelease = new Promise<void>((resolve) => {
+    releaseFirstSave = resolve;
+  });
+  credentials.save = async (next) => {
+    saveCalls += 1;
+    if (saveCalls === 1) {
+      notifyFirstSaveStarted?.();
+      await firstSaveRelease;
+    }
+    await originalSave(next);
+  };
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister(input) {
+        const suffix = input.targetStoreCode.slice(1);
+        return {
+          deviceCode: `IPAD-${suffix}`,
+          storeCode: input.targetStoreCode,
+          storeName: `Store ${suffix}`,
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: `secret-${suffix}`,
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+  const changes: Readonly<{
+    previous: string;
+    current: string;
+  }>[] = [];
+  let s0ListenerCalls = 0;
+  const unsubscribe = subscribeDeviceScopeChange((change) => {
+    changes.push({
+      previous: `${change.previous.storeCode}/${change.previous.deviceCode}`,
+      current: `${change.current.storeCode}/${change.current.deviceCode}`,
+    });
+    if (
+      change.previous.storeCode === "S0" &&
+      change.previous.deviceCode === "IPAD-0"
+    ) {
+      s0ListenerCalls += 1;
+    }
+  });
+
+  try {
+    const first = coordinator.reregister({ targetStoreCode: "S1" });
+    await firstSaveStarted;
+    const second = coordinator.reregister({ targetStoreCode: "S2" });
+    if (!releaseFirstSave) {
+      throw new Error("首个凭据保存未进入可控延迟点。");
+    }
+    releaseFirstSave();
+    await Promise.all([first, second]);
+  } finally {
+    unsubscribe();
+  }
+
+  assert.deepEqual(changes, [
+    { previous: "S0/IPAD-0", current: "S1/IPAD-1" },
+    { previous: "S1/IPAD-1", current: "S2/IPAD-2" },
+  ]);
+  assert.equal(s0ListenerCalls, 1, "S0 runtime 必须收到不可逆的首段换绑事件");
+  assert.deepEqual(coordinator.getState(), {
+    status: "authorized",
+    deviceCode: "IPAD-2",
+    storeCode: "S2",
+  });
+  assert.deepEqual(await coordinator.getDevicePresentation(), {
+    deviceCode: "IPAD-2",
+    storeCode: "S2",
+    storeName: "Store 2",
   });
 });
 

@@ -1,7 +1,9 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
 
 import InstallmentsRoute from "../../../app/installments";
+
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 
 let mockRuntime: any;
 let mockActiveCashier: any;
@@ -11,9 +13,11 @@ const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
 const mockPrepareCreateCheckout = jest.fn();
 const mockDestroyPresenter = jest.fn();
+const mockLoad = jest.fn(async () => undefined);
 const mockSetOnline = jest.fn();
 const mockSetCreateVoucherReference = jest.fn();
 const mockSetRepaymentVoucherReference = jest.fn();
+let mockUseRealScreen = false;
 const mockGetDeviceIdentity = jest.fn<
   () => Promise<Readonly<{
     deviceCode: string;
@@ -39,6 +43,12 @@ jest.mock("expo-router", () => {
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
+}));
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    i18n: { language: "zh", resolvedLanguage: "zh" },
+  }),
 }));
 
 jest.mock("@/features/cashier-login", () => ({
@@ -71,6 +81,9 @@ jest.mock("@/features/installments", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text } =
     jest.requireActual<typeof import("react-native")>("react-native");
+  const { InstallmentScreen: RealInstallmentScreen } = jest.requireActual<
+    typeof import("@/features/installments/installment-screen")
+  >("@/features/installments/installment-screen");
   return {
     resolveInstallmentsAccess: (permissions: readonly string[]) => ({
       canAddRepayment: permissions.includes(
@@ -93,6 +106,9 @@ jest.mock("@/features/installments", () => {
       services.installments ?? null,
     InstallmentScreen: (props: unknown) => {
       mockScreenProps = props;
+      if (mockUseRealScreen) {
+        return React.createElement(RealInstallmentScreen, props as never);
+      }
       return React.createElement(
         Text,
         { testID: "installments-screen" },
@@ -122,6 +138,7 @@ jest.mock("@/ui/screens/bootstrap-screen", () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUseRealScreen = false;
   mockScreenProps = null;
   mockUnavailableProps = null;
   mockActiveCashier = {
@@ -138,6 +155,7 @@ beforeEach(() => {
   });
   mockCreatePresenter.mockReturnValue({
     destroy: mockDestroyPresenter,
+    load: mockLoad,
     setOnline: mockSetOnline,
     setCreateVoucherReference: mockSetCreateVoucherReference,
     setRepaymentVoucherReference: mockSetRepaymentVoucherReference,
@@ -249,6 +267,7 @@ test("购物车准备失败时返回 false 且不静默跳转", async () => {
 });
 
 test("离线授权设备可浏览本地分期，但 presenter 收到离线状态", async () => {
+  usePosShellStore.getState().setConnectivity("checking");
   mockRuntime = readyRuntime({
     backend: "offline",
     device: "authorized-local",
@@ -260,6 +279,134 @@ test("离线授权设备可浏览本地分期，但 presenter 收到离线状态
     expect(screen.getByTestId("installments-screen")).toBeTruthy();
   });
   expect(mockSetOnline).toHaveBeenCalledWith(false);
+  await screen.unmount();
+});
+
+test("shell 尚在 checking 时，ready-offline runtime 先以离线门禁启动，随后可恢复 online", async () => {
+  usePosShellStore.getState().setConnectivity("checking");
+  mockRuntime = readyRuntime({
+    backend: "offline",
+    device: "authorized-local",
+    phase: "ready-offline",
+  });
+  const screen = await render(<InstallmentsRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("installments-screen")).toBeTruthy();
+  });
+  expect(mockSetOnline).toHaveBeenCalledWith(false);
+
+  await act(async () => {
+    usePosShellStore.getState().setConnectivity("online");
+  });
+  await waitFor(() => {
+    expect(mockSetOnline).toHaveBeenLastCalledWith(true);
+  });
+  await screen.unmount();
+});
+
+test("真实路由和 Screen 在离线重连时仅由 Screen 刷新一次", async () => {
+  mockUseRealScreen = true;
+  usePosShellStore.getState().setConnectivity("checking");
+  const listeners = new Set<() => void>();
+  let state = {
+    access: {
+      canAddRepayment: false,
+      canCancel: false,
+      canConfirmPickup: false,
+      canCreate: false,
+      canView: true,
+    },
+    busy: false,
+    cancelReason: "",
+    createDownPayment: "",
+    createDraft: null,
+    createNote: "",
+    createPaymentMethod: "cash" as const,
+    createVoucherReference: "",
+    customerName: "",
+    customerPhone: "",
+    dateFilter: { preset: "all" as const, fromDate: null, toDate: null },
+    details: null,
+    detailsLoading: false,
+    deviceScope: "store" as const,
+    hasMore: false,
+    kind: "ready" as const,
+    loadingMore: false,
+    online: false,
+    orders: [],
+    pane: "history" as const,
+    pickupNote: "",
+    query: "",
+    recoveryRequired: false,
+    reprint: { kind: "idle" as const },
+    repaymentAmount: "",
+    repaymentMethod: "cash" as const,
+    repaymentVoucherReference: "",
+    selectedGuid: null,
+    statusCode: null,
+    statusFilter: null,
+    voidReason: "",
+  };
+  const realScreenPresenter = {
+    capabilities: {
+      reprint: false,
+      selectedDetailsCancelRefundable: false,
+      selectedDetailsPickupConfirmable: false,
+      selectedDetailsRepayable: false,
+      selectedDetailsVoidable: false,
+      selectedDetailsWritable: false,
+    },
+    cancelWithRefund: jest.fn(async () => undefined),
+    confirmPickup: jest.fn(async () => undefined),
+    destroy: mockDestroyPresenter,
+    getState: () => state,
+    load: mockLoad,
+    loadMore: jest.fn(async () => undefined),
+    recoverBlocking: jest.fn(async () => undefined),
+    reprintSelected: jest.fn(async () => undefined),
+    retryDetails: jest.fn(async () => undefined),
+    select: jest.fn(async () => undefined),
+    setCancelReason: jest.fn(),
+    setCreateVoucherReference: mockSetCreateVoucherReference,
+    setDateFilter: jest.fn(async () => undefined),
+    setDeviceScope: jest.fn(async () => undefined),
+    setOnline: jest.fn((online: boolean) => {
+      // useSyncExternalStore 依赖新快照识别网络状态变化，不能原地修改。
+      state = { ...state, online };
+      for (const listener of listeners) listener();
+    }),
+    setPickupNote: jest.fn(),
+    setRepaymentVoucherReference: mockSetRepaymentVoucherReference,
+    setSearchQuery: jest.fn(),
+    setStatusFilter: jest.fn(async () => undefined),
+    setVoidReason: jest.fn(),
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    voidSelected: jest.fn(async () => undefined),
+  };
+  mockCreatePresenter.mockReturnValue(realScreenPresenter);
+  mockRuntime = readyRuntime({
+    backend: "offline",
+    device: "authorized-local",
+    phase: "ready-offline",
+  });
+
+  const screen = await render(<InstallmentsRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId("installments-screen")).toBeTruthy();
+  });
+  expect(mockLoad).not.toHaveBeenCalled();
+
+  await act(async () => {
+    usePosShellStore.getState().setConnectivity("online");
+  });
+  await waitFor(() => {
+    expect(mockLoad).toHaveBeenCalledTimes(1);
+  });
+  expect(realScreenPresenter.setOnline).toHaveBeenLastCalledWith(true);
   await screen.unmount();
 });
 

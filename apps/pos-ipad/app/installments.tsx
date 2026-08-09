@@ -1,5 +1,5 @@
 import { Redirect, type Href, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
@@ -56,7 +56,9 @@ export default function InstallmentsRoute() {
   const connectivity = usePosShellStore(
     (state) => state.connectivity,
   );
-  const prevOnline = useRef<boolean | null>(null);
+  const runtimeExplicitlyOffline =
+    runtime.state.phase === "ready-offline" ||
+    runtime.state.backend === "offline";
   const presenter =
     binding?.services === runtime.services &&
     binding.cashier === activeCashier
@@ -127,20 +129,16 @@ export default function InstallmentsRoute() {
     runtime.services,
   ]);
 
-  // 网络从离线恢复为在线时，自动刷新分期数据，无需用户手动点击重试。
+  // 路由只同步网络门禁；InstallmentScreen 监听 state.online 并作为唯一刷新所有者。
   useEffect(() => {
     if (!presenter) return;
-    // checking 视为在线（未知时乐观），仅明确 offline 才阻断分期。
+    // shell 尚未完成 probe 时，runtime 已明确离线必须优先 fail closed；
+    // shell 后续发布 online 仍可正常恢复并触发刷新。
     const nextOnline =
-      connectivity === "online" || connectivity === "checking";
-    const wasOffline = prevOnline.current === false;
+      connectivity === "online" ||
+      (connectivity === "checking" && !runtimeExplicitlyOffline);
     presenter.setOnline(nextOnline);
-    if (wasOffline && nextOnline) {
-      // 离线期间数据已被清空，恢复后重新加载列表与能力。
-      void presenter.load().catch(() => undefined);
-    }
-    prevOnline.current = nextOnline;
-  }, [connectivity, presenter]);
+  }, [connectivity, presenter, runtimeExplicitlyOffline]);
 
   if (gate === "redirect-index") {
     return <Redirect href={"/" as Href} />;

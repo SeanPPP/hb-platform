@@ -45,6 +45,11 @@ const SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED =
 export type SquareTerminalConfigurationProvider =
   () => Promise<SquareTerminalConfiguration>;
 
+type SquareRecoveryControl = Readonly<{
+  signal: AbortSignal;
+  deadlineAtMs: number;
+}>;
+
 /**
  * Square access token 永远只存在 Hbpos.Api；iPad 仅携带设备/收银员认证并调用后端代理路由。
  */
@@ -70,6 +75,21 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
   }
 
   public recover(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
+    return this.recoverOnce(attempt);
+  }
+
+  /** Square 恢复专用的结构化截止能力；不向通用 OnlinePaymentPort 泄露这个扩展。 */
+  public recoverWithControl(
+    attempt: PaymentAttempt,
+    control: SquareRecoveryControl,
+  ): Promise<PaymentProviderResult> {
+    return this.recoverOnce(attempt, control);
+  }
+
+  private recoverOnce(
+    attempt: PaymentAttempt,
+    control?: SquareRecoveryControl,
+  ): Promise<PaymentProviderResult> {
     return this.safely(attempt, async () => {
       const rawConfiguration = await this.getConfiguration();
       if (attempt.operation === "refund") {
@@ -77,6 +97,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
         return this.refundWithConfiguration(
           attempt,
           normalizeEnvironmentConfiguration(rawConfiguration),
+          control,
         );
       }
       assertPurchaseAttempt(attempt);
@@ -84,8 +105,13 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
         ? this.getStatusWithConfiguration(
             attempt,
             normalizeEnvironmentConfiguration(rawConfiguration),
+            control,
           )
-        : this.createOrReplayCheckout(attempt, normalizeConfiguration(rawConfiguration));
+        : this.createOrReplayCheckout(
+            attempt,
+            normalizeConfiguration(rawConfiguration),
+            control,
+          );
     });
   }
 
@@ -144,6 +170,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
   private async createOrReplayCheckout(
     attempt: PaymentAttempt,
     configuration: SquareTerminalConfiguration,
+    control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const amountCents = squareProviderAmountCents(attempt);
     if (
@@ -172,34 +199,42 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       referenceId: limit(attempt.orderGuid, 40),
       note: limit(`HB POS iPad ${attempt.orderGuid}`, 500),
     };
-    const checkout = await this.requestData<SquareCheckoutStatusResponse>({
-      method: "POST",
-      url: "/api/v1/square/checkouts",
-      data: request,
-    });
-    return this.mapCheckout(attempt, configuration, checkout);
+    const checkout = await this.requestData<SquareCheckoutStatusResponse>(
+      {
+        method: "POST",
+        url: "/api/v1/square/checkouts",
+        data: request,
+      },
+      control,
+    );
+    return this.mapCheckout(attempt, configuration, checkout, control);
   }
 
   private async getStatusWithConfiguration(
     attempt: PaymentAttempt,
     configuration: SquareEnvironmentConfiguration,
+    control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const checkoutId = requiredReference(
       attempt.references.checkoutId,
       "SQUARE_CHECKOUT_ID_REQUIRED",
     );
-    const checkout = await this.requestData<SquareCheckoutStatusResponse>({
-      method: "GET",
-      url: `/api/v1/square/checkouts/${encodeURIComponent(checkoutId)}`,
-      params: { environment: configuration.environment },
-    });
-    return this.mapCheckout(attempt, configuration, checkout);
+    const checkout = await this.requestData<SquareCheckoutStatusResponse>(
+      {
+        method: "GET",
+        url: `/api/v1/square/checkouts/${encodeURIComponent(checkoutId)}`,
+        params: { environment: configuration.environment },
+      },
+      control,
+    );
+    return this.mapCheckout(attempt, configuration, checkout, control);
   }
 
   private async mapCheckout(
     attempt: PaymentAttempt,
     configuration: SquareEnvironmentConfiguration,
     checkout: SquareCheckoutStatusResponse,
+    control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const checkoutId = optionalText(checkout.checkoutId);
     if (!checkoutId) {
@@ -248,17 +283,21 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       return unknown(checkoutReferences, "SQUARE_REFERENCE_CONFLICT");
     }
 
-    const payment = await this.requestData<SquarePaymentStatusDto>({
-      method: "GET",
-      url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
-      params: { environment: configuration.environment },
-    });
+    const payment = await this.requestData<SquarePaymentStatusDto>(
+      {
+        method: "GET",
+        url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
+        params: { environment: configuration.environment },
+      },
+      control,
+    );
     return verifyPayment(attempt, paymentReferences, paymentId.value, payment);
   }
 
   private async refundWithConfiguration(
     attempt: PaymentAttempt,
     configuration: SquareEnvironmentConfiguration,
+    control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const paymentId = requiredReference(
       attempt.references.paymentId,
@@ -274,16 +313,24 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       },
     };
     // Square refund 同样按 idempotencyKey 幂等；Pending/Unknown 恢复只能重放这一个请求。
-    const refund = await this.requestData<SquareRefundResponse>({
-      method: "POST",
-      url: "/api/v1/square/refunds",
-      data: request,
-    });
+    const refund = await this.requestData<SquareRefundResponse>(
+      {
+        method: "POST",
+        url: "/api/v1/square/refunds",
+        data: request,
+      },
+      control,
+    );
     return verifyRefund(attempt, paymentId, refund);
   }
 
-  private async requestData<T>(request: HbposTransportRequest): Promise<T> {
-    const response = await this.transport.request<HbposEnvelope<T>>(request);
+  private async requestData<T>(
+    request: HbposTransportRequest,
+    control?: SquareRecoveryControl,
+  ): Promise<T> {
+    const response = await this.transport.request<HbposEnvelope<T>>(
+      squareRecoveryRequest(request, control),
+    );
     if (response.status < 200 || response.status >= 300) {
       throw new SquareAdapterError(`SQUARE_HTTP_${response.status}`);
     }
@@ -307,6 +354,26 @@ class SquareAdapterError extends Error {
     super(code);
     this.name = "SquareAdapterError";
   }
+}
+
+function squareRecoveryRequest(
+  request: HbposTransportRequest,
+  control: SquareRecoveryControl | undefined,
+): HbposTransportRequest {
+  // 普通 submit/recover/refund 保持原请求形状；只有自动恢复使用请求级控制。
+  if (!control) return request;
+  if (control.signal.aborted) {
+    throw new SquareAdapterError("SQUARE_RECOVERY_ABORTED");
+  }
+  const remainingMs = control.deadlineAtMs - Date.now();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    throw new SquareAdapterError("SQUARE_RECOVERY_DEADLINE_EXCEEDED");
+  }
+  return {
+    ...request,
+    signal: control.signal,
+    timeoutMs: Math.min(15_000, Math.ceil(remainingMs)),
+  };
 }
 
 function verifyPayment(

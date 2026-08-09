@@ -382,6 +382,7 @@ test("setOnline 就地翻转门禁：离线恢复后 kind 从 offline 恢复，�
   await value.refresh();
   assert.equal(value.state.kind, "ready");
   assert.equal(value.state.rows.length, 1);
+  const detailsBeforeOffline = value.state.details;
 
   // 离线：门禁翻转为 offline，但已加载 rows 保留。
   value.setOnline(false);
@@ -392,6 +393,8 @@ test("setOnline 就地翻转门禁：离线恢复后 kind 从 offline 恢复，�
   value.setOnline(true);
   assert.equal(value.state.kind, "ready");
   assert.equal(value.state.rows.length, 1, "恢复后列表仍在");
+  assert.equal(value.state.details, detailsBeforeOffline, "稳定详情不应被重置");
+  assert.equal(port.queries.length, 1, "稳定列表重连不应重复请求");
 });
 
 test("setOnline 同值不重复通知", async () => {
@@ -407,4 +410,189 @@ test("setOnline 同值不重复通知", async () => {
   value.destroy();
   value.setOnline(true);
   assert.equal(notifications, 1, "销毁后不应通知");
+});
+
+test("切离线会使 list、details 与 reprint 的在途 generation 失效", async () => {
+  const listPort = new MemoryPort();
+  const listRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  listPort.listImpl = () => listRequest.promise;
+  const listValue = presenter(listPort);
+  const listRefresh = listValue.refresh();
+  listValue.setOnline(false);
+  listRequest.resolve([firstRow]);
+  await listRefresh;
+  assert.equal(listValue.state.kind, "offline");
+  assert.deepEqual(listValue.state.rows, []);
+
+  const detailsPort = new MemoryPort();
+  const detailsRequest = deferred<RemoteOrderHistoryDetails | null>();
+  detailsPort.listImpl = async () => [firstRow];
+  detailsPort.detailsImpl = () => detailsRequest.promise;
+  const detailsValue = presenter(detailsPort);
+  const detailsRefresh = detailsValue.refresh();
+  await Promise.resolve();
+  await Promise.resolve();
+  detailsValue.setOnline(false);
+  detailsRequest.resolve(firstDetails);
+  await detailsRefresh;
+  assert.equal(detailsValue.state.kind, "offline");
+  assert.equal(detailsValue.state.details.kind, "idle");
+
+  const reprintPort = new MemoryReprintPort();
+  const reprintRequest = deferred<void>();
+  const reprintHistoryPort = new MemoryPort();
+  reprintHistoryPort.listImpl = async () => [firstRow];
+  reprintHistoryPort.detailsImpl = async () => firstDetails;
+  reprintPort.reprintImpl = () => reprintRequest.promise;
+  const reprintValue = presenter(reprintHistoryPort, {
+    permissionCodes: [
+      REMOTE_HISTORY_VIEW_PERMISSION,
+      REMOTE_HISTORY_REPRINT_PERMISSION,
+    ],
+    reprintPort,
+  });
+  await reprintValue.refresh();
+  const reprint = reprintValue.reprintSelected();
+  reprintValue.setOnline(false);
+  reprintValue.setOnline(true);
+  reprintRequest.resolve();
+  await reprint;
+  assert.equal(reprintValue.state.kind, "ready");
+  assert.equal(reprintValue.state.reprint.kind, "idle");
+});
+
+for (const [label, settleSecondRequest, expectedKind] of [
+  ["ready", (request: ReturnType<typeof deferred<readonly RemoteOrderHistorySummary[]>>) => request.resolve([secondRow]), "ready"],
+  ["empty", (request: ReturnType<typeof deferred<readonly RemoteOrderHistorySummary[]>>) => request.resolve([]), "empty"],
+  ["failed", (request: ReturnType<typeof deferred<readonly RemoteOrderHistorySummary[]>>) => request.reject(new Error("network recovered but request failed")), "failed"],
+] as const) {
+  test(`refresh loading 断网后重连只重试一次，并可进入 ${label}`, async () => {
+    const port = new MemoryPort();
+    const firstRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+    const secondRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+    let requests = 0;
+    port.listImpl = () =>
+      requests++ === 0 ? firstRequest.promise : secondRequest.promise;
+    const value = presenter(port);
+    const kinds: string[] = [];
+    value.subscribe(() => kinds.push(value.state.kind));
+
+    const firstRefresh = value.refresh();
+    value.setOnline(false);
+    firstRequest.resolve([firstRow]);
+    await firstRefresh;
+    assert.equal(value.state.kind, "offline");
+    assert.deepEqual(value.state.rows, [], "旧请求结果不得回写");
+
+    value.setOnline(true);
+    value.setOnline(true);
+    assert.equal(requests, 2, "重连只创建一次替代请求");
+    assert.deepEqual(kinds.slice(-3), ["offline", "idle", "loading"]);
+
+    settleSecondRequest(secondRequest);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(value.state.kind, expectedKind);
+  });
+}
+
+test("离线期间修改 filters 后重连只查询最新条件，旧请求不得回写", async () => {
+  const port = new MemoryPort();
+  const firstRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  const secondRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  let requests = 0;
+  port.listImpl = () =>
+    requests++ === 0 ? firstRequest.promise : secondRequest.promise;
+  const value = presenter(port);
+
+  const firstRefresh = value.refresh();
+  value.setOnline(false);
+  value.setFilters({
+    deviceCode: null,
+    keyword: "latest",
+    soldFromIso: "2026-07-26T00:00:00Z",
+    soldToIso: "2026-07-26T23:59:59.999Z",
+  });
+  value.setOnline(true);
+  value.setOnline(true);
+  assert.equal(requests, 2);
+  assert.equal(port.queries[1]?.keyword, "latest");
+
+  firstRequest.resolve([firstRow]);
+  secondRequest.resolve([secondRow]);
+  await firstRefresh;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(value.state.rows.map((row) => row.orderGuid), [
+    secondRow.orderGuid,
+  ]);
+});
+
+test("断网后销毁不会在重连或旧请求结束时创建替代请求", async () => {
+  const port = new MemoryPort();
+  const pending = deferred<readonly RemoteOrderHistorySummary[]>();
+  port.listImpl = () => pending.promise;
+  const value = presenter(port);
+
+  const refresh = value.refresh();
+  value.setOnline(false);
+  value.destroy();
+  value.setOnline(true);
+  pending.reject(new Error("late network failure"));
+  await refresh;
+
+  assert.equal(port.queries.length, 1);
+});
+
+for (const [label, listImpl] of [
+  ["empty", async () => []],
+  ["failed", async () => Promise.reject(new Error("list unavailable"))],
+] as const) {
+  test(`稳定 ${label} 列表重连后保留状态且不重复请求`, async () => {
+    const port = new MemoryPort();
+    port.listImpl = listImpl;
+    const value = presenter(port);
+
+    await value.refresh();
+    assert.equal(value.state.kind, label);
+    value.setOnline(false);
+    value.setOnline(true);
+
+    assert.equal(value.state.kind, label);
+    assert.equal(port.queries.length, 1);
+  });
+}
+
+test("替代 refresh 在再次断网时失效，最终只由最后一次重连请求落地", async () => {
+  const port = new MemoryPort();
+  const firstRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  const secondRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  const thirdRequest = deferred<readonly RemoteOrderHistorySummary[]>();
+  let requests = 0;
+  port.listImpl = () => {
+    requests += 1;
+    if (requests === 1) return firstRequest.promise;
+    if (requests === 2) return secondRequest.promise;
+    return thirdRequest.promise;
+  };
+  const value = presenter(port);
+
+  const firstRefresh = value.refresh();
+  value.setOnline(false);
+  value.setOnline(true);
+  value.setOnline(false);
+  value.setOnline(false);
+  value.setOnline(true);
+  value.setOnline(true);
+  assert.equal(requests, 3, "每次有效重连只产生一个替代请求");
+
+  firstRequest.resolve([firstRow]);
+  secondRequest.resolve([secondRow]);
+  thirdRequest.resolve([firstRow]);
+  await firstRefresh;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(value.state.rows.map((row) => row.orderGuid), [
+    firstRow.orderGuid,
+  ]);
 });

@@ -30,6 +30,22 @@ export interface PaymentProviderRegistryPort {
   get(provider: PaymentProvider): OnlinePaymentPort;
 }
 
+/**
+ * 这是 provider 私有的恢复能力，不扩展通用 OnlinePaymentPort，避免把取消契约强加给
+ * Linkly、Voucher 等既有实现。只有运行时明确暴露此方法的 provider 才会收到 signal。
+ */
+export type PaymentRecoveryControl = Readonly<{
+  signal: AbortSignal;
+  deadlineAtMs: number;
+}>;
+
+type AbortablePaymentRecoveryPort = Readonly<{
+  recoverWithControl(
+    attempt: PaymentAttempt,
+    control: PaymentRecoveryControl,
+  ): Promise<PaymentProviderResult>;
+}>;
+
 export interface PaymentConnectivityPort {
   isOnline(): Promise<boolean>;
 }
@@ -215,7 +231,17 @@ export class PaymentAttemptDurabilityError extends Error {
 type Inflight<T> = Readonly<{
   signature: string;
   promise: Promise<T>;
+  ownerSignal: AbortSignal | null;
 }>;
+
+function isAbortablePaymentRecoveryPort(
+  provider: OnlinePaymentPort,
+): provider is OnlinePaymentPort & AbortablePaymentRecoveryPort {
+  return (
+    "recoverWithControl" in provider &&
+    typeof provider.recoverWithControl === "function"
+  );
+}
 
 // 中文注释：同一 JS runtime 内所有 service 实例共享订单锁，避免不同页面/容器各自实例化后并发触发终端。
 const sharedOrderActions = new Map<string, Inflight<PaymentAttemptExecutionResult>>();
@@ -253,13 +279,22 @@ export class PaymentAttemptService {
     );
   }
 
-  public async recoverAttempt(attemptId: string): Promise<PaymentAttemptExecutionResult> {
+  public async recoverAttempt(
+    attemptId: string,
+    control?: PaymentRecoveryControl,
+  ): Promise<PaymentAttemptExecutionResult> {
+    assertPaymentRecoveryControl(control);
     const observed = await this.requireAttempt(attemptId);
-    return runSharedOrderAction(observed.orderGuid, `recover:${attemptId}`, async () => {
-      const current = await this.requireAttempt(attemptId);
-      assertSameImmutableAttemptIdentity(observed, current);
-      return this.recoverAttemptOnce(current);
-    });
+    return runSharedOrderAction(
+      observed.orderGuid,
+      `recover:${attemptId}`,
+      async () => {
+        const current = await this.requireAttempt(attemptId);
+        assertSameImmutableAttemptIdentity(observed, current);
+        return this.recoverAttemptOnce(current, control);
+      },
+      control?.signal,
+    );
   }
 
   public async cancelAttempt(attemptId: string): Promise<PaymentAttemptExecutionResult> {
@@ -361,6 +396,7 @@ export class PaymentAttemptService {
 
   private async recoverAttemptOnce(
     attempt: PaymentAttempt,
+    control?: PaymentRecoveryControl,
   ): Promise<PaymentAttemptExecutionResult> {
     if (attempt.state === "Approved") {
       // 已批准但订单尚未完成时不再次触碰终端；上层应以同一 OrderGuid 继续落单。
@@ -375,7 +411,7 @@ export class PaymentAttemptService {
       );
     }
     await this.options.drafts.assertPersisted(attempt.orderGuid);
-    return this.resumeBoundAttempt(attempt);
+    return this.resumeBoundAttempt(attempt, control);
   }
 
   private async bindAction(
@@ -413,6 +449,7 @@ export class PaymentAttemptService {
 
   private async resumeBoundAttempt(
     attempt: PaymentAttempt,
+    recoveryControl?: PaymentRecoveryControl,
   ): Promise<PaymentAttemptExecutionResult> {
     if (
       attempt.state === "Approved" ||
@@ -433,6 +470,14 @@ export class PaymentAttemptService {
         null,
       );
       await this.compareAndUpdateOrThrow(attempt, submitted);
+      // 中文注释：自动恢复仍须先耐久进入 Submitted；CAS 成功后才把同一 signal
+      // 交给 provider 的恢复能力，使首次 checkout/refund 请求也受截止时间约束。
+      if (recoveryControl && isAbortablePaymentRecoveryPort(provider)) {
+        return this.executeProvider(submitted, (value) =>
+          provider.recoverWithControl(value, recoveryControl),
+          recoveryControl,
+        );
+      }
       return this.executeProvider(
         submitted,
         submitted.operation === "refund"
@@ -442,6 +487,13 @@ export class PaymentAttemptService {
     }
 
     // Submitted/Pending/Unknown 已可能到达终端，只能查询恢复，禁止再次 submit/refund。
+    // 中文注释：取消能力是 Square 的可选扩展，其他 provider 继续调用原 recover，避免扩大通用契约。
+    if (recoveryControl && isAbortablePaymentRecoveryPort(provider)) {
+      return this.executeProvider(attempt, (value) =>
+        provider.recoverWithControl(value, recoveryControl),
+        recoveryControl,
+      );
+    }
     return this.executeProvider(attempt, (value) => provider.recover(value));
   }
 
@@ -518,12 +570,19 @@ export class PaymentAttemptService {
   private async executeProvider(
     attempt: PaymentAttempt,
     execute: (attempt: PaymentAttempt) => Promise<PaymentProviderResult>,
+    controlledRecovery?: PaymentRecoveryControl,
   ): Promise<PaymentAttemptExecutionResult> {
     let providerResult: PaymentProviderResult;
     try {
       providerResult = await execute(attempt);
     } catch (error) {
       return this.persistUnknown(attempt, providerErrorCode(error));
+    }
+
+    if (isNeutralControlledRecoveryUnknown(providerResult, controlledRecovery)) {
+      // 中文注释：页面卸载取消的仅是本次 Square 查询，不代表支付结论未知。
+      // 保持原 attempt 可让重挂载在剩余自动恢复窗口内继续查询同一笔交易。
+      return outcome(attempt);
     }
 
     let references: PaymentProviderReferences;
@@ -666,10 +725,16 @@ function runSharedOrderAction(
   orderGuid: string,
   signature: string,
   operation: () => Promise<PaymentAttemptExecutionResult>,
+  ownerSignal?: AbortSignal,
 ): Promise<PaymentAttemptExecutionResult> {
   const active = sharedOrderActions.get(orderGuid);
   if (active) {
-    if (active.signature === signature) return active.promise;
+    if (
+      active.signature === signature &&
+      active.ownerSignal === (ownerSignal ?? null)
+    ) {
+      return active.promise;
+    }
     return Promise.reject(
       new PaymentAttemptStateError(
         "Another payment action is already running for this order; recovery, cancellation, refund and provider switching are mutually exclusive.",
@@ -679,13 +744,24 @@ function runSharedOrderAction(
 
   // 先登记锁、后进入异步业务，确保同一事件循环内的两个 service 实例也只能有一个执行者。
   const promise = Promise.resolve().then(operation);
-  const entry = { signature, promise };
+  const entry = { signature, promise, ownerSignal: ownerSignal ?? null };
   sharedOrderActions.set(orderGuid, entry);
   promise.then(
     () => deleteSharedOrderActionIfCurrent(orderGuid, entry),
     () => deleteSharedOrderActionIfCurrent(orderGuid, entry),
   );
   return promise;
+}
+
+function assertPaymentRecoveryControl(
+  control: PaymentRecoveryControl | undefined,
+): void {
+  if (!control) return;
+  if (!Number.isFinite(control.deadlineAtMs)) {
+    throw new PaymentAttemptStateError(
+      "Payment recovery requires a finite absolute deadline.",
+    );
+  }
 }
 
 function deleteSharedOrderActionIfCurrent(
@@ -1167,6 +1243,22 @@ function normalizedProviderCode(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toUpperCase();
   return /^[A-Z0-9][A-Z0-9_.:-]{0,63}$/.test(normalized) ? normalized : null;
+}
+
+function isNeutralControlledRecoveryUnknown(
+  providerResult: PaymentProviderResult,
+  control: PaymentRecoveryControl | undefined,
+): boolean {
+  if (!control || providerResult.state !== "Unknown") return false;
+
+  const code = normalizedProviderCode(providerResult.responseCode);
+  // 中文注释：只有 Square 受控恢复的已知中断/截止短码才中性收口；其他 Unknown
+  // 仍须按原逻辑持久化，避免把网络歧义或证据冲突误认为页面卸载。
+  return (
+    code === "SQUARE_RECOVERY_DEADLINE_EXCEEDED" ||
+    (control.signal.aborted &&
+      (code === "REQUEST_ABORTED" || code === "SQUARE_RECOVERY_ABORTED"))
+  );
 }
 
 function errorMessage(error: unknown): string | null {

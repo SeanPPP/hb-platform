@@ -97,6 +97,7 @@ import type { PosDatabaseOptions, SqliteConnectionPort } from "./types";
 import type { LocalSyncHistorySupportContext } from "@/features/sync-history";
 
 type LocalSequenceRow = Readonly<{ next_sequence: number | string }>;
+type SqlCipherVersionRow = Readonly<{ cipher_version?: unknown }>;
 
 export class PosDatabase implements DatabasePort {
   private constructor(
@@ -114,6 +115,18 @@ export class PosDatabase implements DatabasePort {
     const connection = await options.driver.open(options.databaseName);
     try {
       await runDatabaseOpenStep("key", () => connection.exec(keyPragma));
+      await runDatabaseOpenStep("cipher version", async () => {
+        // 普通 SQLite 会静默接受 PRAGMA key；必须以非空版本确认 SQLCipher 真正启用。
+        const row = await connection.getFirst<SqlCipherVersionRow>(
+          "PRAGMA cipher_version;",
+        );
+        if (
+          typeof row?.cipher_version !== "string" ||
+          row.cipher_version.trim().length === 0
+        ) {
+          throw new Error("SQLCipher cipher_version is unavailable.");
+        }
+      });
       await runDatabaseOpenStep("key verification", () =>
         connection.getFirst("SELECT count(*) AS object_count FROM sqlite_master;"),
       );

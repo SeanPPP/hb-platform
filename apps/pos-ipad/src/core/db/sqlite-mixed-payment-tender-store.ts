@@ -105,19 +105,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
     const actor = normalizedActor(command.actor);
     const amountCents = positiveAud(command.amount);
     const tenderedCents = command.tenderedAmount
-      ? positiveAud(command.tenderedAmount)
+      ? nonNegativeAud(command.tenderedAmount)
       : amountCents;
     const changeCents = command.change
       ? nonNegativeAud(command.change)
       : tenderedCents - amountCents;
-    if (
-      tenderedCents < amountCents ||
-      changeCents !== tenderedCents - amountCents
-    ) {
-      throw new TypeError(
-        "Mixed cash tendered, applied and change amounts are inconsistent.",
-      );
-    }
     const observed = await new SqliteMixedPaymentOrderTruthStore(
       this.connection,
     ).getPaymentTruth(orderGuid);
@@ -136,6 +128,7 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           "Final mixed cash requires a durable completion planner.",
         );
       }
+      assertCashSettlement(amountCents, tenderedCents, changeCents, true);
       const plan = await this.finalCash.planner.planFinalCash({
         actionId,
         orderGuid,
@@ -193,8 +186,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           replayAmountCents !== amountCents ||
           replayTenderedCents !== tenderedCents ||
           replayChangeCents !== changeCents ||
-          replayTenderedCents - replayAmountCents !==
-            replayChangeCents
+          !isPersistedCashSettlement(
+            replayAmountCents,
+            replayTenderedCents,
+            replayChangeCents,
+          )
         ) {
           throw new Error(
             "Mixed cash action was replayed with different immutable content.",
@@ -220,6 +216,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           replayed: true,
           tenderGuid,
           truth: await requireTruth(transaction, orderGuid),
+          cashSettlement: persistedCashSettlement(
+            replayAmountCents,
+            replayTenderedCents,
+            replayChangeCents,
+          ),
         };
       }
 
@@ -240,6 +241,13 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
         );
       }
       const isFinal = amountCents === remainingCents;
+      // 事务内以当前 remaining 重验，避免并发状态下把部分现金伪造成最终舍入。
+      assertCashSettlement(
+        amountCents,
+        tenderedCents,
+        changeCents,
+        isFinal,
+      );
       if (isFinal !== (finalCompletion !== null)) {
         throw new Error(
           "Mixed cash balance changed after final completion planning.",
@@ -331,6 +339,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
         replayed: false,
         tenderGuid,
         truth: await requireTruth(transaction, orderGuid),
+        cashSettlement: persistedCashSettlement(
+          amountCents,
+          tenderedCents,
+          changeCents,
+        ),
       };
     });
   }
@@ -884,6 +897,61 @@ function nonNegativeAud(amount: Money): number {
     throw new TypeError("Mixed cash change must be non-negative AUD cents.");
   }
   return amount.cents;
+}
+
+function assertCashSettlement(
+  amountCents: number,
+  tenderedCents: number,
+  changeCents: number,
+  isFinal: boolean,
+): void {
+  const cashDueCents = isFinal ? roundCashDueCents(amountCents) : amountCents;
+  if (
+    tenderedCents < cashDueCents ||
+    // 最终现金须镜像运行时的五分规范化；部分现金保留原始精确实收。
+    (isFinal && tenderedCents % 5 !== 0) ||
+    changeCents !== tenderedCents - cashDueCents
+  ) {
+    throw new TypeError(
+      "Mixed cash tendered, applied and change amounts are inconsistent.",
+    );
+  }
+}
+
+function isPersistedCashSettlement(
+  amountCents: number,
+  tenderedCents: number,
+  changeCents: number,
+): boolean {
+  try {
+    // M24 历史库先按旧的入账等于实收、找零为零（也是部分现金）规则回放。
+    assertCashSettlement(amountCents, tenderedCents, changeCents, false);
+    return true;
+  } catch {
+    try {
+      assertCashSettlement(amountCents, tenderedCents, changeCents, true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function roundCashDueCents(amountCents: number): number {
+  const remainder = amountCents % 5;
+  return amountCents - remainder + (remainder >= 3 ? 5 : 0);
+}
+
+function persistedCashSettlement(
+  appliedCents: number,
+  tenderedCents: number,
+  changeCents: number,
+): Readonly<{ tendered: Money; applied: Money; change: Money }> {
+  return Object.freeze({
+    tendered: createAud(tenderedCents),
+    applied: createAud(appliedCents),
+    change: createAud(changeCents),
+  });
 }
 
 function orderState(value: unknown): LocalOrder["state"] {

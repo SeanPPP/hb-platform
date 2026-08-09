@@ -421,6 +421,10 @@ class SystemSqliteConnection implements SqliteConnectionPort {
     sql: string,
     parameters: readonly SqlValue[] = [],
   ): Promise<T | null> {
+    // Node 内置 SQLite 不含 SQLCipher；仅为测试的精确探针提供有效版本。
+    if (sql === "PRAGMA cipher_version;") {
+      return { cipher_version: "4.6.1" } as unknown as T;
+    }
     return (
       (this.database
         .prepare(sql)

@@ -116,6 +116,423 @@ test("首次现金支付先耐久同一 draft，再原子写入现金 tender 并
   assert.equal(harness.lease.clearCalls, 1);
 });
 
+test("最终现金按五分规则传入账、规范化实收和找零，并允许 1 分零实收", async () => {
+  const roundDown = createHarness(
+    draft({ total: aud(1_002), remaining: aud(1_002) }),
+  );
+  roundDown.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-round-down",
+    remaining: aud(0),
+    cashSettlement: {
+      tendered: aud(1_000),
+      applied: aud(1_002),
+      change: aud(0),
+    },
+  });
+  roundDown.drafts.afterCash = draft({
+    total: aud(1_002),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-round-down",
+      method: "cash",
+      amount: aud(1_002),
+      reversible: false,
+    }],
+  });
+  const roundDownSnapshot = await roundDown.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-round-down-action",
+    amount: aud(1_000),
+  });
+  assert.deepEqual(roundDown.mixed.lastCashInput, {
+    actionId: "cash-round-down-action",
+    orderGuid: "order-1",
+    amount: aud(1_002),
+    tenderedAmount: aud(1_000),
+    change: aud(0),
+  });
+  assert.deepEqual(roundDownSnapshot.cashSettlement, {
+    tendered: aud(1_000),
+    applied: aud(1_002),
+    change: aud(0),
+  });
+
+  const roundDownOneCentAbove = createHarness(
+    draft({ total: aud(1_002), remaining: aud(1_002) }),
+  );
+  roundDownOneCentAbove.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-round-down-one-cent-above",
+    remaining: aud(0),
+  });
+  roundDownOneCentAbove.drafts.afterCash = draft({
+    total: aud(1_002),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-round-down-one-cent-above",
+      method: "cash",
+      amount: aud(1_002),
+      reversible: false,
+    }],
+  });
+  await roundDownOneCentAbove.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-round-down-one-cent-above-action",
+    amount: aud(1_001),
+  });
+  assert.deepEqual(roundDownOneCentAbove.mixed.lastCashInput, {
+    actionId: "cash-round-down-one-cent-above-action",
+    orderGuid: "order-1",
+    amount: aud(1_002),
+    tenderedAmount: aud(1_000),
+    change: aud(0),
+  });
+
+  const oneCent = createHarness(
+    draft({ total: aud(1), remaining: aud(1) }),
+  );
+  oneCent.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-one-cent",
+    remaining: aud(0),
+    cashSettlement: {
+      tendered: aud(0),
+      applied: aud(1),
+      change: aud(0),
+    },
+  });
+  oneCent.drafts.afterCash = draft({
+    total: aud(1),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-one-cent",
+      method: "cash",
+      amount: aud(1),
+      reversible: false,
+    }],
+  });
+  const oneCentSnapshot = await oneCent.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-one-cent-action",
+    amount: aud(1),
+  });
+  assert.deepEqual(oneCent.mixed.lastCashInput, {
+    actionId: "cash-one-cent-action",
+    orderGuid: "order-1",
+    amount: aud(1),
+    tenderedAmount: aud(0),
+    change: aud(0),
+  });
+  assert.deepEqual(oneCentSnapshot.cashSettlement, {
+    tendered: aud(0),
+    applied: aud(1),
+    change: aud(0),
+  });
+
+  const twoCents = createHarness(
+    draft({ total: aud(2), remaining: aud(2) }),
+  );
+  twoCents.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-two-cents",
+    remaining: aud(0),
+  });
+  twoCents.drafts.afterCash = draft({
+    total: aud(2),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-two-cents",
+      method: "cash",
+      amount: aud(2),
+      reversible: false,
+    }],
+  });
+  await twoCents.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-two-cents-action",
+    amount: aud(2),
+  });
+  assert.deepEqual(twoCents.mixed.lastCashInput, {
+    actionId: "cash-two-cents-action",
+    orderGuid: "order-1",
+    amount: aud(2),
+    tenderedAmount: aud(0),
+    change: aud(0),
+  });
+});
+
+test("最终现金以 cashDue 判定，未达 cashDue 的现金保留原始实收", async () => {
+  const mixedRoundDown = createHarness(
+    draft({
+      total: aud(1_003),
+      remaining: aud(1_002),
+      state: "Completing",
+      tenders: [{
+        tenderGuid: "card-one-cent",
+        method: "card",
+        amount: aud(1),
+        reversible: true,
+      }],
+    }),
+  );
+  mixedRoundDown.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-mixed-round-down",
+    remaining: aud(0),
+  });
+  mixedRoundDown.drafts.afterCash = draft({
+    total: aud(1_003),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "card-one-cent",
+        method: "card",
+        amount: aud(1),
+        reversible: true,
+      },
+      {
+        tenderGuid: "cash-mixed-round-down",
+        method: "cash",
+        amount: aud(1_002),
+        reversible: false,
+      },
+    ],
+  });
+  await mixedRoundDown.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-mixed-round-down-action",
+    amount: aud(1_002),
+  });
+  assert.deepEqual(mixedRoundDown.mixed.lastCashInput, {
+    actionId: "cash-mixed-round-down-action",
+    orderGuid: "order-1",
+    amount: aud(1_002),
+    tenderedAmount: aud(1_000),
+    change: aud(0),
+  });
+
+  const mixedRoundUp = createHarness(
+    draft({
+      total: aud(1_004),
+      remaining: aud(1_003),
+      state: "Completing",
+      tenders: [{
+        tenderGuid: "card-one-cent-up",
+        method: "card",
+        amount: aud(1),
+        reversible: true,
+      }],
+    }),
+  );
+  mixedRoundUp.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-mixed-round-up",
+    remaining: aud(0),
+  });
+  mixedRoundUp.drafts.afterCash = draft({
+    total: aud(1_004),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "card-one-cent-up",
+        method: "card",
+        amount: aud(1),
+        reversible: true,
+      },
+      {
+        tenderGuid: "cash-mixed-round-up",
+        method: "cash",
+        amount: aud(1_003),
+        reversible: false,
+      },
+    ],
+  });
+  await mixedRoundUp.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-mixed-round-up-action",
+    amount: aud(1_005),
+  });
+  assert.deepEqual(mixedRoundUp.mixed.lastCashInput, {
+    actionId: "cash-mixed-round-up-action",
+    orderGuid: "order-1",
+    amount: aud(1_003),
+    tenderedAmount: aud(1_005),
+    change: aud(0),
+  });
+
+  const roundUp = createHarness(
+    draft({ total: aud(1_003), remaining: aud(1_003) }),
+  );
+  roundUp.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-round-up",
+    remaining: aud(0),
+  });
+  roundUp.drafts.afterCash = draft({
+    total: aud(1_003),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-round-up",
+      method: "cash",
+      amount: aud(1_003),
+      reversible: false,
+    }],
+  });
+  await roundUp.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-round-up-action",
+    amount: aud(1_005),
+  });
+  assert.deepEqual(roundUp.mixed.lastCashInput, {
+    actionId: "cash-round-up-action",
+    orderGuid: "order-1",
+    amount: aud(1_003),
+    tenderedAmount: aud(1_005),
+    change: aud(0),
+  });
+
+  const partial = createHarness(
+    draft({
+      total: aud(1_003),
+      remaining: aud(1_003),
+      state: "Completing",
+    }),
+  );
+  partial.mixed.cashResult = mixed("partial", {
+    tenderGuid: "cash-partial",
+    remaining: aud(1),
+  });
+  partial.drafts.afterCash = draft({
+    total: aud(1_003),
+    state: "Completing",
+    remaining: aud(1),
+    tenders: [
+      {
+        tenderGuid: "cash-partial",
+        method: "cash",
+        amount: aud(1_002),
+        reversible: true,
+      },
+    ],
+  });
+  const partialSnapshot = await partial.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-partial-action",
+    amount: aud(1_002),
+  });
+  assert.deepEqual(partial.mixed.lastCashInput, {
+    actionId: "cash-partial-action",
+    orderGuid: "order-1",
+    amount: aud(1_002),
+    tenderedAmount: aud(1_002),
+    change: aud(0),
+  });
+  assert.deepEqual(partialSnapshot.remaining, aud(1));
+
+  const belowCashDue = createHarness(
+    draft({ total: aud(1_002), remaining: aud(1_002), state: "Completing" }),
+  );
+  belowCashDue.mixed.cashResult = mixed("partial", {
+    tenderGuid: "cash-below-due",
+    remaining: aud(3),
+  });
+  belowCashDue.drafts.afterCash = draft({
+    total: aud(1_002),
+    state: "Completing",
+    remaining: aud(3),
+    tenders: [{
+      tenderGuid: "cash-below-due",
+      method: "cash",
+      amount: aud(999),
+      reversible: true,
+    }],
+  });
+  const belowCashDueSnapshot = await belowCashDue.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-below-due-action",
+    amount: aud(999),
+  });
+  assert.deepEqual(belowCashDue.mixed.lastCashInput, {
+    actionId: "cash-below-due-action",
+    orderGuid: "order-1",
+    amount: aud(999),
+    tenderedAmount: aud(999),
+    change: aud(0),
+  });
+  assert.deepEqual(belowCashDueSnapshot.remaining, aud(3));
+
+  const reachesCashDue = createHarness(
+    draft({ total: aud(500), remaining: aud(500), state: "Completing" }),
+  );
+  reachesCashDue.mixed.cashResult = mixed("completed", {
+    tenderGuid: "cash-reaches-due",
+    remaining: aud(0),
+  });
+  reachesCashDue.drafts.afterCash = draft({
+    total: aud(500),
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid: "cash-reaches-due",
+      method: "cash",
+      amount: aud(500),
+      reversible: false,
+    }],
+  });
+  await reachesCashDue.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-reaches-due-action",
+    amount: aud(500),
+  });
+  assert.deepEqual(reachesCashDue.mixed.lastCashInput, {
+    actionId: "cash-reaches-due-action",
+    orderGuid: "order-1",
+    amount: aud(500),
+    tenderedAmount: aud(500),
+    change: aud(0),
+  });
+});
+
+test("现金覆盖 remaining 但不足五分应收时在 mixed 持久化前拒绝", async () => {
+  const addCash = createHarness(
+    draft({ total: aud(1_003), remaining: aud(1_003) }),
+  );
+  await assert.rejects(
+    () =>
+      addCash.runtime().addCash({
+        orderGuid: "order-1",
+        actionId: "cash-insufficient-add-action",
+        amount: aud(1_003),
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PaymentCheckoutRuntimeError);
+      assert.equal(error.code, "MIXED_CASH_COMMIT_FAILED");
+      return true;
+    },
+  );
+  assert.equal(addCash.mixed.cashCalls, 0);
+
+  const startCash = createHarness(
+    draft({ total: aud(1_003), remaining: aud(1_003) }),
+  );
+  await assert.rejects(
+    () =>
+      startCash.runtime().startCash({
+        checkoutIntentId: "checkout-intent-1",
+        expectedCartRevision: 7,
+        actionId: "cash-insufficient-start-action",
+        amount: aud(1_003),
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof PaymentCheckoutRuntimeError);
+      assert.equal(error.code, "MIXED_CASH_COMMIT_FAILED");
+      return true;
+    },
+  );
+  assert.equal(startCash.mixed.cashCalls, 0);
+});
+
 test("配置缺失在 draft/lease/provider 边界前 fail closed，保留稳定 blocker", async () => {
   const harness = createHarness();
   harness.providers.block("square", "SQUARE_CONFIGURATION_MISSING");
@@ -401,6 +818,7 @@ test("冷启动可发现 DraftPrepared(null attempt)，保留 promotion/asOf/手
   const found = await runtime.findRecoveryRequired();
   assert.equal(found?.status, "draft-prepared");
   assert.equal(found?.attemptId, null);
+  assert.equal(found?.attemptCreatedAtIso, null);
   const resumed = await runtime.resumeCurrent({
     actionId: "resume-action",
     provider: "square",
@@ -569,7 +987,10 @@ test("耐久关闭在提交前被 store 拒绝时不得释放购物车 lease", a
 
 test("Unknown 冷恢复只复用同一 attempt；恢复 Approved 完成后才清购物车", async () => {
   const harness = createHarness();
-  const unknown = attempt({ state: "Unknown" });
+  const unknown = attempt({
+    state: "Unknown",
+    createdAtIso: "2026-08-09T00:00:00.000Z",
+  });
   harness.attempts.put(unknown);
   harness.drafts.recovery = {
     draft: harness.drafts.current,
@@ -581,7 +1002,7 @@ test("Unknown 冷恢复只复用同一 attempt；恢复 Approved 完成后才清
       orderGuid: "order-1",
       attemptId: "attempt-1",
     });
-    const approved = attempt({ state: "Approved" });
+    const approved = { ...unknown, state: "Approved" as const };
     harness.attempts.put(approved);
     harness.drafts.current = draft({
       state: "PendingSync",
@@ -606,22 +1027,355 @@ test("Unknown 冷恢复只复用同一 attempt；恢复 Approved 完成后才清
 
   assert.equal(result?.orderGuid, "order-1");
   assert.equal(result?.status, "completed");
+  assert.equal(result?.attemptCreatedAtIso, unknown.createdAtIso);
   assert.equal(harness.lease.clearCalls, 1);
   assert.equal(harness.lease.releaseCalls, 0);
 });
 
-test("provider await 后旧可信会话失效会拒绝伪成功，且不清理 cart lease", async () => {
+test("Square 恢复把本次 absolute deadline 控制原样传给 mixed coordinator", async () => {
+  const harness = createHarness();
+  const pending = attempt({ state: "Pending" });
+  harness.attempts.put(pending);
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(pending.createdAtIso) + 90_000;
+
+  await harness.runtime().recover({
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.strictEqual(harness.mixed.lastRecoveryInput?.signal, controller.signal);
+  assert.equal(harness.mixed.lastRecoveryInput?.deadlineAtMs, deadlineAtMs);
+});
+
+test("不可逆支付已耐久完成后即使旧可信会话失效仍按原 lease 清车并返回成功", async () => {
   const harness = createHarness();
   harness.mixed.addOnlineTender = async () => {
+    const approved = attempt({ state: "Approved" });
+    harness.attempts.put(approved);
+    harness.drafts.current = draft({
+      state: "PendingSync",
+      remaining: aud(0),
+      tenders: [{
+        tenderGuid: "card-completed",
+        method: "card",
+        amount: aud(1_000),
+        reversible: true,
+      }],
+    });
     harness.session.active = false;
+    return mixed("completed", {
+      attemptId: approved.attemptId,
+      tenderGuid: "card-completed",
+      remaining: aud(0),
+    });
+  };
+
+  const result = await harness.runtime().start(startInput());
+
+  assert.equal(result.status, "completed");
+  assert.equal(harness.lease.clearCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 0);
+});
+
+test("现金已耐久完成后旧可信会话失效仍按原 lease 清车并返回成功", async () => {
+  const harness = createHarness();
+  harness.drafts.onRead = () => harness.session.assertActive();
+  harness.mixed.addCashTender = async () => {
+    harness.drafts.current = draft({
+      state: "PendingSync",
+      remaining: aud(0),
+      tenders: [{
+        tenderGuid: "cash-completed",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: false,
+      }],
+    });
+    harness.session.active = false;
+    return mixed("completed", {
+      tenderGuid: "cash-completed",
+      remaining: aud(0),
+      cashSettlement: {
+        tendered: aud(1_000),
+        applied: aud(1_000),
+        change: aud(0),
+      },
+    });
+  };
+
+  const result = await harness.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-completed-action",
+    amount: aud(1_000),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(harness.lease.clearCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 0);
+  // addCash 在提交前为取得当前 draft 已普通读取一次；完成后不能再走受会话保护的 read。
+  assert.equal(harness.drafts.readCalls, 1);
+  assert.equal(harness.drafts.postCommitReadCalls, 1);
+});
+
+test("完成态名称但冻结余额非零时不得按幂等 replay 跳过本次 action 证明", async () => {
+  const before = draft({ state: "PendingSync", remaining: aud(1_000) });
+  const harness = createHarness(before);
+  harness.mixed.addOnlineTender = async () => {
+    harness.drafts.current = completedCardDraft("card-invalid-replay");
     return mixed("completed", { remaining: aud(0) });
   };
 
-  await assert.rejects(
-    () => harness.runtime().start(startInput()),
-    /CURRENT_CASHIER_REQUIRED/,
-  );
+  const result = await harness.runtime().start(startInput());
+
+  assert.equal(result.status, "recovery-required");
+  assert.equal(result.errorCode, "APPROVED_TRUTH_MISMATCH");
   assert.equal(harness.lease.clearCalls, 0);
+  assert.equal(harness.lease.releaseCalls, 0);
+});
+
+test("本次现金完成必须按冻结 draft 的五分规则重算全部结算字段", async () => {
+  const harness = createHarness();
+  harness.mixed.addCashTender = async () => {
+    harness.drafts.current = draft({
+      state: "PendingSync",
+      remaining: aud(0),
+      tenders: [{
+        tenderGuid: "cash-forged-settlement",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: false,
+      }],
+    });
+    return mixed("completed", {
+      tenderGuid: "cash-forged-settlement",
+      remaining: aud(0),
+      cashSettlement: {
+        tendered: aud(0),
+        applied: aud(1_000),
+        change: aud(0),
+      },
+    });
+  };
+
+  const result = await harness.runtime().addCash({
+    orderGuid: "order-1",
+    actionId: "cash-forged-settlement-action",
+    amount: aud(1_000),
+  });
+
+  assert.equal(result.status, "recovery-required");
+  assert.equal(result.errorCode, "APPROVED_TRUTH_MISMATCH");
+  assert.equal(harness.lease.clearCalls, 0);
+  assert.equal(harness.lease.releaseCalls, 0);
+});
+
+test("非 completed 的 pending/unknown 仍拒绝跨 provider attempt", async () => {
+  for (const state of ["Pending", "Unknown"] as const) {
+    const harness = createHarness();
+    const crossProvider = attempt({ state, provider: "linkly-cloud" });
+    harness.attempts.put(crossProvider);
+    harness.mixed.onlineResult = mixed(
+      state === "Pending" ? "pending" : "unknown",
+      { attemptId: crossProvider.attemptId },
+    );
+
+    await assert.rejects(
+      () => harness.runtime().start(startInput()),
+      (error: unknown) => {
+        assert.ok(error instanceof PaymentCheckoutRuntimeError);
+        assert.equal(error.code, "PAYMENT_ATTEMPT_IDENTITY_MISMATCH");
+        return true;
+      },
+    );
+    assert.equal(harness.lease.clearCalls, 0);
+    assert.equal(harness.lease.releaseCalls, 0);
+  }
+});
+
+test("本次完成缺少持久完成态、attempt 或 tender 时必须保留原 lease", async () => {
+  const cases = [
+    {
+      name: "冻结 draft 仍是 Completing",
+      configure: (harness: ReturnType<typeof createHarness>) => {
+        harness.mixed.addCashTender = async () => {
+          harness.drafts.current = draft({
+            state: "Completing",
+            remaining: aud(0),
+            tenders: [{
+              tenderGuid: "cash-completing",
+              method: "cash",
+              amount: aud(1_000),
+              reversible: false,
+            }],
+          });
+          return mixed("completed", {
+            tenderGuid: "cash-completing",
+            remaining: aud(0),
+            cashSettlement: {
+              tendered: aud(1_000),
+              applied: aud(1_000),
+              change: aud(0),
+            },
+          });
+        };
+        return harness.runtime().addCash({
+          orderGuid: "order-1",
+          actionId: "cash-completing-action",
+          amount: aud(1_000),
+        });
+      },
+    },
+    {
+      name: "在线完成缺少 attempt",
+      configure: (harness: ReturnType<typeof createHarness>) => {
+        harness.mixed.addOnlineTender = async () => {
+          harness.drafts.current = completedCardDraft("card-without-attempt");
+          return mixed("completed", {
+            tenderGuid: "card-without-attempt",
+            remaining: aud(0),
+          });
+        };
+        return harness.runtime().start(startInput());
+      },
+    },
+    {
+      name: "在线完成缺少 tender",
+      configure: (harness: ReturnType<typeof createHarness>) => {
+        const approved = attempt({ state: "Approved" });
+        harness.attempts.put(approved);
+        harness.mixed.addOnlineTender = async () => {
+          harness.drafts.current = completedCardDraft("card-without-result-tender");
+          return mixed("completed", {
+            attemptId: approved.attemptId,
+            remaining: aud(0),
+          });
+        };
+        return harness.runtime().start(startInput());
+      },
+    },
+    {
+      name: "现金完成缺少结算事实",
+      configure: (harness: ReturnType<typeof createHarness>) => {
+        harness.mixed.addCashTender = async () => {
+          harness.drafts.current = draft({
+            state: "PendingSync",
+            remaining: aud(0),
+            tenders: [{
+              tenderGuid: "cash-without-settlement",
+              method: "cash",
+              amount: aud(1_000),
+              reversible: false,
+            }],
+          });
+          return mixed("completed", {
+            tenderGuid: "cash-without-settlement",
+            remaining: aud(0),
+          });
+        };
+        return harness.runtime().addCash({
+          orderGuid: "order-1",
+          actionId: "cash-without-settlement-action",
+          amount: aud(1_000),
+        });
+      },
+    },
+  ] as const;
+
+  for (const current of cases) {
+    const harness = createHarness();
+    const result = await current.configure(harness);
+    assert.equal(result.status, "recovery-required", current.name);
+    assert.equal(result.errorCode, "APPROVED_TRUTH_MISMATCH", current.name);
+    assert.equal(harness.lease.clearCalls, 0, current.name);
+    assert.equal(harness.lease.releaseCalls, 0, current.name);
+  }
+});
+
+test("本次完成的 post-commit draft 必须与原 checkout、revision 和 total 绑定", async () => {
+  const cases = [
+    completedCardDraft("card-revision-mismatch", { cartRevision: 8 }),
+    draft({
+      state: "PendingSync",
+      total: aud(900),
+      remaining: aud(0),
+      tenders: [{
+        tenderGuid: "card-total-mismatch",
+        method: "card",
+        amount: aud(900),
+        reversible: true,
+      }],
+    }),
+  ];
+
+  for (const after of cases) {
+    const harness = createHarness();
+    const approved = attempt({ state: "Approved", amount: after.tenders[0]!.amount });
+    harness.attempts.put(approved);
+    harness.mixed.addOnlineTender = async () => {
+      harness.drafts.current = after;
+      return mixed("completed", {
+        attemptId: approved.attemptId,
+        tenderGuid: after.tenders[0]!.tenderGuid,
+        remaining: aud(0),
+      });
+    };
+
+    const result = await harness.runtime().start(startInput());
+
+    assert.equal(result.status, "recovery-required");
+    assert.equal(result.errorCode, "APPROVED_TRUTH_MISMATCH");
+    assert.equal(harness.lease.clearCalls, 0);
+    assert.equal(harness.lease.releaseCalls, 0);
+  }
+});
+
+test("本次在线完成的 provider/operation/amount 必须与持久 Approved attempt 相符", async () => {
+  const cases = [
+    attempt({ state: "Approved", provider: "linkly-cloud" }),
+    attempt({ state: "Approved", operation: "refund" }),
+    attempt({ state: "Approved", amount: aud(500) }),
+  ];
+
+  for (const approved of cases) {
+    const harness = createHarness();
+    harness.attempts.put(approved);
+    harness.mixed.addOnlineTender = async () => {
+      harness.drafts.current = completedCardDraft("card-attempt-mismatch");
+      return mixed("completed", {
+        attemptId: approved.attemptId,
+        tenderGuid: "card-attempt-mismatch",
+        remaining: aud(0),
+      });
+    };
+
+    const result = await harness.runtime().start(startInput());
+
+    assert.equal(result.status, "recovery-required");
+    assert.equal(result.errorCode, "APPROVED_TRUTH_MISMATCH");
+    assert.equal(harness.lease.clearCalls, 0);
+    assert.equal(harness.lease.releaseCalls, 0);
+  }
+});
+
+test("已完成订单的 coordinator 幂等 replay 可省略 attempt/tender 但仍只清原 lease", async () => {
+  const before = completedCardDraft("already-completed-card");
+  const harness = createHarness(before);
+  const approved = attempt({ state: "Approved" });
+  harness.attempts.put(approved);
+  harness.mixed.recoverOnlineAttempt = async () =>
+    mixed("completed", { remaining: aud(0) });
+
+  const result = await harness.runtime().recover({
+    orderGuid: before.orderGuid,
+    attemptId: approved.attemptId,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(harness.lease.clearCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 0);
 });
 
 test("Voucher 上下文必在 provider 前耐久准备，且六项精确权限都经 guard", async () => {
@@ -826,12 +1580,15 @@ test("最后一笔现金已追加 reversal 后可继续支付，也可耐久取�
   assert.equal(harness.lease.releaseCalls, 1);
 });
 
-function createHarness(initialDraft = draft()) {
+function createHarness(
+  initialDraft = draft(),
+  leaseTotalCents = initialDraft.total.cents,
+) {
   const events: string[] = [];
   const session = new SessionGuard();
   const permissions = new PermissionRecorder();
   const drafts = new MemoryDrafts(initialDraft, events);
-  const lease = new MemoryLease(events);
+  const lease = new MemoryLease(events, leaseTotalCents);
   const attempts = new MemoryAttempts(events);
   const providers = new ProviderAvailability();
   const mixed = new MemoryMixed(drafts);
@@ -895,13 +1652,24 @@ class PermissionRecorder {
 }
 
 class MemoryLease implements PaymentCartLeasePort {
-  public readonly value = lease();
+  public readonly value: PaymentCartLease;
   public acquireCalls = 0;
   public readCalls = 0;
   public clearCalls = 0;
   public releaseCalls = 0;
 
-  public constructor(private readonly events: string[]) {}
+  public constructor(
+    private readonly events: string[],
+    totalCents = 1_000,
+  ) {
+    const base = lease();
+    const total = aud(totalCents);
+    this.value = {
+      ...base,
+      total,
+      cart: { ...base.cart, actualAmount: total },
+    };
+  }
 
   public async acquireExact(input: {
     checkoutIntentId: string;
@@ -941,6 +1709,9 @@ class MemoryLease implements PaymentCartLeasePort {
 
 class MemoryDrafts implements PaymentCheckoutDraftPort {
   public createCalls = 0;
+  public readCalls = 0;
+  public postCommitReadCalls = 0;
+  public onRead: () => void = () => {};
   public abandonCalls = 0;
   public closeCalls = 0;
   public closeReplayed = false;
@@ -986,6 +1757,16 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
 
   public async read(orderGuid: string): Promise<PaymentCheckoutDraft | null> {
     assert.equal(orderGuid, this.current.orderGuid);
+    this.readCalls += 1;
+    this.onRead();
+    return this.current;
+  }
+
+  public async readAfterDurableCompletion(
+    orderGuid: string,
+  ): Promise<PaymentCheckoutDraft | null> {
+    assert.equal(orderGuid, this.current.orderGuid);
+    this.postCommitReadCalls += 1;
     return this.current;
   }
 
@@ -1127,6 +1908,12 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     tenderedAmount?: ReturnType<typeof aud>;
     change?: ReturnType<typeof aud>;
   } | null = null;
+  public lastRecoveryInput: {
+    orderGuid: string;
+    attemptId: string;
+    signal?: AbortSignal;
+    deadlineAtMs?: number;
+  } | null = null;
   public onlineResult = mixed("recovery-required", {
     errorCode: "ONLINE_REQUIRED",
   });
@@ -1146,10 +1933,13 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     return this.onlineResult;
   }
 
-  public async recoverOnlineAttempt(_input: {
+  public async recoverOnlineAttempt(input: {
     orderGuid: string;
     attemptId: string;
+    signal?: AbortSignal;
+    deadlineAtMs?: number;
   }): Promise<ReturnType<typeof mixed>> {
+    this.lastRecoveryInput = input;
     return this.onlineResult;
   }
 
@@ -1165,6 +1955,19 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     if (this.drafts.afterCash) {
       this.drafts.current = this.drafts.afterCash;
       this.drafts.afterCash = null;
+    }
+    if (
+      this.cashResult.status === "completed" &&
+      this.cashResult.cashSettlement === undefined
+    ) {
+      return {
+        ...this.cashResult,
+        cashSettlement: {
+          tendered: input.tenderedAmount ?? input.amount,
+          applied: input.amount,
+          change: input.change ?? aud(0),
+        },
+      };
     }
     return this.cashResult;
   }
@@ -1284,6 +2087,23 @@ function draft(
   };
 }
 
+function completedCardDraft(
+  tenderGuid: string,
+  overrides: Partial<PaymentCheckoutDraft> = {},
+): PaymentCheckoutDraft {
+  return draft({
+    state: "PendingSync",
+    remaining: aud(0),
+    tenders: [{
+      tenderGuid,
+      method: "card",
+      amount: aud(1_000),
+      reversible: true,
+    }],
+    ...overrides,
+  });
+}
+
 function attempt(overrides: Partial<PaymentAttempt> = {}): PaymentAttempt {
   return {
     attemptId: "attempt-1",
@@ -1336,6 +2156,11 @@ function mixed(
     attemptId: string | null;
     tenderGuid: string | null;
     errorCode: string | null;
+    cashSettlement: {
+      tendered: ReturnType<typeof aud>;
+      applied: ReturnType<typeof aud>;
+      change: ReturnType<typeof aud>;
+    } | undefined;
   }> = {},
 ) {
   return {
@@ -1346,6 +2171,7 @@ function mixed(
     tenderGuid: null,
     capability: "available" as const,
     errorCode: null,
+    cashSettlement: undefined,
     ...overrides,
   };
 }

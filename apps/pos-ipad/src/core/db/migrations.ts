@@ -5407,6 +5407,137 @@ BEGIN
 END;
 `;
 
+/**
+ * M24 的 CHECK/trigger 只能表达「实收不少于入账」，无法保存澳洲最终现金
+ * 舍入的不可变事实（例如入账 1002、实收 1000）。M39 重建 action 表而不改写
+ * 旧 M24：历史行原样复制，原有外键、唯一索引和不可变语义全部保留。
+ */
+const M39 = `
+DROP TRIGGER IF EXISTS trg_mixed_cash_tender_action_amounts_insert;
+DROP TRIGGER IF EXISTS trg_mixed_cash_tender_actions_immutable_update;
+DROP TRIGGER IF EXISTS trg_mixed_cash_tender_actions_immutable_delete;
+
+CREATE TABLE mixed_cash_tender_actions_m39 (
+  order_guid TEXT NOT NULL REFERENCES local_orders(order_guid) ON DELETE RESTRICT,
+  action_id TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  tendered_cents INTEGER NULL CHECK (
+    tendered_cents IS NULL
+    OR (
+      typeof(tendered_cents) = 'integer'
+      AND tendered_cents BETWEEN 0 AND 9007199254740991
+    )
+  ),
+  change_cents INTEGER NULL CHECK (
+    change_cents IS NULL
+    OR (
+      typeof(change_cents) = 'integer'
+      AND change_cents BETWEEN 0 AND 9007199254740991
+    )
+  ),
+  tender_guid TEXT NOT NULL UNIQUE REFERENCES order_tenders(tender_guid) ON DELETE RESTRICT,
+  audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(event_id) ON DELETE RESTRICT,
+  created_at_iso TEXT NOT NULL,
+  PRIMARY KEY (order_guid, action_id),
+  CHECK (TRIM(action_id) <> '' AND LENGTH(action_id) <= 128),
+  CHECK (TRIM(order_guid) <> '' AND LENGTH(order_guid) <= 128),
+  CHECK (TRIM(tender_guid) <> '' AND LENGTH(tender_guid) <= 128),
+  CHECK (TRIM(audit_event_id) <> '' AND LENGTH(audit_event_id) <= 128),
+  CHECK (TRIM(created_at_iso) <> '' AND LENGTH(created_at_iso) <= 64)
+);
+
+INSERT INTO mixed_cash_tender_actions_m39 (
+  order_guid, action_id, amount_cents, tendered_cents, change_cents,
+  tender_guid, audit_event_id, created_at_iso
+)
+SELECT
+  order_guid, action_id, amount_cents, tendered_cents, change_cents,
+  tender_guid, audit_event_id, created_at_iso
+FROM mixed_cash_tender_actions;
+
+DROP TABLE mixed_cash_tender_actions;
+ALTER TABLE mixed_cash_tender_actions_m39 RENAME TO mixed_cash_tender_actions;
+
+CREATE TRIGGER trg_mixed_cash_tender_actions_immutable_update
+BEFORE UPDATE ON mixed_cash_tender_actions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'MIXED_CASH_ACTION_IMMUTABLE');
+END;
+
+CREATE TRIGGER trg_mixed_cash_tender_actions_immutable_delete
+BEFORE DELETE ON mixed_cash_tender_actions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'MIXED_CASH_ACTION_IMMUTABLE');
+END;
+
+-- 新 action 必须持久化完整结算。直接/部分现金采用入账差额；最终现金才可
+-- 按 5 分规则采用 cashDue。通过排除本 action tender 反推插入前 remaining，
+-- 使部分现金无法伪装成舍入形态。
+CREATE TRIGGER trg_mixed_cash_tender_action_amounts_insert
+BEFORE INSERT ON mixed_cash_tender_actions
+FOR EACH ROW
+WHEN
+  NEW.tendered_cents IS NULL
+  OR NEW.change_cents IS NULL
+  OR NOT EXISTS (
+    SELECT 1
+    FROM order_tenders AS tender
+    WHERE tender.tender_guid = NEW.tender_guid
+      AND tender.order_guid = NEW.order_guid
+      AND tender.method = 'cash'
+      AND tender.amount_cents = NEW.amount_cents
+  )
+  OR NOT (
+    (
+      -- 入账差额只能用于严格未结清的部分现金；amount 等于 remaining 时
+      -- 必须走下方 cashDue 分支，避免绕过最终现金的 5 分舍入事实。
+      NEW.amount_cents < COALESCE((
+        SELECT order_row.actual_amount_cents - COALESCE(SUM(
+          CASE
+            WHEN tender.tender_guid <> NEW.tender_guid THEN tender.amount_cents
+            ELSE 0
+          END
+        ), 0)
+        FROM local_orders AS order_row
+        LEFT JOIN order_tenders AS tender
+          ON tender.order_guid = order_row.order_guid
+        WHERE order_row.order_guid = NEW.order_guid
+      ), -1)
+      AND NEW.tendered_cents >= NEW.amount_cents
+      AND NEW.change_cents = NEW.tendered_cents - NEW.amount_cents
+    )
+    OR (
+      NEW.amount_cents = COALESCE((
+        SELECT order_row.actual_amount_cents - COALESCE(SUM(
+          CASE
+            WHEN tender.tender_guid <> NEW.tender_guid THEN tender.amount_cents
+            ELSE 0
+          END
+        ), 0)
+        FROM local_orders AS order_row
+        LEFT JOIN order_tenders AS tender
+          ON tender.order_guid = order_row.order_guid
+        WHERE order_row.order_guid = NEW.order_guid
+      ), -1)
+      AND NEW.tendered_cents >= (
+        NEW.amount_cents - (NEW.amount_cents % 5)
+        + CASE WHEN NEW.amount_cents % 5 >= 3 THEN 5 ELSE 0 END
+      )
+      -- 最终现金持久化的是运行时已规范化的实收，零实收同样合法。
+      AND NEW.tendered_cents % 5 = 0
+      AND NEW.change_cents = NEW.tendered_cents - (
+        NEW.amount_cents - (NEW.amount_cents % 5)
+        + CASE WHEN NEW.amount_cents % 5 >= 3 THEN 5 ELSE 0 END
+      )
+    )
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'MIXED_CASH_ACTION_AMOUNTS_INVALID');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5446,6 +5577,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 36, name: "M36_installment_lifecycle_actions", sql: M36 },
   { version: 37, name: "M37_installment_action_resolution_code", sql: M37 },
   { version: 38, name: "M38_repair_installment_lifecycle_actions", sql: M38 },
+  { version: 39, name: "M39_mixed_cash_final_rounding", sql: M39 },
 ];
 
 export async function applyMigrations(

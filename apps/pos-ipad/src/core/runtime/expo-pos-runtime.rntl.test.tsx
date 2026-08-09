@@ -11,6 +11,8 @@ import {
   bindCashierSessionToApplicationLog,
   readSettingsDevicePresentation,
   recordRuntimeInitializationFailure,
+  shutdownExpoPosRuntimeServices,
+  shutdownCompositionBeforeDatabaseClose,
 } from "./expo-pos-runtime";
 
 jest.mock("expo-application", () => ({}));
@@ -161,6 +163,24 @@ describe("程序日志收银员身份绑定", () => {
 });
 
 describe("初始化异常收尾", () => {
+  it("组合根后台清理失败仍关闭数据库", async () => {
+    const order: string[] = [];
+    const shutdownError = new Error("catalog shutdown failed");
+
+    await expect(
+      shutdownCompositionBeforeDatabaseClose(
+        async () => {
+          order.push("shutdown-composition");
+          throw shutdownError;
+        },
+        async () => {
+          order.push("close-database");
+        },
+      ),
+    ).rejects.toBe(shutdownError);
+    expect(order).toEqual(["shutdown-composition", "close-database"]);
+  });
+
   it("在关闭数据库前记录并完成日志收尾", async () => {
     const order: string[] = [];
     await recordRuntimeInitializationFailure(
@@ -225,4 +245,94 @@ describe("初始化异常收尾", () => {
       expect(order).toEqual(["record", "shutdown", "close"]);
     },
   );
+
+  it.each(["sync", "record", "application-log"] as const)(
+    "%s 失败仍执行后台与数据库收尾，并保留第一个错误",
+    async (failedStep) => {
+      const order: string[] = [];
+      const firstError = new Error(`${failedStep} failed`);
+
+      await expect(
+        shutdownExpoPosRuntimeServices({
+          sync: {
+            shutdown: async () => {
+              order.push("sync");
+              if (failedStep === "sync") throw firstError;
+            },
+          },
+          applicationLog: {
+            logger: {
+              record: async () => {
+                order.push("record");
+                if (failedStep === "record") throw firstError;
+              },
+            },
+            shutdown: async () => {
+              order.push("application-log");
+              if (failedStep === "application-log") throw firstError;
+            },
+          } as never,
+          shutdownBackgroundWork: async () => {
+            order.push("background");
+            throw new Error("background cleanup failed");
+          },
+          closeDatabase: async () => {
+            order.push("database");
+            throw new Error("database close failed");
+          },
+        }),
+      ).rejects.toBe(firstError);
+      expect(order).toEqual([
+        "sync",
+        "record",
+        "application-log",
+        "background",
+        "database",
+      ]);
+    },
+  );
+
+  it("pre-step 同步异常仍按序尝试全部收尾，且后续 close 异常不覆盖首错", async () => {
+    const order: string[] = [];
+    const preStepError = new Error("customer display stop failed");
+
+    await expect(
+      shutdownExpoPosRuntimeServices({
+        beforeShutdown: [
+          () => {
+            order.push("stop-advertisements");
+            throw preStepError;
+          },
+          async () => { order.push("clear-display"); },
+          () => { order.push("notify-lock"); },
+          () => { order.push("dispose-updates"); },
+        ],
+        sync: {
+          shutdown: async () => { order.push("sync"); },
+        },
+        applicationLog: {
+          logger: {
+            record: async () => { order.push("record"); },
+          },
+          shutdown: async () => { order.push("application-log"); },
+        } as never,
+        shutdownBackgroundWork: async () => { order.push("background"); },
+        closeDatabase: async () => {
+          order.push("database");
+          throw new Error("database close failed");
+        },
+      }),
+    ).rejects.toBe(preStepError);
+    expect(order).toEqual([
+      "stop-advertisements",
+      "clear-display",
+      "notify-lock",
+      "dispose-updates",
+      "sync",
+      "record",
+      "application-log",
+      "background",
+      "database",
+    ]);
+  });
 });

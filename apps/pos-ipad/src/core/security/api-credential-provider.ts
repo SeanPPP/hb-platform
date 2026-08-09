@@ -19,12 +19,17 @@ export class SecurityApiCredentialProvider implements HbposRequestCredentialProv
   ) {}
 
   public async getCredentials(): Promise<HbposRequestCredentials> {
-    const [device, cashierAuthorization] = await Promise.all([
-      this.deviceSession.getTransportCredentials(),
-      this.cashierAuthorization.get()
-    ]);
+    // 先取得实际可出站的设备 scope；没有设备凭据时绝不能单独附加收银员 bearer。
+    const device = await this.deviceSession.getTransportCredentials();
+    if (!device) {
+      return {};
+    }
+    const cashierAuthorization = await this.cashierAuthorization.get({
+      storeCode: device.storeCode,
+      deviceCode: device.deviceCode,
+    });
     return {
-      ...(device ? { device } : {}),
+      device,
       ...(cashierAuthorization ? { cashierAuthorization } : {})
     };
   }

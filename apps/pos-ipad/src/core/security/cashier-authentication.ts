@@ -69,6 +69,7 @@ export class CashierAuthenticationService {
     deviceCode: string;
     userBarcode: string;
   }>): Promise<CashierLoginResult> {
+    const scope = verifiedLoginScope(input);
     if (await this.deviceLock.isLocked()) {
       throw new HbposApiError("Device is disabled and must be re-authorized online.", {
         kind: "http",
@@ -77,21 +78,22 @@ export class CashierAuthenticationService {
       });
     }
     if (hasEmergencyPrefix(input.userBarcode)) {
-      return this.loginEmergency(input);
+      return this.loginEmergency({ ...input, ...scope });
     }
     if (!(await this.network.isOnline())) {
-      return this.loadCached(input);
+      return this.loadCached({ ...input, ...scope });
     }
 
     try {
-      const session = await this.api.barcodeLogin(input);
-      await this.cache.save(input.storeCode, input.deviceCode, input.userBarcode, session);
-      await this.activateAuthorization(session, "online");
+      const session = await this.api.barcodeLogin({ ...input, ...scope });
+      assertCashierSessionScope(session, scope);
+      await this.cache.save(scope.storeCode, scope.deviceCode, input.userBarcode, session);
+      await this.activateAuthorization(session, "online", scope);
       return { source: "online", session };
     } catch (error: unknown) {
       // 关键逻辑：瞬时网络/服务端失败可回退；401/403/其他 4xx 与 envelope 均是明确在线拒绝。
       if (isCacheFallbackEligible(error)) {
-        return this.loadCached(input);
+        return this.loadCached({ ...input, ...scope });
       }
       throw error;
     }
@@ -134,30 +136,32 @@ export class CashierAuthenticationService {
     }
     const compactGrantId = grantId.replaceAll("-", "");
     const emergencyIdentity = `EMERGENCY:${compactGrantId}`;
+    const session: CashierSessionDto = {
+      cashierId: emergencyIdentity,
+      userGuid: emergencyIdentity,
+      cashierName: "EMERGENCY",
+      storeCode: requiredScopeText(input.storeCode),
+      deviceCode: requiredScopeText(input.deviceCode),
+      roles: ["EmergencyOverride"],
+      permissionCodes: [...this.emergencyPermissions],
+      allowedStoreCodes: [requiredScopeText(input.storeCode)],
+      isSuperAdmin: false,
+      isOfflineCached: false,
+      isEmergencyOverride: true,
+      authorizationToken: input.userBarcode,
+      authorizationExpiresAtUtc: new Date(
+        verified.expiresAtEpochMs,
+      ).toISOString(),
+      emergencyGrantId: grantId,
+    };
+    assertCashierSessionScope(session, verifiedLoginScope(input));
     return {
       emergencyTiming: {
         systemUptimeMs: verified.systemUptimeMs,
         trustedNowEpochMs: verified.trustedNowEpochMs,
       },
       source: "emergency-override",
-      session: {
-        cashierId: emergencyIdentity,
-        userGuid: emergencyIdentity,
-        cashierName: "EMERGENCY",
-        storeCode: requiredScopeText(input.storeCode),
-        deviceCode: requiredScopeText(input.deviceCode),
-        roles: ["EmergencyOverride"],
-        permissionCodes: [...this.emergencyPermissions],
-        allowedStoreCodes: [requiredScopeText(input.storeCode)],
-        isSuperAdmin: false,
-        isOfflineCached: false,
-        isEmergencyOverride: true,
-        authorizationToken: input.userBarcode,
-        authorizationExpiresAtUtc: new Date(
-          verified.expiresAtEpochMs,
-        ).toISOString(),
-        emergencyGrantId: grantId,
-      },
+      session,
     };
   }
 
@@ -173,13 +177,16 @@ export class CashierAuthenticationService {
         code: "OFFLINE_CASHIER_NOT_CACHED"
       });
     }
-    await this.activateAuthorization(session, "offline-cache");
+    const scope = verifiedLoginScope(input);
+    assertCashierSessionScope(session, scope);
+    await this.activateAuthorization(session, "offline-cache", scope);
     return { source: "offline-cache", session };
   }
 
   private async activateAuthorization(
     session: CashierSessionDto,
     source: "online" | "offline-cache",
+    scope: Readonly<{ storeCode: string; deviceCode: string }>,
   ): Promise<void> {
     if (!this.authorizationStore) {
       return;
@@ -200,6 +207,32 @@ export class CashierAuthenticationService {
       authorizationToken: session.authorizationToken,
       expiresAtEpochMs,
       source,
+      scope,
+    });
+  }
+}
+
+function verifiedLoginScope(input: Readonly<{
+  storeCode: string;
+  deviceCode: string;
+}>): Readonly<{ storeCode: string; deviceCode: string }> {
+  return Object.freeze({
+    storeCode: requiredScopeText(input.storeCode),
+    deviceCode: requiredScopeText(input.deviceCode),
+  });
+}
+
+function assertCashierSessionScope(
+  session: CashierSessionDto,
+  expected: Readonly<{ storeCode: string; deviceCode: string }>,
+): void {
+  if (
+    requiredScopeText(session.storeCode) !== expected.storeCode ||
+    requiredScopeText(session.deviceCode) !== expected.deviceCode
+  ) {
+    throw new HbposApiError("Cashier session scope is invalid.", {
+      kind: "envelope",
+      code: "CASHIER_SESSION_SCOPE_INVALID",
     });
   }
 }
@@ -227,8 +260,8 @@ function requiredPermission(value: string): string {
   return normalized;
 }
 
-function requiredScopeText(value: string): string {
-  const normalized = value.trim();
+function requiredScopeText(value: unknown): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw invalidEmergencyResult();
   return normalized;
 }

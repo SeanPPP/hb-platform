@@ -410,6 +410,20 @@ test("真实 SQLite：M15 保留历史 NULL/NULL，强制新行整数枚举来�
       ),
       1,
     );
+    const foreignKeys = await connection.getAll<{ table: unknown }>(
+      "PRAGMA foreign_key_list('mixed_cash_tender_actions')",
+    );
+    assert.deepEqual(
+      new Set(foreignKeys.map((row) => String(row.table))),
+      new Set(["local_orders", "order_tenders", "audit_events"]),
+    );
+    const indexes = await connection.getAll<{ unique: unknown }>(
+      "PRAGMA index_list('mixed_cash_tender_actions')",
+    );
+    assert.ok(
+      indexes.filter((row) => Number(row.unique) === 1).length >= 3,
+      "M39 必须保留主键及 tender/audit 的唯一索引语义",
+    );
     await assert.rejects(
       () =>
         connection.run(
@@ -3798,6 +3812,455 @@ test("真实 SQLite：reversal action 以 order+action 查询，两订单同 act
       ),
       0,
     );
+  });
+});
+
+test("真实 SQLite：最终现金 round-down 保留订单入账并持久化规范化实收", async () => {
+  await withDatabase("mixed-cash-round-down", async (connection) => {
+    await migrateFresh(connection);
+    await insertOrder(connection, {
+      orderGuid: "order-round-down",
+      sequence: 1,
+      storeCode: "S-MIX",
+      deviceCode: "D-MIX",
+      cashierId: "C-MIX",
+      amountCents: 1_002,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    const ids = sequenceIds("round-down-tender", "round-down-audit");
+    const store = new SqliteMixedPaymentTenderStore(
+      connection,
+      {
+        createTenderGuid: ids.createOrderGuid,
+        createAuditEventId: ids.createAuditEventId,
+      },
+      () => T1,
+      {
+        planner: {
+          async planFinalCash(input) {
+            return completionPlan(input.orderGuid, "round-down");
+          },
+        },
+        encryptor,
+      },
+    );
+
+    await assert.rejects(
+      () => store.appendCashTenderAtomically({
+        actionId: "round-down-non-canonical-action",
+        orderGuid: "order-round-down",
+        actor: paymentAuditActor(),
+        amount: { currency: "AUD", cents: 1_002 },
+        tenderedAmount: { currency: "AUD", cents: 1_001 },
+        change: { currency: "AUD", cents: 1 },
+      }),
+      /tendered, applied and change amounts are inconsistent/,
+    );
+
+    const result = await store.appendCashTenderAtomically({
+      actionId: "round-down-action",
+      orderGuid: "order-round-down",
+      actor: paymentAuditActor(),
+      amount: { currency: "AUD", cents: 1_002 },
+      tenderedAmount: { currency: "AUD", cents: 1_000 },
+      change: { currency: "AUD", cents: 0 },
+    });
+
+    assert.equal(result.replayed, false);
+    assert.equal(result.truth.tenders[0]?.amount.cents, 1_002);
+    assert.deepEqual(result.cashSettlement, {
+      tendered: { currency: "AUD", cents: 1_000 },
+      applied: { currency: "AUD", cents: 1_002 },
+      change: { currency: "AUD", cents: 0 },
+    });
+    const replay = await store.appendCashTenderAtomically({
+      actionId: "round-down-action",
+      orderGuid: "order-round-down",
+      actor: paymentAuditActor(),
+      amount: { currency: "AUD", cents: 1_002 },
+      tenderedAmount: { currency: "AUD", cents: 1_000 },
+      change: { currency: "AUD", cents: 0 },
+    });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.cashSettlement, result.cashSettlement);
+    await assert.rejects(
+      () => store.appendCashTenderAtomically({
+        actionId: "round-down-action",
+        orderGuid: "order-round-down",
+        actor: paymentAuditActor(),
+        amount: { currency: "AUD", cents: 1_002 },
+        tenderedAmount: { currency: "AUD", cents: 1_005 },
+        change: { currency: "AUD", cents: 5 },
+      }),
+      /different immutable content/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT tendered_cents AS count
+         FROM mixed_cash_tender_actions
+         WHERE order_guid = 'order-round-down'`,
+      ),
+      1_000,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT change_cents AS count
+         FROM mixed_cash_tender_actions
+         WHERE order_guid = 'order-round-down'`,
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：最终现金 round-up 与 1/2 分零实收均保持完整入账", async () => {
+  await withDatabase("mixed-cash-rounding-boundaries", async (connection) => {
+    await migrateFresh(connection);
+    for (const [orderGuid, amountCents, tenderedCents] of [
+      ["order-round-up", 1_003, 1_005],
+      ["order-one-cent", 1, 0],
+      ["order-two-cents", 2, 0],
+    ] as const) {
+      await insertOrder(connection, {
+        orderGuid,
+        sequence: amountCents,
+        storeCode: "S-MIX",
+        deviceCode: "D-MIX",
+        cashierId: "C-MIX",
+        amountCents,
+        state: "Draft",
+        syncProvenance: TEST_SYNC_PROVENANCE,
+      });
+      const ids = sequenceIds(`${orderGuid}-tender`, `${orderGuid}-audit`);
+      const store = new SqliteMixedPaymentTenderStore(
+        connection,
+        {
+          createTenderGuid: ids.createOrderGuid,
+          createAuditEventId: ids.createAuditEventId,
+        },
+        () => T1,
+        {
+          planner: {
+            async planFinalCash(input) {
+              return completionPlan(input.orderGuid, orderGuid);
+            },
+          },
+          encryptor,
+        },
+      );
+      const result = await store.appendCashTenderAtomically({
+        actionId: `${orderGuid}-action`,
+        orderGuid,
+        actor: paymentAuditActor(),
+        amount: { currency: "AUD", cents: amountCents },
+        tenderedAmount: { currency: "AUD", cents: tenderedCents },
+        change: { currency: "AUD", cents: 0 },
+      });
+      assert.equal(result.truth.tenders[0]?.amount.cents, amountCents);
+      assert.equal(
+        await scalar(
+          connection,
+          `SELECT tendered_cents AS count
+           FROM mixed_cash_tender_actions WHERE order_guid = ?`,
+          [orderGuid],
+        ),
+        tenderedCents,
+      );
+    }
+  });
+});
+
+test("真实 SQLite：M39 保留 M38 旧 action，拒绝伪造部分舍入并保持不可变", async () => {
+  await withDatabase("mixed-cash-m39-upgrade", async (connection) => {
+    await applyMigrations(
+      connection,
+      () => T0,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 38),
+    );
+    await insertOrder(connection, {
+      orderGuid: "order-m39-legacy",
+      sequence: 1,
+      storeCode: "S-MIX",
+      deviceCode: "D-MIX",
+      cashierId: "C-MIX",
+      amountCents: 1_000,
+      state: "Completing",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await insertTender(connection, "m39-legacy-tender", "order-m39-legacy", "cash", 400);
+    await connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid,
+        correlation_id, payload_json, uploaded_at_iso
+      ) VALUES ('m39-legacy-audit', 'MIXED_CASH_TENDER_APPENDED', ?,
+        'order-m39-legacy', 'm39-legacy-action', '{}', NULL)`,
+      [T0],
+    );
+    await connection.run(
+      `INSERT INTO mixed_cash_tender_actions (
+        action_id, order_guid, amount_cents, tendered_cents, change_cents,
+        tender_guid, audit_event_id, created_at_iso
+      ) VALUES ('m39-legacy-action', 'order-m39-legacy', 400, 400, 0,
+        'm39-legacy-tender', 'm39-legacy-audit', ?)`,
+      [T0],
+    );
+
+    await applyMigrations(
+      connection,
+      () => T1,
+      POS_DATABASE_MIGRATIONS.filter((migration) => migration.version === 39),
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count FROM mixed_cash_tender_actions
+         WHERE action_id = 'm39-legacy-action'`,
+      ),
+      1,
+    );
+    await assert.rejects(
+      () => connection.run(
+        `UPDATE mixed_cash_tender_actions SET amount_cents = 401
+         WHERE action_id = 'm39-legacy-action'`,
+      ),
+      /MIXED_CASH_ACTION_IMMUTABLE/,
+    );
+    await assert.rejects(
+      () => connection.run(
+        `DELETE FROM mixed_cash_tender_actions
+         WHERE action_id = 'm39-legacy-action'`,
+      ),
+      /MIXED_CASH_ACTION_IMMUTABLE/,
+    );
+
+    await insertOrder(connection, {
+      orderGuid: "order-m39-partial",
+      sequence: 2,
+      storeCode: "S-MIX",
+      deviceCode: "D-MIX",
+      cashierId: "C-MIX",
+      amountCents: 1_000,
+      state: "Draft",
+      syncProvenance: TEST_SYNC_PROVENANCE,
+    });
+    await insertTender(connection, "m39-partial-tender", "order-m39-partial", "cash", 402);
+    await connection.run(
+      `INSERT INTO audit_events (
+        event_id, event_type, occurred_at_iso, order_guid,
+        correlation_id, payload_json, uploaded_at_iso
+      ) VALUES ('m39-partial-audit', 'MIXED_CASH_TENDER_APPENDED', ?,
+        'order-m39-partial', 'm39-partial-action', '{}', NULL)`,
+      [T1],
+    );
+    await assert.rejects(
+      () => new SqliteMixedPaymentTenderStore(
+        connection,
+        {
+          createTenderGuid: () => "m39-store-partial-tender",
+          createAuditEventId: () => "m39-store-partial-audit",
+        },
+        () => T1,
+      ).appendCashTenderAtomically({
+        actionId: "m39-store-partial-action",
+        orderGuid: "order-m39-partial",
+        actor: paymentAuditActor(),
+        amount: { currency: "AUD", cents: 402 },
+        tenderedAmount: { currency: "AUD", cents: 400 },
+        change: { currency: "AUD", cents: 0 },
+      }),
+      /tendered, applied and change amounts are inconsistent/,
+    );
+    await assert.rejects(
+      () => connection.run(
+        `INSERT INTO mixed_cash_tender_actions (
+          action_id, order_guid, amount_cents, tendered_cents, change_cents,
+          tender_guid, audit_event_id, created_at_iso
+        ) VALUES ('m39-partial-action', 'order-m39-partial', 402, 400, 0,
+          'm39-partial-tender', 'm39-partial-audit', ?)`,
+        [T1],
+      ),
+      /MIXED_CASH_ACTION_AMOUNTS_INVALID/,
+    );
+  });
+});
+
+test("真实 SQLite：M39 trigger 仅允许部分现金走入账差额，最终现金必须走 cashDue", async () => {
+  await withDatabase("mixed-cash-m39-final-boundary", async (connection) => {
+    await migrateFresh(connection);
+
+    for (const [index, scenario] of ([
+      {
+        name: "部分现金入账差额",
+        amountCents: 1_002,
+        tenderedCents: 1_002,
+        changeCents: 0,
+        accepted: true,
+      },
+      {
+        name: "部分现金合法找零",
+        amountCents: 1_002,
+        tenderedCents: 1_005,
+        changeCents: 3,
+        accepted: true,
+      },
+      {
+        name: "最终现金伪造未舍入实收",
+        amountCents: 1_002,
+        tenderedCents: 1_001,
+        changeCents: 1,
+        accepted: false,
+      },
+      {
+        name: "最终现金 round-down cashDue",
+        amountCents: 1_002,
+        tenderedCents: 1_000,
+        changeCents: 0,
+        accepted: true,
+      },
+      {
+        name: "最终现金一分伪造实收",
+        amountCents: 1,
+        tenderedCents: 1,
+        changeCents: 1,
+        accepted: false,
+      },
+      {
+        name: "最终现金一分零实收",
+        amountCents: 1,
+        tenderedCents: 0,
+        changeCents: 0,
+        accepted: true,
+      },
+      {
+        name: "最终现金两分伪造实收",
+        amountCents: 2,
+        tenderedCents: 2,
+        changeCents: 2,
+        accepted: false,
+      },
+      {
+        name: "最终现金两分零实收",
+        amountCents: 2,
+        tenderedCents: 0,
+        changeCents: 0,
+        accepted: true,
+      },
+      {
+        name: "最终现金伪造未舍入入账",
+        amountCents: 1_003,
+        tenderedCents: 1_003,
+        changeCents: 0,
+        accepted: false,
+      },
+      {
+        name: "最终现金伪造未舍入找零",
+        amountCents: 1_003,
+        tenderedCents: 1_010,
+        changeCents: 7,
+        accepted: false,
+      },
+      {
+        name: "最终现金 cashDue",
+        amountCents: 1_003,
+        tenderedCents: 1_005,
+        changeCents: 0,
+        accepted: true,
+      },
+      {
+        name: "最终现金 cashDue 找零",
+        amountCents: 1_003,
+        tenderedCents: 1_010,
+        changeCents: 5,
+        accepted: true,
+      },
+    ] as const).entries()) {
+      const suffix = scenario.name.replaceAll("现金", "").replaceAll(" ", "");
+      const orderGuid = `order-m39-${suffix}`;
+      const tenderGuid = `tender-m39-${suffix}`;
+      const auditEventId = `audit-m39-${suffix}`;
+      const actionId = `action-m39-${suffix}`;
+      const remainingCents = scenario.name.startsWith("部分")
+        ? scenario.amountCents + 1
+        : scenario.amountCents;
+
+      // 先写入非现金 tender，再写当前现金 tender；remaining 必须只排除当前 tender。
+      await insertOrder(connection, {
+        orderGuid,
+        sequence: 100 + index,
+        storeCode: "S-MIX",
+        deviceCode: "D-MIX",
+        cashierId: "C-MIX",
+        amountCents: 1_002 + remainingCents,
+        state: "Draft",
+        syncProvenance: TEST_SYNC_PROVENANCE,
+      });
+      await insertTender(connection, `card-${tenderGuid}`, orderGuid, "card", 1_002);
+      await insertTender(connection, tenderGuid, orderGuid, "cash", scenario.amountCents);
+      await connection.run(
+        `INSERT INTO audit_events (
+          event_id, event_type, occurred_at_iso, order_guid,
+          correlation_id, payload_json, uploaded_at_iso
+        ) VALUES (?, 'MIXED_CASH_TENDER_APPENDED', ?, ?, ?, '{}', NULL)`,
+        [auditEventId, T1, orderGuid, actionId],
+      );
+
+      const insertAction = () => connection.run(
+        `INSERT INTO mixed_cash_tender_actions (
+          order_guid, action_id, amount_cents, tendered_cents, change_cents,
+          tender_guid, audit_event_id, created_at_iso
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          orderGuid,
+          actionId,
+          scenario.amountCents,
+          scenario.tenderedCents,
+          scenario.changeCents,
+          tenderGuid,
+          auditEventId,
+          T1,
+        ],
+      );
+
+      if (scenario.accepted) {
+        await insertAction();
+      } else {
+        await assert.rejects(insertAction, /MIXED_CASH_ACTION_AMOUNTS_INVALID/);
+      }
+    }
+  });
+});
+
+test("真实 SQLite：M39 trigger 在缺失订单时 fail-close", async () => {
+  await withDatabase("mixed-cash-m39-missing-order", async (connection) => {
+    await migrateFresh(connection);
+    await connection.exec("PRAGMA foreign_keys = OFF");
+    try {
+      await insertTender(connection, "tender-m39-missing", "order-m39-missing", "cash", 1_003);
+      await connection.run(
+        `INSERT INTO audit_events (
+          event_id, event_type, occurred_at_iso, order_guid,
+          correlation_id, payload_json, uploaded_at_iso
+        ) VALUES ('audit-m39-missing', 'MIXED_CASH_TENDER_APPENDED', ?,
+          'order-m39-missing', 'action-m39-missing', '{}', NULL)`,
+        [T1],
+      );
+      await assert.rejects(
+        () => connection.run(
+          `INSERT INTO mixed_cash_tender_actions (
+            order_guid, action_id, amount_cents, tendered_cents, change_cents,
+            tender_guid, audit_event_id, created_at_iso
+          ) VALUES ('order-m39-missing', 'action-m39-missing', 1_003, 1_003, 0,
+            'tender-m39-missing', 'audit-m39-missing', ?)`,
+          [T1],
+        ),
+        /MIXED_CASH_ACTION_AMOUNTS_INVALID/,
+      );
+    } finally {
+      await connection.exec("PRAGMA foreign_keys = ON");
+    }
   });
 });
 

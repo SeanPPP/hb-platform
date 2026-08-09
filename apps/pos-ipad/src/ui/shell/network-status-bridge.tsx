@@ -79,6 +79,8 @@ export function NetworkStatusBridge() {
     // 最近一次后端 health 探测结果（null = 尚未完成探测）。
     let backendReachable: boolean | null = null;
     let probeTimer: ReturnType<typeof setInterval> | null = null;
+    // 每次 probe 分配单调代次；多来源并发时只允许最新结果发布。
+    let probeGeneration = 0;
 
     const probe = createSettingsApiHealthProbe((url, init) =>
       fetch(url, init),
@@ -94,6 +96,7 @@ export function NetworkStatusBridge() {
 
     // 探测后端 health：结果写入 backendReachable 并重新发布。
     const probeBackend = async () => {
+      const generation = ++probeGeneration;
       try {
         const apiBaseUrl = await resolveCurrentApiBaseUrl();
         const controller = new AbortController();
@@ -110,10 +113,10 @@ export function NetworkStatusBridge() {
         } finally {
           clearTimeout(timeoutId);
         }
-        if (!active) return;
+        if (!active || generation !== probeGeneration) return;
         backendReachable = ok;
       } catch {
-        if (!active) return;
+        if (!active || generation !== probeGeneration) return;
         backendReachable = false;
       }
       publish();
@@ -163,6 +166,8 @@ export function NetworkStatusBridge() {
 
     return () => {
       active = false;
+      // 卸载使全部在途 probe 失效，避免异步完成后覆盖下一次挂载状态。
+      probeGeneration += 1;
       subscription.remove();
       appStateSubscription.remove();
       if (probeTimer) {

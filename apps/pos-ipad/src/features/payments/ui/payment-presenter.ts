@@ -20,6 +20,7 @@ import {
   type PaymentCheckoutTender,
 } from "@/features/payments/runtime/payment-checkout-runtime";
 import type { PaymentProviderAvailability } from "@/features/payments/runtime/payment-provider-registry";
+import { calculateCashSettlement } from "@/features/sales/domain";
 
 export type PaymentUiMethod = "cash" | PaymentProvider;
 
@@ -44,6 +45,7 @@ export type PaymentFieldIssue =
   | "amount-required"
   | "amount-invalid"
   | "amount-exceeds-remaining"
+  | "cash-final-below-due"
   | "installment-customer-required"
   | "installment-down-payment-below-minimum"
   | "installment-total-below-minimum"
@@ -114,6 +116,8 @@ export type PaymentPresenterState = Readonly<{
   recoveryInFlight?: boolean;
   initialized: boolean;
   providers: readonly PaymentProviderAvailability[];
+  /** 当前 cashier 的现金权限；字段缺失一律视为无权限。 */
+  cashAvailable?: boolean;
   selectedMethod: PaymentUiMethod | null;
   amountText: string;
   voucherCaptured: boolean;
@@ -125,6 +129,7 @@ export type PaymentPresenterState = Readonly<{
   remaining: Money;
   tenders: readonly PaymentPresenterTender[];
   attemptId: string | null;
+  attemptCreatedAtIso: string | null;
   provider: PaymentProvider | null;
   runtimeStatus: PaymentCheckoutStatus | null;
   allowedActions: PaymentCheckoutAllowedActions;
@@ -173,6 +178,8 @@ export type PaymentConfirmOptions = Readonly<{
 
 export type PaymentRecoverOptions = Readonly<{
   background?: boolean;
+  signal?: AbortSignal;
+  deadlineAtMs?: number;
 }>;
 
 export type PaymentCheckoutEntryContext = Readonly<{
@@ -261,6 +268,7 @@ export class PaymentPresenter {
 
   public constructor(private readonly dependencies: PaymentPresenterDependencies) {
     const providers = safeProviderAvailability(dependencies.runtime);
+    const cashAvailable = isCashAvailable(dependencies);
     // 默认支付方式：现金可启动时优先现金，否则回退到第一个可用 provider。
     const selectedMethod = resolveInitialMethod(providers, dependencies);
     const total = dependencies.entry
@@ -272,9 +280,9 @@ export class PaymentPresenter {
       recoveryInFlight: false,
       initialized: false,
       providers,
+      cashAvailable,
       selectedMethod,
-      amountText:
-        total.cents > 0 ? centsToAmountInput(total.cents) : "",
+      amountText: defaultAmountText(selectedMethod, total),
       voucherCaptured: false,
       sensitiveInputRevision: 0,
       fieldIssue: null,
@@ -284,12 +292,13 @@ export class PaymentPresenter {
       remaining: total,
       tenders: Object.freeze([]),
       attemptId: null,
+      attemptCreatedAtIso: null,
       provider: null,
       runtimeStatus: null,
       allowedActions: Object.freeze({
         ...EMPTY_ALLOWED_ACTIONS,
         start: dependencies.entry !== null,
-        addCash: isCashAvailable(dependencies),
+        addCash: cashAvailable,
       }),
       tenderReversalRecovery: null,
       checkout: emptyRegularCheckout(dependencies.entry?.lines),
@@ -366,6 +375,7 @@ export class PaymentPresenter {
     if (method !== "voucher") this.clearVoucher();
     this.patch({
       selectedMethod: method,
+      amountText: defaultAmountText(method, this.state.remaining),
       fieldIssue: null,
       runtimeErrorCode: null,
       checkout:
@@ -429,6 +439,10 @@ export class PaymentPresenter {
       this.patch({ fieldIssue: "amount-exceeds-remaining" });
       return Promise.resolve(false);
     }
+    if (method === "cash" && cashFinalTenderBelowDue(amount, this.state.remaining)) {
+      this.patch({ fieldIssue: "cash-final-below-due" });
+      return Promise.resolve(false);
+    }
     if (method === "voucher" && !this.voucherCode) {
       this.patch({ fieldIssue: "voucher-required" });
       return Promise.resolve(false);
@@ -441,10 +455,6 @@ export class PaymentPresenter {
         fieldIssue: null,
       });
       const actionId = this.dependencies.createActionId();
-      const appliedAmount =
-        method === "cash" && amount.cents > this.state.remaining.cents
-          ? copyMoney(this.state.remaining)
-          : amount;
       let snapshot: PaymentCheckoutPublicSnapshot | null;
       try {
         if (method === "cash") {
@@ -507,21 +517,19 @@ export class PaymentPresenter {
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
       if (method === "cash") {
-        const committedCents =
-          snapshot.tenders.find((tender) => tender.method === "cash")
-            ?.amount.cents ?? appliedAmount.cents;
+        const settlement = snapshot.cashSettlement;
         this.patchIfCurrent(revision, {
-          checkout: Object.freeze({
-            ...this.state.checkout,
-            cash: Object.freeze({
-              tenderedCents: amount.cents,
-              appliedCents: committedCents,
-              changeCents: Math.max(
-                0,
-                amount.cents - committedCents,
-              ),
-            }),
-          }),
+          // 现金实收与找零是耐久 action 事实；缺失时宁可不展示，也不能以输入重算。
+          checkout: settlement
+            ? Object.freeze({
+                ...this.state.checkout,
+                cash: Object.freeze({
+                  tenderedCents: settlement.tendered.cents,
+                  appliedCents: settlement.applied.cents,
+                  changeCents: settlement.change.cents,
+                }),
+              })
+            : resetCashPresentation(this.state.checkout),
         });
       }
       return snapshot.status === "completed" || snapshot.status === "partial";
@@ -529,6 +537,8 @@ export class PaymentPresenter {
   }
 
   public recover(options: PaymentRecoverOptions = {}): Promise<boolean> {
+    // 恢复调用必须独占本次生命周期，不能加入带有其他 signal 的在途 Promise。
+    if (this.actionInFlight) return Promise.resolve(false);
     const orderGuid = this.state.orderGuid;
     const tenderReversalRecovery = this.state.tenderReversalRecovery;
     const retryTenderReversal =
@@ -559,6 +569,7 @@ export class PaymentPresenter {
           ? await this.dependencies.runtime.recover({
               orderGuid,
               attemptId: this.state.attemptId,
+              ...paymentRecoveryDeadlineFields(options),
             })
           : await this.dependencies.runtime.resumeCurrent();
       if (!snapshot || !this.isCurrent(revision)) return false;
@@ -699,12 +710,14 @@ export class PaymentPresenter {
         currentMethod,
         snapshot,
         this.state.providers,
+        this.state.cashAvailable === true,
         activeMethods,
       )
         ? currentMethod
         : firstAvailableMethod(
             snapshot,
             this.state.providers,
+            this.state.cashAvailable === true,
             activeMethods,
           );
     this.state = {
@@ -712,10 +725,7 @@ export class PaymentPresenter {
       phase: phaseForSnapshot(snapshot),
       initialized: true,
       selectedMethod,
-      amountText:
-        snapshot.remaining.cents > 0
-          ? centsToAmountInput(snapshot.remaining.cents)
-          : "",
+      amountText: defaultAmountText(selectedMethod, snapshot.remaining),
       fieldIssue: null,
       runtimeErrorCode: snapshot.errorCode,
       orderGuid: snapshot.orderGuid,
@@ -723,10 +733,12 @@ export class PaymentPresenter {
       remaining: copyMoney(snapshot.remaining),
       tenders,
       attemptId: snapshot.attemptId,
+      attemptCreatedAtIso: snapshot.attemptCreatedAtIso,
       provider: snapshot.provider,
       runtimeStatus: snapshot.status,
       allowedActions: Object.freeze({
         ...snapshot.allowedActions,
+        ...(this.state.cashAvailable ? {} : { addCash: false }),
         ...(tenderReversalRecovery?.status === "blocked"
           ? { recover: false }
           : {}),
@@ -837,6 +849,23 @@ export function parseAudInput(value: string): Money | null {
   return Object.freeze({ currency: "AUD", cents });
 }
 
+function paymentRecoveryDeadlineFields(
+  options: PaymentRecoverOptions,
+): Readonly<{ signal: AbortSignal; deadlineAtMs: number }> | Record<string, never> {
+  if (options.signal === undefined && options.deadlineAtMs === undefined) return {};
+  if (
+    options.signal === undefined ||
+    options.deadlineAtMs === undefined ||
+    !Number.isFinite(options.deadlineAtMs)
+  ) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_RECOVERY_FAILED");
+  }
+  return {
+    signal: options.signal,
+    deadlineAtMs: options.deadlineAtMs,
+  };
+}
+
 export function canSelectPaymentMethod(
   state: PaymentPresenterState,
   method: PaymentUiMethod,
@@ -846,11 +875,12 @@ export function canSelectPaymentMethod(
   if (state.checkout.flow !== "regular") {
     if (!state.allowedActions.start || activeMethods.length > 0) return false;
     return method === "cash"
-      ? state.allowedActions.addCash
+      ? state.cashAvailable === true && state.allowedActions.addCash
       : providerAvailable(state.providers, method);
   }
   if (method === "cash") {
     return (
+      state.cashAvailable === true &&
       state.allowedActions.addCash &&
       !activeMethods.includes("cash")
     );
@@ -928,9 +958,11 @@ function safeProviderAvailability(
 function firstAvailableMethod(
   snapshot: PaymentCheckoutPublicSnapshot,
   providers: readonly PaymentProviderAvailability[],
+  cashAvailable: boolean,
   activeMethods: readonly TenderMethod[],
 ): PaymentUiMethod | null {
   if (
+    cashAvailable &&
     snapshot.allowedActions.addCash &&
     !activeMethods.includes("cash")
   ) {
@@ -955,15 +987,21 @@ function resolveInitialMethod(
 }
 
 /**
- * 现金结账是否可用：存在结账入口且运行时实现 startCash。
+ * 现金结账是否可用：存在结账入口，且当前可信收银员具备 TakeCash 权限。
  * 默认支付方式与初始 addCash 权限（含无恢复时的 ready 分支）共用同一判定，
  * 避免失配。
  */
 function isCashAvailable(dependencies: PaymentPresenterDependencies): boolean {
-  return (
-    dependencies.entry !== null &&
-    typeof dependencies.runtime.startCash === "function"
-  );
+  try {
+    return (
+      dependencies.entry !== null &&
+      typeof dependencies.runtime.startCash === "function" &&
+      dependencies.runtime.canTakeCash?.() === true
+    );
+  } catch {
+    // 当前可信会话不可读取时不暴露现金入口，避免 UI 与服务端权限失配。
+    return false;
+  }
 }
 
 function firstAvailableProvider(
@@ -983,10 +1021,12 @@ function isMethodSelectableFromSnapshot(
   method: PaymentUiMethod,
   snapshot: PaymentCheckoutPublicSnapshot,
   providers: readonly PaymentProviderAvailability[],
+  cashAvailable: boolean,
   activeMethods: readonly TenderMethod[],
 ): boolean {
   if (method === "cash") {
     return (
+      cashAvailable &&
       snapshot.allowedActions.addCash &&
       !activeMethods.includes("cash")
     );
@@ -1046,6 +1086,27 @@ function copyMoney(value: Money): Money {
 
 function centsToAmountInput(cents: number): string {
   return (cents / 100).toFixed(2);
+}
+
+function defaultAmountText(
+  method: PaymentUiMethod | null,
+  remaining: Money,
+): string {
+  if (remaining.cents <= 0) return "";
+  const cashDue = method === "cash" ? cashDueCents(remaining) : null;
+  // 1/2 分尾款的五分应收为零，但输入框必须保留可提交的正数原始余额。
+  return centsToAmountInput(cashDue && cashDue > 0 ? cashDue : remaining.cents);
+}
+
+function cashFinalTenderBelowDue(amount: Money, remaining: Money): boolean {
+  return amount.cents >= remaining.cents && amount.cents < cashDueCents(remaining);
+}
+
+function cashDueCents(remaining: Money): number {
+  return calculateCashSettlement({
+    actualAmount: remaining,
+    cashTendered: ZERO_AUD,
+  }).cashDue.cents;
 }
 
 function emptyLinklyState(): PaymentPresenterState["linkly"] {

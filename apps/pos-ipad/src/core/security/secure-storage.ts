@@ -217,6 +217,11 @@ export class CashierSessionCache {
 }
 
 export class CashierAuthorizationStore {
+  // 每次撤销或写入都推进版本；异步 Keychain 读写完成后必须再次确认仍是当前版本。
+  private authorizationVersion = 0;
+  private authorizationRevoked = false;
+  private mutationQueue: Promise<void> = Promise.resolve();
+
   public constructor(
     private readonly secureStore: SecureStorePort,
     private readonly time: CashierAuthorizationTimePort = {
@@ -225,15 +230,25 @@ export class CashierAuthorizationStore {
     },
   ) {}
 
-  public async get(): Promise<string | null> {
+  public async get(scope: CashierAuthorizationScope): Promise<string | null> {
+    const requestedScope = this.requiredScopeOrNull(scope);
+    if (!requestedScope || this.authorizationRevoked) return null;
+    const version = this.authorizationVersion;
     const raw = await this.secureStore.get(
       activeCashierAuthorizationKey,
     );
+    if (this.authorizationRevoked || version !== this.authorizationVersion) {
+      return null;
+    }
     if (!raw) return null;
 
     let stored: StoredCashierAuthorization;
     try {
       stored = parseCashierAuthorization(raw);
+      if (!sameCashierAuthorizationScope(stored.scope, requestedScope)) {
+        this.clearInBackground();
+        return null;
+      }
       const systemUptimeMs = validTimeValue(
         this.time.getSystemUptimeMilliseconds(),
         "system uptime",
@@ -245,12 +260,12 @@ export class CashierAuthorizationStore {
           validTimeValue(this.time.nowEpochMs(), "wall time") >=
             stored.expiresAtEpochMs)
       ) {
-        await this.clear();
+        this.clearInBackground();
         return null;
       }
     } catch {
       // 旧版纯字符串或损坏 envelope 不能继续成为网络 bearer。
-      await this.clear();
+      this.clearInBackground();
       return null;
     }
     return stored.authorizationToken;
@@ -259,23 +274,83 @@ export class CashierAuthorizationStore {
   public async set(
     authorization: CashierAuthorizationWrite,
   ): Promise<void> {
-    const normalized = normalizeCashierAuthorizationWrite(
-      authorization,
-      this.time,
-    );
+    let normalized: StoredCashierAuthorization | null;
+    try {
+      normalized = normalizeCashierAuthorizationWrite(
+        authorization,
+        this.time,
+      );
+    } catch (error) {
+      await this.clear();
+      throw error;
+    }
     if (normalized === null) {
       await this.clear();
       return;
     }
-    await this.secureStore.set(
-      activeCashierAuthorizationKey,
-      JSON.stringify(normalized),
-      secureThisDeviceOnly,
-    );
+    const version = this.revokeInMemory();
+    await this.enqueueMutation(async () => {
+      await this.secureStore.set(
+        activeCashierAuthorizationKey,
+        JSON.stringify(normalized),
+        secureThisDeviceOnly,
+      );
+      // 只有本次成功登录仍是最新操作，才能解除进程内撤销状态。
+      if (version === this.authorizationVersion) {
+        this.authorizationRevoked = false;
+      }
+    });
   }
 
   public clear(): Promise<void> {
-    return this.secureStore.remove(activeCashierAuthorizationKey);
+    this.revokeInMemory();
+    return this.enqueueMutation(() =>
+      this.secureStore.remove(activeCashierAuthorizationKey),
+    );
+  }
+
+  /** scope 发布的同步边界：先撤销进程内可读性，再异步处理 Keychain。 */
+  public invalidateForDeviceScope(): void {
+    this.clearInBackground();
+  }
+
+  private revokeInMemory(): number {
+    this.authorizationVersion += 1;
+    this.authorizationRevoked = true;
+    return this.authorizationVersion;
+  }
+
+  private async enqueueMutation(
+    mutation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.mutationQueue;
+    let release!: () => void;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // 旧 clear 的 Keychain 删除失败不能永久阻塞随后成功登录的写入。
+    await previous.catch(() => undefined);
+    try {
+      await mutation();
+    } finally {
+      release();
+    }
+  }
+
+  private requiredScopeOrNull(
+    scope: CashierAuthorizationScope,
+  ): CashierAuthorizationScope | null {
+    try {
+      return normalizeCashierAuthorizationScope(scope);
+    } catch {
+      this.clearInBackground();
+      return null;
+    }
+  }
+
+  private clearInBackground(): void {
+    // clear 会先同步撤销内存可读性；后台删除挂起或失败都不得阻塞读取或产生未处理拒绝。
+    void this.clear().catch(() => undefined);
   }
 }
 
@@ -288,8 +363,14 @@ export type CashierAuthorizationWrite = Readonly<{
   authorizationToken: string;
   expiresAtEpochMs: number;
   source: CashierAuthorizationSource;
+  scope: CashierAuthorizationScope;
   systemUptimeMs?: number;
   trustedNowEpochMs?: number;
+}>;
+
+export type CashierAuthorizationScope = Readonly<{
+  storeCode: string;
+  deviceCode: string;
 }>;
 
 export type CashierAuthorizationTimePort = Readonly<{
@@ -302,8 +383,9 @@ type StoredCashierAuthorization = Readonly<{
   authorizationToken: string;
   expiresAtEpochMs: number;
   expiresAtSystemUptimeMs: number;
+  scope: CashierAuthorizationScope;
   source: CashierAuthorizationSource;
-  version: 2;
+  version: 3;
 }>;
 
 function normalizeCashierAuthorizationWrite(
@@ -318,6 +400,7 @@ function normalizeCashierAuthorizationWrite(
     "authorization expiry",
   );
   const source = validCashierAuthorizationSource(input.source);
+  const scope = normalizeCashierAuthorizationScope(input.scope);
   const currentSystemUptimeMs = validTimeValue(
     time.getSystemUptimeMilliseconds(),
     "system uptime",
@@ -352,8 +435,9 @@ function normalizeCashierAuthorizationWrite(
     authorizationToken,
     expiresAtEpochMs,
     expiresAtSystemUptimeMs,
+    scope,
     source,
-    version: 2,
+    version: 3,
   });
 }
 
@@ -373,13 +457,14 @@ function parseCashierAuthorization(
     "authorizationToken",
     "expiresAtEpochMs",
     "expiresAtSystemUptimeMs",
+    "scope",
     "source",
     "version",
   ];
   if (
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !(key in record)) ||
-    record.version !== 2
+    record.version !== 3
   ) {
     throw new Error(
       `Stored ${activeCashierAuthorizationKey} is invalid.`,
@@ -409,9 +494,34 @@ function parseCashierAuthorization(
     ),
     expiresAtEpochMs,
     expiresAtSystemUptimeMs,
+    scope: normalizeCashierAuthorizationScope(record.scope),
     source: validCashierAuthorizationSource(record.source),
-    version: 2,
+    version: 3,
   });
+}
+
+function normalizeCashierAuthorizationScope(
+  value: unknown,
+): CashierAuthorizationScope {
+  const record = storedRecord(value, "cashier authorization scope");
+  const expectedKeys = ["storeCode", "deviceCode"];
+  if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !(key in record))
+  ) {
+    throw new Error("Cashier authorization scope is invalid.");
+  }
+  return Object.freeze({
+    storeCode: storedText(record.storeCode, "cashier authorization scope").trim(),
+    deviceCode: storedText(record.deviceCode, "cashier authorization scope").trim(),
+  });
+}
+
+function sameCashierAuthorizationScope(
+  left: CashierAuthorizationScope,
+  right: CashierAuthorizationScope,
+): boolean {
+  return left.storeCode === right.storeCode && left.deviceCode === right.deviceCode;
 }
 
 function validCashierAuthorizationSource(

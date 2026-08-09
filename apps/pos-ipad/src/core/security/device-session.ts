@@ -35,6 +35,25 @@ export type DevicePresentation = Readonly<{
   storeName: string | null;
 }>;
 
+export type DeviceScopeChange = Readonly<{
+  previous: Readonly<{ deviceCode: string; storeCode: string }>;
+  current: Readonly<{ deviceCode: string; storeCode: string }>;
+}>;
+
+const deviceScopeChangeListeners = new Set<
+  (change: DeviceScopeChange) => void
+>();
+
+/**
+ * 组合根只订阅脱敏 scope 变更；授权码与硬件标识始终留在设备会话内部。
+ */
+export function subscribeDeviceScopeChange(
+  listener: (change: DeviceScopeChange) => void,
+): () => void {
+  deviceScopeChangeListeners.add(listener);
+  return () => deviceScopeChangeListeners.delete(listener);
+}
+
 export interface DeviceSessionApi {
   register(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceRegisterResponse>;
   verify(input: Readonly<{ deviceCode: string; storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceVerifyResponse>;
@@ -209,12 +228,27 @@ export class DeviceSessionCoordinator {
         if (!this.isCurrentOperation(generation)) {
           return this.state;
         }
+        const previousCredentials =
+          operation === "reregister" ? await this.credentials.load() : null;
+        if (!this.isCurrentOperation(generation)) {
+          return this.state;
+        }
         await this.credentials.save({
           deviceCode,
           storeCode,
           hardwareId,
           authorizationCode: response.authorizationCode
         });
+        if (operation === "reregister" && previousCredentials) {
+          // 中文注释：save 已不可逆成功，即使本操作此刻变 stale 也必须广播实际 previous/current，generation 只阻止后续 UI 状态写入。
+          publishDeviceScopeChange({
+            previous: {
+              deviceCode: previousCredentials.deviceCode,
+              storeCode: previousCredentials.storeCode,
+            },
+            current: { deviceCode, storeCode },
+          });
+        }
         if (!this.isCurrentOperation(generation)) {
           return this.state;
         }
@@ -338,6 +372,16 @@ export class DeviceSessionCoordinator {
       this.state = resolved;
     }
     return this.state;
+  }
+}
+
+function publishDeviceScopeChange(change: DeviceScopeChange): void {
+  for (const listener of [...deviceScopeChangeListeners]) {
+    try {
+      listener(change);
+    } catch {
+      // 中文注释：凭据写入已完成，监听方故障不能回滚新设备授权或阻断其他安全订阅者。
+    }
   }
 }
 

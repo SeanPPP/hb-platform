@@ -388,6 +388,151 @@ test("崩溃恢复只恢复指定 OrderGuid/attempt，不创建新 attempt", asy
   assert.equal(JSON.stringify(result).includes("paymentId"), false);
 });
 
+test("recoverOnlineAttempt 原样向支付 attempt 服务传递 deadline 控制", async () => {
+  const pending = paymentAttempt({
+    attemptId: "attempt-mixed-abortable-recovery",
+    state: "Pending",
+    references: {
+      checkoutId: "checkout-mixed-abortable-recovery",
+      paymentId: null,
+      sessionId: null,
+      txnRef: null,
+      rfn: null,
+      voucherReservationToken: null,
+    },
+  });
+  const attempts = new SignalAwareFakeAttempts();
+  attempts.attempts.set(pending.attemptId, pending);
+  attempts.recoverResult = () => ({
+    attempt: { ...pending, state: "Unknown" },
+    receiptText: null,
+    responseCode: "SQUARE_ABORTED",
+  });
+  const truth = new MemoryTruth(orderTruth(500));
+  const coordinator = createCoordinator({
+    truth,
+    attempts,
+    completion: new FakeCompletion(truth),
+  });
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(pending.createdAtIso) + 90_000;
+
+  const result = await coordinator.recoverOnlineAttempt({
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.equal(result.status, "unknown");
+  assert.strictEqual(attempts.recoveryControls[0]?.signal, controller.signal);
+  assert.equal(attempts.recoveryControls[0]?.deadlineAtMs, deadlineAtMs);
+});
+
+test("deadline abort 与 Approved 竞争时仍原子完成一次且不重复 tender", async () => {
+  const pending = paymentAttempt({
+    attemptId: "attempt-approved-at-deadline",
+    state: "Pending",
+  });
+  const attempts = new SignalAwareFakeAttempts();
+  attempts.attempts.set(pending.attemptId, pending);
+  const gate = createDeferred<PaymentAttemptExecutionResult>();
+  attempts.recoverResult = () => gate.promise;
+  const truth = new MemoryTruth(orderTruth(500));
+  const completion = new FakeCompletion(truth);
+  const coordinator = createCoordinator({ truth, attempts, completion });
+  const controller = new AbortController();
+  const input = {
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+    signal: controller.signal,
+    deadlineAtMs: Date.parse(pending.createdAtIso) + 90_000,
+  };
+
+  const first = coordinator.recoverOnlineAttempt(input);
+  await waitUntil(() => attempts.recoveryControls.length === 1);
+  const sameOwner = coordinator.recoverOnlineAttempt(input);
+  controller.abort();
+  gate.resolve({
+    attempt: { ...pending, state: "Approved" },
+    receiptText: null,
+    responseCode: "APPROVED",
+  });
+
+  const [left, right] = await Promise.all([first, sameOwner]);
+  assert.equal(left.status, "completed");
+  assert.deepEqual(right, left);
+  assert.equal(attempts.recoveryControls.length, 1);
+  assert.equal(completion.inputs.length, 1);
+  assert.equal(truth.current.tenders.length, 1);
+});
+
+test("跨 coordinator 的不同 signal 或 manual 不 join，只有同一 signal 可复用", async () => {
+  const pending = paymentAttempt({
+    attemptId: "attempt-mixed-owned-flight",
+    state: "Pending",
+  });
+  const attempts = new SignalAwareFakeAttempts();
+  attempts.attempts.set(pending.attemptId, pending);
+  const gate = createDeferred<PaymentAttemptExecutionResult>();
+  attempts.recoverResult = () => gate.promise;
+  const truth = new MemoryTruth(orderTruth(500));
+  const firstCoordinator = createCoordinator({
+    truth,
+    attempts,
+    completion: new FakeCompletion(truth),
+  });
+  const secondCoordinator = createCoordinator({
+    truth,
+    attempts,
+    completion: new FakeCompletion(truth),
+  });
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const deadlineAtMs = Date.parse(pending.createdAtIso) + 90_000;
+  const input = {
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+    deadlineAtMs,
+  };
+
+  const first = firstCoordinator.recoverOnlineAttempt({
+    ...input,
+    signal: firstController.signal,
+  });
+  await waitUntil(() => attempts.recoverInputs.length === 1);
+  const sameOwner = secondCoordinator.recoverOnlineAttempt({
+    ...input,
+    signal: firstController.signal,
+  });
+  const differentOwner = secondCoordinator.recoverOnlineAttempt({
+    ...input,
+    signal: secondController.signal,
+  });
+  const manual = secondCoordinator.recoverOnlineAttempt({
+    orderGuid: input.orderGuid,
+    attemptId: input.attemptId,
+  });
+
+  gate.resolve({
+    attempt: { ...pending, state: "Unknown" },
+    receiptText: null,
+    responseCode: "SQUARE_PENDING",
+  });
+  const [, , differentResult, manualResult] = await Promise.all([
+    first,
+    sameOwner,
+    differentOwner,
+    manual,
+  ]);
+  assert.strictEqual(sameOwner, first);
+  assert.notStrictEqual(differentOwner, first);
+  assert.notStrictEqual(manual, first);
+  assert.equal(differentResult.errorCode, "PAYMENT_ACTION_IN_FLIGHT");
+  assert.equal(manualResult.errorCode, "PAYMENT_ACTION_IN_FLIGHT");
+  assert.equal(attempts.recoverInputs.length, 1);
+});
+
 test("Approved 冷恢复完成订单只使用 action 原员工，不使用当前登录员工", async () => {
   const truth = new MemoryTruth(orderTruth(500));
   const attempts = new FakeAttempts();
@@ -845,6 +990,21 @@ class FakeAttempts implements MixedPaymentAttemptPort {
       throw new Error("Fake action actor order mismatch.");
     }
     return this.actors.get(attemptId) ?? this.actionActor;
+  }
+}
+
+class SignalAwareFakeAttempts extends FakeAttempts {
+  public readonly recoveryControls: {
+    signal: AbortSignal;
+    deadlineAtMs: number;
+  }[] = [];
+
+  public override async recoverAttempt(
+    attemptId: string,
+    control?: { signal: AbortSignal; deadlineAtMs: number },
+  ): Promise<PaymentAttemptExecutionResult> {
+    if (control) this.recoveryControls.push(control);
+    return super.recoverAttempt(attemptId);
   }
 }
 

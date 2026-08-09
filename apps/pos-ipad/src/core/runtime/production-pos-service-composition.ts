@@ -157,6 +157,7 @@ import type {
 import type {
   CashierAuthenticationService,
 } from "../security/cashier-authentication";
+import { subscribeDeviceScopeChange } from "../security/device-session";
 import {
   HbposAuditBatchAdapter,
   HbposOrderSyncAdapter,
@@ -442,6 +443,8 @@ export type CashierSessionSecurityConfiguration = Readonly<{
     deviceCode: string;
   }> | null>;
   clearAuthorization(): Promise<void>;
+  /** 同步撤销旧 bearer，并广播无秘密的设备 scope 变更事件。 */
+  invalidateAuthorizationForDeviceScope(): void;
   subscribeSessionInvalidation(listener: () => void): (() => void) | void;
 }>;
 
@@ -625,6 +628,13 @@ export function createProductionPosRuntimeServices(
         }
       : {},
   );
+  let unsubscribeDeviceScopeChange: (() => void) | null = null;
+  let deviceScopeListenerDisposed = false;
+  const disposeDeviceScopeListener = () => {
+    if (deviceScopeListenerDisposed) return;
+    deviceScopeListenerDisposed = true;
+    unsubscribeDeviceScopeChange?.();
+  };
   const catalogRepository = input.database.catalogSnapshots();
   const catalogLookupOverlay = input.database.catalogLookupOverlay();
   const localSalesCatalog = {
@@ -1526,7 +1536,7 @@ export function createProductionPosRuntimeServices(
           status: "unavailable",
           reason: "ATTENDANCE_SECURITY_ADAPTER_MISSING",
         };
-  const initialize = createCombinedTerminalInitializer(
+  const combinedInitialize = createCombinedTerminalInitializer(
     heldCartInitialize,
     paymentRuntime.initializeRecovery,
     async () => {
@@ -1535,6 +1545,18 @@ export function createProductionPosRuntimeServices(
       await recoverVoucherBalancePrints();
     },
   );
+  const initialize = (() =>
+    combinedInitialize().catch((error: unknown) => {
+      // 中文注释：组合根在 initialize 前已订阅全局 scope；初始化失败不能把旧闭包留给重试 runtime。
+      disposeDeviceScopeListener();
+      throw error;
+    })) as TerminalCartInitializer;
+  Object.defineProperty(initialize, "isReady", {
+    configurable: false,
+    enumerable: false,
+    value: () => combinedInitialize.isReady(),
+    writable: false,
+  });
   const createHeldOrdersOrchestrator = (
     cashierLease: TrustedCashierLease = currentCashier.createLease(),
   ): HeldOrdersOrchestrator => {
@@ -1615,9 +1637,35 @@ export function createProductionPosRuntimeServices(
       }),
   };
 
+  // 所有同步组合完成后才订阅全局事件，避免后续构造异常留下不可达的旧 runtime 闭包。
+  unsubscribeDeviceScopeChange = subscribeDeviceScopeChange((change) => {
+    if (
+      change.previous.storeCode !== input.auditMetadata.storeCode ||
+      change.previous.deviceCode !== input.auditMetadata.deviceCode
+    ) {
+      return;
+    }
+    // 中文注释：外部 Keychain/bus 回调只负责收口；它异常时仍必须同步废弃旧收银员和购物车。
+    try {
+      input.cashierSessionSecurity.invalidateAuthorizationForDeviceScope();
+    } catch {
+      // 进程内 cashier/cart 的 fail-closed 边界不能依赖外部回调成功。
+    }
+    invalidateCurrentCashier();
+    activePricingCart.invalidateForDeviceScope();
+  });
+
   return {
     initialize,
-    shutdownBackgroundWork: () => catalogRefreshCoordinator.shutdown(),
+    shutdownBackgroundWork: (() => {
+      let shutdown: Promise<void> | null = null;
+      return () => {
+        // runtime 重载会重新构造组合根；先解除 scope 订阅，避免旧 cashier/cart 闭包被永久保留。
+        disposeDeviceScopeListener();
+        shutdown ??= catalogRefreshCoordinator.shutdown();
+        return shutdown;
+      };
+    })(),
     attendanceAudit,
     appUpdateSafety: {
       getSnapshot: async () => {

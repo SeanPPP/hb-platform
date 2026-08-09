@@ -15,8 +15,10 @@ import {
 
 import type { SpecialProductItem } from "@/core/contracts";
 
-jest.mock("@/ui/feedback", () => ({
-  usePosSound: () => ({ play: jest.fn() }),
+const mockPlayTouchSound = jest.fn();
+
+jest.mock("@/ui/feedback/pos-sound-context", () => ({
+  usePosSound: () => ({ play: mockPlayTouchSound }),
 }));
 
 let mockLanguage: "en" | "zh" = "zh";
@@ -30,6 +32,7 @@ jest.mock("react-i18next", () => ({
 describe("SpecialProductsScreen", () => {
   beforeEach(() => {
     mockLanguage = "zh";
+    mockPlayTouchSound.mockClear();
   });
 
   it("离线显示本地列表并允许加购，但所有管理写操作禁用且触控至少 44pt", async () => {
@@ -249,7 +252,7 @@ describe("SpecialProductsScreen", () => {
     const cardA = screen.getByTestId("special-product-card-A");
     const shellA = screen.getByTestId("special-product-card-A-shell");
     // 卡片实测尺寸：宽 85.6（单列）、高 240 → 行高 252
-    // （shell 挂载 PanResponder 后 fireEvent 被 responder 检查拦截，手动调用）
+    // responder 必须由受审计的拖动壳层承接，手动调用真实回调。
     await act(async () => {
       shellA.props.onLayout({
         nativeEvent: { layout: { height: 240, width: 85.6 } },
@@ -294,7 +297,7 @@ describe("SpecialProductsScreen", () => {
         screen.getByTestId("special-product-card-B-shell").props.style,
       ).borderWidth,
     ).toBe(2);
-    // 松手：重放完整手势序列（重渲染后 shell 的 handler 已更新，
+    // 松手：重放完整手势序列（重渲染后壳层的 handler 已更新，
     // gestureState 按 touchHistory 帧差重新累计，dx 仍为 110）
     await act(async () => {
       shellA.props.onResponderGrant(moveEvent(20, 80));
@@ -303,6 +306,52 @@ describe("SpecialProductsScreen", () => {
     });
 
     expect(presenter.moveToCalls).toEqual([{ productCode: "A", toIndex: 1 }]);
+    await screen.unmount();
+  });
+
+  it("可拖拽卡片长按播放一次排序音且不加购", async () => {
+    const presenter = new ScreenPresenter({
+      items: [product("A"), product("B")],
+      online: true,
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    const cardA = screen.getByTestId("special-product-card-A");
+    await fireEvent(cardA, "pressIn");
+    await fireEvent(cardA, "longPress");
+    await fireEvent.press(cardA);
+
+    expect(mockPlayTouchSound).toHaveBeenCalledTimes(1);
+    expect(mockPlayTouchSound).toHaveBeenCalledWith("navigate");
+    expect(presenter.addToCartCalls).toEqual([]);
+    await screen.unmount();
+  });
+
+  it("不可拖拽卡片不注册长按音且普通点击仍加购", async () => {
+    const presenter = new ScreenPresenter({
+      items: [product("A")],
+      online: true,
+      permissions: [
+        SPECIAL_PRODUCTS_VIEW_PERMISSION,
+        SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION,
+      ],
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    const cardA = screen.getByTestId("special-product-card-A");
+    await fireEvent(cardA, "pressIn");
+    await fireEvent(cardA, "longPress");
+    await fireEvent.press(cardA);
+
+    expect(cardA.props.onLongPress).toBeUndefined();
+    expect(mockPlayTouchSound).toHaveBeenCalledTimes(1);
+    expect(mockPlayTouchSound).toHaveBeenCalledWith("tap");
+    expect(mockPlayTouchSound).not.toHaveBeenCalledWith("navigate");
+    expect(presenter.addToCartCalls).toEqual(["A"]);
     await screen.unmount();
   });
 

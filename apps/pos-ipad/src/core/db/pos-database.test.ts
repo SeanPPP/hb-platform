@@ -33,6 +33,9 @@ class RecordingConnection implements SqliteConnectionPort {
   public appliedVersions: number[] = [];
   public nextSequence: number | null = null;
   public failWhenSqlIncludes: string | null = null;
+  public cipherVersion: string | null | undefined = "4.7.0";
+  public cipherVersionError: Error | null = null;
+  public readonly firstQueries: string[] = [];
   private readonly drawerColumns = new Map<string, Readonly<{
     type: string;
     pk: number;
@@ -72,6 +75,18 @@ class RecordingConnection implements SqliteConnectionPort {
   }
 
   public async getFirst<T extends object>(sql: string): Promise<T | null> {
+    this.firstQueries.push(sql);
+    if (sql === "PRAGMA cipher_version;") {
+      if (this.cipherVersionError) {
+        throw this.cipherVersionError;
+      }
+      if (this.cipherVersion === undefined) {
+        return {} as T;
+      }
+      return (this.cipherVersion === null
+        ? null
+        : { cipher_version: this.cipherVersion }) as T | null;
+    }
     if (sql.includes("RETURNING setting_value AS next_sequence")) {
       return (this.nextSequence === null ? null : { next_sequence: this.nextSequence }) as T;
     }
@@ -259,6 +274,60 @@ test("开库先注入 SQLCipher 密钥，启用 WAL 与外键，再原子执行 
   assert.ok(connection.executed.includes("PRAGMA journal_mode = WAL;"));
   assert.deepEqual(connection.appliedVersions, POS_DATABASE_MIGRATIONS.map((migration) => migration.version));
   assert.equal(connection.transactionCount, 1);
+});
+
+test("SQLCipher 版本有效时才继续开库", async () => {
+  const connection = new RecordingConnection();
+  connection.cipherVersion = "4.7.0";
+
+  await PosDatabase.open(options(connection));
+
+  assert.ok(connection.firstQueries.includes("PRAGMA cipher_version;"));
+  assert.equal(connection.closed, false);
+});
+
+test("SQLCipher 版本缺失、为空或查询失败时关闭连接并拒绝开库", async () => {
+  const cases: readonly Readonly<{
+    name: string;
+    configure: (connection: RecordingConnection) => void;
+  }>[] = [
+    {
+      name: "版本列缺失",
+      configure(connection) {
+        connection.cipherVersion = undefined;
+      },
+    },
+    {
+      name: "版本为空",
+      configure(connection) {
+        connection.cipherVersion = "";
+      },
+    },
+    {
+      name: "查询异常",
+      configure(connection) {
+        connection.cipherVersionError = new Error("cipher unavailable");
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const connection = new RecordingConnection();
+    scenario.configure(connection);
+
+    await assert.rejects(
+      PosDatabase.open(options(connection)),
+      /SQLCipher cipher version failed/,
+      scenario.name,
+    );
+
+    assert.ok(
+      connection.firstQueries.includes("PRAGMA cipher_version;"),
+      `${scenario.name} 必须执行 SQLCipher 版本校验`,
+    );
+    assert.equal(connection.closed, true, `${scenario.name} 必须关闭连接`);
+    assert.deepEqual(connection.appliedVersions, [], `${scenario.name} 不得执行迁移`);
+  }
 });
 
 test("拒绝非 32 字节十六进制 Keychain 密钥，避免生成不可恢复数据库", async () => {

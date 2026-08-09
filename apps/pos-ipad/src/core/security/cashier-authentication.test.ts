@@ -108,7 +108,10 @@ test("过期在线票据不使普通离线缓存失效，但不会成为后续 A
 
   assert.equal(result.source, "offline-cache");
   assert.equal(result.session.cashierId, "CASHIER-1");
-  assert.equal(await authorization.get(), null);
+  assert.equal(
+    await authorization.get({ storeCode: "1003", deviceCode: "POS_1003_1011" }),
+    null,
+  );
 });
 
 test("在线成功用同门店同设备同条码覆盖缓存并激活收银员票据", async () => {
@@ -140,7 +143,10 @@ test("在线成功用同门店同设备同条码覆盖缓存并激活收银员�
     await cache.load("1003", "POS_1003_1011", "CASHIER-BARCODE"),
     session
   );
-  assert.equal(await authorization.get(), "cashier-ticket");
+  assert.equal(
+    await authorization.get({ storeCode: "1003", deviceCode: "POS_1003_1011" }),
+    "cashier-ticket",
+  );
 });
 
 test("在线明确拒绝绝不回退缓存", async () => {
@@ -276,6 +282,7 @@ test("HBPOSE 紧急二维码在普通 API 与离线缓存之前分流且不写�
               "2026-07-28T10:01:00.000Z",
             ),
             source: "emergency-override",
+            scope: device,
             systemUptimeMs: 10_000,
             trustedNowEpochMs: Date.parse(
               "2026-07-28T10:00:00.000Z",
@@ -339,7 +346,10 @@ test("HBPOSE 紧急二维码在普通 API 与离线缓存之前分流且不写�
     await cache.load("S1", "IPAD-1", "HBPOSE2-signed-token"),
     null,
   );
-  assert.equal(await authorization.get(), "HBPOSE2-signed-token");
+  assert.equal(
+    await authorization.get({ storeCode: "S1", deviceCode: "IPAD-1" }),
+    "HBPOSE2-signed-token",
+  );
 });
 
 test("紧急二维码拒绝不回退普通缓存，也不触发条码 API", async () => {

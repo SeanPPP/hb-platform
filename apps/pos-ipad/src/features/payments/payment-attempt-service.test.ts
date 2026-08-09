@@ -959,6 +959,362 @@ test("同一订单的并发重复点击共享一次 provider 调用和同一 att
   assert.equal(left.attempt.references.checkoutId, "checkout-1");
 });
 
+test("Pending 受控恢复在卸载 abort 后保留原状态和身份，不追加 Unknown CAS", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const pending = attempt({
+    attemptId: "attempt-abortable-recovery",
+    idempotencyKey: "key-abortable-recovery",
+    state: "Pending",
+    references: references({ checkoutId: "checkout-abortable-recovery" }),
+  });
+  ledger.seed(pending, true);
+  const service = createService({ ledger, provider });
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(pending.createdAtIso) + 90_000;
+  ledger.failUpdateWhenState = "Unknown";
+  provider.recoverWithControlResult = async () => {
+    controller.abort();
+    return {
+      ...result("Unknown", { checkoutId: "checkout-should-not-merge" }),
+      responseCode: "REQUEST_ABORTED",
+    };
+  };
+
+  const recovered = await service.recoverAttempt(pending.attemptId, {
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.equal(provider.recoverCalls, 0);
+  assert.equal(provider.recoverWithControlCalls, 1);
+  assert.strictEqual(provider.recoveryControls[0]?.signal, controller.signal);
+  assert.equal(provider.recoveryControls[0]?.deadlineAtMs, deadlineAtMs);
+  assert.equal(recovered.attempt.state, "Pending");
+  assert.equal(recovered.attempt.attemptId, pending.attemptId);
+  assert.equal(recovered.attempt.idempotencyKey, pending.idempotencyKey);
+  assert.equal(recovered.attempt.references.checkoutId, pending.references.checkoutId);
+  assert.equal((await ledger.get(pending.attemptId))?.state, "Pending");
+  assert.equal(ledger.attempts.size, 1);
+});
+
+test("Created 受控恢复在 Submitted CAS 后 abort 时保留 Submitted，不追加 Unknown CAS", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const created = attempt({
+    attemptId: "attempt-created-abort-neutral",
+    idempotencyKey: "key-created-abort-neutral",
+    state: "Created",
+  });
+  ledger.seed(created, true);
+  const controller = new AbortController();
+  ledger.failUpdateWhenState = "Unknown";
+  provider.recoverWithControlResult = async () => {
+    controller.abort();
+    return {
+      ...result("Unknown", { checkoutId: "checkout-should-not-merge" }),
+      responseCode: "SQUARE_RECOVERY_ABORTED",
+    };
+  };
+
+  const recovered = await createService({ ledger, provider }).recoverAttempt(
+    created.attemptId,
+    {
+      signal: controller.signal,
+      deadlineAtMs: Date.parse(created.createdAtIso) + 90_000,
+    },
+  );
+
+  assert.equal(recovered.attempt.state, "Submitted");
+  assert.equal(recovered.attempt.attemptId, created.attemptId);
+  assert.equal(recovered.attempt.idempotencyKey, created.idempotencyKey);
+  assert.equal(recovered.attempt.references.checkoutId, null);
+  assert.equal((await ledger.get(created.attemptId))?.state, "Submitted");
+  assert.equal(provider.submitCalls, 0);
+  assert.equal(provider.recoverWithControlCalls, 1);
+});
+
+test("受控恢复 deadline exceeded 即使 signal 尚未 abort 也保留 Pending", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const pending = attempt({
+    attemptId: "attempt-deadline-neutral",
+    state: "Pending",
+    references: references({ checkoutId: "checkout-deadline-neutral" }),
+  });
+  ledger.seed(pending, true);
+  const controller = new AbortController();
+  ledger.failUpdateWhenState = "Unknown";
+  provider.recoverWithControlResult = async () => ({
+    ...result("Unknown", { checkoutId: "checkout-should-not-merge" }),
+    responseCode: "SQUARE_RECOVERY_DEADLINE_EXCEEDED",
+  });
+
+  const recovered = await createService({ ledger, provider }).recoverAttempt(
+    pending.attemptId,
+    {
+      signal: controller.signal,
+      deadlineAtMs: Date.parse(pending.createdAtIso) + 90_000,
+    },
+  );
+
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(recovered.attempt.state, "Pending");
+  assert.equal(recovered.attempt.attemptId, pending.attemptId);
+  assert.equal(recovered.attempt.idempotencyKey, pending.idempotencyKey);
+  assert.equal(recovered.attempt.references.checkoutId, pending.references.checkoutId);
+});
+
+test("受控恢复的其他 Unknown（包括未 abort 或短码缺失）仍按原逻辑持久化", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const pending = attempt({
+    attemptId: "attempt-uncontrolled-unknown",
+    state: "Pending",
+  });
+  ledger.seed(pending, true);
+  const controller = new AbortController();
+  provider.recoverWithControlResult = async () => ({
+    ...result("Unknown"),
+    responseCode: "REQUEST_ABORTED",
+  });
+
+  const recovered = await createService({ ledger, provider }).recoverAttempt(
+    pending.attemptId,
+    {
+      signal: controller.signal,
+      deadlineAtMs: Date.parse(pending.createdAtIso) + 90_000,
+    },
+  );
+
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(recovered.attempt.state, "Unknown");
+  assert.equal(recovered.attempt.lastErrorCode, "REQUEST_ABORTED");
+  assert.equal((await ledger.get(pending.attemptId))?.state, "Unknown");
+
+  const missingCodeLedger = new MemoryLedger();
+  const missingCodeProvider = new AbortableFakeProvider("square");
+  const missingCodeAttempt = attempt({
+    attemptId: "attempt-unknown-missing-code",
+    state: "Pending",
+  });
+  missingCodeLedger.seed(missingCodeAttempt, true);
+  missingCodeProvider.recoverWithControlResult = async () => result("Unknown");
+
+  const missingCodeRecovered = await createService({
+    ledger: missingCodeLedger,
+    provider: missingCodeProvider,
+  }).recoverAttempt(missingCodeAttempt.attemptId, {
+    signal: new AbortController().signal,
+    deadlineAtMs: Date.parse(missingCodeAttempt.createdAtIso) + 90_000,
+  });
+
+  assert.equal(missingCodeRecovered.attempt.state, "Unknown");
+  assert.equal(missingCodeRecovered.attempt.lastErrorCode, null);
+  assert.equal(
+    (await missingCodeLedger.get(missingCodeAttempt.attemptId))?.state,
+    "Unknown",
+  );
+});
+
+test("受控恢复在 provider 已返回真实状态后即使 signal 迟到 abort 也持久化真实结果", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const pending = attempt({
+    attemptId: "attempt-late-abort-real-result",
+    state: "Pending",
+  });
+  ledger.seed(pending, true);
+  const controller = new AbortController();
+  provider.recoverWithControlResult = async () => {
+    controller.abort();
+    return {
+      ...result("Declined"),
+      responseCode: "CARD_DECLINED",
+    };
+  };
+
+  const recovered = await createService({ ledger, provider }).recoverAttempt(
+    pending.attemptId,
+    {
+      signal: controller.signal,
+      deadlineAtMs: Date.parse(pending.createdAtIso) + 90_000,
+    },
+  );
+
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(recovered.attempt.state, "Declined");
+  assert.equal(recovered.attempt.lastErrorCode, "CARD_DECLINED");
+  assert.equal((await ledger.get(pending.attemptId))?.state, "Declined");
+});
+
+test("Created Square purchase 带 deadline 恢复时先 CAS Submitted，再调用私有恢复 capability", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const created = attempt({
+    attemptId: "attempt-created-abortable-purchase",
+    idempotencyKey: "key-created-abortable-purchase",
+    state: "Created",
+  });
+  ledger.seed(created, true);
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(created.createdAtIso) + 90_000;
+  provider.recoverWithControlResult = async (submitted, control) => {
+    const persisted = await ledger.get(submitted.attemptId);
+    assert.equal(submitted.state, "Submitted");
+    assert.equal(persisted?.state, "Submitted");
+    assert.equal(control.signal, controller.signal);
+    assert.equal(control.deadlineAtMs, deadlineAtMs);
+    return result("Pending", { checkoutId: "checkout-created-abortable" });
+  };
+  const service = createService({ ledger, provider });
+
+  const recovered = await service.recoverAttempt(created.attemptId, {
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.equal(provider.recoverWithControlCalls, 1);
+  assert.equal(provider.submitCalls, 0);
+  assert.equal(provider.refundCalls, 0);
+  assert.equal(provider.recoverCalls, 0);
+  assert.equal(recovered.attempt.state, "Pending");
+  assert.equal(recovered.attempt.attemptId, created.attemptId);
+  assert.equal(recovered.attempt.idempotencyKey, created.idempotencyKey);
+  assert.equal(ledger.attempts.size, 1);
+});
+
+test("Created Square refund 带 deadline 恢复时同样走私有恢复 capability，不绕过取消能力", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const created = attempt({
+    attemptId: "attempt-created-abortable-refund",
+    idempotencyKey: "key-created-abortable-refund",
+    operation: "refund",
+    amount: { currency: "AUD", cents: -500 },
+    state: "Created",
+    references: references({ paymentId: "payment-original" }),
+  });
+  ledger.seed(created, true);
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(created.createdAtIso) + 90_000;
+  provider.recoverWithControlResult = async (submitted, control) => {
+    const persisted = await ledger.get(submitted.attemptId);
+    assert.equal(submitted.state, "Submitted");
+    assert.equal(persisted?.state, "Submitted");
+    assert.equal(submitted.operation, "refund");
+    assert.equal(control.signal, controller.signal);
+    assert.equal(control.deadlineAtMs, deadlineAtMs);
+    return result("Pending", { paymentId: "payment-original" });
+  };
+  const service = createService({ ledger, provider });
+
+  const recovered = await service.recoverAttempt(created.attemptId, {
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.equal(provider.recoverWithControlCalls, 1);
+  assert.equal(provider.submitCalls, 0);
+  assert.equal(provider.refundCalls, 0);
+  assert.equal(provider.recoverCalls, 0);
+  assert.equal(recovered.attempt.state, "Pending");
+  assert.equal(recovered.attempt.attemptId, created.attemptId);
+  assert.equal(recovered.attempt.idempotencyKey, created.idempotencyKey);
+  assert.equal(ledger.attempts.size, 1);
+});
+
+test("Created 恢复在无 signal 或 provider 不支持取消时保持原 submit/refund 行为", async () => {
+  const noSignalLedger = new MemoryLedger();
+  const abortableProvider = new AbortableFakeProvider("square");
+  const purchase = attempt({
+    attemptId: "attempt-created-no-signal",
+    state: "Created",
+  });
+  noSignalLedger.seed(purchase, true);
+
+  await createService({
+    ledger: noSignalLedger,
+    provider: abortableProvider,
+  }).recoverAttempt(purchase.attemptId);
+
+  assert.equal(abortableProvider.submitCalls, 1);
+  assert.equal(abortableProvider.recoverWithControlCalls, 0);
+  assert.equal(abortableProvider.recoverCalls, 0);
+
+  const nonAbortableLedger = new MemoryLedger();
+  const nonAbortableProvider = new FakeProvider("square");
+  const refund = attempt({
+    attemptId: "attempt-created-non-abortable-refund",
+    operation: "refund",
+    amount: { currency: "AUD", cents: -500 },
+    state: "Created",
+    references: references({ paymentId: "payment-original" }),
+  });
+  nonAbortableLedger.seed(refund, true);
+
+  await createService({
+    ledger: nonAbortableLedger,
+    provider: nonAbortableProvider,
+  }).recoverAttempt(refund.attemptId, {
+    signal: new AbortController().signal,
+    deadlineAtMs: Date.parse(refund.createdAtIso) + 90_000,
+  });
+
+  assert.equal(nonAbortableProvider.refundCalls, 1);
+  assert.equal(nonAbortableProvider.submitCalls, 0);
+  assert.equal(nonAbortableProvider.recoverCalls, 0);
+});
+
+test("跨 service 的不同 signal 或 manual 不 join，只有同一 signal 可复用", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new AbortableFakeProvider("square");
+  const pending = attempt({
+    attemptId: "attempt-owned-recovery-flight",
+    idempotencyKey: "key-owned-recovery-flight",
+    state: "Pending",
+    references: references({ checkoutId: "checkout-owned-recovery-flight" }),
+  });
+  ledger.seed(pending, true);
+  const gate = createDeferred<PaymentProviderResult>();
+  provider.recoverWithControlResult = () => gate.promise;
+  const firstService = createService({ ledger, provider });
+  const secondService = createService({ ledger, provider });
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const deadlineAtMs = Date.parse(pending.createdAtIso) + 90_000;
+
+  const first = firstService.recoverAttempt(pending.attemptId, {
+    signal: firstController.signal,
+    deadlineAtMs,
+  });
+  await waitUntil(() => provider.recoverWithControlCalls === 1);
+  const sameOwner = secondService.recoverAttempt(pending.attemptId, {
+    signal: firstController.signal,
+    deadlineAtMs,
+  });
+  const differentOwner = secondService.recoverAttempt(pending.attemptId, {
+    signal: secondController.signal,
+    deadlineAtMs,
+  });
+  const manual = secondService.recoverAttempt(pending.attemptId);
+
+  gate.resolve(result("Unknown", { checkoutId: "checkout-owned-recovery-flight" }));
+  const settled = await Promise.allSettled([
+    first,
+    sameOwner,
+    differentOwner,
+    manual,
+  ]);
+  assert.notStrictEqual(differentOwner, first);
+  assert.notStrictEqual(manual, first);
+  assert.equal(settled[0]?.status, "fulfilled");
+  assert.equal(settled[1]?.status, "fulfilled");
+  assert.equal(settled[2]?.status, "rejected");
+  assert.equal(settled[3]?.status, "rejected");
+  assert.equal(provider.recoverWithControlCalls, 1);
+});
+
 test("两个 service 实例的并发 start 共享模块级订单 single-flight", async () => {
   const ledger = new MemoryLedger();
   const firstProvider = new FakeProvider("square");
@@ -1679,6 +2035,30 @@ class FakeProvider implements OnlinePaymentPort {
   public async refund(value: PaymentAttempt): Promise<PaymentProviderResult> {
     this.refundCalls += 1;
     return withDefaultProtectedEvidence(await this.refundResult(value), value);
+  }
+}
+
+class AbortableFakeProvider extends FakeProvider {
+  public recoverWithControlCalls = 0;
+  public readonly recoveryControls: {
+    signal: AbortSignal;
+    deadlineAtMs: number;
+  }[] = [];
+  public recoverWithControlResult: (
+    attempt: PaymentAttempt,
+    control: { signal: AbortSignal; deadlineAtMs: number },
+  ) => Promise<PaymentProviderResult> = async () => result("Unknown");
+
+  public async recoverWithControl(
+    value: PaymentAttempt,
+    control: { signal: AbortSignal; deadlineAtMs: number },
+  ): Promise<PaymentProviderResult> {
+    this.recoverWithControlCalls += 1;
+    this.recoveryControls.push(control);
+    return withDefaultProtectedEvidence(
+      await this.recoverWithControlResult(value, control),
+      value,
+    );
   }
 }
 

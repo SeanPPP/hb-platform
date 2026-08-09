@@ -53,7 +53,6 @@ export const PAYMENT_MIN_TOUCH_TARGET = 44;
 const SQUARE_AUTO_RECOVERY_INTERVAL_MS = 2_000;
 const SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS = 45;
 const SQUARE_AUTO_RECOVERY_WINDOW_MS = 90_000;
-const squareAutoRecoveryDeadlines = new Map<string, number>();
 
 export type PaymentInstallmentModeIssue = "unavailable";
 
@@ -120,10 +119,8 @@ export function PaymentScreen({
     preparedCashCancellationOpen,
     setPreparedCashCancellationOpen,
   ] = useState(false);
-  const squareAutoRecovery = useRef<{
-    attemptId: string | null;
-    recoveryCount: number;
-  }>({ attemptId: null, recoveryCount: 0 });
+  const latestState = useRef(state);
+  latestState.current = state;
 
   useEffect(() => {
     void presenter.initialize();
@@ -155,61 +152,118 @@ export function PaymentScreen({
 
   useEffect(() => {
     const attemptId = state.attemptId;
-    if (squareAutoRecovery.current.attemptId !== attemptId) {
-      squareAutoRecovery.current = { attemptId, recoveryCount: 0 };
-    }
-    if (
-      attemptId &&
-      state.provider === "square" &&
-      state.runtimeStatus !== "pending"
-    ) {
-      squareAutoRecoveryDeadlines.delete(attemptId);
-    }
     if (
       !attemptId ||
       state.provider !== "square" ||
       state.phase !== "pending" ||
       state.runtimeStatus !== "pending" ||
-      state.busy ||
-      state.recoveryInFlight === true ||
-      !state.allowedActions.recover ||
-      squareAutoRecovery.current.recoveryCount >=
-        SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS
+      !state.allowedActions.recover
     ) {
       return;
     }
 
     const now = Date.now();
-    const existingDeadline = squareAutoRecoveryDeadlines.get(attemptId);
-    const deadlineAt =
-      existingDeadline ?? now + SQUARE_AUTO_RECOVERY_WINDOW_MS;
-    if (existingDeadline === undefined) {
-      squareAutoRecoveryDeadlines.set(attemptId, deadlineAt);
-    }
-    if (now >= deadlineAt) return;
+    const createdAtMs = canonicalAttemptCreatedAtMs(
+      state.attemptCreatedAtIso,
+      now,
+    );
+    if (createdAtMs === null) return;
+    const deadlineAtMs = createdAtMs + SQUARE_AUTO_RECOVERY_WINDOW_MS;
+    let disposed = false;
+    let tickTimer: ReturnType<typeof setTimeout> | null = null;
+    let activeController: AbortController | null = null;
 
-    // Square checkout 已先耐久化；这里只恢复同一 attempt，绝不创建第二笔付款。
-    const timer = setTimeout(() => {
-      const tracker = squareAutoRecovery.current;
+    const stopAtDeadline = () => {
+      if (tickTimer !== null) clearTimeout(tickTimer);
+      tickTimer = null;
+      activeController?.abort();
+    };
+
+    const scheduleNext = () => {
+      if (disposed) return;
+      const scheduleNow = Date.now();
+      if (scheduleNow >= deadlineAtMs) {
+        stopAtDeadline();
+        return;
+      }
+      const nextTickNumber =
+        Math.floor((scheduleNow - createdAtMs) / SQUARE_AUTO_RECOVERY_INTERVAL_MS) +
+        1;
+      const nextTickAtMs =
+        createdAtMs + nextTickNumber * SQUARE_AUTO_RECOVERY_INTERVAL_MS;
       if (
-        tracker.attemptId !== attemptId ||
-        tracker.recoveryCount >= SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS ||
-        Date.now() >= deadlineAt
+        nextTickNumber > SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS ||
+        nextTickAtMs >= deadlineAtMs
       ) {
         return;
       }
-      tracker.recoveryCount += 1;
-      void presenter.recover({ background: true });
-    }, Math.min(SQUARE_AUTO_RECOVERY_INTERVAL_MS, deadlineAt - now));
-    return () => clearTimeout(timer);
+      tickTimer = setTimeout(() => {
+        tickTimer = null;
+        void recoverAtAnchoredTick(nextTickAtMs);
+      }, Math.max(0, nextTickAtMs - scheduleNow));
+    };
+
+    const recoverAtAnchoredTick = async (scheduledAtMs: number) => {
+      if (disposed) return;
+      const tickNow = Date.now();
+      // 事件循环若跨过了下一个锚点，本 tick 已错过；直接跳到未来锚点，不追赶。
+      if (
+        tickNow >= deadlineAtMs ||
+        tickNow >= scheduledAtMs + SQUARE_AUTO_RECOVERY_INTERVAL_MS
+      ) {
+        scheduleNext();
+        return;
+      }
+      const current = latestState.current;
+      if (
+        current.attemptId !== attemptId ||
+        current.attemptCreatedAtIso !== state.attemptCreatedAtIso ||
+        current.provider !== "square" ||
+        current.phase !== "pending" ||
+        current.runtimeStatus !== "pending" ||
+        current.busy ||
+        current.recoveryInFlight === true ||
+        !current.allowedActions.recover
+      ) {
+        scheduleNext();
+        return;
+      }
+
+      // 每个真正发起的后台恢复只拥有这个 controller；任何生命周期切换只 abort 它。
+      const controller = new AbortController();
+      activeController = controller;
+      try {
+        await presenter.recover({
+          background: true,
+          signal: controller.signal,
+          deadlineAtMs,
+        });
+      } catch {
+        // 后台恢复不能产生 unhandled rejection；公开状态由 presenter/runtime 稳定映射。
+      } finally {
+        if (activeController === controller) activeController = null;
+        scheduleNext();
+      }
+    };
+
+    const deadlineTimer = setTimeout(
+      stopAtDeadline,
+      Math.max(0, deadlineAtMs - now),
+    );
+    scheduleNext();
+    return () => {
+      disposed = true;
+      clearTimeout(deadlineTimer);
+      if (tickTimer !== null) clearTimeout(tickTimer);
+      activeController?.abort();
+    };
   }, [
     presenter,
     state.allowedActions.recover,
     state.attemptId,
-    state.busy,
+    state.attemptCreatedAtIso,
     state.phase,
     state.provider,
-    state.recoveryInFlight,
     state.runtimeStatus,
   ]);
 
@@ -1812,6 +1866,28 @@ function canSafelyLeave(state: PaymentPresenterState): boolean {
     state.phase === "declined" ||
     state.phase === "success"
   );
+}
+
+function canonicalAttemptCreatedAtMs(
+  createdAtIso: string | null,
+  nowMs: number,
+): number | null {
+  if (!createdAtIso) return null;
+  const createdAtMs = Date.parse(createdAtIso);
+  if (!Number.isFinite(createdAtMs)) return null;
+  try {
+    // 自动恢复窗口只能由持久化的 canonical UTC ISO 身份决定。
+    if (new Date(createdAtMs).toISOString() !== createdAtIso) return null;
+  } catch {
+    return null;
+  }
+  if (
+    createdAtMs > nowMs ||
+    nowMs >= createdAtMs + SQUARE_AUTO_RECOVERY_WINDOW_MS
+  ) {
+    return null;
+  }
+  return createdAtMs;
 }
 
 function shortIdentifier(value: string): string {

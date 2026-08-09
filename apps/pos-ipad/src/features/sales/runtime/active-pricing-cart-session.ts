@@ -15,6 +15,8 @@ import {
 } from "@/features/sales/domain";
 
 export const ACTIVE_PRICING_CART_BUSY = "ACTIVE_PRICING_CART_BUSY";
+export const ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED =
+  "ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED";
 export const ACTIVE_PRICING_CART_STALE_LEASE =
   "ACTIVE_PRICING_CART_STALE_LEASE";
 export const ACTIVE_PRICING_CART_STALE_SNAPSHOT =
@@ -76,6 +78,7 @@ export class ActivePricingCartSession {
   private readonly committedOrderTombstoneLimit: number;
   private readonly canStartMutation: () => boolean;
   private activeLeaseToken: symbol | null = null;
+  private scopeInvalidated = false;
   private pendingRecallRecovery: RecallActiveBinding | null = null;
   private recallBinding: RecallActiveBinding | null = null;
   private sessionRevision = 0;
@@ -99,10 +102,12 @@ export class ActivePricingCartSession {
   }
 
   public read(): ActivePricingCartSessionSnapshot {
+    this.assertDeviceScopeValid();
     return this.current;
   }
 
   public getSnapshot(): CartSnapshot {
+    this.assertDeviceScopeValid();
     return this.current.cart;
   }
 
@@ -117,12 +122,24 @@ export class ActivePricingCartSession {
   }
 
   public isCurrentCartSnapshot(snapshot: CartSnapshot): boolean {
+    this.assertDeviceScopeValid();
     return snapshot === this.current.cart;
   }
 
   /** EAS reload 只能在没有正在提交的 exclusive 操作时执行。 */
   public hasPendingExclusiveOperation(): boolean {
     return this.activeLeaseToken !== null;
+  }
+
+  /**
+   * 设备凭据已切换到另一 scope 后，旧 runtime 绝不能继续提交旧门店购物车。
+   * 此操作允许在 active lease 内同步执行：不会等待或抢占 lease，只令当前及未来写操作失效。
+   */
+  public invalidateForDeviceScope(): boolean {
+    if (this.scopeInvalidated) return false;
+    // 中文注释：保留只读快照供 UI 收尾，但 runtime 重建前所有写入和支付租约一律拒绝。
+    this.scopeInvalidated = true;
+    return true;
   }
 
   /**
@@ -167,6 +184,7 @@ export class ActivePricingCartSession {
   }
 
   public hasMergeCompatibleLines(): boolean {
+    this.assertDeviceScopeValid();
     return this.cart.hasMergeCompatibleLines();
   }
 
@@ -398,6 +416,7 @@ export class ActivePricingCartSession {
   private runExclusiveInternal<T>(
     operation: (lease: ActivePricingCartLease) => T | Promise<T>,
   ): Promise<T> {
+    this.assertDeviceScopeValid();
     if (this.activeLeaseToken !== null) {
       return Promise.reject(
         codedError(
@@ -451,7 +470,9 @@ export class ActivePricingCartSession {
         return this.setRecallBindingInternal(recallBinding);
       },
       clearAfterCommittedOrder: (orderGuid: string) => {
-        this.assertLease(token);
+        // 中文注释：设备 scope 切换后，只有仍由本次支付持有的原 lease
+        // 可为已耐久完成订单收尾；其他 lease 操作仍必须先通过 scope 校验。
+        this.assertActiveLeaseToken(token);
         return this.clearAfterCommittedOrderInternal(orderGuid);
       },
     });
@@ -617,6 +638,7 @@ export class ActivePricingCartSession {
   }
 
   private assertMutationAllowed(): void {
+    this.assertDeviceScopeValid();
     if (!this.canStartMutation()) {
       throw codedError(
         ACTIVE_PRICING_CART_UPDATE_TRANSITION,
@@ -626,10 +648,24 @@ export class ActivePricingCartSession {
   }
 
   private assertLease(token: symbol): void {
+    this.assertDeviceScopeValid();
+    this.assertActiveLeaseToken(token);
+  }
+
+  private assertActiveLeaseToken(token: symbol): void {
     if (this.activeLeaseToken !== token) {
       throw codedError(
         ACTIVE_PRICING_CART_STALE_LEASE,
         "Active pricing cart lease is no longer valid.",
+      );
+    }
+  }
+
+  private assertDeviceScopeValid(): void {
+    if (this.scopeInvalidated) {
+      throw codedError(
+        ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED,
+        "Active pricing cart is invalidated by a device scope change.",
       );
     }
   }

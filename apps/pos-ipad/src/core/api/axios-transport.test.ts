@@ -3,11 +3,52 @@ import test from "node:test";
 
 import { AxiosError, create, type AxiosRequestConfig } from "axios";
 
-import { createAxiosHbposTransport } from "./axios-transport";
+import { createAxiosHbposTransport, type HbposRequestCredentials } from "./axios-transport";
 import { HbposApiError, HbposCashierApi } from "./hbpos-api";
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve(value) {
+      resolvePromise?.(value);
+    },
+    reject(reason) {
+      rejectPromise?.(reason);
+    },
+  };
+}
+
+function settlesWithin<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`request did not settle within ${timeoutMs}ms`));
+    }, timeoutMs);
+    request.then(
+      (response) => {
+        clearTimeout(timer);
+        resolve(response);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证头", async () => {
   let request: AxiosRequestConfig | undefined;
+  let credentialReads = 0;
   const instance = create({
     adapter: async (config) => {
       request = config;
@@ -16,6 +57,7 @@ test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证
   });
   const transport = createAxiosHbposTransport("https://hbpos.example", {
     async getCredentials() {
+      credentialReads += 1;
       return {
         device: {
           authorizationCode: "device-secret",
@@ -30,6 +72,7 @@ test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证
 
   await transport.request({ method: "GET", url: "/api/v1/cashiers/session" });
 
+  assert.equal(credentialReads, 1);
   assert.equal(request?.headers?.Authorization, "Bearer device-secret");
   assert.equal(request?.headers?.["X-HBPOS-Device-Code"], "POS-001");
   assert.equal(request?.headers?.["X-HBPOS-Store-Code"], "1003");
@@ -334,7 +377,7 @@ test("非条码登录请求的 401 仍触发默认全局认证失效处理", asy
   assert.deepEqual(calls, ["401"]);
 });
 
-test("目录请求可单独关闭超时并透传取消信号，普通请求仍保留实例默认超时", async () => {
+test("目录 timeout=0 保持 0，普通请求继承默认总预算并向 adapter 传递正的剩余值", async () => {
   const requests: AxiosRequestConfig[] = [];
   const instance = create({
     timeout: 15_000,
@@ -367,10 +410,16 @@ test("目录请求可单独关闭超时并透传取消信号，普通请求仍�
     url: "/api/v1/orders",
   });
 
-  assert.equal(requests[0]?.timeout, 0);
-  assert.equal(requests[0]?.signal, controller.signal);
-  assert.equal(requests[1]?.timeout, 15_000);
-  assert.equal(requests[1]?.signal, undefined);
+  const catalogRequest = requests[0];
+  const normalRequest = requests[1];
+  const normalRequestTimeout = normalRequest?.timeout;
+
+  assert.equal(catalogRequest?.timeout, 0);
+  assert.equal(catalogRequest?.signal, controller.signal);
+  assert.ok(typeof normalRequestTimeout === "number");
+  assert.ok(normalRequestTimeout > 0);
+  assert.ok(normalRequestTimeout <= 15_000);
+  assert.equal(normalRequest?.signal, undefined);
 });
 
 test("主动取消保留可识别错误且不得触发认证失效处理", async () => {
@@ -413,6 +462,191 @@ test("主动取消保留可识别错误且不得触发认证失效处理", async
       && /cancel/i.test(error.message),
   );
   assert.deepEqual(authenticationFailures, []);
+});
+
+test("凭据读取等待中取消会立即停止派发，并保留 REQUEST_ABORTED", async () => {
+  const credentials = createDeferred<HbposRequestCredentials>();
+  let credentialReads = 0;
+  let adapterCalls = 0;
+  const instance = create({
+    adapter: async (config) => {
+      adapterCalls += 1;
+      return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    getCredentials() {
+      credentialReads += 1;
+      return credentials.promise;
+    },
+  }, instance);
+  const controller = new AbortController();
+  const request = transport.request({
+    method: "GET",
+    url: "/api/v1/orders",
+    signal: controller.signal,
+    timeoutMs: 0,
+  });
+
+  await Promise.resolve();
+  assert.equal(credentialReads, 1);
+  controller.abort();
+  await assert.rejects(
+    () => settlesWithin(request, 50),
+    (error: unknown) => error instanceof HbposApiError && error.code === "REQUEST_ABORTED",
+  );
+  assert.equal(adapterCalls, 0);
+
+  credentials.resolve({});
+  await Promise.resolve();
+  assert.equal(adapterCalls, 0);
+});
+
+test("已取消的请求不会读取凭据或派发 HTTP", async () => {
+  let credentialReads = 0;
+  let adapterCalls = 0;
+  const instance = create({
+    adapter: async (config) => {
+      adapterCalls += 1;
+      return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    async getCredentials() {
+      credentialReads += 1;
+      return {};
+    },
+  }, instance);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => transport.request({ method: "GET", url: "/api/v1/orders", signal: controller.signal }),
+    (error: unknown) => error instanceof HbposApiError && error.code === "REQUEST_ABORTED",
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(adapterCalls, 0);
+});
+
+test("凭据读取超时沿用无响应语义，晚到结果不得派发 HTTP", async () => {
+  const credentials = createDeferred<HbposRequestCredentials>();
+  let adapterCalls = 0;
+  const instance = create({
+    adapter: async (config) => {
+      adapterCalls += 1;
+      return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    getCredentials() {
+      return credentials.promise;
+    },
+  }, instance);
+
+  await assert.rejects(
+    () => settlesWithin(transport.request({ method: "GET", url: "/api/v1/orders", timeoutMs: 5 }), 50),
+    (error: unknown) =>
+      error instanceof HbposApiError
+      && error.code === "NO_HTTP_RESPONSE"
+      && error.networkCode === "ECONNABORTED",
+  );
+  assert.equal(adapterCalls, 0);
+
+  credentials.resolve({});
+  await Promise.resolve();
+  assert.equal(adapterCalls, 0);
+});
+
+test("凭据读取超时后晚拒绝也不得派发 HTTP", async () => {
+  const credentials = createDeferred<HbposRequestCredentials>();
+  let adapterCalls = 0;
+  const instance = create({
+    adapter: async (config) => {
+      adapterCalls += 1;
+      return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+    },
+  });
+  const transport = createAxiosHbposTransport("https://hbpos.example", {
+    getCredentials() {
+      return credentials.promise;
+    },
+  }, instance);
+
+  await assert.rejects(
+    () => settlesWithin(transport.request({ method: "GET", url: "/api/v1/orders", timeoutMs: 5 }), 50),
+    (error: unknown) => error instanceof HbposApiError && error.code === "NO_HTTP_RESPONSE",
+  );
+  credentials.reject(new Error("late credential failure"));
+  await Promise.resolve();
+  assert.equal(adapterCalls, 0);
+});
+
+test("有限 timeout 在凭据读取后仅向 adapter 传递剩余预算", async () => {
+  const credentials = createDeferred<HbposRequestCredentials>();
+  let adapterTimeout: number | undefined;
+  let now = 1_000;
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const instance = create({
+      adapter: async (config) => {
+        adapterTimeout = config.timeout;
+        return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+      },
+    });
+    const transport = createAxiosHbposTransport("https://hbpos.example", {
+      getCredentials() {
+        return credentials.promise;
+      },
+    }, instance);
+
+    const request = transport.request({ method: "GET", url: "/api/v1/orders", timeoutMs: 100 });
+    await Promise.resolve();
+    now = 1_040;
+    credentials.resolve({});
+
+    await request;
+    assert.equal(adapterTimeout, 60);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test("凭据阶段耗尽有限 timeout 时以 ECONNABORTED 失败且不得派发 HTTP", async () => {
+  const credentials = createDeferred<HbposRequestCredentials>();
+  let adapterCalls = 0;
+  let now = 1_000;
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const instance = create({
+      adapter: async (config) => {
+        adapterCalls += 1;
+        return { config, status: 200, statusText: "OK", headers: {}, data: {} };
+      },
+    });
+    const transport = createAxiosHbposTransport("https://hbpos.example", {
+      getCredentials() {
+        return credentials.promise;
+      },
+    }, instance);
+
+    const request = transport.request({ method: "GET", url: "/api/v1/orders", timeoutMs: 100 });
+    await Promise.resolve();
+    now = 1_100;
+    credentials.resolve({});
+
+    await assert.rejects(
+      () => request,
+      (error: unknown) =>
+        error instanceof HbposApiError
+        && error.code === "NO_HTTP_RESPONSE"
+        && error.networkCode === "ECONNABORTED",
+    );
+    assert.equal(adapterCalls, 0);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test("无 HTTP 响应（ERR_NETWORK）时抛出可读中文提示并携带 networkCode", async () => {

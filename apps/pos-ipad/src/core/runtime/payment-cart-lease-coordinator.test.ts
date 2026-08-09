@@ -85,6 +85,54 @@ test("订单确认后才清空购物车并释放支付 lease", async () => {
   assert.equal(active.read().cart.lines.length, 1);
 });
 
+test("设备 scope 失效后已耐久完成订单仍由原支付 lease 清车并释放", async () => {
+  const active = session(cartWithDiscount());
+  const leaseCoordinator = createCoordinator(active, null);
+  const lease = await leaseCoordinator.acquireExact({
+    checkoutIntentId: "checkout-scope-invalidated",
+    expectedRevision: active.read().cart.revision,
+  });
+
+  await assert.rejects(
+    () =>
+      leaseCoordinator.clearAfterCompleted(
+        { ...lease },
+        "wrong-lease-must-not-clear",
+      ),
+    hasCode("PAYMENT_CART_LEASE_CONFLICT"),
+  );
+  assert.equal(active.read().cart.lines.length, 1);
+
+  assert.equal(active.invalidateForDeviceScope(), true);
+  await leaseCoordinator.clearAfterCompleted(lease, "durable-completed-order");
+  assert.equal(active.hasPendingExclusiveOperation(), false);
+  await assert.rejects(
+    () => leaseCoordinator.readExact(lease),
+    hasCode("PAYMENT_CART_LEASE_CONFLICT"),
+  );
+});
+
+test("清车失败时仍保留原支付 lease，不能把完成态误当作安全退出", async () => {
+  const active = new ActivePricingCartSession(
+    cartWithDiscount(),
+    () => cartWithDiscount(),
+  );
+  const leaseCoordinator = createCoordinator(active, null);
+  const lease = await leaseCoordinator.acquireExact({
+    checkoutIntentId: "checkout-clear-failure",
+    expectedRevision: active.read().cart.revision,
+  });
+
+  await assert.rejects(
+    () => leaseCoordinator.clearAfterCompleted(lease, "order-clear-failure"),
+    /Empty cart factory must return a cart without lines/u,
+  );
+  assert.equal(await leaseCoordinator.readExact(lease), lease);
+  assert.equal(active.read().cart.lines.length, 1);
+
+  await leaseCoordinator.releaseAfterSafeCancel(lease, "order-clear-failure");
+});
+
 test("冷启动先恢复 promotion/asOf/手工折扣状态并立即持有写锁", async () => {
   const recoveredCart = cartWithPromotionAndManualDiscount();
   const recovered = recoveredCart.snapshot();

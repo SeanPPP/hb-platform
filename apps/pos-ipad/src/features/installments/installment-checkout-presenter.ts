@@ -80,7 +80,10 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
     private readonly options: InstallmentCheckoutPresenterOptions,
   ) {
     this.granted = new Set(options.permissions.map((value) => value.trim()));
-    this.state = initialState(options.entry);
+    this.state = initialState(
+      options.entry,
+      this.granted.has(PAYMENT_PERMISSION.takeCash),
+    );
   }
 
   public readonly getState = (): PaymentPresenterState => this.state;
@@ -1109,12 +1112,14 @@ export class InstallmentCheckoutPresenter implements PaymentScreenPresenter {
 
 function initialState(
   entry: InstallmentCheckoutEntry | null,
+  cashAvailable: boolean,
 ): PaymentPresenterState {
   return {
     phase: "loading",
     busy: false,
     initialized: false,
     providers: EMPTY_PROVIDERS,
+    cashAvailable,
     selectedMethod: null,
     amountText: "",
     voucherCaptured: false,
@@ -1126,6 +1131,8 @@ function initialState(
     remaining: ZERO_AUD,
     tenders: Object.freeze([]),
     attemptId: null,
+    // 分期没有 PaymentAttempt 窗口身份，但仍必须履行统一公开状态契约。
+    attemptCreatedAtIso: null,
     provider: null,
     runtimeStatus: null,
     allowedActions: allowedActions({}),

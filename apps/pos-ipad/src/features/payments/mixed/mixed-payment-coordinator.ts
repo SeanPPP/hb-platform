@@ -69,6 +69,14 @@ export type MixedCashTenderMutation = Readonly<{
   replayed: boolean;
   tenderGuid: string;
   truth: MixedPaymentOrderTruth;
+  /** SQLite 已验证的现金结算事实；不得由 UI 反推。 */
+  cashSettlement?: MixedCashSettlement | undefined;
+}>;
+
+export type MixedCashSettlement = Readonly<{
+  tendered: Money;
+  applied: Money;
+  change: Money;
 }>;
 
 /**
@@ -133,6 +141,7 @@ export type MixedPaymentResult = Readonly<{
   tenderGuid: string | null;
   capability: MixedPaymentCapability;
   errorCode: string | null;
+  cashSettlement?: MixedCashSettlement | undefined;
 }>;
 
 export type AddMixedOnlineTenderInput = Readonly<{
@@ -145,6 +154,8 @@ export type AddMixedOnlineTenderInput = Readonly<{
 export type RecoverMixedOnlineAttemptInput = Readonly<{
   orderGuid: string;
   attemptId: string;
+  signal?: AbortSignal;
+  deadlineAtMs?: number;
 }>;
 
 export type AddMixedCashTenderInput = Omit<MixedCashTenderCommand, "actor">;
@@ -178,6 +189,7 @@ type PaymentSnapshot = Readonly<{
 type InflightMixedAction = Readonly<{
   signature: string;
   promise: Promise<MixedPaymentResult>;
+  ownerSignal: AbortSignal | null;
 }>;
 
 // 中文注释：多个页面或容器实例共享订单级锁，避免现金、卡、券和 reversal 交叉越过持久阻塞检查。
@@ -218,10 +230,12 @@ export class MixedPaymentCoordinator {
   ): Promise<MixedPaymentResult> {
     assertRequiredId(input.orderGuid, "orderGuid");
     assertRequiredId(input.attemptId, "attemptId");
+    assertRecoveryDeadlineControl(input);
     return this.runOrderAction(
       input.orderGuid,
       `recover|${input.attemptId}`,
       () => this.recoverOnlineAttemptOnce(input),
+      input.signal,
     );
   }
 
@@ -237,6 +251,10 @@ export class MixedPaymentCoordinator {
         input.actionId,
         input.amount.currency,
         String(input.amount.cents),
+        input.tenderedAmount?.currency ?? "",
+        String(input.tenderedAmount?.cents ?? input.amount.cents),
+        input.change?.currency ?? "",
+        String(input.change?.cents ?? 0),
         actorSignature(this.options.actor),
       ].join("|"),
       () => this.addCashTenderOnce(input),
@@ -259,15 +277,21 @@ export class MixedPaymentCoordinator {
     orderGuid: string,
     signature: string,
     operation: () => Promise<MixedPaymentResult>,
+    ownerSignal?: AbortSignal,
   ): Promise<MixedPaymentResult> {
     const active = sharedMixedActions.get(orderGuid);
     if (active) {
-      if (active.signature === signature) return active.promise;
+      if (
+        active.signature === signature &&
+        active.ownerSignal === (ownerSignal ?? null)
+      ) {
+        return active.promise;
+      }
       return this.inflightConflict(orderGuid);
     }
 
     const promise = Promise.resolve().then(operation);
-    const entry = { signature, promise };
+    const entry = { signature, promise, ownerSignal: ownerSignal ?? null };
     sharedMixedActions.set(orderGuid, entry);
     promise.then(
       () => deleteMixedActionIfCurrent(orderGuid, entry),
@@ -279,7 +303,12 @@ export class MixedPaymentCoordinator {
   private async inflightConflict(orderGuid: string): Promise<MixedPaymentResult> {
     const snapshot = await this.loadSnapshot(orderGuid);
     const blocking = await this.options.paymentAttempts.getBlockingAttempt(orderGuid);
-    if (blocking) return blockingResult(snapshot, blocking);
+    if (blocking) {
+      return Object.freeze({
+        ...blockingResult(snapshot, blocking),
+        errorCode: "PAYMENT_ACTION_IN_FLIGHT",
+      });
+    }
     return result("awaiting-terminal", snapshot, {
       errorCode: "PAYMENT_ACTION_IN_FLIGHT",
     });
@@ -383,6 +412,12 @@ export class MixedPaymentCoordinator {
     try {
       execution = await this.options.paymentAttempts.recoverAttempt(
         observed.attemptId,
+        input.signal && input.deadlineAtMs !== undefined
+          ? {
+              signal: input.signal,
+              deadlineAtMs: input.deadlineAtMs,
+            }
+          : undefined,
       );
     } catch (error) {
       if (error instanceof PaymentAttemptOfflineError) {
@@ -511,6 +546,7 @@ export class MixedPaymentCoordinator {
       }
       return result(classifyCompletedMutation(after), after, {
         tenderGuid: mutation.tenderGuid,
+        cashSettlement: mutation.cashSettlement,
       });
     } catch {
       return result("recovery-required", before, {
@@ -752,7 +788,11 @@ function result(
   overrides: Partial<
     Pick<
       MixedPaymentResult,
-      "attemptId" | "tenderGuid" | "capability" | "errorCode"
+      | "attemptId"
+      | "tenderGuid"
+      | "capability"
+      | "errorCode"
+      | "cashSettlement"
     >
   > = {},
 ): MixedPaymentResult {
@@ -919,6 +959,22 @@ async function safelyFindBlockingAttempt(
 function assertActionInput(actionId: string, orderGuid: string): void {
   assertRequiredId(actionId, "actionId");
   assertRequiredId(orderGuid, "orderGuid");
+}
+
+function assertRecoveryDeadlineControl(
+  input: RecoverMixedOnlineAttemptInput,
+): void {
+  if (input.signal === undefined && input.deadlineAtMs === undefined) return;
+  if (
+    input.signal === undefined ||
+    input.deadlineAtMs === undefined ||
+    !Number.isFinite(input.deadlineAtMs)
+  ) {
+    throw new MixedPaymentValidationError(
+      "RECOVERY_CONTROL_INVALID",
+      "Recovery signal and absolute deadline must be supplied together.",
+    );
+  }
 }
 
 function actorSignature(actor: AuditActorSnapshot): string {

@@ -1,21 +1,22 @@
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import { act, cleanup, render, waitFor } from "@testing-library/react-native";
+import * as Network from "expo-network";
 import {
   AppState,
   type AppStateEvent,
   type AppStateStatus,
 } from "react-native";
 
-import { usePosShellStore } from "./pos-shell-store";
 import { NetworkStatusBridge } from "./network-status-bridge";
+import { usePosShellStore } from "./pos-shell-store";
 
 // 设备网络层：固定返回“设备在线”（模拟 Wi-Fi 正常，后端却已停止的场景）。
 jest.mock("expo-network", () => ({
-  getNetworkStateAsync: async () => ({
+  getNetworkStateAsync: jest.fn(async () => ({
     isConnected: true,
     isInternetReachable: true,
-  }),
-  addNetworkStateListener: () => ({ remove: jest.fn() }),
+  })),
+  addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
 }));
 
 // app.config extra：本地 API 地址（与用户环境 192.168.31.246:5159 一致）。
@@ -47,6 +48,10 @@ let appStateListener: ((state: AppStateStatus) => void) | null = null;
 beforeEach(() => {
   usePosShellStore.getState().reset();
   appStateListener = null;
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
+    isConnected: true,
+    isInternetReachable: true,
+  });
   jest.spyOn(AppState, "addEventListener").mockImplementation(
     (eventName: AppStateEvent, handler: (state: AppStateStatus) => void) => {
       if (eventName === "change") {
@@ -117,3 +122,65 @@ test("App 回到前台时立即重新探测后端", async () => {
     expect(usePosShellStore.getState().connectivity).toBe("online");
   });
 });
+
+test("新 probe 先完成时，旧 probe 结果不得覆盖最新 connectivity", async () => {
+  const stale = deferred<{ ok: boolean }>();
+  const latest = deferred<{ ok: boolean }>();
+  const fetchMock = jest.fn()
+    .mockImplementationOnce(() => stale.promise)
+    .mockImplementationOnce(() => latest.promise) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  await act(async () => {
+    appStateListener?.("active");
+  });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  latest.resolve({ ok: true });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+  stale.resolve({ ok: false });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(usePosShellStore.getState().connectivity).toBe("online");
+});
+
+test("卸载后延迟 probe 不得再发布状态", async () => {
+  const pending = deferred<{ ok: boolean }>();
+  const fetchMock = jest.fn(() => pending.promise) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  const screen = await render(<NetworkStatusBridge />);
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  const connectivityBeforeUnmount = usePosShellStore.getState().connectivity;
+  await screen.unmount();
+  pending.resolve({ ok: false });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  expect(usePosShellStore.getState().connectivity).toBe(
+    connectivityBeforeUnmount,
+  );
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

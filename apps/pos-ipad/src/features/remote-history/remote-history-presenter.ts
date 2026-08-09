@@ -77,6 +77,11 @@ export type RemoteHistoryPresenterState = Readonly<{
   errorCode: "remote-history-load-failed" | null;
 }>;
 
+type RecoverableRemoteHistoryKind = Exclude<
+  RemoteHistoryPresenterState["kind"],
+  "loading" | "offline"
+>;
+
 export type RemoteHistoryPresenterOptions = Readonly<{
   port: RemoteOrderHistoryPort | null;
   trustedStoreCode: string;
@@ -96,8 +101,10 @@ export class RemoteHistoryPresenter {
   private readonly allowed: boolean;
   private readonly canReprint: boolean;
   private online: boolean;
-  /** 进入离线前记录的门禁状态，恢复在线后原样还原（数据不被清空）。 */
-  private kindBeforeOffline: RemoteHistoryPresenterState["kind"] | null = null;
+  /** 仅记录可恢复的稳定状态，loading 必须通过新的请求结束，不能原样恢复。 */
+  private kindBeforeOffline: RecoverableRemoteHistoryKind | null = null;
+  /** 离线使列表请求失效后，重连时合并触发一次替代 refresh。 */
+  private refreshAfterReconnect = false;
   private listGeneration = 0;
   private detailsGeneration = 0;
   private reprintGeneration = 0;
@@ -171,6 +178,11 @@ export class RemoteHistoryPresenter {
     this.listGeneration += 1;
     this.detailsGeneration += 1;
     this.reprintGeneration += 1;
+    if (!this.online) {
+      // 中文注释：离线期间的新筛选不能恢复旧列表，重连后只请求最后一次筛选条件。
+      this.kindBeforeOffline = null;
+      this.refreshAfterReconnect = true;
+    }
     this.publish({
       kind: this.gateKind(),
       filters: normalized,
@@ -191,19 +203,44 @@ export class RemoteHistoryPresenter {
     if (this.destroyed || this.online === online) return;
     this.online = online;
     if (online) {
-      // 恢复在线：还原离线前状态（如 ready/empty），不覆盖已加载列表。
+      // 恢复在线：仅还原稳定状态；已中止的 loading 先落到 idle，再启动替代请求。
       const restored = this.kindBeforeOffline;
+      const refreshAfterReconnect = this.refreshAfterReconnect;
       this.kindBeforeOffline = null;
+      this.refreshAfterReconnect = false;
       if (this.state.kind === "offline") {
         this.publish({
           ...this.state,
           kind: restored ?? this.gateKind(),
         });
       }
+      if (refreshAfterReconnect && !this.destroyed) {
+        // 中文注释：refresh 已自行吸收远端失败；显式兜底避免未来实现产生未处理 rejection。
+        void this.refresh().catch(() => undefined);
+      }
     } else if (this.state.kind !== "offline") {
-      // 进入离线：记住离线前状态，统一翻转为 offline 门禁。
-      this.kindBeforeOffline = this.state.kind;
-      this.publish({ ...this.state, kind: "offline" });
+      // 进入离线：使所有在途远端结果失效，旧成功结果不得回写离线状态。
+      const kindBeforeOffline = this.state.kind;
+      this.listGeneration += 1;
+      this.detailsGeneration += 1;
+      this.reprintGeneration += 1;
+      this.kindBeforeOffline = isRecoverableRemoteHistoryKind(kindBeforeOffline)
+        ? kindBeforeOffline
+        : null;
+      this.refreshAfterReconnect = kindBeforeOffline === "loading";
+      this.publish({
+        ...this.state,
+        kind: "offline",
+        // 中文注释：仅清除在途子操作；已加载详情和已完成重打仍是可安全展示的快照。
+        details:
+          this.state.details.kind === "loading"
+            ? { kind: "idle" }
+            : this.state.details,
+        reprint:
+          this.state.reprint.kind === "submitting"
+            ? { kind: "idle" }
+            : this.state.reprint,
+      });
     }
   }
 
@@ -519,4 +556,10 @@ function requiredText(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized) throw new TypeError(`${label} is required.`);
   return normalized;
+}
+
+function isRecoverableRemoteHistoryKind(
+  kind: RemoteHistoryPresenterState["kind"],
+): kind is RecoverableRemoteHistoryKind {
+  return kind !== "loading" && kind !== "offline";
 }

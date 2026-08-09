@@ -22,6 +22,7 @@ const directTextInputAllowlist = new Set([
   "src/core/peripherals/scanner/hid-scanner-capture.tsx",
 ]);
 const controlImplementationFiles = new Set([
+  "src/ui/controls/pos-pan-responder-view.tsx",
   "src/ui/controls/pos-pressable.tsx",
   "src/ui/controls/pos-switch.tsx",
   "src/ui/controls/pos-text-input.tsx",

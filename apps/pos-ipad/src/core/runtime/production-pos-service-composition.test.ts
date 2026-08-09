@@ -88,6 +88,15 @@ import { PosDatabase } from "../db/pos-database";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
 import type { SqliteInstallmentSnapshotRepository } from "../db/sqlite-installment-snapshot-repository";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
+import {
+  DeviceSessionCoordinator,
+  type DeviceSessionApi,
+} from "../security/device-session";
+import {
+  DeviceCredentialStore,
+  InMemorySecureStore,
+  InstallationIdentityStore,
+} from "../security/secure-storage";
 
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import type {
@@ -227,6 +236,9 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
         return { storeCode: "S001", deviceCode: "IPAD-1" };
       },
       async clearAuthorization() {
+        cashierAuthorizationClears += 1;
+      },
+      invalidateAuthorizationForDeviceScope() {
         cashierAuthorizationClears += 1;
       },
       subscribeSessionInvalidation() {
@@ -3351,6 +3363,287 @@ test("日结只使用可信收银员作用域，先耐久归档再通过同一�
   presenter.destroy();
 });
 
+test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 cashier/cart，提交前失败不误杀", async (context) => {
+  const cases = [
+    { name: "正常 reload", afterCommit: "success" },
+    { name: "reload 失败", afterCommit: "reload-failed" },
+    { name: "reload 前中止", afterCommit: "aborted" },
+    { name: "重新注册失败", afterCommit: "reregister-failed" },
+  ] as const;
+
+  for (const scenario of cases) {
+    await context.test(scenario.name, async (scenarioContext) => {
+      const secureStore = new InMemorySecureStore();
+      const installation = new InstallationIdentityStore(
+        secureStore,
+        () => "INSTALL-001",
+      );
+      const credentials = new DeviceCredentialStore(secureStore);
+      await credentials.save({
+        deviceCode: "IPAD-1",
+        storeCode: "S001",
+        hardwareId: "INSTALL-001",
+        authorizationCode: "old-device-secret",
+      });
+      const api: DeviceSessionApi = {
+        async register() {
+          throw new Error("not used");
+        },
+        async verify() {
+          throw new Error("not used");
+        },
+        async reregister() {
+          if (scenario.afterCommit === "reregister-failed") {
+            throw new Error("reregister failed before credentials save");
+          }
+          return {
+            deviceCode: "IPAD-2",
+            storeCode: "S002",
+            deviceStatus: 1,
+            isAllowed: true,
+            authorizationCode: "new-device-secret",
+          };
+        },
+      };
+      const coordinator = new DeviceSessionCoordinator(
+        api,
+        installation,
+        credentials,
+      );
+      const settings = settingsRuntimeConfiguration();
+      const services = createTestComposition(databaseFor([]), {
+        cashierPermissions: [
+          SETTINGS_VIEW_PERMISSION,
+          SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+        ],
+        settings: {
+          ...settings,
+          device: {
+            reregister: async () => {
+              await coordinator.reregister({ targetStoreCode: "S002" });
+              if (scenario.afterCommit === "aborted") {
+                throw Object.assign(new Error("reregister aborted after save"), {
+                  name: "AbortError",
+                });
+              }
+            },
+          },
+          runtimeReload: {
+            reload: async () => {
+              if (scenario.afterCommit === "reload-failed") {
+                throw new Error("runtime reload failed");
+              }
+            },
+          },
+        },
+      });
+      scenarioContext.after(() => services.shutdownBackgroundWork());
+      await services.initialize();
+      await services.cashierSession.signIn("cashier");
+      assert.equal("createPresenter" in services.settings, true);
+      if (!("createPresenter" in services.settings)) return;
+      const presenter = services.settings.createPresenter();
+      await presenter.load();
+      presenter.setReregisterStoreCode("S002");
+      assert.equal(presenter.requestDeviceReregistration(), true);
+      await presenter.confirmDangerousAction();
+
+      if (scenario.afterCommit === "reregister-failed") {
+        assert.equal(
+          presenter.getState().statusCode,
+          "device-reregister-failed",
+        );
+        assert.doesNotThrow(() => services.dailyClose.createPresenter());
+        return;
+      }
+
+      assert.equal(
+        await coordinator.getRequestHeaders().then((headers) =>
+          headers?.["X-HBPOS-Store-Code"],
+        ),
+        "S002",
+      );
+      assert.throws(
+        () => services.dailyClose.createPresenter(),
+        /CURRENT_CASHIER_REQUIRED/,
+      );
+    });
+  }
+});
+
+test("初始化失败收尾后解除 device scope listener，不让重试 runtime 重复失效", async () => {
+  let oldClearCalls = 0;
+  let retryClearCalls = 0;
+  const failed = createTestComposition(
+    databaseFor([], {
+      heldOrderRecords: {
+        async getTerminalFence() {
+          throw new Error("terminal fence initialization failed");
+        },
+      },
+    }),
+    { onClearAuthorization: () => { oldClearCalls += 1; } },
+  );
+  await assert.rejects(
+    () => failed.initialize(),
+    /terminal fence initialization failed/,
+  );
+  await failed.cashierSession.signIn("old-cashier");
+  oldClearCalls = 0;
+
+  const retry = createTestComposition(databaseFor([]), {
+    onClearAuthorization: () => { retryClearCalls += 1; },
+  });
+  await retry.initialize();
+  await retry.cashierSession.signIn("retry-cashier");
+
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-device-secret",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() {
+        return {
+          deviceCode: "IPAD-2",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "new-device-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+
+  await coordinator.reregister({ targetStoreCode: "S002" });
+  assert.equal(oldClearCalls, 0, "失败 runtime 的旧闭包必须已退订");
+  assert.equal(
+    retryClearCalls,
+    2,
+    "仅重试 runtime 响应一次 scope 撤销及一次旧会话清理",
+  );
+  await failed.shutdownBackgroundWork();
+  await failed.shutdownBackgroundWork();
+  await retry.shutdownBackgroundWork();
+});
+
+test("device scope 外部撤销回调异常时仍同步废弃旧 cashier 与购物车", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "device-token-1",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() {
+        return {
+          deviceCode: "IPAD-2",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "device-token-2",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+  const services = createTestComposition(databaseFor([]), {
+    throwOnScopeInvalidation: true,
+  });
+  try {
+    await services.initialize();
+    await services.cashierSession.signIn("cashier");
+    const sales = services.sales.createPresenter();
+    sales.setQuery("930000000001");
+    assert.equal(await sales.addLookupCode(), true);
+    assert.equal(sales.getState().cart.lines.length, 1);
+
+    await coordinator.reregister({ targetStoreCode: "S002" });
+
+    // scope invalidation 保留只读购物车快照供 UI 收尾，但旧 presenter 不得再写入。
+    assert.equal(await sales.addLookupCode(), false);
+    assert.throws(
+      () => services.dailyClose.createPresenter(),
+      /CURRENT_CASHIER_REQUIRED/,
+    );
+    sales.destroy();
+  } finally {
+    await services.shutdownBackgroundWork();
+  }
+});
+
+test("组合根同步构造失败时不遗留 device scope listener", async () => {
+  let staleRuntimeInvalidations = 0;
+  const database = databaseFor([]);
+  Object.assign(database, {
+    catalogSnapshots() {
+      throw new Error("catalog composition failed");
+    },
+  });
+  assert.throws(
+    () =>
+      createTestComposition(database, {
+        onClearAuthorization: () => { staleRuntimeInvalidations += 1; },
+      }),
+    /catalog composition failed/,
+  );
+
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-device-secret",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() {
+        return {
+          deviceCode: "IPAD-2",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          authorizationCode: "new-device-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+
+  await coordinator.reregister({ targetStoreCode: "S002" });
+  assert.equal(staleRuntimeInvalidations, 0);
+});
+
 function createTestComposition(
   database: PosDatabase,
   options: Readonly<{
@@ -3358,6 +3651,8 @@ function createTestComposition(
     cashierPermissions?: readonly string[];
     supervisorPermissions?: readonly string[];
     captureInvalidation?(listener: () => void): void;
+    onClearAuthorization?(): void;
+    throwOnScopeInvalidation?: boolean;
     externalDisplay?: ExternalCustomerDisplayPort;
     advertisementCache?: CustomerDisplayAdvertisementCachePort;
     customerDisplayAdvertisementCacheRootUri?: string;
@@ -3454,8 +3749,16 @@ function createTestComposition(
       async getDeviceIdentity() {
         return { storeCode: "S001", deviceCode: "IPAD-1" };
       },
-      async clearAuthorization() {},
-      subscribeSessionInvalidation(listener) {
+    async clearAuthorization() {
+      options.onClearAuthorization?.();
+    },
+    invalidateAuthorizationForDeviceScope() {
+      options.onClearAuthorization?.();
+      if (options.throwOnScopeInvalidation) {
+        throw new Error("scope invalidation callback failed");
+      }
+    },
+    subscribeSessionInvalidation(listener) {
         options.captureInvalidation?.(listener);
         return () => undefined;
       },

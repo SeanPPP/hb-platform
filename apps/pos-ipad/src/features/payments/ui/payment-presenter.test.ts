@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { paymentText } from "./payment-copy";
 import {
+  canSelectPaymentMethod,
   LINKLY_SAFE_OPERATOR_KEYS,
   PaymentPresenter,
   parseAudInput,
@@ -25,7 +26,7 @@ import type {
   PaymentProviderAvailability,
 } from "@/features/payments/runtime/payment-provider-registry";
 
-test("冷启动 Unknown 仅保留恢复动作，重复恢复共享同一单飞并完成同一订单", async () => {
+test("冷启动 Unknown 仅保留恢复动作，重复恢复立即失败且首个恢复完成同一订单", async () => {
   const runtime = new FakePaymentRuntime();
   const pending = deferred<PaymentCheckoutPublicSnapshot>();
   runtime.recovery = snapshot({
@@ -51,7 +52,8 @@ test("冷启动 Unknown 仅保留恢复动作，重复恢复共享同一单飞�
 
   const first = presenter.recover();
   const duplicate = presenter.recover();
-  assert.strictEqual(first, duplicate);
+  assert.notStrictEqual(first, duplicate);
+  assert.equal(await duplicate, false);
   await tick();
   assert.equal(runtime.recoverCalls, 1);
   assert.equal(presenter.getState().phase, "submitting");
@@ -101,6 +103,139 @@ test("后台恢复保持 Pending 页面稳定并公开独立恢复状态", async
   pending.resolve(runtime.recovery);
   assert.equal(await recovery, false);
   assert.equal(presenter.getState().recoveryInFlight, false);
+});
+
+test("后台恢复在途时手动恢复立即失败，不加入后台 signal 的 promise", async () => {
+  const runtime = new FakePaymentRuntime();
+  const pending = deferred<PaymentCheckoutPublicSnapshot>();
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse("2026-08-09T00:00:00.000Z") + 90_000;
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "square",
+    attemptId: "attempt-square-background-first",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  runtime.recoverImpl = async () => pending.promise;
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+
+  const background = presenter.recover({
+    background: true,
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+  await tick();
+  const manual = presenter.recover();
+
+  assert.notStrictEqual(manual, background);
+  assert.equal(await manual, false);
+  assert.equal(runtime.recoverCalls, 1);
+  assert.strictEqual(runtime.recoverInputs[0]?.signal, controller.signal);
+
+  pending.resolve(runtime.recovery);
+  assert.equal(await background, false);
+});
+
+test("不同后台 signal 的恢复不互相加入同一个 promise", async () => {
+  const runtime = new FakePaymentRuntime();
+  const pending = deferred<PaymentCheckoutPublicSnapshot>();
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "square",
+    attemptId: "attempt-square-different-signals",
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  runtime.recoverImpl = async () => pending.promise;
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+
+  const first = presenter.recover({
+    background: true,
+    signal: firstController.signal,
+    deadlineAtMs: 1,
+  });
+  await tick();
+  const second = presenter.recover({
+    background: true,
+    signal: secondController.signal,
+    deadlineAtMs: 2,
+  });
+
+  assert.notStrictEqual(first, second);
+  assert.equal(await second, false);
+  assert.equal(runtime.recoverCalls, 1);
+  assert.strictEqual(runtime.recoverInputs[0]?.signal, firstController.signal);
+
+  pending.resolve(runtime.recovery);
+  assert.equal(await first, false);
+});
+
+test("后台恢复传递本次 signal/deadline，且已有手动 action 时立即 false 不冒领旧 promise", async () => {
+  const runtime = new FakePaymentRuntime();
+  const pending = deferred<PaymentCheckoutPublicSnapshot>();
+  const createdAtIso = "2026-08-09T00:00:00.000Z";
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "square",
+    attemptId: "attempt-square-owned-recovery",
+    attemptCreatedAtIso: createdAtIso,
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  runtime.recoverImpl = async () => pending.promise;
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  assert.equal(presenter.getState().attemptCreatedAtIso, createdAtIso);
+
+  const manual = presenter.recover();
+  await tick();
+  const controller = new AbortController();
+  const background = presenter.recover({
+    background: true,
+    signal: controller.signal,
+    deadlineAtMs: Date.parse(createdAtIso) + 90_000,
+  });
+
+  assert.notStrictEqual(background, manual);
+  assert.equal(await background, false);
+  assert.equal(runtime.recoverCalls, 1);
+  assert.deepEqual(runtime.recoverInputs, [
+    {
+      orderGuid: "order-local-1",
+      attemptId: "attempt-square-owned-recovery",
+    },
+  ]);
+
+  pending.resolve(runtime.recovery);
+  assert.equal(await manual, false);
+});
+
+test("空闲后台恢复把结构化 deadline 控制原样交给 runtime", async () => {
+  const runtime = new FakePaymentRuntime();
+  const createdAtIso = "2026-08-09T00:10:00.000Z";
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "square",
+    attemptId: "attempt-square-forward-control",
+    attemptCreatedAtIso: createdAtIso,
+    allowedActions: actions({ recover: true, cancel: true }),
+  });
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  const controller = new AbortController();
+  const deadlineAtMs = Date.parse(createdAtIso) + 90_000;
+
+  await presenter.recover({
+    background: true,
+    signal: controller.signal,
+    deadlineAtMs,
+  });
+
+  assert.equal(runtime.recoverCalls, 1);
+  assert.strictEqual(runtime.recoverInputs[0]?.signal, controller.signal);
+  assert.equal(runtime.recoverInputs[0]?.deadlineAtMs, deadlineAtMs);
 });
 
 test("冷启动礼券撤销 Unknown 使用脱敏持久恢复入口，完成后清除旧恢复标记", async () => {
@@ -328,7 +463,7 @@ test("确定离线且未创建 attempt 时保留安全改现金入口", async ()
   assert.equal(presenter.getState().phase, "success");
 });
 
-test("首次进入支付页可直接现金结账，超付只提交应收并公开找零", async () => {
+test("现金展示只使用持久化 settlement，不从输入金额重新猜找零", async () => {
   const runtime = new FakePaymentRuntime();
   runtime.startCashImpl = async () =>
     snapshot({
@@ -342,6 +477,11 @@ test("首次进入支付页可直接现金结账，超付只提交应收并公�
           reversible: false,
         },
       ],
+      cashSettlement: {
+        tendered: aud(1_000),
+        applied: aud(1_002),
+        change: aud(0),
+      },
     });
   const presenter = createPresenter(runtime);
   await presenter.initialize();
@@ -359,10 +499,169 @@ test("首次进入支付页可直接现金结账，超付只提交应收并公�
     },
   ]);
   assert.deepEqual(presenter.getState().checkout.cash, {
-    tenderedCents: 2_000,
-    appliedCents: 1_000,
-    changeCents: 1_000,
+    tenderedCents: 1_000,
+    appliedCents: 1_002,
+    changeCents: 0,
   });
+});
+
+test("现金默认金额按五分应收刷新，手动输入的部分现金保持精确", async () => {
+  const roundDownRuntime = new FakePaymentRuntime();
+  roundDownRuntime.startCashImpl = async () =>
+    snapshot({
+      status: "completed",
+      total: aud(1_002),
+      remaining: aud(0),
+      tenders: [{
+        tenderGuid: "cash-round-down-default",
+        method: "cash",
+        amount: aud(1_002),
+        reversible: false,
+      }],
+      cashSettlement: {
+        tendered: aud(1_000),
+        applied: aud(1_002),
+        change: aud(0),
+      },
+    });
+  const roundDown = createPresenter(roundDownRuntime, undefined, aud(1_002));
+  assert.equal(roundDown.getState().selectedMethod, "cash");
+  assert.equal(roundDown.getState().amountText, "10.00");
+  await roundDown.initialize();
+  assert.equal(await roundDown.submitSelected(), true);
+  assert.deepEqual(roundDownRuntime.startCashCalls, [{
+    checkoutIntentId: "checkout-local-1",
+    expectedCartRevision: 7,
+    actionId: "action-1",
+    amount: aud(1_000),
+  }]);
+
+  const runtime = new FakePaymentRuntime();
+  runtime.recovery = snapshot({
+    status: "partial",
+    total: aud(1_003),
+    remaining: aud(1_003),
+    allowedActions: actions({
+      start: true,
+      changeProvider: true,
+      addCash: true,
+    }),
+  });
+  const presenter = createPresenter(runtime, undefined, aud(1_003));
+  assert.equal(presenter.getState().amountText, "10.05");
+  await presenter.initialize();
+  assert.equal(presenter.getState().selectedMethod, "cash");
+  assert.equal(presenter.getState().amountText, "10.05");
+
+  assert.equal(presenter.selectMethod("square"), true);
+  presenter.setAmountText("1.00");
+  assert.equal(presenter.selectMethod("cash"), true);
+  assert.equal(presenter.getState().amountText, "10.05");
+
+  presenter.setAmountText("10.02");
+  assert.equal(await presenter.submitSelected(), true);
+  assert.deepEqual(runtime.addCashInputs, [
+    {
+      actionId: "action-1",
+      orderGuid: "order-local-1",
+      amount: aud(1_002),
+    },
+  ]);
+});
+
+test("现金剩余 1/2 分时默认保持正数并可直接提交", async () => {
+  for (const remainingCents of [1, 2]) {
+    const runtime = new FakePaymentRuntime();
+    runtime.startCashImpl = async () =>
+      snapshot({
+        status: "completed",
+        total: aud(remainingCents),
+        remaining: aud(0),
+        tenders: [{
+          tenderGuid: `cash-${remainingCents}-cent-default`,
+          method: "cash",
+          amount: aud(remainingCents),
+          reversible: false,
+        }],
+        cashSettlement: {
+          tendered: aud(0),
+          applied: aud(remainingCents),
+          change: aud(0),
+        },
+      });
+    const presenter = createPresenter(
+      runtime,
+      undefined,
+      aud(remainingCents),
+    );
+
+    assert.equal(
+      presenter.getState().amountText,
+      remainingCents === 1 ? "0.01" : "0.02",
+    );
+    await presenter.initialize();
+    assert.equal(await presenter.submitSelected(), true);
+    assert.deepEqual(runtime.startCashCalls, [{
+      checkoutIntentId: "checkout-local-1",
+      expectedCartRevision: 7,
+      actionId: "action-1",
+      amount: aud(remainingCents),
+    }]);
+  }
+});
+
+test("现金全额输入低于五分应收时在 presenter 拒绝且不调用 runtime", async () => {
+  const runtime = new FakePaymentRuntime();
+  const presenter = createPresenter(runtime, undefined, aud(1_003));
+  presenter.setAmountText("10.03");
+
+  assert.equal(await presenter.submitSelected(), false);
+  assert.equal(presenter.getState().fieldIssue, "cash-final-below-due");
+  assert.equal(runtime.startCashCalls.length, 0);
+  assert.equal(runtime.addCashCalls, 0);
+  assert.equal(
+    paymentText("en", "field.cash-final-below-due"),
+    "Cash tendered must meet the rounded cash due.",
+  );
+  assert.equal(
+    paymentText("zh", "field.cash-final-below-due"),
+    "现金实收必须达到按五分取整后的应收金额。",
+  );
+});
+
+test("运行时未公开 TakeCash 能力时现金不默认选中、不可选且不标记可用", async () => {
+  const runtime = new FakePaymentRuntime();
+  runtime.canTakeCash = () => false;
+  const presenter = createPresenter(runtime);
+
+  assert.equal(presenter.getState().selectedMethod, "square");
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.getState().allowedActions.addCash, false);
+  assert.equal(presenter.selectMethod("cash"), false);
+});
+
+test("cashAvailable 缺失时现金 fail closed，不能选择或提交", async () => {
+  const runtime = new FakePaymentRuntime();
+  Object.defineProperty(runtime, "canTakeCash", {
+    value: undefined,
+    configurable: true,
+  });
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  const { cashAvailable: _cashAvailable, ...missingCapability } =
+    presenter.getState();
+  const staleAllowedActions = {
+    ...missingCapability,
+    allowedActions: {
+      ...missingCapability.allowedActions,
+      addCash: true,
+    },
+  };
+
+  assert.equal(canSelectPaymentMethod(staleAllowedActions, "cash"), false);
+  assert.equal(presenter.selectMethod("cash"), false);
+  assert.equal(runtime.startCashCalls.length, 0);
+  assert.equal(runtime.addCashCalls, 0);
 });
 
 test("未配置 startCash 时默认回退到第一个可用 provider", async () => {
@@ -394,6 +693,11 @@ test("移除最后一笔现金后清空实收展示，并开放继续支付或�
           reversible: true,
         },
       ],
+      cashSettlement: {
+        tendered: aud(400),
+        applied: aud(400),
+        change: aud(0),
+      },
       allowedActions: actions({
         start: true,
         changeProvider: true,
@@ -537,8 +841,10 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
   public readonly startCalls: unknown[] = [];
   public readonly startCashCalls: unknown[] = [];
   public recoverCalls = 0;
+  public readonly recoverInputs: Parameters<PaymentCheckoutRuntimePort["recover"]>[0][] = [];
   public readonly retryTenderReversalCalls: unknown[] = [];
   public addCashCalls = 0;
+  public readonly addCashInputs: Parameters<PaymentCheckoutRuntimePort["addCash"]>[0][] = [];
   public cancelCalls = 0;
   public readonly abandonCalls: unknown[] = [];
   public findRecoveryImpl: () => Promise<PaymentCheckoutPublicSnapshot | null> =
@@ -572,6 +878,10 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
     ];
   }
 
+  public canTakeCash(): boolean {
+    return true;
+  }
+
   public async read(): Promise<PaymentCheckoutPublicSnapshot> {
     return snapshot();
   }
@@ -600,8 +910,11 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
     return this.startCashImpl(input);
   }
 
-  public recover(): Promise<PaymentCheckoutPublicSnapshot> {
+  public recover(
+    input: Parameters<PaymentCheckoutRuntimePort["recover"]>[0],
+  ): Promise<PaymentCheckoutPublicSnapshot> {
     this.recoverCalls += 1;
+    this.recoverInputs.push(input);
     return this.recoverImpl();
   }
 
@@ -625,8 +938,11 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
     return this.abandonImpl();
   }
 
-  public addCash(): Promise<PaymentCheckoutPublicSnapshot> {
+  public addCash(
+    input: Parameters<PaymentCheckoutRuntimePort["addCash"]>[0],
+  ): Promise<PaymentCheckoutPublicSnapshot> {
     this.addCashCalls += 1;
+    this.addCashInputs.push(input);
     return this.addCashImpl();
   }
 
@@ -680,6 +996,7 @@ class FakeLinklyOperator implements LinklyOperatorRuntimePort {
 function createPresenter(
   runtime: FakePaymentRuntime,
   linklyOperator?: LinklyOperatorRuntimePort,
+  entryTotal: Money = aud(1_000),
 ): PaymentPresenter {
   let action = 0;
   return new PaymentPresenter({
@@ -688,7 +1005,7 @@ function createPresenter(
     entry: {
       checkoutIntentId: "checkout-local-1",
       expectedCartRevision: 7,
-      total: aud(1_000),
+      total: entryTotal,
     },
     createActionId: () => `action-${++action}`,
   });
@@ -708,6 +1025,7 @@ function snapshot(
     remaining: aud(1_000),
     tenders: [],
     attemptId: null,
+    attemptCreatedAtIso: null,
     provider: null,
     status: "draft-prepared",
     errorCode: null,

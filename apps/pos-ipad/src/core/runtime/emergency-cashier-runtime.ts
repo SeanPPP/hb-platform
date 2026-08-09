@@ -49,6 +49,10 @@ export function createEmergencyCashierRuntime(
           authorizationToken: session.authorizationToken,
           expiresAtEpochMs: session.expiresAtEpochMs,
           source: "emergency-override",
+          scope: {
+            storeCode: session.storeCode,
+            deviceCode: session.deviceCode,
+          },
           systemUptimeMs: session.systemUptimeMs,
           trustedNowEpochMs: session.trustedNowEpochMs,
         }),

@@ -152,6 +152,43 @@ test("生产支付只公开 presenter/恢复布尔值，启动前和无可信收
   );
 });
 
+test("生产支付 facade 基于当前 cashier 的 TakeCash 权限透传现金可用性", async () => {
+  const runtime = createProductionPaymentRuntime({
+    database: database(),
+    repositories: repositories(),
+    encryptor,
+    activeCart: new ActivePricingCartSession(
+      new PricingCart(),
+      () => new PricingCart(),
+    ),
+    currentCashier: activeCashier(
+      ALL_PAYMENT_PERMISSIONS.filter(
+        (code) => code !== "Permissions.PosTerminal.Payment.TakeCash",
+      ),
+    ),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: {
+      now: () => new Date("2026-07-28T00:00:00.000Z"),
+      nowIso: () => "2026-07-28T00:00:00.000Z",
+    },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: bootstrap(() => undefined),
+    async drainFulfilment() {},
+  });
+  await runtime.initializeRecovery();
+  if (runtime.service.status !== "available") return;
+
+  const presenter = runtime.service.createPresenter({
+    checkoutIntentId: "checkout-no-cash",
+    expectedCartRevision: 1,
+    total: { currency: "AUD", cents: 500 },
+  });
+  assert.notEqual(presenter.getState().selectedMethod, "cash");
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.getState().allowedActions.addCash, false);
+});
+
 test("普通支付展示行只投影可信活动购物车，忽略路由伪造明细", async () => {
   const cart = pricedCart();
   const activeCart = new ActivePricingCartSession(
@@ -1019,7 +1056,9 @@ function idFactory(): () => string {
   return () => `id-${++value}`;
 }
 
-function activeCashier(): CurrentCashierSession {
+function activeCashier(
+  permissionCodes: readonly string[] = ALL_PAYMENT_PERMISSIONS,
+): CurrentCashierSession {
   const cashier = new CurrentCashierSession();
   const epoch = cashier.beginAuthentication();
   cashier.activate(
@@ -1031,7 +1070,7 @@ function activeCashier(): CurrentCashierSession {
         cashierName: "Cashier",
         storeCode: "S1",
         deviceCode: "IPAD-1",
-        permissionCodes: [...ALL_PAYMENT_PERMISSIONS],
+        permissionCodes: [...permissionCodes],
       },
     },
     { storeCode: "S1", deviceCode: "IPAD-1" },

@@ -51,3 +51,21 @@ test("临时授权或锁定投影失败不阻止活动收银员清理", () => {
   assert.throws(() => handler("forbidden"), /runtime state unavailable/);
   assert.equal(clears, 1);
 });
+
+test("设备 scope 变更只清除 Zustand 活动收银员，不把 runtime 投影为 forbidden", () => {
+  let clears = 0;
+  let locks = 0;
+  const handler = createCashierInvalidationHandler({
+    clearActiveCashier() {
+      clears += 1;
+    },
+    lockRuntime() {
+      locks += 1;
+    },
+  });
+
+  handler("device-scope-change");
+
+  assert.equal(clears, 1);
+  assert.equal(locks, 0);
+});

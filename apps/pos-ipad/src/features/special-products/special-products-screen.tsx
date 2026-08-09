@@ -29,6 +29,7 @@ import {
   PosKeyboardAwareScrollView,
   PosKeyboardAwareTextInput,
 } from "@/ui/controls/pos-keyboard-aware-scroll-view";
+import { PosPanResponderView } from "@/ui/controls/pos-pan-responder-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 export const SPECIAL_PRODUCTS_MIN_TOUCH_TARGET = 44;
@@ -597,12 +598,14 @@ function SpecialProductCard({
       }),
     [index, item.productCode, onDragEnd, onDragMove],
   );
+  const panHandlers = panResponder.panHandlers;
   return (
-    <View
+    <PosPanResponderView
       onLayout={(event) => {
         const { height, width } = event.nativeEvent.layout;
         onMeasureCell(width, height);
       }}
+      panHandlers={panHandlers}
       style={[
         styles.productCard,
         dragTargetIndex !== null &&
@@ -611,7 +614,6 @@ function SpecialProductCard({
           styles.productCardDragTarget,
       ]}
       testID={`special-product-card-${item.productCode}-shell`}
-      {...panResponder.panHandlers}
     >
       {/* 整卡可点击 = 加购，触屏操作无需精确瞄准小按钮（与 WPF 卡片一致）；
           长按（canDrag 时）抬起卡片进入拖拽排序 */}
@@ -627,6 +629,8 @@ function SpecialProductCard({
               }
             : undefined
         }
+        // 仅可拖拽时注册排序反馈，避免普通卡片的长按抑制 tap 音。
+        longPressSound={canDrag ? "navigate" : false}
         onPress={onAddToCart}
         sound="tap"
         style={[
@@ -686,7 +690,7 @@ function SpecialProductCard({
           />
         </View>
       ) : null}
-    </View>
+    </PosPanResponderView>
   );
 }
 
