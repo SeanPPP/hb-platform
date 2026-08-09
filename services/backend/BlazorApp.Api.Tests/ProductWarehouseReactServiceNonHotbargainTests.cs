@@ -285,9 +285,14 @@ namespace BlazorApp.Api.Tests
             Assert.Null(warehouseProduct.StockAlertQuantity);
             Assert.Null(warehouseProduct.Volume);
             Assert.Null(warehouseProduct.PackingQuantity);
-            Assert.Null(warehouseProduct.CreatedBy);
-            Assert.Null(warehouseProduct.UpdatedBy);
-            Assert.True(warehouseProduct.CreatedAt > oldCreatedAt);
+            Assert.Equal("old-user", warehouseProduct.CreatedBy);
+            Assert.Equal("System", warehouseProduct.UpdatedBy);
+            Assert.InRange(
+                warehouseProduct.CreatedAt,
+                oldCreatedAt.AddMilliseconds(-1),
+                oldCreatedAt.AddMilliseconds(1)
+            );
+            Assert.True(warehouseProduct.UpdatedAt > oldCreatedAt);
 
             var locationCount = await _db
                 .Queryable<ProductLocation>()

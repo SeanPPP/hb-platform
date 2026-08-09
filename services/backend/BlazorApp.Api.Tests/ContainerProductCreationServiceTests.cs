@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using AutoMapper;
+using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
@@ -10,6 +12,8 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Data.Sqlite;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -106,6 +110,187 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(3.4m, warehouseProduct.OEMPrice);
         Assert.Equal(1.2m, storeRetailPrice.PurchasePrice);
         Assert.Equal(3.4m, storeRetailPrice.StoreRetailPriceValue);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesProvidedUpdatedByForCreatedWarehouseProduct()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-UPDATER", "C001", "P-UPDATER", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-UPDATER", "HB-UPDATER", "更新人商品", "Updater Product", 0);
+
+        await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-updater",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-UPDATER" },
+            },
+            "操作员 A"
+        );
+
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+            .SingleAsync(item => item.ProductCode == "P-UPDATER");
+        Assert.Equal("操作员 A", warehouseProduct.CreatedBy);
+        Assert.Equal("操作员 A", warehouseProduct.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FallsBackToSystemWhenUpdatedByIsBlank()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-UPDATER-EMPTY", "C001", "P-UPDATER-EMPTY", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-UPDATER-EMPTY", "HB-UPDATER-EMPTY", "空更新人商品", "Empty Updater Product", 0);
+
+        await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-updater-empty",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-UPDATER-EMPTY" },
+            },
+            "  "
+        );
+
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+            .SingleAsync(item => item.ProductCode == "P-UPDATER-EMPTY");
+        Assert.Equal("System", warehouseProduct.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task Controller_UsesIdentityNameAsJobUpdatedBy()
+    {
+        var jobService = new Mock<IContainerProductCreationJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(service => service.StartJobAsync(
+                "claim-user-id",
+                "操作员 A",
+                It.Is<ContainerProductCreationJobRequestDto>(request =>
+                    request.OperationId == "op-controller" && request.ContainerGuid == "C001"),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new ContainerProductCreationJobDto { JobId = "job-1" });
+        var controller = new ReactContainerProductsController(
+            jobService.Object,
+            NullLogger<ReactContainerProductsController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[]
+                        {
+                            new Claim(ClaimTypes.NameIdentifier, "claim-user-id"),
+                            new Claim(ClaimTypes.Name, "操作员 A"),
+                        },
+                        "test"
+                    )),
+                },
+            },
+        };
+
+        var result = await controller.StartCreateNewProductsJob(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-controller",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D001" },
+            },
+            CancellationToken.None
+        );
+
+        Assert.IsType<OkObjectResult>(result);
+        jobService.VerifyAll();
+    }
+
+    [Fact]
+    public async Task Controller_StartSubmitContainerJob_稳定用户与身份名称透传并提交全柜()
+    {
+        var request = new ContainerProductCreationJobRequestDto
+        {
+            OperationId = "op-submit-container",
+            ContainerGuid = "C001",
+            DetailHguids = new List<string> { "D001", "D002" },
+        };
+        var jobService = new Mock<IContainerProductCreationJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(service => service.StartJobAsync(
+                "stable-user-id",
+                "货柜提交人",
+                It.Is<ContainerProductCreationJobRequestDto>(submitted =>
+                    ReferenceEquals(submitted, request)
+                    && submitted.SubmitContainer
+                    && submitted.DetailHguids != null
+                    && submitted.DetailHguids.Count == 0),
+                CancellationToken.None
+            ))
+            .ReturnsAsync(new ContainerProductCreationJobDto { JobId = "submit-container-job-1" });
+        var controller = new ReactContainerProductsController(
+            jobService.Object,
+            NullLogger<ReactContainerProductsController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[]
+                        {
+                            new Claim(ClaimTypes.NameIdentifier, "stable-user-id"),
+                            new Claim(ClaimTypes.Name, "货柜提交人"),
+                        },
+                        "test"
+                    )),
+                },
+            },
+        };
+
+        var result = await controller.StartSubmitContainerJob(request, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        jobService.Verify(
+            service => service.StartJobAsync(
+                "stable-user-id",
+                "货柜提交人",
+                It.Is<ContainerProductCreationJobRequestDto>(submitted =>
+                    ReferenceEquals(submitted, request)
+                    && submitted.SubmitContainer
+                    && submitted.DetailHguids != null
+                    && submitted.DetailHguids.Count == 0),
+                CancellationToken.None
+            ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task JobService_PassesUpdatedByToScopedExecutor()
+    {
+        var executor = new BlockingContainerProductCreationExecutor();
+        var services = new ServiceCollection();
+        services.AddSingleton<IContainerProductCreationExecutorService>(executor);
+        var provider = services.BuildServiceProvider();
+        var jobService = new ContainerProductCreationJobService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ContainerProductCreationJobService>.Instance
+        );
+
+        await jobService.StartJobAsync(
+            "claim-user-id",
+            "操作员 A",
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-job-updater",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D001" },
+            }
+        );
+
+        Assert.Equal("操作员 A", await executor.WaitForUpdatedByAsync());
+        executor.Release();
     }
 
     [Fact]
@@ -905,7 +1090,8 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
                 OperationId = "submit-container:C-PRICE-ONLY",
                 ContainerGuid = "C-PRICE-ONLY",
                 SubmitContainer = true,
-            }
+            },
+            "整柜提交人"
         );
 
         Assert.Equal(1, result.UpdatedCount);
@@ -924,6 +1110,7 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(8.8m, warehouseProduct.ImportPrice);
         Assert.Equal(9.9m, warehouseProduct.OEMPrice);
         Assert.False(warehouseProduct.IsActive);
+        Assert.Equal("整柜提交人", warehouseProduct.UpdatedBy);
     }
 
     [Fact]
@@ -1449,15 +1636,30 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         : IContainerProductCreationExecutorService
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<string?> _updatedByReceived = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
-        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+        public Task<ContainerProductCreationResultDto> ExecuteAsync(
             ContainerProductCreationJobRequestDto request,
             CancellationToken cancellationToken = default
         )
         {
+            return ExecuteAsync(request, null, cancellationToken);
+        }
+
+        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+            ContainerProductCreationJobRequestDto request,
+            string? updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
+            _updatedByReceived.TrySetResult(updatedBy);
             await _release.Task.WaitAsync(cancellationToken);
             return new ContainerProductCreationResultDto();
         }
+
+        public Task<string?> WaitForUpdatedByAsync() => _updatedByReceived.Task;
 
         public void Release() => _release.TrySetResult();
     }

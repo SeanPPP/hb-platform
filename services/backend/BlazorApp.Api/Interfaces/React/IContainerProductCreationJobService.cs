@@ -13,6 +13,13 @@ namespace BlazorApp.Api.Interfaces.React
             CancellationToken cancellationToken = default
         );
 
+        Task<ContainerProductCreationJobDto> StartJobAsync(
+            string userId,
+            string? updatedBy,
+            ContainerProductCreationJobRequestDto request,
+            CancellationToken cancellationToken = default
+        );
+
         Task<ContainerProductCreationJobDto?> GetJobAsync(
             string userId,
             string jobId,

@@ -261,8 +261,8 @@ export class PaymentPresenter {
 
   public constructor(private readonly dependencies: PaymentPresenterDependencies) {
     const providers = safeProviderAvailability(dependencies.runtime);
-    const selectedMethod =
-      firstAvailableProvider(providers, []) ?? null;
+    // 默认支付方式：现金可启动时优先现金，否则回退到第一个可用 provider。
+    const selectedMethod = resolveInitialMethod(providers, dependencies);
     const total = dependencies.entry
       ? copyMoney(dependencies.entry.total)
       : ZERO_AUD;
@@ -289,9 +289,7 @@ export class PaymentPresenter {
       allowedActions: Object.freeze({
         ...EMPTY_ALLOWED_ACTIONS,
         start: dependencies.entry !== null,
-        addCash:
-          dependencies.entry !== null &&
-          typeof dependencies.runtime.startCash === "function",
+        addCash: isCashAvailable(dependencies),
       }),
       tenderReversalRecovery: null,
       checkout: emptyRegularCheckout(dependencies.entry?.lines),
@@ -326,9 +324,7 @@ export class PaymentPresenter {
           allowedActions: Object.freeze({
             ...EMPTY_ALLOWED_ACTIONS,
             start: this.dependencies.entry !== null,
-            addCash:
-              this.dependencies.entry !== null &&
-              typeof this.dependencies.runtime.startCash === "function",
+            addCash: isCashAvailable(this.dependencies),
           }),
         });
       }
@@ -942,6 +938,32 @@ function firstAvailableMethod(
   }
   if (!snapshot.allowedActions.start) return null;
   return firstAvailableProvider(providers, activeMethods);
+}
+
+/**
+ * 支付页面默认支付方式：现金可用时优先现金，否则回退到第一个可用 provider。
+ * 判定条件与初始 allowedActions.addCash 共用 isCashAvailable，保持一致；
+ * 用户手动选择后由 selectMethod 覆盖，applySnapshot 按快照可选择性保留当前
+ * 选择（现金不可选时回退 firstAvailableMethod），不重复执行默认解析。
+ */
+function resolveInitialMethod(
+  providers: readonly PaymentProviderAvailability[],
+  dependencies: PaymentPresenterDependencies,
+): PaymentUiMethod | null {
+  if (isCashAvailable(dependencies)) return "cash";
+  return firstAvailableProvider(providers, []) ?? null;
+}
+
+/**
+ * 现金结账是否可用：存在结账入口且运行时实现 startCash。
+ * 默认支付方式与初始 addCash 权限（含无恢复时的 ready 分支）共用同一判定，
+ * 避免失配。
+ */
+function isCashAvailable(dependencies: PaymentPresenterDependencies): boolean {
+  return (
+    dependencies.entry !== null &&
+    typeof dependencies.runtime.startCash === "function"
+  );
 }
 
 function firstAvailableProvider(

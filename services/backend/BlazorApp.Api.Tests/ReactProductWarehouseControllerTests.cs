@@ -211,7 +211,8 @@ namespace BlazorApp.Api.Tests
                             dto.StockQuantity == 141
                             && dto.RetailPrice == 12.99m
                             && dto.SyncStoreRetailPrices == true
-                        )
+                        ),
+                        "仓库操作员"
                     )
                 )
                 .ReturnsAsync(
@@ -223,7 +224,11 @@ namespace BlazorApp.Api.Tests
                     }
                 );
 
-            var controller = CreateController(serviceMock.Object, roles: new[] { "WarehouseStaff" });
+            var controller = CreateController(
+                serviceMock.Object,
+                roles: new[] { "WarehouseStaff" },
+                username: "仓库操作员"
+            );
 
             var result = await controller.PatchMobileProduct(
                 "HB313-129",
@@ -244,7 +249,8 @@ namespace BlazorApp.Api.Tests
                             dto.StockQuantity == 141
                             && dto.RetailPrice == 12.99m
                             && dto.SyncStoreRetailPrices == true
-                        )
+                        ),
+                        "仓库操作员"
                     ),
                 Times.Once
             );
@@ -262,7 +268,8 @@ namespace BlazorApp.Api.Tests
                             dto.WarehouseIsActive == false
                             && dto.IsActive == null
                             && dto.StockQuantity == 25
-                        )
+                        ),
+                        "仓库操作员"
                     )
                 )
                 .ReturnsAsync(
@@ -275,7 +282,11 @@ namespace BlazorApp.Api.Tests
                     }
                 );
 
-            var controller = CreateController(serviceMock.Object, roles: new[] { "WarehouseStaff" });
+            var controller = CreateController(
+                serviceMock.Object,
+                roles: new[] { "WarehouseStaff" },
+                username: "仓库操作员"
+            );
 
             var result = await controller.PatchMobileProduct(
                 "HB313-130",
@@ -295,7 +306,8 @@ namespace BlazorApp.Api.Tests
                             dto.WarehouseIsActive == false
                             && dto.IsActive == null
                             && dto.StockQuantity == 25
-                        )
+                        ),
+                        "仓库操作员"
                     ),
                 Times.Once
             );
@@ -417,6 +429,158 @@ namespace BlazorApp.Api.Tests
             );
         }
 
+        [Fact]
+        public async Task BatchUpdate_使用ClaimTypesName透传当前用户名给服务()
+        {
+            var items = new List<UpdateItemDto> { new() { ProductCode = "P001" } };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.BatchUpdateAsync(items, "批量更新人"))
+                .ReturnsAsync(new BatchOperationResultDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "批量更新人");
+            Assert.Equal("批量更新人", controller.User.FindFirstValue(ClaimTypes.Name));
+
+            var result = await controller.BatchUpdate(
+                new ReactProductWarehouseController.BatchUpdateRequest { Items = items }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.BatchUpdateAsync(items, "批量更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task BatchCreate_传递当前用户名给服务()
+        {
+            var items = new List<CreateItemDto> { new() };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.BatchCreateAsync(items, true, "商品更新人"))
+                .ReturnsAsync(new BatchOperationResultDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.BatchCreate(
+                new ReactProductWarehouseController.BatchCreateRequest { Items = items }
+            );
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.BatchCreateAsync(items, true, "商品更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task CreateSingle_传递当前用户名给服务()
+        {
+            var request = new CreateSingleProductRequestDto { ProductCode = "P001" };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.CreateSingleProductAsync(request, "商品更新人"))
+                .ReturnsAsync(new CreateSingleProductResponseDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.CreateSingle(request);
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.CreateSingleProductAsync(request, "商品更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task ImportFromDomestic_传递当前用户名给服务()
+        {
+            var request = new ImportFromDomesticRequestDto { ProductCodes = new List<string> { "P001" } };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.ImportFromDomesticAsync(request, "商品更新人"))
+                .ReturnsAsync(new ImportFromDomesticResponseDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.ImportFromDomestic(request);
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.ImportFromDomesticAsync(request, "商品更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task ImportNonHotbargain_传递当前用户名给服务()
+        {
+            var request = new ImportNonHotbargainRequestDto
+            {
+                ProductCodes = new List<string> { "P001" },
+            };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.ImportNonHotbargainProductsAsync(request, "商品更新人"))
+                .ReturnsAsync(new ImportFromDomesticResponseDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.ImportNonHotbargain(request);
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.ImportNonHotbargainProductsAsync(request, "商品更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task FullUpdate_传递当前用户名给服务()
+        {
+            var dto = new WarehouseProductFullUpdateDto { ProductName = "测试商品" };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.FullUpdateAsync("P001", dto, "商品更新人"))
+                .ReturnsAsync(new WarehouseProductFullUpdateResultDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.FullUpdate("P001", dto);
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.FullUpdateAsync("P001", dto, "商品更新人"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task BatchToggleActive_传递当前用户名给服务()
+        {
+            var request = new BatchToggleWarehouseProductsActiveRequestDto
+            {
+                ProductCodes = new List<string> { "P001" },
+                IsActive = true,
+            };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.BatchToggleActiveAsync(request, "商品更新人"))
+                .ReturnsAsync(new BatchToggleWarehouseProductsActiveResultDto { Success = true });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.BatchToggleActive(request);
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.Verify(
+                service => service.BatchToggleActiveAsync(request, "商品更新人"),
+                Times.Once
+            );
+        }
+
         private static AuthorizeAttribute GetSingleAuthorizeAttribute(string methodName)
         {
             var method = typeof(ReactProductWarehouseController).GetMethod(methodName);
@@ -433,14 +597,16 @@ namespace BlazorApp.Api.Tests
             IWarehouseProductHqSyncJobService? jobService = null,
             IDeviceRegistrationService? deviceService = null,
             IMapper? mapper = null,
-            string[]? roles = null
+            string[]? roles = null,
+            string username = "测试用户"
         )
         {
             roles ??= new[] { "Admin" };
             var httpContext = new DefaultHttpContext();
             if (roles.Length > 0)
             {
-                var claims = roles.Select(role => new Claim(ClaimTypes.Role, role));
+                var claims = roles.Select(role => new Claim(ClaimTypes.Role, role))
+                    .Append(new Claim(ClaimTypes.Name, username));
                 httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth"));
             }
 

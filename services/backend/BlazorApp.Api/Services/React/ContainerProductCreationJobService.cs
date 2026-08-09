@@ -46,9 +46,20 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
+            return StartJobAsync(userId, null, request, cancellationToken);
+        }
+
+        public Task<ContainerProductCreationJobDto> StartJobAsync(
+            string userId,
+            string? updatedBy,
+            ContainerProductCreationJobRequestDto request,
+            CancellationToken cancellationToken = default
+        )
+        {
             CleanupExpiredJobs();
 
             var normalizedUserId = NormalizeUserId(userId);
+            var normalizedUpdatedBy = NormalizeUpdatedBy(updatedBy);
             var normalizedRequest = NormalizeRequest(request);
             var operationKey = BuildOperationKey(normalizedRequest);
 
@@ -74,6 +85,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     JobId = Guid.NewGuid().ToString("N"),
                     UserId = normalizedUserId,
+                    UpdatedBy = normalizedUpdatedBy,
                     OperationKey = operationKey,
                     Request = normalizedRequest,
                     CreatedAt = now,
@@ -106,7 +118,8 @@ namespace BlazorApp.Api.Services.React
                 SetRunning(jobState);
                 using var scope = _serviceScopeFactory.CreateScope();
                 var executor = scope.ServiceProvider.GetRequiredService<IContainerProductCreationExecutorService>();
-                var result = await executor.ExecuteAsync(jobState.Request);
+                // 后台 scope 没有原始 HttpContext，必须从 job state 传递可信的更新人。
+                var result = await executor.ExecuteAsync(jobState.Request, jobState.UpdatedBy);
                 var status = result.FailedCount > 0
                     ? ContainerProductCreationJobStatusConstants.Failed
                     : ContainerProductCreationJobStatusConstants.Succeeded;
@@ -318,11 +331,17 @@ namespace BlazorApp.Api.Services.React
             return string.IsNullOrWhiteSpace(userId) ? "anonymous" : userId.Trim();
         }
 
+        private static string NormalizeUpdatedBy(string? updatedBy)
+        {
+            return string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy.Trim();
+        }
+
         private sealed class ContainerProductCreationJobState
         {
             public object SyncRoot { get; } = new();
             public string JobId { get; set; } = string.Empty;
             public string UserId { get; set; } = string.Empty;
+            public string UpdatedBy { get; set; } = "System";
             public string OperationKey { get; set; } = string.Empty;
             public ContainerProductCreationJobRequestDto Request { get; set; } = new();
             public string Status { get; set; } = ContainerProductCreationJobStatusConstants.Queued;

@@ -47,6 +47,7 @@ namespace BlazorApp.Shared.DTOs
         public bool IsActive { get; set; }
         public DateTime? CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
         public string? ProductImage { get; set; }
         /// <summary>商品类型：0-普通，1-套装，2-多码</summary>
         public int ProductType { get; set; }

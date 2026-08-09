@@ -61,7 +61,8 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var userId = ResolveUserId();
-                var job = await _jobService.StartJobAsync(userId, request, cancellationToken);
+                var updatedBy = ResolveUpdatedBy();
+                var job = await _jobService.StartJobAsync(userId, updatedBy, request, cancellationToken);
                 return Ok(new { success = true, data = job, message = "创建新商品 job 已提交" });
             }
             catch (UnauthorizedAccessException)
@@ -107,7 +108,8 @@ namespace BlazorApp.Api.Controllers.React
                 request.DetailHguids = new List<string>();
 
                 var userId = ResolveUserId();
-                var job = await _jobService.StartJobAsync(userId, request, cancellationToken);
+                var updatedBy = ResolveUpdatedBy();
+                var job = await _jobService.StartJobAsync(userId, updatedBy, request, cancellationToken);
                 return Ok(new { success = true, data = job, message = "提交货柜 job 已提交" });
             }
             catch (UnauthorizedAccessException)
@@ -167,6 +169,13 @@ namespace BlazorApp.Api.Controllers.React
                 ?? User.FindFirstValue(ClaimTypes.Name)
                 ?? User.FindFirstValue("sub")
                 ?? "anonymous";
+        }
+
+        private string? ResolveUpdatedBy()
+        {
+            // 更新人只能来自已认证身份，绝不接受请求体提供的审计字段。
+            var updatedBy = User.Identity?.Name;
+            return string.IsNullOrWhiteSpace(updatedBy) ? null : updatedBy.Trim();
         }
     }
 }

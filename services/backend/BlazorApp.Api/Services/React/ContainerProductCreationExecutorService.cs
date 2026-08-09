@@ -37,7 +37,17 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
+            return await ExecuteAsync(request, null, cancellationToken);
+        }
+
+        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+            ContainerProductCreationJobRequestDto request,
+            string? updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
             var result = new ContainerProductCreationResultDto();
+            var effectiveUpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy.Trim();
             var isSubmitContainer = request.SubmitContainer;
             var normalizedDetailHguids = NormalizeDetailHguids(request.DetailHguids);
 
@@ -238,7 +248,9 @@ namespace BlazorApp.Api.Services.React
                 {
                     var batchResult = await _productWarehouseService.BatchCreateAsync(
                         createItems,
-                        useTransaction: !isSubmitContainer
+                        useTransaction: !isSubmitContainer,
+                        // 保留整柜事务边界，同时将 job 捕获的真实操作人写入审计字段。
+                        updatedBy: effectiveUpdatedBy
                     );
                     if (!batchResult.Success)
                     {
@@ -300,7 +312,11 @@ namespace BlazorApp.Api.Services.React
 
             if (isSubmitContainer && updateItems.Count > 0)
             {
-                await UpdateExistingProductsForSubmitAsync(updateItems.Values.ToList(), result);
+                await UpdateExistingProductsForSubmitAsync(
+                    updateItems.Values.ToList(),
+                    effectiveUpdatedBy,
+                    result
+                );
             }
 
             return CompleteSubmitTransaction(
@@ -1156,6 +1172,7 @@ namespace BlazorApp.Api.Services.React
 
         private async Task UpdateExistingProductsForSubmitAsync(
             List<ContainerProductUpdateSource> sources,
+            string effectiveUpdatedBy,
             ContainerProductCreationResultDto result
         )
         {
@@ -1239,6 +1256,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     warehouseProduct.Volume = item.Volume;
                 }
+                // 整柜提交的已有商品同样必须保留实际操作人的审计信息。
+                warehouseProduct.UpdatedBy = effectiveUpdatedBy;
                 warehouseProduct.UpdatedAt = now;
                 warehouseProductsToUpdate.Add(warehouseProduct);
 
@@ -1263,6 +1282,7 @@ namespace BlazorApp.Api.Services.React
                             product.OEMPrice,
                             product.ImportPrice,
                             product.Volume,
+                            product.UpdatedBy,
                             product.UpdatedAt,
                         })
                         .ExecuteCommandAsync();

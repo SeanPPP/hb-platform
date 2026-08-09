@@ -26,6 +26,7 @@ namespace BlazorApp.Api.Services.React
     public class ProductWarehouseReactService : IProductWarehouseReactService
     {
         private const int PickingLocationType = 1;
+        private const string SystemUpdatedBy = "System";
 
         private readonly SqlSugarContext _context;
         private readonly HqSqlSugarContext _hqContext;
@@ -668,11 +669,21 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="items">待更新的商品列表</param>
         /// <returns>批量操作结果</returns>
-        public async Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items)
+        public Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items)
+        {
+            return BatchUpdateAsync(items, SystemUpdatedBy);
+        }
+
+        public async Task<BatchOperationResultDto> BatchUpdateAsync(
+            List<UpdateItemDto> items,
+            string? updatedBy
+        )
         {
             var result = new BatchOperationResultDto { Success = true, Message = "更新完成" };
             if (items == null || items.Count == 0)
                 return result;
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -831,6 +842,8 @@ namespace BlazorApp.Api.Services.React
                             IsDeleted = false,
                             CreatedAt = DateTime.Now,
                             UpdatedAt = DateTime.Now,
+                            CreatedBy = effectiveUpdatedBy,
+                            UpdatedBy = effectiveUpdatedBy,
                         };
                         toCreateWp.Add(newWp);
                         if (item.PackingQuantity.HasValue)
@@ -873,6 +886,7 @@ namespace BlazorApp.Api.Services.React
                         wp.IsActive = item.IsActive.Value;
                     }
                     wp.UpdatedAt = DateTime.Now;
+                    wp.UpdatedBy = effectiveUpdatedBy;
                     toUpdateWp.Add(wp);
 
                     if (item.ImportPrice.HasValue)
@@ -900,6 +914,7 @@ namespace BlazorApp.Api.Services.React
                             w.MinOrderQuantity,
                             w.IsActive,
                             w.UpdatedAt,
+                            w.UpdatedBy,
                         })
                         .ExecuteCommandAsync();
                     result.SuccessCount += toUpdateWp.Count;
@@ -1023,14 +1038,25 @@ namespace BlazorApp.Api.Services.React
         /// <param name="items">待创建的商品列表</param>
         /// <param name="useTransaction">是否由本方法自行开启事务；整柜提交会关闭它，交给外层事务统一控制</param>
         /// <returns>批量操作结果</returns>
-        public async Task<BatchOperationResultDto> BatchCreateAsync(
+        public Task<BatchOperationResultDto> BatchCreateAsync(
             List<CreateItemDto> items,
             bool useTransaction = true
+        )
+        {
+            return BatchCreateAsync(items, useTransaction, SystemUpdatedBy);
+        }
+
+        public async Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy
         )
         {
             var result = new BatchOperationResultDto { Success = true, Message = "创建完成" };
             if (items == null || items.Count == 0)
                 return result;
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -1332,6 +1358,8 @@ namespace BlazorApp.Api.Services.React
                         IsDeleted = false,
                         CreatedAt = now,
                         UpdatedAt = now,
+                        CreatedBy = effectiveUpdatedBy,
+                        UpdatedBy = effectiveUpdatedBy,
                     };
                     toCreateWps.Add(wp);
 
@@ -2214,6 +2242,8 @@ namespace BlazorApp.Api.Services.React
                             IsActive = w.IsActive,
                             CreatedAt = w.CreatedAt,
                             UpdatedAt = w.UpdatedAt,
+                            UpdatedBy = w.UpdatedBy,
+                            CreatedBy = w.CreatedBy,
                             ProductImage = p.ProductImage,
                             ProductType = p.ProductType ?? dp.ProductType,
                         }
@@ -2251,6 +2281,8 @@ namespace BlazorApp.Api.Services.React
                     IsActive = row.IsActive,
                     CreatedAt = row.CreatedAt,
                     UpdatedAt = row.UpdatedAt,
+                    // 历史记录没有更新人时不能借用创建人，前端会按空值显示“--”。
+                    UpdatedBy = string.IsNullOrWhiteSpace(row.UpdatedBy) ? null : row.UpdatedBy,
                     ProductImage = row.ProductImage,
                     ProductType = row.ProductType,
                     LocationCodes = pickingLocationMap.TryGetValue(
@@ -3227,8 +3259,16 @@ namespace BlazorApp.Api.Services.React
         /// <summary>
         /// 新建单个仓库商品：货号/商品编码可自动生成，支持普通/套装/一品多码，分店零售价可默认补充。
         /// </summary>
-        public async Task<CreateSingleProductResponseDto> CreateSingleProductAsync(
+        public Task<CreateSingleProductResponseDto> CreateSingleProductAsync(
             CreateSingleProductRequestDto request
+        )
+        {
+            return CreateSingleProductAsync(request, SystemUpdatedBy);
+        }
+
+        public async Task<CreateSingleProductResponseDto> CreateSingleProductAsync(
+            CreateSingleProductRequestDto request,
+            string? updatedBy
         )
         {
             var response = new CreateSingleProductResponseDto
@@ -3237,6 +3277,7 @@ namespace BlazorApp.Api.Services.React
                 Message = "创建失败",
             };
             var warnings = new List<string>();
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -3417,6 +3458,8 @@ namespace BlazorApp.Api.Services.React
                         IsDeleted = false,
                         CreatedAt = now,
                         UpdatedAt = now,
+                        CreatedBy = effectiveUpdatedBy,
+                        UpdatedBy = effectiveUpdatedBy,
                     };
                     await _context.Db.Insertable(domesticProduct).ExecuteCommandAsync();
                 }
@@ -3463,6 +3506,8 @@ namespace BlazorApp.Api.Services.React
                         IsDeleted = false,
                         CreatedAt = now,
                         UpdatedAt = now,
+                        CreatedBy = effectiveUpdatedBy,
+                        UpdatedBy = effectiveUpdatedBy,
                     };
                     await _context.Db.Insertable(warehouseProduct).ExecuteCommandAsync();
                 }
@@ -3474,6 +3519,7 @@ namespace BlazorApp.Api.Services.React
                     warehouseProduct.Volume = request.Volume;
                     warehouseProduct.IsActive = request.IsActive;
                     warehouseProduct.UpdatedAt = now;
+                    warehouseProduct.UpdatedBy = effectiveUpdatedBy;
                     await _context
                         .Db.Updateable(warehouseProduct)
                         .UpdateColumns(wp => new
@@ -3484,6 +3530,7 @@ namespace BlazorApp.Api.Services.React
                             wp.Volume,
                             wp.IsActive,
                             wp.UpdatedAt,
+                            wp.UpdatedBy,
                         })
                         .ExecuteCommandAsync();
                 }
@@ -4006,8 +4053,16 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="request">导入请求，包含商品编码列表和可选的价格覆盖</param>
         /// <returns>导入结果</returns>
-        public async Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(
+        public Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(
             ImportFromDomesticRequestDto request
+        )
+        {
+            return ImportFromDomesticAsync(request, SystemUpdatedBy);
+        }
+
+        public async Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(
+            ImportFromDomesticRequestDto request,
+            string? updatedBy
         )
         {
             var response = new ImportFromDomesticResponseDto
@@ -4022,6 +4077,8 @@ namespace BlazorApp.Api.Services.React
                 response.Success = false;
                 return response;
             }
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -4245,6 +4302,7 @@ namespace BlazorApp.Api.Services.React
                         existingWp.ImportPrice = importPrice;
                         existingWp.Volume = unitVolume;
                         existingWp.UpdatedAt = now;
+                        existingWp.UpdatedBy = effectiveUpdatedBy;
                         toUpdateWarehouseProducts.Add(existingWp);
                         wp = existingWp;
                     }
@@ -4262,6 +4320,8 @@ namespace BlazorApp.Api.Services.React
                             IsDeleted = false,
                             CreatedAt = now,
                             UpdatedAt = now,
+                            CreatedBy = effectiveUpdatedBy,
+                            UpdatedBy = effectiveUpdatedBy,
                         };
                         toInsertWarehouseProducts.Add(wp);
                     }
@@ -4474,6 +4534,7 @@ namespace BlazorApp.Api.Services.React
                             wp.ImportPrice,
                             wp.Volume,
                             wp.UpdatedAt,
+                            wp.UpdatedBy,
                         })
                         .ExecuteCommandAsync();
                 }
@@ -4549,9 +4610,18 @@ namespace BlazorApp.Api.Services.React
         /// 仓库商品完整更新：同一 db 顺序查、一次性取列表，事务内更新 DomesticProduct、Product、WarehouseProduct、StoreRetailPrice、StoreMultiCodeProduct、ProductSetCode。
         /// 分店零售价强联动：StoreRetailPriceValue / MultiCodeRetailPrice 用主表零售价（OEM）覆盖，PurchasePrice 用进口价覆盖。
         /// </summary>
-        public async Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
+        public Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
             string productCode,
             WarehouseProductFullUpdateDto dto
+        )
+        {
+            return FullUpdateAsync(productCode, dto, SystemUpdatedBy);
+        }
+
+        public async Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
+            string productCode,
+            WarehouseProductFullUpdateDto dto,
+            string? updatedBy
         )
         {
             var result = new WarehouseProductFullUpdateResultDto
@@ -4564,6 +4634,8 @@ namespace BlazorApp.Api.Services.React
                 result.Message = "商品编码或请求体为空";
                 return result;
             }
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -4704,6 +4776,7 @@ namespace BlazorApp.Api.Services.React
                     warehouseProduct.MinOrderQuantity = dto.MinOrderQuantity;
                 warehouseProduct.IsActive = dto.IsActive;
                 warehouseProduct.UpdatedAt = now;
+                warehouseProduct.UpdatedBy = effectiveUpdatedBy;
                 await _context
                     .Db.Updateable(warehouseProduct)
                     .UpdateColumns(w => new
@@ -4715,6 +4788,7 @@ namespace BlazorApp.Api.Services.React
                         w.MinOrderQuantity,
                         w.IsActive,
                         w.UpdatedAt,
+                        w.UpdatedBy,
                     })
                     .ExecuteCommandAsync();
 
@@ -5045,8 +5119,16 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="request">导入请求，包含商品编码列表</param>
         /// <returns>导入结果</returns>
-        public async Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
+        public Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
             ImportNonHotbargainRequestDto request
+        )
+        {
+            return ImportNonHotbargainProductsAsync(request, SystemUpdatedBy);
+        }
+
+        public async Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
+            ImportNonHotbargainRequestDto request,
+            string? updatedBy
         )
         {
             var response = new ImportFromDomesticResponseDto
@@ -5061,6 +5143,8 @@ namespace BlazorApp.Api.Services.React
                 response.Success = false;
                 return response;
             }
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             try
             {
@@ -5139,10 +5223,8 @@ namespace BlazorApp.Api.Services.React
                         deletedWp.PackingQuantity = null;
                         deletedWp.IsActive = true;
                         deletedWp.IsDeleted = false;
-                        deletedWp.CreatedAt = now;
-                        deletedWp.CreatedBy = null;
                         deletedWp.UpdatedAt = now;
-                        deletedWp.UpdatedBy = null;
+                        deletedWp.UpdatedBy = effectiveUpdatedBy;
                         toRestoreWarehouseProducts.Add(deletedWp);
 
                         result.Success = true;
@@ -5164,6 +5246,8 @@ namespace BlazorApp.Api.Services.React
                         IsDeleted = false,
                         CreatedAt = now,
                         UpdatedAt = now,
+                        CreatedBy = effectiveUpdatedBy,
+                        UpdatedBy = effectiveUpdatedBy,
                     };
                     toInsertWarehouseProducts.Add(wp);
 
@@ -5213,8 +5297,16 @@ namespace BlazorApp.Api.Services.React
             return response;
         }
 
-        public async Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
+        public Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
             BatchToggleWarehouseProductsActiveRequestDto request
+        )
+        {
+            return BatchToggleActiveAsync(request, SystemUpdatedBy);
+        }
+
+        public async Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
+            BatchToggleWarehouseProductsActiveRequestDto request,
+            string? updatedBy
         )
         {
             var result = new BatchToggleWarehouseProductsActiveResultDto
@@ -5228,6 +5320,8 @@ namespace BlazorApp.Api.Services.React
                 result.Message = "商品编码不能为空";
                 return result;
             }
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             var productCodes = request
                 .ProductCodes.Where(code => !string.IsNullOrWhiteSpace(code))
@@ -5263,6 +5357,7 @@ namespace BlazorApp.Api.Services.React
                         .Db.Updateable<WarehouseProduct>()
                         .SetColumns(w => w.IsActive == request.IsActive)
                         .SetColumns(w => w.UpdatedAt == now)
+                        .SetColumns(w => w.UpdatedBy == effectiveUpdatedBy)
                         .Where(w => validWarehouseProductCodes.Contains(w.ProductCode) && !w.IsDeleted)
                         .ExecuteCommandAsync();
 
@@ -5329,6 +5424,12 @@ namespace BlazorApp.Api.Services.React
             }
 
             return result;
+        }
+
+        private static string ResolveUpdatedBy(string? updatedBy)
+        {
+            // 服务也会被后台任务等非 HTTP 入口调用，空操作人必须可审计地回退为 System。
+            return string.IsNullOrWhiteSpace(updatedBy) ? SystemUpdatedBy : updatedBy;
         }
 
         /// <summary>
@@ -5451,9 +5552,18 @@ namespace BlazorApp.Api.Services.React
             return await FindMobileProductByCodeAsync(trimmed);
         }
 
-        public async Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
+        public Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
             string productCode,
             WarehouseMobileProductPatchDto dto
+        )
+        {
+            return PatchMobileProductAsync(productCode, dto, SystemUpdatedBy);
+        }
+
+        public async Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
+            string productCode,
+            WarehouseMobileProductPatchDto dto,
+            string? updatedBy
         )
         {
             var product = await _context
@@ -5469,6 +5579,8 @@ namespace BlazorApp.Api.Services.React
             {
                 return null;
             }
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
 
             var domesticProduct = await _context
                 .Db.Queryable<DomesticProduct>()
@@ -5626,9 +5738,13 @@ namespace BlazorApp.Api.Services.React
             {
                 product.UpdatedAt = now;
             }
-            if (shouldUpdateWarehouseProduct)
+            // 任一移动端可编辑字段发生变化时，都刷新仓库商品审计信息。
+            // 即使实际字段位于 Product、DomesticProduct 或 ProductGrade，列表也从 WarehouseProduct 展示更新人。
+            if (shouldUpdateProduct || shouldUpdateWarehouseProduct || shouldUpdateDomesticProduct || shouldUpdateProductGrade)
             {
                 warehouseProduct.UpdatedAt = now;
+                warehouseProduct.UpdatedBy = effectiveUpdatedBy;
+                shouldUpdateWarehouseProduct = true;
             }
             if (domesticProduct != null && shouldUpdateDomesticProduct)
             {
@@ -5640,15 +5756,135 @@ namespace BlazorApp.Api.Services.React
             {
                 if (shouldUpdateProduct)
                 {
-                    await _context.Db.Updateable(product).ExecuteCommandAsync();
+                    // 仅回写移动端本次涉及的 Product 列，避免覆盖并发修改的基础商品字段。
+                    var productUpdate = _context
+                        .Db.Updateable<Product>()
+                        .SetColumns(p => p.UpdatedAt == now)
+                        .Where(p => p.UUID == product.UUID && !p.IsDeleted);
+                    if (syncedPurchasePrice.HasValue)
+                    {
+                        productUpdate = productUpdate.SetColumns(p =>
+                            p.PurchasePrice == syncedPurchasePrice.Value
+                        );
+                    }
+                    if (syncedRetailPrice.HasValue)
+                    {
+                        productUpdate = productUpdate.SetColumns(p =>
+                            p.RetailPrice == syncedRetailPrice.Value
+                        );
+                    }
+                    if (dto.MiddlePackageQuantity.HasValue)
+                    {
+                        productUpdate = productUpdate.SetColumns(p =>
+                            p.MiddlePackageQuantity == dto.MiddlePackageQuantity.Value
+                        );
+                    }
+                    if (dto.ProductImage != null)
+                    {
+                        productUpdate = productUpdate.SetColumns(p => p.ProductImage == dto.ProductImage);
+                    }
+                    await productUpdate.ExecuteCommandAsync();
                 }
                 if (shouldUpdateWarehouseProduct)
                 {
-                    await _context.Db.Updateable(warehouseProduct).ExecuteCommandAsync();
+                    // 移动端只写本次请求涉及的仓库字段，避免读后全实体回写覆盖并发库存或价格。
+                    var warehouseUpdate = _context
+                        .Db.Updateable<WarehouseProduct>()
+                        .SetColumns(w => w.UpdatedAt == now)
+                        .SetColumns(w => w.UpdatedBy == effectiveUpdatedBy)
+                        .Where(w => w.ProductCode == productCode && !w.IsDeleted);
+                    if (warehouseIsActive.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.IsActive == warehouseIsActive.Value
+                        );
+                    }
+                    if (syncedPurchasePrice.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.ImportPrice == syncedPurchasePrice.Value
+                        );
+                    }
+                    if (syncedRetailPrice.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.OEMPrice == syncedRetailPrice.Value
+                        );
+                    }
+                    if (dto.DomesticPrice.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.DomesticPrice == dto.DomesticPrice.Value
+                        );
+                    }
+                    if (dto.StockQuantity.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.StockQuantity == dto.StockQuantity.Value
+                        );
+                    }
+                    if (dto.PackingQuantity.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                            w.PackingQuantity == dto.PackingQuantity.Value
+                        );
+                    }
+                    if (dto.Volume.HasValue)
+                    {
+                        warehouseUpdate = warehouseUpdate.SetColumns(w => w.Volume == dto.Volume.Value);
+                    }
+                    await warehouseUpdate.ExecuteCommandAsync();
                 }
                 if (domesticProduct != null && shouldUpdateDomesticProduct)
                 {
-                    await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
+                    // 国内商品同样只写本次 DTO 驱动的联动列，避免全实体更新覆盖并发包装数据。
+                    var domesticProductUpdate = _context
+                        .Db.Updateable<DomesticProduct>()
+                        .SetColumns(dp => dp.UpdatedAt == now)
+                        .Where(dp => dp.ProductCode == domesticProduct.ProductCode && !dp.IsDeleted);
+                    if (syncedPurchasePrice.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.ImportPrice == syncedPurchasePrice.Value
+                        );
+                    }
+                    if (syncedRetailPrice.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.OEMPrice == syncedRetailPrice.Value
+                        );
+                    }
+                    if (dto.ProductImage != null)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.ProductImage == dto.ProductImage
+                        );
+                    }
+                    if (dto.DomesticPrice.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.DomesticPrice == dto.DomesticPrice.Value
+                        );
+                    }
+                    if (dto.PackingQuantity.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.PackingQuantity == dto.PackingQuantity.Value
+                        );
+                    }
+                    if (dto.Volume.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.UnitVolume == dto.Volume.Value
+                        );
+                    }
+                    if (dto.MiddlePackageQuantity.HasValue)
+                    {
+                        domesticProductUpdate = domesticProductUpdate.SetColumns(dp =>
+                            dp.MiddlePackQuantity == dto.MiddlePackageQuantity.Value
+                        );
+                    }
+                    await domesticProductUpdate.ExecuteCommandAsync();
                 }
                 if (productGrade != null && shouldUpdateProductGrade)
                 {

@@ -39,6 +39,7 @@ namespace BlazorApp.Api.Tests
                 DbType = DbType.Sqlite,
                 IsAutoCloseConnection = false,
                 InitKeyType = InitKeyType.Attribute,
+                MoreSettings = new ConnMoreSettings(),
             });
 
             _db.CodeFirst.InitTables(
@@ -54,7 +55,8 @@ namespace BlazorApp.Api.Tests
                 typeof(Location),
                 typeof(ProductGrade),
                 typeof(WarehouseCategory),
-                typeof(HBLocalSupplier)
+                typeof(HBLocalSupplier),
+                typeof(ProductSetCode)
             );
         }
 
@@ -975,6 +977,471 @@ namespace BlazorApp.Api.Tests
 
             var deletedItem = Assert.Single(deletedResult.Items);
             Assert.Equal("AU-DELETED", deletedItem.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_列表投影返回仓库商品更新人()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-UPDATED-BY-LIST",
+                "ITEM-UPDATED-BY-LIST",
+                "更新人列表商品",
+                null,
+                updatedBy: "仓库员A"
+            );
+
+            var result = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("仓库员A", item.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_列表投影历史记录没有更新人时保持为空()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-CREATED-BY-LIST",
+                "ITEM-CREATED-BY-LIST",
+                "历史审计商品",
+                null,
+                createdBy: "历史仓库员",
+                updatedBy: "   "
+            );
+
+            var result = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+            });
+
+            Assert.True(string.IsNullOrWhiteSpace(Assert.Single(result.Items).UpdatedBy));
+        }
+
+        [Fact]
+        public async Task UpdatedBy_批量修改写入传入操作人且缺失时回退System()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-UPDATED-BY-BATCH",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            var service = CreateService();
+
+            await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = "P-UPDATED-BY-BATCH", DomesticPrice = 8.88m },
+                },
+                "仓库员B"
+            );
+            var afterUserUpdate = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == "P-UPDATED-BY-BATCH");
+
+            await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = "P-UPDATED-BY-BATCH", OEMPrice = 9.99m },
+                }
+            );
+            var afterFallbackUpdate = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == "P-UPDATED-BY-BATCH");
+
+            Assert.Equal("仓库员B", afterUserUpdate.UpdatedBy);
+            Assert.Equal("System", afterFallbackUpdate.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_批量修改新建仓库商品同时写入创建人与更新人()
+        {
+            const string productCode = "P-UPDATED-BY-BATCH-NEW";
+            await _db.Insertable(new Product
+            {
+                UUID = $"uuid-{productCode}",
+                ProductCode = productCode,
+                ItemNumber = "ITEM-UPDATED-BY-BATCH-NEW",
+                ProductName = "批量修改新建审计商品",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = productCode, DomesticPrice = 8.88m },
+                },
+                "仓库员B2"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal("仓库员B2", warehouseProduct.CreatedBy);
+            Assert.Equal("仓库员B2", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_单个新建仓库商品同时写入创建人与更新人()
+        {
+            const string productCode = "P-UPDATED-BY-CREATE-SINGLE";
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:DefaultConnection"] = _sqliteConnection.ConnectionString,
+                    }
+                )
+                .Build();
+
+            var result = await CreateService(configuration: configuration).CreateSingleProductAsync(
+                new CreateSingleProductRequestDto
+                {
+                    ProductCode = productCode,
+                    ItemNumber = "ITEM-UPDATED-BY-CREATE-SINGLE",
+                    Barcode = "BAR-UPDATED-BY-CREATE-SINGLE",
+                    ChineseName = "单个新建审计商品",
+                    OEMPrice = 9.99m,
+                    ImportPrice = 4.28m,
+                },
+                "仓库员C2"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("仓库员C2", warehouseProduct.CreatedBy);
+            Assert.Equal("仓库员C2", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_完整编辑写入传入操作人()
+        {
+            const string productCode = "P-UPDATED-BY-FULL";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+
+            var result = await CreateService().FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto { IsActive = true, ProductType = 0 },
+                "仓库员C"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal("仓库员C", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_批量上下架写入传入操作人()
+        {
+            const string productCode = "P-UPDATED-BY-TOGGLE";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+
+            var result = await CreateService().BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { productCode },
+                    IsActive = false,
+                },
+                "仓库员D"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal("仓库员D", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_批量创建同时写入创建人与更新人()
+        {
+            const string productCode = "P-UPDATED-BY-BATCH-CREATE";
+
+            var result = await CreateService().BatchCreateAsync(
+                new List<CreateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        ItemNumber = "ITEM-UPDATED-BY-BATCH-CREATE",
+                        ChineseName = "批量创建审计商品",
+                        OEMPrice = 9.99m,
+                        ImportPrice = 4.28m,
+                    },
+                },
+                useTransaction: true,
+                updatedBy: "仓库员E"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(result.Success);
+            Assert.Equal("仓库员E", warehouseProduct.CreatedBy);
+            Assert.Equal("仓库员E", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_国内导入新建与更新仓库商品都写入操作人()
+        {
+            const string productCode = "P-UPDATED-BY-DOMESTIC-IMPORT";
+            await SeedDomesticImportProductAsync(productCode, "国内导入审计商品", "Domestic audit product");
+            var service = CreateService();
+
+            var createResult = await service.ImportFromDomesticAsync(
+                new ImportFromDomesticRequestDto { ProductCodes = new List<string> { productCode } },
+                "仓库员F"
+            );
+            var created = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            var updateResult = await service.ImportFromDomesticAsync(
+                new ImportFromDomesticRequestDto { ProductCodes = new List<string> { productCode } },
+                "仓库员G"
+            );
+            var updated = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.True(createResult.Success);
+            Assert.True(updateResult.Success);
+            Assert.Equal("仓库员F", created.CreatedBy);
+            Assert.Equal("仓库员F", created.UpdatedBy);
+            Assert.Equal("仓库员G", updated.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_非国内导入新建与软删除恢复保留当前操作人()
+        {
+            const string newCode = "P-UPDATED-BY-NON-HB-CREATE";
+            const string restoredCode = "P-UPDATED-BY-NON-HB-RESTORE";
+            var originalCreatedAt = new DateTime(2025, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+            await _db.Insertable(new List<Product>
+            {
+                new()
+                {
+                    UUID = $"uuid-{newCode}",
+                    ProductCode = newCode,
+                    ProductName = "非国内新建审计商品",
+                    PurchasePrice = 4.28m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    UUID = $"uuid-{restoredCode}",
+                    ProductCode = restoredCode,
+                    ProductName = "非国内恢复审计商品",
+                    PurchasePrice = 5.28m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = restoredCode,
+                CreatedAt = originalCreatedAt,
+                CreatedBy = "旧操作人",
+                UpdatedBy = "旧操作人",
+                IsActive = false,
+                IsDeleted = true,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().ImportNonHotbargainProductsAsync(
+                new ImportNonHotbargainRequestDto
+                {
+                    ProductCodes = new List<string> { newCode, restoredCode },
+                },
+                "仓库员H"
+            );
+            var created = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == newCode);
+            var restored = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == restoredCode);
+
+            Assert.True(result.Success);
+            Assert.Equal("仓库员H", created.CreatedBy);
+            Assert.Equal("仓库员H", created.UpdatedBy);
+            Assert.Equal(originalCreatedAt, restored.CreatedAt);
+            Assert.Equal("旧操作人", restored.CreatedBy);
+            Assert.Equal("仓库员H", restored.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_移动端修改写入传入操作人()
+        {
+            const string productCode = "P-UPDATED-BY-MOBILE";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER trg_mobile_stock_patch_must_not_write_import_price
+                BEFORE UPDATE OF ImportPrice ON WarehouseProduct
+                WHEN OLD.ProductCode = 'P-UPDATED-BY-MOBILE'
+                BEGIN
+                    SELECT RAISE(ABORT, '库存修改不应写入未请求的进口价');
+                END;
+                """
+            );
+
+            await CreateService().PatchMobileProductAsync(
+                productCode,
+                new WarehouseMobileProductPatchDto { StockQuantity = 8 },
+                "仓库员I"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal("仓库员I", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdatedBy_移动端只修改商品字段时仓库仅写入审计列()
+        {
+            const string productCode = "P-UPDATED-BY-MOBILE-PRODUCT-ONLY";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER trg_mobile_audit_patch_must_not_write_stock
+                BEFORE UPDATE OF StockQuantity ON WarehouseProduct
+                WHEN OLD.ProductCode = 'P-UPDATED-BY-MOBILE-PRODUCT-ONLY'
+                BEGIN
+                    SELECT RAISE(ABORT, '审计修改不应写入库存');
+                END;
+                """
+            );
+
+            await CreateService().PatchMobileProductAsync(
+                productCode,
+                new WarehouseMobileProductPatchDto
+                {
+                    ProductImage = "/images/mobile-audit.jpg",
+                    Grade = "A",
+                },
+                "仓库员J"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal("仓库员J", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task PatchMobileProductAsync_仅审计更新保留并发库存()
+        {
+            const string productCode = "P-MOBILE-AUDIT-CONCURRENT-STOCK";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await _db
+                .Updateable<WarehouseProduct>()
+                .SetColumns(w => w.StockQuantity == 5)
+                .Where(w => w.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER trg_mobile_audit_concurrent_stock
+                AFTER UPDATE OF ProductImage ON Product
+                WHEN NEW.ProductCode = 'P-MOBILE-AUDIT-CONCURRENT-STOCK'
+                BEGIN
+                    UPDATE WarehouseProduct
+                    SET StockQuantity = 73
+                    WHERE ProductCode = NEW.ProductCode;
+                END;
+                """
+            );
+
+            // 图片仅改变 Product；触发器模拟两次写入之间发生的库存并发更新。
+            var result = await CreateService().PatchMobileProductAsync(
+                productCode,
+                new WarehouseMobileProductPatchDto { ProductImage = "/images/audit-only-concurrent.jpg" },
+                "移动端仓库员"
+            );
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(w => w.ProductCode == productCode);
+
+            Assert.NotNull(result);
+            Assert.Equal(73, warehouseProduct.StockQuantity);
+            Assert.Equal("移动端仓库员", warehouseProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task PatchMobileProductAsync_修改图片时保留并发Product中包数量()
+        {
+            const string productCode = "P-MOBILE-PRODUCT-COLUMN-SCOPE";
+            var originalUpdatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await _db
+                .Updateable<Product>()
+                .SetColumns(p => p.MiddlePackageQuantity == 12)
+                .SetColumns(p => p.UpdatedAt == originalUpdatedAt)
+                .Where(p => p.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER trg_mobile_product_image_concurrent_middle_package_quantity
+                BEFORE UPDATE OF ProductImage ON Product
+                WHEN OLD.ProductCode = 'P-MOBILE-PRODUCT-COLUMN-SCOPE'
+                BEGIN
+                    UPDATE Product
+                    SET MiddlePackageQuantity = 73
+                    WHERE ProductCode = NEW.ProductCode;
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchMobileProductAsync(
+                productCode,
+                new WarehouseMobileProductPatchDto { ProductImage = "/images/product-column-scope.jpg" }
+            );
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(p => p.ProductCode == productCode);
+
+            Assert.NotNull(result);
+            Assert.Equal("/images/product-column-scope.jpg", product.ProductImage);
+            Assert.Equal(73, product.MiddlePackageQuantity);
+            Assert.True(product.UpdatedAt > originalUpdatedAt);
+        }
+
+        [Fact]
+        public async Task PatchMobileProductAsync_修改国内价时保留并发DomesticProduct装箱数量()
+        {
+            const string productCode = "P-MOBILE-DOMESTIC-COLUMN-SCOPE";
+            var originalUpdatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                DomesticPrice = 6.66m,
+                PackingQuantity = 24,
+                UpdatedAt = originalUpdatedAt,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER trg_mobile_domestic_price_concurrent_packing_quantity
+                BEFORE UPDATE OF DomesticPrice ON DomesticProduct
+                WHEN OLD.ProductCode = 'P-MOBILE-DOMESTIC-COLUMN-SCOPE'
+                BEGIN
+                    UPDATE DomesticProduct
+                    SET PackingQuantity = 73
+                    WHERE ProductCode = NEW.ProductCode;
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchMobileProductAsync(
+                productCode,
+                new WarehouseMobileProductPatchDto { DomesticPrice = 8.88m }
+            );
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(p => p.ProductCode == productCode);
+
+            Assert.NotNull(result);
+            Assert.Equal(8.88m, domesticProduct.DomesticPrice);
+            Assert.Equal(73, domesticProduct.PackingQuantity);
+            Assert.True(domesticProduct.UpdatedAt > originalUpdatedAt);
         }
 
         [Fact]
@@ -2813,7 +3280,9 @@ namespace BlazorApp.Api.Tests
             bool seedLocalSupplierRow = true,
             bool localSupplierIsDeleted = false,
             DateTime? createdAt = null,
-            DateTime? updatedAt = null
+            DateTime? updatedAt = null,
+            string? createdBy = null,
+            string? updatedBy = null
         )
         {
             if (!string.IsNullOrWhiteSpace(supplierCode))
@@ -2900,6 +3369,8 @@ namespace BlazorApp.Api.Tests
                 IsActive = isActive,
                 CreatedAt = createdAt ?? DateTime.UtcNow,
                 UpdatedAt = updatedAt ?? DateTime.UtcNow,
+                CreatedBy = createdBy,
+                UpdatedBy = updatedBy,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }
@@ -3022,9 +3493,12 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
-        private ProductWarehouseReactService CreateService(ITranslationService? translationService = null)
+        private ProductWarehouseReactService CreateService(
+            ITranslationService? translationService = null,
+            IConfiguration? configuration = null
+        )
         {
-            var configuration = new ConfigurationBuilder().Build();
+            configuration ??= new ConfigurationBuilder().Build();
             var context = CreateSqlSugarContext(_db);
             var itemBarcodeService = new ItemBarcodeService(
                 context,

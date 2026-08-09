@@ -285,6 +285,55 @@ try {
     ],
     '仓库商品列表应保留分类与供应商字段，并兼容澳洲供应商大小写和嵌套字段',
   )
+
+  for (const testCase of [
+    {
+      name: 'PascalCase UpdatedBy',
+      raw: {
+        ProductCode: 'P003',
+        ProductName: 'PascalCase 更新人',
+        ItemNumber: 'HB-003',
+        UpdatedBy: 'pascal-editor',
+      },
+      expectedUpdatedBy: 'pascal-editor',
+    },
+    {
+      name: 'camelCase updatedBy',
+      raw: {
+        ProductCode: 'P004',
+        ProductName: 'camelCase 更新人',
+        ItemNumber: 'HB-004',
+        updatedBy: 'camel-editor',
+      },
+      expectedUpdatedBy: 'camel-editor',
+    },
+    {
+      name: '缺失 updatedBy',
+      raw: {
+        ProductCode: 'P005',
+        ProductName: '无更新人',
+        ItemNumber: 'HB-005',
+      },
+      expectedUpdatedBy: undefined,
+    },
+  ]) {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: [testCase.raw],
+      total: 1,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    const updatedByResult = await getWarehouseProductsTable({ page: 1, pageSize: 20 })
+    assert(updatedByResult.items.length === 1, `${testCase.name} 响应应转换为一条仓库商品`)
+    assertDeepEqual(
+      updatedByResult.items[0].updatedBy,
+      testCase.expectedUpdatedBy,
+      `${testCase.name} 应映射到 items[0].updatedBy`,
+    )
+  }
 } finally {
   globalThis.fetch = originalFetch
 }

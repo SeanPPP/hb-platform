@@ -318,6 +318,8 @@ test("确定离线且未创建 attempt 时保留安全改现金入口", async ()
     });
   const presenter = createPresenter(runtime);
   await presenter.initialize();
+  // 默认支付方式为现金；本用例聚焦 provider 离线回退，显式切到卡支付再提交。
+  assert.equal(presenter.selectMethod("square"), true);
   assert.equal(await presenter.submitSelected(), false);
   assert.equal(presenter.getState().phase, "offline-cash");
   assert.equal(presenter.selectMethod("cash"), true);
@@ -343,7 +345,8 @@ test("首次进入支付页可直接现金结账，超付只提交应收并公�
     });
   const presenter = createPresenter(runtime);
   await presenter.initialize();
-  assert.equal(presenter.selectMethod("cash"), true);
+  // 默认支付方式即现金：无需显式选择，直接提交应走 startCash 路径。
+  assert.equal(presenter.getState().selectedMethod, "cash");
   presenter.setAmountText("20.00");
 
   assert.equal(await presenter.submitSelected(), true);
@@ -360,6 +363,21 @@ test("首次进入支付页可直接现金结账，超付只提交应收并公�
     appliedCents: 1_000,
     changeCents: 1_000,
   });
+});
+
+test("未配置 startCash 时默认回退到第一个可用 provider", async () => {
+  const runtime = new FakePaymentRuntime();
+  // 遮蔽原型上的 startCash 方法，模拟未配置现金结账的运行时。
+  Object.defineProperty(runtime, "startCash", {
+    value: undefined,
+    writable: true,
+  });
+  const presenter = createPresenter(runtime);
+  await presenter.initialize();
+  // resolveInitialMethod 现金不可用时回退 firstAvailableProvider（square）。
+  assert.equal(presenter.getState().selectedMethod, "square");
+  // 初始 addCash 权限与默认值共用同一判定，同步锁住无现金配置。
+  assert.equal(presenter.getState().allowedActions.addCash, false);
 });
 
 test("移除最后一笔现金后清空实收展示，并开放继续支付或取消", async () => {
@@ -491,6 +509,8 @@ test("销毁后异步结果不回流；未知异常只映射稳定失败码且�
   };
   const failing = createPresenter(failingRuntime);
   await failing.initialize();
+  // 默认支付方式为现金；本用例聚焦 provider 启动失败映射，显式切到卡支付。
+  assert.equal(failing.selectMethod("square"), true);
   assert.equal(await failing.submitSelected(), false);
   assert.equal(
     failing.getState().runtimeErrorCode,

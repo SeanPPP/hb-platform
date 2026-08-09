@@ -12,23 +12,33 @@ namespace BlazorApp.Api.Interfaces.React
     {
         Task<List<DetectionResultDto>> DetectAsync(List<DetectionItemDto> items);
         Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items);
+        Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items, string? updatedBy);
         Task<BatchOperationResultDto> BatchCreateAsync(
             List<CreateItemDto> items,
             bool useTransaction = true
         );
+        Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy
+        );
         Task<ReactTableResponseDto<WarehouseProductReactListDto>> GetAntdTableDataAsync(
             ReactTableRequestDto request
         );
+        Task<CreateSingleProductResponseDto> CreateSingleProductAsync(CreateSingleProductRequestDto request);
         Task<CreateSingleProductResponseDto> CreateSingleProductAsync(
-            CreateSingleProductRequestDto request
+            CreateSingleProductRequestDto request,
+            string? updatedBy
         );
         Task<
             ReactTableResponseDto<DomesticProductNotInWarehouseDto>
         > GetDomesticProductsNotInWarehouseAsync(
             GetDomesticProductsNotInWarehouseRequestDto request
         );
+        Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(ImportFromDomesticRequestDto request);
         Task<ImportFromDomesticResponseDto> ImportFromDomesticAsync(
-            ImportFromDomesticRequestDto request
+            ImportFromDomesticRequestDto request,
+            string? updatedBy
         );
 
         /// <summary>
@@ -37,6 +47,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
             string productCode,
             WarehouseProductFullUpdateDto dto
+        );
+        Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
+            string productCode,
+            WarehouseProductFullUpdateDto dto,
+            string? updatedBy
         );
 
         /// <summary>
@@ -47,6 +62,10 @@ namespace BlazorApp.Api.Interfaces.React
         Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
             BatchToggleWarehouseProductsActiveRequestDto request
         );
+        Task<BatchToggleWarehouseProductsActiveResultDto> BatchToggleActiveAsync(
+            BatchToggleWarehouseProductsActiveRequestDto request,
+            string? updatedBy
+        );
 
         Task<
             ReactTableResponseDto<NonHotbargainProductNotInWarehouseDto>
@@ -55,6 +74,10 @@ namespace BlazorApp.Api.Interfaces.React
         );
         Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
             ImportNonHotbargainRequestDto request
+        );
+        Task<ImportFromDomesticResponseDto> ImportNonHotbargainProductsAsync(
+            ImportNonHotbargainRequestDto request,
+            string? updatedBy
         );
 
         /// <summary>
@@ -66,6 +89,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
             string productCode,
             WarehouseMobileProductPatchDto dto
+        );
+        Task<WarehouseMobileProductDto?> PatchMobileProductAsync(
+            string productCode,
+            WarehouseMobileProductPatchDto dto,
+            string? updatedBy
         );
         Task<WarehouseMobileProductDto?> SetMobileProductLocationAsync(
             string productCode,

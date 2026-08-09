@@ -114,7 +114,7 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
                 }
 
-                var item = await _service.PatchMobileProductAsync(productCode, dto);
+                var item = await _service.PatchMobileProductAsync(productCode, dto, GetCurrentUsername());
                 if (item == null)
                 {
                     return NotFound(new { success = false, message = "商品不存在" });
@@ -307,7 +307,7 @@ namespace BlazorApp.Api.Controllers.React
                         item.SyncStorePurchasePrice ??= request.SyncStorePurchasePrice;
                 }
 
-                var resp = await _service.BatchUpdateAsync(request.Items);
+                var resp = await _service.BatchUpdateAsync(request.Items, GetCurrentUsername());
                 return Ok(
                     new
                     {
@@ -335,7 +335,11 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null || request.Items == null || !request.Items.Any())
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
-                var resp = await _service.BatchCreateAsync(request.Items);
+                var resp = await _service.BatchCreateAsync(
+                    request.Items,
+                    true,
+                    GetCurrentUsername()
+                );
                 return Ok(
                     new
                     {
@@ -400,7 +404,7 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null)
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
-                var resp = await _service.CreateSingleProductAsync(request);
+                var resp = await _service.CreateSingleProductAsync(request, GetCurrentUsername());
                 return Ok(
                     new
                     {
@@ -460,7 +464,7 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null)
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
-                var resp = await _service.ImportFromDomesticAsync(request);
+                var resp = await _service.ImportFromDomesticAsync(request, GetCurrentUsername());
                 return Ok(
                     new
                     {
@@ -594,7 +598,10 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null)
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
-                var resp = await _service.ImportNonHotbargainProductsAsync(request);
+                var resp = await _service.ImportNonHotbargainProductsAsync(
+                    request,
+                    GetCurrentUsername()
+                );
                 return Ok(
                     new
                     {
@@ -630,7 +637,7 @@ namespace BlazorApp.Api.Controllers.React
                 if (dto == null)
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
-                var resp = await _service.FullUpdateAsync(productCode, dto);
+                var resp = await _service.FullUpdateAsync(productCode, dto, GetCurrentUsername());
                 if (resp.Success)
                     return Ok(new { success = true, message = resp.Message });
                 return BadRequest(new { success = false, message = resp.Message });
@@ -653,7 +660,7 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null || request.ProductCodes == null || !request.ProductCodes.Any())
                     return BadRequest(new { success = false, message = "商品编码不能为空" });
 
-                var resp = await _service.BatchToggleActiveAsync(request);
+                var resp = await _service.BatchToggleActiveAsync(request, GetCurrentUsername());
                 if (resp.Success)
                 {
                     return Ok(
@@ -793,6 +800,12 @@ namespace BlazorApp.Api.Controllers.React
                 _logger.LogError(ex, "获取条码价列表失败 ProductCode={ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
+        }
+
+        private string GetCurrentUsername()
+        {
+            // 控制器沿用仓库现有惯例传递认证用户名；非 HTTP 调用由服务层回退 System。
+            return User.Identity?.Name ?? "System";
         }
 
         #region 请求包装类
