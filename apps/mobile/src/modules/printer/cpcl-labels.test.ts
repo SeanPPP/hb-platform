@@ -279,16 +279,90 @@ assert.equal(
 
 const warehouseLocationCommand = buildWarehouseLocationLabelCommand({
   locationGuid: "GUID-001",
-  locationCode: "",
-  locationBarcode: "LOC-A0102",
+  locationCode: "A-00-00-01",
+  locationBarcode: "2606041557190",
   itemNumber: "HB013-108",
   productName: "Coconut Water 1L",
   middlePackageQuantity: 0,
   productCount: 3,
 });
-assert.ok(warehouseLocationCommand.includes("TEXT 7 0 20 16 LOCATION"), "仓库货位标签包含标题");
-assert.ok(warehouseLocationCommand.includes("TEXT 7 0 20 46 LOC-A0102"), "仓库货位标签使用货位条码兜底展示");
-assert.ok(warehouseLocationCommand.includes("TEXT 4 0 392 90 INNER 1"), "仓库货位标签中包数最小为 1");
-assert.ok(warehouseLocationCommand.includes("BARCODE 128 1 1 44 24 150 LOC-A0102"), "仓库货位标签包含货位条码");
+assert.ok(warehouseLocationCommand.includes("CENTER"), "仓库货位代码和条码必须水平居中");
+assert.ok(warehouseLocationCommand.includes("SETBOLD 2"), "仓库货位代码必须使用加粗打印");
+assert.ok(warehouseLocationCommand.includes("SETMAG 4 4"), "标准货位代码必须使用 Font 7 最大等比例放大");
+assert.ok(warehouseLocationCommand.includes("TEXT 7 0 0 21 A-00-00-01"), "仓库货位标签必须在上方区域居中打印超大货位代码");
+assert.ok(warehouseLocationCommand.includes("SETMAG 0 0"), "货位代码打印后必须复位字号");
+assert.ok(warehouseLocationCommand.includes("SETBOLD 0"), "货位代码打印后必须复位粗体");
+assert.ok(
+  warehouseLocationCommand.includes("BARCODE 128 1 1 44 0 151 2606041557190"),
+  "仓库货位标签必须在下方居中打印货位条码"
+);
+assert.equal(warehouseLocationCommand.includes("LOCATION"), false, "仓库货位标签不打印 LOCATION 标题");
+assert.equal(warehouseLocationCommand.includes("ITEM "), false, "仓库货位标签不打印货号");
+assert.equal(warehouseLocationCommand.includes("DESC "), false, "仓库货位标签不打印商品描述");
+assert.equal(warehouseLocationCommand.includes("INNER "), false, "仓库货位标签不打印中包数");
+assert.equal(warehouseLocationCommand.includes("COUNT "), false, "仓库货位标签不打印商品数");
+assert.ok(warehouseLocationCommand.includes("BARCODE-TEXT OFF"), "仓库货位条码必须显式关闭可读数字");
+assert.equal(warehouseLocationCommand.includes("BARCODE-TEXT 7"), false, "仓库货位条码不得重新开启可读数字");
+assert.doesNotMatch(warehouseLocationCommand, /\b\d{4}\/\d{2}\/\d{2}\b/, "仓库货位标签不打印日期");
+
+const longWarehouseLocationCode = "WAREHOUSE-LOCATION-CODE-1234567890";
+const longWarehouseLocationCommand = buildWarehouseLocationLabelCommand({
+  locationGuid: "GUID-LONG",
+  locationCode: longWarehouseLocationCode,
+  locationBarcode: "2606041557190",
+  productCount: 0,
+});
+assert.ok(
+  longWarehouseLocationCommand.includes("SETMAG 1 1") &&
+    longWarehouseLocationCommand.includes(`TEXT 7 0 0 57 ${longWarehouseLocationCode}`),
+  "超长货位代码必须逐级缩小 Font 7 后完整打印"
+);
+
+assert.throws(
+  () =>
+    buildWarehouseLocationLabelCommand({
+      locationGuid: "GUID-TOO-LONG",
+      locationCode: "X".repeat(46),
+      locationBarcode: "2606041557190",
+      productCount: 0,
+    }),
+  /货位代码过长/,
+  "Font 7 最小倍率仍无法容纳时必须终止，禁止输出越界标签"
+);
+
+const fallbackWarehouseLocationCommand = buildWarehouseLocationLabelCommand({
+  locationGuid: "GUID-FALLBACK",
+  locationCode: "",
+  locationBarcode: "LOC-A0102",
+  productCount: 0,
+});
+assert.ok(
+  fallbackWarehouseLocationCommand.includes("TEXT 7 0 0 21 LOC-A0102"),
+  "缺少货位代码时必须使用货位条码作为显示值"
+);
+assert.ok(
+  fallbackWarehouseLocationCommand.includes("BARCODE 128 1 1 44 0 151 LOC-A0102"),
+  "货位条码必须使用原始货位条码值"
+);
+
+const codeBarcodeFallbackCommand = buildWarehouseLocationLabelCommand({
+  locationGuid: "GUID-CODE-FALLBACK",
+  locationCode: "B-01-02-03",
+  locationBarcode: "",
+  productCount: 0,
+});
+assert.ok(
+  codeBarcodeFallbackCommand.includes("BARCODE 128 1 1 44 0 151 B-01-02-03"),
+  "缺少货位条码时必须使用最终显示的货位代码编码"
+);
+
+const emptyWarehouseLocationCommand = buildWarehouseLocationLabelCommand({
+  locationGuid: "",
+  locationCode: "",
+  locationBarcode: "",
+  productCount: 0,
+});
+assert.ok(emptyWarehouseLocationCommand.includes("TEXT 7 0 0 21 --"), "货位标识全空时必须显示占位符");
+assert.equal(emptyWarehouseLocationCommand.includes("BARCODE 128"), false, "货位标识全空时不打印空条码");
 
 console.log("cpcl-labels.test.ts: ok");

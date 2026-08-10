@@ -857,55 +857,101 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private func buildWarehouseLocationLabelCommand(_ payload: NSDictionary) -> String {
     let width = 570
     let height = 208
-    let locationCode = dictString(payload, "locationCode")
-    let locationBarcode = dictString(payload, "locationBarcode")
-    let locationGuid = dictString(payload, "locationGuid")
-    let itemValue = dictString(payload, "itemNumber")
-    let itemNumber = itemValue.isEmpty ? "--" : itemValue
-    let productValue = dictString(payload, "productName")
-    let productName = productValue.isEmpty ? "--" : productValue
-    let quantityValue = dictDouble(payload, "middlePackageQuantity").map { Int($0.rounded()) }
-    let middlePackageQuantity = (quantityValue ?? 1) > 0 ? (quantityValue ?? 1) : 1
+    let locationCode = warehouseLocationText(payload, "locationCode")
+    let locationBarcode = warehouseLocationText(payload, "locationBarcode")
+    let locationGuid = warehouseLocationText(payload, "locationGuid")
+    // 显示代码优先级：locationCode > locationBarcode > locationGuid。
     let displayCode = locationCode.isEmpty ? (locationBarcode.isEmpty ? locationGuid : locationBarcode) : locationCode
+    let printableCode = displayCode.isEmpty ? "--" : displayCode
+    // 条码优先级：locationBarcode，否则回退显示代码。
     let barcode = locationBarcode.isEmpty ? displayCode : locationBarcode
-
-    let titleBitmap = textToBitmap("LOCATION", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let codeBitmap = longTextToBitmap(displayCode, fontSize: fontSizeToPixels(15), isBold: true, fontFamily: "sans-serif-black", maxLines: 1, maxWidth: width - 30)
-    // 货位标签补充商品信息，空货位保持占位，避免打印布局跳动。
-    let rightAreaLeft = width - 178
-    let leftTextWidth = rightAreaLeft - 28
-    let itemBitmap = longTextToBitmap("ITEM \(itemNumber)", fontSize: fontSizeToPixels(9), isBold: true, fontFamily: "sans-serif-black", maxLines: 1, maxWidth: leftTextWidth)
-    let nameBitmap = longTextToBitmap("DESC \(productName)", fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "Arial", maxLines: 1, maxWidth: leftTextWidth)
-    let innerBitmap = textToBitmap("INNER", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
-    let innerQuantityBitmap = textToBitmap(String(middlePackageQuantity), fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
-    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    func centerX(_ bitmap: PrinterBitmap) -> Int { max(0, (width - bitmap.width) / 2) }
-    let rightPadding = 20
-    let quantityX = width - rightPadding - innerQuantityBitmap.width
-    let innerX = max(rightAreaLeft, quantityX - innerBitmap.width - 8)
-    let quantityY = 72
-    let innerY = quantityY + max(0, innerQuantityBitmap.height - innerBitmap.height - 3)
-    let dateX = width - rightPadding - dateBitmap.width
-    let dateY = height - dateBitmap.height - 10
 
     var commands = [
       "! 0 200 200 \(height) 1",
       "PAGE-WIDTH \(width)",
-      bitmapCommand(centerX(titleBitmap), 8, titleBitmap),
-      bitmapCommand(centerX(codeBitmap), 28, codeBitmap),
-      bitmapCommand(18, 78, itemBitmap),
-      bitmapCommand(18, 108, nameBitmap),
-      bitmapCommand(innerX, innerY, innerBitmap),
-      bitmapCommand(quantityX, quantityY, innerQuantityBitmap),
-      bitmapCommand(dateX, dateY, dateBitmap),
     ]
 
+    // 上方 2/3 的安全区为宽 540、高 120；代码必须完整显示，禁止换行或截断。
+    let safeWidth = 540
+    let safeHeight = 120
+    let upperZoneHeight = height * 2 / 3
+    // 目标字号 30（fontSizeToPixels 后约 90 dots），从 30 逐级递减到 1，
+    // 先按字体度量挑选能放进安全区的最大字号，避免超长代码反复渲染位图。
+    var fittedFontSize = CGFloat(1)
+    var foundFittingSize = false
+    for fontSize in stride(from: 30, through: 1, by: -1) {
+      let font = printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(CGFloat(fontSize)), isBold: true)
+      let measured = (printableCode as NSString).size(withAttributes: [.font: font])
+      if Int(ceil(measured.width)) <= safeWidth && Int(ceil(measured.height)) <= safeHeight {
+        fittedFontSize = CGFloat(fontSize)
+        foundFittingSize = true
+        break
+      }
+    }
+
+    // 极端长代码即使 1 号仍放不下时，继续按比例缩小完整文字，禁止截断或越界。
+    if !foundFittingSize {
+      let minimumFont = printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(1), isBold: true)
+      let measured = (printableCode as NSString).size(withAttributes: [.font: minimumFont])
+      let widthScale = CGFloat(safeWidth) / max(1, measured.width)
+      let heightScale = CGFloat(safeHeight) / max(1, measured.height)
+      fittedFontSize = max(0.1, min(widthScale, heightScale) * 0.98)
+    }
+
+    var codeBitmap = warehouseLocationTextToBitmap(
+      printableCode,
+      fontSize: fontSizeToPixels(fittedFontSize)
+    )
+    if codeBitmap.width > safeWidth || codeBitmap.height > safeHeight {
+      let correction = min(
+        CGFloat(safeWidth) / CGFloat(codeBitmap.width),
+        CGFloat(safeHeight) / CGFloat(codeBitmap.height)
+      )
+      fittedFontSize = max(0.1, fittedFontSize * correction * 0.98)
+      codeBitmap = warehouseLocationTextToBitmap(printableCode, fontSize: fontSizeToPixels(fittedFontSize))
+    }
+    // 代码位图水平居中，并在上方 2/3 区域内垂直居中。
+    let codeX = max(0, (width - codeBitmap.width) / 2)
+    let codeY = max(0, (upperZoneHeight - codeBitmap.height) / 2)
+    commands.append(bitmapCommand(codeX, codeY, codeBitmap))
+
+    // 下方 1/3：CENTER + Code128 条码居中打印；条码为空时不输出 BARCODE 行。
     if !barcode.isEmpty {
-      commands.append("BARCODE 128 1 1 44 24 150 \(cpclText(barcode))")
+      // BARCODE-TEXT 会跨标签保持，必须显式关闭，避免继承上一张商品标签的可读数字。
+      commands.append("BARCODE-TEXT OFF")
+      commands.append("CENTER")
+      commands.append("BARCODE 128 1 1 44 0 151 \(cpclText(barcode))")
     }
 
     commands.append("PRINT")
     return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
+  private func warehouseLocationText(_ payload: NSDictionary, _ key: String) -> String {
+    guard let value = payload[key], !(value is NSNull) else {
+      return ""
+    }
+
+    let text = value as? String ?? String(describing: value)
+    return text
+      .replacingOccurrences(of: "[\\r\\n]+", with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func warehouseLocationTextToBitmap(_ text: String, fontSize: CGFloat) -> PrinterBitmap {
+    let safeText = text.isEmpty ? " " : text
+    let font = printerFont(fontFamily: "sans-serif-black", fontSize: fontSize, isBold: true)
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: UIColor.black,
+    ]
+    let measuredSize = (safeText as NSString).size(withAttributes: attributes)
+    let width = max(1, Int(ceil(measuredSize.width)))
+    let height = max(1, Int(ceil(measuredSize.height)))
+
+    return renderPrinterBitmap(width: width, height: height, isInverse: false) {
+      (safeText as NSString).draw(at: .zero, withAttributes: attributes)
+    }
   }
 
   private func dictString(_ payload: NSDictionary, _ key: String) -> String {

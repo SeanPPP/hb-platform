@@ -374,18 +374,41 @@ export function buildWarehouseProductLabelCommand(payload: WarehouseProductLabel
 export function buildWarehouseLocationLabelCommand(payload: WarehouseLocationLabelPrintPayload) {
   const displayCode = cpclText(payload.locationCode) || cpclText(payload.locationBarcode) || cpclText(payload.locationGuid);
   const barcodeValue = cpclText(payload.locationBarcode) || displayCode;
-  const middlePackageQuantity = Math.max(1, Math.round(asNumber(payload.middlePackageQuantity, 1)));
+  const printableCode = displayCode || "--";
+  const maxCodeWidth = 540;
+  const maxCodeHeight = 120;
+  const font7BaseHeight = 24;
+  const font7BaseWidth = Array.from(printableCode).reduce((width, char) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    return width + (codePoint > 127 ? 24 : 12);
+  }, 0);
+
+  // Font 7 的最小倍率为 1；物理上无法完整容纳时终止打印，禁止输出会被裁切的标签。
+  if (font7BaseWidth > maxCodeWidth) {
+    throw new Error("货位代码过长，无法在标签安全宽度内完整打印");
+  }
+
+  // Font 7 基础尺寸为 12×24 dots，标准代码使用 4×4 等比例放大到约 96 dots 高。
+  const codeMultiplier = Math.max(
+    1,
+    Math.min(4, Math.floor(maxCodeWidth / font7BaseWidth), Math.floor(maxCodeHeight / font7BaseHeight))
+  );
+  const upperZoneHeight = Math.floor((WAREHOUSE_HEIGHT * 2) / 3);
+  const codeY = Math.max(0, Math.floor((upperZoneHeight - font7BaseHeight * codeMultiplier) / 2));
   const lines = [
     `! 0 200 200 ${WAREHOUSE_HEIGHT} 1`,
     `PAGE-WIDTH ${STANDARD_WIDTH}`,
-    text(7, 20, 16, "LOCATION"),
-    text(7, 20, 46, displayCode || "--"),
-    text(4, 20, 82, `ITEM ${payload.itemNumber || "--"}`),
-    text(4, 20, 114, `DESC ${payload.productName || "--"}`),
-    text(4, 392, 90, `INNER ${middlePackageQuantity}`),
-    text(4, 392, 118, `COUNT ${payload.productCount}`),
+    "CENTER",
+    // 货位代码在上方区域使用最大安全倍率；打印后必须复位，避免污染后续标签。
+    "SETBOLD 2",
+    `SETMAG ${codeMultiplier} ${codeMultiplier}`,
+    text(7, 0, codeY, printableCode),
+    "SETMAG 0 0",
+    "SETBOLD 0",
+    // BARCODE-TEXT 会跨标签保持，必须显式关闭，避免继承上一张商品标签的可读数字。
+    "BARCODE-TEXT OFF",
   ];
-  addBarcode(lines, "128", 24, 150, barcodeValue, 44, 1);
+  addBarcode(lines, "128", 0, 151, barcodeValue, 44, 1);
   lines.push("PRINT");
   return command(lines);
 }

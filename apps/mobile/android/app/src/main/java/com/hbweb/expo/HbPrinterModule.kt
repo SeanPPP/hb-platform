@@ -741,49 +741,54 @@ class HbPrinterModule(
     val locationCode = payload.getNullableString("locationCode")
     val locationBarcode = payload.getNullableString("locationBarcode")
     val locationGuid = payload.getNullableString("locationGuid")
-    val itemNumber = payload.getNullableString("itemNumber").ifBlank { "--" }
-    val productName = payload.getNullableString("productName").ifBlank { "--" }
-    val middlePackageQuantity = payload
-      .getNullableDouble("middlePackageQuantity")
-      ?.roundToInt()
-      ?.takeIf { it > 0 }
-      ?: 1
+
+    // 显示代码优先级：locationCode > locationBarcode > locationGuid；全空时打印占位符。
     val displayCode = locationCode.ifBlank { locationBarcode.ifBlank { locationGuid } }
+    val printableCode = displayCode.ifBlank { "--" }
+    // 条码优先级：locationBarcode，其次显示代码；全空则不出条码。
     val barcode = locationBarcode.ifBlank { displayCode }
 
-    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
-    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(15f), true, "sans-serif-black", 1, w - 30)
-    // 货位标签补充商品信息，空货位保持占位，避免打印布局跳动。
-    val rightAreaLeft = w - 178
-    val leftTextWidth = rightAreaLeft - 28
-    val itemBitmap = longTextToBitmap("ITEM $itemNumber", fontSizeToPixels(9f), true, "sans-serif-black", 1, leftTextWidth)
-    val nameBitmap = longTextToBitmap("DESC $productName", fontSizeToPixels(7f), true, "Arial", 1, leftTextWidth)
-    val innerBitmap = textToBitmap("INNER", fontSizeToPixels(8f), true, "sans-serif-black")
-    val innerQuantityBitmap = textToBitmap(middlePackageQuantity.toString(), fontSizeToPixels(16f), true, "sans-serif-black")
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
-    fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
-    val rightPadding = 20
-    val quantityX = w - rightPadding - innerQuantityBitmap.width
-    val innerX = max(rightAreaLeft, quantityX - innerBitmap.width - 8)
-    val quantityY = 72
-    val innerY = quantityY + max(0, innerQuantityBitmap.height - innerBitmap.height - 3)
-    val dateX = w - rightPadding - dateBitmap.width
-    val dateY = h - dateBitmap.height - 10
+    // 上方 2/3：完整货位代码以黑字白底、sans-serif-black、加粗位图显示。
+    // 安全区域宽 540、高 120；目标字号 30（约 90 dots），逐级缩小取最大可容纳字号，不换行、不截断。
+    val maxCodeWidth = 540
+    val maxCodeHeight = 120
+    var codeBitmap = textToBitmap(printableCode, fontSizeToPixels(1f), true, "sans-serif-black")
+    for (fontSize in 30 downTo 1) {
+      val candidate = textToBitmap(printableCode, fontSizeToPixels(fontSize.toFloat()), true, "sans-serif-black")
+      if (candidate.width <= maxCodeWidth && candidate.height <= maxCodeHeight) {
+        codeBitmap = candidate
+        break
+      }
+    }
+    // 极端长代码即使最小字号仍放不下时，按比例缩放完整位图，避免裁切或越界。
+    if (codeBitmap.width > maxCodeWidth || codeBitmap.height > maxCodeHeight) {
+      val scale = minOf(
+        maxCodeWidth.toFloat() / codeBitmap.width,
+        maxCodeHeight.toFloat() / codeBitmap.height,
+      )
+      codeBitmap = Bitmap.createScaledBitmap(
+        codeBitmap,
+        max(1, (codeBitmap.width * scale).toInt()),
+        max(1, (codeBitmap.height * scale).toInt()),
+        true,
+      )
+    }
+    // 位图水平居中，并在上方 2/3 区域内垂直居中。
+    val codeX = max(0, (w - codeBitmap.width) / 2)
+    val codeY = (h * 2 / 3 - codeBitmap.height) / 2
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
-      bitmapCommand(centerX(titleBitmap), 8, titleBitmap),
-      bitmapCommand(centerX(codeBitmap), 28, codeBitmap),
-      bitmapCommand(18, 78, itemBitmap),
-      bitmapCommand(18, 108, nameBitmap),
-      bitmapCommand(innerX, innerY, innerBitmap),
-      bitmapCommand(quantityX, quantityY, innerQuantityBitmap),
-      bitmapCommand(dateX, dateY, dateBitmap),
+      bitmapCommand(codeX, codeY, codeBitmap),
     )
 
+    // 下方 1/3：CENTER 使 Code128 条码水平居中；空条码不输出 BARCODE。
     if (barcode.isNotBlank()) {
-      commands += "BARCODE 128 1 1 44 24 150 ${cpclText(barcode)}"
+      // BARCODE-TEXT 会跨标签保持，必须显式关闭，避免继承上一张商品标签的可读数字。
+      commands += "BARCODE-TEXT OFF"
+      commands += "CENTER"
+      commands += "BARCODE 128 1 1 44 0 151 ${cpclText(barcode)}"
     }
 
     commands += "PRINT"
