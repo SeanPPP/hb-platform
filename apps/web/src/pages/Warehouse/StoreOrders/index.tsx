@@ -44,7 +44,7 @@ import {
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -298,10 +298,6 @@ function cleanStoreOrderListColumnFilters(
   assignNumber('totalOrderAmountMax')
   assignNumber('totalOrderVolumeMin')
   assignNumber('totalOrderVolumeMax')
-  assignNumber('totalAllocVolumeMin')
-  assignNumber('totalAllocVolumeMax')
-  assignNumber('totalAllocQuantityMin')
-  assignNumber('totalAllocQuantityMax')
   assignNumber('importTotalAmountMin')
   assignNumber('importTotalAmountMax')
 
@@ -311,14 +307,73 @@ function cleanStoreOrderListColumnFilters(
 const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
 const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]
 const STATUS_FILTER_ORDER = [FlowStatus.Submitted, FlowStatus.Picking, FlowStatus.Completed]
+const STORE_ORDER_LIST_SELECTION_COLUMN_WIDTH = 48
 const STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.storeOrders.list.columnOrder.v1'
+const STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.storeOrders.list.columnWidths.v1'
+const STORE_ORDER_LIST_MIN_COLUMN_WIDTH = 48
+const STORE_ORDER_LIST_MAX_COLUMN_WIDTH = 420
+type StoreOrderListColumnWidthMap = Partial<Record<StoreOrderListTableColumnKey, number>>
+
+function clampStoreOrderListColumnWidth(width: number) {
+  return Math.max(STORE_ORDER_LIST_MIN_COLUMN_WIDTH, Math.min(STORE_ORDER_LIST_MAX_COLUMN_WIDTH, Math.round(width)))
+}
+
+function normalizeStoreOrderListColumnWidths(
+  value: unknown,
+  allowedKeys: readonly StoreOrderListTableColumnKey[],
+): StoreOrderListColumnWidthMap {
+  if (!value || typeof value !== 'object') {
+    return {}
+  }
+
+  const allowedSet = new Set(allowedKeys)
+  const nextWidths: StoreOrderListColumnWidthMap = {}
+  Object.entries(value as Record<string, unknown>).forEach(([key, width]) => {
+    if (!allowedSet.has(key) || typeof width !== 'number' || !Number.isFinite(width)) {
+      return
+    }
+    nextWidths[key] = clampStoreOrderListColumnWidth(width)
+  })
+  return nextWidths
+}
+
+function areStoreOrderListColumnWidthsEqual(
+  left: StoreOrderListColumnWidthMap,
+  right: StoreOrderListColumnWidthMap,
+) {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key])
+}
+
+function persistStoreOrderListColumnWidths(nextWidths: StoreOrderListColumnWidthMap) {
+  try {
+    if (Object.keys(nextWidths).length) {
+      localStorage.setItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(nextWidths))
+    } else {
+      localStorage.removeItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY)
+    }
+  } catch {
+    // localStorage 不可用时不影响当前页面内拖拽列宽。
+  }
+}
 
 interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
   'data-column-key'?: string
+  'data-column-width'?: number
+  'data-column-fixed'?: 'right'
+  onColumnResizeStart?: (
+    columnKey: StoreOrderListTableColumnKey,
+    width: number,
+    resizeFromLeft: boolean,
+    event: ReactPointerEvent<HTMLSpanElement>,
+  ) => void
 }
 
-function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+function DraggableHeaderCell({ children, style, onColumnResizeStart, ...props }: DraggableHeaderCellProps) {
   const columnKey = props['data-column-key']
+  const columnWidth = props['data-column-width']
+  const resizeFromLeft = props['data-column-fixed'] === 'right'
   const {
     attributes,
     listeners,
@@ -339,16 +394,31 @@ function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellP
     ...style,
     transform: CSS.Translate.toString(transform),
     transition,
-    cursor: 'move',
+    position: style?.position ?? 'relative',
     zIndex: isDragging ? 3 : style?.zIndex,
     opacity: isDragging ? 0.85 : style?.opacity,
   }
 
   return (
-    <th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
-      <div className="store-order-list-draggable-header">
+    <th ref={setNodeRef} style={headerStyle} {...props}>
+      <div className="store-order-list-draggable-header" {...attributes} {...listeners}>
         {children}
       </div>
+      <span
+        className={`store-order-list-column-resize-handle${resizeFromLeft ? ' store-order-list-column-resize-handle-left' : ''}`}
+        aria-hidden="true"
+        onPointerDown={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (!columnKey || typeof columnWidth !== 'number') return
+          event.currentTarget.setPointerCapture(event.pointerId)
+          onColumnResizeStart?.(columnKey, columnWidth, resizeFromLeft, event)
+        }}
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+      />
     </th>
   )
 }
@@ -851,14 +921,20 @@ export default function StoreOrdersPage() {
   const [unmatchedStoreTargets, setUnmatchedStoreTargets] = useState<Record<string, string>>({})
   const [unmatchedTargetStores, setUnmatchedTargetStores] = useState<StoreDto[]>([])
   const [columnOrder, setColumnOrder] = useState<StoreOrderListTableColumnKey[]>([])
+  const [columnWidths, setColumnWidths] = useState<StoreOrderListColumnWidthMap>({})
   // 记录当前轮询停止函数，确保重复触发和页面卸载时都能清理定时器。
   const stopSyncPollingRef = useRef<(() => void) | null>(null)
+  const stopColumnResizeRef = useRef<(() => void) | null>(null)
   // 避免卸载后继续 setState，防止轮询尾声触发无效更新。
   const isMountedRef = useRef(true)
   const loadDataRef = useRef<((
     overrides?: Partial<StoreOrderListQuery & { pageNumber: number; pageSize: number }>,
   ) => Promise<void>) | null>(null)
   const listRequestGuardRef = useRef(createLatestRequestGuard())
+
+  useEffect(() => () => {
+    stopColumnResizeRef.current?.()
+  }, [])
 
   const branchMap = useMemo(
     () => Object.fromEntries(branches.map((item) => [item.code, item.name])) as Record<string, string>,
@@ -1537,7 +1613,7 @@ export default function StoreOrdersPage() {
         key: 'index',
         title: t('column.index'),
         dataIndex: 'index',
-        width: 52,
+        width: 64,
         fixed: 'left',
         render: (_, __, index) => renderStoreOrderNumericCell((page - 1) * pageSize + index + 1),
       },
@@ -1545,7 +1621,7 @@ export default function StoreOrdersPage() {
         key: 'orderNo',
         title: t('column.orderNo'),
         dataIndex: 'orderNo',
-        width: 146,
+        width: 152,
         sorter: true,
         ...textFilterProps('orderNo', t('storeOrders.filterOrderNo', '过滤订单号')),
         fixed: 'left',
@@ -1569,7 +1645,7 @@ export default function StoreOrdersPage() {
         key: 'storeCode',
         title: t('column.store'),
         dataIndex: 'storeCode',
-        width: 170,
+        width: 180,
         sorter: true,
         filterDropdown: makeStoreFilterDropdown,
         filterIcon,
@@ -1600,7 +1676,7 @@ export default function StoreOrdersPage() {
         key: 'orderDate',
         title: t('column.orderDate'),
         dataIndex: 'orderDate',
-        width: 112,
+        width: 124,
         sorter: true,
         filterDropdown: makeOrderDateFilterDropdown,
         filterIcon,
@@ -1611,7 +1687,7 @@ export default function StoreOrdersPage() {
         key: 'outboundDate',
         title: t('storeOrders.outboundDate'),
         dataIndex: 'outboundDate',
-        width: 112,
+        width: 124,
         sorter: true,
         ...dateRangeFilterProps('outboundDateStart', 'outboundDateEnd'),
         render: (value: string | undefined) => renderDateTag(value, i18n.language),
@@ -1620,7 +1696,7 @@ export default function StoreOrdersPage() {
         key: 'flowStatus',
         title: t('column.status'),
         dataIndex: 'flowStatus',
-        width: 92,
+        width: 104,
         sorter: true,
         filterDropdown: makeStatusFilterDropdown,
         filterIcon,
@@ -1645,7 +1721,7 @@ export default function StoreOrdersPage() {
         key: 'totalQuantity',
         title: t('storeOrders.orderQuantity'),
         dataIndex: 'totalQuantity',
-        width: 88,
+        width: 116,
         sorter: true,
         ...numberFilterProps({ min: 'totalQuantityMin', max: 'totalQuantityMax' }),
         render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
@@ -1654,7 +1730,7 @@ export default function StoreOrdersPage() {
         key: 'totalOrderAmount',
         title: t('storeOrders.orderAmount'),
         dataIndex: 'totalOrderAmount',
-        width: 92,
+        width: 116,
         sorter: true,
         ...numberFilterProps({ min: 'totalOrderAmountMin', max: 'totalOrderAmountMax' }),
         render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
@@ -1663,32 +1739,15 @@ export default function StoreOrdersPage() {
         key: 'totalOrderVolume',
         title: t('storeOrders.orderVolume'),
         dataIndex: 'totalOrderVolume',
-        width: 92,
+        width: 112,
         ...numberFilterProps({ min: 'totalOrderVolumeMin', max: 'totalOrderVolumeMax' }),
         render: (value: number | undefined) => renderStoreOrderNumericCell(formatStoreOrderVolume(value)),
-      },
-      {
-        key: 'totalAllocVolume',
-        title: t('storeOrders.shipVolume'),
-        dataIndex: 'totalAllocVolume',
-        width: 92,
-        ...numberFilterProps({ min: 'totalAllocVolumeMin', max: 'totalAllocVolumeMax' }),
-        render: (value: number | undefined) => renderStoreOrderNumericCell(formatStoreOrderVolume(value)),
-      },
-      {
-        key: 'totalAllocQuantity',
-        title: t('storeOrders.shipQuantity'),
-        dataIndex: 'totalAllocQuantity',
-        width: 88,
-        sorter: true,
-        ...numberFilterProps({ min: 'totalAllocQuantityMin', max: 'totalAllocQuantityMax' }),
-        render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
       },
       {
         key: 'importTotalAmount',
         title: t('storeOrders.shipAmount'),
         dataIndex: 'importTotalAmount',
-        width: 92,
+        width: 116,
         sorter: true,
         ...numberFilterProps({ min: 'importTotalAmountMin', max: 'importTotalAmountMax' }),
         render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
@@ -1697,7 +1756,7 @@ export default function StoreOrdersPage() {
         key: 'remarks',
         title: t('common.remarks'),
         dataIndex: 'remarks',
-        width: 170,
+        width: 220,
         ...textFilterProps('remarks', t('storeOrders.filterRemarks', '过滤备注')),
         render: (value: string | undefined) => renderStoreOrderTwoLineText(value),
       },
@@ -1705,7 +1764,7 @@ export default function StoreOrdersPage() {
         key: 'createdAt',
         title: t('column.createTime'),
         dataIndex: 'createdAt',
-        width: 150,
+        width: 160,
         ...dateRangeFilterProps('createdAtStart', 'createdAtEnd'),
         render: (value: string | undefined) => <span className="store-order-nowrap">{formatDateTime(value, i18n.language)}</span>,
       },
@@ -1713,7 +1772,7 @@ export default function StoreOrdersPage() {
         key: 'updatedBy',
         title: t('column.updater'),
         dataIndex: 'updatedBy',
-        width: 112,
+        width: 120,
         ...textFilterProps('updatedBy', t('storeOrders.filterUpdatedBy', '过滤更新人')),
         render: (value: string | undefined) => <span className="store-order-nowrap">{value || '--'}</span>,
       },
@@ -1721,7 +1780,7 @@ export default function StoreOrdersPage() {
         key: 'updatedAt',
         title: t('column.updateTime'),
         dataIndex: 'updatedAt',
-        width: 150,
+        width: 160,
         ...dateRangeFilterProps('updatedAtStart', 'updatedAtEnd'),
         render: (value: string | undefined) => <span className="store-order-nowrap">{formatDateTime(value, i18n.language)}</span>,
       },
@@ -1788,6 +1847,8 @@ export default function StoreOrdersPage() {
 
   const draggableColumnKeys = baseColumns.map((column) => String(column.key) as StoreOrderListTableColumnKey)
   const isColumnOrderCustomized = isStoreOrderListColumnOrderCustomized(columnOrder, draggableColumnKeys)
+  const isColumnWidthCustomized = Object.keys(columnWidths).length > 0
+  const isColumnSettingsCustomized = isColumnOrderCustomized || isColumnWidthCustomized
 
   useEffect(() => {
     setColumnOrder((current) => {
@@ -1810,6 +1871,36 @@ export default function StoreOrdersPage() {
     })
   }, [draggableColumnKeys.join('|')])
 
+  useEffect(() => {
+    setColumnWidths((current) => {
+      let savedWidths: unknown = null
+      let hasSavedWidths = false
+      if (!Object.keys(current).length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY)
+          hasSavedWidths = raw !== null
+          savedWidths = raw ? JSON.parse(raw) : null
+        } catch {
+          savedWidths = null
+          hasSavedWidths = true
+        }
+      }
+
+      // 只恢复当前可见业务列的宽度，自动清理已隐藏或废弃列留下的本地设置。
+      const nextWidths = normalizeStoreOrderListColumnWidths(
+        Object.keys(current).length ? current : savedWidths,
+        draggableColumnKeys,
+      )
+      if (hasSavedWidths) {
+        persistStoreOrderListColumnWidths(nextWidths)
+      }
+      if (areStoreOrderListColumnWidthsEqual(current, nextWidths)) {
+        return current
+      }
+      return nextWidths
+    })
+  }, [draggableColumnKeys.join('|')])
+
   const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return
     setColumnOrder((current) => {
@@ -1823,14 +1914,98 @@ export default function StoreOrdersPage() {
     })
   }
 
+  const handleColumnResizeStart = useCallback((
+    columnKey: StoreOrderListTableColumnKey,
+    startWidth: number,
+    resizeFromLeft: boolean,
+    event: ReactPointerEvent<HTMLSpanElement>,
+  ) => {
+    stopColumnResizeRef.current?.()
+
+    const startX = event.clientX
+    const pointerId = event.pointerId
+    const resizeHandle = event.currentTarget
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    let latestWidth = startWidth
+    let didResize = false
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId) return
+      const pointerDelta = pointerEvent.clientX - startX
+      const nextWidth = clampStoreOrderListColumnWidth(
+        startWidth + (resizeFromLeft ? -pointerDelta : pointerDelta),
+      )
+      if (nextWidth === latestWidth) return
+      latestWidth = nextWidth
+      didResize = true
+      setColumnWidths((current) => {
+        return { ...current, [columnKey]: nextWidth }
+      })
+    }
+
+    function cleanupResize() {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', finishResize)
+      document.removeEventListener('pointercancel', finishResize)
+      window.removeEventListener('blur', finishResize)
+      resizeHandle.removeEventListener('lostpointercapture', finishResize)
+      if (resizeHandle.hasPointerCapture(pointerId)) {
+        resizeHandle.releasePointerCapture(pointerId)
+      }
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      if (stopColumnResizeRef.current === cleanupResize) {
+        stopColumnResizeRef.current = null
+      }
+    }
+
+    function suppressResizeClick() {
+      const headerCell = resizeHandle.closest('th')
+      const suppressHeaderClick = (clickEvent: MouseEvent) => {
+        if (!headerCell?.contains(clickEvent.target as Node)) return
+        clickEvent.preventDefault()
+        clickEvent.stopPropagation()
+      }
+      document.addEventListener('click', suppressHeaderClick, { capture: true, once: true })
+      // 浏览器若未在 pointerup 后派发 click，及时撤掉保护，避免影响下一次正常点击。
+      window.setTimeout(() => document.removeEventListener('click', suppressHeaderClick, true), 0)
+    }
+
+    function finishResize(finishEvent: Event) {
+      if (finishEvent instanceof PointerEvent && finishEvent.pointerId !== pointerId) return
+      cleanupResize()
+      if (!didResize) return
+      suppressResizeClick()
+      setColumnWidths((current) => {
+        const nextWidths = { ...current, [columnKey]: latestWidth }
+        persistStoreOrderListColumnWidths(nextWidths)
+        return nextWidths
+      })
+    }
+
+    // 使用 document 级监听，指针离开表头后仍可连续调整列宽。
+    stopColumnResizeRef.current = cleanupResize
+    resizeHandle.addEventListener('lostpointercapture', finishResize, { once: true })
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', finishResize)
+    document.addEventListener('pointercancel', finishResize)
+    window.addEventListener('blur', finishResize, { once: true })
+  }, [])
+
   const resetColumnOrder = () => {
     setColumnOrder(draggableColumnKeys)
+    setColumnWidths({})
     try {
       localStorage.removeItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY)
+      localStorage.removeItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY)
     } catch {
-      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+      // localStorage 不可用时仍恢复当前页面内的默认列设置。
     }
-    message.success(t('containers.messages.columnOrderReset', '列顺序已恢复默认'))
+    message.success(t('containers.messages.columnOrderReset', '列设置已恢复默认'))
   }
 
   const columns = useMemo(() => {
@@ -1839,13 +2014,27 @@ export default function StoreOrdersPage() {
     return activeOrder
       .map((key) => columnMap.get(key))
       .filter((column): column is ColumnsType<StoreOrderListItem>[number] => Boolean(column))
-      .map((column) => ({
-        ...column,
-        onHeaderCell: () => ({
-          'data-column-key': String(column.key),
-        }),
-      })) as ColumnsType<StoreOrderListItem>
-  }, [baseColumns, columnOrder, draggableColumnKeys])
+      .map((column) => {
+        const columnKey = String(column.key) as StoreOrderListTableColumnKey
+        const width = columnWidths[columnKey] ?? column.width
+        return {
+          ...column,
+          width,
+          onHeaderCell: () => ({
+            'data-column-key': columnKey,
+            'data-column-width': typeof width === 'number' ? width : STORE_ORDER_LIST_MIN_COLUMN_WIDTH,
+            'data-column-fixed': column.fixed === 'right' ? 'right' : undefined,
+            onColumnResizeStart: handleColumnResizeStart,
+          } as DraggableHeaderCellProps),
+        }
+      }) as ColumnsType<StoreOrderListItem>
+  }, [baseColumns, columnOrder, columnWidths, draggableColumnKeys, handleColumnResizeStart])
+  const tableScrollX =
+    (canUseWarehouseManagerActions ? STORE_ORDER_LIST_SELECTION_COLUMN_WIDTH : 0)
+    + columns.reduce((total, column) => {
+      const width = typeof column.width === 'number' ? column.width : Number(column.width)
+      return total + (Number.isFinite(width) ? width : 0)
+    }, 0)
 
   return (
     <PageContainer
@@ -1928,7 +2117,7 @@ export default function StoreOrdersPage() {
           >
             {t('common.reset')}
           </Button>
-          {isColumnOrderCustomized ? (
+          {isColumnSettingsCustomized ? (
             <Button icon={<ReloadOutlined />} onClick={resetColumnOrder}>
               {t('containers.actions.resetColumns', '重置列')}
             </Button>
@@ -1997,12 +2186,13 @@ export default function StoreOrdersPage() {
               rowSelection={
                 canUseWarehouseManagerActions
                   ? {
+                      columnWidth: STORE_ORDER_LIST_SELECTION_COLUMN_WIDTH,
                       selectedRowKeys,
                       onChange: setSelectedRowKeys,
                     }
                   : undefined
               }
-              scroll={{ x: 1640, y: 620 }}
+              scroll={{ x: tableScrollX, y: 620 }}
               pagination={{
                 current: page,
                 pageSize,

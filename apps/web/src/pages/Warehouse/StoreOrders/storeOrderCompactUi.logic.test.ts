@@ -151,6 +151,87 @@ async function main() {
   })
   if (listColumnDragFailure) failures.push(listColumnDragFailure)
 
+  const listColumnResizeFailure = await runTest('列表页应隐藏无用发货列并支持全部业务列拖拽调宽', () => {
+    assert(
+      !storeOrdersSource.includes("dataIndex: 'totalAllocVolume'") &&
+        !storeOrdersSource.includes("dataIndex: 'totalAllocQuantity'"),
+      '列表页不应继续渲染发货体积和发货数量列',
+    )
+
+    const defaultWidthExpectations = [
+      ['orderDate', 120],
+      ['outboundDate', 120],
+      ['flowStatus', 100],
+      ['totalQuantity', 112],
+      ['totalOrderAmount', 112],
+      ['totalOrderVolume', 108],
+      ['importTotalAmount', 112],
+      ['remarks', 220],
+      ['createdAt', 160],
+      ['updatedBy', 120],
+      ['updatedAt', 160],
+    ] as const
+    for (const [dataIndex, minimumWidth] of defaultWidthExpectations) {
+      const columnBlock = readColumnBlock(storeOrdersSource, dataIndex)
+      const width = readNumericValue(columnBlock, /width:\s*(\d+)/)
+      assert(width >= minimumWidth, `${dataIndex} 默认列宽应至少为 ${minimumWidth}px，避免列头过度折行`)
+    }
+
+    assert(
+      storeOrdersSource.includes("const STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.storeOrders.list.columnWidths.v1'") &&
+        storeOrdersSource.includes('const [columnWidths, setColumnWidths]') &&
+        storeOrdersSource.includes('normalizeStoreOrderListColumnWidths(') &&
+        storeOrdersSource.includes('hasSavedWidths = raw !== null') &&
+        storeOrdersSource.includes('localStorage.setItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY'),
+      '列表页列宽应使用独立 localStorage key 持久化，并过滤失效列宽',
+    )
+    assert(
+        storeOrdersSource.includes('data-column-width') &&
+        storeOrdersSource.includes('onColumnResizeStart: handleColumnResizeStart') &&
+        storeOrdersSource.includes('store-order-list-column-resize-handle') &&
+        storeOrdersSource.includes('<div className="store-order-list-draggable-header" {...attributes} {...listeners}>') &&
+        !storeOrdersSource.includes('<th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>'),
+      '列表页每个业务列表头应使用独立调宽手柄，且不能误触列顺序拖拽',
+    )
+    assert(
+      storeOrdersSource.includes('event.currentTarget.setPointerCapture(event.pointerId)') &&
+        storeOrdersSource.includes('onClick={(event) => {') &&
+        storeOrdersSource.includes('const stopColumnResizeRef = useRef<(() => void) | null>(null)') &&
+        storeOrdersSource.includes('stopColumnResizeRef.current?.()') &&
+        storeOrdersSource.includes('pointerEvent.pointerId !== pointerId') &&
+        storeOrdersSource.includes("window.addEventListener('blur', finishResize, { once: true })") &&
+        storeOrdersSource.includes("document.addEventListener('click', suppressHeaderClick, { capture: true, once: true })"),
+      '调宽手柄应隔离表头排序 click，并在重复拖拽或页面卸载时清理监听',
+    )
+    assert(
+      storeOrdersSource.includes("position: style?.position ?? 'relative'") &&
+        storeOrdersSource.includes("'data-column-fixed': column.fixed === 'right' ? 'right' : undefined") &&
+        storeOrdersSource.includes('const resizeFromLeft = props[\'data-column-fixed\'] === \'right\'') &&
+        storeOrdersSource.includes('resizeFromLeft ? -pointerDelta : pointerDelta') &&
+        compactCssSource.includes('.store-order-list-column-resize-handle-left'),
+      '固定列表头应保留 sticky 定位，固定右列应从左侧反向调宽',
+    )
+    assert(
+      storeOrdersSource.includes('(canUseWarehouseManagerActions ? STORE_ORDER_LIST_SELECTION_COLUMN_WIDTH : 0)') &&
+        storeOrdersSource.includes('+ columns.reduce((total, column) => {') &&
+        storeOrdersSource.includes('scroll={{ x: tableScrollX, y: 620 }}'),
+      '列表页横向滚动宽度应只按当前业务列和实际存在的选择列计算',
+    )
+    assert(
+      compactCssSource.includes('.store-order-list-column-resize-handle') &&
+        compactCssSource.includes('cursor: col-resize') &&
+        compactCssSource.includes('touch-action: none'),
+      '列表页调宽手柄应提供独立命中区域和调宽光标',
+    )
+    assert(
+      storeOrdersSource.includes('const isColumnSettingsCustomized = isColumnOrderCustomized || isColumnWidthCustomized') &&
+        storeOrdersSource.includes('setColumnWidths({})') &&
+        storeOrdersSource.includes('localStorage.removeItem(STORE_ORDER_LIST_COLUMN_WIDTH_STORAGE_KEY)'),
+      '手动调整顺序或宽度后，重置列应恢复全部默认列设置',
+    )
+  })
+  if (listColumnResizeFailure) failures.push(listColumnResizeFailure)
+
   const listStatusFilterFailure = await runTest('列表页状态筛选应使用多选框并默认勾选已提交和配货中', () => {
     assert(storeOrdersSource.includes('Checkbox.Group'), '状态筛选应使用 Checkbox.Group')
     assert(storeOrdersSource.includes('const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]'), '默认状态筛选应为已提交和配货中')
