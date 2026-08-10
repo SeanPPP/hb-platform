@@ -27,6 +27,24 @@ jest.mock("@/ui/feedback", () => ({
 }));
 
 let mockStatusStripProps: any;
+let mockCameraModalProps: any;
+let mockCameraInlineProps: any;
+
+jest.mock("@/features/scanner-camera", () => {
+  const { View } = jest.requireActual(
+    "react-native",
+  ) as typeof import("react-native");
+  return {
+    CameraScannerModal: (props: Readonly<{ visible: boolean }>) => {
+      mockCameraModalProps = props;
+      return props.visible ? <View testID="mock-camera-scanner-modal" /> : null;
+    },
+    CameraScannerInline: (props: unknown) => {
+      mockCameraInlineProps = props;
+      return <View testID="mock-camera-scanner-inline" />;
+    },
+  };
+});
 
 jest.mock("@/ui/shell/status-strip", () => ({
   PosStatusStrip: (props: unknown) => {
@@ -359,12 +377,334 @@ function flattenedStyle(node: Readonly<{ props: { style?: unknown } }>) {
 }
 
 afterEach(() => {
+  mockCameraInlineProps = null;
+  mockCameraModalProps = null;
   mockStatusStripProps = null;
   usePosShellStore.getState().reset();
   jest.restoreAllMocks();
 });
 
 describe("SalesScreen", () => {
+  it("相机控制器未活动时把入口和单一模式开关排在同一行", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    const onManualInputFocusChange = jest.fn();
+    const cameraScanner = {
+      active: false,
+      mode: "single" as const,
+      scanner: {
+        acceptCameraText: jest.fn(() => true),
+        startCamera: jest.fn(async () => undefined),
+        stopCamera: jest.fn(async () => undefined),
+      },
+      onModeChange: jest.fn(),
+      onOpen: jest.fn(),
+      onClose: jest.fn(),
+      onScan: jest.fn(() => true),
+    };
+    const screen = await render(
+      <SalesScreen
+        cameraScanner={cameraScanner}
+        locale="zh"
+        onManualInputFocusChange={onManualInputFocusChange}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    const cameraRow = screen.getByTestId("sales-camera-scanner-row");
+    const cameraAction = screen.getByTestId("sales-open-camera-scanner");
+    const searchAction = screen.getByTestId("sales-search-button");
+    const modeControl = screen.getByTestId("sales-camera-mode-control");
+    const modeToggle = screen.getByTestId("sales-camera-mode-toggle");
+    expect(modeToggle.props.disabled).toBe(false);
+    expect(modeToggle.props.value).toBe(false);
+    expect(modeToggle.props.accessibilityValue).toEqual({ text: "单次" });
+    expect(flattenedStyle(cameraRow).flexDirection).toBe("row");
+    expect(flattenedStyle(modeControl).minHeight).toBeGreaterThanOrEqual(
+      MIN_TOUCH_TARGET,
+    );
+    expect(flattenedStyle(modeControl).alignItems).toBe("center");
+    expect(flattenedStyle(modeControl).justifyContent).toBe("center");
+    expect(flattenedStyle(modeControl).flexShrink).toBe(1);
+    expect(flattenedStyle(cameraAction).flexBasis).toBe("47%");
+    expect(flattenedStyle(cameraAction).flexBasis).toBe(
+      flattenedStyle(searchAction).flexBasis,
+    );
+    expect(flattenedStyle(cameraAction).flexGrow).toBe(
+      flattenedStyle(searchAction).flexGrow,
+    );
+    expect(flattenedStyle(modeControl).flexBasis).toBe(
+      flattenedStyle(cameraAction).flexBasis,
+    );
+    expect(flattenedStyle(modeControl).flexGrow).toBe(
+      flattenedStyle(cameraAction).flexGrow,
+    );
+    expect(flattenedStyle(modeToggle).alignSelf).toBe("center");
+    expect(
+      descendantTestIds(cameraRow).filter((testID) =>
+        [
+          "sales-open-camera-scanner",
+          "sales-camera-mode-toggle",
+        ].includes(testID),
+      ),
+    ).toEqual([
+      "sales-open-camera-scanner",
+      "sales-camera-mode-toggle",
+    ]);
+    expect(
+      descendantTestIds(modeControl).filter((testID) =>
+        [
+          "sales-camera-mode-toggle",
+          "sales-camera-mode-continuous-label",
+        ].includes(testID),
+      ),
+    ).toEqual([
+      "sales-camera-mode-toggle",
+      "sales-camera-mode-continuous-label",
+    ]);
+    expect(screen.queryByText("单次")).toBeNull();
+    const continuousLabel = screen.getByTestId(
+      "sales-camera-mode-continuous-label",
+    );
+    expect(continuousLabel.props).toMatchObject({
+      adjustsFontSizeToFit: true,
+      minimumFontScale: 0.75,
+      numberOfLines: 1,
+    });
+    expect(screen.getByText("连续")).toBeTruthy();
+    expect(screen.getByText("相机扫码")).toBeTruthy();
+    expect(screen.queryByTestId("sales-camera-mode-single")).toBeNull();
+    expect(screen.queryByTestId("sales-camera-mode-continuous")).toBeNull();
+
+    await fireEvent(modeToggle, "valueChange", true);
+    expect(cameraScanner.onModeChange).toHaveBeenCalledWith("continuous");
+
+    await screen.rerender(
+      <SalesScreen
+        cameraScanner={{ ...cameraScanner, mode: "continuous" }}
+        locale="zh"
+        onManualInputFocusChange={onManualInputFocusChange}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    const continuousToggle = screen.getByTestId("sales-camera-mode-toggle");
+    expect(continuousToggle.props.value).toBe(true);
+    expect(continuousToggle.props.accessibilityValue).toEqual({ text: "连续" });
+    await fireEvent(continuousToggle, "valueChange", false);
+    expect(cameraScanner.onModeChange).toHaveBeenLastCalledWith("single");
+
+    await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+    jest.useFakeTimers();
+    try {
+      await fireEvent.press(screen.getByTestId("sales-open-camera-scanner"));
+      await act(() => {
+        jest.runOnlyPendingTimers();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(cameraScanner.onOpen).toHaveBeenCalledTimes(1);
+    expect(onManualInputFocusChange.mock.calls).toEqual([[true], [false]]);
+    expect(screen.queryByTestId("mock-camera-scanner-modal")).toBeNull();
+    expect(screen.queryByTestId("mock-camera-scanner-inline")).toBeNull();
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("目录操作被门禁时同步禁用相机模式和入口", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      capabilities: { ...ALL_CAPABILITIES, catalog: false },
+    });
+    const cameraScanner = {
+      active: false,
+      mode: "continuous" as const,
+      scanner: {
+        acceptCameraText: jest.fn(() => true),
+        startCamera: jest.fn(async () => undefined),
+        stopCamera: jest.fn(async () => undefined),
+      },
+      onModeChange: jest.fn(),
+      onOpen: jest.fn(),
+      onClose: jest.fn(),
+      onScan: jest.fn(() => true),
+    };
+    const screen = await render(
+      <SalesScreen
+        cameraScanner={cameraScanner}
+        locale="en"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(screen.queryByText("Single")).toBeNull();
+    expect(screen.getByText("Continuous")).toBeTruthy();
+    expect(screen.getByText("Camera scanner")).toBeTruthy();
+    expect(
+      screen.queryByText(
+        'Tapping the search field keeps HID-only input and submits scans with Enter. For touch or Chinese input, tap the "Keyboard" button above.',
+      ),
+    ).toBeNull();
+    expect(
+      screen.getByTestId("sales-open-camera-scanner").props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+    expect(screen.getByTestId("sales-camera-mode-toggle").props.disabled).toBe(
+      true,
+    );
+
+    await fireEvent(
+      screen.getByTestId("sales-camera-mode-toggle"),
+      "valueChange",
+      false,
+    );
+    await fireEvent.press(screen.getByTestId("sales-open-camera-scanner"));
+    expect(cameraScanner.onModeChange).not.toHaveBeenCalled();
+    expect(cameraScanner.onOpen).not.toHaveBeenCalled();
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("单次活动会话保留商品录入控件并显示相机覆盖层", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    const cameraScanner = {
+      active: true,
+      mode: "single" as const,
+      scanner: {
+        acceptCameraText: jest.fn(() => true),
+        startCamera: jest.fn(async () => undefined),
+        stopCamera: jest.fn(async () => undefined),
+      },
+      onModeChange: jest.fn(),
+      onOpen: jest.fn(),
+      onClose: jest.fn(),
+      onScan: jest.fn(() => true),
+    };
+    const screen = await render(
+      <SalesScreen
+        cameraScanner={cameraScanner}
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(screen.getByTestId("sales-search-input")).toBeTruthy();
+    expect(screen.getByTestId("sales-transaction-functions")).toBeTruthy();
+    expect(screen.queryByTestId("sales-camera-mode-toggle")).toBeNull();
+    expect(screen.queryByTestId("sales-open-camera-scanner")).toBeNull();
+    expect(screen.getByTestId("mock-camera-scanner-modal")).toBeTruthy();
+    expect(screen.queryByTestId("mock-camera-scanner-inline")).toBeNull();
+    expect(mockCameraModalProps).toMatchObject({
+      context: "product",
+      onClose: cameraScanner.onClose,
+      onScan: cameraScanner.onScan,
+      scanner: cameraScanner.scanner,
+      visible: true,
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("连续活动会话仅替换商品录入控件并保留购物车和交易功能", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+    const onOpenPayment = jest.fn();
+    const onReprintReceipt = jest.fn(async () => ({
+      kind: "completed" as const,
+    }));
+    const onOpenCashDrawer = jest.fn(async () => ({
+      kind: "completed" as const,
+    }));
+    const cameraScanner = {
+      active: true,
+      mode: "continuous" as const,
+      scanner: {
+        acceptCameraText: jest.fn(() => true),
+        startCamera: jest.fn(async () => undefined),
+        stopCamera: jest.fn(async () => undefined),
+      },
+      onModeChange: jest.fn(),
+      onOpen: jest.fn(),
+      onClose: jest.fn(),
+      onScan: jest.fn(() => true),
+    };
+    const screen = await render(
+      <SalesScreen
+        cameraScanner={cameraScanner}
+        locale="zh"
+        onOpenCashDrawer={onOpenCashDrawer}
+        onOpenPayment={onOpenPayment}
+        onReprintReceipt={onReprintReceipt}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    expect(screen.queryByTestId("sales-search-input")).toBeNull();
+    expect(screen.queryByTestId("sales-search-button")).toBeNull();
+    expect(screen.queryByTestId("sales-camera-mode-toggle")).toBeNull();
+    expect(screen.queryByTestId("sales-open-camera-scanner")).toBeNull();
+    expect(screen.queryByTestId("mock-camera-scanner-modal")).toBeNull();
+    expect(screen.getByTestId("mock-camera-scanner-inline")).toBeTruthy();
+    expect(screen.getByTestId("sales-transaction-pane")).toBeTruthy();
+    expect(screen.getByTestId("sales-cart-list")).toBeTruthy();
+    expect(screen.getByTestId("sales-transaction-functions")).toBeTruthy();
+    for (const testID of [
+      "sales-hold",
+      "sales-reprint-receipt",
+      "sales-open-cash-drawer",
+      "sales-open-payment",
+    ]) {
+      expect(screen.getByTestId(testID).props.accessibilityState).toMatchObject({
+        disabled: true,
+      });
+    }
+    expect(mockCameraInlineProps).toMatchObject({
+      context: "product",
+      onClose: cameraScanner.onClose,
+      onScan: cameraScanner.onScan,
+      scanner: cameraScanner.scanner,
+      visible: true,
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("相机会话活动时离开 selling 会立即请求关闭", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+    const cameraScanner = {
+      active: true,
+      mode: "continuous" as const,
+      scanner: {
+        acceptCameraText: jest.fn(() => true),
+        startCamera: jest.fn(async () => undefined),
+        stopCamera: jest.fn(async () => undefined),
+      },
+      onModeChange: jest.fn(),
+      onOpen: jest.fn(),
+      onClose: jest.fn(),
+      onScan: jest.fn(() => true),
+    };
+    const screen = await render(
+      <SalesScreen
+        cameraScanner={cameraScanner}
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await openLegacyCash(salesPresenter);
+
+    await waitFor(() => expect(cameraScanner.onClose).toHaveBeenCalledTimes(1));
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("无码商品使用自定义小数键盘且不会暴露系统文本输入", async () => {
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
     const screen = await render(
@@ -1545,10 +1885,10 @@ describe("SalesScreen", () => {
     expect(searchInput.props.showSoftInputOnFocus).toBe(false);
     expect(searchInput.props.submitBehavior).toBe("blurAndSubmit");
     expect(
-      screen.getByText(
+      screen.queryByText(
         "点击搜索框默认只接收 HID 扫码，并以回车提交；触摸或中文输入请点击上方“键盘”按钮。",
       ),
-    ).toBeTruthy();
+    ).toBeNull();
 
     jest.useFakeTimers();
     try {
@@ -1607,10 +1947,10 @@ describe("SalesScreen", () => {
       />,
     );
     expect(
-      englishScreen.getByText(
+      englishScreen.queryByText(
         'Tapping the search field keeps HID-only input and submits scans with Enter. For touch or Chinese input, tap the "Keyboard" button above.',
       ),
-    ).toBeTruthy();
+    ).toBeNull();
     expect(englishScreen.getByText("Keyboard")).toBeTruthy();
 
     englishPresenter.destroy();

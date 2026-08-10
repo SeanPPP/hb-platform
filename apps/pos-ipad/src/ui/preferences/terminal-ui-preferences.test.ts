@@ -3,19 +3,24 @@ import Storage from "expo-sqlite/kv-store";
 
 import {
   BUTTON_SOUND_PREFERENCE_KEY,
+  CAMERA_SCAN_MODE_PREFERENCE_KEY,
   LANGUAGE_PREFERENCE_KEY,
   SPECIAL_NODE_SOUND_PREFERENCE_KEY,
   TOUCH_SOUND_PREFERENCE_KEY,
   readButtonSoundEnabled,
+  readCameraScanMode,
   readSalesToolbarOrder,
   readSpecialNodeSoundEnabled,
   readStoredLanguage,
   SALES_TOOLBAR_ORDER_PREFERENCE_KEY,
   saveButtonSoundEnabled,
+  saveCameraScanMode,
   saveSalesToolbarOrder,
   saveSpecialNodeSoundEnabled,
   saveStoredLanguage,
 } from "./terminal-ui-preferences";
+
+import type { CameraScanMode } from "@/core/contracts/scanner";
 
 jest.mock("expo-sqlite/kv-store", () => ({
   __esModule: true,
@@ -85,6 +90,50 @@ test("异步保存使用固定键且吞掉存储异常", async () => {
   mockSetItem.mockRejectedValue(new Error("disk full"));
   await expect(saveStoredLanguage("zh")).resolves.toBeUndefined();
   await expect(saveSalesToolbarOrder(["payment"])).resolves.toBeUndefined();
+});
+
+test("相机扫码模式只接受 single/continuous，缺失、损坏或读取异常时回退单次", () => {
+  mockGetItemSync.mockReturnValue("continuous");
+  expect(readCameraScanMode()).toBe("continuous");
+  expect(mockGetItemSync).toHaveBeenCalledWith(
+    CAMERA_SCAN_MODE_PREFERENCE_KEY,
+  );
+
+  mockGetItemSync.mockReturnValue("single");
+  expect(readCameraScanMode()).toBe("single");
+
+  mockGetItemSync.mockReturnValue(null);
+  expect(readCameraScanMode()).toBe("single");
+
+  mockGetItemSync.mockReturnValue("invalid");
+  expect(readCameraScanMode()).toBe("single");
+
+  mockGetItemSync.mockImplementation(() => {
+    throw new Error("SQLite unavailable");
+  });
+  expect(readCameraScanMode()).toBe("single");
+});
+
+test("相机扫码模式仅保存合法值，非法运行时值和写入异常均安全忽略", async () => {
+  await saveCameraScanMode("continuous");
+  await saveCameraScanMode("single");
+
+  expect(mockSetItem).toHaveBeenNthCalledWith(
+    1,
+    CAMERA_SCAN_MODE_PREFERENCE_KEY,
+    "continuous",
+  );
+  expect(mockSetItem).toHaveBeenNthCalledWith(
+    2,
+    CAMERA_SCAN_MODE_PREFERENCE_KEY,
+    "single",
+  );
+
+  await saveCameraScanMode("invalid" as CameraScanMode);
+  expect(mockSetItem).toHaveBeenCalledTimes(2);
+
+  mockSetItem.mockRejectedValue(new Error("disk full"));
+  await expect(saveCameraScanMode("continuous")).resolves.toBeUndefined();
 });
 
 test("双音效新键严格读取 true/false，且有效新值优先于旧总开关", () => {

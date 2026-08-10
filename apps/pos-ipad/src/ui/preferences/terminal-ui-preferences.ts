@@ -1,9 +1,12 @@
 import Storage from "expo-sqlite/kv-store";
 
+import type { CameraScanMode } from "@/core/contracts/scanner";
+
 export type AppLanguage = "zh" | "en";
 
 export const LANGUAGE_PREFERENCE_KEY = "hb.pos.language.v1";
 export const SALES_TOOLBAR_ORDER_PREFERENCE_KEY = "hb.pos.sales-toolbar-order.v1";
+export const CAMERA_SCAN_MODE_PREFERENCE_KEY = "hb.pos.camera-scan-mode.v1";
 export const BUTTON_SOUND_PREFERENCE_KEY = "hb.pos.button-sound.v1";
 export const SPECIAL_NODE_SOUND_PREFERENCE_KEY =
   "hb.pos.special-node-sound.v1";
@@ -16,6 +19,10 @@ function isAppLanguage(value: unknown): value is AppLanguage {
 
 function isToolbarActionOrder(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((actionId) => typeof actionId === "string");
+}
+
+function isCameraScanMode(value: unknown): value is CameraScanMode {
+  return value === "single" || value === "continuous";
 }
 
 /** 同步读取仅含语言代码的本地偏好，存储故障时继续使用设备语言。 */
@@ -65,6 +72,29 @@ export async function saveSalesToolbarOrder(
       SALES_TOOLBAR_ORDER_PREFERENCE_KEY,
       JSON.stringify(actionIds),
     );
+  } catch {
+    // 偏好持久化失败不应阻断 POS 界面。
+  }
+}
+
+/** 同步读取相机扫码模式，缺失、损坏或存储故障时默认单次扫码。 */
+export function readCameraScanMode(): CameraScanMode {
+  try {
+    const value = Storage.getItemSync(CAMERA_SCAN_MODE_PREFERENCE_KEY);
+    return isCameraScanMode(value) ? value : "single";
+  } catch {
+    return "single";
+  }
+}
+
+/** 仅保存合法扫码模式；持久化失败不得影响当前会话。 */
+export async function saveCameraScanMode(mode: CameraScanMode): Promise<void> {
+  if (!isCameraScanMode(mode)) {
+    return;
+  }
+
+  try {
+    await Storage.setItem(CAMERA_SCAN_MODE_PREFERENCE_KEY, mode);
   } catch {
     // 偏好持久化失败不应阻断 POS 界面。
   }

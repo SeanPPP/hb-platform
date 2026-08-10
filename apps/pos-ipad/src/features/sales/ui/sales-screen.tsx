@@ -50,11 +50,18 @@ import {
 
 import type { CartLine, CartSnapshot } from "@/core/contracts";
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import type { CameraScanMode } from "@/core/contracts/scanner";
+import {
+  CameraScannerInline,
+  CameraScannerModal,
+  type CameraScannerPort,
+} from "@/features/scanner-camera";
 import {
   PosKeyboardAwareScrollView,
   PosKeyboardAwareTextInput,
 } from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
+import { PosSwitch } from "@/ui/controls/pos-switch";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
@@ -85,8 +92,19 @@ export type SalesUtilityActionResult = Readonly<{
 
 type SalesUtilityAction = "reprint" | "drawer";
 
+export type SalesCameraScannerControl = Readonly<{
+  active: boolean;
+  mode: CameraScanMode;
+  scanner: CameraScannerPort;
+  onModeChange(mode: CameraScanMode): void;
+  onOpen(): void;
+  onClose(): void;
+  onScan(value: string): boolean | Promise<boolean>;
+}>;
+
 export type SalesScreenProps = Readonly<{
   presenter: SalesPresenter;
+  cameraScanner?: SalesCameraScannerControl;
   locale?: SalesLocale;
   newTransactionGate?: NewTransactionGate;
   resolveCartProductImage?: (input: {
@@ -136,6 +154,7 @@ type NumericValueDisplayProps = Readonly<{
 
 export function SalesScreen({
   presenter,
+  cameraScanner,
   locale: localeOverride,
   newTransactionGate,
   resolveCartProductImage,
@@ -224,6 +243,7 @@ export function SalesScreen({
   );
   const searchRequestGenerationRef = useRef(0);
   const beginNumericInputRef = useRef<() => void>(() => undefined);
+  const cameraCloseRequestedRef = useRef(false);
   manualInputFocusChangeRef.current = onManualInputFocusChange;
   const successDrawerWarning = state.success
     ? drawerWarningCopyKey(state.success.drawerDisposition)
@@ -240,7 +260,10 @@ export function SalesScreen({
   const newTransactionBlocked =
     cartEmpty && newTransactionGate?.canStartNewTransaction === false;
   const checkoutVerifying = state.phase === "verifying-checkout";
-  const transactionActionsDisabled = state.phase !== "selling";
+  const cameraScannerActive = cameraScanner?.active === true;
+  const closeCameraScanner = cameraScanner?.onClose;
+  const transactionActionsDisabled =
+    state.phase !== "selling" || cameraScannerActive;
   const mergeCartDisabled =
     transactionActionsDisabled || !presenter.canMergeCompatibleLines();
   const catalogActionsDisabled =
@@ -393,6 +416,14 @@ export function SalesScreen({
     searchKeyboardRequestPhaseRef.current = "idle";
     searchInputRef.current?.setNativeProps({ showSoftInputOnFocus: false });
     setSearchSoftInputOnFocus(false);
+  };
+
+  const openCameraScanner = (): void => {
+    resetSearchInputToHidMode();
+    searchInputRef.current?.blur();
+    // TextInput 被连续扫码区域替换时不保证触发 onBlur，必须主动释放 HID 暂停态。
+    notifyManualInputBlurred();
+    cameraScanner?.onOpen();
   };
 
   const beginNumericInput = (): void => {
@@ -558,6 +589,16 @@ export function SalesScreen({
     numericInputModalActiveRef.current = false;
     notifyManualInputBlurred();
   }, [catalogActionsDisabled, manualInputTreeUnavailable]);
+
+  useEffect(() => {
+    if (!cameraScannerActive || state.phase === "selling") {
+      cameraCloseRequestedRef.current = false;
+      return;
+    }
+    if (cameraCloseRequestedRef.current) return;
+    cameraCloseRequestedRef.current = true;
+    closeCameraScanner?.();
+  }, [cameraScannerActive, closeCameraScanner, state.phase]);
 
   useEffect(() => {
     if (
@@ -1098,6 +1139,16 @@ export function SalesScreen({
             <Text style={styles.functionSectionTitle}>
               {t("functions.productEntry")}
             </Text>
+            {cameraScanner?.active && cameraScanner.mode === "continuous" ? (
+              <CameraScannerInline
+                context="product"
+                onClose={cameraScanner.onClose}
+                onScan={cameraScanner.onScan}
+                scanner={cameraScanner.scanner}
+                visible
+              />
+            ) : (
+              <>
             <View style={styles.searchInputRow}>
               <PosKeyboardAwareTextInput
                 ref={searchInputRef}
@@ -1176,7 +1227,73 @@ export function SalesScreen({
                 />
               ) : null}
             </View>
-            <Text style={styles.scanHint}>{t("catalog.scanHint")}</Text>
+            {cameraScanner && !cameraScanner.active ? (
+              <View
+                style={styles.cameraScannerRow}
+                testID="sales-camera-scanner-row"
+              >
+                <ActionButton
+                  disabled={catalogActionsDisabled}
+                  label={t("catalog.cameraScanner")}
+                  onPress={openCameraScanner}
+                  sound="navigate"
+                  style={styles.cameraScannerAction}
+                  testID="sales-open-camera-scanner"
+                  tone="secondary"
+                />
+                <View
+                  style={[
+                    styles.cameraModeControl,
+                    catalogActionsDisabled && styles.actionButtonDisabled,
+                  ]}
+                  testID="sales-camera-mode-control"
+                >
+                  <PosSwitch
+                    accessibilityLabel={t("catalog.cameraModeSwitch")}
+                    accessibilityValue={{
+                      text: t(
+                        cameraScanner.mode === "continuous"
+                          ? "catalog.cameraModeContinuous"
+                          : "catalog.cameraModeSingle",
+                      ),
+                    }}
+                    disabled={catalogActionsDisabled}
+                    ios_backgroundColor={posColors.border}
+                    onValueChange={(continuous) =>
+                      cameraScanner.onModeChange(
+                        continuous ? "continuous" : "single",
+                      )
+                    }
+                    style={styles.cameraModeSwitch}
+                    testID="sales-camera-mode-toggle"
+                    thumbColor={
+                      cameraScanner.mode === "continuous"
+                        ? posColors.orange
+                        : posColors.surface
+                    }
+                    trackColor={{
+                      false: posColors.border,
+                      true: posColors.orangeSoft,
+                    }}
+                    value={cameraScanner.mode === "continuous"}
+                  />
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.75}
+                    numberOfLines={1}
+                    style={[
+                      styles.cameraModeLabel,
+                      cameraScanner.mode === "continuous" &&
+                        styles.cameraModeLabelSelected,
+                      catalogActionsDisabled && styles.actionButtonTextDisabled,
+                    ]}
+                    testID="sales-camera-mode-continuous-label"
+                  >
+                    {t("catalog.cameraModeContinuous")}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
             {state.pendingLookupCount > 0 || checkoutVerifying ? (
               <Text
                 accessibilityLiveRegion="polite"
@@ -1186,6 +1303,8 @@ export function SalesScreen({
                 {t("catalog.verifying")}
               </Text>
             ) : null}
+              </>
+            )}
 
             <View style={styles.functionDivider} />
             <Text style={styles.functionSectionTitle}>
@@ -1250,7 +1369,11 @@ export function SalesScreen({
                 />
               ) : null}
               <ActionButton
-                disabled={!onReprintReceipt || utilityActionPending !== null}
+                disabled={
+                  transactionActionsDisabled ||
+                  !onReprintReceipt ||
+                  utilityActionPending !== null
+                }
                 label={
                   utilityActionPending === "reprint"
                     ? t("functions.reprinting")
@@ -1262,7 +1385,11 @@ export function SalesScreen({
                 tone="quiet"
               />
               <ActionButton
-                disabled={!onOpenCashDrawer || utilityActionPending !== null}
+                disabled={
+                  transactionActionsDisabled ||
+                  !onOpenCashDrawer ||
+                  utilityActionPending !== null
+                }
                 label={
                   utilityActionPending === "drawer"
                     ? t("functions.openingDrawer")
@@ -1311,7 +1438,7 @@ export function SalesScreen({
               cartEmpty ||
               !onOpenPayment ||
               !state.capabilities.cartEditing ||
-              state.phase !== "selling"
+              transactionActionsDisabled
             }
             label={
               cartEmpty
@@ -1336,6 +1463,16 @@ export function SalesScreen({
           dismissLabel={t("common.dismiss")}
           message={t(errorCopyKey(state.errorCode))}
           onDismiss={() => presenter.dismissError()}
+        />
+      ) : null}
+
+      {cameraScanner?.active && cameraScanner.mode === "single" ? (
+        <CameraScannerModal
+          context="product"
+          onClose={cameraScanner.onClose}
+          onScan={cameraScanner.onScan}
+          scanner={cameraScanner.scanner}
+          visible
         />
       ) : null}
 
@@ -2638,6 +2775,47 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.4,
   },
+  cameraModeControl: {
+    alignItems: "center",
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 4,
+    borderWidth: 1,
+    flexBasis: "47%",
+    flexDirection: "row",
+    flexGrow: 1,
+    flexShrink: 1,
+    gap: 4,
+    justifyContent: "center",
+    minHeight: MIN_TOUCH_TARGET,
+    minWidth: 100,
+    paddingHorizontal: 6,
+  },
+  cameraModeLabel: {
+    color: posColors.mutedInk,
+    flexShrink: 1,
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  cameraModeLabelSelected: {
+    color: posColors.orange,
+    fontWeight: "900",
+  },
+  cameraModeSwitch: {
+    alignSelf: "center",
+    flexShrink: 0,
+  },
+  cameraScannerAction: {
+    flexBasis: "47%",
+    flexGrow: 1,
+    paddingHorizontal: 7,
+  },
+  cameraScannerRow: {
+    alignItems: "stretch",
+    flexDirection: "row",
+    gap: 8,
+  },
   catalogPane: {
     backgroundColor: posColors.surface,
     borderColor: posColors.border,
@@ -3140,11 +3318,6 @@ const styles = StyleSheet.create({
   safeArea: {
     backgroundColor: posColors.canvas,
     flex: 1,
-  },
-  scanHint: {
-    color: posColors.mutedInk,
-    fontSize: 11,
-    lineHeight: 16,
   },
   searchAction: {
     flexBasis: "47%",

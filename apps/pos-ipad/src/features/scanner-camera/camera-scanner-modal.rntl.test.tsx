@@ -18,7 +18,13 @@ jest.doMock("expo-camera", () => {
   CameraView.isAvailableAsync = jest
     .fn<() => Promise<boolean>>()
     .mockResolvedValue(true);
-  return { CameraView, useCameraPermissions: jest.fn(() => [{ granted: true, status: "granted" }, jest.fn()]) };
+  return {
+    CameraView,
+    useCameraPermissions: jest.fn(() => [
+      { granted: true, status: "granted" },
+      jest.fn(),
+    ]),
+  };
 });
 
 const { CameraScannerModal } = require("./camera-scanner-modal") as typeof import("./camera-scanner-modal");
@@ -65,6 +71,31 @@ test("只交付一次规范化条码，并立即关闭相机会话", async () =>
 
   expect(scanner.accepted).toEqual(["01ABC"]);
   expect(onScan).toHaveBeenCalledWith("01ABC");
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(scanner.stopCalls).toBe(1));
+});
+
+test("单次扫码回调同步失败时仍关闭相机会话", async () => {
+  const scanner = new CameraScannerPortStub();
+  const onClose = jest.fn();
+  const rendered = await render(
+    <CameraScannerModal
+      context="product"
+      onClose={onClose}
+      onScan={() => {
+        throw new Error("submit failed");
+      }}
+      scanner={scanner}
+      visible
+    />,
+  );
+  const preview = await rendered.findByTestId("camera-scanner-preview");
+  await waitFor(() => expect(scanner.startCalls).toBe(1));
+
+  expect(() =>
+    fireEvent(preview, "onBarcodeScanned", { data: "FAIL" }),
+  ).not.toThrow();
+
   expect(onClose).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(scanner.stopCalls).toBe(1));
 });

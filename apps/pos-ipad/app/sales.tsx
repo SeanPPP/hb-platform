@@ -12,6 +12,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import type { CameraScanMode } from "@/core/contracts/scanner";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import type { PosAuthorizedFulfilmentActionResult } from "@/core/runtime/production-pos-service-composition";
 import {
@@ -41,7 +42,9 @@ import { toggleAppLanguage } from "@/i18n";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
 import {
+  readCameraScanMode,
   readSalesToolbarOrder,
+  saveCameraScanMode,
   saveSalesToolbarOrder,
 } from "@/ui/preferences/terminal-ui-preferences";
 import { RouteHidScannerCapture } from "@/ui/scanner/scanner-route-bridge";
@@ -88,6 +91,9 @@ export default function SalesRoute() {
     getUpdateGate,
   );
   const [binding, setBinding] = useState<SalesPresenterBinding | null>(null);
+  const [cameraScanMode, setCameraScanMode] =
+    useState<CameraScanMode>(readCameraScanMode);
+  const [cameraScannerActive, setCameraScannerActive] = useState(false);
   const [manualInputActive, setManualInputActive] = useState(false);
   const [toolbarOrder, setToolbarOrder] = useState<
     readonly SalesToolbarActionId[]
@@ -121,19 +127,59 @@ export default function SalesRoute() {
     binding?.services === runtime.services && binding.cashier === activeCashier
       ? binding.presenter
       : null;
+  const scanner = runtime.services?.scanner.router ?? null;
+  const operationAuthorization = runtime.services?.operationAuthorization;
   useFocusEffect(
     useCallback(() => {
       // 支付页位于同一导航栈时销售路由不会卸载；回焦必须释放结账冻结态。
       presenter?.releasePreparedCheckout();
+      return () => {
+        // 路由失焦时立即关闭相机会话，不能让后台页面继续持有镜头或扫码上下文。
+        setCameraScannerActive(false);
+      };
     }, [presenter]),
   );
   const addScannedProduct = useCallback(
-    (barcode: string, source: "hid" | "camera" = "hid") => {
-      if (!presenter || presenter.getState().phase !== "selling") return;
+    (
+      barcode: string,
+      source: "hid" | "camera" = "hid",
+    ): Promise<boolean> => {
+      if (!presenter || presenter.getState().phase !== "selling") {
+        return Promise.resolve(false);
+      }
       // 路由扫码不触碰触屏草稿；每次 HID/相机输入独立启动 lookup。
-      void presenter.addScannedLookupCode(barcode, source);
+      return presenter.addScannedLookupCode(barcode, source);
     },
     [presenter],
+  );
+  const handleRoutedScan = useCallback(
+    (barcode: string, source: "hid" | "camera" = "hid"): void => {
+      // HID 路由不能等待在线目录续作；Presenter 自己维护 pending 生命周期。
+      void addScannedProduct(barcode, source);
+    },
+    [addScannedProduct],
+  );
+  const handleCameraScan = useCallback(
+    (barcode: string): Promise<boolean> =>
+      addScannedProduct(barcode, "camera"),
+    [addScannedProduct],
+  );
+  const closeCameraScanner = useCallback(() => {
+    setCameraScannerActive(false);
+  }, []);
+  const openCameraScanner = useCallback(() => {
+    if (!scanner || !presenter || presenter.getState().phase !== "selling") {
+      return;
+    }
+    setCameraScannerActive(true);
+  }, [presenter, scanner]);
+  const handleCameraScanModeChange = useCallback(
+    (nextMode: CameraScanMode) => {
+      if (cameraScannerActive || nextMode === cameraScanMode) return;
+      setCameraScanMode(nextMode);
+      void saveCameraScanMode(nextMode).catch(() => undefined);
+    },
+    [cameraScanMode, cameraScannerActive],
   );
   const handleToolbarOrderChange = useCallback(
     (nextOrder: readonly SalesToolbarActionId[]) => {
@@ -160,6 +206,37 @@ export default function SalesRoute() {
   );
 
   useEffect(() => clearHidRestoreTimer, [clearHidRestoreTimer]);
+
+  useEffect(() => {
+    if (!cameraScannerActive || !scanner || !presenter) return undefined;
+    // 相机直接提交 Presenter；关闭 HID 订阅并单独占用 product 上下文，避免同码双投递。
+    return scanner.acquireContext("product");
+  }, [cameraScannerActive, presenter, scanner]);
+
+  useEffect(() => {
+    if (
+      !cameraScannerActive ||
+      !operationAuthorization ||
+      operationAuthorization.status !== "available"
+    ) {
+      return undefined;
+    }
+    const closeForSupervisorAuthorization = () => {
+      if (
+        operationAuthorization.getState().kind === "awaiting-supervisor"
+      ) {
+        setCameraScannerActive(false);
+      }
+    };
+    closeForSupervisorAuthorization();
+    return operationAuthorization.subscribe(closeForSupervisorAuthorization);
+  }, [cameraScannerActive, operationAuthorization]);
+
+  useEffect(() => {
+    if (cameraScannerActive && (!scanner || !presenter)) {
+      setCameraScannerActive(false);
+    }
+  }, [cameraScannerActive, presenter, scanner]);
 
   useEffect(() => {
     if (
@@ -291,12 +368,25 @@ export default function SalesRoute() {
     <>
       <RouteHidScannerCapture
         context="product"
-        enabled={!manualInputActive}
-        onScan={addScannedProduct}
+        enabled={!cameraScannerActive && !manualInputActive}
+        onScan={handleRoutedScan}
         path="/sales"
       />
       <SalesSoundBridge presenter={presenter} />
       <SalesScreen
+        {...(scanner
+          ? {
+              cameraScanner: {
+                active: cameraScannerActive,
+                mode: cameraScanMode,
+                scanner,
+                onClose: closeCameraScanner,
+                onModeChange: handleCameraScanModeChange,
+                onOpen: openCameraScanner,
+                onScan: handleCameraScan,
+              },
+            }
+          : {})}
         locale={resolveSalesLocale(i18n.resolvedLanguage ?? i18n.language)}
         newTransactionGate={updateGate}
         onManualInputFocusChange={handleManualInputFocusChange}

@@ -1,24 +1,22 @@
-import {
-  CameraView,
-  useCameraPermissions,
-  type BarcodeScanningResult,
-} from "expo-camera";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ActivityIndicator,
-  Modal,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { Modal, StyleSheet, Text, View } from "react-native";
 
 import {
   cameraScannerContextCopyKey,
   cameraScannerText,
   resolveCameraScannerLocale,
-  type CameraScannerCopyKey,
 } from "./camera-scanner-copy";
+import {
+  CAMERA_SCANNER_MIN_TOUCH_TARGET,
+  CAMERA_SCANNER_SUPPORTED_ORIENTATIONS,
+  type CameraScannerBarcodeResult,
+  CameraScannerCameraView,
+  CameraScannerState,
+  type CameraScannerPort,
+  type CameraScannerTranslate,
+  useCameraScannerSession,
+} from "./camera-scanner-session";
 
 import {
   normalizeScanValue,
@@ -27,13 +25,10 @@ import {
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
-export const CAMERA_SCANNER_MIN_TOUCH_TARGET = 44;
-
-/** 相机功能只依赖扫描公共边界，禁止把会话或授权资料传入 UI。 */
-export type CameraScannerPort = Pick<
-  import("@/core/peripherals/scanner").HidScannerRouter,
-  "acceptCameraText" | "startCamera" | "stopCamera"
->;
+export {
+  CAMERA_SCANNER_MIN_TOUCH_TARGET,
+  type CameraScannerPort,
+} from "./camera-scanner-session";
 
 export type CameraScannerModalProps = Readonly<{
   visible: boolean;
@@ -42,10 +37,6 @@ export type CameraScannerModalProps = Readonly<{
   onScan(value: string): void;
   onClose(): void;
 }>;
-
-type NativeAvailability = "checking" | "ready" | "unavailable";
-
-type CameraScannerTranslate = (key: CameraScannerCopyKey) => string;
 
 /**
  * 相机是 HID 的兜底输入，不改变当前路由上下文；条码仍必须先由 scanner 接受。
@@ -63,92 +54,45 @@ export function CameraScannerModal({
     i18n.resolvedLanguage ?? i18n.language,
   );
   const t: CameraScannerTranslate = (key) => cameraScannerText(locale, key);
-  const [permission, requestPermission] = useCameraPermissions();
-  const [availability, setAvailability] = useState<NativeAvailability>("checking");
-  const [cameraStarted, setCameraStarted] = useState(false);
   const deliveredRef = useRef(false);
   const closingRef = useRef(false);
-  const cameraStartedRef = useRef(false);
-
-  const stopCamera = useCallback(() => {
-    if (!cameraStartedRef.current) return;
-    cameraStartedRef.current = false;
-    setCameraStarted(false);
-    void scanner.stopCamera();
-  }, [scanner]);
+  const {
+    availability,
+    cameraStartedRef,
+    deactivateSession,
+    markCameraUnavailable,
+    permissionDenied,
+    permissionGranted,
+    requestCameraPermission,
+    showCamera,
+  } = useCameraScannerSession({
+    scanner,
+    visible,
+  });
 
   const close = useCallback(() => {
     if (closingRef.current) return;
     closingRef.current = true;
-    stopCamera();
+    deactivateSession();
     onClose();
-  }, [onClose, stopCamera]);
+  }, [deactivateSession, onClose]);
 
   useEffect(() => {
     if (!visible) {
-      stopCamera();
+      deactivateSession();
       return;
     }
     deliveredRef.current = false;
     closingRef.current = false;
-  }, [stopCamera, visible]);
-
-  useEffect(() => {
-    if (!visible || !permission?.granted) {
-      setAvailability("checking");
-      return;
-    }
-
-    let cancelled = false;
-    const checkNativeCamera = CameraView.isAvailableAsync;
-    if (typeof checkNativeCamera !== "function") {
-      setAvailability("unavailable");
-      return;
-    }
-    void checkNativeCamera()
-      .then((isAvailable) => {
-        if (!cancelled) {
-          setAvailability(isAvailable ? "ready" : "unavailable");
-        }
-      })
-      .catch(() => {
-        // Development Build 缺少原生模块或模拟器无相机时必须保持关闭状态。
-        if (!cancelled) setAvailability("unavailable");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [permission?.granted, visible]);
-
-  useEffect(() => {
-    if (!visible || !permission?.granted || availability !== "ready") {
-      stopCamera();
-      return;
-    }
-
-    let cancelled = false;
-    void scanner
-      .startCamera()
-      .then(() => {
-        if (cancelled || closingRef.current) {
-          void scanner.stopCamera();
-          return;
-        }
-        cameraStartedRef.current = true;
-        setCameraStarted(true);
-      })
-      .catch(() => {
-        if (!cancelled) setAvailability("unavailable");
-      });
-    return () => {
-      cancelled = true;
-      stopCamera();
-    };
-  }, [availability, permission?.granted, scanner, stopCamera, visible]);
+  }, [deactivateSession, visible]);
 
   const handleBarcodeScanned = useCallback(
-    (result: BarcodeScanningResult) => {
-      if (!cameraStartedRef.current || deliveredRef.current || closingRef.current) {
+    (result: CameraScannerBarcodeResult) => {
+      if (
+        !cameraStartedRef.current ||
+        deliveredRef.current ||
+        closingRef.current
+      ) {
         return;
       }
       const value = normalizeScanValue(result.data ?? "");
@@ -156,19 +100,14 @@ export function CameraScannerModal({
         return;
       }
       deliveredRef.current = true;
-      onScan(value);
+      try {
+        void Promise.resolve(onScan(value)).catch(() => undefined);
+      } catch {
+        // 单次模式无论业务回调结果如何都必须释放相机，避免卡在不可重试状态。
+      }
       close();
     },
-    [close, onScan, scanner],
-  );
-
-  const requestCameraPermission = useCallback(() => {
-    void requestPermission();
-  }, [requestPermission]);
-
-  const permissionDenied = permission?.status === "denied";
-  const showCamera = Boolean(
-    visible && permission?.granted && availability === "ready" && cameraStarted,
+    [cameraStartedRef, close, onScan, scanner],
   );
 
   return (
@@ -177,7 +116,7 @@ export function CameraScannerModal({
       onRequestClose={close}
       presentationStyle="overFullScreen"
       statusBarTranslucent
-      supportedOrientations={["landscape-left", "landscape-right"]}
+      supportedOrientations={CAMERA_SCANNER_SUPPORTED_ORIENTATIONS}
       transparent
       visible={visible}
     >
@@ -189,28 +128,24 @@ export function CameraScannerModal({
 
           {showCamera ? (
             <View style={styles.previewFrame}>
-              <CameraView
-                active
-                barcodeScannerSettings={{
-                  barcodeTypes: ["aztec", "code128", "code39", "code93", "ean13", "ean8", "itf14", "pdf417", "qr", "upc_a", "upc_e"],
-                }}
-                facing="back"
+              <CameraScannerCameraView
+                accessibilityLabel={t("preview.label")}
                 onBarcodeScanned={handleBarcodeScanned}
-                onMountError={() => {
+                onMountUnavailable={() => {
                   // 原生 view 启动失败时不允许回调继续被当作有效扫码。
-                  stopCamera();
-                  setAvailability("unavailable");
+                  markCameraUnavailable();
                 }}
                 style={styles.preview}
               />
               <View pointerEvents="none" style={styles.target} />
             </View>
           ) : (
-            <CameraState
+            <CameraScannerState
               availability={availability}
-              permissionGranted={Boolean(permission?.granted)}
+              permissionGranted={permissionGranted}
               permissionDenied={permissionDenied}
               onRequestPermission={requestCameraPermission}
+              stateStyle={styles.stateSpacing}
               t={t}
             />
           )}
@@ -228,71 +163,6 @@ export function CameraScannerModal({
         </View>
       </View>
     </Modal>
-  );
-}
-
-function CameraState({
-  availability,
-  onRequestPermission,
-  permissionGranted,
-  permissionDenied,
-  t,
-}: Readonly<{
-  availability: NativeAvailability;
-  permissionDenied: boolean;
-  permissionGranted: boolean;
-  onRequestPermission(): void;
-  t: CameraScannerTranslate;
-}>) {
-  if (permissionDenied) {
-    return (
-      <View accessibilityRole="alert" style={styles.state} testID="camera-scanner-permission-denied">
-        <Text style={styles.stateTitle}>{t("permission.denied.title")}</Text>
-        <Text style={styles.stateCopy}>{t("permission.denied.body")}</Text>
-      </View>
-    );
-  }
-
-  if (availability === "unavailable") {
-    return (
-      <View accessibilityRole="alert" style={styles.state} testID="camera-scanner-unavailable">
-        <Text style={styles.stateTitle}>{t("unavailable.title")}</Text>
-        <Text style={styles.stateCopy}>{t("unavailable.body")}</Text>
-      </View>
-    );
-  }
-
-  if (!permissionGranted) {
-    return (
-      <View style={styles.state} testID="camera-scanner-permission-request-state">
-        <Text style={styles.stateTitle}>{t("permission.required.title")}</Text>
-        <Text style={styles.stateCopy}>{t("permission.required.body")}</Text>
-        <PosPressable
-          accessibilityRole="button"
-          onPress={onRequestPermission}
-          style={({ pressed }) => [styles.permissionButton, pressed && styles.buttonPressed]}
-          testID="camera-scanner-request-permission"
-        >
-          <Text style={styles.permissionButtonLabel}>{t("action.allowCamera")}</Text>
-        </PosPressable>
-      </View>
-    );
-  }
-
-  if (availability === "checking") {
-    return (
-      <View style={styles.state} testID="camera-scanner-starting">
-        <ActivityIndicator color={posColors.orange} />
-        <Text style={styles.stateTitle}>{t("checking")}</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.state} testID="camera-scanner-starting">
-      <ActivityIndicator color={posColors.orange} />
-      <Text style={styles.stateTitle}>{t("starting")}</Text>
-    </View>
   );
 }
 
@@ -335,17 +205,6 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     width: "100%",
   },
-  permissionButton: {
-    alignItems: "center",
-    alignSelf: "flex-start",
-    backgroundColor: posColors.orange,
-    borderRadius: 2,
-    justifyContent: "center",
-    marginTop: 18,
-    minHeight: CAMERA_SCANNER_MIN_TOUCH_TARGET,
-    paddingHorizontal: 18,
-  },
-  permissionButtonLabel: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
   preview: { flex: 1 },
   previewFrame: {
     backgroundColor: "#0A1723",
@@ -354,25 +213,16 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     position: "relative",
   },
-  state: {
-    alignItems: "flex-start",
-    backgroundColor: posColors.canvas,
-    justifyContent: "center",
-    marginVertical: 22,
-    minHeight: 200,
-    padding: 22,
-  },
-  stateCopy: { color: posColors.mutedInk, fontSize: 15, lineHeight: 22, marginTop: 8 },
-  stateTitle: { color: posColors.ink, fontSize: 18, fontWeight: "800" },
+  stateSpacing: { marginVertical: 22 },
   target: {
     borderColor: "#FFFFFF",
     borderRadius: 2,
     borderWidth: 2,
-    bottom: "18%",
-    left: "14%",
+    bottom: "32%",
+    left: "10%",
     position: "absolute",
-    right: "14%",
-    top: "18%",
+    right: "10%",
+    top: "32%",
   },
   title: { color: posColors.ink, fontSize: 26, fontWeight: "800", marginTop: 6 },
 });

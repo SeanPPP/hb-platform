@@ -10,6 +10,8 @@ let mockRouteCaptureProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
 let mockSalesRouteFocusEffect: (() => void) | null;
+let mockAuthorizationState: Readonly<{ kind: string }>;
+let mockAuthorizationListener: (() => void) | null;
 type MockSalesFeedbackEvent = Readonly<{ kind: string }>;
 const mockSalesFeedbackSubscription: {
   listener?: (event: MockSalesFeedbackEvent) => void;
@@ -41,11 +43,24 @@ const mockPerformSelectedUpdate = jest.fn<() => Promise<any>>();
 const mockRecordApplicationLog = jest.fn();
 const mockSetQuery = jest.fn();
 const mockToggleAppLanguage = jest.fn<() => Promise<"en" | "zh">>();
+const mockReadCameraScanMode = jest.fn<() => "single" | "continuous">();
+const mockSaveCameraScanMode =
+  jest.fn<(mode: "single" | "continuous") => Promise<void>>();
 const mockReadSalesToolbarOrder = jest.fn<() => string[] | null>();
 const mockSaveSalesToolbarOrder =
   jest.fn<(order: readonly string[]) => Promise<void>>();
 const mockReconcileSalesToolbarOrder =
   jest.fn<(order: readonly string[] | null | undefined) => string[]>();
+const mockReleaseCameraContext = jest.fn();
+const mockAcquireScannerContext = jest.fn(
+  (_context: string) => mockReleaseCameraContext,
+);
+const mockAcceptCameraText = jest.fn();
+const mockUnsubscribeAuthorization = jest.fn();
+const mockSubscribeAuthorization = jest.fn<
+  (listener: () => void) => () => void
+>();
+const mockGetAuthorizationState = jest.fn(() => mockAuthorizationState);
 
 const DEFAULT_TOOLBAR_ORDER = ["held-orders", "hold", "language", "lock"];
 
@@ -131,7 +146,10 @@ jest.mock("@/features/sales/ui/sales-toolbar-order", () => ({
 }));
 
 jest.mock("@/ui/preferences/terminal-ui-preferences", () => ({
+  readCameraScanMode: () => mockReadCameraScanMode(),
   readSalesToolbarOrder: () => mockReadSalesToolbarOrder(),
+  saveCameraScanMode: (mode: "single" | "continuous") =>
+    mockSaveCameraScanMode(mode),
   saveSalesToolbarOrder: (order: readonly string[]) =>
     mockSaveSalesToolbarOrder(order),
 }));
@@ -182,6 +200,12 @@ beforeEach(() => {
   mockSalesScreenProps = null;
   mockRouteCaptureProps = null;
   mockSalesRouteFocusEffect = null;
+  mockAuthorizationListener = null;
+  mockAuthorizationState = { kind: "idle" };
+  mockSubscribeAuthorization.mockImplementation((listener) => {
+    mockAuthorizationListener = listener;
+    return mockUnsubscribeAuthorization;
+  });
   delete mockSalesFeedbackSubscription.listener;
   mockSubscribeSalesFeedback.mockImplementation((listener) => {
     mockSalesFeedbackSubscription.listener = listener;
@@ -190,6 +214,7 @@ beforeEach(() => {
   mockHasRecoveryRequired.mockResolvedValue(false);
   mockInstallmentHasRecoveryRequired.mockResolvedValue(false);
   mockAddLookupCode.mockResolvedValue(true);
+  mockAddScannedLookupCode.mockResolvedValue(true);
   mockPrepareOnlineCheckout.mockResolvedValue({
     revision: 7,
     lines: [{ lineId: "line-1" }],
@@ -210,6 +235,8 @@ beforeEach(() => {
   });
   mockRandomUUID.mockReturnValue("123e4567-e89b-42d3-a456-426614174000");
   mockToggleAppLanguage.mockResolvedValue("zh");
+  mockReadCameraScanMode.mockReturnValue("single");
+  mockSaveCameraScanMode.mockResolvedValue(undefined);
   mockReadSalesToolbarOrder.mockReturnValue(null);
   mockSaveSalesToolbarOrder.mockResolvedValue(undefined);
   mockReconcileSalesToolbarOrder.mockImplementation((order) =>
@@ -599,14 +626,82 @@ test("销售工具栏同步读取已保存顺序，先更新页面再异步持�
   await screen.unmount();
 });
 
-test("销售路由不再注入相机扫码入口，HID 默认保持可用", async () => {
+test("相机模式按终端偏好恢复，活动期间独占商品上下文并只提交一次", async () => {
+  mockReadCameraScanMode.mockReturnValue("continuous");
   const screen = await render(<SalesRoute />);
 
   await waitFor(() => {
     expect(screen.getByTestId("sales-screen")).toBeTruthy();
   });
-  expect(mockSalesScreenProps.onOpenCameraScanner).toBeUndefined();
+  expect(mockReadCameraScanMode).toHaveBeenCalledTimes(1);
+  expect(mockSalesScreenProps.cameraScanner).toMatchObject({
+    active: false,
+    mode: "continuous",
+  });
   expect(mockRouteCaptureProps.enabled).toBe(true);
+
+  await act(async () => {
+    mockSalesScreenProps.cameraScanner.onModeChange("single");
+    await Promise.resolve();
+  });
+  expect(mockSaveCameraScanMode).toHaveBeenCalledWith("single");
+  expect(mockSalesScreenProps.cameraScanner.mode).toBe("single");
+
+  await act(async () => {
+    mockSalesScreenProps.cameraScanner.onOpen();
+  });
+  expect(mockSalesScreenProps.cameraScanner.active).toBe(true);
+  expect(mockRouteCaptureProps.enabled).toBe(false);
+  expect(mockAcquireScannerContext).toHaveBeenCalledWith("product");
+
+  await act(async () => {
+    mockSalesScreenProps.cameraScanner.onModeChange("continuous");
+    await Promise.resolve();
+  });
+  expect(mockSalesScreenProps.cameraScanner.mode).toBe("single");
+  expect(mockSaveCameraScanMode).toHaveBeenCalledTimes(1);
+
+  await expect(
+    mockSalesScreenProps.cameraScanner.onScan("9300000000012"),
+  ).resolves.toBe(true);
+  expect(mockAddScannedLookupCode).toHaveBeenCalledWith(
+    "9300000000012",
+    "camera",
+  );
+  expect(mockAddScannedLookupCode).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    mockSalesScreenProps.cameraScanner.onClose();
+  });
+  expect(mockSalesScreenProps.cameraScanner.active).toBe(false);
+  expect(mockRouteCaptureProps.enabled).toBe(true);
+  expect(mockReleaseCameraContext).toHaveBeenCalledTimes(1);
+
+  await screen.unmount();
+});
+
+test("主管授权开始时关闭相机会话并恢复 HID", async () => {
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(mockSalesScreenProps.cameraScanner).toBeTruthy();
+  });
+  await act(async () => {
+    mockSalesScreenProps.cameraScanner.onOpen();
+  });
+  expect(mockSalesScreenProps.cameraScanner.active).toBe(true);
+  expect(mockRouteCaptureProps.enabled).toBe(false);
+
+  mockAuthorizationState = { kind: "awaiting-supervisor" };
+  await act(async () => {
+    mockAuthorizationListener?.();
+  });
+
+  expect(mockSalesScreenProps.cameraScanner.active).toBe(false);
+  expect(mockRouteCaptureProps.enabled).toBe(true);
+  expect(mockReleaseCameraContext).toHaveBeenCalledTimes(1);
+
+  await screen.unmount();
 });
 
 test("手动输入失焦后延后恢复 HID，焦点交接会取消恢复", async () => {
@@ -886,11 +981,16 @@ function readyRuntime() {
       },
       scanner: {
         router: {
-          acceptCameraText: jest.fn(),
-          acquireContext: jest.fn(() => () => undefined),
+          acceptCameraText: mockAcceptCameraText,
+          acquireContext: mockAcquireScannerContext,
           startCamera: jest.fn(),
           stopCamera: jest.fn(),
         },
+      },
+      operationAuthorization: {
+        status: "available",
+        getState: mockGetAuthorizationState,
+        subscribe: mockSubscribeAuthorization,
       },
       applicationLog: {
         record: mockRecordApplicationLog,

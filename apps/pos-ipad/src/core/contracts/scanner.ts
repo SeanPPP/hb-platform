@@ -7,6 +7,8 @@ export type ScannerContext =
 
 export type ScanSource = "hid" | "camera";
 
+export type CameraScanMode = "single" | "continuous";
+
 export type ScanEvent = Readonly<{
   value: string;
   source: ScanSource;
