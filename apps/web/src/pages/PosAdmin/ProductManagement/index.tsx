@@ -41,10 +41,11 @@ import {
   Tooltip,
   Tree,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
-import type { ReactNode } from 'react'
+import { useKeepAliveContext } from 'keepalive-for-react'
+import type { ReactNode, UIEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -408,6 +409,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
 
 export default function ProductManagementPage() {
   const { t } = useTranslation()
+  const { active } = useKeepAliveContext()
   const isAdmin = useAuthStore((state) => state.access.isAdmin)
   const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
   const canManageStoreProducts = useAuthStore((state) => state.access.canManageStoreProducts)
@@ -417,6 +419,7 @@ export default function ProductManagementPage() {
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ProductRow[]>([])
   const [total, setTotal] = useState(0)
+  const [productTableRenderKey, setProductTableRenderKey] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [keyword, setKeyword] = useState('')
@@ -782,6 +785,12 @@ export default function ProductManagementPage() {
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
+  const productTableRef = useRef<TableRef | null>(null)
+  const lastProductTableScrollTopRef = useRef(0)
+  const productTableHasDataRef = useRef(data.length > 0)
+  const wasProductManagementTabActiveRef = useRef(active)
+  const productTableRestoreFrameRef = useRef<number | null>(null)
+  productTableHasDataRef.current = data.length > 0
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
   const storeRecordSelectedRows = useMemo(
     () => storeRecordsData.filter((record) => storeRecordSelectedRowKeys.includes(`${record.storeCode || ''}-${record.storeProductCode || ''}`)),
@@ -1358,6 +1367,32 @@ export default function ProductManagementPage() {
   }, [loadData])
 
   useEffect(() => {
+    const wasActive = wasProductManagementTabActiveRef.current
+    wasProductManagementTabActiveRef.current = active
+
+    if (!active || wasActive || !productTableHasDataRef.current) {
+      return
+    }
+
+    const renderFrame = window.requestAnimationFrame(() => {
+      // KeepAlive 恢复时先重挂载虚拟表格，避免隐藏期间的测量结果导致表体空白。
+      setProductTableRenderKey((value) => value + 1)
+      productTableRestoreFrameRef.current = window.requestAnimationFrame(() => {
+        // 查询或分页可能已归零，第二帧必须使用当前目标，不能恢复过期位置。
+        productTableRef.current?.scrollTo?.({ top: lastProductTableScrollTopRef.current })
+      })
+    })
+    productTableRestoreFrameRef.current = renderFrame
+
+    return () => {
+      if (productTableRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(productTableRestoreFrameRef.current)
+        productTableRestoreFrameRef.current = null
+      }
+    }
+  }, [active])
+
+  useEffect(() => {
     return () => {
       isMountedRef.current = false
       stopHqSyncJobPolling()
@@ -1397,6 +1432,16 @@ export default function ProductManagementPage() {
     return () => window.removeEventListener('resize', calc)
   }, [pageSize, total])
 
+  const resetProductTableScroll = () => {
+    lastProductTableScrollTopRef.current = 0
+    productTableRef.current?.scrollTo?.({ top: 0 })
+  }
+
+  const handleProductTableScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (!active) return
+    lastProductTableScrollTopRef.current = event.currentTarget.scrollTop
+  }
+
   const handleSearch = () => {
     // 分店记录筛选保持“输入态”和“生效态”分离，只在查询时折算成后端范围参数。
     let nextStoreRecordCountMode = storeRecordCountModeInput
@@ -1433,6 +1478,7 @@ export default function ProductManagementPage() {
     setStoreRecordCountMode(nextStoreRecordCountMode)
     setStoreRecordCountMin(nextStoreRecordCountMin)
     setStoreRecordCountMax(nextStoreRecordCountMax)
+    resetProductTableScroll()
     setPage(1)
     setSelectedRowKeys([])
     setQueryVersion((value) => value + 1)
@@ -1458,6 +1504,7 @@ export default function ProductManagementPage() {
     setColumnFilters({})
     setSortBy('productCode')
     setSortOrder('ascend')
+    resetProductTableScroll()
     setPage(1)
     setSelectedRowKeys([])
     setQueryVersion((value) => value + 1)
@@ -3192,6 +3239,8 @@ export default function ProductManagementPage() {
 
         <div style={{ flex: 1, minHeight: 0 }}>
           <Table
+            key={productTableRenderKey}
+            ref={productTableRef}
             virtual
             className="pos-products-compact-table"
             size="small"
@@ -3207,6 +3256,7 @@ export default function ProductManagementPage() {
               columnWidth: 40,
             }}
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
+            onScroll={handleProductTableScroll}
             onChange={(_pagination, filters, sorter) => {
               const nextColumnFilters = normalizeProductTableFilters(filters as Record<string, FilterValue | null>)
               setColumnFilters(nextColumnFilters)
@@ -3221,6 +3271,7 @@ export default function ProductManagementPage() {
                 setSortOrder('ascend')
               }
               // 列头筛选和排序都属于重新查询，必须回到第一页并清空跨条件选择。
+              resetProductTableScroll()
               setPage(1)
               setSelectedRowKeys([])
             }}
@@ -3254,6 +3305,7 @@ export default function ProductManagementPage() {
             pageSize={pageSize}
             total={total}
             onChange={(p, ps) => {
+              resetProductTableScroll()
               setPage(p)
               setPageSize(ps)
             }}

@@ -1606,6 +1606,84 @@ async function main() {
   })
   if (supplierImageConcurrentJobFailure) failures.push(supplierImageConcurrentJobFailure)
 
+  const keepAliveVirtualTableRestoreFailure = await runTest('KeepAlive 恢复虚拟商品表格时应重挂载并恢复滚动位置', () => {
+    assert(
+      pageSource.includes("import type { ColumnsType, TableRef } from 'antd/es/table'") &&
+        pageSource.includes("import { useKeepAliveContext } from 'keepalive-for-react'") &&
+        pageSource.includes('const { active } = useKeepAliveContext()'),
+      '商品页面应读取 KeepAlive active 状态并持有 AntD TableRef',
+    )
+    assert(
+      pageSource.includes('const [productTableRenderKey, setProductTableRenderKey] = useState(0)') &&
+        pageSource.includes('const productTableRef = useRef<TableRef | null>(null)') &&
+        pageSource.includes('const lastProductTableScrollTopRef = useRef(0)') &&
+        pageSource.includes('const productTableHasDataRef = useRef(data.length > 0)') &&
+        pageSource.includes('productTableHasDataRef.current = data.length > 0') &&
+        pageSource.includes('const wasProductManagementTabActiveRef = useRef(active)') &&
+        pageSource.includes('const productTableRestoreFrameRef = useRef<number | null>(null)'),
+      '商品页面应同步保存虚拟表格数据状态、重挂载 key、滚动位置和待取消的动画帧',
+    )
+    const restoreEffectStart = pageSource.indexOf('useEffect(() => {\n    const wasActive = wasProductManagementTabActiveRef.current')
+    const restoreEffectSource = pageSource.slice(restoreEffectStart, pageSource.indexOf("  useEffect(() => {\n    return () => {\n      isMountedRef.current = false", restoreEffectStart))
+    assert(
+      restoreEffectSource.includes('if (!active || wasActive || !productTableHasDataRef.current)') &&
+        restoreEffectSource.includes('}, [active])') &&
+        !restoreEffectSource.includes('data.length') &&
+        restoreEffectSource.includes('window.cancelAnimationFrame(productTableRestoreFrameRef.current)'),
+      '恢复 effect 只能依赖 active，并通过数据 ref 判断是否需要调度或取消动画帧',
+    )
+    assertSourceOrder(
+      restoreEffectSource,
+      'const renderFrame = window.requestAnimationFrame',
+      'setProductTableRenderKey((value) => value + 1)',
+      '恢复首帧应先调度并重挂载表格',
+    )
+    assertSourceOrder(
+      restoreEffectSource,
+      'setProductTableRenderKey((value) => value + 1)',
+      'productTableRestoreFrameRef.current = window.requestAnimationFrame',
+      '滚动位置应在重挂载后的下一帧恢复',
+    )
+    assert(
+      !restoreEffectSource.includes('const scrollTop = lastProductTableScrollTopRef.current') &&
+        restoreEffectSource.includes('productTableRef.current?.scrollTo?.({ top: lastProductTableScrollTopRef.current })'),
+      '第二帧必须读取最新滚动位置，避免查询或分页归零后恢复旧位置',
+    )
+    assert(
+      pageSource.includes('const handleProductTableScroll = (event: UIEvent<HTMLDivElement>) => {\n    if (!active) return') &&
+        pageSource.includes('lastProductTableScrollTopRef.current = event.currentTarget.scrollTop'),
+      '隐藏态滚动事件不得覆盖已保存的有效滚动位置',
+    )
+    const mainTableClassIndex = pageSource.indexOf('className="pos-products-compact-table"')
+    const mainTableSource = pageSource.slice(
+      pageSource.lastIndexOf('<Table', mainTableClassIndex),
+      pageSource.indexOf('\n        </div>\n\n        <div\n          ref={pagerRef}', mainTableClassIndex),
+    )
+    assert(
+      mainTableSource.includes('key={productTableRenderKey}') &&
+        mainTableSource.includes('ref={productTableRef}') &&
+        mainTableSource.includes('onScroll={handleProductTableScroll}'),
+      '主商品虚拟表格应接入重挂载 key、ref 和滚动监听',
+    )
+    assert(
+      mainTableSource.includes('onChange={(_pagination, filters, sorter) => {') &&
+        mainTableSource.includes('resetProductTableScroll()'),
+      '主表排序筛选变更时应归零滚动位置',
+    )
+    const searchSource = pageSource.slice(pageSource.indexOf('const handleSearch = () => {'), pageSource.indexOf('const handleReset = () => {'))
+    const resetSource = pageSource.slice(pageSource.indexOf('const handleReset = () => {'), pageSource.indexOf('const buildCategoryCascaderOptions = '))
+    const paginationStart = pageSource.indexOf('<Pagination\n            current={page}')
+    const paginationSource = pageSource.slice(paginationStart, pageSource.indexOf('/>', paginationStart) + 2)
+    assert(
+      pageSource.includes('const resetProductTableScroll = () => {') &&
+        searchSource.includes('resetProductTableScroll()') &&
+        resetSource.includes('resetProductTableScroll()') &&
+        paginationSource.includes('onChange={(p, ps) => {\n              resetProductTableScroll()'),
+      '查询、重置和分页变化时应分别同步归零表格滚动位置',
+    )
+  })
+  if (keepAliveVirtualTableRestoreFailure) failures.push(keepAliveVirtualTableRestoreFailure)
+
   const existingJobFailure = await runTest('已有 active job 时 HQ 同步按钮只展示状态不新建任务', () => {
     assert(
       pageSource.includes('const storedActiveJob = activeHqSyncJob ?? readActiveProductHqSyncJob()') &&
