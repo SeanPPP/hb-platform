@@ -174,7 +174,7 @@ async function main() {
     assert(pageSource.includes("createStoreOrderSyncJobPoller"), "\u9875\u9762\u5E94\u4F7F\u7528\u72EC\u7ACB\u8F6E\u8BE2\u5668");
     assert(pageSource.includes("stopSyncPollingRef.current?.()"), "\u9875\u9762\u5378\u8F7D\u65F6\u5E94\u6E05\u7406\u8F6E\u8BE2\u5B9A\u65F6\u5668");
     assert(pageSource.includes("result.status === 'Failed'"), "\u9875\u9762\u5E94\u5355\u72EC\u5904\u7406\u5931\u8D25\u72B6\u6001");
-    assert(pageSource.includes("void loadData()"), "\u540C\u6B65\u6210\u529F\u540E\u5E94\u5237\u65B0\u5F53\u524D\u7B5B\u9009\u5217\u8868");
+    assert(pageSource.includes("void refreshCurrentList()"), "\u540C\u6B65\u6210\u529F\u540E\u5E94\u5237\u65B0\u5F53\u524D\u7B5B\u9009\u5217\u8868");
     assert(pageSource.includes("const [incrementalConflictStrategy, setIncrementalConflictStrategy]"), "\u9875\u9762\u5E94\u7EF4\u62A4\u589E\u91CF\u540C\u6B65\u51B2\u7A81\u7B56\u7565\u72B6\u6001");
     assert(pageSource.includes("const handleOpenIncrementalHqSync = () =>"), "\u9875\u9762\u5E94\u901A\u8FC7\u7EDF\u4E00\u5165\u53E3\u6253\u5F00\u589E\u91CF\u540C\u6B65\u5F39\u7A97");
     assert(pageSource.includes("setIncrementalConflictStrategy(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)"), "\u6BCF\u6B21\u6253\u5F00\u6216\u53D6\u6D88\u589E\u91CF\u540C\u6B65\u5F39\u7A97\u65F6\u5E94\u6062\u590D\u9ED8\u8BA4\u51B2\u7A81\u7B56\u7565");

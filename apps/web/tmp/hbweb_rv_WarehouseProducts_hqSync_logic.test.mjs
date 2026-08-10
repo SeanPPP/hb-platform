@@ -1209,6 +1209,42 @@ function getSingleFilterValue(values) {
   return values?.length === 1 ? values[0] : void 0;
 }
 
+// src/pages/Warehouse/Products/hqPush.ts
+function areWarehouseProductCodeSelectionsEqual(previous, current) {
+  if (previous.length !== current.length) return false;
+  const sortedPrevious = [...previous].sort();
+  const sortedCurrent = [...current].sort();
+  return sortedPrevious.every((productCode, index) => productCode === sortedCurrent[index]);
+}
+function buildWarehouseProductHqPushPayload(products, selectedProductCodes, updateFields, targetStoreCodes) {
+  const productByCode = new Map(products.map((product) => [product.productCode, product]));
+  const productCodes = selectedProductCodes.map(String);
+  const items = productCodes.flatMap((productCode) => {
+    const product = productByCode.get(productCode);
+    if (!product) return [];
+    return [{
+      productCode: product.productCode,
+      localSupplierCode: product.localSupplierCode,
+      itemNumber: product.itemNumber,
+      productName: product.name,
+      englishName: product.nameEn,
+      barcode: product.barcode,
+      imageUrl: product.productImage,
+      domesticPrice: product.domesticPrice,
+      importPrice: product.importPrice,
+      // 仓库列表的 labelPrice 对应后端 WarehouseProduct.OEMPrice。
+      oemPrice: product.labelPrice,
+      isNewProduct: false
+    }];
+  });
+  return {
+    productCodes,
+    targetStoreCodes: targetStoreCodes ? [...targetStoreCodes] : void 0,
+    items,
+    updateFields: [...updateFields]
+  };
+}
+
 // src/pages/Warehouse/Products/WarehouseProducts.hqSync.logic.test.ts
 function createCurrentUser(overrides = {}) {
   return {
@@ -1269,12 +1305,167 @@ function extractSection(source, startText, endText) {
 }
 var pageFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/index.tsx");
 var pageSource = readFileSync(pageFile, "utf8");
+var zhLocaleSource = readFileSync(path.resolve(process.cwd(), "src/i18n/locales/zh.json"), "utf8");
+var enLocaleSource = readFileSync(path.resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8");
 var columnFiltersFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/columnFilters.ts");
 var columnFiltersSource = readFileSync(columnFiltersFile, "utf8");
 var categoryTreePickerFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/CategoryTreePicker.tsx");
 var categoryTreePickerSource = readFileSync(categoryTreePickerFile, "utf8");
 async function main() {
   const failures = [];
+  const pushPayloadFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u53D1\u9001 HQ \u5E94\u643A\u5E26\u9875\u9762\u5546\u54C1\u8D44\u6599\u4E0E\u5E93\u5B58\u4E09\u4EF7", () => {
+    const products = [
+      {
+        id: "HB001",
+        productCode: "HB001",
+        itemNumber: "ITEM-001",
+        name: "\u6D4B\u8BD5\u5546\u54C1",
+        nameEn: "Test Product",
+        barcode: "952700000001",
+        localSupplierCode: "SUP-AU",
+        domesticPrice: 8.88,
+        importPrice: 1.23,
+        labelPrice: 4.99,
+        productImage: "https://example.com/product.jpg",
+        isActive: true,
+        productType: 0
+      }
+    ];
+    const payload = buildWarehouseProductHqPushPayload(
+      products,
+      ["HB001"],
+      ["productName", "inventoryDomesticPrice", "inventoryImportPrice", "inventoryOemPrice"],
+      ["1001", "1002"]
+    );
+    assertDeepEqual(payload, {
+      productCodes: ["HB001"],
+      targetStoreCodes: ["1001", "1002"],
+      items: [
+        {
+          productCode: "HB001",
+          localSupplierCode: "SUP-AU",
+          itemNumber: "ITEM-001",
+          productName: "\u6D4B\u8BD5\u5546\u54C1",
+          englishName: "Test Product",
+          barcode: "952700000001",
+          imageUrl: "https://example.com/product.jpg",
+          domesticPrice: 8.88,
+          importPrice: 1.23,
+          oemPrice: 4.99,
+          isNewProduct: false
+        }
+      ],
+      updateFields: ["productName", "inventoryDomesticPrice", "inventoryImportPrice", "inventoryOemPrice"]
+    }, "\u4ED3\u5E93 HQ payload \u5E94\u4FDD\u7559\u5B8C\u6574\u5546\u54C1\u5019\u9009\u3001\u76EE\u6807\u5206\u5E97\uFF0C\u5E76\u628A labelPrice \u6620\u5C04\u4E3A oemPrice");
+  });
+  if (pushPayloadFailure) failures.push(pushPayloadFailure);
+  const pushSelectionRaceFailure = await runTest("\u53D1\u9001 HQ \u786E\u8BA4\u524D\u540E\u5E94\u590D\u6838\u6700\u65B0\u9009\u62E9\u96C6\u5408", () => {
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(["HB001", "HB002"], ["HB002", "HB001"]),
+      true,
+      "\u540C\u4E00\u9009\u62E9\u96C6\u5408\u4E0D\u5E94\u56E0\u987A\u5E8F\u53D8\u5316\u88AB\u8BEF\u5224"
+    );
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(["HB001"], []),
+      false,
+      "\u5F39\u7A97\u671F\u95F4\u5217\u8868\u5237\u65B0\u5E76\u6E05\u7A7A\u9009\u62E9\u65F6\u5FC5\u987B\u4E2D\u6B62\u53D1\u9001"
+    );
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(["HB001"], ["HB002"]),
+      false,
+      "\u5F39\u7A97\u671F\u95F4\u9009\u62E9\u5546\u54C1\u53D8\u5316\u65F6\u5FC5\u987B\u4E2D\u6B62\u53D1\u9001"
+    );
+  });
+  if (pushSelectionRaceFailure) failures.push(pushSelectionRaceFailure);
+  const pushPermissionFailure = await runTest("\u53D1\u9001 HQ \u5E94\u53EA\u5F00\u653E\u7ED9 POS \u5546\u54C1\u7BA1\u7406\u6743\u9650", () => {
+    const posManagerAccess = buildAccess(createCurrentUser({ permissions: ["PosProducts.Manage"] }));
+    const warehouseOnlyAccess = buildAccess(createCurrentUser({ permissions: ["Warehouse.ManageProducts"] }));
+    assertEqual(posManagerAccess.canManagePosProducts, true, "PosProducts.Manage \u5E94\u5141\u8BB8\u53D1\u9001 HQ");
+    assertEqual(warehouseOnlyAccess.canManagePosProducts, false, "Warehouse.ManageProducts \u4E0D\u5E94\u6269\u5927 HQ \u8DE8\u5E93\u5199\u6743\u9650");
+  });
+  if (pushPermissionFailure) failures.push(pushPermissionFailure);
+  const pushToHqUiFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u6309 POS \u5546\u54C1\u7BA1\u7406\u6743\u9650\u63D0\u4F9B\u53D1\u9001 HQ \u5B8C\u6574\u4EA4\u4E92", () => {
+    assert(
+      pageSource.includes("CloudUploadOutlined") && pageSource.includes("pushProductsToHq") && pageSource.includes("buildWarehouseProductHqPushPayload") && pageSource.includes("PosHqPushModal") && pageSource.includes("getPushToHqStoreOptions"),
+      "\u9875\u9762\u5E94\u5F15\u5165\u53D1\u9001 HQ \u56FE\u6807\u3001\u670D\u52A1\u3001\u4ED3\u5E93 payload \u6620\u5C04\u3001\u5171\u4EAB\u5F39\u7A97\u548C\u5206\u5E97\u9009\u9879\u670D\u52A1"
+    );
+    assert(
+      pageSource.includes("const [pushToHqLoading, setPushToHqLoading] = useState(false);") && pageSource.includes("const pushToHqLoadingRef = useRef(false);") && pageSource.includes("const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);") && pageSource.includes("const [pushToHqStoreOptions, setPushToHqStoreOptions]"),
+      "\u9875\u9762\u5E94\u7EF4\u62A4\u53D1\u9001 loading\u3001\u5373\u65F6\u9501\u3001\u5F39\u7A97\u53EF\u89C1\u6027\u548C\u72EC\u7ACB HQ \u5206\u5E97\u9009\u9879"
+    );
+    const loadSection = extractSection(
+      pageSource,
+      "const loadPushToHqStoreOptions",
+      "const handlePushToHq = async"
+    );
+    assert(
+      loadSection.includes("await getPushToHqStoreOptions()") && loadSection.includes("setPushToHqStoreOptionsError(") && loadSection.includes("t('posAdmin.products.pushToHqStoreOptionsLoadFailed'") && loadSection.includes("pushToHqStoreOptionsGuardRef.current") && loadSection.includes("guard.begin()") && loadSection.includes("requestId < 0") && loadSection.includes("guard.isLatest(requestId)") && loadSection.includes("guard.complete(requestId)"),
+      "\u6BCF\u6B21\u6253\u5F00\u5F39\u7A97\u5E94\u91CD\u53D6\u6700\u65B0 HQ \u5206\u5E97\u9009\u9879\uFF0C\u5E76\u4F7F\u7528\u5355\u98DE\u52A0\u6700\u65B0\u8BF7\u6C42\u5B88\u536B\u5FFD\u7565\u8FC7\u671F\u54CD\u5E94"
+    );
+    const openHandlerSection = extractSection(
+      pageSource,
+      "const handlePushToHq = async",
+      "const handlePushToHqConfirm"
+    );
+    assert(
+      openHandlerSection.includes("if (!access.canManagePosProducts)") && openHandlerSection.includes("if (!selectedRowKeys.length)") && openHandlerSection.includes("if (pushToHqLoadingRef.current || pushToHqModalOpen) return;") && openHandlerSection.includes("pushToHqLoadingRef.current = true;") && openHandlerSection.includes("setPushToHqModalOpen(true);") && openHandlerSection.includes("await loadPushToHqStoreOptions();") && openHandlerSection.indexOf("pushToHqLoadingRef.current = true;") < openHandlerSection.indexOf("await loadPushToHqStoreOptions();"),
+      "\u53D1\u9001\u5904\u7406\u5E94\u5728\u5373\u65F6\u9501\u5185\u6253\u5F00\u5F39\u7A97\u5E76\u83B7\u53D6\u6700\u65B0 HQ \u5206\u5E97\u9009\u9879\uFF0C\u907F\u514D\u91CD\u590D\u6253\u5F00"
+    );
+    const confirmSection = extractSection(
+      pageSource,
+      "const handlePushToHqConfirm",
+      "const handlePushToHqCancel"
+    );
+    assert(
+      confirmSection.indexOf("if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return;") < confirmSection.indexOf("pushToHqConfirmLoadingRef.current = true;") && confirmSection.indexOf("pushToHqConfirmLoadingRef.current = true;") < confirmSection.indexOf("await pushProductsToHq(payload)") && confirmSection.includes("pushToHqConfirmLoadingRef.current = false;") && confirmSection.includes("if (!isMountedRef.current) return;") && confirmSection.includes("selectedRowKeysRef.current.map(String)") && confirmSection.includes("areWarehouseProductCodeSelectionsEqual(productCodes, currentProductCodes)") && confirmSection.includes("buildWarehouseProductHqPushPayload(dataRef.current, currentProductCodes, updateFields, targetStoreCodes)") && confirmSection.includes("await pushProductsToHq(payload)") && confirmSection.includes("if (!showPushToHqResult(result)) return;") && confirmSection.includes("setPushToHqModalOpen(false);") && confirmSection.includes("setSelectedRowKeys([]);") && confirmSection.includes("await refreshCurrentList();"),
+      "\u786E\u8BA4\u63D0\u4EA4\u5E94\u590D\u6838\u6700\u65B0\u9009\u62E9\u3001\u53D1\u9001\u542B\u76EE\u6807\u5206\u5E97\u7684\u4ED3\u5E93 payload\uFF0C\u5E76\u4EC5\u5728\u6210\u529F\u540E\u5173\u95ED\u3001\u6E05\u9009\u3001\u5237\u65B0"
+    );
+    assert(
+      confirmSection.lastIndexOf("if (isMountedRef.current)") < confirmSection.indexOf("setPushToHqConfirmLoading(false);") && confirmSection.lastIndexOf("if (isMountedRef.current)") < confirmSection.indexOf("setPushToHqLoading(false);"),
+      "\u63D0\u4EA4 finally \u91CA\u653E loading \u72B6\u6001\u524D\u5FC5\u987B\u68C0\u67E5\u7EC4\u4EF6\u662F\u5426\u5DF2\u5378\u8F7D"
+    );
+    const failureSection = extractSection(confirmSection, "catch (error)", "finally");
+    assert(
+      failureSection.includes("const errorResult = extractPushToHqErrorResult(error)") && failureSection.includes("Modal.error({") && !failureSection.includes("setSelectedRowKeys([])"),
+      "\u5931\u8D25\u65F6\u5E94\u4FDD\u7559\u5546\u54C1\u3001\u5B57\u6BB5\u548C\u5206\u5E97\u9009\u62E9\uFF0C\u5E76\u663E\u793A\u540E\u7AEF\u8FD4\u56DE\u7684\u9519\u8BEF\u660E\u7EC6"
+    );
+    const cancelSection = extractSection(
+      pageSource,
+      "const handlePushToHqCancel",
+      "const handleBatchToggleActive"
+    );
+    assert(
+      cancelSection.includes("setPushToHqModalOpen(false);") && cancelSection.includes("pushToHqLoadingRef.current = false;") && cancelSection.includes("pushToHqStoreOptionsGuardRef.current.invalidate();") && cancelSection.indexOf("if (pushToHqConfirmLoadingRef.current) return") < cancelSection.indexOf("pushToHqLoadingRef.current = false;") && !cancelSection.includes("pushProductsToHq("),
+      "\u53D6\u6D88\u53EA\u5173\u95ED\u5F39\u7A97\u3001\u4F7F\u8FC7\u671F\u9009\u9879\u54CD\u5E94\u5931\u6548\u5E76\u91CA\u653E\u9501\uFF0C\u4E14\u63D0\u4EA4\u8FDB\u884C\u4E2D\u4E0D\u5F97\u91CA\u653E\u9501"
+    );
+    const toolbarSection = extractSection(
+      pageSource,
+      "<PageContainer title={t('warehouse.productManagement')}",
+      "<Card>"
+    );
+    assert(
+      toolbarSection.includes("access.canManagePosProducts ?") && toolbarSection.includes("icon={<CloudUploadOutlined />}") && toolbarSection.includes("loading={pushToHqLoading}") && toolbarSection.includes("disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}") && toolbarSection.includes("onClick={() => void handlePushToHq()}") && toolbarSection.includes("t('posAdmin.products.pushToHq', '\u53D1\u9001\u5230HQ')"),
+      "\u5DE5\u5177\u680F\u53D1\u9001\u6309\u94AE\u5E94\u53EA\u5BF9 POS \u5546\u54C1\u7BA1\u7406\u5458\u663E\u793A\uFF0C\u5E76\u6B63\u786E\u7ED1\u5B9A\u9009\u62E9\u3001loading \u4E0E\u70B9\u51FB\u884C\u4E3A"
+    );
+    const resultSection = extractSection(
+      pageSource,
+      "const showPushToHqResult = useCallback",
+      "const loadPushToHqStoreOptions"
+    );
+    assert(
+      resultSection.includes("if (errors.length || (result.failedCount ?? 0) > 0)") && resultSection.includes("Modal.warning({") && resultSection.includes("return false;") && resultSection.includes("Modal.success({") && resultSection.includes("return true;") && resultSection.includes("t('posAdmin.products.pushToHqAffectedRows', 'HQ\u5F71\u54CD\u8BB0\u5F55')") && resultSection.includes("errors.join('\\n')"),
+      "\u53D1\u9001\u7ED3\u679C\u5E94\u590D\u7528\u5546\u54C1\u7BA1\u7406\u9875\u7684\u6210\u529F\u3001\u90E8\u5206\u6210\u529F\u548C HQ \u5F71\u54CD\u7EDF\u8BA1\u53CD\u9988"
+    );
+    assert(
+      pageSource.includes("<PosHqPushModal") && pageSource.includes("storeOptions={pushToHqStoreOptions}") && pageSource.includes("onConfirm={handlePushToHqConfirm}") && pageSource.includes("onCancel={handlePushToHqCancel}"),
+      "\u9875\u9762\u5E94\u6E32\u67D3\u5171\u4EAB\u5F39\u7A97\u5E76\u7ED1\u5B9A HQ \u9009\u9879\u3001\u786E\u8BA4\u4E0E\u53D6\u6D88"
+    );
+    assert(
+      zhLocaleSource.includes('"pushToHqSelectionChanged": "\u9009\u4E2D\u5546\u54C1\u6570\u636E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u518D\u8BD5"') && enLocaleSource.includes('"pushToHqSelectionChanged": "The selected product data changed. Please select the products again and retry."'),
+      "\u9009\u62E9\u53D8\u5316\u63D0\u793A\u5E94\u540C\u65F6\u63D0\u4F9B\u4E2D\u82F1\u6587\u7FFB\u8BD1\uFF0C\u4E0D\u80FD\u8BA9\u82F1\u6587\u754C\u9762\u56DE\u9000\u5230\u4E2D\u6587"
+    );
+  });
+  if (pushToHqUiFailure) failures.push(pushToHqUiFailure);
   const adminAccessFailure = await runTest("Admin \u6743\u9650\u5224\u65AD\u6210\u7ACB", () => {
     const access = buildAccess(
       createCurrentUser({
@@ -1680,6 +1871,53 @@ async function main() {
     );
   });
   if (categoryColumnFailure) failures.push(categoryColumnFailure);
+  const categoryManagementFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u590D\u7528\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E76\u8054\u52A8\u6279\u91CF\u5206\u7C7B\u76EE\u6807", () => {
+    assert(
+      pageSource.includes("import ContainerCategoryManageModal from '../ContainerDetail/ContainerCategoryManageModal'") && pageSource.includes("resolveContainerCategorySelectionAfterRefresh") && pageSource.includes("resolveContainerCategoryTargetAfterMutation"),
+      "\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u590D\u7528\u8D27\u67DC\u660E\u7EC6\u7684\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u548C\u76EE\u6807\u8054\u52A8\u903B\u8F91"
+    );
+    assert(
+      pageSource.includes("const [categoryManageOpen, setCategoryManageOpen] = useState(false);"),
+      "\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u7EF4\u62A4\u72EC\u7ACB\u7684\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5F00\u5173"
+    );
+    const openBatchCategorySection = extractSection(
+      pageSource,
+      "const openBatchCategory = () => {",
+      "const handleBatchCategorySave = async () => {"
+    );
+    assert(
+      openBatchCategorySection.includes("setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID);") && !openBatchCategorySection.includes("setTargetCategoryGuid(undefined);"),
+      "\u6253\u5F00\u6279\u91CF\u5206\u7C7B\u65F6\u5E94\u4FDD\u7559\u5206\u7C7B\u6811\u4E2D\u4ECD\u5B58\u5728\u7684\u7BA1\u7406\u5F39\u7A97\u76EE\u6807"
+    );
+    const categoryMutationSection = extractSection(
+      pageSource,
+      "const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {",
+      "const openBatchCategory = () => {"
+    );
+    assert(
+      categoryMutationSection.includes("resolveContainerCategoryTargetAfterMutation(current, change)") && categoryMutationSection.includes("setCategories(tree);") && categoryMutationSection.includes("setCategoryExpandedKeys(firstLevelExpandedKeys);") && categoryMutationSection.includes("setCategoryFilterExpandedKeys(firstLevelExpandedKeys);") && categoryMutationSection.includes("resolveContainerCategorySelectionAfterRefresh("),
+      "\u5206\u7C7B\u5199\u5165\u53CA\u5237\u65B0\u540E\u5E94\u540C\u6B65\u6279\u91CF\u76EE\u6807\u3001\u6279\u91CF\u5206\u7C7B\u6811\u548C\u9876\u90E8\u7B5B\u9009\u6811"
+    );
+    const manageButtonSection = extractSection(
+      pageSource,
+      "{access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />}",
+      '{access.canWriteProduct ? (<Button type="primary"'
+    );
+    assert(
+      manageButtonSection.includes("onClick={() => setCategoryManageOpen(true)}") && manageButtonSection.includes("t('containers.actions.manageCategories', '\u7BA1\u7406\u5206\u7C7B')") && !manageButtonSection.includes("selectedRowKeys") && !manageButtonSection.includes("disabled="),
+      "\u7BA1\u7406\u5206\u7C7B\u5165\u53E3\u5E94\u4EC5\u53D7\u5206\u7C7B\u7BA1\u7406\u6743\u9650\u63A7\u5236\uFF0C\u4E14\u65E0\u9700\u52FE\u9009\u5546\u54C1"
+    );
+    const categoryManageModalSection = extractSection(
+      pageSource,
+      "{access.canManageWarehouseCategories ? (<ContainerCategoryManageModal",
+      "<ImportFromDomesticModal"
+    );
+    assert(
+      categoryManageModalSection.includes("open={categoryManageOpen}") && categoryManageModalSection.includes("activeTargetCategoryGuid={targetCategoryGuid}") && categoryManageModalSection.includes("onMutationCommitted={handleCategoryMutationCommitted}") && categoryManageModalSection.includes("onCategoriesChanged={handleCategoriesChanged}"),
+      "\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u6536\u5230\u5F53\u524D\u6279\u91CF\u76EE\u6807\u53CA\u4E24\u4E2A\u8054\u52A8\u56DE\u8C03"
+    );
+  });
+  if (categoryManagementFailure) failures.push(categoryManagementFailure);
   const compactTableFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868\u5E94\u4F7F\u7528\u7D27\u51D1\u884C\u9AD8\u3001\u5A92\u4F53\u5C3A\u5BF8\u548C\u5217\u5BBD", () => {
     assert(
       pageSource.includes("const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60"),

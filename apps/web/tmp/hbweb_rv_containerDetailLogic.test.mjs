@@ -3250,6 +3250,7 @@ var pageSource = readFileSync("src/pages/Warehouse/ContainerDetail/index.tsx", "
 var tagFiltersSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerTagFilters.tsx", "utf8");
 var columnsSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerDetailColumns.tsx", "utf8");
 var categoryManageSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.tsx", "utf8");
+var categoryManageStyleSource = readFileSync("src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.css", "utf8");
 var setCodeHookSource = readFileSync("src/pages/Warehouse/ContainerDetail/useContainerSetCode.tsx", "utf8");
 var pageStyleSource = readFileSync("src/pages/Warehouse/ContainerDetail/index.css", "utf8");
 var mobileLayoutSource = readFileSync("src/layout/MobileLayout.tsx", "utf8");
@@ -5213,7 +5214,7 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u590D\u7528\u4ED3\u5E93\u5206\u7C7B CRUD\uFF0C\u5E76\u4FDD\u62A4\u65B0\u589E\u72B6\u6001\u548C\u5220\u9664\u786E\u8BA4"
 );
 assertEqual(
-  pageStyleSource.includes(".container-category-manage-grid") && pageStyleSource.includes("grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)") && pageStyleSource.includes("@media (max-width: 760px)") && pageStyleSource.includes("grid-template-columns: minmax(0, 1fr)"),
+  categoryManageSource.includes("import './ContainerCategoryManageModal.css'") && categoryManageStyleSource.includes(".container-category-manage-grid") && categoryManageStyleSource.includes("grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)") && categoryManageStyleSource.includes("@media (max-width: 760px)") && categoryManageStyleSource.includes("grid-template-columns: minmax(0, 1fr)"),
   true,
   "\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u5728\u684C\u9762\u4F7F\u7528\u7D27\u51D1\u53CC\u680F\uFF0C\u5E76\u5728\u7A84\u5C4F\u5207\u6362\u4E3A\u5355\u680F"
 );

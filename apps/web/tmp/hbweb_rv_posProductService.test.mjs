@@ -1,6 +1,25 @@
 // <define:import.meta.env>
 var define_import_meta_env_default = {};
 
+// src/components/posHqPush/storeSelection.ts
+function normalizePushToHqStoreOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const options = [];
+  const seenCodes = /* @__PURE__ */ new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item;
+    const storeCode = typeof record.storeCode === "string" ? record.storeCode.trim() : "";
+    if (!storeCode) continue;
+    const normalizedCode = storeCode.toLowerCase();
+    if (seenCodes.has(normalizedCode)) continue;
+    seenCodes.add(normalizedCode);
+    const storeName = typeof record.storeName === "string" ? record.storeName.trim() : "";
+    options.push({ storeCode, storeName });
+  }
+  return options;
+}
+
 // src/utils/clientPublicIp.ts
 var CLIENT_PUBLIC_IP_HEADER = "X-Client-Public-IP";
 var CACHE_KEY = "hbweb:client-public-ipv4";
@@ -431,6 +450,16 @@ function unwrapApiData(payload) {
   }
   return payload;
 }
+function unwrapPagedResult(payload) {
+  const result = unwrapApiData(payload);
+  return {
+    items: result.items ?? [],
+    total: result.total ?? result.totalCount ?? 0,
+    page: result.page ?? result.pageIndex ?? 1,
+    pageSize: result.pageSize ?? 10,
+    totalPages: result.totalPages
+  };
+}
 request.get = (url, options) => request(url, { ...options, method: "GET" });
 request.post = (url, data, options) => request(url, { ...options, method: "POST", data });
 request.put = (url, data, options) => request(url, { ...options, method: "PUT", data });
@@ -532,9 +561,145 @@ function createProductHqSyncJobPoller(options) {
 // src/services/posProductService.ts
 var API_BASE = "/api/react/v1/products";
 var SYNC_API_BASE = "/api/react/v1/sync";
+var TEXT_FILTER_TYPE_MAP = {
+  equals: 0,
+  startsWith: 2,
+  endsWith: 3,
+  contains: 4
+};
+var NUMBER_FILTER_TYPE_MAP = {
+  equals: 0,
+  gte: 3,
+  lte: 5,
+  between: 6
+};
 var activeHqProductSyncJobs = /* @__PURE__ */ new Map();
 function isRecord(value) {
   return typeof value === "object" && value !== null;
+}
+function readFirstString(source, aliases) {
+  for (const alias of aliases) {
+    const value = source[alias];
+    if (typeof value === "string" && value) {
+      return value;
+    }
+  }
+  return void 0;
+}
+function normalizePosProductDto(raw) {
+  if (!isRecord(raw)) {
+    return raw;
+  }
+  const source = { ...raw };
+  const categoryGuid = readFirstString(source, [
+    "categoryGuid",
+    "productCategoryGUID",
+    "ProductCategoryGUID",
+    "productCategoryGuid"
+  ]);
+  const warehouseCategoryGuid = readFirstString(source, [
+    "warehouseCategoryGuid",
+    "warehouseCategoryGUID",
+    "WarehouseCategoryGUID"
+  ]);
+  const domesticSupplierCode = readFirstString(source, ["domesticSupplierCode", "DomesticSupplierCode"]);
+  const domesticSupplierName = readFirstString(source, ["domesticSupplierName", "DomesticSupplierName"]);
+  delete source.productCategoryGUID;
+  delete source.ProductCategoryGUID;
+  delete source.productCategoryGuid;
+  delete source.warehouseCategoryGUID;
+  delete source.WarehouseCategoryGUID;
+  delete source.warehouseCategoryGuid;
+  delete source.DomesticSupplierCode;
+  delete source.DomesticSupplierName;
+  const normalized = { ...source };
+  if (categoryGuid !== void 0) normalized.categoryGuid = categoryGuid;
+  if (warehouseCategoryGuid !== void 0) normalized.warehouseCategoryGuid = warehouseCategoryGuid;
+  if (domesticSupplierCode !== void 0) normalized.domesticSupplierCode = domesticSupplierCode;
+  if (domesticSupplierName !== void 0) normalized.domesticSupplierName = domesticSupplierName;
+  return normalized;
+}
+function normalizePosProductList(raw) {
+  return raw.map(normalizePosProductDto);
+}
+function readColumnFilterToken(value) {
+  if (!value) return void 0;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function getColumnFilterValues(params, key) {
+  return params.columnFilters?.[key]?.filter((value) => typeof value === "string" && value.trim()) ?? [];
+}
+function applyTextColumnFilter(payload, params, key, valueField, typeField) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0]);
+  const value = typeof token?.value === "string" ? token.value.trim() : "";
+  const operator = typeof token?.operator === "string" ? token.operator : "contains";
+  if (!value) return;
+  payload[valueField] = value;
+  payload[typeField] = TEXT_FILTER_TYPE_MAP[operator] ?? TEXT_FILTER_TYPE_MAP.contains;
+}
+function applyNumberColumnFilter(payload, params, key, minField, maxField, typeField) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0]);
+  const operator = typeof token?.operator === "string" ? token.operator : "between";
+  const value = token?.value !== void 0 && token.value !== null && String(token.value).trim() ? Number(token.value) : void 0;
+  const min = token?.min !== void 0 && token.min !== null && String(token.min).trim() ? Number(token.min) : void 0;
+  const max = token?.max !== void 0 && token.max !== null && String(token.max).trim() ? Number(token.max) : void 0;
+  if (operator === "equals" || operator === "gte" || operator === "lte") {
+    if (value === void 0 || Number.isNaN(value)) return;
+    if (typeField) {
+      payload[minField] = value;
+      payload[typeField] = NUMBER_FILTER_TYPE_MAP[operator];
+      return;
+    }
+    if (operator === "lte") {
+      payload[maxField] = value;
+    } else {
+      payload[minField] = value;
+      if (operator === "equals") payload[maxField] = value;
+    }
+    return;
+  }
+  if (min !== void 0 && !Number.isNaN(min)) payload[minField] = min;
+  if (max !== void 0 && !Number.isNaN(max)) payload[maxField] = max;
+  if ((min !== void 0 || max !== void 0) && typeField) payload[typeField] = NUMBER_FILTER_TYPE_MAP.between;
+}
+function buildDateBoundsFromColumnFilter(params, key) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0]);
+  const operator = typeof token?.operator === "string" ? token.operator : "between";
+  const value = typeof token?.value === "string" ? token.value : "";
+  const start = typeof token?.start === "string" ? token.start : "";
+  const end = typeof token?.end === "string" ? token.end : "";
+  const toStartOfDay = (date) => date ? `${date}T00:00:00` : void 0;
+  const toNextDayStart = (date) => {
+    if (!date) return void 0;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+    if (!match) return void 0;
+    const parsed = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + 1));
+    return `${parsed.toISOString().slice(0, 10)}T00:00:00`;
+  };
+  if (operator === "equals") {
+    return { from: toStartOfDay(value), toExclusive: toNextDayStart(value) };
+  }
+  if (operator === "gte") {
+    return { from: toStartOfDay(value), toExclusive: void 0 };
+  }
+  if (operator === "lte") {
+    return { from: void 0, toExclusive: toNextDayStart(value) };
+  }
+  return { from: toStartOfDay(start), toExclusive: toNextDayStart(end) };
+}
+function applyDateColumnFilter(payload, params, key, fromField, toExclusiveField) {
+  const bounds = buildDateBoundsFromColumnFilter(params, key);
+  if (bounds.from) payload[fromField] = bounds.from;
+  if (bounds.toExclusive) payload[toExclusiveField] = bounds.toExclusive;
+}
+function getColumnFilterStrings(params, key) {
+  const values = getColumnFilterValues(params, key).map((value) => String(value).trim()).filter(Boolean);
+  return values.length ? values : void 0;
 }
 function assertApiSuccess(response, fallbackMessage) {
   if (response.success === false || response.isSuccess === false) {
@@ -653,10 +818,101 @@ function normalizePushProductsToHqJobResult(payload, fallbackJobId = "") {
     errors: Array.isArray(raw.errors) ? raw.errors.filter((item) => typeof item === "string") : []
   };
 }
+async function getProducts(params) {
+  const sortOrderMap = { ascend: "asc", descend: "desc" };
+  const categoryGuids = params.categoryGuid ? [params.categoryGuid] : getColumnFilterStrings(params, "categoryGuid");
+  const warehouseCategoryGuids = params.warehouseCategoryGuid ? [params.warehouseCategoryGuid] : getColumnFilterStrings(params, "warehouseCategoryGuid");
+  const payload = {
+    pageNumber: params.pageIndex,
+    pageSize: params.pageSize,
+    search: params.keyword || void 0,
+    localSupplierCode: params.supplierCode || void 0,
+    productCategoryGUIDs: categoryGuids,
+    // 契约保留单值 warehouseCategoryGUID，顶部筛选同时发送数组与单值，兼容新旧后端。
+    warehouseCategoryGUID: params.warehouseCategoryGuid || void 0,
+    warehouseCategoryGUIDs: warehouseCategoryGuids,
+    isActive: params.isActive,
+    storeRecordCountMin: params.storeRecordCountMin,
+    storeRecordCountMax: params.storeRecordCountMax,
+    sortBy: params.sortBy || void 0,
+    sortOrder: params.sortOrder ? sortOrderMap[params.sortOrder] || params.sortOrder : void 0
+  };
+  if (!params.supplierCode) {
+    payload.localSupplierCodes = getColumnFilterStrings(params, "localSupplierCode");
+  }
+  payload.domesticSupplierCodes = getColumnFilterStrings(params, "domesticSupplierCode");
+  if (params.isActive === void 0) {
+    payload.isActiveValues = getColumnFilterStrings(params, "isActive")?.map((value) => value === "true");
+  }
+  if (params.isSet !== void 0) {
+    payload.productType = params.isSet ? 1 : 0;
+  } else {
+    payload.productTypeValues = getColumnFilterStrings(params, "productType")?.map((value) => Number(value)).filter((value) => !Number.isNaN(value));
+  }
+  payload.isAutoPricingValues = getColumnFilterStrings(params, "isAutoPricing")?.map((value) => value === "true");
+  applyTextColumnFilter(payload, params, "itemNumber", "itemNumber", "itemNumberFilterType");
+  applyTextColumnFilter(payload, params, "barcode", "barcode", "barcodeFilterType");
+  applyTextColumnFilter(payload, params, "productName", "productName", "productNameFilterType");
+  applyTextColumnFilter(payload, params, "productCode", "productCode", "productCodeFilterType");
+  applyNumberColumnFilter(payload, params, "purchasePrice", "purchasePriceMin", "purchasePriceMax", "purchasePriceFilterType");
+  applyNumberColumnFilter(payload, params, "retailPrice", "retailPriceMin", "retailPriceMax", "retailPriceFilterType");
+  if (params.storeRecordCountMin === void 0 && params.storeRecordCountMax === void 0) {
+    applyNumberColumnFilter(payload, params, "storeRecordCount", "storeRecordCountMin", "storeRecordCountMax");
+  }
+  applyDateColumnFilter(payload, params, "createdAt", "createdAtFrom", "createdAtToExclusive");
+  applyDateColumnFilter(payload, params, "updatedAt", "updatedAtFrom", "updatedAtToExclusive");
+  const response = await request_default.post(
+    `${API_BASE}/list`,
+    payload
+  );
+  if (Array.isArray(response)) {
+    return { items: normalizePosProductList(response), total: response.length };
+  }
+  if (isRecord(response) && Array.isArray(response.data)) {
+    return {
+      items: normalizePosProductList(response.data),
+      total: Number(response.total ?? response.totalCount ?? response.data.length)
+    };
+  }
+  const unwrapped = unwrapApiData(response);
+  if (Array.isArray(unwrapped)) {
+    return { items: normalizePosProductList(unwrapped), total: unwrapped.length };
+  }
+  const paged = unwrapPagedResult(unwrapped);
+  return { ...paged, items: normalizePosProductList(paged.items) };
+}
+async function getProductById(productCode) {
+  const response = await request_default.get(`${API_BASE}/${productCode}`);
+  return normalizePosProductDto(unwrapApiData(response));
+}
+async function getProductByBarcode(barcode) {
+  const response = await request_default.get(`${API_BASE}/by-barcode/${barcode}`);
+  return normalizePosProductDto(unwrapApiData(response));
+}
+function toProductMutationPayload(data) {
+  const { categoryGuid, warehouseCategoryGuid, ...payload } = data;
+  return {
+    ...payload,
+    productCategoryGUID: categoryGuid,
+    warehouseCategoryGUID: warehouseCategoryGuid
+  };
+}
+async function createProduct(data) {
+  const response = await request_default.post(`${API_BASE}`, toProductMutationPayload(data));
+  return normalizePosProductDto(unwrapApiData(response));
+}
 async function createProductWithPrices(data) {
   const response = await request_default.post(`${API_BASE}/create-with-prices`, data);
   assertApiSuccess(response, "\u521B\u5EFA\u5546\u54C1\u5931\u8D25");
-  return unwrapApiData(response);
+  const result = unwrapApiData(response);
+  return {
+    ...result,
+    product: result.product ? normalizePosProductDto(result.product) : result.product
+  };
+}
+async function updateProduct(productCode, data) {
+  const response = await request_default.put(`${API_BASE}/${productCode}`, toProductMutationPayload(data));
+  return normalizePosProductDto(unwrapApiData(response));
 }
 function normalizeSupplierImageBatchUpdateResult(raw) {
   if (!isRecord(raw)) {
@@ -825,6 +1081,12 @@ async function pushProductsToHq(data) {
   assertApiSuccess(response, "\u53D1\u9001\u5546\u54C1\u5230 HQ \u5931\u8D25");
   return normalizePushProductsToHqResult(unwrapApiData(response));
 }
+async function getPushToHqStoreOptions() {
+  const response = await request_default.get(
+    `${API_BASE}/push-to-hq/store-options`
+  );
+  return normalizePushToHqStoreOptions(unwrapApiData(response));
+}
 async function createPushProductsToHqJob(data) {
   const response = await request_default.post(
     `${API_BASE}/push-to-hq/jobs`,
@@ -980,17 +1242,96 @@ var createHqProductFullSyncJob = createProductHqSyncFullJob;
 var createHqProductIncrementalSyncJob = createProductHqSyncIncrementalJob;
 var getHqProductSyncJob = getProductHqSyncJob;
 
+// src/services/chinaSupplierService.ts
+var API_BASE2 = "/api/v1/ChinaSuppliers";
+function transformSupplier(raw) {
+  return {
+    guid: String(raw.guid ?? raw.Guid ?? ""),
+    supplierCode: String(raw.supplierCode ?? raw.SupplierCode ?? ""),
+    supplierName: String(raw.supplierName ?? raw.SupplierName ?? ""),
+    shopNumber: String(raw.shopNumber ?? raw.ShopNumber ?? "") || void 0,
+    contactPerson: String(raw.contactPerson ?? raw.ContactPerson ?? "") || void 0,
+    phone: String(raw.phone ?? raw.Phone ?? "") || void 0,
+    email: String(raw.email ?? raw.Email ?? "") || void 0,
+    storefrontPhoto: String(raw.storefrontPhoto ?? raw.StorefrontPhoto ?? "") || void 0,
+    status: Number(raw.status ?? raw.Status ?? 0),
+    remarks: String(raw.remarks ?? raw.Remarks ?? "") || void 0,
+    createdAt: String(raw.fgC_CreateDate ?? raw.createdAt ?? raw.CreatedAt ?? "") || void 0,
+    updatedAt: String(raw.fgC_LastModifyDate ?? raw.updatedAt ?? raw.UpdatedAt ?? "") || void 0
+  };
+}
+async function getAllChinaSuppliers(signal) {
+  const response = await request_default.get(`${API_BASE2}/all`, {
+    signal
+  });
+  const data = unwrapApiData(response) ?? [];
+  const suppliers = Array.isArray(data) ? data.filter((item) => !!item && typeof item === "object").map(transformSupplier) : [];
+  const supplierByCode = /* @__PURE__ */ new Map();
+  for (const supplier of suppliers) {
+    const supplierCode = supplier.supplierCode.trim();
+    if (!supplierCode) continue;
+    const normalizedSupplier = {
+      ...supplier,
+      supplierCode,
+      supplierName: supplier.supplierName.trim()
+    };
+    const current = supplierByCode.get(supplierCode);
+    if (!current || normalizedSupplier.supplierName > current.supplierName) {
+      supplierByCode.set(supplierCode, normalizedSupplier);
+    }
+  }
+  return [...supplierByCode.values()];
+}
+
 // src/services/posProductService.test.ts
 function assertEqual(actual, expected, message) {
   if (actual !== expected) {
     throw new Error(`${message}\u3002Expected: ${String(expected)}, received: ${String(actual)}`);
   }
 }
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function findDeepMismatch(actual, expected) {
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+      return "\u6570\u7EC4\u7ED3\u6784\u4E0D\u4E00\u81F4";
+    }
+    for (let index = 0; index < actual.length; index++) {
+      const mismatch = findDeepMismatch(actual[index], expected[index]);
+      if (mismatch) {
+        return `[${index}]${mismatch}`;
+      }
+    }
+    return void 0;
+  }
+  if (isPlainObject(actual) || isPlainObject(expected)) {
+    if (!isPlainObject(actual) || !isPlainObject(expected)) {
+      return "\u5BF9\u8C61\u7ED3\u6784\u4E0D\u4E00\u81F4";
+    }
+    const actualKeys = Object.keys(actual);
+    if (actualKeys.length !== Object.keys(expected).length) {
+      return `\u952E\u96C6\u5408\u4E0D\u4E00\u81F4\uFF08\u5B9E\u9645 ${actualKeys.sort().join(",")}\uFF0C\u671F\u671B ${Object.keys(expected).sort().join(",")}\uFF09`;
+    }
+    for (const key of Object.keys(expected)) {
+      if (!Object.prototype.hasOwnProperty.call(actual, key)) {
+        return `\u7F3A\u5C11\u952E ${key}`;
+      }
+      const mismatch = findDeepMismatch(actual[key], expected[key]);
+      if (mismatch) {
+        return `.${key}${mismatch}`;
+      }
+    }
+    return void 0;
+  }
+  return actual === expected ? void 0 : "\u503C\u4E0D\u4E00\u81F4";
+}
 function assertDeepEqual(actual, expected, message) {
-  const actualJson = JSON.stringify(actual);
-  const expectedJson = JSON.stringify(expected);
-  if (actualJson !== expectedJson) {
-    throw new Error(`${message}\u3002Expected: ${expectedJson}, received: ${actualJson}`);
+  const mismatch = findDeepMismatch(actual, expected);
+  if (mismatch) {
+    throw new Error(
+      `${message}\u3002Expected: ${JSON.stringify(expected)}, received: ${JSON.stringify(actual)}\uFF08\u5DEE\u5F02\uFF1A${mismatch}\uFF09`
+    );
   }
 }
 function assert(condition, message) {
@@ -1157,6 +1498,7 @@ try {
   };
   const pushResult = await pushProductsToHq({
     productCodes: ["HB001", "HB002"],
+    targetStoreCodes: ["1001", "1002"],
     items: [
       {
         productCode: "HB001",
@@ -1185,6 +1527,7 @@ try {
     JSON.parse(String(capturedInit?.body)),
     {
       productCodes: ["HB001", "HB002"],
+      targetStoreCodes: ["1001", "1002"],
       items: [
         {
           productCode: "HB001",
@@ -1207,7 +1550,7 @@ try {
         }
       ]
     },
-    "\u9009\u4E2D\u5546\u54C1\u53D1\u9001 HQ \u8BF7\u6C42\u5E94\u517C\u5BB9\u65E7 productCodes\uFF0C\u5E76\u643A\u5E26 items \u4E0E\u4EF7\u683C\u5B57\u6BB5"
+    "\u9009\u4E2D\u5546\u54C1\u53D1\u9001 HQ \u8BF7\u6C42\u5E94\u643A\u5E26 productCodes\u3001\u76EE\u6807\u5206\u5E97\u3001items \u4E0E\u4EF7\u683C\u5B57\u6BB5"
   );
   assertEqual(pushResult.successCount, 2, "\u53D1\u9001 HQ \u5E94\u4F7F\u7528\u540E\u7AEF\u8FD4\u56DE\u7684\u5546\u54C1\u6210\u529F\u6570");
   assertEqual(pushResult.failedCount, 0, "\u53D1\u9001 HQ \u65E0\u9519\u8BEF\u660E\u7EC6\u65F6\u5931\u8D25\u6570\u5E94\u4E3A 0");
@@ -1215,6 +1558,30 @@ try {
   assertEqual(pushResult.affectedRowCount, 55, "\u53D1\u9001 HQ \u7F3A\u5C11\u540E\u7AEF\u6C47\u603B\u65F6\u5E94\u628A\u5E93\u5B58\u3001\u5206\u5E97\u4EF7\u683C\u548C\u591A\u7801\u7EDF\u8BA1\u5408\u5E76\u4E3A\u5F71\u54CD\u8BB0\u5F55\u6570");
   assertEqual(pushResult.warehouseInventoriesCreated, 9, "\u53D1\u9001 HQ \u5E94\u4FDD\u7559\u4ED3\u5E93\u5E93\u5B58\u65B0\u589E\u7EDF\u8BA1");
   assertEqual(pushResult.warehouseInventoriesUpdated, 10, "\u53D1\u9001 HQ \u5E94\u4FDD\u7559\u4ED3\u5E93\u5E93\u5B58\u66F4\u65B0\u7EDF\u8BA1");
+  nextPayload = {
+    success: true,
+    data: [
+      { storeCode: " 1001 ", storeName: "Sunnybank" },
+      { storeCode: "1001", storeName: "Duplicate Sunnybank" },
+      { storeCode: "1002", storeName: "Garden City" },
+      { storeCode: "   ", storeName: "BlankCode" }
+    ]
+  };
+  const storeOptions = await getPushToHqStoreOptions();
+  assertEqual(
+    capturedUrl,
+    "/api/react/v1/products/push-to-hq/store-options",
+    "\u53D1\u9001 HQ \u5F39\u7A97\u5E94\u901A\u8FC7\u56FA\u5B9A\u63A5\u53E3\u8BFB\u53D6\u6700\u65B0 HQ \u5206\u5E97\u9009\u9879"
+  );
+  assertEqual(capturedInit?.method, "GET", "\u8BFB\u53D6 HQ \u5206\u5E97\u9009\u9879\u5E94\u4F7F\u7528 GET");
+  assertDeepEqual(
+    storeOptions,
+    [
+      { storeCode: "1001", storeName: "Sunnybank" },
+      { storeCode: "1002", storeName: "Garden City" }
+    ],
+    "\u53D1\u9001 HQ \u5206\u5E97\u9009\u9879\u5E94\u901A\u8FC7 unwrapApiData \u5E76\u53BB\u7A7A\u3001\u53BB\u91CD\u5F52\u4E00 ApiResponse.data \u6570\u7EC4"
+  );
   nextPayload = {
     success: true,
     data: {
@@ -1566,6 +1933,267 @@ try {
     },
     "\u521B\u5EFA\u5546\u54C1\u5E26\u5206\u5E97\u4EF7\u683C\u5E94\u8FD4\u56DE unwrap \u540E\u7684\u7ED3\u679C"
   );
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        productCode: "P001",
+        productCategoryGUID: "cat-list-1",
+        warehouseCategoryGUID: "wh-list-1",
+        domesticSupplierCode: "CN-001",
+        domesticSupplierName: "\u56FD\u5185\u4F9B\u5E94\u5546\u4E00"
+      }
+    ],
+    total: 1
+  };
+  const listResult = await getProducts({
+    pageIndex: 1,
+    pageSize: 20,
+    categoryGuid: "top-cat",
+    warehouseCategoryGuid: "top-wh",
+    columnFilters: {
+      categoryGuid: ["col-cat"],
+      warehouseCategoryGuid: ["col-wh"],
+      domesticSupplierCode: ["CN-001", "CN-002"]
+    }
+  });
+  assertEqual(capturedUrl, "/api/react/v1/products/list", "\u5546\u54C1\u5217\u8868\u5E94\u8C03\u7528\u5206\u9875\u67E5\u8BE2\u63A5\u53E3");
+  assertEqual(capturedInit?.method, "POST", "\u5546\u54C1\u5217\u8868\u5E94\u4F7F\u7528 POST");
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      pageNumber: 1,
+      pageSize: 20,
+      productCategoryGUIDs: ["top-cat"],
+      warehouseCategoryGUID: "top-wh",
+      warehouseCategoryGUIDs: ["top-wh"],
+      domesticSupplierCodes: ["CN-001", "CN-002"]
+    },
+    "\u5546\u54C1\u5217\u8868\u9876\u90E8 categoryGuid/warehouseCategoryGuid \u5E94\u4F18\u5148\u4E8E\u540C\u5217\u5934\u8FC7\u6EE4\u5E76\u53D1\u9001\u6570\u7EC4\uFF1B\u56FD\u5185\u4F9B\u5E94\u5546\u5217\u5934\u53D1\u9001 domesticSupplierCodes"
+  );
+  assertEqual(listResult.total, 1, "\u5546\u54C1\u5217\u8868\u5E94\u900F\u4F20\u540E\u7AEF total");
+  assertDeepEqual(
+    listResult.items[0],
+    {
+      productCode: "P001",
+      categoryGuid: "cat-list-1",
+      warehouseCategoryGuid: "wh-list-1",
+      domesticSupplierCode: "CN-001",
+      domesticSupplierName: "\u56FD\u5185\u4F9B\u5E94\u5546\u4E00"
+    },
+    "\u5546\u54C1\u5217\u8868\u54CD\u5E94\u5E94\u5F52\u4E00\u5316 productCategoryGUID/warehouseCategoryGUID \u53CA\u56FD\u5185\u4F9B\u5E94\u5546\u5B57\u6BB5"
+  );
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        Guid: "supplier-disabled",
+        SupplierCode: "CN-DISABLED",
+        SupplierName: "\u505C\u7528\u4F46\u4ECD\u6709\u5173\u8054\u7684\u4F9B\u5E94\u5546",
+        Status: 0
+      },
+      {
+        Guid: "supplier-disabled-duplicate",
+        SupplierCode: "CN-DISABLED",
+        SupplierName: "\u505C\u7528\u4F46\u4ECD\u6709\u5173\u8054\u7684\u4F9B\u5E94\u5546",
+        Status: 0
+      },
+      {
+        Guid: "supplier-empty-code",
+        SupplierCode: "   ",
+        SupplierName: "\u65E0\u6709\u6548\u7F16\u7801\u4F9B\u5E94\u5546",
+        Status: 1
+      }
+    ]
+  };
+  const allDomesticSuppliers = await getAllChinaSuppliers();
+  assertEqual(capturedUrl, "/api/v1/ChinaSuppliers/all", "\u5546\u54C1\u5217\u5934\u9009\u9879\u5E94\u8C03\u7528\u5305\u542B\u505C\u7528\u4E14\u6392\u9664\u8F6F\u5220\u8BB0\u5F55\u7684\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3");
+  assertEqual(allDomesticSuppliers.length, 1, "\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3\u5E94\u6309\u975E\u7A7A\u4F9B\u5E94\u5546\u4EE3\u7801\u53BB\u91CD");
+  assertEqual(allDomesticSuppliers[0]?.guid, "supplier-disabled", "\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3\u5E94\u5F52\u4E00\u5316 GUID");
+  assertEqual(allDomesticSuppliers[0]?.supplierCode, "CN-DISABLED", "\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3\u5E94\u5F52\u4E00\u5316\u4F9B\u5E94\u5546\u4EE3\u7801");
+  assertEqual(allDomesticSuppliers[0]?.supplierName, "\u505C\u7528\u4F46\u4ECD\u6709\u5173\u8054\u7684\u4F9B\u5E94\u5546", "\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3\u5E94\u5F52\u4E00\u5316\u4F9B\u5E94\u5546\u540D\u79F0");
+  assertEqual(allDomesticSuppliers[0]?.status, 0, "\u5168\u90E8\u56FD\u5185\u4F9B\u5E94\u5546\u63A5\u53E3\u5E94\u4FDD\u7559\u505C\u7528\u72B6\u6001");
+  nextPayload = {
+    success: true,
+    data: [],
+    total: 0
+  };
+  await getProducts({
+    columnFilters: {
+      categoryGuid: ["col-cat-1", "col-cat-2"],
+      warehouseCategoryGuid: ["col-wh-1"],
+      domesticSupplierCode: ["CN-009"]
+    }
+  });
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productCategoryGUIDs: ["col-cat-1", "col-cat-2"],
+      warehouseCategoryGUIDs: ["col-wh-1"],
+      domesticSupplierCodes: ["CN-009"]
+    },
+    "\u65E0\u9876\u90E8\u7B5B\u9009\u65F6\u5546\u54C1\u5217\u8868\u5E94\u4F7F\u7528 categoryGuid/warehouseCategoryGuid/domesticSupplierCode \u5217\u5934\u8FC7\u6EE4\u503C"
+  );
+  nextPayload = [
+    {
+      productCode: "P002",
+      productCategoryGUID: "cat-array",
+      warehouseCategoryGUID: "wh-array",
+      domesticSupplierCode: "CN-002"
+    }
+  ];
+  const arrayResult = await getProducts({});
+  assertDeepEqual(
+    arrayResult.items,
+    [
+      {
+        productCode: "P002",
+        categoryGuid: "cat-array",
+        warehouseCategoryGuid: "wh-array",
+        domesticSupplierCode: "CN-002"
+      }
+    ],
+    "\u5546\u54C1\u5217\u8868\u76F4\u63A5\u6570\u7EC4\u54CD\u5E94\u5E94\u5F52\u4E00\u5316\u5B57\u6BB5"
+  );
+  assertEqual(arrayResult.total, 1, "\u5546\u54C1\u5217\u8868\u76F4\u63A5\u6570\u7EC4\u54CD\u5E94 total \u5E94\u4E3A\u6570\u7EC4\u957F\u5EA6");
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        productCode: "P003",
+        productCategoryGUID: "cat-data",
+        warehouseCategoryGUID: "wh-data"
+      }
+    ],
+    total: 9
+  };
+  const dataResult = await getProducts({});
+  assertDeepEqual(
+    dataResult.items,
+    [
+      {
+        productCode: "P003",
+        categoryGuid: "cat-data",
+        warehouseCategoryGuid: "wh-data"
+      }
+    ],
+    "\u5546\u54C1\u5217\u8868 data+total \u5305\u88F9\u54CD\u5E94\u5E94\u5F52\u4E00\u5316\u5B57\u6BB5"
+  );
+  assertEqual(dataResult.total, 9, "\u5546\u54C1\u5217\u8868 data+total \u5305\u88F9\u54CD\u5E94\u5E94\u4FDD\u7559 total");
+  nextPayload = {
+    success: true,
+    data: {
+      items: [
+        {
+          productCode: "P004",
+          productCategoryGUID: "cat-paged",
+          warehouseCategoryGUID: "wh-paged",
+          domesticSupplierName: "\u56FD\u5185\u56DB"
+        }
+      ],
+      total: 7,
+      pageNumber: 1,
+      pageSize: 10
+    }
+  };
+  const pagedResult = await getProducts({});
+  assertDeepEqual(
+    pagedResult.items,
+    [
+      {
+        productCode: "P004",
+        categoryGuid: "cat-paged",
+        warehouseCategoryGuid: "wh-paged",
+        domesticSupplierName: "\u56FD\u5185\u56DB"
+      }
+    ],
+    "\u5546\u54C1\u5217\u8868 PagedResult \u5305\u88F9\u54CD\u5E94\u5E94\u5F52\u4E00\u5316\u5B57\u6BB5"
+  );
+  assertEqual(pagedResult.total, 7, "\u5546\u54C1\u5217\u8868 PagedResult \u5305\u88F9\u54CD\u5E94\u5E94\u4FDD\u7559 total");
+  assertEqual(pagedResult.page, 1, "\u5546\u54C1\u5217\u8868 PagedResult \u5305\u88F9\u54CD\u5E94\u5E94\u4FDD\u7559\u9875\u7801");
+  const detailPayload = {
+    success: true,
+    data: {
+      productCode: "P005",
+      productCategoryGUID: "cat-detail",
+      warehouseCategoryGUID: "wh-detail",
+      DomesticSupplierCode: "CN-005",
+      DomesticSupplierName: "\u56FD\u5185\u4E94"
+    }
+  };
+  nextPayload = detailPayload;
+  const productDetail = await getProductById("P005");
+  assertDeepEqual(
+    productDetail,
+    {
+      productCode: "P005",
+      categoryGuid: "cat-detail",
+      warehouseCategoryGuid: "wh-detail",
+      domesticSupplierCode: "CN-005",
+      domesticSupplierName: "\u56FD\u5185\u4E94"
+    },
+    "\u5546\u54C1\u8BE6\u60C5\u5E94\u590D\u7528\u540C\u4E00\u5F52\u4E00\u5316 helper"
+  );
+  nextPayload = detailPayload;
+  const barcodeDetail = await getProductByBarcode("930000000005");
+  assertEqual(barcodeDetail.categoryGuid, "cat-detail", "\u6761\u7801\u67E5\u8BE2\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u5546\u54C1\u5206\u7C7B");
+  assertEqual(barcodeDetail.warehouseCategoryGuid, "wh-detail", "\u6761\u7801\u67E5\u8BE2\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u4ED3\u5E93\u5206\u7C7B");
+  assertEqual(barcodeDetail.domesticSupplierCode, "CN-005", "\u6761\u7801\u67E5\u8BE2\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u56FD\u5185\u4F9B\u5E94\u5546\u7F16\u7801");
+  nextPayload = detailPayload;
+  const createdProduct = await createProduct({
+    productName: "\u65B0\u5EFA\u5546\u54C1",
+    categoryGuid: "cat-create",
+    warehouseCategoryGuid: "wh-create"
+  });
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productName: "\u65B0\u5EFA\u5546\u54C1",
+      productCategoryGUID: "cat-create",
+      warehouseCategoryGUID: "wh-create"
+    },
+    "\u521B\u5EFA\u5546\u54C1\u8BF7\u6C42\u5E94\u6620\u5C04\u4E24\u5957\u5206\u7C7B GUID \u4E14\u4E0D\u53D1\u9001\u524D\u7AEF\u522B\u540D"
+  );
+  assertEqual(createdProduct.categoryGuid, "cat-detail", "\u521B\u5EFA\u5546\u54C1\u8FD4\u56DE\u5E94\u5F52\u4E00\u5316\u5546\u54C1\u5206\u7C7B");
+  assertEqual(createdProduct.warehouseCategoryGuid, "wh-detail", "\u521B\u5EFA\u5546\u54C1\u8FD4\u56DE\u5E94\u5F52\u4E00\u5316\u4ED3\u5E93\u5206\u7C7B");
+  nextPayload = detailPayload;
+  const updatedProduct = await updateProduct("P005", {
+    productName: "\u66F4\u65B0\u5546\u54C1",
+    categoryGuid: "cat-update",
+    warehouseCategoryGuid: "wh-update"
+  });
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productName: "\u66F4\u65B0\u5546\u54C1",
+      productCategoryGUID: "cat-update",
+      warehouseCategoryGUID: "wh-update"
+    },
+    "\u66F4\u65B0\u5546\u54C1\u8BF7\u6C42\u5E94\u6620\u5C04\u4E24\u5957\u5206\u7C7B GUID \u4E14\u4E0D\u53D1\u9001\u524D\u7AEF\u522B\u540D"
+  );
+  assertEqual(updatedProduct.categoryGuid, "cat-detail", "\u66F4\u65B0\u5546\u54C1\u8FD4\u56DE\u5E94\u5F52\u4E00\u5316\u5546\u54C1\u5206\u7C7B");
+  assertEqual(updatedProduct.domesticSupplierCode, "CN-005", "\u66F4\u65B0\u5546\u54C1\u8FD4\u56DE\u5E94\u5F52\u4E00\u5316\u56FD\u5185\u4F9B\u5E94\u5546\u7F16\u7801");
+  nextPayload = {
+    success: true,
+    data: {
+      productCode: "P006",
+      storeProductCodes: {},
+      product: {
+        productCode: "P006",
+        productCategoryGUID: "cat-create-prices",
+        warehouseCategoryGUID: "wh-create-prices",
+        domesticSupplierCode: "CN-006"
+      }
+    }
+  };
+  const createPricesResult = await createProductWithPrices({
+    productName: "\u5E26\u4EF7\u521B\u5EFA",
+    isAutoPricing: true,
+    isSpecialProduct: false
+  });
+  assertEqual(createPricesResult.product?.categoryGuid, "cat-create-prices", "\u521B\u5EFA\u5E26\u5206\u5E97\u4EF7\u683C\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u5185\u5D4C product \u5546\u54C1\u5206\u7C7B");
+  assertEqual(createPricesResult.product?.warehouseCategoryGuid, "wh-create-prices", "\u521B\u5EFA\u5E26\u5206\u5E97\u4EF7\u683C\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u5185\u5D4C product \u4ED3\u5E93\u5206\u7C7B");
+  assertEqual(createPricesResult.product?.domesticSupplierCode, "CN-006", "\u521B\u5EFA\u5E26\u5206\u5E97\u4EF7\u683C\u5546\u54C1\u5E94\u5F52\u4E00\u5316\u5185\u5D4C product \u56FD\u5185\u4F9B\u5E94\u5546\u7F16\u7801");
   const jobFailurePayload = {
     isSuccess: false,
     message: "\u521B\u5EFA\u4EFB\u52A1\u5931\u8D25",

@@ -112,7 +112,7 @@ async function main() {
     assert(pageSource.includes('createStoreOrderSyncJobPoller'), '页面应使用独立轮询器')
     assert(pageSource.includes('stopSyncPollingRef.current?.()'), '页面卸载时应清理轮询定时器')
     assert(pageSource.includes("result.status === 'Failed'"), '页面应单独处理失败状态')
-    assert(pageSource.includes('void loadData()'), '同步成功后应刷新当前筛选列表')
+    assert(pageSource.includes('void refreshCurrentList()'), '同步成功后应刷新当前筛选列表')
     assert(pageSource.includes('const [incrementalConflictStrategy, setIncrementalConflictStrategy]'), '页面应维护增量同步冲突策略状态')
     assert(pageSource.includes('const handleOpenIncrementalHqSync = () =>'), '页面应通过统一入口打开增量同步弹窗')
     assert(pageSource.includes('setIncrementalConflictStrategy(DEFAULT_INCREMENTAL_CONFLICT_STRATEGY)'), '每次打开或取消增量同步弹窗时应恢复默认冲突策略')

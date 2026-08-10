@@ -38,6 +38,10 @@ public sealed class PosOperationAudit
     [SugarColumn(ColumnName = "is_emergency_override", IsNullable = false)]
     public bool IsEmergencyOverride { get; set; }
 
+    // 设备上报的审计记录默认未经服务端验证，并保留数据库现有可信度契约。
+    [SugarColumn(ColumnName = "trust_level", Length = 40, IsNullable = false)]
+    public string TrustLevel { get; set; } = "DeviceReportedUnverified";
+
     [SugarColumn(ColumnName = "store_code", Length = 50, IsNullable = false)]
     public string StoreCode { get; set; } = string.Empty;
 
