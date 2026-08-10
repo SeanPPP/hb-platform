@@ -20,6 +20,16 @@ namespace BlazorApp.Shared.DTOs
         public string? LocalSupplierCode { get; set; }
 
         /// <summary>
+        /// 国内供应商代码（来自未删除 DomesticProduct 与未删除 ChinaSupplier 的有效映射）
+        /// </summary>
+        public string? DomesticSupplierCode { get; set; }
+
+        /// <summary>
+        /// 国内供应商名称（来自有效映射的 ChinaSupplier）
+        /// </summary>
+        public string? DomesticSupplierName { get; set; }
+
+        /// <summary>
         /// 产品代码
         /// </summary>
         [Required(ErrorMessage = "产品代码不能为空")]

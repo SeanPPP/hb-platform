@@ -113,3 +113,33 @@ export async function getActiveChinaSuppliers(signal?: AbortSignal): Promise<Chi
         .map(transformSupplier)
     : []
 }
+
+// 商品列表需要覆盖所有仍有效的历史供应商映射，包括已停用但未软删的供应商。
+export async function getAllChinaSuppliers(signal?: AbortSignal): Promise<ChinaSupplierItem[]> {
+  const response = await request.get<ApiResponse<ChinaSupplierApiItem[]>>(`${API_BASE}/all`, {
+    signal,
+  })
+  const data = unwrapApiData(response) ?? []
+  const suppliers = Array.isArray(data)
+    ? data
+        .filter((item): item is ChinaSupplierApiItem => !!item && typeof item === 'object')
+        .map(transformSupplier)
+    : []
+
+  // 列头过滤只接受有效代码；历史重复资料按代码合并，避免同值选项和空值选项。
+  const supplierByCode = new Map<string, ChinaSupplierItem>()
+  for (const supplier of suppliers) {
+    const supplierCode = supplier.supplierCode.trim()
+    if (!supplierCode) continue
+    const normalizedSupplier = {
+      ...supplier,
+      supplierCode,
+      supplierName: supplier.supplierName.trim(),
+    }
+    const current = supplierByCode.get(supplierCode)
+    if (!current || normalizedSupplier.supplierName > current.supplierName) {
+      supplierByCode.set(supplierCode, normalizedSupplier)
+    }
+  }
+  return [...supplierByCode.values()]
+}

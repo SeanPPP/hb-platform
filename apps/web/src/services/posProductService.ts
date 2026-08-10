@@ -76,6 +76,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function readFirstString(source: Record<string, unknown>, aliases: string[]): string | undefined {
+  for (const alias of aliases) {
+    const value = source[alias]
+    if (typeof value === 'string' && value) {
+      return value
+    }
+  }
+  return undefined
+}
+
+// PosProductDto 响应归一化：后端返回 productCategoryGUID/warehouseCategoryGUID 及国内供应商字段，
+// 列表与详情复用同一 helper，避免列表/详情字段不一致。
+export function normalizePosProductDto(raw: unknown): PosProductDto {
+  if (!isRecord(raw)) {
+    return raw as PosProductDto
+  }
+
+  const source: Record<string, unknown> = { ...raw }
+  const categoryGuid = readFirstString(source, [
+    'categoryGuid',
+    'productCategoryGUID',
+    'ProductCategoryGUID',
+    'productCategoryGuid',
+  ])
+  const warehouseCategoryGuid = readFirstString(source, [
+    'warehouseCategoryGuid',
+    'warehouseCategoryGUID',
+    'WarehouseCategoryGUID',
+  ])
+  const domesticSupplierCode = readFirstString(source, ['domesticSupplierCode', 'DomesticSupplierCode'])
+  const domesticSupplierName = readFirstString(source, ['domesticSupplierName', 'DomesticSupplierName'])
+
+  delete source.productCategoryGUID
+  delete source.ProductCategoryGUID
+  delete source.productCategoryGuid
+  delete source.warehouseCategoryGUID
+  delete source.WarehouseCategoryGUID
+  delete source.warehouseCategoryGuid
+  delete source.DomesticSupplierCode
+  delete source.DomesticSupplierName
+
+  const normalized: Record<string, unknown> = { ...source }
+  // 只写有值的归一化字段，避免响应中出现 undefined 键。
+  if (categoryGuid !== undefined) normalized.categoryGuid = categoryGuid
+  if (warehouseCategoryGuid !== undefined) normalized.warehouseCategoryGuid = warehouseCategoryGuid
+  if (domesticSupplierCode !== undefined) normalized.domesticSupplierCode = domesticSupplierCode
+  if (domesticSupplierName !== undefined) normalized.domesticSupplierName = domesticSupplierName
+  return normalized as unknown as PosProductDto
+}
+
+function normalizePosProductList(raw: unknown[]): PosProductDto[] {
+  return raw.map(normalizePosProductDto)
+}
+
 function readColumnFilterToken(value: string | undefined): Record<string, unknown> | undefined {
   if (!value) return undefined
   try {
@@ -341,14 +395,22 @@ function normalizePushProductsToHqJobResult(payload: unknown, fallbackJobId = ''
 
 export async function getProducts(params: PosProductFilterParams) {
   const sortOrderMap: Record<string, string> = { ascend: 'asc', descend: 'desc' }
+  // 顶部 categoryGuid/warehouseCategoryGuid 优先于同列头过滤，分别发送 productCategoryGUIDs/warehouseCategoryGUIDs。
+  const categoryGuids = params.categoryGuid
+    ? [params.categoryGuid]
+    : getColumnFilterStrings(params, 'categoryGuid')
+  const warehouseCategoryGuids = params.warehouseCategoryGuid
+    ? [params.warehouseCategoryGuid]
+    : getColumnFilterStrings(params, 'warehouseCategoryGuid')
   const payload: Record<string, unknown> = {
     pageNumber: params.pageIndex,
     pageSize: params.pageSize,
     search: params.keyword || undefined,
     localSupplierCode: params.supplierCode || undefined,
-    productCategoryGUIDs: params.categoryGuid
-      ? [params.categoryGuid]
-      : getColumnFilterStrings(params, 'categoryGuid'),
+    productCategoryGUIDs: categoryGuids,
+    // 契约保留单值 warehouseCategoryGUID，顶部筛选同时发送数组与单值，兼容新旧后端。
+    warehouseCategoryGUID: params.warehouseCategoryGuid || undefined,
+    warehouseCategoryGUIDs: warehouseCategoryGuids,
     isActive: params.isActive,
     storeRecordCountMin: params.storeRecordCountMin,
     storeRecordCountMax: params.storeRecordCountMax,
@@ -359,6 +421,8 @@ export async function getProducts(params: PosProductFilterParams) {
   if (!params.supplierCode) {
     payload.localSupplierCodes = getColumnFilterStrings(params, 'localSupplierCode')
   }
+  // 国内供应商列头按契约发送 domesticSupplierCodes，不能映射到本地供应商字段。
+  payload.domesticSupplierCodes = getColumnFilterStrings(params, 'domesticSupplierCode')
   if (params.isActive === undefined) {
     payload.isActiveValues = getColumnFilterStrings(params, 'isActive')?.map((value) => value === 'true')
   }
@@ -387,34 +451,35 @@ export async function getProducts(params: PosProductFilterParams) {
   )
 
   if (Array.isArray(response)) {
-    return { items: response, total: response.length }
+    return { items: normalizePosProductList(response), total: response.length }
   }
 
   if (isRecord(response) && Array.isArray(response.data)) {
     return {
-      items: response.data as PosProductDto[],
+      items: normalizePosProductList(response.data),
       total: Number(response.total ?? response.totalCount ?? response.data.length),
     }
   }
 
   const unwrapped = unwrapApiData(response)
   if (Array.isArray(unwrapped)) {
-    return { items: unwrapped, total: unwrapped.length }
+    return { items: normalizePosProductList(unwrapped), total: unwrapped.length }
   }
 
-  return unwrapPagedResult(unwrapped as PagedResult<PosProductDto>)
+  const paged = unwrapPagedResult(unwrapped as PagedResult<PosProductDto>)
+  return { ...paged, items: normalizePosProductList(paged.items) }
 }
 
 export { getProducts as getPosProducts }
 
 export async function getProductById(productCode: string): Promise<PosProductDto> {
   const response = await request.get<ApiResponse<PosProductDto>>(`${API_BASE}/${productCode}`)
-  return unwrapApiData(response)
+  return normalizePosProductDto(unwrapApiData(response))
 }
 
 export async function getProductByBarcode(barcode: string): Promise<PosProductDto> {
   const response = await request.get<ApiResponse<PosProductDto>>(`${API_BASE}/by-barcode/${barcode}`)
-  return unwrapApiData(response)
+  return normalizePosProductDto(unwrapApiData(response))
 }
 
 export async function getProductStoreRecords(productCode: string): Promise<ProductStoreRecordDto[]> {
@@ -424,20 +489,34 @@ export async function getProductStoreRecords(productCode: string): Promise<Produ
   return unwrapApiData(response) ?? []
 }
 
+function toProductMutationPayload(data: Partial<PosProductDto>) {
+  const { categoryGuid, warehouseCategoryGuid, ...payload } = data
+  return {
+    ...payload,
+    productCategoryGUID: categoryGuid,
+    warehouseCategoryGUID: warehouseCategoryGuid,
+  }
+}
+
 export async function createProduct(data: Partial<PosProductDto> & Record<string, unknown>) {
-  const response = await request.post<ApiResponse<PosProductDto>>(`${API_BASE}`, data)
-  return unwrapApiData(response)
+  const response = await request.post<ApiResponse<PosProductDto>>(`${API_BASE}`, toProductMutationPayload(data))
+  return normalizePosProductDto(unwrapApiData(response))
 }
 
 export async function createProductWithPrices(data: CreateProductWithPricesDto): Promise<CreateProductWithPricesResultDto> {
   const response = await request.post<ApiResponse<CreateProductWithPricesResultDto>>(`${API_BASE}/create-with-prices`, data)
   assertApiSuccess(response, '创建商品失败')
-  return unwrapApiData(response)
+  const result = unwrapApiData(response)
+  // 内嵌 product 同样返回 PosProductDto，复用同一 helper 避免与列表字段不一致。
+  return {
+    ...result,
+    product: result.product ? normalizePosProductDto(result.product) : result.product,
+  }
 }
 
 export async function updateProduct(productCode: string, data: Partial<PosProductDto>) {
-  const response = await request.put<ApiResponse<PosProductDto>>(`${API_BASE}/${productCode}`, data)
-  return unwrapApiData(response)
+  const response = await request.put<ApiResponse<PosProductDto>>(`${API_BASE}/${productCode}`, toProductMutationPayload(data))
+  return normalizePosProductDto(unwrapApiData(response))
 }
 
 export async function batchUpdateProducts(items: BatchUpdatePosProductDto[]) {

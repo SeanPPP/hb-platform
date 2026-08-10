@@ -64,12 +64,16 @@ const productIntegrityTypeFile = path.resolve(process.cwd(), 'src/types/productI
 const serviceFile = path.resolve(process.cwd(), 'src/services/posProductService.ts')
 const productIntegrityHelperFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/ProductManagement/productIntegrityReport.ts')
 const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
+const zhLocaleFile = path.resolve(process.cwd(), 'src/i18n/locales/zh.json')
+const enLocaleFile = path.resolve(process.cwd(), 'src/i18n/locales/en.json')
 const pageSource = readFileSync(pageFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
 const productIntegrityTypeSource = readFileSync(productIntegrityTypeFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const productIntegrityHelperSource = readFileSync(productIntegrityHelperFile, 'utf8')
 const globalStyleSource = readFileSync(globalStyleFile, 'utf8')
+const zhLocaleSource = readFileSync(zhLocaleFile, 'utf8')
+const enLocaleSource = readFileSync(enLocaleFile, 'utf8')
 
 function assertSourceOrder(source: string, first: string, second: string, message: string) {
   const firstIndex = source.indexOf(first)
@@ -497,7 +501,7 @@ async function main() {
     const supplierFieldSource = editModalSource.slice(supplierFieldStart, supplierFieldEnd)
     assert(
       supplierFieldSource.includes('options={supplierOptions}') &&
-        supplierFieldSource.includes("placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')}") &&
+        supplierFieldSource.includes("placeholder={t('posAdmin.products.selectSupplier', '请选择澳洲供应商')}") &&
         !supplierFieldSource.includes('disabled'),
       '编辑弹窗供应商下拉应打开编辑，不能禁用',
     )
@@ -905,7 +909,7 @@ async function main() {
         pageSource.includes('width: 92') &&
         pageSource.includes("title: t('posAdmin.products.productTypeLabel', '商品类型')") &&
         pageSource.includes('width: 88') &&
-        pageSource.includes('scroll={{ x: 1640, y: tableScrollY }}'),
+        pageSource.includes('scroll={{ x: 1880, y: tableScrollY }}'),
       '接入筛选/排序后的窄列表头应放宽列宽，并同步表格横向滚动宽度',
     )
     assert(
@@ -1683,6 +1687,203 @@ async function main() {
     )
   })
   if (keepAliveVirtualTableRestoreFailure) failures.push(keepAliveVirtualTableRestoreFailure)
+
+  const supplierCategoryColumnsFailure = await runTest('商品管理应加载商品/仓库分类树与国内供应商并扩展供应商与分类列', () => {
+    assert(
+      pageSource.includes("import { getAllChinaSuppliers } from '../../../services/chinaSupplierService'") &&
+        pageSource.includes('getCategoryTree as getWarehouseCategoryTree') &&
+        pageSource.includes('type WarehouseCategoryNode'),
+      '页面应加载国内供应商和仓库分类服务',
+    )
+    assert(
+      pageSource.includes('warehouseCategoryGuid?: string') &&
+        pageSource.includes('domesticSupplierCode?: string') &&
+        pageSource.includes('domesticSupplierName?: string'),
+      '商品行类型应声明仓库分类和国内供应商响应字段',
+    )
+    assert(
+      pageSource.includes('const [warehouseCategoryTree, setWarehouseCategoryTree] = useState<WarehouseCategoryNode[]>([])') &&
+        pageSource.includes('const [warehouseCategoryLoadFailed, setWarehouseCategoryLoadFailed] = useState(false)') &&
+        pageSource.includes('const [chinaSupplierOptions, setChinaSupplierOptions] = useState<ChinaSupplierOption[]>([])') &&
+        pageSource.includes('const [warehouseCategoryGuid, setWarehouseCategoryGuid] = useState<string | undefined>(undefined)') &&
+        pageSource.includes('const [warehouseCategoryGuidInput, setWarehouseCategoryGuidInput] = useState<string | undefined>(undefined)'),
+      '页面应保存仓库分类树、失败状态、国内供应商选项和仓库分类顶部筛选状态',
+    )
+    const loadOptionsStart = pageSource.indexOf('const loadOptions = useCallback')
+    const loadOptionsEnd = pageSource.indexOf('useEffect(() => {\n    loadOptions()', loadOptionsStart)
+    const loadOptionsSource = pageSource.slice(loadOptionsStart, loadOptionsEnd)
+    assert(
+      loadOptionsSource.includes('const tree = await getProductCategoryTree()') &&
+        loadOptionsSource.includes('setCategoryLoadFailed') &&
+        loadOptionsSource.includes('const tree = await getWarehouseCategoryTree()') &&
+        loadOptionsSource.includes('setWarehouseCategoryLoadFailed') &&
+        loadOptionsSource.includes('getAllChinaSuppliers()'),
+      'loadOptions 应独立加载商品分类树、仓库分类树和国内供应商选项',
+    )
+    assert(
+      pageSource.includes('warehouseCategoryGuid: warehouseCategoryGuid || undefined') &&
+        pageSource.includes('setWarehouseCategoryGuid(warehouseCategoryGuidInput)') &&
+        pageSource.includes('setWarehouseCategoryGuidInput(undefined)') &&
+        pageSource.includes('setWarehouseCategoryGuid(undefined)'),
+      '查询参数、查询和重置应同步仓库分类顶部筛选',
+    )
+    assert(
+      pageSource.includes("domesticSupplierCode: 'domesticsuppliercode'") &&
+        pageSource.includes("warehouseCategoryGuid: 'warehousecategoryguid'"),
+      '国内供应商和仓库分类排序字段应映射到后端契约',
+    )
+    assert(
+      pageSource.match(/text: fullPath\.join\(' \/ '\)/g)?.length === 2,
+      '商品分类和仓库分类列头筛选应显示完整分类路径，避免同名叶级分类混淆',
+    )
+    const toolbarStart = pageSource.indexOf('<Space wrap>')
+    const toolbarEnd = pageSource.indexOf('onClick={handleSearch}', toolbarStart)
+    const toolbarSource = pageSource.slice(toolbarStart, toolbarEnd)
+    assertSourceOrder(
+      toolbarSource,
+      'onPressEnter={handleSearch}',
+      'options={supplierOptions}',
+      '顶部筛选应先搜索再澳洲供应商',
+    )
+    assertSourceOrder(
+      toolbarSource,
+      'options={supplierOptions}',
+      'options={buildCategoryCascaderOptions(categoryTree)}',
+      '顶部筛选澳洲供应商应排在商品分类前',
+    )
+    assertSourceOrder(
+      toolbarSource,
+      'options={buildCategoryCascaderOptions(categoryTree)}',
+      'options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}',
+      '顶部筛选商品分类应排在仓库分类前',
+    )
+    assertSourceOrder(
+      toolbarSource,
+      'options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}',
+      'value={isActiveFilterInput}',
+      '顶部筛选仓库分类应排在状态前',
+    )
+    assertSourceOrder(
+      toolbarSource,
+      'value={isActiveFilterInput}',
+      'value={isSetFilterInput}',
+      '顶部筛选状态应排在套装前',
+    )
+    assert(
+      !toolbarSource.includes('domesticSupplierColumnFilterOptions') &&
+        !toolbarSource.includes("t('posAdmin.products.domesticSupplier'"),
+      '国内供应商不应设置顶部筛选',
+    )
+    const columnsStart = pageSource.indexOf('const columns: ColumnsType<ProductRow> = [')
+    const columnsEnd = pageSource.indexOf('\n  ]\n\n  return (', columnsStart)
+    const mainColumnsSource = pageSource.slice(columnsStart, columnsEnd)
+    assertSourceOrder(
+      mainColumnsSource,
+      "key: 'localSupplierCode'",
+      "key: 'domesticSupplierCode'",
+      '表格澳洲供应商列应排在国内供应商列前',
+    )
+    assertSourceOrder(
+      mainColumnsSource,
+      "key: 'domesticSupplierCode'",
+      "key: 'categoryGuid'",
+      '表格国内供应商列应排在商品分类列前',
+    )
+    assertSourceOrder(
+      mainColumnsSource,
+      "key: 'categoryGuid'",
+      "key: 'warehouseCategoryGuid'",
+      '表格商品分类列应排在仓库分类列前',
+    )
+    assert(
+      mainColumnsSource.includes("...enumFilterProps('domesticSupplierCode', domesticSupplierColumnFilterOptions)") &&
+        mainColumnsSource.includes("...enumFilterProps('warehouseCategoryGuid', warehouseCategoryColumnFilterOptions)") &&
+        mainColumnsSource.includes("title: t('posAdmin.products.australianSupplier', '澳洲供应商')") &&
+        mainColumnsSource.includes("title: t('posAdmin.products.domesticSupplier', '国内供应商')") &&
+        mainColumnsSource.includes("title: t('posAdmin.products.productCategoryLabel', '商品分类')") &&
+        mainColumnsSource.includes("title: t('posAdmin.products.warehouseCategory', '仓库分类')"),
+      '供应商与分类列应使用明确标题并绑定多选列头过滤',
+    )
+    assert(
+      mainColumnsSource.includes("sortOrder: sortBy === 'domesticSupplierCode' ? sortOrder : undefined") &&
+        mainColumnsSource.includes("sortOrder: sortBy === 'warehouseCategoryGuid' ? sortOrder : undefined"),
+      '国内供应商和仓库分类列应启用服务端排序',
+    )
+    assert(
+      pageSource.includes('function renderCategoryCell') &&
+        pageSource.includes('nameByGuid.get(guid)') &&
+        pageSource.includes('const displayName = name ?? guid') &&
+        pageSource.includes('return <span>-</span>') &&
+        pageSource.includes("path.join(' / ')") &&
+        pageSource.includes("textOverflow: 'ellipsis'") &&
+        pageSource.includes("whiteSpace: 'nowrap'") &&
+        pageSource.includes('renderCategoryCell(record.categoryGuid, categoryPathMaps.nameByGuid, categoryPathMaps.pathByGuid)') &&
+        pageSource.includes('renderCategoryCell(record.warehouseCategoryGuid, warehouseCategoryPathMaps.nameByGuid, warehouseCategoryPathMaps.pathByGuid)'),
+      '分类单元格应显示叶级名、完整路径 tooltip，未知 GUID 显示 GUID，空值显示占位符',
+    )
+    assert(
+      pageSource.includes('warehouseCategoryGuid: editingProduct.warehouseCategoryGuid'),
+      '编辑商品保存时应显式带回只读仓库分类，避免覆盖式 PUT 清空分类',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.products.categoryManagement', '商品分类管理')") &&
+        pageSource.includes("t('posAdmin.products.newCategory', '新建商品分类')") &&
+        pageSource.includes("t('posAdmin.products.editCategory', '编辑商品分类')") &&
+        pageSource.includes("t('posAdmin.products.parentCategory', '父商品分类')") &&
+        pageSource.includes("t('posAdmin.products.categoryName', '商品分类名称')"),
+      '分类管理入口与新建/编辑表单应明确为商品分类',
+    )
+    assert(
+      pageSource.includes('isActive: editingCategory.isActive') &&
+        pageSource.includes("placeholder={t('posAdmin.products.categoryPlaceholder', '商品分类')}"),
+      '编辑商品分类应显式保留启用状态，顶部筛选应明确标注商品分类',
+    )
+    assert(
+      pageSource.includes('scroll={{ x: 1880, y: tableScrollY }}'),
+      '新增两列后表格横向滚动宽度应同步放宽',
+    )
+    assert(
+      zhLocaleSource.includes('"australianSupplier": "澳洲供应商"') &&
+        zhLocaleSource.includes('"domesticSupplier": "国内供应商"') &&
+        zhLocaleSource.includes('"warehouseCategory": "仓库分类"') &&
+        zhLocaleSource.includes('"warehouseCategoryPlaceholder": "仓库分类"') &&
+        zhLocaleSource.includes('"categoryManagement": "商品分类管理"') &&
+        zhLocaleSource.includes('"newCategory": "新建商品分类"') &&
+        zhLocaleSource.includes('"editCategory": "编辑商品分类"') &&
+        zhLocaleSource.includes('"parentCategory": "父商品分类"') &&
+        zhLocaleSource.includes('"categoryName": "商品分类名称"') &&
+        zhLocaleSource.includes('"categoryPlaceholder": "商品分类"') &&
+        zhLocaleSource.includes('"supplierPlaceholder": "澳洲供应商"'),
+      '中文文案应补齐国内供应商、仓库分类与商品分类管理命名',
+    )
+    assert(
+      enLocaleSource.includes('"australianSupplier": "Australian Supplier"') &&
+        enLocaleSource.includes('"domesticSupplier": "Domestic Supplier"') &&
+        enLocaleSource.includes('"warehouseCategory": "Warehouse Category"') &&
+        enLocaleSource.includes('"warehouseCategoryPlaceholder": "Warehouse Category"') &&
+        enLocaleSource.includes('"categoryManagement": "Product Category Management"') &&
+        enLocaleSource.includes('"newCategory": "New Product Category"') &&
+        enLocaleSource.includes('"editCategory": "Edit Product Category"') &&
+        enLocaleSource.includes('"parentCategory": "Parent Product Category"') &&
+        enLocaleSource.includes('"categoryName": "Product Category Name"') &&
+        enLocaleSource.includes('"categoryPlaceholder": "Product Category"') &&
+        enLocaleSource.includes('"supplierPlaceholder": "Australian Supplier"'),
+      '英文文案应与中文同步补齐',
+    )
+    const zhProductMessages = (JSON.parse(zhLocaleSource) as {
+      posAdmin: { products: Record<string, string> }
+    }).posAdmin.products
+    const enProductMessages = (JSON.parse(enLocaleSource) as {
+      posAdmin: { products: Record<string, string> }
+    }).posAdmin.products
+    assertEqual(zhProductMessages.supplier, '澳洲供应商', '中文商品页不应继续使用泛称供应商')
+    assertEqual(zhProductMessages.selectSupplier, '请选择澳洲供应商', '中文商品页供应商选择提示应明确为澳洲供应商')
+    assertEqual(zhProductMessages.searchPlaceholder, '搜索商品名称 / 货号 / 条码 / 英文名 / 澳洲供应商', '中文搜索提示应明确供应商字段为澳洲供应商')
+    assertEqual(enProductMessages.supplier, 'Australian Supplier', '英文商品页不应继续使用泛称 Supplier')
+    assertEqual(enProductMessages.selectSupplier, 'Select Australian Supplier', '英文商品页供应商选择提示应明确为 Australian Supplier')
+    assertEqual(enProductMessages.searchPlaceholder, 'Search product name / item no. / barcode / English name / Australian supplier', '英文搜索提示应明确 supplier 字段为 Australian supplier')
+  })
+  if (supplierCategoryColumnsFailure) failures.push(supplierCategoryColumnsFailure)
 
   const existingJobFailure = await runTest('已有 active job 时 HQ 同步按钮只展示状态不新建任务', () => {
     assert(

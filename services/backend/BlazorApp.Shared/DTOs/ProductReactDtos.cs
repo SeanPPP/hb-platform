@@ -258,6 +258,16 @@ namespace BlazorApp.Shared.DTOs
         /// 本地供应商代码多选过滤
         /// </summary>
         public List<string>? LocalSupplierCodes { get; set; }
+
+        /// <summary>
+        /// 国内供应商代码多选过滤（来自未删除 DomesticProduct 与 ChinaSupplier 的有效映射）
+        /// </summary>
+        public List<string>? DomesticSupplierCodes { get; set; }
+
+        /// <summary>
+        /// 仓库类别GUID多选过滤；有值时优先于单值 WarehouseCategoryGUID
+        /// </summary>
+        public List<string>? WarehouseCategoryGUIDs { get; set; }
         
         /// <summary>
         /// 是否启用状态过滤

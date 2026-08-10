@@ -47,7 +47,9 @@ public sealed class ProductStoreRecordsTests : IDisposable
             typeof(Store),
             typeof(StoreRetailPrice),
             typeof(StoreMultiCodeProduct),
-            typeof(ProductSetCode)
+            typeof(ProductSetCode),
+            typeof(DomesticProduct),
+            typeof(ChinaSupplier)
         );
     }
 
@@ -429,6 +431,342 @@ public sealed class ProductStoreRecordsTests : IDisposable
             storeRecordSql,
             StringComparison.OrdinalIgnoreCase
         );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_国内供应商代码名称来自未删除映射且未映射商品保留()
+    {
+        await SeedProductAsync("P-MAPPED", "M001");
+        await SeedProductAsync("P-UNMAPPED", "U001");
+        await SeedProductAsync("P-DELETED-MAP", "D001");
+        await SeedProductAsync("P-DELETED-SUPPLIER", "S001");
+        await SeedProductAsync("P-MISSING-SUPPLIER", "X001");
+        await SeedDomesticProductAsync("P-MAPPED", "SUP-CN-1");
+        await SeedDomesticProductAsync("P-DELETED-MAP", "SUP-CN-DEL", isDeleted: true);
+        await SeedDomesticProductAsync("P-DELETED-SUPPLIER", "SUP-CN-2");
+        await SeedDomesticProductAsync("P-MISSING-SUPPLIER", "SUP-CN-MISSING");
+        await SeedChinaSupplierAsync("SUP-CN-1", "国内供应商甲");
+        await SeedChinaSupplierAsync("SUP-CN-2", "国内供应商乙", isDeleted: true);
+
+        var result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+
+        var mapped = result.Items.Single(item => item.ProductCode == "P-MAPPED");
+        Assert.Equal("SUP-CN-1", mapped.DomesticSupplierCode);
+        Assert.Equal("国内供应商甲", mapped.DomesticSupplierName);
+
+        var unmapped = result.Items.Single(item => item.ProductCode == "P-UNMAPPED");
+        Assert.Null(unmapped.DomesticSupplierCode);
+        Assert.Null(unmapped.DomesticSupplierName);
+
+        var deletedMap = result.Items.Single(item => item.ProductCode == "P-DELETED-MAP");
+        Assert.Null(deletedMap.DomesticSupplierCode);
+        Assert.Null(deletedMap.DomesticSupplierName);
+
+        var deletedSupplier = result.Items.Single(item => item.ProductCode == "P-DELETED-SUPPLIER");
+        Assert.Null(deletedSupplier.DomesticSupplierCode);
+        Assert.Null(deletedSupplier.DomesticSupplierName);
+
+        var missingSupplier = result.Items.Single(item => item.ProductCode == "P-MISSING-SUPPLIER");
+        Assert.Null(missingSupplier.DomesticSupplierCode);
+        Assert.Null(missingSupplier.DomesticSupplierName);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_国内供应商字段仅来自未删除完整映射()
+    {
+        await SeedProductAsync("P-DETAIL-MAPPED", "D001");
+        await SeedDomesticProductAsync("P-DETAIL-MAPPED", "SUP-DETAIL");
+        await SeedChinaSupplierAsync("SUP-DETAIL", "详情供应商");
+
+        await SeedProductAsync("P-DETAIL-DELETED", "D002");
+        await SeedDomesticProductAsync("P-DETAIL-DELETED", "SUP-DELETED");
+        await SeedChinaSupplierAsync("SUP-DELETED", "已删除供应商", isDeleted: true);
+
+        var mapped = await CreateService().GetByIdAsync("P-DETAIL-MAPPED");
+        Assert.True(mapped.Success, mapped.Message);
+        Assert.Equal("SUP-DETAIL", mapped.Data?.DomesticSupplierCode);
+        Assert.Equal("详情供应商", mapped.Data?.DomesticSupplierName);
+
+        var deleted = await CreateService().GetByIdAsync("P-DETAIL-DELETED");
+        Assert.True(deleted.Success, deleted.Message);
+        Assert.Null(deleted.Data?.DomesticSupplierCode);
+        Assert.Null(deleted.Data?.DomesticSupplierName);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_国内供应商多选过滤只返回映射命中商品()
+    {
+        await SeedProductAsync("P-SUP-A", "A001");
+        await SeedProductAsync("P-SUP-B", "B001");
+        await SeedProductAsync("P-SUP-C", "C001");
+        await SeedProductAsync("P-SUP-NONE", "N001");
+        await SeedDomesticProductAsync("P-SUP-A", "SUP-A");
+        await SeedDomesticProductAsync("P-SUP-B", "SUP-B");
+        await SeedDomesticProductAsync("P-SUP-C", "SUP-C");
+        await SeedChinaSupplierAsync("SUP-A", "供应商A");
+        await SeedChinaSupplierAsync("SUP-B", "供应商B");
+        await SeedChinaSupplierAsync("SUP-C", "供应商C");
+
+        var result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            DomesticSupplierCodes = new List<string> { "SUP-A", "SUP-C" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+
+        Assert.Equal(
+            new[] { "P-SUP-A", "P-SUP-C" },
+            result.Items.Select(item => item.ProductCode).ToArray()
+        );
+        Assert.Equal(2, result.Total);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_仓库分类多选过滤且复数优先于单值()
+    {
+        await SeedProductAsync("P-WH-A", "A001", warehouseCategoryGuid: "WH-A");
+        await SeedProductAsync("P-WH-B", "B001", warehouseCategoryGuid: "WH-B");
+        await SeedProductAsync("P-WH-C", "C001", warehouseCategoryGuid: "WH-C");
+        await SeedProductAsync("P-WH-NONE", "N001");
+
+        var plural = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            WarehouseCategoryGUIDs = new List<string> { "WH-A", "WH-B" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-WH-A", "P-WH-B" },
+            plural.Items.Select(item => item.ProductCode).ToArray()
+        );
+
+        var pluralWins = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            WarehouseCategoryGUID = "WH-C",
+            WarehouseCategoryGUIDs = new List<string> { "WH-A" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-WH-A" },
+            pluralWins.Items.Select(item => item.ProductCode).ToArray()
+        );
+
+        var single = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            WarehouseCategoryGUID = "WH-C",
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-WH-C" },
+            single.Items.Select(item => item.ProductCode).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_商品分类与仓库分类多选独立且AND组合过滤()
+    {
+        await SeedProductAsync("P-PC-A-WH-1", "A001", categoryGuid: "PC-A", warehouseCategoryGuid: "WH-1");
+        await SeedProductAsync("P-PC-A-WH-2", "A002", categoryGuid: "PC-A", warehouseCategoryGuid: "WH-2");
+        await SeedProductAsync("P-PC-B-WH-1", "B001", categoryGuid: "PC-B", warehouseCategoryGuid: "WH-1");
+        await SeedProductAsync("P-PC-B-WH-2", "B002", categoryGuid: "PC-B", warehouseCategoryGuid: "WH-2");
+
+        var byProductCategory = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductCategoryGUIDs = new List<string> { "PC-A" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-PC-A-WH-1", "P-PC-A-WH-2" },
+            byProductCategory.Items.Select(item => item.ProductCode).ToArray()
+        );
+
+        var andCombination = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductCategoryGUIDs = new List<string> { "PC-A", "PC-B" },
+            WarehouseCategoryGUIDs = new List<string> { "WH-1" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-PC-A-WH-1", "P-PC-B-WH-1" },
+            andCombination.Items.Select(item => item.ProductCode).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_国内供应商与仓库分类筛选在分页和计数前生效()
+    {
+        await SeedProductAsync("P01", "A001", warehouseCategoryGuid: "WH-1");
+        await SeedProductAsync("P02", "A002", warehouseCategoryGuid: "WH-1");
+        await SeedProductAsync("P03", "A003", warehouseCategoryGuid: "WH-2");
+        await SeedProductAsync("P04", "A004", warehouseCategoryGuid: "WH-2");
+        await SeedProductAsync("P05", "A005", warehouseCategoryGuid: "WH-2");
+        await SeedDomesticProductAsync("P01", "SUP-A");
+        await SeedDomesticProductAsync("P02", "SUP-B");
+        await SeedDomesticProductAsync("P03", "SUP-A");
+        await SeedDomesticProductAsync("P04", "SUP-B");
+        await SeedDomesticProductAsync("P05", "SUP-C");
+        await SeedChinaSupplierAsync("SUP-A", "供应商A");
+        await SeedChinaSupplierAsync("SUP-B", "供应商B");
+        await SeedChinaSupplierAsync("SUP-C", "供应商C");
+
+        var domestic = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            DomesticSupplierCodes = new List<string> { "SUP-A", "SUP-B" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(4, domestic.Total);
+        Assert.Equal(new[] { "P01" }, domestic.Items.Select(item => item.ProductCode).ToArray());
+
+        var warehouse = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 2,
+            PageSize = 1,
+            WarehouseCategoryGUIDs = new List<string> { "WH-2" },
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(3, warehouse.Total);
+        Assert.Equal(new[] { "P04" }, warehouse.Items.Select(item => item.ProductCode).ToArray());
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_国内供应商映射唯一性不产生重复行()
+    {
+        await SeedProductAsync("P-DUP", "D001");
+        await SeedDomesticProductAsync("P-DUP", "SUP-DUP");
+        await SeedChinaSupplierAsync("SUP-DUP", "同一供应商");
+        await SeedChinaSupplierAsync("SUP-DUP", "同一供应商", guid: "supplier-guid-dup-2");
+
+        var result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            DomesticSupplierCodes = new List<string> { "SUP-DUP" },
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-DUP", item.ProductCode);
+        Assert.Equal("SUP-DUP", item.DomesticSupplierCode);
+        Assert.Equal("同一供应商", item.DomesticSupplierName);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_国内供应商代码和仓库分类排序不落回默认更新时间排序()
+    {
+        await SeedProductAsync("P-SORT-CN-2", "C002", warehouseCategoryGuid: "WH-2", updatedAt: new DateTime(2026, 6, 16));
+        await SeedProductAsync("P-SORT-CN-1", "C001", warehouseCategoryGuid: "WH-1", updatedAt: new DateTime(2026, 6, 18));
+        await SeedProductAsync("P-SORT-CN-3", "C003", warehouseCategoryGuid: "WH-3", updatedAt: new DateTime(2026, 6, 17));
+        await SeedDomesticProductAsync("P-SORT-CN-1", "SUP-Z");
+        await SeedDomesticProductAsync("P-SORT-CN-2", "SUP-A");
+        await SeedDomesticProductAsync("P-SORT-CN-3", "SUP-M");
+        await SeedChinaSupplierAsync("SUP-Z", "供应商Z");
+        await SeedChinaSupplierAsync("SUP-A", "供应商A");
+        await SeedChinaSupplierAsync("SUP-M", "供应商M");
+
+        var bySupplierAsc = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "domesticsuppliercode",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-SORT-CN-2", "P-SORT-CN-3", "P-SORT-CN-1" },
+            bySupplierAsc.Items.Select(item => item.ProductCode).ToArray()
+        );
+
+        var bySupplierDesc = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "domesticsuppliercode",
+            SortOrder = "desc",
+        });
+        Assert.Equal(
+            new[] { "P-SORT-CN-1", "P-SORT-CN-3", "P-SORT-CN-2" },
+            bySupplierDesc.Items.Select(item => item.ProductCode).ToArray()
+        );
+
+        var byWarehouseAsc = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "warehousecategoryguid",
+            SortOrder = "asc",
+        });
+        Assert.Equal(
+            new[] { "P-SORT-CN-1", "P-SORT-CN-2", "P-SORT-CN-3" },
+            byWarehouseAsc.Items.Select(item => item.ProductCode).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_新增排序字段同值时按商品代码稳定分页()
+    {
+        await SeedProductAsync("P-STABLE-2", "S002", warehouseCategoryGuid: "WH-SAME");
+        await SeedProductAsync("P-STABLE-1", "S001", warehouseCategoryGuid: "WH-SAME");
+        await SeedDomesticProductAsync("P-STABLE-2", "SUP-SAME");
+        await SeedDomesticProductAsync("P-STABLE-1", "SUP-SAME");
+        await SeedChinaSupplierAsync("SUP-SAME", "相同供应商");
+
+        var supplierPage1 = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            SortBy = "domesticsuppliercode",
+            SortOrder = "desc",
+        });
+        var supplierPage2 = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 2,
+            PageSize = 1,
+            SortBy = "domesticsuppliercode",
+            SortOrder = "desc",
+        });
+        Assert.Equal("P-STABLE-1", Assert.Single(supplierPage1.Items).ProductCode);
+        Assert.Equal("P-STABLE-2", Assert.Single(supplierPage2.Items).ProductCode);
+
+        var warehousePage1 = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            SortBy = "warehousecategoryguid",
+            SortOrder = "asc",
+        });
+        var warehousePage2 = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 2,
+            PageSize = 1,
+            SortBy = "warehousecategoryguid",
+            SortOrder = "asc",
+        });
+        Assert.Equal("P-STABLE-1", Assert.Single(warehousePage1.Items).ProductCode);
+        Assert.Equal("P-STABLE-2", Assert.Single(warehousePage2.Items).ProductCode);
     }
 
     [Fact]
@@ -912,6 +1250,7 @@ public sealed class ProductStoreRecordsTests : IDisposable
         bool isAutoPricing = false,
         int? productType = null,
         string? categoryGuid = null,
+        string? warehouseCategoryGuid = null,
         DateTime? createdAt = null,
         DateTime? updatedAt = null)
     {
@@ -921,6 +1260,7 @@ public sealed class ProductStoreRecordsTests : IDisposable
             UUID = $"product-{productCode}",
             ProductCode = productCode,
             ProductCategoryGUID = categoryGuid,
+            WarehouseCategoryGUID = warehouseCategoryGuid,
             LocalSupplierCode = localSupplierCode,
             ItemNumber = itemNumber,
             Barcode = barcode ?? $"barcode-{productCode}",
@@ -933,6 +1273,40 @@ public sealed class ProductStoreRecordsTests : IDisposable
             CreatedAt = createdAt ?? now,
             UpdatedAt = updatedAt ?? now,
             IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedDomesticProductAsync(
+        string productCode,
+        string? supplierCode,
+        bool isDeleted = false)
+    {
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = productCode,
+            SupplierCode = supplierCode,
+            ProductName = $"国内商品{productCode}",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            IsDeleted = isDeleted,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedChinaSupplierAsync(
+        string supplierCode,
+        string supplierName,
+        bool isDeleted = false,
+        string? guid = null)
+    {
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = guid ?? $"supplier-guid-{supplierCode}",
+            SupplierCode = supplierCode,
+            SupplierName = supplierName,
+            Status = isDeleted ? 0 : 1,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 

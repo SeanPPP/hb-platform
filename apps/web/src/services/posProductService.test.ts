@@ -1,10 +1,14 @@
 import {
   batchUpdateProductStoreRecords,
+  createProduct,
   createProductWithPrices,
   createPushProductsToHqJob,
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
   createSupplierImageBatchUpdateJob,
+  getProductByBarcode,
+  getProductById,
+  getProducts,
   getPushToHqStoreOptions,
   getPushProductsToHqJob,
   getSyncProductsToStoresJob,
@@ -13,7 +17,9 @@ import {
   pushProductsToHq,
   startSyncProductsToStoresJob,
   syncProductsFromHqFull,
+  updateProduct,
 } from './posProductService'
+import { getAllChinaSuppliers } from './chinaSupplierService'
 import { RequestError } from '../utils/request'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
@@ -22,12 +28,54 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
   }
 }
 
-function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
-  const actualJson = JSON.stringify(actual)
-  const expectedJson = JSON.stringify(expected)
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
-  if (actualJson !== expectedJson) {
-    throw new Error(`${message}。Expected: ${expectedJson}, received: ${actualJson}`)
+// 深度比较对象时忽略键顺序（JSON.stringify 对键序敏感，会让归一化后的等价对象误判失败），数组仍按索引顺序比较。
+function findDeepMismatch(actual: unknown, expected: unknown): string | undefined {
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+      return '数组结构不一致'
+    }
+    for (let index = 0; index < actual.length; index++) {
+      const mismatch = findDeepMismatch(actual[index], expected[index])
+      if (mismatch) {
+        return `[${index}]${mismatch}`
+      }
+    }
+    return undefined
+  }
+
+  if (isPlainObject(actual) || isPlainObject(expected)) {
+    if (!isPlainObject(actual) || !isPlainObject(expected)) {
+      return '对象结构不一致'
+    }
+    const actualKeys = Object.keys(actual)
+    if (actualKeys.length !== Object.keys(expected).length) {
+      return `键集合不一致（实际 ${actualKeys.sort().join(',')}，期望 ${Object.keys(expected).sort().join(',')}）`
+    }
+    for (const key of Object.keys(expected)) {
+      if (!Object.prototype.hasOwnProperty.call(actual, key)) {
+        return `缺少键 ${key}`
+      }
+      const mismatch = findDeepMismatch(actual[key], expected[key])
+      if (mismatch) {
+        return `.${key}${mismatch}`
+      }
+    }
+    return undefined
+  }
+
+  return actual === expected ? undefined : '值不一致'
+}
+
+function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
+  const mismatch = findDeepMismatch(actual, expected)
+  if (mismatch) {
+    throw new Error(
+      `${message}。Expected: ${JSON.stringify(expected)}, received: ${JSON.stringify(actual)}（差异：${mismatch}）`,
+    )
   }
 }
 
@@ -676,6 +724,281 @@ try {
     },
     '创建商品带分店价格应返回 unwrap 后的结果',
   )
+
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        productCode: 'P001',
+        productCategoryGUID: 'cat-list-1',
+        warehouseCategoryGUID: 'wh-list-1',
+        domesticSupplierCode: 'CN-001',
+        domesticSupplierName: '国内供应商一',
+      },
+    ],
+    total: 1,
+  }
+
+  const listResult = await getProducts({
+    pageIndex: 1,
+    pageSize: 20,
+    categoryGuid: 'top-cat',
+    warehouseCategoryGuid: 'top-wh',
+    columnFilters: {
+      categoryGuid: ['col-cat'],
+      warehouseCategoryGuid: ['col-wh'],
+      domesticSupplierCode: ['CN-001', 'CN-002'],
+    },
+  })
+  assertEqual(capturedUrl, '/api/react/v1/products/list', '商品列表应调用分页查询接口')
+  assertEqual(capturedInit?.method, 'POST', '商品列表应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      pageNumber: 1,
+      pageSize: 20,
+      productCategoryGUIDs: ['top-cat'],
+      warehouseCategoryGUID: 'top-wh',
+      warehouseCategoryGUIDs: ['top-wh'],
+      domesticSupplierCodes: ['CN-001', 'CN-002'],
+    },
+    '商品列表顶部 categoryGuid/warehouseCategoryGuid 应优先于同列头过滤并发送数组；国内供应商列头发送 domesticSupplierCodes',
+  )
+  assertEqual(listResult.total, 1, '商品列表应透传后端 total')
+  assertDeepEqual(
+    listResult.items[0],
+    {
+      productCode: 'P001',
+      categoryGuid: 'cat-list-1',
+      warehouseCategoryGuid: 'wh-list-1',
+      domesticSupplierCode: 'CN-001',
+      domesticSupplierName: '国内供应商一',
+    },
+    '商品列表响应应归一化 productCategoryGUID/warehouseCategoryGUID 及国内供应商字段',
+  )
+
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        Guid: 'supplier-disabled',
+        SupplierCode: 'CN-DISABLED',
+        SupplierName: '停用但仍有关联的供应商',
+        Status: 0,
+      },
+      {
+        Guid: 'supplier-disabled-duplicate',
+        SupplierCode: 'CN-DISABLED',
+        SupplierName: '停用但仍有关联的供应商',
+        Status: 0,
+      },
+      {
+        Guid: 'supplier-empty-code',
+        SupplierCode: '   ',
+        SupplierName: '无有效编码供应商',
+        Status: 1,
+      },
+    ],
+  }
+  const allDomesticSuppliers = await getAllChinaSuppliers()
+  assertEqual(capturedUrl, '/api/v1/ChinaSuppliers/all', '商品列头选项应调用包含停用且排除软删记录的全部国内供应商接口')
+  assertEqual(allDomesticSuppliers.length, 1, '全部国内供应商接口应按非空供应商代码去重')
+  assertEqual(allDomesticSuppliers[0]?.guid, 'supplier-disabled', '全部国内供应商接口应归一化 GUID')
+  assertEqual(allDomesticSuppliers[0]?.supplierCode, 'CN-DISABLED', '全部国内供应商接口应归一化供应商代码')
+  assertEqual(allDomesticSuppliers[0]?.supplierName, '停用但仍有关联的供应商', '全部国内供应商接口应归一化供应商名称')
+  assertEqual(allDomesticSuppliers[0]?.status, 0, '全部国内供应商接口应保留停用状态')
+
+  nextPayload = {
+    success: true,
+    data: [],
+    total: 0,
+  }
+
+  await getProducts({
+    columnFilters: {
+      categoryGuid: ['col-cat-1', 'col-cat-2'],
+      warehouseCategoryGuid: ['col-wh-1'],
+      domesticSupplierCode: ['CN-009'],
+    },
+  })
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productCategoryGUIDs: ['col-cat-1', 'col-cat-2'],
+      warehouseCategoryGUIDs: ['col-wh-1'],
+      domesticSupplierCodes: ['CN-009'],
+    },
+    '无顶部筛选时商品列表应使用 categoryGuid/warehouseCategoryGuid/domesticSupplierCode 列头过滤值',
+  )
+
+  nextPayload = [
+    {
+      productCode: 'P002',
+      productCategoryGUID: 'cat-array',
+      warehouseCategoryGUID: 'wh-array',
+      domesticSupplierCode: 'CN-002',
+    },
+  ]
+  const arrayResult = await getProducts({})
+  assertDeepEqual(
+    arrayResult.items,
+    [
+      {
+        productCode: 'P002',
+        categoryGuid: 'cat-array',
+        warehouseCategoryGuid: 'wh-array',
+        domesticSupplierCode: 'CN-002',
+      },
+    ],
+    '商品列表直接数组响应应归一化字段',
+  )
+  assertEqual(arrayResult.total, 1, '商品列表直接数组响应 total 应为数组长度')
+
+  nextPayload = {
+    success: true,
+    data: [
+      {
+        productCode: 'P003',
+        productCategoryGUID: 'cat-data',
+        warehouseCategoryGUID: 'wh-data',
+      },
+    ],
+    total: 9,
+  }
+  const dataResult = await getProducts({})
+  assertDeepEqual(
+    dataResult.items,
+    [
+      {
+        productCode: 'P003',
+        categoryGuid: 'cat-data',
+        warehouseCategoryGuid: 'wh-data',
+      },
+    ],
+    '商品列表 data+total 包裹响应应归一化字段',
+  )
+  assertEqual(dataResult.total, 9, '商品列表 data+total 包裹响应应保留 total')
+
+  nextPayload = {
+    success: true,
+    data: {
+      items: [
+        {
+          productCode: 'P004',
+          productCategoryGUID: 'cat-paged',
+          warehouseCategoryGUID: 'wh-paged',
+          domesticSupplierName: '国内四',
+        },
+      ],
+      total: 7,
+      pageNumber: 1,
+      pageSize: 10,
+    },
+  }
+  const pagedResult = await getProducts({})
+  assertDeepEqual(
+    pagedResult.items,
+    [
+      {
+        productCode: 'P004',
+        categoryGuid: 'cat-paged',
+        warehouseCategoryGuid: 'wh-paged',
+        domesticSupplierName: '国内四',
+      },
+    ],
+    '商品列表 PagedResult 包裹响应应归一化字段',
+  )
+  assertEqual(pagedResult.total, 7, '商品列表 PagedResult 包裹响应应保留 total')
+  assertEqual((pagedResult as { page?: number }).page, 1, '商品列表 PagedResult 包裹响应应保留页码')
+
+  const detailPayload = {
+    success: true,
+    data: {
+      productCode: 'P005',
+      productCategoryGUID: 'cat-detail',
+      warehouseCategoryGUID: 'wh-detail',
+      DomesticSupplierCode: 'CN-005',
+      DomesticSupplierName: '国内五',
+    },
+  }
+
+  nextPayload = detailPayload
+  const productDetail = await getProductById('P005')
+  assertDeepEqual(
+    productDetail,
+    {
+      productCode: 'P005',
+      categoryGuid: 'cat-detail',
+      warehouseCategoryGuid: 'wh-detail',
+      domesticSupplierCode: 'CN-005',
+      domesticSupplierName: '国内五',
+    },
+    '商品详情应复用同一归一化 helper',
+  )
+
+  nextPayload = detailPayload
+  const barcodeDetail = await getProductByBarcode('930000000005')
+  assertEqual(barcodeDetail.categoryGuid, 'cat-detail', '条码查询商品应归一化商品分类')
+  assertEqual(barcodeDetail.warehouseCategoryGuid, 'wh-detail', '条码查询商品应归一化仓库分类')
+  assertEqual(barcodeDetail.domesticSupplierCode, 'CN-005', '条码查询商品应归一化国内供应商编码')
+
+  nextPayload = detailPayload
+  const createdProduct = await createProduct({
+    productName: '新建商品',
+    categoryGuid: 'cat-create',
+    warehouseCategoryGuid: 'wh-create',
+  })
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productName: '新建商品',
+      productCategoryGUID: 'cat-create',
+      warehouseCategoryGUID: 'wh-create',
+    },
+    '创建商品请求应映射两套分类 GUID 且不发送前端别名',
+  )
+  assertEqual(createdProduct.categoryGuid, 'cat-detail', '创建商品返回应归一化商品分类')
+  assertEqual(createdProduct.warehouseCategoryGuid, 'wh-detail', '创建商品返回应归一化仓库分类')
+
+  nextPayload = detailPayload
+  const updatedProduct = await updateProduct('P005', {
+    productName: '更新商品',
+    categoryGuid: 'cat-update',
+    warehouseCategoryGuid: 'wh-update',
+  })
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      productName: '更新商品',
+      productCategoryGUID: 'cat-update',
+      warehouseCategoryGUID: 'wh-update',
+    },
+    '更新商品请求应映射两套分类 GUID 且不发送前端别名',
+  )
+  assertEqual(updatedProduct.categoryGuid, 'cat-detail', '更新商品返回应归一化商品分类')
+  assertEqual(updatedProduct.domesticSupplierCode, 'CN-005', '更新商品返回应归一化国内供应商编码')
+
+  nextPayload = {
+    success: true,
+    data: {
+      productCode: 'P006',
+      storeProductCodes: {},
+      product: {
+        productCode: 'P006',
+        productCategoryGUID: 'cat-create-prices',
+        warehouseCategoryGUID: 'wh-create-prices',
+        domesticSupplierCode: 'CN-006',
+      },
+    },
+  }
+  const createPricesResult = await createProductWithPrices({
+    productName: '带价创建',
+    isAutoPricing: true,
+    isSpecialProduct: false,
+  })
+  assertEqual(createPricesResult.product?.categoryGuid, 'cat-create-prices', '创建带分店价格商品应归一化内嵌 product 商品分类')
+  assertEqual(createPricesResult.product?.warehouseCategoryGuid, 'wh-create-prices', '创建带分店价格商品应归一化内嵌 product 仓库分类')
+  assertEqual(createPricesResult.product?.domesticSupplierCode, 'CN-006', '创建带分店价格商品应归一化内嵌 product 国内供应商编码')
 
   const jobFailurePayload = {
     isSuccess: false,

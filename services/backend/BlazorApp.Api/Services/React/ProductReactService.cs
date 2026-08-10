@@ -59,6 +59,8 @@ namespace BlazorApp.Api.Services.React
             public string ProductCode { get; set; } = string.Empty;
             public string ProductCategoryGUID { get; set; } = string.Empty;
             public string? LocalSupplierCode { get; set; }
+            public string? DomesticSupplierCode { get; set; }
+            public string? DomesticSupplierName { get; set; }
             public string? ItemNumber { get; set; }
             public string? Barcode { get; set; }
             public string? ProductName { get; set; }
@@ -90,6 +92,16 @@ namespace BlazorApp.Api.Services.React
         {
             public string ProductCode { get; set; } = string.Empty;
             public int StoreRecordCount { get; set; }
+        }
+
+        /// <summary>
+        /// 国内供应商映射行：每个 ProductCode 至多一行，保证映射唯一性不产生重复商品行。
+        /// </summary>
+        private sealed class DomesticProductMappingRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public string? DomesticSupplierCode { get; set; }
+            public string? DomesticSupplierName { get; set; }
         }
 
         #region 筛选辅助方法
@@ -327,7 +339,19 @@ namespace BlazorApp.Api.Services.React
                     q = q.Where(p => p.IsSpecialProduct == query.IsSpecialProduct.Value);
                 }
 
-                if (!string.IsNullOrWhiteSpace(query.WarehouseCategoryGUID))
+                var warehouseCategoryGuids = NormalizeColumnFilterValues(query.WarehouseCategoryGUIDs)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Select(guid => guid.Trim())
+                    .ToList();
+                if (warehouseCategoryGuids.Count > 0)
+                {
+                    // 复数过滤有值时优先；未设置仓库分类的商品不参与匹配。
+                    q = q.Where(p =>
+                        p.WarehouseCategoryGUID != null
+                        && warehouseCategoryGuids.Contains(p.WarehouseCategoryGUID)
+                    );
+                }
+                else if (!string.IsNullOrWhiteSpace(query.WarehouseCategoryGUID))
                 {
                     q = q.Where(p => p.WarehouseCategoryGUID == query.WarehouseCategoryGUID);
                 }
@@ -422,14 +446,40 @@ namespace BlazorApp.Api.Services.React
                     })
                     .MergeTable();
 
+                // 国内供应商映射：DomesticProduct 和 ChinaSupplier 都必须有效；
+                // Product 在外层左连接该映射，因此无映射、任一端软删或供应商不存在时商品仍保留。
+                // 按 ProductCode 聚合可避免重复供应商资料造成重复商品行。
+                var domesticMappings = _db.Queryable<DomesticProduct>()
+                    .InnerJoin<ChinaSupplier>(
+                        (dp, cs) => dp.SupplierCode == cs.SupplierCode && cs.IsDeleted == false
+                    )
+                    .Where((dp, cs) => dp.IsDeleted == false)
+                    .GroupBy(dp => dp.ProductCode)
+                    .Select(
+                        (dp, cs) =>
+                            new DomesticProductMappingRow
+                            {
+                                ProductCode = dp.ProductCode,
+                                DomesticSupplierCode = SqlFunc.AggregateMax(dp.SupplierCode),
+                                DomesticSupplierName = SqlFunc.AggregateMax(cs.SupplierName),
+                            }
+                    )
+                    .MergeTable();
+
                 // 关键位置：分店记录数必须来自预聚合结果，避免分页、筛选和排序反复触发逐行相关计数。
                 var projectedQuery = q
                     .LeftJoin(storeRecordCounts, (p, count) => p.ProductCode == count.ProductCode)
-                    .Select((p, count) => new ProductListQueryRow
+                    .LeftJoin(
+                        domesticMappings,
+                        (p, count, domestic) => p.ProductCode == domestic.ProductCode
+                    )
+                    .Select((p, count, domestic) => new ProductListQueryRow
                     {
                         ProductCode = p.ProductCode ?? string.Empty,
                         ProductCategoryGUID = p.ProductCategoryGUID ?? string.Empty,
                         LocalSupplierCode = p.LocalSupplierCode,
+                        DomesticSupplierCode = domestic.DomesticSupplierCode,
+                        DomesticSupplierName = domestic.DomesticSupplierName,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
                         ProductName = p.ProductName ?? string.Empty,
@@ -448,6 +498,18 @@ namespace BlazorApp.Api.Services.React
                         StoreRecordCount = SqlFunc.IsNull(count.StoreRecordCount, 0),
                     })
                     .MergeTable();
+
+                var domesticSupplierCodes = NormalizeColumnFilterValues(query.DomesticSupplierCodes)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .ToList();
+                if (domesticSupplierCodes.Count > 0)
+                {
+                    projectedQuery = projectedQuery.Where(item =>
+                        item.DomesticSupplierCode != null
+                        && domesticSupplierCodes.Contains(item.DomesticSupplierCode)
+                    );
+                }
 
                 if (query.StoreRecordCountMin.HasValue)
                 {
@@ -495,6 +557,24 @@ namespace BlazorApp.Api.Services.React
                             projectedQuery = isDesc
                                 ? projectedQuery.OrderBy(p => p.LocalSupplierCode, OrderByType.Desc)
                                 : projectedQuery.OrderBy(p => p.LocalSupplierCode, OrderByType.Asc);
+                            break;
+                        case "domesticsuppliercode":
+                            projectedQuery = isDesc
+                                ? projectedQuery
+                                    .OrderBy(p => p.DomesticSupplierCode, OrderByType.Desc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc)
+                                : projectedQuery
+                                    .OrderBy(p => p.DomesticSupplierCode, OrderByType.Asc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc);
+                            break;
+                        case "warehousecategoryguid":
+                            projectedQuery = isDesc
+                                ? projectedQuery
+                                    .OrderBy(p => p.WarehouseCategoryGUID, OrderByType.Desc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc)
+                                : projectedQuery
+                                    .OrderBy(p => p.WarehouseCategoryGUID, OrderByType.Asc)
+                                    .OrderBy(p => p.ProductCode, OrderByType.Asc);
                             break;
                         case "productcategoryguid":
                             projectedQuery = isDesc
@@ -569,6 +649,8 @@ namespace BlazorApp.Api.Services.React
                         ProductCode = p.ProductCode ?? string.Empty,
                         ProductCategoryGUID = p.ProductCategoryGUID ?? string.Empty,
                         LocalSupplierCode = p.LocalSupplierCode,
+                        DomesticSupplierCode = p.DomesticSupplierCode,
+                        DomesticSupplierName = p.DomesticSupplierName,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
                         ProductName = p.ProductName ?? string.Empty,
@@ -822,11 +904,29 @@ namespace BlazorApp.Api.Services.React
                     return new ApiResponse<ProductDto> { Success = false, Message = "商品不存在" };
                 }
 
+                var domesticSupplier = await _db.Queryable<DomesticProduct>()
+                    .InnerJoin<ChinaSupplier>((dp, cs) => dp.SupplierCode == cs.SupplierCode)
+                    .Where((dp, cs) =>
+                        dp.ProductCode == productCode
+                        && dp.IsDeleted == false
+                        && cs.IsDeleted == false
+                    )
+                    .GroupBy(dp => dp.ProductCode)
+                    .Select((dp, cs) => new DomesticProductMappingRow
+                    {
+                        ProductCode = dp.ProductCode,
+                        DomesticSupplierCode = SqlFunc.AggregateMax(dp.SupplierCode),
+                        DomesticSupplierName = SqlFunc.AggregateMax(cs.SupplierName),
+                    })
+                    .FirstAsync();
+
                 var dto = new ProductDto
                 {
                     ProductCode = product.ProductCode ?? string.Empty,
                     ProductCategoryGUID = product.ProductCategoryGUID ?? string.Empty,
                     LocalSupplierCode = product.LocalSupplierCode,
+                    DomesticSupplierCode = domesticSupplier?.DomesticSupplierCode,
+                    DomesticSupplierName = domesticSupplier?.DomesticSupplierName,
                     ItemNumber = product.ItemNumber,
                     Barcode = product.Barcode,
                     ProductName = product.ProductName,

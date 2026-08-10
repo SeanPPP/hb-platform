@@ -8,6 +8,9 @@ export interface PosProductDto {
   localSupplierName?: string
   categoryGuid?: string
   categoryName?: string
+  warehouseCategoryGuid?: string
+  domesticSupplierCode?: string
+  domesticSupplierName?: string
   purchasePrice: number
   retailPrice: number
   unitWeight?: number
@@ -47,6 +50,7 @@ export interface PosProductFilterParams {
   keyword?: string
   supplierCode?: string
   categoryGuid?: string
+  warehouseCategoryGuid?: string
   isActive?: boolean
   isSet?: boolean
   storeRecordCountMin?: number

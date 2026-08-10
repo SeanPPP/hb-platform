@@ -50,6 +50,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
+import { getAllChinaSuppliers } from '../../../services/chinaSupplierService'
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import {
   batchCreateSetCodes,
@@ -90,6 +91,7 @@ import {
 import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrityService'
 import { getActiveStores } from '../../../services/storeService'
 import { batchTranslate } from '../../../services/translationService'
+import { getCategoryTree as getWarehouseCategoryTree, type WarehouseCategoryNode } from '../../../services/warehouseCategoryService'
 import { useAuthStore } from '../../../store/auth'
 import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal'
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection'
@@ -138,9 +140,15 @@ import {
   type ProductIntegrityIssueRow,
 } from './productIntegrityReport'
 
-type ProductRow = PosProductDto & { key: string }
+type ProductRow = (PosProductDto & {
+  warehouseCategoryGuid?: string
+  domesticSupplierCode?: string
+  domesticSupplierName?: string
+}) & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
 type SupplierOption = { label: string; value: string; localSupplierCode: string; name?: string; imageBaseUrl?: string }
+type ChinaSupplierOption = { label: string; value: string }
+type ProductFilterParams = PosProductFilterParams & { warehouseCategoryGuid?: string }
 type StoreRecordBatchEditFormValues = {
   updatePurchasePrice?: boolean
   purchasePrice?: number
@@ -257,6 +265,58 @@ function buildProductDateFilterToken(operator: PosProductDateFilterOperator, val
     ? { operator, start: values.start || '', end: values.end || '' }
     : { operator, value: values.value || '' }
   return JSON.stringify(payload)
+}
+
+function buildCategoryPathMaps(nodes: ProductCategoryDto[]) {
+  const nameByGuid = new Map<string, string>()
+  const pathByGuid = new Map<string, string[]>()
+  const visit = (items: ProductCategoryDto[], ancestors: string[]) => {
+    for (const node of items) {
+      const fullPath = [...ancestors, node.name]
+      nameByGuid.set(node.guid, node.name)
+      pathByGuid.set(node.guid, fullPath)
+      visit(node.children ?? [], fullPath)
+    }
+  }
+  visit(nodes, [])
+  return { nameByGuid, pathByGuid }
+}
+
+function buildWarehouseCategoryPathMaps(nodes: WarehouseCategoryNode[]) {
+  const nameByGuid = new Map<string, string>()
+  const pathByGuid = new Map<string, string[]>()
+  const visit = (items: WarehouseCategoryNode[], ancestors: string[]) => {
+    for (const node of items) {
+      const fullPath = [...ancestors, node.categoryName]
+      nameByGuid.set(node.categoryGUID, node.categoryName)
+      pathByGuid.set(node.categoryGUID, fullPath)
+      visit(node.children ?? [], fullPath)
+    }
+  }
+  visit(nodes, [])
+  return { nameByGuid, pathByGuid }
+}
+
+function renderCategoryCell(
+  guid: string | undefined,
+  nameByGuid: Map<string, string>,
+  pathByGuid: Map<string, string[]>,
+) {
+  // 分类单元格显示叶级名；tooltip 展示完整路径；未知 GUID 直接显示 GUID，空值显示占位符。
+  if (!guid) return <span>-</span>
+  const name = nameByGuid.get(guid)
+  const path = pathByGuid.get(guid)
+  const displayName = name ?? guid
+  return (
+    <Tooltip title={name ? (path && path.length > 1 ? path.join(' / ') : name) : guid}>
+      <span
+        className="pos-products-category-cell"
+        style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {displayName}
+      </span>
+    </Tooltip>
+  )
 }
 
 function containsChineseText(value?: string) {
@@ -395,8 +455,10 @@ const SORT_FIELD_MAP: Record<string, string> = {
   barcode: 'barcode',
   productName: 'productname',
   localSupplierCode: 'localsuppliercode',
+  domesticSupplierCode: 'domesticsuppliercode',
   categoryGuid: 'productcategoryguid',
   categoryName: 'productcategoryguid',
+  warehouseCategoryGuid: 'warehousecategoryguid',
   purchasePrice: 'purchaseprice',
   retailPrice: 'retailprice',
   isAutoPricing: 'isautopricing',
@@ -428,6 +490,8 @@ export default function ProductManagementPage() {
   const [supplierCodeInput, setSupplierCodeInput] = useState<string | undefined>(undefined)
   const [categoryGuid, setCategoryGuid] = useState<string | undefined>(undefined)
   const [categoryGuidInput, setCategoryGuidInput] = useState<string | undefined>(undefined)
+  const [warehouseCategoryGuid, setWarehouseCategoryGuid] = useState<string | undefined>(undefined)
+  const [warehouseCategoryGuidInput, setWarehouseCategoryGuidInput] = useState<string | undefined>(undefined)
   const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>(undefined)
   const [isActiveFilterInput, setIsActiveFilterInput] = useState<boolean | undefined>(undefined)
   const [isSetFilter, setIsSetFilter] = useState<boolean | undefined>(undefined)
@@ -458,6 +522,9 @@ export default function ProductManagementPage() {
   const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
   const [categoryTree, setCategoryTree] = useState<ProductCategoryDto[]>([])
   const [categoryLoadFailed, setCategoryLoadFailed] = useState(false)
+  const [warehouseCategoryTree, setWarehouseCategoryTree] = useState<WarehouseCategoryNode[]>([])
+  const [warehouseCategoryLoadFailed, setWarehouseCategoryLoadFailed] = useState(false)
+  const [chinaSupplierOptions, setChinaSupplierOptions] = useState<ChinaSupplierOption[]>([])
   const [storeOptions, setStoreOptions] = useState<StoreOption[]>([])
 
   const [editVisible, setEditVisible] = useState(false)
@@ -555,12 +622,35 @@ export default function ProductManagementPage() {
     [supplierOptions],
   )
   const categoryColumnFilterOptions = useMemo(() => {
-    const flatten = (nodes: ProductCategoryDto[]): Array<{ text: string; value: string }> => nodes.flatMap((node) => [
-      { text: node.name, value: node.guid },
-      ...flatten(node.children ?? []),
-    ])
+    const flatten = (nodes: ProductCategoryDto[], ancestors: string[] = []): Array<{ text: string; value: string }> => nodes.flatMap((node) => {
+      const fullPath = [...ancestors, node.name]
+      return [
+        { text: fullPath.join(' / '), value: node.guid },
+        ...flatten(node.children ?? [], fullPath),
+      ]
+    })
     return flatten(categoryTree)
   }, [categoryTree])
+  const warehouseCategoryColumnFilterOptions = useMemo(() => {
+    const flatten = (nodes: WarehouseCategoryNode[], ancestors: string[] = []): Array<{ text: string; value: string }> => nodes.flatMap((node) => {
+      const fullPath = [...ancestors, node.categoryName]
+      return [
+        { text: fullPath.join(' / '), value: node.categoryGUID },
+        ...flatten(node.children ?? [], fullPath),
+      ]
+    })
+    return flatten(warehouseCategoryTree)
+  }, [warehouseCategoryTree])
+  const domesticSupplierColumnFilterOptions = useMemo(
+    () => chinaSupplierOptions.map((option) => ({
+      text: option.label,
+      value: option.value,
+    })),
+    [chinaSupplierOptions],
+  )
+  // 分类单元格需要按 GUID 反查叶级名和完整路径，树加载完成后构建一次索引。
+  const categoryPathMaps = useMemo(() => buildCategoryPathMaps(categoryTree), [categoryTree])
+  const warehouseCategoryPathMaps = useMemo(() => buildWarehouseCategoryPathMaps(warehouseCategoryTree), [warehouseCategoryTree])
   const getProductTypeLabel = useCallback((productType: unknown) => {
     const normalizedType = normalizeProductType(productType)
     if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')
@@ -808,12 +898,13 @@ export default function ProductManagementPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const params: PosProductFilterParams = {
+      const params: ProductFilterParams = {
         pageIndex: page,
         pageSize,
         keyword: keyword || undefined,
         supplierCode: supplierCode || undefined,
         categoryGuid: categoryGuid || undefined,
+        warehouseCategoryGuid: warehouseCategoryGuid || undefined,
         isActive: isActiveFilter,
         isSet: isSetFilter,
         storeRecordCountMin: storeRecordCountMin,
@@ -831,7 +922,7 @@ export default function ProductManagementPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
+  }, [page, pageSize, keyword, supplierCode, categoryGuid, warehouseCategoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
 
   const stopHqSyncJobPolling = useCallback(() => {
     stopHqSyncPollingRef.current?.()
@@ -1327,7 +1418,7 @@ export default function ProductManagementPage() {
           <Descriptions.Item label={t('posAdmin.products.hqSyncJobId', '任务 ID')}>
             {job.jobId}
           </Descriptions.Item>
-          <Descriptions.Item label={t('posAdmin.products.supplier', '供应商')}>
+          <Descriptions.Item label={t('posAdmin.products.supplier', '澳洲供应商')}>
             {supplierNameMap.get(job.localSupplierCode) || job.localSupplierCode}
           </Descriptions.Item>
           <Descriptions.Item label={t('posAdmin.products.hqSyncJobStatus', '任务状态')}>
@@ -1351,6 +1442,23 @@ export default function ProductManagementPage() {
     } catch {
       setCategoryLoadFailed(true)
       message.error(t('posAdmin.products.categoryLoadFailed', '商品分类加载失败，请刷新后重试'))
+    }
+    try {
+      const tree = await getWarehouseCategoryTree()
+      setWarehouseCategoryTree(tree ?? [])
+      setWarehouseCategoryLoadFailed(false)
+    } catch {
+      setWarehouseCategoryLoadFailed(true)
+      message.error(t('posAdmin.products.warehouseCategoryLoadFailed', '仓库分类加载失败，请刷新后重试'))
+    }
+    try {
+      const suppliers = await getAllChinaSuppliers()
+      setChinaSupplierOptions(suppliers.map((supplier) => ({
+        label: supplier.supplierName ? `${supplier.supplierName} (${supplier.supplierCode})` : supplier.supplierCode,
+        value: supplier.supplierCode,
+      })))
+    } catch {
+      message.error(t('posAdmin.products.domesticSupplierLoadFailed', '国内供应商选项加载失败，请刷新后重试'))
     }
     try {
       const stores = await getActiveStores()
@@ -1473,6 +1581,7 @@ export default function ProductManagementPage() {
     setKeyword(keywordInput.trim())
     setSupplierCode(supplierCodeInput)
     setCategoryGuid(categoryGuidInput)
+    setWarehouseCategoryGuid(warehouseCategoryGuidInput)
     setIsActiveFilter(isActiveFilterInput)
     setIsSetFilter(isSetFilterInput)
     setStoreRecordCountMode(nextStoreRecordCountMode)
@@ -1491,6 +1600,8 @@ export default function ProductManagementPage() {
     setSupplierCode(undefined)
     setCategoryGuidInput(undefined)
     setCategoryGuid(undefined)
+    setWarehouseCategoryGuidInput(undefined)
+    setWarehouseCategoryGuid(undefined)
     setIsActiveFilterInput(undefined)
     setIsActiveFilter(undefined)
     setIsSetFilterInput(undefined)
@@ -1525,6 +1636,30 @@ export default function ProductManagementPage() {
       for (const item of items) {
         const currentPath = [...path, item.guid]
         if (item.guid === guid) return currentPath
+        if (item.children?.length) {
+          const found = findPath(item.children, currentPath)
+          if (found) return found
+        }
+      }
+      return undefined
+    }
+    return findPath(nodes, [])
+  }
+
+  const buildWarehouseCategoryCascaderOptions = (nodes: WarehouseCategoryNode[]): any[] => {
+    return nodes.map((node) => ({
+      value: node.categoryGUID,
+      label: node.categoryName,
+      children: node.children?.length ? buildWarehouseCategoryCascaderOptions(node.children) : undefined,
+    }))
+  }
+
+  const getWarehouseCategoryValueFromGuid = (guid: string | undefined, nodes: WarehouseCategoryNode[]): string[] | undefined => {
+    if (!guid) return undefined
+    const findPath = (items: WarehouseCategoryNode[], path: string[]): string[] | undefined => {
+      for (const item of items) {
+        const currentPath = [...path, item.categoryGUID]
+        if (item.categoryGUID === guid) return currentPath
         if (item.children?.length) {
           const found = findPath(item.children, currentPath)
           if (found) return found
@@ -1885,6 +2020,7 @@ export default function ProductManagementPage() {
         isSpecialProduct: values.isSpecialProduct,
         isActive: values.isActive,
         categoryGuid: resolvedCategoryGuid,
+        warehouseCategoryGuid: editingProduct.warehouseCategoryGuid,
         // 后端商品更新可能是覆盖式 PUT，保存多码前必须带回原图片字段。
         productImage: values.productImage ?? editingProduct.productImage ?? '',
       }
@@ -2667,6 +2803,7 @@ export default function ProductManagementPage() {
           name: values.name,
           parentGuid,
           sortOrder: values.sortOrder,
+          isActive: editingCategory.isActive,
         })
         message.success(t('posAdmin.products.updateCategorySuccess', '更新分类成功'))
       } else {
@@ -2853,7 +2990,7 @@ export default function ProductManagementPage() {
       ),
     },
     {
-      title: t('posAdmin.productPrice.supplier', '供应商'),
+      title: t('posAdmin.products.australianSupplier', '澳洲供应商'),
       dataIndex: 'localSupplierName',
       key: 'localSupplierCode',
       width: 110,
@@ -2874,14 +3011,41 @@ export default function ProductManagementPage() {
       },
     },
     {
-      title: t('posAdmin.products.categoryGuid', '分类'),
+      title: t('posAdmin.products.domesticSupplier', '国内供应商'),
+      dataIndex: 'domesticSupplierCode',
+      key: 'domesticSupplierCode',
+      width: 110,
+      sorter: true,
+      sortOrder: sortBy === 'domesticSupplierCode' ? sortOrder : undefined,
+      ...enumFilterProps('domesticSupplierCode', domesticSupplierColumnFilterOptions),
+      render: (v: string, record: ProductRow) => {
+        const supplierName = record.domesticSupplierName || v || '-'
+        return (
+          <div className="pos-products-supplier-cell" title={supplierName}>
+            {supplierName}
+          </div>
+        )
+      },
+    },
+    {
+      title: t('posAdmin.products.productCategoryLabel', '商品分类'),
       dataIndex: 'categoryName',
       key: 'categoryGuid',
       width: 90,
       sorter: true,
       sortOrder: sortBy === 'categoryGuid' ? sortOrder : undefined,
       ...enumFilterProps('categoryGuid', categoryColumnFilterOptions),
-      render: (v: string) => v || '-',
+      render: (_v: string, record: ProductRow) => renderCategoryCell(record.categoryGuid, categoryPathMaps.nameByGuid, categoryPathMaps.pathByGuid),
+    },
+    {
+      title: t('posAdmin.products.warehouseCategory', '仓库分类'),
+      dataIndex: 'warehouseCategoryGuid',
+      key: 'warehouseCategoryGuid',
+      width: 110,
+      sorter: true,
+      sortOrder: sortBy === 'warehouseCategoryGuid' ? sortOrder : undefined,
+      ...enumFilterProps('warehouseCategoryGuid', warehouseCategoryColumnFilterOptions),
+      render: (_v: string, record: ProductRow) => renderCategoryCell(record.warehouseCategoryGuid, warehouseCategoryPathMaps.nameByGuid, warehouseCategoryPathMaps.pathByGuid),
     },
     {
       title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'),
@@ -3057,7 +3221,7 @@ export default function ProductManagementPage() {
           </Button>
           {canManagePosProducts && (
             <Button icon={<SettingOutlined />} onClick={handleOpenCategoryModal}>
-              {t('posAdmin.products.categoryManagement', '分类管理')}
+              {t('posAdmin.products.categoryManagement', '商品分类管理')}
             </Button>
           )}
         </Space>
@@ -3086,7 +3250,7 @@ export default function ProductManagementPage() {
               allowClear
               showSearch
               optionFilterProp="label"
-              placeholder={t('posAdmin.products.supplierPlaceholder', '供应商')}
+              placeholder={t('posAdmin.products.supplierPlaceholder', '澳洲供应商')}
               style={{ width: 200 }}
               value={supplierCodeInput}
               onChange={setSupplierCodeInput}
@@ -3094,12 +3258,22 @@ export default function ProductManagementPage() {
             />
             <Cascader
               allowClear
-              placeholder={t('posAdmin.products.categoryPlaceholder', '分类')}
+              placeholder={t('posAdmin.products.categoryPlaceholder', '商品分类')}
               style={{ width: 200 }}
               value={getCategoryValueFromGuid(categoryGuidInput, categoryTree)}
               onChange={(v) => setCategoryGuidInput(v?.[v.length - 1])}
               options={buildCategoryCascaderOptions(categoryTree)}
               disabled={categoryLoadFailed}
+              changeOnSelect
+            />
+            <Cascader
+              allowClear
+              placeholder={t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类')}
+              style={{ width: 200 }}
+              value={getWarehouseCategoryValueFromGuid(warehouseCategoryGuidInput, warehouseCategoryTree)}
+              onChange={(v) => setWarehouseCategoryGuidInput(v?.[v.length - 1])}
+              options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}
+              disabled={warehouseCategoryLoadFailed}
               changeOnSelect
             />
             <Select
@@ -3249,7 +3423,7 @@ export default function ProductManagementPage() {
             dataSource={data}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1640, y: tableScrollY }}
+            scroll={{ x: 1880, y: tableScrollY }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
@@ -3347,8 +3521,8 @@ export default function ProductManagementPage() {
           </Row>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')}>
-                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')} />
+              <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '澳洲供应商')}>
+                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择澳洲供应商')} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -3480,8 +3654,8 @@ export default function ProductManagementPage() {
           </Row>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')}>
-                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')} />
+              <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '澳洲供应商')}>
+                <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.selectSupplier', '请选择澳洲供应商')} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -3623,12 +3797,12 @@ export default function ProductManagementPage() {
         destroyOnHidden
       >
         <Form form={imageBatchForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
-          <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')} rules={[{ required: true, message: t('posAdmin.products.selectSupplier', '请选择供应商') }]}>
+          <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '澳洲供应商')} rules={[{ required: true, message: t('posAdmin.products.selectSupplier', '请选择澳洲供应商') }]}>
             <Select
               showSearch
               optionFilterProp="label"
               options={supplierOptions}
-              placeholder={t('posAdmin.products.selectSupplier', '请选择供应商')}
+              placeholder={t('posAdmin.products.selectSupplier', '请选择澳洲供应商')}
               onChange={(value) => {
                 const mode = (imageBatchForm.getFieldValue('mode') || 'supplier') as SupplierImageMode
                 setImageBatchTemplate(value, mode)
@@ -3720,7 +3894,7 @@ export default function ProductManagementPage() {
               style={{ width: '100%' }}
             />
           </Form.Item>
-          <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '供应商')}>
+          <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '澳洲供应商')}>
             <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} />
           </Form.Item>
           <Form.Item name="purchasePrice" label={t('posAdmin.products.purchasePrice', '采购价')}>
@@ -4201,7 +4375,7 @@ export default function ProductManagementPage() {
             {t('posAdmin.products.close', '关闭')}
           </Button>,
           <Button key="add" type="primary" icon={<PlusOutlined />} onClick={() => { setEditingCategory(null); categoryEditForm.resetFields() }}>
-            {t('posAdmin.products.newCategory', '新建分类')}
+            {t('posAdmin.products.newCategory', '新建商品分类')}
           </Button>,
         ]}
         width={700}
@@ -4218,12 +4392,12 @@ export default function ProductManagementPage() {
             )}
           </div>
           <div style={{ width: 280 }}>
-            <Card title={editingCategory ? t('posAdmin.products.editCategory', '编辑分类') : t('posAdmin.products.newCategory', '新建分类')} size="small">
+            <Card title={editingCategory ? t('posAdmin.products.editCategory', '编辑商品分类') : t('posAdmin.products.newCategory', '新建商品分类')} size="small">
               <Form form={categoryEditForm} layout="vertical">
-                <Form.Item name="name" label={t('posAdmin.products.categoryName', '名称')} rules={[{ required: true, message: t('posAdmin.products.categoryNameRequired', '请输入分类名称') }]}>
+                <Form.Item name="name" label={t('posAdmin.products.categoryName', '商品分类名称')} rules={[{ required: true, message: t('posAdmin.products.categoryNameRequired', '请输入商品分类名称') }]}>
                   <Input />
                 </Form.Item>
-                <Form.Item name="parentGuid" label={t('posAdmin.products.parentCategory', '父分类')}>
+                <Form.Item name="parentGuid" label={t('posAdmin.products.parentCategory', '父商品分类')}>
                   <Cascader
                     allowClear
                     showSearch
