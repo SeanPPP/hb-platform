@@ -15,8 +15,8 @@ function run() {
   );
   assert.equal(
     shouldRunAutomaticAppUpdatesForProfile("preview"),
-    false,
-    "测试 preview 包不应自动更新"
+    true,
+    "preview 包应自动检查 OTA 和 APK 更新"
   );
   assert.equal(
     shouldRunAutomaticAppUpdatesForProfile("development"),
