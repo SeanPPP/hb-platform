@@ -859,6 +859,71 @@ async function main() {
   })
   if (categoryColumnFailure) failures.push(categoryColumnFailure)
 
+  const categoryManagementFailure = await runTest('仓库商品页应复用分类管理弹窗并联动批量分类目标', () => {
+    assert(
+      pageSource.includes("import ContainerCategoryManageModal from '../ContainerDetail/ContainerCategoryManageModal'") &&
+        pageSource.includes('resolveContainerCategorySelectionAfterRefresh') &&
+        pageSource.includes('resolveContainerCategoryTargetAfterMutation'),
+      '仓库商品页应复用货柜明细的分类管理弹窗和目标联动逻辑',
+    )
+    assert(
+      pageSource.includes('const [categoryManageOpen, setCategoryManageOpen] = useState(false);'),
+      '仓库商品页应维护独立的分类管理弹窗开关',
+    )
+
+    const openBatchCategorySection = extractSection(
+      pageSource,
+      'const openBatchCategory = () => {',
+      'const handleBatchCategorySave = async () => {',
+    )
+    assert(
+      openBatchCategorySection.includes('setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID);') &&
+        !openBatchCategorySection.includes('setTargetCategoryGuid(undefined);'),
+      '打开批量分类时应保留分类树中仍存在的管理弹窗目标',
+    )
+
+    const categoryMutationSection = extractSection(
+      pageSource,
+      'const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {',
+      'const openBatchCategory = () => {',
+    )
+    assert(
+      categoryMutationSection.includes('resolveContainerCategoryTargetAfterMutation(current, change)') &&
+        categoryMutationSection.includes('setCategories(tree);') &&
+        categoryMutationSection.includes('setCategoryExpandedKeys(firstLevelExpandedKeys);') &&
+        categoryMutationSection.includes('setCategoryFilterExpandedKeys(firstLevelExpandedKeys);') &&
+        categoryMutationSection.includes('resolveContainerCategorySelectionAfterRefresh('),
+      '分类写入及刷新后应同步批量目标、批量分类树和顶部筛选树',
+    )
+
+    const manageButtonSection = extractSection(
+      pageSource,
+      '{access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />}',
+      '{access.canWriteProduct ? (<Button type="primary"',
+    )
+    assert(
+      manageButtonSection.includes('onClick={() => setCategoryManageOpen(true)}') &&
+        manageButtonSection.includes("t('containers.actions.manageCategories', '管理分类')") &&
+        !manageButtonSection.includes('selectedRowKeys') &&
+        !manageButtonSection.includes('disabled='),
+      '管理分类入口应仅受分类管理权限控制，且无需勾选商品',
+    )
+
+    const categoryManageModalSection = extractSection(
+      pageSource,
+      '{access.canManageWarehouseCategories ? (<ContainerCategoryManageModal',
+      '<ImportFromDomesticModal',
+    )
+    assert(
+      categoryManageModalSection.includes('open={categoryManageOpen}') &&
+        categoryManageModalSection.includes('activeTargetCategoryGuid={targetCategoryGuid}') &&
+        categoryManageModalSection.includes('onMutationCommitted={handleCategoryMutationCommitted}') &&
+        categoryManageModalSection.includes('onCategoriesChanged={handleCategoriesChanged}'),
+      '分类管理弹窗应收到当前批量目标及两个联动回调',
+    )
+  })
+  if (categoryManagementFailure) failures.push(categoryManagementFailure)
+
   const compactTableFailure = await runTest('仓库商品主表应使用紧凑行高、媒体尺寸和列宽', () => {
     assert(
       pageSource.includes('const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60'),

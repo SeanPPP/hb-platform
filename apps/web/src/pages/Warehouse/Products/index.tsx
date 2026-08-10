@@ -1,4 +1,4 @@
-import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -28,6 +28,8 @@ import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../util
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import CategoryTreePicker from './CategoryTreePicker';
+import ContainerCategoryManageModal from '../ContainerDetail/ContainerCategoryManageModal';
+import { resolveContainerCategorySelectionAfterRefresh, resolveContainerCategoryTargetAfterMutation, type ContainerCategoryChange, } from '../ContainerDetail/containerCategoryManageLogic';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
@@ -642,6 +644,7 @@ export default function WarehouseProductsPage() {
     const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('');
     const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({});
     const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([]);
+    const [categoryManageOpen, setCategoryManageOpen] = useState(false);
     const [batchCategoryOpen, setBatchCategoryOpen] = useState(false);
     const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>();
     const [batchCategorySaving, setBatchCategorySaving] = useState(false);
@@ -1365,12 +1368,22 @@ export default function WarehouseProductsPage() {
         batchEditForm.resetFields();
         setBatchEditOpen(true);
     };
+    const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {
+        setTargetCategoryGuid((current) => resolveContainerCategoryTargetAfterMutation(current, change));
+    };
+    const handleCategoriesChanged = (tree: WarehouseCategoryNode[], change: ContainerCategoryChange) => {
+        setCategories(tree);
+        const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);
+        setCategoryExpandedKeys(firstLevelExpandedKeys);
+        setCategoryFilterExpandedKeys(firstLevelExpandedKeys);
+        setTargetCategoryGuid((current) => resolveContainerCategorySelectionAfterRefresh(tree, undefined, current, change).activeTargetCategoryGuid);
+    };
     const openBatchCategory = () => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
             return;
         }
-        setTargetCategoryGuid(undefined);
+        setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID);
         // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
         setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1));
         setBatchCategoryOpen(true);
@@ -2009,6 +2022,9 @@ export default function WarehouseProductsPage() {
           {access.canWriteProduct ? (<Button icon={<AppstoreOutlined />} loading={batchCategorySaving} disabled={!selectedRowKeys.length || batchCategorySaving} onClick={openBatchCategory}>
               {t('warehouse.batchSetCategory', '批量分类')}
             </Button>) : null}
+          {access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />} onClick={() => setCategoryManageOpen(true)}>
+              {t('containers.actions.manageCategories', '管理分类')}
+            </Button>) : null}
           {access.canWriteProduct ? (<Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
               {t('warehouse.createProduct')}
             </Button>) : null}
@@ -2236,6 +2252,15 @@ export default function WarehouseProductsPage() {
           <CategoryTreePicker categories={categories} selectedKey={targetCategoryGuid} expandedKeys={categoryExpandedKeys} onExpand={setCategoryExpandedKeys} onSelect={setTargetCategoryGuid} language={i18n.language} t={t} maxHeight={420}/>
         </Space>
       </Modal>
+
+      {access.canManageWarehouseCategories ? (<ContainerCategoryManageModal
+          open={categoryManageOpen}
+          categories={categories}
+          language={i18n.language}
+          activeTargetCategoryGuid={targetCategoryGuid}
+          onCancel={() => setCategoryManageOpen(false)}
+          onMutationCommitted={handleCategoryMutationCommitted}
+          onCategoriesChanged={handleCategoriesChanged}/>) : null}
 
       <ImportFromDomesticModal open={importFromDomesticOpen} onCancel={() => setImportFromDomesticOpen(false)} onSuccess={() => void refreshCurrentList({ page: 1 })}/>
 

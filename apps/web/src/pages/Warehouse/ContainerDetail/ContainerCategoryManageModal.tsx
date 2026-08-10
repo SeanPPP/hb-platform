@@ -38,6 +38,7 @@ import {
   resolveContainerCategorySelectionAfterRefresh,
   type ContainerCategoryChange,
 } from './containerCategoryManageLogic'
+import './ContainerCategoryManageModal.css'
 
 type CategoryFormMode = 'idle' | 'create' | 'edit'
 

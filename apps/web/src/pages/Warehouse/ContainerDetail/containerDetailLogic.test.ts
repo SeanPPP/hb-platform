@@ -1981,6 +1981,7 @@ const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx',
 const tagFiltersSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerTagFilters.tsx', 'utf8')
 const columnsSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerDetailColumns.tsx', 'utf8')
 const categoryManageSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.tsx', 'utf8')
+const categoryManageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerCategoryManageModal.css', 'utf8')
 const setCodeHookSource = readFileSync('src/pages/Warehouse/ContainerDetail/useContainerSetCode.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
 const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
@@ -4304,10 +4305,11 @@ assertEqual(
   '货柜明细分类管理弹窗应复用仓库分类 CRUD，并保护新增状态和删除确认',
 )
 assertEqual(
-  pageStyleSource.includes('.container-category-manage-grid') &&
-    pageStyleSource.includes('grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)') &&
-    pageStyleSource.includes('@media (max-width: 760px)') &&
-    pageStyleSource.includes('grid-template-columns: minmax(0, 1fr)'),
+  categoryManageSource.includes("import './ContainerCategoryManageModal.css'") &&
+    categoryManageStyleSource.includes('.container-category-manage-grid') &&
+    categoryManageStyleSource.includes('grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr)') &&
+    categoryManageStyleSource.includes('@media (max-width: 760px)') &&
+    categoryManageStyleSource.includes('grid-template-columns: minmax(0, 1fr)'),
   true,
   '分类管理弹窗应在桌面使用紧凑双栏，并在窄屏切换为单栏',
 )
