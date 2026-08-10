@@ -9,6 +9,7 @@ import {
   type Money,
   type OrderTender,
   type OutboxMessageDraft,
+  type RecalledHoldCompletion,
 } from "../contracts";
 
 import { SqliteMixedPaymentOrderTruthStore } from "./sqlite-mixed-payment-order-truth-store";
@@ -49,11 +50,18 @@ export interface MixedCashOrderCompletionPlannerPort {
 export type MixedCashFinalCompletionDependencies = Readonly<{
   planner: MixedCashOrderCompletionPlannerPort;
   encryptor: SensitivePayloadEncryptor;
+  recallCompletion?: Readonly<{
+    resolve(
+      orderGuid: string,
+      actor: AuditActorSnapshot,
+    ): RecalledHoldCompletion | null | Promise<RecalledHoldCompletion | null>;
+  }>;
 }>;
 
 type PreparedFinalCash = Readonly<{
   plan: MixedCashOrderCompletionPlan;
   receiptCiphertext: Uint8Array | null;
+  recalledHoldCompletion: RecalledHoldCompletion | null;
 }>;
 
 type CashActionRow = Readonly<{
@@ -143,7 +151,14 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           plan.fulfilment.print.receiptBytes,
         )
         : null;
-      finalCompletion = { plan, receiptCiphertext };
+      const recalledHoldCompletion =
+        await this.finalCash.recallCompletion?.resolve(orderGuid, actor) ??
+        null;
+      finalCompletion = {
+        plan,
+        receiptCiphertext,
+        recalledHoldCompletion,
+      };
     }
 
     return this.connection.withExclusiveTransaction(async (transaction) => {
@@ -332,6 +347,11 @@ implements MixedCashTenderPort, MixedTenderReversalPort {
           finalCompletion,
           orderGuid,
           now,
+        );
+        await completeRecalledHoldInMixedCashTransaction(
+          transaction,
+          orderGuid,
+          finalCompletion.recalledHoldCompletion,
         );
       }
 
@@ -653,6 +673,144 @@ async function encryptReceipt(
     throw new Error("Final mixed cash receipt encryption failed.");
   }
   return ciphertext;
+}
+
+async function completeRecalledHoldInMixedCashTransaction(
+  transaction: SqliteConnectionPort,
+  orderGuidInput: string,
+  completion: RecalledHoldCompletion | null,
+): Promise<void> {
+  const orderGuid = strictId(orderGuidInput, "mixed cash order guid");
+  const order = await transaction.getFirst<{
+    store_code: unknown;
+    device_code: unknown;
+  }>(
+    `SELECT store_code, device_code
+     FROM local_orders WHERE order_guid = ?`,
+    [orderGuid],
+  );
+  if (!order) throw new Error("Mixed cash completion order is missing.");
+  const storeCode = strictId(text(order.store_code, "mixed cash store"), "mixed cash store");
+  const deviceCode = strictId(text(order.device_code, "mixed cash device"), "mixed cash device");
+  const fence = await transaction.getFirst<{
+    kind: unknown;
+    hold_id: unknown;
+    recall_attempt_id: unknown;
+    bound_order_guid: unknown;
+    held_status: unknown;
+    held_recall_attempt_id: unknown;
+  }>(
+    `SELECT fence.kind, fence.hold_id, fence.recall_attempt_id,
+      fence.bound_order_guid, held.status AS held_status,
+      held.recall_attempt_id AS held_recall_attempt_id
+     FROM terminal_cart_fences fence
+     INNER JOIN held_order_records held ON held.hold_id = fence.hold_id
+     WHERE fence.store_code = ? AND fence.device_code = ?`,
+    [storeCode, deviceCode],
+  );
+  if (completion === null) {
+    if (fence) {
+      throw new Error(
+        "Ordinary mixed cash completion is blocked by an active terminal cart fence.",
+      );
+    }
+    return;
+  }
+  if (!fence || completion.binding.kind !== "recalled") {
+    throw new Error(
+      "Recalled mixed cash completion has no active recall fence.",
+    );
+  }
+  const binding = completion.binding;
+  const holdId = strictId(binding.holdId, "mixed cash recall hold id");
+  const recallAttemptId = strictId(
+    binding.recallAttemptId,
+    "mixed cash recall attempt id",
+  );
+  if (
+    binding.scope.storeCode !== storeCode ||
+    binding.scope.deviceCode !== deviceCode ||
+    text(fence.kind, "mixed cash recall fence kind") !== "RecallActive" ||
+    text(fence.hold_id, "mixed cash recall fence hold") !== holdId ||
+    text(fence.recall_attempt_id, "mixed cash recall fence attempt") !==
+      recallAttemptId ||
+    fence.bound_order_guid !== null ||
+    text(fence.held_status, "mixed cash held status") !== "Recalling" ||
+    text(fence.held_recall_attempt_id, "mixed cash held attempt") !==
+      recallAttemptId
+  ) {
+    throw new Error(
+      "Recalled mixed cash completion does not match the active recall fence.",
+    );
+  }
+  const recalledAtIso = canonicalIso(
+    completion.recalledAtIso,
+    "mixed cash recall completion time",
+  );
+  const audit = completion.recallAudit;
+  if (
+    audit.eventType !== "ORDER_RECALL" ||
+    audit.orderGuid !== orderGuid ||
+    audit.correlationId !== holdId ||
+    canonicalIso(audit.occurredAtIso, "mixed cash recall audit time") !==
+      recalledAtIso
+  ) {
+    throw new Error("Mixed cash recall completion audit is invalid.");
+  }
+  assertSafeObject(audit.payload, "Mixed cash recall audit payload");
+  const bound = await transaction.run(
+    `UPDATE terminal_cart_fences SET bound_order_guid = ?
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid IS NULL`,
+    [orderGuid, storeCode, deviceCode, holdId, recallAttemptId],
+  );
+  if (bound.changes !== 1) {
+    throw new Error("Recall fence changed before mixed cash completion.");
+  }
+  const changed = await transaction.run(
+    `UPDATE held_order_records
+     SET status = 'Recalled', recalled_at_iso = ?, updated_at_iso = ?
+     WHERE hold_id = ? AND store_code = ? AND device_code = ?
+       AND recall_attempt_id = ? AND status = 'Recalling'`,
+    [
+      recalledAtIso,
+      recalledAtIso,
+      holdId,
+      storeCode,
+      deviceCode,
+      recallAttemptId,
+    ],
+  );
+  if (changed.changes !== 1) {
+    throw new Error("Recalled hold changed before mixed cash completion.");
+  }
+  await transaction.run(
+    `INSERT INTO audit_events (
+      event_id, event_type, occurred_at_iso, order_guid,
+      correlation_id, payload_json, uploaded_at_iso,
+      scope_store_code, scope_device_code
+    ) VALUES (?, 'ORDER_RECALL', ?, ?, ?, ?, NULL, ?, ?)`,
+    [
+      strictId(audit.eventId, "mixed cash recall audit id"),
+      recalledAtIso,
+      orderGuid,
+      holdId,
+      JSON.stringify(audit.payload),
+      storeCode,
+      deviceCode,
+    ],
+  );
+  const deleted = await transaction.run(
+    `DELETE FROM terminal_cart_fences
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid = ?`,
+    [storeCode, deviceCode, holdId, recallAttemptId, orderGuid],
+  );
+  if (deleted.changes !== 1) {
+    throw new Error("Recall fence changed before mixed cash completion.");
+  }
 }
 
 async function persistFinalCashCompletion(

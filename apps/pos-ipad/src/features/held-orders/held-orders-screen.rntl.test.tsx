@@ -44,11 +44,15 @@ test("横屏挂单列表提供 44pt 操作、显式恢复入口和不含商品�
     recall: jest.fn(async () => ({ ok: true, code: "recalled" })),
     recover: jest.fn(async () => ({ ok: true, code: "recovered" })),
   };
-  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+  const onBack = jest.fn();
+  const screen = await render(
+    <HeldOrdersScreen onBack={onBack} presenter={presenter} />,
+  );
   await waitFor(() => expect(presenter.refresh).toHaveBeenCalledTimes(1));
   expect(screen.getByTestId("held-order-row-recover-1")).toBeTruthy();
   expect(screen.queryByText("Product 1")).toBeNull();
   await fireEvent.press(screen.getByTestId("held-order-action-recover-1"));
   expect(presenter.recover).toHaveBeenCalledWith("recover-1");
+  await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
   expect(screen.getByTestId("held-orders-hold").props.accessibilityState.disabled).toBe(false);
 });

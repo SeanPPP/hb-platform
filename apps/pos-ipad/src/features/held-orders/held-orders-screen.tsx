@@ -46,6 +46,18 @@ export function HeldOrdersScreen({
     void presenter.refresh();
   }, [presenter]);
 
+  const returnToSalesAfterRestore = async (
+    action: () => ReturnType<HeldOrdersPresenter["recall"]>,
+  ) => {
+    const result = await action();
+    if (
+      result.ok &&
+      (result.code === "recalled" || result.code === "recovered")
+    ) {
+      onBack?.();
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} testID="held-orders-screen">
       <View style={styles.header}>
@@ -135,8 +147,16 @@ export function HeldOrdersScreen({
               <HeldOrderRow
                 busy={state.busy}
                 locale={locale}
-                onRecall={() => void presenter.recall(item.holdId)}
-                onRecover={() => void presenter.recover(item.holdId)}
+                onRecall={() =>
+                  void returnToSalesAfterRestore(() =>
+                    presenter.recall(item.holdId),
+                  )
+                }
+                onRecover={() =>
+                  void returnToSalesAfterRestore(() =>
+                    presenter.recover(item.holdId),
+                  )
+                }
                 onRelease={() => void presenter.release(item.holdId)}
                 row={item}
               />

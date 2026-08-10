@@ -39,10 +39,58 @@ test("重启后的 Approved execution 只以原 attempt.orderGuid 计划并提�
     {
       attemptId: "attempt-restarted",
       orderGuid: "order-before-provider-call",
+      recalledHoldCompletion: null,
       ...plan(),
     },
   ]);
   assert.deepEqual(completed, result());
+});
+
+test("恢复挂单的 Approved 支付提交携带精确 binding 和完成审计", async () => {
+  const committer = new RecordingCommitter(result());
+  const service = new ApprovedPaymentOrderCompletionService({
+    planner: new RecordingPlanner(plan()),
+    committer,
+    recallCompletion: {
+      resolveBinding: async () => ({
+        kind: "recalled",
+        scope: { storeCode: "S1", deviceCode: "IPAD-1" },
+        holdId: "hold-1",
+        recallAttemptId: "recall-attempt-1",
+      }),
+      createId: () => "audit-recall-complete",
+      nowIso: () => "2026-07-28T00:02:00.000Z",
+    },
+  });
+
+  await service.complete(execution(), actor());
+
+  assert.deepEqual(committer.inputs[0]?.recalledHoldCompletion, {
+    binding: {
+      kind: "recalled",
+      scope: { storeCode: "S1", deviceCode: "IPAD-1" },
+      holdId: "hold-1",
+      recallAttemptId: "recall-attempt-1",
+    },
+    recalledAtIso: "2026-07-28T00:02:00.000Z",
+    recallAudit: {
+      eventId: "audit-recall-complete",
+      eventType: "ORDER_RECALL",
+      occurredAtIso: "2026-07-28T00:02:00.000Z",
+      orderGuid: "order-approved",
+      correlationId: "hold-1",
+      payload: {
+        source: "ipad-pos",
+        action: "recall",
+        result: "completed",
+        storeCode: "S1",
+        deviceCode: "IPAD-1",
+        cashierId: "cashier-1",
+        cashierName: "Alice",
+        userGuid: "user-guid-1",
+      },
+    },
+  });
 });
 
 test("DB 判定为 replay 时原样返回已存在的 tender，不用 planner 新 ID 宣称新提交", async () => {

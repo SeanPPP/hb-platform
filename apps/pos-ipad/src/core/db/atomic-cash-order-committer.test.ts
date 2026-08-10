@@ -81,6 +81,8 @@ class ApprovedCasFailingConnection extends TransactionRecordingConnection {
         order_guid: "order-cas",
         state: "Draft",
         actual_amount_cents: 500,
+        store_code: "S1",
+        device_code: "IPAD1",
       } as T;
     }
     if (sql.includes("payment_attempt_id = ?")) return null;
@@ -1118,7 +1120,7 @@ async function readReturnRollbackState(
 }
 
 function approvedPaymentInput(attemptId: string, orderGuid: string, tenderGuid: string, fulfilment: { print: { jobId: string; orderGuid: string; printerId: string; receiptBytes: Uint8Array; isReprint: false } | null; drawer: { eventId: string; orderGuid: string; printerId: string; printJobId: string | null; reason: string } | null } | null) {
-  return { attemptId, orderGuid, tenderGuid, completionAuditEvents: [{ eventId: `audit-${attemptId}`, eventType: "PAYMENT_COMPLETE", occurredAtIso: "2026-07-28T00:00:00.000Z", orderGuid, correlationId: orderGuid, payload: { source: "approved-payment" } }], outbox: { messageId: `outbox-${attemptId}`, aggregateId: orderGuid, kind: "order-sync", payloadJson: JSON.stringify({ orderGuid }), nextAttemptAtIso: "2026-07-28T00:00:00.000Z" }, fulfilment: fulfilment ?? { print: null, drawer: null } } as const;
+  return { attemptId, orderGuid, tenderGuid, completionAuditEvents: [{ eventId: `audit-${attemptId}`, eventType: "PAYMENT_COMPLETE", occurredAtIso: "2026-07-28T00:00:00.000Z", orderGuid, correlationId: orderGuid, payload: { source: "approved-payment" } }], outbox: { messageId: `outbox-${attemptId}`, aggregateId: orderGuid, kind: "order-sync", payloadJson: JSON.stringify({ orderGuid }), nextAttemptAtIso: "2026-07-28T00:00:00.000Z" }, fulfilment: fulfilment ?? { print: null, drawer: null }, recalledHoldCompletion: null } as const;
 }
 
 async function insertDraftOrder(connection: SqliteConnectionPort, orderGuid: string, sequence: number, amountCents: number): Promise<void> {

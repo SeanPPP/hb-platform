@@ -854,9 +854,23 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
     }
 
     const completed = completedAmountCents === actualAmountCents;
+    let recalledHoldCompletion: RecalledHoldCompletion | null = null;
     if (completed) {
       assertApprovedPaymentFulfilment(input);
       for (const event of input.completionAuditEvents) assertSafeAuditPayload(event.payload);
+      recalledHoldCompletion = validateApprovedPaymentRecallCompletion(
+        input,
+        order,
+      );
+      const terminalFence = await readTerminalCartFenceForCheckout(
+        transaction,
+        intentText(order.store_code),
+        intentText(order.device_code),
+      );
+      validateApprovedPaymentRecallFence(
+        recalledHoldCompletion,
+        terminalFence,
+      );
     }
 
     // 在写 tender 前先以读取到的精确状态做 CAS；任何竞争或终态变化都整事务失败。
@@ -891,6 +905,13 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
       [input.outbox.messageId, input.outbox.aggregateId, input.outbox.kind, input.outbox.payloadJson, input.outbox.nextAttemptAtIso, now, now],
     );
     await persistApprovedPaymentFulfilment(transaction, input.fulfilment, input.orderGuid, this.encryptor, now);
+    if (recalledHoldCompletion) {
+      await completeRecalledHoldInApprovedPaymentTransaction(
+        transaction,
+        input.orderGuid,
+        recalledHoldCompletion,
+      );
+    }
     return { replayed: false, orderGuid: input.orderGuid, tenderGuid: input.tenderGuid, completed: true, signedTenderAmountCents: amountCents };
   }
 }
@@ -1489,6 +1510,169 @@ function validateTerminalFenceForCheckout(
     throw new Error(
       "Recalled cash checkout terminal binding changed during validation.",
     );
+  }
+}
+
+function validateApprovedPaymentRecallCompletion(
+  input: ApprovedPaymentOrderCommit,
+  order: ApprovedPaymentOrderRow,
+): RecalledHoldCompletion | null {
+  const completion = input.recalledHoldCompletion;
+  if (completion === null) return null;
+  const binding = completion.binding;
+  if (binding.kind !== "recalled") {
+    throw new Error("Approved payment recall binding is invalid.");
+  }
+  const scope = {
+    storeCode: strictIdentifier(
+      binding.scope.storeCode,
+      "approved recall store code",
+    ),
+    deviceCode: strictIdentifier(
+      binding.scope.deviceCode,
+      "approved recall device code",
+    ),
+  };
+  if (
+    scope.storeCode !==
+      strictIdentifier(order.store_code, "approved payment order store code") ||
+    scope.deviceCode !==
+      strictIdentifier(order.device_code, "approved payment order device code")
+  ) {
+    throw new Error("Approved recalled payment belongs to a different terminal.");
+  }
+  const holdId = strictIdentifier(binding.holdId, "approved recall hold id");
+  const recallAttemptId = strictIdentifier(
+    binding.recallAttemptId,
+    "approved recall attempt id",
+  );
+  const recalledAtIso = canonicalIso(
+    completion.recalledAtIso,
+    "approved recall completion time",
+  );
+  return {
+    binding: {
+      kind: "recalled",
+      scope,
+      holdId,
+      recallAttemptId,
+    },
+    recalledAtIso,
+    recallAudit: validateRecallCompletionAudit(
+      completion.recallAudit,
+      input.orderGuid,
+      holdId,
+      recalledAtIso,
+    ),
+  };
+}
+
+function validateApprovedPaymentRecallFence(
+  completion: RecalledHoldCompletion | null,
+  state: TerminalCartFenceCheckoutState | null,
+): void {
+  if (completion === null) {
+    if (state !== null) {
+      throw new Error(
+        "Ordinary approved payment is blocked by an active terminal cart fence.",
+      );
+    }
+    return;
+  }
+  if (!state) {
+    throw new Error(
+      "Recalled approved payment has no active terminal cart fence.",
+    );
+  }
+  const { binding } = completion;
+  const { fence } = state;
+  if (
+    fence.kind !== "RecallActive" ||
+    fence.scope.storeCode !== binding.scope.storeCode ||
+    fence.scope.deviceCode !== binding.scope.deviceCode ||
+    fence.holdId !== binding.holdId ||
+    fence.recallAttemptId !== binding.recallAttemptId ||
+    fence.boundOrderGuid !== null ||
+    state.heldStatus !== "Recalling" ||
+    state.heldStoreCode !== binding.scope.storeCode ||
+    state.heldDeviceCode !== binding.scope.deviceCode ||
+    state.heldRecallAttemptId !== binding.recallAttemptId
+  ) {
+    throw new Error(
+      "Recalled approved payment does not match the active recall fence.",
+    );
+  }
+}
+
+async function completeRecalledHoldInApprovedPaymentTransaction(
+  transaction: SqliteConnectionPort,
+  orderGuidInput: string,
+  completion: RecalledHoldCompletion,
+): Promise<void> {
+  const orderGuid = strictIdentifier(
+    orderGuidInput,
+    "approved recalled payment order guid",
+  );
+  const { binding } = completion;
+  // 在线支付先把 fence 精确绑定到当前订单，再在同一事务内完成并删除。
+  const bound = await transaction.run(
+    `UPDATE terminal_cart_fences
+     SET bound_order_guid = ?
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid IS NULL`,
+    [
+      orderGuid,
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.holdId,
+      binding.recallAttemptId,
+    ],
+  );
+  if (bound.changes !== 1) {
+    throw new Error("Recall fence changed before approved payment completion.");
+  }
+  const changed = await transaction.run(
+    `UPDATE held_order_records
+     SET status = 'Recalled', recalled_at_iso = ?, updated_at_iso = ?
+     WHERE hold_id = ? AND store_code = ? AND device_code = ?
+       AND recall_attempt_id = ? AND status = 'Recalling'`,
+    [
+      completion.recalledAtIso,
+      completion.recalledAtIso,
+      binding.holdId,
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.recallAttemptId,
+    ],
+  );
+  if (changed.changes !== 1) {
+    throw new Error("Recalled hold changed before approved payment completion.");
+  }
+  await appendScopedAuditEvent(
+    transaction,
+    completion.recallAudit,
+    freezeAuditScope(binding.scope),
+    completion.recalledAtIso,
+  );
+  const deleted = await transaction.run(
+    `DELETE FROM terminal_cart_fences
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid = ?`,
+    [
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.holdId,
+      binding.recallAttemptId,
+      orderGuid,
+    ],
+  );
+  if (deleted.changes !== 1) {
+    throw new Error("Recall fence changed before approved payment completion.");
+  }
+  if (completion.recallAudit.orderGuid !== orderGuid) {
+    throw new Error("Recall audit order changed during approved payment completion.");
   }
 }
 

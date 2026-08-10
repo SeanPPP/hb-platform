@@ -271,6 +271,12 @@ export function createProductionPaymentRuntime(
         nowIso: input.clock.nowIso,
       }),
       committer: input.database.paymentOrderCommitter(input.encryptor),
+      recallCompletion: {
+        // 支付 lease 持有期间 active cart 是唯一可信的恢复挂单绑定。
+        resolveBinding: () => input.activeCart.read().recallBinding,
+        createId: input.createId,
+        nowIso: input.clock.nowIso,
+      },
     });
     const orderTruth = input.database.mixedPaymentOrderTruth();
     const tenders = input.database.mixedPaymentTenders(
@@ -281,6 +287,34 @@ export function createProductionPaymentRuntime(
       {
         planner: finalPlanner,
         encryptor: input.encryptor,
+        recallCompletion: {
+          async resolve(orderGuid, actor) {
+            const binding = input.activeCart.read().recallBinding;
+            if (!binding) return null;
+            const recalledAtIso = input.clock.nowIso();
+            return {
+              binding,
+              recalledAtIso,
+              recallAudit: {
+                eventId: input.createId(),
+                eventType: "ORDER_RECALL",
+                occurredAtIso: recalledAtIso,
+                orderGuid,
+                correlationId: binding.holdId,
+                payload: {
+                  source: "ipad-pos",
+                  action: "recall",
+                  result: "completed",
+                  storeCode: binding.scope.storeCode,
+                  deviceCode: binding.scope.deviceCode,
+                  cashierId: actor.cashierId,
+                  cashierName: actor.cashierName,
+                  userGuid: actor.userGuid,
+                },
+              },
+            };
+          },
+        },
       },
     );
     const voucherReversalStore = voucherTenderReversalStore(input);

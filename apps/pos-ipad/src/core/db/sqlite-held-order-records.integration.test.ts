@@ -3,6 +3,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
 import type {
+  ApprovedPaymentOrderCommit,
   DurableCashOrderCommit,
   HeldOrderPayloadV1,
   HeldOrderRecordRepositoryPort,
@@ -11,7 +12,11 @@ import type {
 import type { AuditEventDraft } from "../contracts/order";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
-import { SqliteAtomicCashOrderCommitter } from "./pos-database";
+import {
+  SqliteApprovedPaymentOrderCommitter,
+  SqliteAtomicCashOrderCommitter,
+} from "./pos-database";
+import { SqliteMixedPaymentTenderStore } from "./sqlite-mixed-payment-tender-store";
 import { createSqliteRepositories } from "./sqlite-repositories";
 import type {
   SqliteConnectionPort,
@@ -405,6 +410,85 @@ async function prepareRecall(
     recallAttemptId,
     recallingAtIso: "2026-07-28T08:01:00.000Z",
   }));
+}
+
+async function insertApprovedDraft(
+  connection: SqliteConnectionPort,
+  orderGuid: string,
+  amountCents: number,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO local_orders (
+      order_guid, local_sequence, store_code, device_code,
+      cashier_id, cashier_name, sold_at_iso, state,
+      total_cents, discount_cents, actual_amount_cents,
+      original_order_guid, created_at_iso, updated_at_iso
+    ) VALUES (?, 2, ?, ?, 'cashier-2', 'Cashier Two', ?, 'Draft',
+      ?, 0, ?, NULL, ?, ?)`,
+    [orderGuid, scope.storeCode, scope.deviceCode, nowIso, amountCents, amountCents, nowIso, nowIso],
+  );
+}
+
+async function insertApprovedAttempt(
+  connection: SqliteConnectionPort,
+  attemptId: string,
+  orderGuid: string,
+  amountCents: number,
+): Promise<void> {
+  await connection.run(
+    `INSERT INTO payment_attempts (
+      attempt_id, idempotency_key, order_guid, provider, operation,
+      amount_cents, state, checkout_id, payment_id, session_id, txn_ref,
+      rfn, provider_payload_ciphertext, provider_receipt_ciphertext,
+      provider_response_code, created_at_iso, updated_at_iso, last_error_code
+    ) VALUES (?, ?, ?, 'square', 'purchase', ?, 'Approved',
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+    [attemptId, `key-${attemptId}`, orderGuid, amountCents, nowIso, nowIso],
+  );
+}
+
+function approvedRecallPaymentInput(
+  binding: NonNullable<ApprovedPaymentOrderCommit["recalledHoldCompletion"]>["binding"],
+): ApprovedPaymentOrderCommit {
+  const orderGuid = "order-recall-card";
+  const recalledAtIso = "2026-07-28T08:05:00.000Z";
+  return {
+    attemptId: "payment-attempt-recall-card",
+    orderGuid,
+    tenderGuid: "tender-recall-card",
+    completionAuditEvents: [{
+      eventId: "audit-payment-recall-card",
+      eventType: "PAYMENT_COMPLETE",
+      occurredAtIso: recalledAtIso,
+      orderGuid,
+      correlationId: "payment-attempt-recall-card",
+      payload: { source: "approved-payment" },
+    }],
+    outbox: {
+      messageId: "outbox-recall-card",
+      aggregateId: orderGuid,
+      kind: "order-sync",
+      payloadJson: JSON.stringify({ orderGuid }),
+      nextAttemptAtIso: recalledAtIso,
+    },
+    fulfilment: { print: null, drawer: null },
+    recalledHoldCompletion: {
+      binding,
+      recalledAtIso,
+      recallAudit: {
+        eventId: "audit-order-recall-card",
+        eventType: "ORDER_RECALL",
+        occurredAtIso: recalledAtIso,
+        orderGuid,
+        correlationId: binding.holdId,
+        payload: {
+          source: "ipad-pos",
+          action: "recall",
+          result: "completed",
+        },
+      },
+    },
+  };
 }
 
 test("真实 SQLite：M8 升级 M17 保留 legacy held_orders，V2 密文保存完整定价状态且不生成订单/outbox", async () => {
@@ -899,6 +983,149 @@ test("真实 SQLite：matching RecallActive 现金成交原子完成挂单、订
       audits: 3,
       fences: 0,
     },
+  );
+  await connection.close();
+});
+
+test("真实 SQLite：恢复挂单的电子支付成交原子标记 Recalled 并删除 fence", async () => {
+  const { connection, records } = await open();
+  await prepareRecall(records, "recall-card-1");
+  await insertApprovedDraft(connection, "order-recall-card", 674);
+  await insertApprovedAttempt(
+    connection,
+    "payment-attempt-recall-card",
+    "order-recall-card",
+    674,
+  );
+  const binding = {
+    kind: "recalled",
+    scope,
+    holdId: "hold-1",
+    recallAttemptId: "recall-card-1",
+  } as const;
+  const committer = new SqliteApprovedPaymentOrderCommitter(
+    connection,
+    encryptor,
+    () => "2026-07-28T08:05:00.000Z",
+  );
+
+  const committed = await committer.completeApprovedPaymentOrder(
+    approvedRecallPaymentInput(binding),
+  );
+
+  assert.equal(committed.completed, true);
+  const result = await connection.getFirst<{
+    status: string;
+    recalled_at_iso: string;
+    order_state: string;
+    fences: number;
+    recall_audits: number;
+  }>(
+    `SELECT held.status, held.recalled_at_iso,
+      (SELECT state FROM local_orders WHERE order_guid = 'order-recall-card') AS order_state,
+      (SELECT COUNT(*) FROM terminal_cart_fences) AS fences,
+      (SELECT COUNT(*) FROM audit_events WHERE event_type = 'ORDER_RECALL') AS recall_audits
+     FROM held_order_records held WHERE held.hold_id = 'hold-1'`,
+  );
+  assert.deepEqual(
+    { ...result },
+    {
+      status: "Recalled",
+      recalled_at_iso: "2026-07-28T08:05:00.000Z",
+      order_state: "PendingSync",
+      fences: 0,
+      recall_audits: 1,
+    },
+  );
+  await connection.close();
+});
+
+test("真实 SQLite：恢复挂单的最终混合现金成交原子标记 Recalled", async () => {
+  const { connection, records } = await open();
+  await prepareRecall(records, "recall-mixed-cash-1");
+  await insertApprovedDraft(connection, "order-recall-mixed-cash", 674);
+  const binding = {
+    kind: "recalled",
+    scope,
+    holdId: "hold-1",
+    recallAttemptId: "recall-mixed-cash-1",
+  } as const;
+  const store = new SqliteMixedPaymentTenderStore(
+    connection,
+    {
+      createTenderGuid: () => "tender-recall-mixed-cash",
+      createAuditEventId: () => "audit-recall-mixed-cash-tender",
+    },
+    () => "2026-07-28T08:05:00.000Z",
+    {
+      planner: {
+        async planFinalCash() {
+          return {
+            completionAuditEvents: [{
+              eventId: "audit-payment-recall-mixed-cash",
+              eventType: "PAYMENT_COMPLETE",
+              occurredAtIso: "2026-07-28T08:05:00.000Z",
+              orderGuid: "order-recall-mixed-cash",
+              correlationId: "cash-action-recall-mixed-cash",
+              payload: { source: "mixed-cash" },
+            }],
+            outbox: {
+              messageId: "outbox-recall-mixed-cash",
+              aggregateId: "order-recall-mixed-cash",
+              kind: "order-sync",
+              payloadJson: "{}",
+              nextAttemptAtIso: "2026-07-28T08:05:00.000Z",
+            },
+            fulfilment: { print: null, drawer: null },
+          };
+        },
+      },
+      encryptor,
+      recallCompletion: {
+        async resolve() {
+          const completion = approvedRecallPaymentInput(binding)
+            .recalledHoldCompletion;
+          if (!completion) throw new Error("missing recall completion");
+          return {
+            ...completion,
+            recallAudit: {
+              ...completion.recallAudit,
+              eventId: "audit-order-recall-mixed-cash",
+              orderGuid: "order-recall-mixed-cash",
+            },
+          };
+        },
+      },
+    },
+  );
+
+  const committed = await store.appendCashTenderAtomically({
+    actionId: "cash-action-recall-mixed-cash",
+    orderGuid: "order-recall-mixed-cash",
+    actor: {
+      cashierId: "cashier-2",
+      cashierName: "Cashier Two",
+      userGuid: "user-2",
+    },
+    amount: { currency: "AUD", cents: 674 },
+    tenderedAmount: { currency: "AUD", cents: 675 },
+    change: { currency: "AUD", cents: 0 },
+  });
+
+  assert.equal(committed.truth.state, "PendingSync");
+  const result = await connection.getFirst<{
+    status: string;
+    fences: number;
+    recall_audits: number;
+  }>(
+    `SELECT held.status,
+      (SELECT COUNT(*) FROM terminal_cart_fences) AS fences,
+      (SELECT COUNT(*) FROM audit_events WHERE event_type = 'ORDER_RECALL') AS recall_audits
+     FROM held_order_records held WHERE held.hold_id = 'hold-1'`,
+  );
+  assert.deepEqual(
+    { ...result },
+    { status: "Recalled", fences: 0, recall_audits: 1 },
   );
   await connection.close();
 });
