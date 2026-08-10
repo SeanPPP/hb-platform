@@ -167,6 +167,11 @@ export interface PushProductsToHqItem {
   warehouseIsActive?: boolean
 }
 
+export interface PushProductsToHqStoreOption {
+  storeCode: string
+  storeName?: string
+}
+
 export type PushProductsToHqUpdateField =
   | 'itemNumber'
   | 'barcode'
@@ -222,6 +227,7 @@ export interface PushProductsToHqRequest {
   productCodes: string[]
   items?: PushProductsToHqItem[]
   updateFields?: PushProductsToHqUpdateField[]
+  targetStoreCodes?: string[]
 }
 
 export interface SyncSelectedProductsFromHqRequest {

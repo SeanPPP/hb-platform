@@ -798,6 +798,28 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 加载商品推送到 HQ 的分店选项，直接来自 HQ 分店表。
+        /// </summary>
+        [HttpGet("push-to-hq/store-options")]
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> GetPushToHqStoreOptions()
+        {
+            try
+            {
+                var result = await _productHqSyncService.GetHqStoreOptionsAsync();
+                return Ok(ApiResponse<List<ProductHqStoreOptionDto>>.OK(result));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "加载商品推送HQ分店选项失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<List<ProductHqStoreOptionDto>>.Error("加载商品推送HQ分店选项失败")
+                );
+            }
+        }
+
+        /// <summary>
         /// 创建商品推送到 HQ 的后台任务，HTTP 请求立即返回。
         /// </summary>
         [HttpPost("push-to-hq/jobs")]

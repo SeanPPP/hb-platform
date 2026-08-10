@@ -3,6 +3,7 @@ using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,6 +15,14 @@ namespace BlazorApp.Api.Tests;
 
 public class ReactProductHqSyncContractTests
 {
+    [Fact]
+    public void PushProductsToHqRequest_TargetStoreCodes默认null_保持全部分店旧行为()
+    {
+        var request = new PushProductsToHqRequest();
+
+        Assert.Null(request.TargetStoreCodes);
+    }
+
     [Fact]
     public async Task SyncFromHq_兼容旧路由但委托新商品HQ增量服务()
     {
@@ -80,5 +89,45 @@ public class ReactProductHqSyncContractTests
         Assert.IsType<OkObjectResult>(response);
         hqSyncService.VerifyAll();
         legacyProductService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetPushToHqStoreOptions_要求PosProductsManage权限并返回统一ApiResponse包装()
+    {
+        var httpGet = typeof(ReactProductController)
+            .GetMethod(nameof(ReactProductController.GetPushToHqStoreOptions))!
+            .GetCustomAttribute<HttpGetAttribute>();
+        Assert.NotNull(httpGet);
+        Assert.Equal("push-to-hq/store-options", httpGet!.Template);
+        var authorize = typeof(ReactProductController)
+            .GetMethod(nameof(ReactProductController.GetPushToHqStoreOptions))!
+            .GetCustomAttribute<AuthorizeAttribute>();
+        Assert.Equal(Permissions.PosProducts.Manage, authorize?.Policy);
+
+        var hqSyncService = new Mock<IProductHqSyncService>(MockBehavior.Strict);
+        hqSyncService
+            .Setup(service => service.GetHqStoreOptionsAsync())
+            .ReturnsAsync(new List<ProductHqStoreOptionDto>
+            {
+                new() { StoreCode = "S01", StoreName = "一店" },
+            });
+
+        var controller = new ReactProductController(
+            Mock.Of<IProductReactService>(),
+            Mock.Of<IProductStoreSyncService>(),
+            hqSyncService.Object,
+            Mock.Of<ICurrentUserManageableStoreScopeService>(),
+            Mock.Of<ILogger<ReactProductController>>()
+        );
+
+        var response = await controller.GetPushToHqStoreOptions();
+
+        var ok = Assert.IsType<OkObjectResult>(response);
+        var payload = Assert.IsType<ApiResponse<List<ProductHqStoreOptionDto>>>(ok.Value);
+        Assert.True(payload.Success);
+        Assert.Single(payload.Data!);
+        Assert.Equal("S01", payload.Data![0].StoreCode);
+        Assert.Equal("一店", payload.Data![0].StoreName);
+        hqSyncService.VerifyAll();
     }
 }

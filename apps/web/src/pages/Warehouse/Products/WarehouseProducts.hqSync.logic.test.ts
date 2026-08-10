@@ -4,6 +4,7 @@ import {
   createWarehouseProductHqSyncJob,
   getWarehouseProductHqSyncJob,
   syncWarehouseProductsFromHq,
+  type WarehouseProductListItem,
 } from '../../../services/warehouseProductService'
 import type { CurrentUser } from '../../../types/auth'
 import { buildAccess } from '../../../utils/access'
@@ -23,6 +24,10 @@ import {
   resolveCategoryFilterValueFromTableFilters,
   setFilterValues,
 } from './columnFilters'
+import {
+  areWarehouseProductCodeSelectionsEqual,
+  buildWarehouseProductHqPushPayload,
+} from './hqPush'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -93,6 +98,8 @@ function extractSection(source: string, startText: string, endText: string) {
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/index.tsx')
 const pageSource = readFileSync(pageFile, 'utf8')
+const zhLocaleSource = readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/zh.json'), 'utf8')
+const enLocaleSource = readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/en.json'), 'utf8')
 const columnFiltersFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/columnFilters.ts')
 const columnFiltersSource = readFileSync(columnFiltersFile, 'utf8')
 const categoryTreePickerFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/CategoryTreePicker.tsx')
@@ -100,6 +107,230 @@ const categoryTreePickerSource = readFileSync(categoryTreePickerFile, 'utf8')
 
 async function main() {
   const failures: string[] = []
+
+  const pushPayloadFailure = await runTest('仓库商品发送 HQ 应携带页面商品资料与库存三价', () => {
+    const products: WarehouseProductListItem[] = [
+      {
+        id: 'HB001',
+        productCode: 'HB001',
+        itemNumber: 'ITEM-001',
+        name: '测试商品',
+        nameEn: 'Test Product',
+        barcode: '952700000001',
+        localSupplierCode: 'SUP-AU',
+        domesticPrice: 8.88,
+        importPrice: 1.23,
+        labelPrice: 4.99,
+        productImage: 'https://example.com/product.jpg',
+        isActive: true,
+        productType: 0,
+      },
+    ]
+
+    const payload = buildWarehouseProductHqPushPayload(
+      products,
+      ['HB001'],
+      ['productName', 'inventoryDomesticPrice', 'inventoryImportPrice', 'inventoryOemPrice'],
+      ['1001', '1002'],
+    )
+
+    assertDeepEqual(payload, {
+      productCodes: ['HB001'],
+      targetStoreCodes: ['1001', '1002'],
+      items: [
+        {
+          productCode: 'HB001',
+          localSupplierCode: 'SUP-AU',
+          itemNumber: 'ITEM-001',
+          productName: '测试商品',
+          englishName: 'Test Product',
+          barcode: '952700000001',
+          imageUrl: 'https://example.com/product.jpg',
+          domesticPrice: 8.88,
+          importPrice: 1.23,
+          oemPrice: 4.99,
+          isNewProduct: false,
+        },
+      ],
+      updateFields: ['productName', 'inventoryDomesticPrice', 'inventoryImportPrice', 'inventoryOemPrice'],
+    }, '仓库 HQ payload 应保留完整商品候选、目标分店，并把 labelPrice 映射为 oemPrice')
+  })
+  if (pushPayloadFailure) failures.push(pushPayloadFailure)
+
+  const pushSelectionRaceFailure = await runTest('发送 HQ 确认前后应复核最新选择集合', () => {
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(['HB001', 'HB002'], ['HB002', 'HB001']),
+      true,
+      '同一选择集合不应因顺序变化被误判',
+    )
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(['HB001'], []),
+      false,
+      '弹窗期间列表刷新并清空选择时必须中止发送',
+    )
+    assertEqual(
+      areWarehouseProductCodeSelectionsEqual(['HB001'], ['HB002']),
+      false,
+      '弹窗期间选择商品变化时必须中止发送',
+    )
+  })
+  if (pushSelectionRaceFailure) failures.push(pushSelectionRaceFailure)
+
+  const pushPermissionFailure = await runTest('发送 HQ 应只开放给 POS 商品管理权限', () => {
+    const posManagerAccess = buildAccess(createCurrentUser({ permissions: ['PosProducts.Manage'] }))
+    const warehouseOnlyAccess = buildAccess(createCurrentUser({ permissions: ['Warehouse.ManageProducts'] }))
+
+    assertEqual(posManagerAccess.canManagePosProducts, true, 'PosProducts.Manage 应允许发送 HQ')
+    assertEqual(warehouseOnlyAccess.canManagePosProducts, false, 'Warehouse.ManageProducts 不应扩大 HQ 跨库写权限')
+  })
+  if (pushPermissionFailure) failures.push(pushPermissionFailure)
+
+  const pushToHqUiFailure = await runTest('仓库商品页应按 POS 商品管理权限提供发送 HQ 完整交互', () => {
+    assert(
+      pageSource.includes('CloudUploadOutlined') &&
+        pageSource.includes('pushProductsToHq') &&
+        pageSource.includes('buildWarehouseProductHqPushPayload') &&
+        pageSource.includes('PosHqPushModal') &&
+        pageSource.includes('getPushToHqStoreOptions'),
+      '页面应引入发送 HQ 图标、服务、仓库 payload 映射、共享弹窗和分店选项服务',
+    )
+    assert(
+      pageSource.includes('const [pushToHqLoading, setPushToHqLoading] = useState(false);') &&
+        pageSource.includes('const pushToHqLoadingRef = useRef(false);') &&
+        pageSource.includes('const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);') &&
+        pageSource.includes('const [pushToHqStoreOptions, setPushToHqStoreOptions]'),
+      '页面应维护发送 loading、即时锁、弹窗可见性和独立 HQ 分店选项',
+    )
+
+    const loadSection = extractSection(
+      pageSource,
+      'const loadPushToHqStoreOptions',
+      'const handlePushToHq = async',
+    )
+    assert(
+      loadSection.includes('await getPushToHqStoreOptions()') &&
+        loadSection.includes('setPushToHqStoreOptionsError(') &&
+        loadSection.includes("t('posAdmin.products.pushToHqStoreOptionsLoadFailed'") &&
+        loadSection.includes('pushToHqStoreOptionsGuardRef.current') &&
+        loadSection.includes('guard.begin()') &&
+        loadSection.includes('requestId < 0') &&
+        loadSection.includes('guard.isLatest(requestId)') &&
+        loadSection.includes('guard.complete(requestId)'),
+      '每次打开弹窗应重取最新 HQ 分店选项，并使用单飞加最新请求守卫忽略过期响应',
+    )
+
+    const openHandlerSection = extractSection(
+      pageSource,
+      'const handlePushToHq = async',
+      'const handlePushToHqConfirm',
+    )
+    assert(
+      openHandlerSection.includes('if (!access.canManagePosProducts)') &&
+        openHandlerSection.includes('if (!selectedRowKeys.length)') &&
+        openHandlerSection.includes('if (pushToHqLoadingRef.current || pushToHqModalOpen) return;') &&
+        openHandlerSection.includes('pushToHqLoadingRef.current = true;') &&
+        openHandlerSection.includes('setPushToHqModalOpen(true);') &&
+        openHandlerSection.includes('await loadPushToHqStoreOptions();') &&
+        openHandlerSection.indexOf('pushToHqLoadingRef.current = true;') <
+          openHandlerSection.indexOf('await loadPushToHqStoreOptions();'),
+      '发送处理应在即时锁内打开弹窗并获取最新 HQ 分店选项，避免重复打开',
+    )
+
+    const confirmSection = extractSection(
+      pageSource,
+      'const handlePushToHqConfirm',
+      'const handlePushToHqCancel',
+    )
+    assert(
+      confirmSection.indexOf('if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return;') <
+          confirmSection.indexOf('pushToHqConfirmLoadingRef.current = true;') &&
+        confirmSection.indexOf('pushToHqConfirmLoadingRef.current = true;') <
+          confirmSection.indexOf('await pushProductsToHq(payload)') &&
+        confirmSection.includes('pushToHqConfirmLoadingRef.current = false;') &&
+        confirmSection.includes('if (!isMountedRef.current) return;') &&
+        confirmSection.includes('selectedRowKeysRef.current.map(String)') &&
+        confirmSection.includes('areWarehouseProductCodeSelectionsEqual(productCodes, currentProductCodes)') &&
+        confirmSection.includes('buildWarehouseProductHqPushPayload(dataRef.current, currentProductCodes, updateFields, targetStoreCodes)') &&
+        confirmSection.includes('await pushProductsToHq(payload)') &&
+        confirmSection.includes('if (!showPushToHqResult(result)) return;') &&
+        confirmSection.includes('setPushToHqModalOpen(false);') &&
+        confirmSection.includes('setSelectedRowKeys([]);') &&
+        confirmSection.includes('await refreshCurrentList();'),
+      '确认提交应复核最新选择、发送含目标分店的仓库 payload，并仅在成功后关闭、清选、刷新',
+    )
+    assert(
+      confirmSection.lastIndexOf('if (isMountedRef.current)') <
+          confirmSection.indexOf('setPushToHqConfirmLoading(false);') &&
+        confirmSection.lastIndexOf('if (isMountedRef.current)') <
+          confirmSection.indexOf('setPushToHqLoading(false);'),
+      '提交 finally 释放 loading 状态前必须检查组件是否已卸载',
+    )
+    const failureSection = extractSection(confirmSection, 'catch (error)', 'finally')
+    assert(
+      failureSection.includes('const errorResult = extractPushToHqErrorResult(error)') &&
+        failureSection.includes('Modal.error({') &&
+        !failureSection.includes('setSelectedRowKeys([])'),
+      '失败时应保留商品、字段和分店选择，并显示后端返回的错误明细',
+    )
+
+    const cancelSection = extractSection(
+      pageSource,
+      'const handlePushToHqCancel',
+      'const handleBatchToggleActive',
+    )
+    assert(
+      cancelSection.includes('setPushToHqModalOpen(false);') &&
+        cancelSection.includes('pushToHqLoadingRef.current = false;') &&
+        cancelSection.includes('pushToHqStoreOptionsGuardRef.current.invalidate();') &&
+        cancelSection.indexOf('if (pushToHqConfirmLoadingRef.current) return') <
+          cancelSection.indexOf('pushToHqLoadingRef.current = false;') &&
+        !cancelSection.includes('pushProductsToHq('),
+      '取消只关闭弹窗、使过期选项响应失效并释放锁，且提交进行中不得释放锁',
+    )
+
+    const toolbarSection = extractSection(
+      pageSource,
+      "<PageContainer title={t('warehouse.productManagement')}",
+      '<Card>',
+    )
+    assert(
+      toolbarSection.includes('access.canManagePosProducts ?') &&
+        toolbarSection.includes('icon={<CloudUploadOutlined />}') &&
+        toolbarSection.includes('loading={pushToHqLoading}') &&
+        toolbarSection.includes('disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}') &&
+        toolbarSection.includes('onClick={() => void handlePushToHq()}') &&
+        toolbarSection.includes("t('posAdmin.products.pushToHq', '发送到HQ')"),
+      '工具栏发送按钮应只对 POS 商品管理员显示，并正确绑定选择、loading 与点击行为',
+    )
+    const resultSection = extractSection(
+      pageSource,
+      'const showPushToHqResult = useCallback',
+      'const loadPushToHqStoreOptions',
+    )
+    assert(
+      resultSection.includes("if (errors.length || (result.failedCount ?? 0) > 0)") &&
+        resultSection.includes('Modal.warning({') &&
+        resultSection.includes('return false;') &&
+        resultSection.includes('Modal.success({') &&
+        resultSection.includes('return true;') &&
+        resultSection.includes("t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录')") &&
+        resultSection.includes("errors.join('\\n')"),
+      '发送结果应复用商品管理页的成功、部分成功和 HQ 影响统计反馈',
+    )
+    assert(
+      pageSource.includes('<PosHqPushModal') &&
+        pageSource.includes('storeOptions={pushToHqStoreOptions}') &&
+        pageSource.includes('onConfirm={handlePushToHqConfirm}') &&
+        pageSource.includes('onCancel={handlePushToHqCancel}'),
+      '页面应渲染共享弹窗并绑定 HQ 选项、确认与取消',
+    )
+    assert(
+      zhLocaleSource.includes('"pushToHqSelectionChanged": "选中商品数据已变化，请重新选择后再试"') &&
+        enLocaleSource.includes('"pushToHqSelectionChanged": "The selected product data changed. Please select the products again and retry."'),
+      '选择变化提示应同时提供中英文翻译，不能让英文界面回退到中文',
+    )
+  })
+  if (pushToHqUiFailure) failures.push(pushToHqUiFailure)
 
   const adminAccessFailure = await runTest('Admin 权限判断成立', () => {
     const access = buildAccess(

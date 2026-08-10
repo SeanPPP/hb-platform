@@ -67,6 +67,7 @@ import {
   createProductFullHqSyncJob,
   createProductIncrementalHqSyncJob,
   createSupplierImageBatchUpdateJob,
+  getPushToHqStoreOptions,
   getSyncProductsToStoresJob,
   getSupplierImageBatchUpdateJob,
   getProductStoreRecords,
@@ -89,13 +90,11 @@ import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrity
 import { getActiveStores } from '../../../services/storeService'
 import { batchTranslate } from '../../../services/translationService'
 import { useAuthStore } from '../../../store/auth'
+import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal'
+import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
-import {
-  defaultPushProductsToHqUpdateFields,
-  pushProductsToHqUpdateFieldOptions,
-} from '../../../types/posProduct'
-import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductColumnFilters, PosProductDateFilterOperator, PosProductDto, PosProductFilterParams, PosProductNumberFilterOperator, PosProductTextFilterOperator, ProductStoreRecordDto, PushProductsToHqResult, PushProductsToHqUpdateField, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductColumnFilters, PosProductDateFilterOperator, PosProductDto, PosProductFilterParams, PosProductNumberFilterOperator, PosProductTextFilterOperator, ProductStoreRecordDto, PushProductsToHqResult, PushProductsToHqStoreOption, PushProductsToHqUpdateField, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
@@ -478,6 +477,14 @@ export default function ProductManagementPage() {
   const [syncSelectAll, setSyncSelectAll] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const pushToHqLoadingRef = useRef(false)
+  const pushToHqConfirmLoadingRef = useRef(false)
+  const pushToHqProductCodesRef = useRef<string[]>([])
+  const pushToHqStoreOptionsGuardRef = useRef(createPushToHqStoreOptionsGuard())
+  const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false)
+  const [pushToHqStoreOptions, setPushToHqStoreOptions] = useState<PushProductsToHqStoreOption[]>([])
+  const [pushToHqStoreOptionsLoading, setPushToHqStoreOptionsLoading] = useState(false)
+  const [pushToHqStoreOptionsError, setPushToHqStoreOptionsError] = useState<string | null>(null)
+  const [pushToHqConfirmLoading, setPushToHqConfirmLoading] = useState(false)
   const [selectedFromHqLoading, setSelectedFromHqLoading] = useState(false)
   const selectedFromHqLoadingRef = useRef(false)
 
@@ -1546,62 +1553,15 @@ export default function ProductManagementPage() {
         title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
         content,
       })
-      return
+      return false
     }
 
     Modal.success({
       title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
       content,
     })
+    return true
   }, [t])
-
-  const confirmPushToHqUpdateFields = (count: number): Promise<PushProductsToHqUpdateField[] | null> => {
-    let selectedFields = [...defaultPushProductsToHqUpdateFields]
-    return new Promise((resolve) => {
-      Modal.confirm({
-        title: t('posAdmin.products.pushToHq', '发送到HQ'),
-        width: 640,
-        okText: t('common.confirm', '确定'),
-        cancelText: t('common.cancel', '取消'),
-        content: (
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            <div>
-              {t('posAdmin.products.pushToHqUpdateFieldsHint', '已选择 {{count}} 个商品，请勾选要更新到 HQ 的字段。', { count })}
-            </div>
-            <Checkbox.Group
-              defaultValue={selectedFields}
-              onChange={(values) => {
-                selectedFields = values.map(String) as PushProductsToHqUpdateField[]
-              }}
-            >
-              <Row gutter={[8, 6]}>
-                {pushProductsToHqUpdateFieldOptions.map((field) => (
-                  <Col span={12} key={field.value}>
-                    <Checkbox value={field.value}>{t(field.labelKey, field.fallbackLabel)}</Checkbox>
-                  </Col>
-                ))}
-              </Row>
-            </Checkbox.Group>
-            <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-              {t(
-                'containers.updateFields.hqCreateHint',
-                '字段选择主要限制已有 HQ 记录更新；如果目标表需要新增记录，系统仍会写入创建该记录所需的完整字段。',
-              )}
-            </div>
-          </Space>
-        ),
-        onOk: () => {
-          if (!selectedFields.length) {
-            message.warning(t('containers.updateFields.selectAtLeastOne', '请至少选择一个更新字段'))
-            return Promise.reject()
-          }
-          resolve(selectedFields)
-          return undefined
-        },
-        onCancel: () => resolve(null),
-      })
-    })
-  }
 
   const showSelectedFromHqResult = useCallback((result: HqProductSyncResult) => {
     const content = (
@@ -2289,27 +2249,82 @@ export default function ProductManagementPage() {
     }
   }
 
+  // 每次打开发送到 HQ 弹窗都重新获取最新 HQ 分店选项；失败时由弹窗保留并可重试。
+  const loadPushToHqStoreOptions = async (): Promise<boolean> => {
+    const guard = pushToHqStoreOptionsGuardRef.current
+    const requestId = guard.begin()
+    // 单飞守卫：同一时刻只允许一个选项请求，避免连续点击重试造成重复 GET。
+    if (requestId < 0) return false
+    setPushToHqStoreOptionsLoading(true)
+    setPushToHqStoreOptionsError(null)
+    try {
+      const options = await getPushToHqStoreOptions()
+      if (!isMountedRef.current || !guard.isLatest(requestId)) return false
+      setPushToHqStoreOptions(options)
+      return true
+    } catch (error) {
+      if (!isMountedRef.current || !guard.isLatest(requestId)) return false
+      setPushToHqStoreOptionsError(
+        error instanceof Error
+          ? error.message
+          : t('posAdmin.products.pushToHqStoreOptionsLoadFailed', '获取 HQ 分店选项失败，请重试'),
+      )
+      return false
+    } finally {
+      guard.complete(requestId)
+      if (isMountedRef.current && guard.isLatest(requestId)) {
+        setPushToHqStoreOptionsLoading(false)
+      }
+    }
+  }
+
   const handlePushToHq = async () => {
     if (!ensureCanManagePosProducts()) return
     if (!selectedRowKeys.length) {
       message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
       return
     }
-    // 使用 ref 作为即时锁，避免 React 状态尚未刷新时连续点击重复提交。
-    if (pushToHqLoadingRef.current) return
+    // 使用 ref 作为即时锁并覆盖选项获取，避免状态尚未刷新时连续点击打开多个弹窗。
+    if (pushToHqLoadingRef.current || pushToHqModalOpen) return
     const productCodes = selectedRowKeys.map(String)
+    pushToHqProductCodesRef.current = productCodes
     pushToHqLoadingRef.current = true
     setPushToHqLoading(true)
-
+    setPushToHqModalOpen(true)
+    setPushToHqStoreOptions([])
     try {
-      const updateFields = await confirmPushToHqUpdateFields(productCodes.length)
-      if (!updateFields) return
+      await loadPushToHqStoreOptions()
+    } finally {
+      pushToHqLoadingRef.current = false
+      if (isMountedRef.current) {
+        setPushToHqLoading(false)
+      }
+    }
+  }
+
+  const handlePushToHqConfirm = async (
+    updateFields: PushProductsToHqUpdateField[],
+    targetStoreCodes: string[],
+  ) => {
+    // 选项请求在途或提交进行中时拒绝确认；通过后再同步占用两个锁，
+    // 避免同 tick 内取消在状态刷新前释放锁，也避免提前占用锁导致永不释放。
+    if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return
+    pushToHqLoadingRef.current = true
+    pushToHqConfirmLoadingRef.current = true
+    const productCodes = pushToHqProductCodesRef.current
+    setPushToHqLoading(true)
+    setPushToHqConfirmLoading(true)
+    try {
       const result = await pushProductsToHq({
         productCodes,
         updateFields,
+        targetStoreCodes,
       })
-      showPushToHqResult(result)
+      if (!isMountedRef.current) return
+      if (!showPushToHqResult(result)) return
+      setPushToHqModalOpen(false)
       setSelectedRowKeys([])
+      pushToHqProductCodesRef.current = []
       await loadData()
     } catch (error) {
       const errorResult = extractPushToHqErrorResult(error)
@@ -2331,7 +2346,26 @@ export default function ProductManagementPage() {
         message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))
       }
     } finally {
+      pushToHqConfirmLoadingRef.current = false
       pushToHqLoadingRef.current = false
+      if (isMountedRef.current) {
+        setPushToHqConfirmLoading(false)
+        setPushToHqLoading(false)
+      }
+    }
+  }
+
+  const handlePushToHqCancel = () => {
+    // 提交进行中忽略取消，避免释放锁后立即重开导致重复提交。
+    if (pushToHqConfirmLoadingRef.current) return
+    pushToHqLoadingRef.current = false
+    pushToHqConfirmLoadingRef.current = false
+    // 使仍在途的选项请求过期，防止取消后旧响应覆盖下一次打开的状态。
+    pushToHqStoreOptionsGuardRef.current.invalidate()
+    pushToHqProductCodesRef.current = []
+    if (isMountedRef.current) {
+      setPushToHqModalOpen(false)
+      setPushToHqConfirmLoading(false)
       setPushToHqLoading(false)
     }
   }
@@ -3121,7 +3155,7 @@ export default function ProductManagementPage() {
                 <Button
                   icon={<CloudUploadOutlined />}
                   loading={pushToHqLoading}
-                  disabled={!selectedRowKeys.length || pushToHqLoading}
+                  disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}
                   onClick={handlePushToHq}
                 >
                   {t('posAdmin.products.pushToHq', '发送到HQ')}
@@ -3757,6 +3791,18 @@ export default function ProductManagementPage() {
           </div>
         </Form>
       </Modal>
+
+      <PosHqPushModal
+        open={pushToHqModalOpen}
+        selectedCount={selectedRowKeys.length}
+        storeOptions={pushToHqStoreOptions}
+        storeOptionsLoading={pushToHqStoreOptionsLoading}
+        storeOptionsError={pushToHqStoreOptionsError}
+        onRetryStoreOptions={() => void loadPushToHqStoreOptions()}
+        confirmLoading={pushToHqConfirmLoading}
+        onConfirm={handlePushToHqConfirm}
+        onCancel={handlePushToHqCancel}
+      />
 
       <Modal
         open={storeRecordsVisible}

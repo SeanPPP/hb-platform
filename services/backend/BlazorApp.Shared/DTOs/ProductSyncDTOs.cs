@@ -381,6 +381,28 @@ namespace BlazorApp.Shared.DTOs
         /// 允许更新的 HQ 字段；为空时兼容旧入口，按原逻辑全量更新。
         /// </summary>
         public List<string>? UpdateFields { get; set; }
+
+        /// <summary>
+        /// 指定目标 HQ 分店编码列表；为 null 时保持旧行为（全部 HQ 分店）。
+        /// 显式提供时做 trim、大小写不敏感去重，并映射为 HQ 规范编码。
+        /// </summary>
+        public List<string>? TargetStoreCodes { get; set; }
+    }
+
+    /// <summary>
+    /// 商品推送 HQ 分店选项。
+    /// </summary>
+    public class ProductHqStoreOptionDto
+    {
+        /// <summary>
+        /// HQ 分店编码。
+        /// </summary>
+        public string StoreCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// HQ 分店名称。
+        /// </summary>
+        public string StoreName { get; set; } = string.Empty;
     }
 
     /// <summary>

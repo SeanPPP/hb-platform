@@ -127,6 +127,39 @@ public sealed class ProductPushToHqJobServiceTests
         await WaitForJobAsync(service, second.JobId);
     }
 
+    [Fact]
+    public async Task StartJobAsync_保留指定分店范围透传给推送服务()
+    {
+        var pushService = new Mock<IProductHqSyncService>();
+        pushService
+            .Setup(service => service.PushToHqAsync(It.Is<PushProductsToHqRequest>(request =>
+                request.TargetStoreCodes != null
+                && request.TargetStoreCodes.SequenceEqual(new[] { "S01", "S02" })
+            )))
+            .ReturnsAsync(
+                ApiResponse<PushProductsToHqResult>.OK(
+                    new PushProductsToHqResult
+                    {
+                        SuccessCount = 1,
+                        TotalCount = 1,
+                    },
+                    "商品推送HQ完成"
+                )
+            );
+        var service = CreateService(pushService);
+
+        var started = await service.StartJobAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            TargetStoreCodes = new List<string> { "S01", "S02" },
+        });
+
+        var completed = await WaitForJobAsync(service, started.JobId);
+        Assert.Equal(ProductPushToHqJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(1, completed.Result!.SuccessCount);
+        pushService.VerifyAll();
+    }
+
     private static ProductPushToHqJobService CreateService(Mock<IProductHqSyncService> pushService)
     {
         var services = new ServiceCollection();

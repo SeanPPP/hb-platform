@@ -1,3 +1,4 @@
+import { normalizePushToHqStoreOptions } from '../components/posHqPush/storeSelection'
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   BatchUpdateProductStoreRecordsRequest,
@@ -18,6 +19,7 @@ import type {
   PosProductDto,
   PosProductFilterParams,
   ProductStoreRecordDto,
+  PushProductsToHqStoreOption,
   PushProductsToHqRequest,
   PushProductsToHqResult,
   SyncSelectedProductsFromHqRequest,
@@ -663,6 +665,14 @@ export async function pushProductsToHq(data: PushProductsToHqRequest): Promise<P
   )
   assertApiSuccess(response, '发送商品到 HQ 失败')
   return normalizePushProductsToHqResult(unwrapApiData(response))
+}
+
+// 发送到 HQ 弹窗每次打开都读取最新 HQ 分店选项，接口按现有 ApiResponse 包裹返回数组。
+export async function getPushToHqStoreOptions(): Promise<PushProductsToHqStoreOption[]> {
+  const response = await request.get<ApiResponse<PushProductsToHqStoreOption[]>>(
+    `${API_BASE}/push-to-hq/store-options`,
+  )
+  return normalizePushToHqStoreOptions(unwrapApiData(response))
 }
 
 export function buildPushProductsToHqOperationId(

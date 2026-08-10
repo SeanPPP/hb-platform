@@ -1,4 +1,4 @@
-import { AppstoreOutlined, CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -15,12 +15,14 @@ import { getSupplierOptions, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
 import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
 import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
+import { getPushToHqStoreOptions, pushProductsToHq } from '../../../services/posProductService';
 import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { batchAssignProducts, getCategoryTree, type WarehouseCategoryNode, } from '../../../services/warehouseCategoryService';
 import { useAuthStore } from '../../../store/auth';
 import type { SupplierOption, } from '../../../types/domesticProduct';
 import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
 import type { MulticodeSetItem } from '../../../types/multiCodeSet';
+import type { PushProductsToHqResult, PushProductsToHqStoreOption, PushProductsToHqUpdateField, } from '../../../types/posProduct';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
@@ -31,6 +33,54 @@ import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
 import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, buildFilterCategoryTreeOptions, } from '../Categories/categoryProductFilters';
 import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
+import { areWarehouseProductCodeSelectionsEqual, buildWarehouseProductHqPushPayload } from './hqPush';
+import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
+import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function normalizePushToHqPayload(raw: unknown, fallbackMessage?: string): PushProductsToHqResult | null {
+    if (!isPlainRecord(raw)) return null;
+    const errors = Array.isArray(raw.errors)
+        ? raw.errors.filter((item): item is string => typeof item === 'string')
+        : [];
+    const affectedRowCount = Number(raw.affectedRowCount ?? 0)
+        || Number(raw.productsAdded ?? 0)
+            + Number(raw.productsUpdated ?? 0)
+            + Number(raw.storeRetailPricesCreated ?? 0)
+            + Number(raw.storeRetailPricesUpdated ?? 0)
+            + Number(raw.productSetCodesCreated ?? raw.productSetCodesAdded ?? 0)
+            + Number(raw.productSetCodesUpdated ?? 0)
+            + Number(raw.storeMultiCodesCreated ?? 0)
+            + Number(raw.storeMultiCodesUpdated ?? 0);
+
+    return {
+        ...(raw as Partial<PushProductsToHqResult>),
+        successCount: Number(raw.successCount ?? raw.productsAdded ?? 0)
+            + Number(raw.successCount === undefined ? raw.productsUpdated ?? 0 : 0),
+        failedCount: Number(raw.failedCount ?? raw.errorCount ?? errors.length),
+        totalCount: Number(raw.totalCount ?? 0),
+        affectedRowCount,
+        errors,
+        message: typeof raw.message === 'string' ? raw.message : fallbackMessage,
+    };
+}
+
+function extractPushToHqErrorResult(error: unknown): PushProductsToHqResult | null {
+    if (!isPlainRecord(error) || !('payload' in error)) return null;
+    const payload = error.payload;
+    if (!isPlainRecord(payload)) return null;
+    const fallbackMessage = typeof payload.message === 'string'
+        ? payload.message
+        : error instanceof Error
+            ? error.message
+            : undefined;
+    return normalizePushToHqPayload(payload.data, fallbackMessage)
+        ?? normalizePushToHqPayload(payload.details, fallbackMessage);
+}
+
 interface ProductFormValues {
     supplierCode?: string;
     productName: string;
@@ -624,6 +674,12 @@ export default function WarehouseProductsPage() {
     const [batchActionLoading, setBatchActionLoading] = useState(false);
     const [batchEditOpen, setBatchEditOpen] = useState(false);
     const [batchEditSaving, setBatchEditSaving] = useState(false);
+    const [pushToHqLoading, setPushToHqLoading] = useState(false);
+    const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);
+    const [pushToHqStoreOptions, setPushToHqStoreOptions] = useState<PushProductsToHqStoreOption[]>([]);
+    const [pushToHqStoreOptionsLoading, setPushToHqStoreOptionsLoading] = useState(false);
+    const [pushToHqStoreOptionsError, setPushToHqStoreOptionsError] = useState<string | null>(null);
+    const [pushToHqConfirmLoading, setPushToHqConfirmLoading] = useState(false);
     const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([]);
     const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false);
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
@@ -631,9 +687,19 @@ export default function WarehouseProductsPage() {
     const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
     const [columnOrder, setColumnOrder] = useState<WarehouseProductTableColumnKey[]>([]);
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
+    const pushToHqLoadingRef = useRef(false);
+    const pushToHqProductCodesRef = useRef<string[]>([]);
+    const pushToHqConfirmLoadingRef = useRef(false);
+    const pushToHqStoreOptionsGuardRef = useRef(createPushToHqStoreOptionsGuard());
     const isMountedRef = useRef(true);
+    const dataRef = useRef<WarehouseProductListItem[]>([]);
+    const selectedRowKeysRef = useRef<React.Key[]>([]);
     const loadDataRef = useRef<((overrides?: Partial<WarehouseProductsTableQuery>) => Promise<void>) | null>(null);
     const listRequestGuardRef = useRef(createLatestRequestGuard());
+    useLayoutEffect(() => {
+        dataRef.current = data;
+        selectedRowKeysRef.current = selectedRowKeys;
+    }, [data, selectedRowKeys]);
     const columnDragSensors = useSensors(useSensor(PointerSensor, {
         activationConstraint: {
             distance: 6,
@@ -1092,6 +1158,178 @@ export default function WarehouseProductsPage() {
         }
         finally {
             setSaving(false);
+        }
+    };
+    const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {
+        const errors = result.errors ?? [];
+        const detailStats = [
+            { label: t('posAdmin.products.pushToHqAffectedRows', 'HQ影响记录'), value: result.affectedRowCount ?? 0 },
+            { label: t('posAdmin.products.productsAdded', '商品新增'), value: result.productsAdded ?? 0 },
+            { label: t('posAdmin.products.productsUpdated', '商品更新'), value: result.productsUpdated ?? 0 },
+            { label: t('posAdmin.products.storeRetailPricesCreated', '门店零售价新增'), value: result.storeRetailPricesCreated ?? 0 },
+            { label: t('posAdmin.products.storeRetailPricesUpdated', '门店零售价更新'), value: result.storeRetailPricesUpdated ?? 0 },
+            { label: t('posAdmin.products.productSetCodesCreated', '套装编码新增'), value: result.productSetCodesCreated ?? 0 },
+            { label: t('posAdmin.products.productSetCodesUpdated', '套装编码更新'), value: result.productSetCodesUpdated ?? 0 },
+            { label: t('posAdmin.products.storeMultiCodesCreated', '门店多码新增'), value: result.storeMultiCodesCreated ?? 0 },
+            { label: t('posAdmin.products.storeMultiCodesUpdated', '门店多码更新'), value: result.storeMultiCodesUpdated ?? 0 },
+        ].filter((item) => item.value > 0);
+        const content = (<Space direction="vertical" size={6}>
+            {result.message ? <div>{result.message}</div> : null}
+            <div>
+              {t('posAdmin.products.pushToHqResult', '发送完成：商品成功 {{success}}，失败 {{failed}}，合计 {{total}}', {
+                success: result.successCount ?? 0,
+                failed: result.failedCount ?? 0,
+                total: result.totalCount ?? (result.successCount ?? 0) + (result.failedCount ?? 0),
+            })}
+            </div>
+            {detailStats.map((item) => (<div key={item.label}>{item.label}: {item.value}</div>))}
+            {errors.length ? (<div style={{ whiteSpace: 'pre-wrap' }}>
+              {t('posAdmin.products.partialSyncError', '部分同步错误')}：{errors.join('\n')}
+            </div>) : null}
+          </Space>);
+
+        if (errors.length || (result.failedCount ?? 0) > 0) {
+            Modal.warning({
+                title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
+                content,
+            });
+            return false;
+        }
+
+        Modal.success({
+            title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
+            content,
+        });
+        return true;
+    }, [t]);
+    // 每次打开发送到 HQ 弹窗都重新获取最新 HQ 分店选项；失败时由弹窗保留并可重试。
+    const loadPushToHqStoreOptions = async (): Promise<boolean> => {
+        const guard = pushToHqStoreOptionsGuardRef.current;
+        const requestId = guard.begin();
+        // 单飞守卫：同一时刻只允许一个选项请求，避免连续点击重试造成重复 GET。
+        if (requestId < 0) return false;
+        setPushToHqStoreOptionsLoading(true);
+        setPushToHqStoreOptionsError(null);
+        try {
+            const options = await getPushToHqStoreOptions();
+            if (!isMountedRef.current || !guard.isLatest(requestId)) return false;
+            setPushToHqStoreOptions(options);
+            return true;
+        }
+        catch (error) {
+            if (!isMountedRef.current || !guard.isLatest(requestId)) return false;
+            setPushToHqStoreOptionsError(
+                error instanceof Error
+                    ? error.message
+                    : t('posAdmin.products.pushToHqStoreOptionsLoadFailed', '获取 HQ 分店选项失败，请重试'),
+            );
+            return false;
+        }
+        finally {
+            guard.complete(requestId);
+            if (isMountedRef.current && guard.isLatest(requestId)) {
+                setPushToHqStoreOptionsLoading(false);
+            }
+        }
+    };
+    const handlePushToHq = async () => {
+        if (!access.canManagePosProducts) {
+            message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'));
+            return;
+        }
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        // 使用 ref 作为即时锁并覆盖选项获取，避免状态尚未刷新时连续点击打开多个弹窗。
+        if (pushToHqLoadingRef.current || pushToHqModalOpen) return;
+        const productCodes = selectedRowKeys.map(String);
+        pushToHqProductCodesRef.current = productCodes;
+        pushToHqLoadingRef.current = true;
+        setPushToHqLoading(true);
+        setPushToHqModalOpen(true);
+        setPushToHqStoreOptions([]);
+
+        try {
+            await loadPushToHqStoreOptions();
+        }
+        finally {
+            pushToHqLoadingRef.current = false;
+            if (isMountedRef.current) {
+                setPushToHqLoading(false);
+            }
+        }
+    };
+    const handlePushToHqConfirm = async (
+        updateFields: PushProductsToHqUpdateField[],
+        targetStoreCodes: string[],
+    ) => {
+        // 选项请求在途或提交进行中时拒绝确认；通过后再同步占用两个锁，
+        // 避免同 tick 内取消在状态刷新前释放锁，也避免提前占用锁导致永不释放。
+        if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return;
+        pushToHqLoadingRef.current = true;
+        pushToHqConfirmLoadingRef.current = true;
+        const productCodes = pushToHqProductCodesRef.current;
+        setPushToHqLoading(true);
+        setPushToHqConfirmLoading(true);
+
+        try {
+            if (!isMountedRef.current) return;
+            const currentProductCodes = selectedRowKeysRef.current.map(String);
+            if (!areWarehouseProductCodeSelectionsEqual(productCodes, currentProductCodes)) {
+                message.warning(t('warehouse.pushToHqSelectionChanged', '选中商品数据已变化，请重新选择后再试'));
+                return;
+            }
+            const payload = buildWarehouseProductHqPushPayload(dataRef.current, currentProductCodes, updateFields, targetStoreCodes);
+            if (payload.items?.length !== currentProductCodes.length) {
+                message.warning(t('warehouse.pushToHqSelectionChanged', '选中商品数据已变化，请重新选择后再试'));
+                return;
+            }
+            const result = await pushProductsToHq(payload);
+            if (!isMountedRef.current) return;
+            if (!showPushToHqResult(result)) return;
+            setPushToHqModalOpen(false);
+            setSelectedRowKeys([]);
+            await refreshCurrentList();
+        }
+        catch (error) {
+            if (!isMountedRef.current) return;
+            const errorResult = extractPushToHqErrorResult(error);
+            if (errorResult) {
+                Modal.error({
+                    title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+                    content: (<div>
+                        <div>{errorResult.message || (error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))}</div>
+                        {errorResult.errors.length ? (<div style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
+                            {errorResult.errors.join('\n')}
+                          </div>) : null}
+                      </div>),
+                });
+            }
+            else {
+                message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'));
+            }
+        }
+        finally {
+            pushToHqConfirmLoadingRef.current = false;
+            pushToHqLoadingRef.current = false;
+            if (isMountedRef.current) {
+                setPushToHqConfirmLoading(false);
+                setPushToHqLoading(false);
+            }
+        }
+    };
+    const handlePushToHqCancel = () => {
+        // 提交进行中忽略取消，避免释放锁后立即重开导致重复提交。
+        if (pushToHqConfirmLoadingRef.current) return;
+        pushToHqLoadingRef.current = false;
+        pushToHqConfirmLoadingRef.current = false;
+        // 使仍在途的选项请求过期，防止取消后旧响应覆盖下一次打开的状态。
+        pushToHqStoreOptionsGuardRef.current.invalidate();
+        if (isMountedRef.current) {
+            setPushToHqModalOpen(false);
+            setPushToHqConfirmLoading(false);
+            setPushToHqLoading(false);
         }
     };
     const handleBatchToggleActive = async (nextIsActive: boolean) => {
@@ -1737,6 +1975,9 @@ export default function WarehouseProductsPage() {
           {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq || Boolean(activeHqSyncJob)} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
             {t('warehouse.hqSync', '从HQ同步库存')}
           </Button>) : null}
+          {access.canManagePosProducts ? (<Button icon={<CloudUploadOutlined />} loading={pushToHqLoading} disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen} onClick={() => void handlePushToHq()}>
+            {t('posAdmin.products.pushToHq', '发送到HQ')}
+          </Button>) : null}
           <Button icon={<DownloadOutlined />} loading={exporting} disabled={exporting} onClick={() => setExportConfigOpen(true)}>
             {t('warehouse.exportExcel')}
           </Button>
@@ -2043,6 +2284,18 @@ export default function WarehouseProductsPage() {
             },
         ]}/>
       </Modal>
+
+      <PosHqPushModal
+        open={pushToHqModalOpen}
+        selectedCount={selectedRowKeys.length}
+        storeOptions={pushToHqStoreOptions}
+        storeOptionsLoading={pushToHqStoreOptionsLoading}
+        storeOptionsError={pushToHqStoreOptionsError}
+        onRetryStoreOptions={() => void loadPushToHqStoreOptions()}
+        confirmLoading={pushToHqConfirmLoading}
+        onConfirm={handlePushToHqConfirm}
+        onCancel={handlePushToHqCancel}
+      />
       </PageContainer>
     </>);
 }

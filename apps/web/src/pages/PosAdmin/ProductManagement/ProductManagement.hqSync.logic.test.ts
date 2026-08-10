@@ -1200,66 +1200,140 @@ async function main() {
   })
   if (storeRecordColumnSorterFailure) failures.push(storeRecordColumnSorterFailure)
 
-  const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用选择、权限和防重复提交保护', () => {
-    const pushToHqHandlerStart = pageSource.indexOf('const handlePushToHq = async () => {')
-    const pushToHqHandlerEnd = pageSource.indexOf('const handleSyncSelectedFromHq', pushToHqHandlerStart)
-    const pushToHqHandlerSource = pageSource.slice(pushToHqHandlerStart, pushToHqHandlerEnd)
+  const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用目标分店选择、权限和防重复提交保护', () => {
+    const openHandlerStart = pageSource.indexOf('const handlePushToHq = async () => {')
+    const openHandlerEnd = pageSource.indexOf('const handlePushToHqConfirm', openHandlerStart)
+    const openHandlerSource = pageSource.slice(openHandlerStart, openHandlerEnd)
+    const confirmHandlerSource = pageSource.slice(
+      pageSource.indexOf('const handlePushToHqConfirm'),
+      pageSource.indexOf('const handlePushToHqCancel'),
+    )
+    const cancelHandlerSource = pageSource.slice(
+      pageSource.indexOf('const handlePushToHqCancel'),
+      pageSource.indexOf('const handleSyncSelectedFromHq'),
+    )
+    const loadSection = pageSource.slice(
+      pageSource.indexOf('const loadPushToHqStoreOptions'),
+      openHandlerStart,
+    )
+    const resultHandlerSource = pageSource.slice(
+      pageSource.indexOf('const showPushToHqResult = useCallback'),
+      pageSource.indexOf('const showSelectedFromHqResult'),
+    )
+
     assert(
-      typeSource.includes('PushProductsToHqRequest') &&
-        typeSource.includes('productCodes: string[]') &&
-        typeSource.includes('updateFields?: PushProductsToHqUpdateField[]') &&
-        typeSource.includes('PushProductsToHqResult'),
-      '类型层应声明发送到 HQ 的请求和结果契约',
+      typeSource.includes('PushProductsToHqStoreOption') &&
+        typeSource.includes('targetStoreCodes?: string[]') &&
+        typeSource.includes('PushProductsToHqRequest'),
+      '类型层应声明目标分店选项与请求字段',
     )
     assert(
-      serviceSource.includes('pushProductsToHq') &&
-        serviceSource.includes("`${API_BASE}/push-to-hq`") &&
-        serviceSource.includes('normalizePushProductsToHqResult'),
-      '服务层应提供固定接口调用，并归一后端统计字段',
+      serviceSource.includes('getPushToHqStoreOptions') &&
+        serviceSource.includes("`${API_BASE}/push-to-hq/store-options`") &&
+        serviceSource.includes('normalizePushToHqStoreOptions(unwrapApiData(response))'),
+      '服务层应提供 HQ 分店选项接口，并对 ApiResponse.data 做前端兜底归一化',
     )
     assert(
-      pageSource.includes('handlePushToHq') &&
-        pageSource.includes('const productCodes = selectedRowKeys.map(String)') &&
-        pageSource.includes('const updateFields = await confirmPushToHqUpdateFields(productCodes.length)') &&
-        pageSource.includes('updateFields,') &&
-        pageSource.includes('pushProductsToHq({') &&
-        pageSource.includes('showPushToHqResult(result)'),
-      '页面应把当前选中商品编码和勾选字段发送到 HQ，并展示成功和错误明细',
+      pageSource.includes('PosHqPushModal') &&
+        pageSource.includes('pushToHqStoreOptions') &&
+        pageSource.includes('getPushToHqStoreOptions'),
+      '页面应复用共享发送 HQ 弹窗并维护独立 HQ 分店选项',
     )
     assert(
-      typeSource.includes('export const pushProductsToHqUpdateFieldOptions = [') &&
-        typeSource.includes('type MissingPushProductsToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushProductsToHqUpdateFieldOptionValue>') &&
-        typeSource.includes('const assertAllPushProductsToHqUpdateFieldsCovered: Record<MissingPushProductsToHqUpdateFieldOption, never> = {}') &&
-        typeSource.includes('export const defaultPushProductsToHqUpdateFields') &&
-        pageSource.includes('pushProductsToHqUpdateFieldOptions.map') &&
-        pageSource.includes('defaultPushProductsToHqUpdateFields') &&
-        pageSource.includes('<Checkbox.Group') &&
-        pageSource.includes("message.warning(t('containers.updateFields.selectAtLeastOne', '请至少选择一个更新字段'))") &&
-        pageSource.includes("'containers.updateFields.hqCreateHint'"),
-      '发送到 HQ 前端应提供和字段类型匹配的勾选更新字段弹窗',
+      pageSource.includes('const [storeOptions, setStoreOptions] = useState<StoreOption[]>([])') &&
+        pageSource.includes('const [pushToHqStoreOptions, setPushToHqStoreOptions]'),
+      '同步到分店本地 storeOptions 必须与 HQ 分店选项保持独立',
     )
     assert(
-      pageSource.includes('extractPushToHqErrorResult(error)') &&
-        pageSource.includes('payload.details') &&
-        pageSource.includes('Modal.error({') &&
-        pageSource.includes('errorResult.errors.join'),
-      '发送到 HQ 失败时应从后端 data/details 中提取错误明细并弹窗展示',
+      loadSection.includes('await getPushToHqStoreOptions()') &&
+        loadSection.includes('setPushToHqStoreOptionsError(') &&
+        loadSection.includes("t('posAdmin.products.pushToHqStoreOptionsLoadFailed'") &&
+        loadSection.includes('pushToHqStoreOptionsGuardRef.current') &&
+        loadSection.includes('guard.begin()') &&
+        loadSection.includes('requestId < 0') &&
+        loadSection.includes('guard.isLatest(requestId)') &&
+        loadSection.includes('guard.complete(requestId)'),
+      '选项每次打开重取，并使用单飞加最新请求守卫忽略取消后的过期响应',
     )
     assert(
-      pageSource.includes('pushToHqAffectedRows') &&
-        pageSource.includes('affectedRowCount') &&
-        pageSource.includes('商品成功 {{success}}'),
-      '发送到 HQ 结果应区分商品成功数和 HQ 影响记录数，避免统计语义混淆',
+      openHandlerSource.includes('if (!ensureCanManagePosProducts()) return') &&
+        openHandlerSource.includes('if (!selectedRowKeys.length)') &&
+        openHandlerSource.includes('if (pushToHqLoadingRef.current || pushToHqModalOpen) return') &&
+        openHandlerSource.includes('const productCodes = selectedRowKeys.map(String)') &&
+        openHandlerSource.includes('pushToHqProductCodesRef.current = productCodes') &&
+        openHandlerSource.includes('pushToHqLoadingRef.current = true') &&
+        openHandlerSource.includes('setPushToHqModalOpen(true)') &&
+        openHandlerSource.includes('await loadPushToHqStoreOptions()'),
+      '打开弹窗应按权限与选择校验，并在即时锁内获取最新 HQ 分店选项',
+    )
+    assertSourceOrder(
+      openHandlerSource,
+      'pushToHqLoadingRef.current = true',
+      'await loadPushToHqStoreOptions()',
+      '选项获取必须被即时锁覆盖，防止连续打开重复请求',
+    )
+    assertSourceOrder(
+      openHandlerSource,
+      'setPushToHqModalOpen(true)',
+      'await loadPushToHqStoreOptions()',
+      '每次打开应先显示弹窗再拉取最新选项',
     )
     assert(
-      pageSource.includes("t('posAdmin.products.productSetCodesCreated', '套装编码新增')") &&
-        pageSource.includes("t('posAdmin.products.productSetCodesUpdated', '套装编码更新')") &&
-        pageSource.includes("t('posAdmin.products.storeMultiCodesCreated', '门店多码新增')") &&
-        pageSource.includes("t('posAdmin.products.storeMultiCodesUpdated', '门店多码更新')") &&
-        serviceSource.includes('Number(payload.productSetCodesCreated ?? payload.productSetCodesAdded ?? 0)') &&
-        serviceSource.includes('Number(payload.storeMultiCodesCreated ?? 0)') &&
-        serviceSource.includes('Number(payload.storeMultiCodesUpdated ?? 0)'),
-      '发送到 HQ 成功弹窗和服务归一化应覆盖套装编码与门店多码统计',
+      confirmHandlerSource.indexOf('if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return') <
+          confirmHandlerSource.indexOf('pushToHqConfirmLoadingRef.current = true') &&
+        confirmHandlerSource.indexOf('pushToHqConfirmLoadingRef.current = true') <
+          confirmHandlerSource.indexOf('await pushProductsToHq(') &&
+        confirmHandlerSource.includes('pushToHqConfirmLoadingRef.current = false') &&
+        confirmHandlerSource.includes('const productCodes = pushToHqProductCodesRef.current') &&
+        confirmHandlerSource.includes('pushProductsToHq({') &&
+        confirmHandlerSource.includes('targetStoreCodes') &&
+        confirmHandlerSource.includes('if (!showPushToHqResult(result)) return') &&
+        confirmHandlerSource.includes('setPushToHqModalOpen(false)') &&
+        confirmHandlerSource.includes('setSelectedRowKeys([])') &&
+        confirmHandlerSource.includes('await loadData()'),
+      '确认提交应发送打开弹窗时快照的商品编码、updateFields 与 targetStoreCodes，并仅在成功后关闭、清选、刷新',
+    )
+    assert(
+      resultHandlerSource.includes("if (errors.length || (result.failedCount ?? 0) > 0)") &&
+        resultHandlerSource.includes('Modal.warning({') &&
+        resultHandlerSource.includes('return false') &&
+        resultHandlerSource.includes('Modal.success({') &&
+        resultHandlerSource.includes('return true'),
+      'HTTP 成功但业务部分失败时应返回 false，使弹窗保留商品、字段和分店选择',
+    )
+    assert(
+      confirmHandlerSource.indexOf('setSelectedRowKeys([])') >
+        confirmHandlerSource.indexOf('showPushToHqResult(result)'),
+      '清空选择必须发生在成功后，失败时保留商品、字段和分店选择',
+    )
+    assert(
+      confirmHandlerSource.includes('extractPushToHqErrorResult(error)') &&
+        confirmHandlerSource.includes('Modal.error({'),
+      '提交失败应提取后端错误明细并弹窗展示',
+    )
+    assert(
+      confirmHandlerSource.lastIndexOf('if (isMountedRef.current)') <
+          confirmHandlerSource.indexOf('setPushToHqConfirmLoading(false)') &&
+        confirmHandlerSource.lastIndexOf('if (isMountedRef.current)') <
+          confirmHandlerSource.indexOf('setPushToHqLoading(false)'),
+      '提交 finally 释放 loading 状态前必须检查组件是否已卸载',
+    )
+    assert(
+      cancelHandlerSource.includes('setPushToHqModalOpen(false)') &&
+        cancelHandlerSource.includes('pushToHqLoadingRef.current = false') &&
+        cancelHandlerSource.includes('pushToHqStoreOptionsGuardRef.current.invalidate()') &&
+        cancelHandlerSource.indexOf('if (pushToHqConfirmLoadingRef.current) return') <
+          cancelHandlerSource.indexOf('pushToHqLoadingRef.current = false') &&
+        !cancelHandlerSource.includes('pushProductsToHq('),
+      '取消只关闭弹窗、使过期选项响应失效并释放锁，且提交进行中不得释放锁',
+    )
+    assert(
+      pageSource.includes('<PosHqPushModal') &&
+        pageSource.includes('storeOptions={pushToHqStoreOptions}') &&
+        pageSource.includes('onRetryStoreOptions=') &&
+        pageSource.includes('onConfirm={handlePushToHqConfirm}') &&
+        pageSource.includes('onCancel={handlePushToHqCancel}'),
+      '页面应渲染共享弹窗并绑定选项、重试、确认与取消',
     )
     assert(
       pageSource.includes('if (!ensureCanManagePosProducts()) return') &&
@@ -1269,17 +1343,8 @@ async function main() {
     )
     assert(
       pageSource.includes('const pushToHqLoadingRef = useRef(false)') &&
-        pageSource.includes('if (pushToHqLoadingRef.current) return') &&
-        pageSource.includes('pushToHqLoadingRef.current = true') &&
-        pageSource.includes('pushToHqLoadingRef.current = false') &&
-        pageSource.includes('disabled={!selectedRowKeys.length || pushToHqLoading}'),
-      '发送到 HQ 应使用 ref 锁和 loading 状态防止连续点击重复提交',
-    )
-    assertSourceOrder(
-      pushToHqHandlerSource,
-      'pushToHqLoadingRef.current = true',
-      'const updateFields = await confirmPushToHqUpdateFields(productCodes.length)',
-      '发送到 HQ 应在字段确认弹窗前占用锁，避免连续点击打开多个确认框',
+        pageSource.includes('disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}'),
+      '发送到 HQ 应使用 ref 锁和 loading/modal 状态防止重复提交',
     )
   })
   if (pushToHqFailure) failures.push(pushToHqFailure)
@@ -1493,6 +1558,21 @@ async function main() {
     )
   })
   if (supplierImagePollingFailure) failures.push(supplierImagePollingFailure)
+
+  const supplierImageResultRefreshFailure = await runTest('供应商图片批量修改成功后应刷新供应商与商品列表', () => {
+    const resultSource = pageSource.slice(
+      pageSource.indexOf('const showSupplierImageBatchResult = useCallback'),
+      pageSource.indexOf('const startHqSyncJobPolling'),
+    )
+    const successSource = resultSource.slice(resultSource.indexOf('Modal.success({'))
+    assert(
+      successSource.includes('void refreshSupplierOptions()') &&
+        successSource.includes('void loadData()') &&
+        !successSource.includes('return true'),
+      '完整成功分支不得在刷新供应商选项和商品列表前提前返回',
+    )
+  })
+  if (supplierImageResultRefreshFailure) failures.push(supplierImageResultRefreshFailure)
 
   const supplierImageConcurrentJobFailure = await runTest('供应商图片批量修改应按供应商跟踪 active job', () => {
     assert(

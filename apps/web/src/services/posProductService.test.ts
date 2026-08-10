@@ -5,6 +5,7 @@ import {
   createHqProductFullSyncJob,
   createHqProductIncrementalSyncJob,
   createSupplierImageBatchUpdateJob,
+  getPushToHqStoreOptions,
   getPushProductsToHqJob,
   getSyncProductsToStoresJob,
   getSupplierImageBatchUpdateJob,
@@ -220,6 +221,7 @@ try {
 
   const pushResult = await pushProductsToHq({
     productCodes: ['HB001', 'HB002'],
+    targetStoreCodes: ['1001', '1002'],
     items: [
       {
         productCode: 'HB001',
@@ -248,6 +250,7 @@ try {
     JSON.parse(String(capturedInit?.body)),
     {
       productCodes: ['HB001', 'HB002'],
+      targetStoreCodes: ['1001', '1002'],
       items: [
         {
           productCode: 'HB001',
@@ -270,7 +273,7 @@ try {
         },
       ],
     },
-    '选中商品发送 HQ 请求应兼容旧 productCodes，并携带 items 与价格字段',
+    '选中商品发送 HQ 请求应携带 productCodes、目标分店、items 与价格字段',
   )
   assertEqual(pushResult.successCount, 2, '发送 HQ 应使用后端返回的商品成功数')
   assertEqual(pushResult.failedCount, 0, '发送 HQ 无错误明细时失败数应为 0')
@@ -278,6 +281,32 @@ try {
   assertEqual(pushResult.affectedRowCount, 55, '发送 HQ 缺少后端汇总时应把库存、分店价格和多码统计合并为影响记录数')
   assertEqual(pushResult.warehouseInventoriesCreated, 9, '发送 HQ 应保留仓库库存新增统计')
   assertEqual(pushResult.warehouseInventoriesUpdated, 10, '发送 HQ 应保留仓库库存更新统计')
+
+  nextPayload = {
+    success: true,
+    data: [
+      { storeCode: ' 1001 ', storeName: 'Sunnybank' },
+      { storeCode: '1001', storeName: 'Duplicate Sunnybank' },
+      { storeCode: '1002', storeName: 'Garden City' },
+      { storeCode: '   ', storeName: 'BlankCode' },
+    ],
+  }
+
+  const storeOptions = await getPushToHqStoreOptions()
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/products/push-to-hq/store-options',
+    '发送 HQ 弹窗应通过固定接口读取最新 HQ 分店选项',
+  )
+  assertEqual(capturedInit?.method, 'GET', '读取 HQ 分店选项应使用 GET')
+  assertDeepEqual(
+    storeOptions,
+    [
+      { storeCode: '1001', storeName: 'Sunnybank' },
+      { storeCode: '1002', storeName: 'Garden City' },
+    ],
+    '发送 HQ 分店选项应通过 unwrapApiData 并去空、去重归一 ApiResponse.data 数组',
+  )
 
   nextPayload = {
     success: true,
