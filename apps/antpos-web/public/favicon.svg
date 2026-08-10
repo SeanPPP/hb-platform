@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>ANTPOS</title>
+  <rect width="64" height="64" rx="16" fill="#c83b27"/>
+  <rect x="19" y="19" width="10" height="10" rx="2" fill="#fff"/>
+  <rect x="35" y="19" width="10" height="10" rx="2" fill="#fff"/>
+  <rect x="19" y="35" width="10" height="10" rx="2" fill="#fff"/>
+  <rect x="35" y="35" width="10" height="10" rx="2" fill="#fff" opacity=".45"/>
+</svg>
