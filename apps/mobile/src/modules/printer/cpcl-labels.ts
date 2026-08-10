@@ -344,7 +344,10 @@ export function buildBigDiscountLabelCommand(payload: ProductLabelPrintPayload, 
 }
 
 export function buildWarehouseProductLabelCommand(payload: WarehouseProductLabelPrintPayload) {
-  const barcodeValue = cpclText(payload.barcode) || cpclText(payload.itemNumber);
+  const barcodeValue = cpclText(payload.barcode);
+  const middlePackageQuantity = Number(payload.middlePackageQuantity);
+  // 仓库商品标签只在实际中包数大于 1 时显示 INNER。
+  const shouldPrintInner = Number.isFinite(middlePackageQuantity) && middlePackageQuantity > 1;
   const displayPrice = payload.retailPrice ?? payload.domesticPrice ?? payload.oemPrice ?? payload.importPrice;
   const costPrice = payload.purchasePrice ?? payload.importPrice ?? payload.domesticPrice ?? payload.oemPrice;
   const lines = [
@@ -354,10 +357,14 @@ export function buildWarehouseProductLabelCommand(payload: WarehouseProductLabel
     text(4, 20, 46, payload.productName),
     text(4, 20, 66, `ITEM ${payload.itemNumber || "--"}`),
     text(4, 20, 86, `LOC ${payload.locationCode || "UNASSIGNED"}`),
-    text(4, 20, 106, payload.locationBarcode || ""),
   ];
+  if (barcodeValue) {
+    lines.push("BARCODE-TEXT 7 0 5");
+  }
   addBarcode(lines, "128", 20, 132, barcodeValue, 38, 1);
-  lines.push(text(4, 360, 124, `PK ${formatOptionalQuantity(payload.middlePackageQuantity)}`));
+  if (shouldPrintInner) {
+    lines.push(text(4, 360, 124, `INNER ${formatOptionalQuantity(payload.middlePackageQuantity)}`));
+  }
   lines.push(text(4, 360, 152, `COST ${formatOptionalMoney(costPrice)}`));
   lines.push(text(4, 360, 180, `RRP ${formatOptionalMoney(displayPrice)}`));
   lines.push("PRINT");

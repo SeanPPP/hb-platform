@@ -666,19 +666,21 @@ class HbPrinterModule(
     val h = warehouseLabelHeight
     val productName = payload.getNullableString("productName")
     val itemNumber = payload.getNullableString("itemNumber")
-    val barcode = payload.getNullableString("barcode").ifBlank { itemNumber }
+    val barcode = payload.getNullableString("barcode")
     val middlePackageQuantity = payload.getNullableDouble("middlePackageQuantity")
     val purchasePrice = payload.getNullableDouble("purchasePrice")
     val retailPrice = payload.getNullableDouble("retailPrice")
     val locationCode = payload.getNullableString("locationCode")
-    val locationBarcode = payload.getNullableString("locationBarcode")
     val domesticPrice = payload.getNullableDouble("domesticPrice")
     val oemPrice = payload.getNullableDouble("oemPrice")
     val importPrice = payload.getNullableDouble("importPrice")
     val displayPrice = retailPrice ?: domesticPrice ?: oemPrice ?: importPrice
     val costPrice = purchasePrice ?: importPrice ?: domesticPrice ?: oemPrice
+    // 仓库商品标签只在实际中包数大于 1 时显示 INNER。
+    val innerText = middlePackageQuantity?.takeIf { it > 1 }?.let {
+      "INNER ${formatOptionalQuantity(it)}"
+    }
     val priceDetails = listOf(
-      "PK ${formatOptionalQuantity(middlePackageQuantity)}",
       "COST ${formatOptionalMoney(costPrice)}",
       "RRP ${formatOptionalMoney(displayPrice)}",
     )
@@ -687,9 +689,11 @@ class HbPrinterModule(
     val titleBitmap = textToBitmap("WAREHOUSE PRODUCT", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
     val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(8f), true, "Arial", 1, max(180, contentWidth))
     val itemBitmap = textToBitmap("ITEM ${cpclText(itemNumber.ifBlank { "--" })}", fontSizeToPixels(7f), true, "sans-serif-black")
-    val packBitmap = textToBitmap(priceDetails[0], fontSizeToPixels(7f), true, "sans-serif-black")
-    val costBitmap = textToBitmap(priceDetails[1], fontSizeToPixels(7f), true, "sans-serif-black")
-    val rrpBitmap = textToBitmap(priceDetails[2], fontSizeToPixels(7f), true, "sans-serif-black")
+    val innerBitmap = innerText?.let {
+      textToBitmap(it, fontSizeToPixels(7f), true, "sans-serif-black")
+    }
+    val costBitmap = textToBitmap(priceDetails[0], fontSizeToPixels(7f), true, "sans-serif-black")
+    val rrpBitmap = textToBitmap(priceDetails[1], fontSizeToPixels(7f), true, "sans-serif-black")
     val locationBitmap = textToBitmap(
       "LOC ${cpclText(locationCode.ifBlank { "UNASSIGNED" })}",
       fontSizeToPixels(8f),
@@ -698,9 +702,6 @@ class HbPrinterModule(
       true,
       2,
     )
-    val locationBarcodeBitmap = locationBarcode.takeIf { it.isNotBlank() }?.let {
-      textToBitmap(cpclText(it), fontSizeToPixels(7f), true, "sans-serif-black")
-    }
     val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
     fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
 
@@ -714,17 +715,18 @@ class HbPrinterModule(
       bitmapCommand(w - dateBitmap.width - 20, 92, dateBitmap),
     )
 
-    if (locationBarcodeBitmap != null) {
-      commands += bitmapCommand(centerX(locationBarcodeBitmap), 120, locationBarcodeBitmap)
-    }
-
     if (barcode.isNotBlank()) {
+      commands += "BARCODE-TEXT 7 0 5"
       commands += "BARCODE 128 1 1 38 24 146 ${cpclText(barcode)}"
-      commands += bitmapCommand(380, 132, packBitmap)
+      if (innerBitmap != null) {
+        commands += bitmapCommand(380, 132, innerBitmap)
+      }
       commands += bitmapCommand(380, 156, costBitmap)
       commands += bitmapCommand(380, 180, rrpBitmap)
     } else {
-      commands += bitmapCommand(centerX(packBitmap), 132, packBitmap)
+      if (innerBitmap != null) {
+        commands += bitmapCommand(centerX(innerBitmap), 132, innerBitmap)
+      }
       commands += bitmapCommand(centerX(costBitmap), 156, costBitmap)
       commands += bitmapCommand(centerX(rrpBitmap), 180, rrpBitmap)
     }

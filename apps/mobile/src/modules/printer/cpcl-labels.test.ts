@@ -234,9 +234,48 @@ const warehouseProductCommand = buildWarehouseProductLabelCommand({
 });
 assert.ok(warehouseProductCommand.includes("TEXT 7 0 20 14 WAREHOUSE PRODUCT"), "仓库商品标签包含标题");
 assert.ok(warehouseProductCommand.includes("TEXT 4 0 20 86 LOC A-01-02"), "仓库商品标签包含货位");
-assert.ok(warehouseProductCommand.includes("TEXT 4 0 360 124 PK 12"), "仓库商品标签包含中包数");
+assert.equal(warehouseProductCommand.includes("LOC-A0102"), false, "仓库商品标签不显示货位条码或其文本");
+assert.ok(
+  warehouseProductCommand.includes("BARCODE 128 1 1 38 20 132 9300605123458"),
+  "仓库商品标签条码必须编码商品条码"
+);
+assert.ok(warehouseProductCommand.includes("BARCODE-TEXT 7 0 5"), "仓库商品标签必须显示商品条码可读文本");
+assert.ok(warehouseProductCommand.includes("TEXT 4 0 360 124 INNER 12"), "仓库商品标签使用 INNER 显示中包数");
+assert.equal(warehouseProductCommand.includes("PK "), false, "仓库商品标签不再显示 PK");
 assert.ok(warehouseProductCommand.includes("TEXT 4 0 360 152 COST 5.00"), "仓库商品标签包含成本");
 assert.ok(warehouseProductCommand.includes("TEXT 4 0 360 180 RRP 12.34"), "仓库商品标签包含售价");
+
+for (const middlePackageQuantity of [null, 0, 1]) {
+  const commandWithoutInner = buildWarehouseProductLabelCommand({
+    ...productPayload,
+    productCode: "P001",
+    middlePackageQuantity,
+    locationCode: "A-01-02",
+    locationBarcode: "LOC-A0102",
+  });
+  assert.equal(commandWithoutInner.includes("INNER "), false, `中包数 ${middlePackageQuantity} 时不打印 INNER`);
+  assert.equal(commandWithoutInner.includes("PK "), false, `中包数 ${middlePackageQuantity} 时不打印 PK`);
+}
+
+const warehouseProductWithoutBarcode = buildWarehouseProductLabelCommand({
+  ...productPayload,
+  productCode: "P001",
+  barcode: "   ",
+  itemNumber: "HB013-108",
+  middlePackageQuantity: 12,
+  locationCode: "A-01-02",
+  locationBarcode: "LOC-A0102",
+});
+assert.equal(
+  warehouseProductWithoutBarcode.includes("BARCODE 128"),
+  false,
+  "仓库商品标签缺少商品条码时不得回退货号生成条码"
+);
+assert.equal(
+  warehouseProductWithoutBarcode.includes("BARCODE-TEXT"),
+  false,
+  "仓库商品标签缺少商品条码时不启用条码可读文本"
+);
 
 const warehouseLocationCommand = buildWarehouseLocationLabelCommand({
   locationGuid: "GUID-001",

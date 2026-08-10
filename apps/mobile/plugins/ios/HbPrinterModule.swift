@@ -791,20 +791,21 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let height = 208
     let productName = dictString(payload, "productName")
     let itemNumber = dictString(payload, "itemNumber")
-    let barcodeValue = dictString(payload, "barcode")
-    let barcode = barcodeValue.isEmpty ? itemNumber : barcodeValue
+    let barcode = dictString(payload, "barcode")
     let middlePackageQuantity = dictDouble(payload, "middlePackageQuantity")
     let purchasePrice = dictDouble(payload, "purchasePrice")
     let retailPrice = dictDouble(payload, "retailPrice")
     let locationCode = dictString(payload, "locationCode")
-    let locationBarcode = dictString(payload, "locationBarcode")
     let domesticPrice = dictDouble(payload, "domesticPrice")
     let oemPrice = dictDouble(payload, "oemPrice")
     let importPrice = dictDouble(payload, "importPrice")
     let displayPrice = retailPrice ?? domesticPrice ?? oemPrice ?? importPrice
     let costPrice = purchasePrice ?? importPrice ?? domesticPrice ?? oemPrice
+    // 仓库商品标签只在实际中包数大于 1 时显示 INNER。
+    let innerText: String? = (middlePackageQuantity ?? 0) > 1
+      ? "INNER \(formatOptionalQuantity(middlePackageQuantity))"
+      : nil
     let priceDetails = [
-      "PK \(formatOptionalQuantity(middlePackageQuantity))",
       "COST \(formatOptionalMoney(costPrice))",
       "RRP \(formatOptionalMoney(displayPrice))",
     ]
@@ -815,12 +816,11 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "Arial", maxLines: 1, maxWidth: max(180, contentWidth))
     let itemText = itemNumber.isEmpty ? "--" : itemNumber
     let itemBitmap = textToBitmap("ITEM \(cpclText(itemText))", fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
-    let packBitmap = textToBitmap(priceDetails[0], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
-    let costBitmap = textToBitmap(priceDetails[1], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
-    let rrpBitmap = textToBitmap(priceDetails[2], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let innerBitmap = innerText.map { textToBitmap($0, fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black") }
+    let costBitmap = textToBitmap(priceDetails[0], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let rrpBitmap = textToBitmap(priceDetails[1], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
     let locationText = locationCode.isEmpty ? "UNASSIGNED" : locationCode
     let locationBitmap = textToBitmap("LOC \(cpclText(locationText))", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let locationBarcodeBitmap = locationBarcode.isEmpty ? nil : textToBitmap(cpclText(locationBarcode), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
     let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
     func centerX(_ bitmap: PrinterBitmap) -> Int { max(0, (width - bitmap.width) / 2) }
 
@@ -834,17 +834,18 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
       bitmapCommand(width - dateBitmap.width - 20, 92, dateBitmap),
     ]
 
-    if let locationBarcodeBitmap {
-      commands.append(bitmapCommand(centerX(locationBarcodeBitmap), 120, locationBarcodeBitmap))
-    }
-
     if !barcode.isEmpty {
+      commands.append("BARCODE-TEXT 7 0 5")
       commands.append("BARCODE 128 1 1 38 24 146 \(cpclText(barcode))")
-      commands.append(bitmapCommand(380, 132, packBitmap))
+      if let innerBitmap {
+        commands.append(bitmapCommand(380, 132, innerBitmap))
+      }
       commands.append(bitmapCommand(380, 156, costBitmap))
       commands.append(bitmapCommand(380, 180, rrpBitmap))
     } else {
-      commands.append(bitmapCommand(centerX(packBitmap), 132, packBitmap))
+      if let innerBitmap {
+        commands.append(bitmapCommand(centerX(innerBitmap), 132, innerBitmap))
+      }
       commands.append(bitmapCommand(centerX(costBitmap), 156, costBitmap))
       commands.append(bitmapCommand(centerX(rrpBitmap), 180, rrpBitmap))
     }
