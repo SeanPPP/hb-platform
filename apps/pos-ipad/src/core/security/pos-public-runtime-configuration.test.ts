@@ -67,12 +67,12 @@ test("局部保存不会覆盖另一组公开配置", async () => {
 
 test("已确认的 API 地址会被下一次启动创建的新配置仓库读取", async () => {
   const secureStore = new InMemorySecureStore();
-  const trustedOrigins = ["http://192.168.31.246:5159"];
+  const trustedOrigins = ["http://192.168.31.246:5003"];
   const currentLaunch = new PosPublicRuntimeConfigurationStore(
     secureStore,
     trustedOrigins,
   );
-  await currentLaunch.saveApiBaseUrl("http://192.168.31.246:5159");
+  await currentLaunch.saveApiBaseUrl("http://192.168.31.246:5003");
 
   const nextLaunch = new PosPublicRuntimeConfigurationStore(
     secureStore,
@@ -80,6 +80,22 @@ test("已确认的 API 地址会被下一次启动创建的新配置仓库读取
   );
   assert.equal(
     (await nextLaunch.load()).apiBaseUrl,
+    "http://192.168.31.246:5003",
+  );
+});
+
+test("构建白名单在迁移期间同时接受新旧本地后端端口", async () => {
+  const subject = new PosPublicRuntimeConfigurationStore(
+    new InMemorySecureStore(),
+    [
+      "http://192.168.31.246:5003",
+      "http://192.168.31.246:5159",
+    ],
+  );
+
+  await subject.saveApiBaseUrl("http://192.168.31.246:5159");
+  assert.equal(
+    (await subject.load()).apiBaseUrl,
     "http://192.168.31.246:5159",
   );
 });

@@ -286,7 +286,7 @@ describe("SettingsScreen", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("settings-api-address").props.value).toBe(
-        "http://192.168.31.246:5159",
+        "http://192.168.31.246:5003",
       ),
     );
     expect(
@@ -303,7 +303,7 @@ describe("SettingsScreen", () => {
 
     await fireEvent.press(screen.getByTestId("settings-api-request-change"));
     await screen.findByTestId("settings-confirmation");
-    expect(screen.getByText(/http:\/\/192\.168\.31\.246:5159/)).toBeTruthy();
+    expect(screen.getByText(/http:\/\/192\.168\.31\.246:5003/)).toBeTruthy();
     expect(port.apiAddresses).toEqual([]);
   });
 
@@ -350,7 +350,7 @@ describe("SettingsScreen", () => {
     await fireEvent.press(screen.getByTestId("settings-api-test"));
 
     await waitFor(() =>
-      expect(port.apiAddressTests).toEqual(["http://192.168.31.246:5159"]),
+      expect(port.apiAddressTests).toEqual(["http://192.168.31.246:5003"]),
     );
     expect(screen.getByText(/连接成功/)).toBeTruthy();
     expect(port.apiAddresses).toEqual([]);

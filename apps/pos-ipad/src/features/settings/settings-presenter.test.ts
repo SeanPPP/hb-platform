@@ -1435,11 +1435,39 @@ test("API 地址拒绝凭据、query 与 fragment，且不会打开确认框", a
     assert.equal(presenter.getState().confirmation, null);
   }
 
-  presenter.setApiAddressDraft("http://192.168.31.246:5159/pos-api/");
+  presenter.setApiAddressDraft("http://192.168.31.246:5003/pos-api/");
   assert.equal(presenter.requestApiAddressChange(), true);
   assert.deepEqual(presenter.getState().confirmation, {
     kind: "change-api-address",
-    apiBaseUrl: "http://192.168.31.246:5159/pos-api",
+    apiBaseUrl: "http://192.168.31.246:5003/pos-api",
+  });
+});
+
+test("本地后端允许使用受信任的局域网 IP 与 5003 端口", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("http://192.168.31.246:5003");
+
+  assert.equal(presenter.requestApiAddressChange(), true);
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "change-api-address",
+    apiBaseUrl: "http://192.168.31.246:5003",
+  });
+});
+
+test("旧本地后端 5159 端口在客户端迁移期间仍可使用", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("http://192.168.31.246:5159");
+
+  assert.equal(presenter.requestApiAddressChange(), true);
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "change-api-address",
+    apiBaseUrl: "http://192.168.31.246:5159",
   });
 });
 
@@ -1448,10 +1476,10 @@ test("测试候选 API 只检查规范地址并显示结果，不切换当前地
   const presenter = createPresenter(port);
   await presenter.load();
 
-  presenter.setApiAddressDraft("http://192.168.31.246:5159/");
+  presenter.setApiAddressDraft("http://192.168.31.246:5003/");
   await presenter.testApiAddress();
 
-  assert.deepEqual(port.apiAddressTests, ["http://192.168.31.246:5159"]);
+  assert.deepEqual(port.apiAddressTests, ["http://192.168.31.246:5003"]);
   assert.deepEqual(port.apiAddressChanges, []);
   assert.equal(
     presenter.getState().apiBaseUrl,
@@ -1459,7 +1487,7 @@ test("测试候选 API 只检查规范地址并显示结果，不切换当前地
   );
   assert.equal(
     presenter.getState().apiAddressDraft,
-    "http://192.168.31.246:5159",
+    "http://192.168.31.246:5003",
   );
   assert.equal(presenter.getState().confirmation, null);
   assert.equal(presenter.getState().statusCode, "api-health-check-passed");
@@ -1468,7 +1496,7 @@ test("测试候选 API 只检查规范地址并显示结果，不切换当前地
   await presenter.testApiAddress();
   assert.equal(
     presenter.getState().apiAddressDraft,
-    "http://192.168.31.246:5159",
+    "http://192.168.31.246:5003",
   );
   assert.equal(presenter.getState().statusCode, "api-health-check-failed");
 });

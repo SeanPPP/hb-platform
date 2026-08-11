@@ -18,7 +18,7 @@ import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
-import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "@/core/security/pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 
 export type SettingsPane =
@@ -1949,7 +1949,7 @@ export function normalizeApiAddress(value: string): string {
   if (
     parsed.protocol === "http:" &&
     !isLoopbackHostname(parsed.hostname) &&
-    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+    !isTrustedLocalHbposApiOrigin(parsed.origin)
   ) {
     throw new Error("remote API requires HTTPS");
   }
