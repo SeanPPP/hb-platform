@@ -4,6 +4,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
+using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
@@ -34,6 +35,197 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(1, backend.AcknowledgeCallCount);
         Assert.Equal("SESSION-001", backend.AcknowledgedSessionId);
         Assert.NotNull(attempts.AcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_binds_matching_active_claim_from_frozen_draft_snapshot()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-card",
+            CanonicalForDraftCart(),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-card", "activate-card", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        var attempt = CreateAttempt(sessionId: "SESSION-001", txnRef: "TXN-001");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
+
+        // 当前 UI 购物车为空：恢复必须使用 draft 中冻结的 CartSnapshot 解析来源。
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        var heldCompletion = Assert.Single(orders.HeldSources);
+        Assert.Equal(result.Order!.OrderGuid, heldCompletion.Order.OrderGuid);
+        Assert.Equal(holdGuid, heldCompletion.Context.HoldGuid);
+        Assert.Equal(claimId, heldCompletion.Context.ClaimId);
+        Assert.Equal(SharedHeldOrderClaimSource.OfflineOrigin, heldCompletion.Context.Source);
+        Assert.Equal("prepare-card", heldCompletion.Context.PrepareIdempotencyKey);
+        Assert.Equal("activate-card", heldCompletion.Context.ActivateIdempotencyKey);
+        Assert.Equal(1, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_with_non_matching_claim_does_not_bind_held_source()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            Guid.NewGuid(),
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-card-nomatch",
+            CanonicalForDraftCart(quantity: 2m),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-card-nomatch", "activate-card-nomatch", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        var attempt = CreateAttempt(sessionId: "SESSION-NOMATCH", txnRef: "TXN-NOMATCH");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus("Completed", sessionId: "SESSION-NOMATCH", txnRef: "TXN-NOMATCH", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Empty(orders.HeldSources);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_with_existing_order_skips_bound_claim_resolution()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-card-existing",
+            CanonicalForDraftCart(),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId,
+            "prepare-card-existing",
+            "activate-card-existing",
+            serverRevision: null,
+            "2026-07-28T00:00:01.000Z"));
+        // 订单已保存、attempt 未收尾：claim 已绑定并完成（与 LocalOrder 同事务）。
+        Assert.True(await scope.Repository.TryBindOrderAsync(
+            claimId,
+            "activate-card-existing",
+            CreateOrderGuid().ToString("D"),
+            "2026-07-28T00:00:02.000Z"));
+        Assert.True(await scope.Repository.TryCompleteClaimAsync(
+            claimId,
+            "activate-card-existing",
+            "release-card-existing",
+            "2026-07-28T00:00:03.000Z"));
+
+        var attempt = CreateAttempt(sessionId: "SESSION-EXISTING", txnRef: "TXN-EXISTING");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository(CreateExistingOrder());
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-EXISTING",
+                txnRef: "TXN-EXISTING",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        // 既有订单幂等收尾：不再解析已 Completed/bound 的 held claim，直接完成 attempt，
+        // 不重复保存订单，也绝不把来源静默降级为普通订单。
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(CreateOrderGuid(), result.Order!.OrderGuid);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Empty(orders.HeldSources);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_binds_matching_active_claim_from_frozen_draft_snapshot()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-card-local",
+            CanonicalForDraftCart(),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-card-local", "activate-card-local", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "LOCAL-TXN-001",
+            connectionMode: LinklyConnectionMode.LocalIp);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:LOCAL-TXN-001",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction("LOCAL-TXN-001", "00", "APPROVED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "LOCAL-TXN-001",
+            "00",
+            "APPROVED"));
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal,
+            sharedHeldOrderRepository: scope.Repository);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        var heldCompletion = Assert.Single(orders.HeldSources);
+        Assert.Equal(result.Order!.OrderGuid, heldCompletion.Order.OrderGuid);
+        Assert.Equal(holdGuid, heldCompletion.Context.HoldGuid);
+        Assert.Equal(claimId, heldCompletion.Context.ClaimId);
+        Assert.Equal(1, orders.SaveCount);
     }
 
     [Fact]
@@ -1904,7 +2096,8 @@ public sealed class CardPaymentRecoveryServiceTests
         FakeLocalOrderRepository orders,
         FakeLinklyBackendTerminalClient backend,
         FakeCardTerminalSettingsProvider? settingsProvider = null,
-        ILinklyTerminalClient? linklyTerminalClient = null)
+        ILinklyTerminalClient? linklyTerminalClient = null,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
     {
         return new CardPaymentRecoveryService(
             attempts,
@@ -1913,20 +2106,23 @@ public sealed class CardPaymentRecoveryServiceTests
             new CashCheckoutService(),
             orders,
             new FakeSyncQueueRepository(),
-            linklyTerminalClient: linklyTerminalClient);
+            linklyTerminalClient: linklyTerminalClient,
+            sharedHeldOrderRepository: sharedHeldOrderRepository);
     }
 
     private static SquarePaymentRecoveryService CreateSquareService(
         FakeSquarePaymentAttemptRepository attempts,
         FakeLocalOrderRepository orders,
-        FakeSquareTerminalPaymentClient terminal)
+        FakeSquareTerminalPaymentClient terminal,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
     {
         return new SquarePaymentRecoveryService(
             attempts,
             new FakeSquareCardTerminalSettingsProvider(),
             terminal,
             new CashCheckoutService(),
-            orders);
+            orders,
+            sharedHeldOrderRepository: sharedHeldOrderRepository);
     }
 
     private static LocalCardPaymentAttempt CreateAttempt(
@@ -2054,6 +2250,35 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
     }
 
+    /// <summary>与 CreateDraft 冻结购物车（SKU-10, $10.00）逐行一致的 claim canonical。</summary>
+    private static SharedHeldOrderCanonicalPayload CanonicalForDraftCart(decimal quantity = 1m)
+    {
+        return new SharedHeldOrderCanonicalPayload(
+            1,
+            new SharedHeldOrderPricingState(
+                1,
+                SharedHeldOrderCanonicalConstants.SaleMode,
+                "2026-07-28T00:00:00.000Z",
+                [],
+                [
+                    new SharedHeldOrderPricingLine(
+                        "line-1",
+                        "SKU-10",
+                        "ITEM-10",
+                        "930010",
+                        "Test Item",
+                        quantity,
+                        1000,
+                        SharedHeldOrderCanonicalConstants.BasePriceSourceCatalog,
+                        new SharedHeldOrderLineSyncProvenance(null, (int)PriceSourceKind.StoreRetailPrice),
+                        SharedHeldOrderCanonicalConstants.LineKindSale,
+                        null,
+                        null,
+                        null,
+                        new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone))
+                ]));
+    }
+
     private static CardPaymentOrderDraft CreateRefundDraft(string originalReference)
     {
         var cart = new PosCartService();
@@ -2112,6 +2337,36 @@ public sealed class CardPaymentRecoveryServiceTests
     private static Guid CreateOrderGuid()
     {
         return Guid.Parse("11111111-2222-3333-4444-555555555555");
+    }
+
+    /// <summary>订单已保存（与 claim 同事务绑定完成）、attempt 未收尾的既有订单。</summary>
+    private static LocalOrder CreateExistingOrder()
+    {
+        return new LocalOrder(
+            CreateOrderGuid(),
+            "S001",
+            "POS-01",
+            "C001",
+            "Alice",
+            DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"),
+            10m,
+            0m,
+            10m,
+            [
+                new LocalOrderLine(
+                    Guid.NewGuid(),
+                    "SKU-10",
+                    null,
+                    "Test Item",
+                    "930010",
+                    "ITEM-10",
+                    1m,
+                    10m,
+                    0m,
+                    10m,
+                    PriceSourceKind.StoreRetailPrice)
+            ],
+            []);
     }
 
     private static LinklyCloudBackendSessionResponse CreateStatus(
@@ -2826,8 +3081,16 @@ public sealed class CardPaymentRecoveryServiceTests
     private sealed class FakeLocalOrderRepository : ILocalOrderRepository
     {
         private LocalOrder? _saved;
+        private readonly LocalOrder? _existingOrder;
+
+        public FakeLocalOrderRepository(LocalOrder? existingOrder = null)
+        {
+            _existingOrder = existingOrder;
+        }
 
         public int SaveCount { get; private set; }
+
+        public List<(LocalOrder Order, LocalHeldOrderCompletionContext Context)> HeldSources { get; } = [];
 
         public CancellationToken LastSaveCancellationToken { get; private set; }
 
@@ -2851,6 +3114,15 @@ public sealed class CardPaymentRecoveryServiceTests
             return Task.CompletedTask;
         }
 
+        public async Task SavePendingOrderWithHeldSourceAsync(
+            LocalOrder order,
+            LocalHeldOrderCompletionContext heldOrder,
+            CancellationToken cancellationToken = default)
+        {
+            await SavePendingOrderAsync(order, cancellationToken);
+            HeldSources.Add((order, heldOrder));
+        }
+
         public Task UpdatePaymentReferenceAsync(
             Guid paymentGuid,
             string? reference,
@@ -2872,7 +3144,10 @@ public sealed class CardPaymentRecoveryServiceTests
         public Task<LocalOrder?> GetOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
             LastGetOrderCancellationToken = cancellationToken;
-            return Task.FromResult(_saved is not null && _saved.OrderGuid == orderGuid ? _saved : null);
+            var existing = _existingOrder is not null && _existingOrder.OrderGuid == orderGuid
+                ? _existingOrder
+                : null;
+            return Task.FromResult(existing ?? (_saved is not null && _saved.OrderGuid == orderGuid ? _saved : null));
         }
     }
 

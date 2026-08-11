@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Hbpos.Api;
@@ -281,6 +282,7 @@ public sealed class LinklyCloudConnectionPoolTests
             SandboxRestBaseUrl = "https://sandbox-rest.example/"
         });
         using var service = new LinklyHttpConnectionMetricsService(options, logger);
+        DisableMetricsTimer(service);
         await service.StartAsync(timeout.Token);
         using var meter = new Meter("System.Net.Http");
         var connections = meter.CreateUpDownCounter<long>("http.client.open_connections");
@@ -293,23 +295,28 @@ public sealed class LinklyCloudConnectionPoolTests
         {
             connections.Add(1, tokenIdleTags);
             connections.Add(1, restIdleTags);
-            await WaitForSnapshotAsync(
-                logger,
-                snapshot => snapshot.Environment == "Production" && snapshot.TotalConnections == 2,
-                timeout.Token);
+            InvokeMetricsFlush(service);
+            var initialSnapshot = Assert.Single(logger.Snapshots);
+            Assert.Equal(2, initialSnapshot.TotalConnections);
             var initialSnapshotCount = logger.Snapshots.Count;
 
+            // A（token）先完成 idle -> active 配对。
             connections.Add(-1, tokenIdleTags);
             connections.Add(1, tokenActiveTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(150), timeout.Token);
+
+            // A 的 active -1 尚未配对：flush 必须延后，不能输出中间态快照。
             connections.Add(-1, tokenActiveTags);
+            InvokeMetricsFlush(service);
+            Assert.DoesNotContain(logger.Snapshots, snapshot => snapshot.TotalConnections == 1);
+            Assert.Equal(initialSnapshotCount, logger.Snapshots.Count);
 
             // B origin 的完整状态切换不能清除 A origin 尚未配对的负 delta。
             connections.Add(-1, restIdleTags);
             connections.Add(1, restActiveTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(140), timeout.Token);
+
+            // A 配对完成后再触发 flush：totals 收敛，不应输出任何新快照。
             connections.Add(1, tokenIdleTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(400), timeout.Token);
+            InvokeMetricsFlush(service);
 
             Assert.DoesNotContain(logger.Snapshots, snapshot => snapshot.TotalConnections == 1);
             Assert.Equal(initialSnapshotCount, logger.Snapshots.Count);
@@ -446,6 +453,31 @@ public sealed class LinklyCloudConnectionPoolTests
 
             await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
         }
+    }
+
+    private static void DisableMetricsTimer(LinklyHttpConnectionMetricsService service)
+    {
+        // 测试需要确定性驱动 flush，禁用真实 250ms/75ms 定时器，避免异步回调与断言竞态。
+        var timerField = typeof(LinklyHttpConnectionMetricsService).GetField(
+            "_timer",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("未找到 LinklyHttpConnectionMetricsService._timer 字段");
+        var existingTimer = timerField.GetValue(service) as System.Threading.Timer
+            ?? throw new InvalidOperationException("LinklyHttpConnectionMetricsService._timer 类型无效");
+        existingTimer.Dispose();
+        timerField.SetValue(
+            service,
+            new System.Threading.Timer(_ => { }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan));
+    }
+
+    private static void InvokeMetricsFlush(LinklyHttpConnectionMetricsService service)
+    {
+        // 直接调用私有 FlushSnapshots，等价于定时器到期回调，按测试节奏确定性触发。
+        var flushMethod = typeof(LinklyHttpConnectionMetricsService).GetMethod(
+            "FlushSnapshots",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("未找到 LinklyHttpConnectionMetricsService.FlushSnapshots 方法");
+        flushMethod.Invoke(service, [null]);
     }
 
     private static HttpRequestMessage CreateHttp11Request(Uri baseAddress, int requestNumber) =>

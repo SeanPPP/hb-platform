@@ -132,7 +132,8 @@ public sealed class OrderUploadService(
                 line.ReturnSourceKey,
                 line.OriginalOrderGuid,
                 line.OriginalOrderDetailGuid)).ToList(),
-            order.Payments.Select(ToPaymentSyncDto).ToList());
+            order.Payments.Select(ToPaymentSyncDto).ToList(),
+            order.HeldOrderSource);
     }
 
     private static PaymentSyncDto ToPaymentSyncDto(LocalPayment payment)

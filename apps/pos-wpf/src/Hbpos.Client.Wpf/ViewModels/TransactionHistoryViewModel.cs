@@ -6,8 +6,12 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.HeldOrders;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using HeldClaimStatus = Hbpos.Client.Wpf.Models.SharedHeldOrderClaimStatus;
+using HeldPublicationStatus = Hbpos.Client.Wpf.Models.SharedHeldOrderPublicationStatus;
+using HeldServerStatus = Hbpos.Contracts.HeldOrders.SharedHeldOrderStatus;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
@@ -15,7 +19,8 @@ public enum TransactionHistorySource
 {
     LocalOrders,
     RemoteOrders,
-    InstallmentOrders
+    InstallmentOrders,
+    HeldOrders
 }
 
 public sealed record HistorySourceOption(TransactionHistorySource Source, string Label);
@@ -43,7 +48,15 @@ public sealed record HistoryOrderListItem(
     bool CanConfirmInstallmentPickup = false,
     string CustomerPhone = "",
     string SyncStatus = "",
-    CultureInfo? DisplayCulture = null)
+    CultureInfo? DisplayCulture = null,
+    bool IsHeldOrder = false,
+    HeldOrderBadgeKind HeldBadgeKind = HeldOrderBadgeKind.LocalHold,
+    string HeldStatusDetail = "",
+    Guid? HeldClaimId = null,
+    bool CanForceRelease = false,
+    bool CanRemoteRecall = false,
+    bool CanOfflineRecall = false,
+    bool CanLegacyRecall = false)
 {
     public RowSelectionState Selection { get; } = new();
 
@@ -66,10 +79,14 @@ public sealed record HistoryOrderListItem(
 public sealed partial class TransactionHistoryViewModel : ObservableObject, IDisposable
 {
     private const int ReuploadBatchSize = 500;
+    private static readonly TimeSpan HeldAutoRefreshInterval = TimeSpan.FromSeconds(10);
 
     private readonly IReceiptQueryService? _receiptQueryService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
+    private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
+    private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
+    private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
     private readonly IInstallmentOrderService _installmentOrderService;
     private readonly IReceiptTextFormatter _receiptTextFormatter;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
@@ -83,9 +100,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IOrderUploadExecutionService _orderUploadExecutionService;
     private readonly IConfirmationDialogService? _confirmationDialogService;
+    private readonly TimeProvider _timeProvider;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
     private bool _disposed;
+    private bool _isScreenVisible;
+    private Task<IReadOnlyList<HistoryOrderListItem>>? _heldLoadTask;
+    private ITimer? _heldAutoRefreshTimer;
 
     [ObservableProperty]
     private string _searchText = string.Empty;
@@ -133,23 +154,35 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private string _statusMessage = string.Empty;
 
     [ObservableProperty]
+    private string _heldOrdersRemoteStatusMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _isForceReleaseReasonPromptOpen;
+
+    [ObservableProperty]
+    private string _forceReleaseReason = string.Empty;
+
+    [ObservableProperty]
+    private HistoryOrderListItem? _forceReleaseCandidate;
+
+    [ObservableProperty]
     private bool _isReuploading;
 
     [ObservableProperty]
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -170,8 +203,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IOperationAuditLogger? operationAuditLogger = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         IOrderUploadExecutionService? orderUploadExecutionService = null,
-        IConfirmationDialogService? confirmationDialogService = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, initialize: true)
+        IConfirmationDialogService? confirmationDialogService = null,
+        ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
+        ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
+        TimeProvider? timeProvider = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, sharedHeldOrderCoordinator, sharedHeldOrderApiClient, sharedHeldOrderRepository, timeProvider, initialize: true)
     {
     }
 
@@ -193,11 +230,18 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IOperationAuthorizationService? operationAuthorizationService,
         IOrderUploadExecutionService? orderUploadExecutionService,
         IConfirmationDialogService? confirmationDialogService,
+        ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator,
+        ISharedHeldOrderApiClient? sharedHeldOrderApiClient,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository,
+        TimeProvider? timeProvider,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
+        _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
+        _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
+        _sharedHeldOrderRepository = sharedHeldOrderRepository;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _onSuspendedOrderRecalledAsync = onSuspendedOrderRecalledAsync;
         _continueInstallmentPaymentAsync = continueInstallmentPaymentAsync;
@@ -211,6 +255,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _operationAuthorizationService = operationAuthorizationService;
         _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
         _confirmationDialogService = confirmationDialogService;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -243,6 +288,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         SelectAllReuploadableCommand = new RelayCommand(SelectAllReuploadable, CanStartReupload);
         ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync, CanStartReupload);
         ReuploadDateRangeCommand = new AsyncRelayCommand(ReuploadDateRangeAsync, CanReuploadDateRange);
+        ForceReleaseHeldOrderCommand = new RelayCommand<HistoryOrderListItem>(RequestForceRelease, CanForceReleaseOrder);
+        ConfirmForceReleaseCommand = new AsyncRelayCommand(ConfirmForceReleaseAsync, CanConfirmForceRelease);
+        CancelForceReleaseCommand = new RelayCommand(CancelForceRelease, CanCancelForceRelease);
     }
 
     public event EventHandler? ReprintRequested;
@@ -280,6 +328,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public IAsyncRelayCommand ReuploadSelectedCommand { get; }
 
     public IAsyncRelayCommand ReuploadDateRangeCommand { get; }
+
+    public IRelayCommand<HistoryOrderListItem> ForceReleaseHeldOrderCommand { get; }
+
+    public IAsyncRelayCommand ConfirmForceReleaseCommand { get; }
+
+    public IRelayCommand CancelForceReleaseCommand { get; }
 
     public TransactionHistorySource SelectedSource => SelectedSourceOption?.Source ?? TransactionHistorySource.LocalOrders;
 
@@ -327,7 +381,33 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    public bool IsHeldSourceSelected
+    {
+        get => SelectedSource == TransactionHistorySource.HeldOrders;
+        set
+        {
+            if (value)
+            {
+                SetSelectedSource(TransactionHistorySource.HeldOrders);
+            }
+        }
+    }
+
     public bool IsStandardSourceSelected => !IsInstallmentSourceSelected;
+
+    public bool IsForceReleaseVisible => SelectedOrder?.CanForceRelease == true;
+
+    public string HeldOrdersSourceLabel => T("history.source.held");
+
+    public string ForceReleaseLabel => T("history.held.forceRelease");
+
+    public string ForceReleaseHeaderLabel => T("history.held.forceRelease");
+
+    public string ForceReleaseReasonLabel => T("history.held.forceReleaseReason");
+
+    public string ForceReleaseConfirmLabel => T("history.held.forceReleaseConfirm");
+
+    public string ForceReleaseCancelLabel => T("history.held.forceReleaseCancel");
 
     public string TitleText => T("TransactionHistory");
 
@@ -348,6 +428,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             {
                 TransactionHistorySource.RemoteOrders => await LoadRemoteOrdersAsync(cancellationToken),
                 TransactionHistorySource.InstallmentOrders => await LoadInstallmentOrdersAsync(cancellationToken),
+                TransactionHistorySource.HeldOrders => await LoadHeldOrdersAsync(cancellationToken),
                 _ => await LoadLocalAndSuspendedOrdersAsync(cancellationToken)
             };
 
@@ -388,15 +469,21 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsLocalSourceSelected));
         OnPropertyChanged(nameof(IsOnlineSourceSelected));
         OnPropertyChanged(nameof(IsInstallmentSourceSelected));
+        OnPropertyChanged(nameof(IsHeldSourceSelected));
         OnPropertyChanged(nameof(IsStandardSourceSelected));
+        OnPropertyChanged(nameof(IsForceReleaseVisible));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
+        ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
+        ConfirmForceReleaseCommand?.NotifyCanExecuteChanged();
+        CancelForceReleaseCommand?.NotifyCanExecuteChanged();
         ReprintCommand?.NotifyCanExecuteChanged();
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
         NotifyReuploadCanExecuteChanged();
+        UpdateHeldAutoRefresh();
         if (!_suppressSourceAutoLoad)
         {
             _ = LoadAsync(CancellationToken.None);
@@ -410,8 +497,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
+        ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
+        OnPropertyChanged(nameof(IsForceReleaseVisible));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
 
@@ -660,6 +749,272 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             .ToList();
     }
 
+    private sealed record LocalHeldRow(
+        SuspendedOrderSummary Order,
+        SharedHeldOrderPublication? Publication,
+        HeldClaimStatus? ClaimStatus,
+        Guid? ClaimId);
+
+    /// <summary>
+    /// 共享挂单源：合并本机待发布/已发布挂单与服务端 Pending 汇总，按 HoldGuid 去重。
+    /// single-flight：并发刷新复用同一个进行中的任务；任何远端/本地错误都保留现有列表，
+    /// 只通过 HeldOrdersRemoteStatusMessage 做非阻塞提示。
+    /// </summary>
+    private Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersAsync(CancellationToken cancellationToken)
+    {
+        if (_heldLoadTask is not null && !_heldLoadTask.IsCompleted)
+        {
+            return _heldLoadTask;
+        }
+
+        _heldLoadTask = LoadHeldOrdersGuardedAsync(cancellationToken);
+        return _heldLoadTask;
+    }
+
+    private async Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersGuardedAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await LoadHeldOrdersCoreAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            HeldOrdersRemoteStatusMessage = ex.Message;
+            // 共享挂单首次加载失败绝不回退显示 Local/Online 旧列表；
+            // 已成功的 Held 列表保留，其余来源行一律不展示。
+            return Orders
+                .Where(order => order.Source == TransactionHistorySource.HeldOrders)
+                .ToArray();
+        }
+    }
+
+    private async Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersCoreAsync(CancellationToken cancellationToken)
+    {
+        HeldOrdersRemoteStatusMessage = string.Empty;
+        var localTask = LoadLocalHeldRowsAsync(cancellationToken);
+        var remoteTask = LoadRemoteHeldRowsAsync(cancellationToken);
+        await Task.WhenAll(localTask, remoteTask);
+
+        var localRows = localTask.Result;
+        var remoteRows = remoteTask.Result;
+        var merged = new List<HistoryOrderListItem>(localRows.Count + remoteRows.Count);
+        foreach (var remote in remoteRows)
+        {
+            if (localRows.Remove(remote.HoldGuid, out var local))
+            {
+                merged.Add(BuildHeldOrderRow(
+                    local.Order,
+                    local.Publication,
+                    local.ClaimStatus,
+                    local.ClaimId,
+                    remote.Item));
+            }
+            else
+            {
+                merged.Add(BuildHeldOrderRow(
+                    null,
+                    null,
+                    null,
+                    null,
+                    remote.Item));
+            }
+        }
+
+        foreach (var local in localRows.Values)
+        {
+            merged.Add(BuildHeldOrderRow(
+                local.Order,
+                local.Publication,
+                local.ClaimStatus,
+                local.ClaimId,
+                null));
+        }
+
+        return merged
+            .OrderByDescending(order => order.OccurredAt)
+            .ToList();
+    }
+
+    private async Task<Dictionary<Guid, LocalHeldRow>> LoadLocalHeldRowsAsync(CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<Guid, LocalHeldRow>();
+        if (_suspendedOrderService is null)
+        {
+            return result;
+        }
+
+        var summaries = await _suspendedOrderService.GetPendingOrdersAsync(
+            Session.StoreCode,
+            SelectedTerminalDeviceCode,
+            NormalizeKeyword(SearchText),
+            100,
+            cancellationToken);
+        var from = ParseDateFrom(DateFrom);
+        var to = ParseDateTo(DateTo);
+        var filtered = summaries
+            .Where(order => from is null || order.SuspendedAt >= from.Value)
+            .Where(order => to is null || order.SuspendedAt <= to.Value)
+            .ToList();
+
+        var publications = new Dictionary<Guid, SharedHeldOrderPublication?>();
+        if (_sharedHeldOrderRepository is not null)
+        {
+            var publicationTasks = filtered.Select(async order =>
+            {
+                try
+                {
+                    return (order.SuspendedOrderGuid, await _sharedHeldOrderRepository
+                        .GetPublicationAsync(order.SuspendedOrderGuid, cancellationToken));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    return (order.SuspendedOrderGuid, (SharedHeldOrderPublication?)null);
+                }
+            }).ToArray();
+            foreach (var pair in await Task.WhenAll(publicationTasks))
+            {
+                publications[pair.Item1] = pair.Item2;
+            }
+        }
+
+        var claimsByHold = new Dictionary<Guid, SharedHeldOrderClaimRecovery>();
+        if (_sharedHeldOrderRepository is not null)
+        {
+            var claims = await _sharedHeldOrderRepository.FindRecoverableClaimsAsync(
+                Session.StoreCode,
+                Session.DeviceCode,
+                cancellationToken);
+            claimsByHold = claims.ToDictionary(claim => claim.HoldGuid);
+        }
+
+        foreach (var order in filtered)
+        {
+            var claim = claimsByHold.GetValueOrDefault(order.SuspendedOrderGuid);
+            result[order.SuspendedOrderGuid] = new LocalHeldRow(
+                order,
+                publications.GetValueOrDefault(order.SuspendedOrderGuid),
+                claim?.Status,
+                claim?.ClaimId);
+        }
+
+        return result;
+    }
+
+    private async Task<IReadOnlyList<(Guid HoldGuid, SharedHeldOrderListItemDto Item)>> LoadRemoteHeldRowsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_sharedHeldOrderApiClient is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            var rows = await _sharedHeldOrderApiClient.ListPendingAsync(cancellationToken);
+            var from = ParseDateFrom(DateFrom);
+            var to = ParseDateTo(DateTo);
+            var keyword = NormalizeKeyword(SearchText);
+            return rows
+                .Where(item => string.Equals(item.StoreCode, Session.StoreCode, StringComparison.OrdinalIgnoreCase))
+                .Where(item => SelectedTerminalDeviceCode is null ||
+                    string.Equals(item.DeviceCode, SelectedTerminalDeviceCode, StringComparison.OrdinalIgnoreCase))
+                .Where(item => from is null || item.HeldAtUtc >= from.Value)
+                .Where(item => to is null || item.HeldAtUtc <= to.Value)
+                .Where(item => keyword is null ||
+                    item.HeldByCashierName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                    item.DeviceCode.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                .Select(item => (item.HoldGuid, item))
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 远端错误：保留本地列表，仅非阻塞提示。
+            HeldOrdersRemoteStatusMessage = string.Format(
+                CultureInfo.CurrentCulture,
+                T("history.held.remoteUnavailable"),
+                ex.Message);
+            return [];
+        }
+    }
+
+    private HistoryOrderListItem BuildHeldOrderRow(
+        SuspendedOrderSummary? local,
+        SharedHeldOrderPublication? publication,
+        HeldClaimStatus? claimStatus,
+        Guid? claimId,
+        SharedHeldOrderListItemDto? remote)
+    {
+        var holdGuid = remote?.HoldGuid ?? local!.SuspendedOrderGuid;
+        var serverStatus = remote is null ? null : (HeldServerStatus?)HeldServerStatus.Pending;
+        var badge = HeldOrderStatusResolver.Resolve(publication?.Status, serverStatus, claimStatus);
+        var blockDetail = publication is null
+            ? string.Empty
+            : string.Join(
+                " ",
+                new[] { publication.ErrorCode, publication.ErrorMessage }
+                    .Where(value => !string.IsNullOrWhiteSpace(value)));
+        var hasLocalCopy = local is not null;
+        var canRemoteRecall = serverStatus == HeldServerStatus.Pending &&
+            claimStatus is null &&
+            Session.IsOnline;
+        var canOfflineRecall = hasLocalCopy &&
+            publication?.Status is HeldPublicationStatus.PendingPublish or HeldPublicationStatus.Published &&
+            claimStatus is null;
+        var canLegacyRecall = hasLocalCopy &&
+            !canRemoteRecall &&
+            !canOfflineRecall &&
+            (publication is null ||
+             publication.Status is HeldPublicationStatus.NeedsEvaluation or HeldPublicationStatus.Blocked);
+
+        return new HistoryOrderListItem(
+            holdGuid,
+            TransactionHistorySource.HeldOrders,
+            remote?.StoreCode ?? local!.StoreCode,
+            remote?.DeviceCode ?? local!.DeviceCode,
+            remote?.HeldByCashierName ?? local!.CashierName,
+            remote?.HeldAtUtc ?? local!.SuspendedAt,
+            ToMoney(remote?.TotalCents) ?? local!.TotalAmount,
+            ToMoney(remote?.DiscountCents) ?? local!.DiscountAmount,
+            ToMoney(remote?.ActualCents) ?? local!.ActualAmount,
+            remote?.LineCount ?? local!.LineCount,
+            T("history.payment.suspended"),
+            BuildHeldStatusLabel(badge, blockDetail),
+            IsSuspendedOrder: hasLocalCopy,
+            CanRecall: canRemoteRecall || canOfflineRecall || canLegacyRecall,
+            DisplayCulture: CurrentDisplayCulture,
+            IsHeldOrder: true,
+            HeldBadgeKind: badge,
+            HeldStatusDetail: blockDetail,
+            HeldClaimId: claimId,
+            CanForceRelease: claimStatus is HeldClaimStatus.Prepared or HeldClaimStatus.Active,
+            CanRemoteRecall: canRemoteRecall,
+            CanOfflineRecall: canOfflineRecall,
+            CanLegacyRecall: canLegacyRecall);
+    }
+
+    private static decimal? ToMoney(long? cents)
+    {
+        return cents is null ? null : cents.Value / 100m;
+    }
+
+    private string BuildHeldStatusLabel(HeldOrderBadgeKind kind, string detail)
+    {
+        var label = kind switch
+        {
+            HeldOrderBadgeKind.LocalPendingPublish => T("history.held.pendingPublish"),
+            HeldOrderBadgeKind.Published => T("history.held.published"),
+            HeldOrderBadgeKind.RemotePending => T("history.held.remotePending"),
+            HeldOrderBadgeKind.LocalClaimPrepared => T("history.held.claimPrepared"),
+            HeldOrderBadgeKind.LocalClaimActive => T("history.held.claimActive"),
+            HeldOrderBadgeKind.ClaimedByOther => T("history.held.claimedByOther"),
+            HeldOrderBadgeKind.Completed => T("history.held.completed"),
+            HeldOrderBadgeKind.Blocked => T("history.held.blocked"),
+            _ => T("history.held.localHold")
+        };
+        return string.IsNullOrWhiteSpace(detail) ? label : $"{label}: {detail}";
+    }
+
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadRemoteOrdersAsync(CancellationToken cancellationToken)
     {
         if (_remoteOrderHistoryService is null)
@@ -859,6 +1214,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
         using var authorizationActivation = authorization.Activate();
 
+        if (orderSnapshot?.IsHeldOrder == true)
+        {
+            await RecallHeldOrderCoreAsync(orderSnapshot);
+            return;
+        }
+
         if (!CanRecallOrder(orderSnapshot) || _suspendedOrderService is null)
         {
             return;
@@ -909,6 +1270,205 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
             StatusMessage = ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 共享挂单取单路由：服务端 Pending 且在线 -> ISharedHeldOrderCoordinator 远端取单；
+    /// 本地待发布/已发布副本 -> 原设备本地/离线 recall；无发布状态的本地挂单 ->
+    /// 既有本地挂单召回。成功统一走 _onSuspendedOrderRecalledAsync 刷新购物车并返回 POS。
+    /// </summary>
+    private async Task RecallHeldOrderCoreAsync(HistoryOrderListItem order)
+    {
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        try
+        {
+            if (order.CanRemoteRecall && Session.IsOnline)
+            {
+                if (_sharedHeldOrderCoordinator is null)
+                {
+                    throw new InvalidOperationException(T("history.held.unavailable"));
+                }
+
+                await _sharedHeldOrderCoordinator.TakeRemoteHoldAsync(
+                    order.OrderGuid,
+                    Session);
+            }
+            else if (order.CanOfflineRecall)
+            {
+                if (_sharedHeldOrderCoordinator is null)
+                {
+                    throw new InvalidOperationException(T("history.held.unavailable"));
+                }
+
+                await _sharedHeldOrderCoordinator.RecallLocalPublicationAsync(
+                    order.OrderGuid,
+                    Session);
+            }
+            else if (order.CanLegacyRecall)
+            {
+                if (_suspendedOrderService is null)
+                {
+                    return;
+                }
+
+                var recalledOrder = await _suspendedOrderService.RecallOrderAsync(order.OrderGuid);
+                OperationAuditEvents.RecordCartChange(
+                    _operationAuditLogger,
+                    OperationAuditTypes.OrderRecall,
+                    Session,
+                    new OperationAuditCartSnapshot(0m, 0m, 0m, []),
+                    OperationAuditEvents.CaptureSuspendedOrder(recalledOrder),
+                    reasonCode: "SUSPENDED_ORDER",
+                    orderGuid: order.OrderGuid.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+            }
+            else
+            {
+                return;
+            }
+
+            if (_onSuspendedOrderRecalledAsync is not null)
+            {
+                await _onSuspendedOrderRecalledAsync();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.OrderRecall,
+                "Failed",
+                Session,
+                reasonCode: "SHARED_HELD_ORDER",
+                safeMessage: ex.GetType().Name,
+                orderGuid: order.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"held order recall failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            StatusMessage = ex.Message;
+        }
+    }
+
+    private bool CanForceReleaseOrder(HistoryOrderListItem? order)
+    {
+        return order?.CanForceRelease == true && !IsForceReleaseReasonPromptOpen;
+    }
+
+    private void RequestForceRelease(HistoryOrderListItem? order)
+    {
+        if (!CanForceReleaseOrder(order))
+        {
+            return;
+        }
+
+        ForceReleaseCandidate = order;
+        ForceReleaseReason = string.Empty;
+        StatusMessage = string.Empty;
+        IsForceReleaseReasonPromptOpen = true;
+    }
+
+    private bool CanConfirmForceRelease()
+    {
+        return IsForceReleaseReasonPromptOpen &&
+            ForceReleaseCandidate?.CanForceRelease == true &&
+            !string.IsNullOrWhiteSpace(ForceReleaseReason);
+    }
+
+    private bool CanCancelForceRelease()
+    {
+        return IsForceReleaseReasonPromptOpen;
+    }
+
+    private void CancelForceRelease()
+    {
+        IsForceReleaseReasonPromptOpen = false;
+        ForceReleaseCandidate = null;
+        ForceReleaseReason = string.Empty;
+    }
+
+    partial void OnForceReleaseReasonChanged(string value)
+    {
+        ConfirmForceReleaseCommand?.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsForceReleaseReasonPromptOpenChanged(bool value)
+    {
+        ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
+        ConfirmForceReleaseCommand?.NotifyCanExecuteChanged();
+        CancelForceReleaseCommand?.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// 主管强制释放：复用 History.Recall 授权；原因必须非空（且不超过 500 字符），
+    /// 校验通过后调用 coordinator 的 durable 方法（服务端 force-release 成功后才
+    /// 清理本地 cart binding/fence/claim；失败保留可重试状态）。
+    /// </summary>
+    private async Task ConfirmForceReleaseAsync()
+    {
+        var candidate = ForceReleaseCandidate;
+        if (candidate?.HeldClaimId is not Guid claimGuid)
+        {
+            CancelForceRelease();
+            return;
+        }
+
+        var reason = ForceReleaseReason?.Trim() ?? string.Empty;
+        if (reason.Length == 0)
+        {
+            StatusMessage = T("history.held.forceReleaseReasonRequired");
+            return;
+        }
+
+        if (reason.Length > 500)
+        {
+            StatusMessage = T("history.held.forceReleaseReasonTooLong");
+            return;
+        }
+
+        IsForceReleaseReasonPromptOpen = false;
+        ForceReleaseCandidate = null;
+
+        if (_sharedHeldOrderCoordinator is null)
+        {
+            StatusMessage = T("history.held.unavailable");
+            ForceReleaseReason = string.Empty;
+            return;
+        }
+
+        using var authorization = await AuthorizeAsync(
+            Permissions.PosTerminal.History.Recall,
+            "force-release-held-order");
+        if (authorization is null)
+        {
+            ForceReleaseReason = string.Empty;
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        try
+        {
+            await _sharedHeldOrderCoordinator.ForceReleaseAsync(
+                candidate.OrderGuid,
+                claimGuid,
+                reason,
+                Session,
+                CancellationToken.None);
+            StatusMessage = T("history.held.forceReleased");
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            ForceReleaseReason = string.Empty;
         }
     }
 
@@ -1144,6 +1704,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.LocalOrders, T("history.source.local")));
         SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.RemoteOrders, T("history.source.online")));
         SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.InstallmentOrders, T("history.source.installments")));
+        SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.HeldOrders, T("history.source.held")));
         SelectedSourceOption = SourceOptions.First(option => option.Source == selectedSource);
         _suppressSourceAutoLoad = false;
     }
@@ -1178,7 +1739,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(ReprintLabel));
         OnPropertyChanged(nameof(RefundLabel));
         OnPropertyChanged(nameof(IsInstallmentSourceSelected));
+        OnPropertyChanged(nameof(IsHeldSourceSelected));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
+        OnPropertyChanged(nameof(HeldOrdersSourceLabel));
+        OnPropertyChanged(nameof(ForceReleaseLabel));
+        OnPropertyChanged(nameof(ForceReleaseHeaderLabel));
+        OnPropertyChanged(nameof(ForceReleaseReasonLabel));
+        OnPropertyChanged(nameof(ForceReleaseConfirmLabel));
+        OnPropertyChanged(nameof(ForceReleaseCancelLabel));
     }
 
     private void LocalizeSuspendedRows()
@@ -1193,8 +1761,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         Orders.ReplaceWith(Orders.Select(order => order with
         {
             DisplayCulture = displayCulture,
-            PaymentSummary = order.IsSuspendedOrder ? T("history.payment.suspended") : order.PaymentSummary,
-            StatusLabel = order.IsSuspendedOrder ? T("history.status.pendingRecall") : order.StatusLabel
+            PaymentSummary = order.IsSuspendedOrder || order.IsHeldOrder
+                ? T("history.payment.suspended")
+                : order.PaymentSummary,
+            StatusLabel = order.IsHeldOrder
+                ? BuildHeldStatusLabel(order.HeldBadgeKind, order.HeldStatusDetail)
+                : order.IsSuspendedOrder ? T("history.status.pendingRecall") : order.StatusLabel
         }).ToList());
         SelectedOrder = selectedOrderGuid is null
             ? Orders.FirstOrDefault()
@@ -1203,9 +1775,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private string T(string key)
     {
-        if (_localization is not null)
+        if (_localization?.T(key) is { } localized && !localized.StartsWith("[[", StringComparison.Ordinal))
         {
-            return _localization.T(key);
+            return localized;
         }
 
         return key switch
@@ -1226,6 +1798,25 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "history.source.local" => "Local",
             "history.source.online" => "Online",
             "history.source.installments" => "Installments",
+            "history.source.held" => "Held",
+            "history.held.localHold" => "Local hold",
+            "history.held.pendingPublish" => "Pending publish",
+            "history.held.published" => "Published",
+            "history.held.remotePending" => "Remote recall",
+            "history.held.claimPrepared" => "Preparing on this device",
+            "history.held.claimActive" => "Active on this device",
+            "history.held.claimedByOther" => "Claimed by another terminal",
+            "history.held.completed" => "Completed",
+            "history.held.blocked" => "Blocked",
+            "history.held.forceRelease" => "Force release",
+            "history.held.forceReleaseReason" => "Force release reason",
+            "history.held.forceReleaseConfirm" => "Confirm",
+            "history.held.forceReleaseCancel" => "Cancel",
+            "history.held.forceReleaseReasonRequired" => "A force-release reason is required.",
+            "history.held.forceReleaseReasonTooLong" => "The force-release reason must not exceed 500 characters.",
+            "history.held.forceReleased" => "Held order force-released.",
+            "history.held.remoteUnavailable" => "Remote held orders unavailable: {0}",
+            "history.held.unavailable" => "Shared held orders are not configured on this terminal.",
             "Customer" => "Customer",
             "Phone" => "Phone",
             "Total" => "Total",
@@ -1317,6 +1908,105 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    /// <summary>
+    /// 界面变为可见时由视图代码调用：挂单源立即刷新并启动 10 秒自动刷新。
+    /// </summary>
+    public void OnScreenShown()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _isScreenVisible = true;
+        UpdateHeldAutoRefresh();
+        if (SelectedSource == TransactionHistorySource.HeldOrders)
+        {
+            LastHeldAutoRefreshTask = RefreshHeldOrdersSilentlyAsync();
+        }
+    }
+
+    /// <summary>界面隐藏时停表，避免后台空转。</summary>
+    public void OnScreenHidden()
+    {
+        _isScreenVisible = false;
+        UpdateHeldAutoRefresh();
+    }
+
+    private void UpdateHeldAutoRefresh()
+    {
+        var shouldRun = !_disposed &&
+            _isScreenVisible &&
+            SelectedSource == TransactionHistorySource.HeldOrders;
+        if (shouldRun)
+        {
+            if (_heldAutoRefreshTimer is null)
+            {
+                _heldAutoRefreshTimer = _timeProvider.CreateTimer(
+                    OnHeldAutoRefreshTick,
+                    null,
+                    HeldAutoRefreshInterval,
+                    HeldAutoRefreshInterval);
+            }
+
+            return;
+        }
+
+        StopHeldAutoRefresh();
+    }
+
+    private void StopHeldAutoRefresh()
+    {
+        _heldAutoRefreshTimer?.Dispose();
+        _heldAutoRefreshTimer = null;
+    }
+
+    private void OnHeldAutoRefreshTick(object? state)
+    {
+        if (_disposed || !_isScreenVisible || SelectedSource != TransactionHistorySource.HeldOrders)
+        {
+            return;
+        }
+
+        // 生产环境 Timer 回调在线程池线程，需回到 Dispatcher 再刷新 UI 集合；
+        // 测试环境没有 Application，直接在线程上执行。
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => LastHeldAutoRefreshTask = RefreshHeldOrdersSilentlyAsync());
+            return;
+        }
+
+        LastHeldAutoRefreshTask = RefreshHeldOrdersSilentlyAsync();
+    }
+
+    /// <summary>仅测试使用：最近一次自动刷新任务，便于等待 tick 完成。</summary>
+    internal Task? LastHeldAutoRefreshTask { get; private set; }
+
+    private async Task RefreshHeldOrdersSilentlyAsync()
+    {
+        if (_disposed ||
+            !_isScreenVisible ||
+            SelectedSource != TransactionHistorySource.HeldOrders)
+        {
+            return;
+        }
+
+        var rows = await LoadHeldOrdersAsync(CancellationToken.None);
+        if (_disposed)
+        {
+            return;
+        }
+
+        var selectedGuid = SelectedOrder?.OrderGuid;
+        _suppressSelectedOrderLoad = true;
+        Orders.ReplaceWith(rows);
+        SelectedOrder = selectedGuid is { } preserved
+            ? Orders.FirstOrDefault(order => order.OrderGuid == preserved)
+            : Orders.FirstOrDefault();
+        _suppressSelectedOrderLoad = false;
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -1325,6 +2015,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
 
         _disposed = true;
+        StopHeldAutoRefresh();
         if (_localization is not null)
         {
             _localization.CultureChanged -= OnCultureChanged;

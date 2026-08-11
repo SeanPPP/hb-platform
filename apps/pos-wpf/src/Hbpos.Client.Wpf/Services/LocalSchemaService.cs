@@ -36,8 +36,11 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         await EnsureLocalSquarePaymentAttemptColumnsAsync(connection, cancellationToken);
         await EnsureLocalInstallmentColumnsAsync(connection, cancellationToken);
         await EnsureLocalInstallmentOperationAttemptColumnsAsync(connection, cancellationToken);
+        await EnsureSuspendedOrderColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderLineColumnsAsync(connection, cancellationToken);
         await EnsureSuspendedOrderReturnPaymentCapacityColumnsAsync(connection, cancellationToken);
+        await EnsureSharedHeldOrderConsumptionColumnsAsync(connection, cancellationToken);
+        await EnsureSharedHeldOrderSchemaAsync(connection, cancellationToken);
         await EnsureLinklySettlementUploadColumnsAsync(connection, cancellationToken);
 
         foreach (var sql in IndexStatements)
@@ -406,6 +409,20 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             cancellationToken);
     }
 
+    private static async Task EnsureSuspendedOrderColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var columns = await ReadColumnNamesAsync(connection, "SuspendedOrders", cancellationToken);
+        if (!columns.Contains("FrozenPromotionRulesJson"))
+        {
+            await ExecuteAsync(
+                connection,
+                "ALTER TABLE SuspendedOrders ADD COLUMN FrozenPromotionRulesJson TEXT NULL;",
+                cancellationToken);
+        }
+    }
+
     private static async Task EnsureSuspendedOrderLineColumnsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -450,6 +467,386 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         if (!columns.Contains("ReturnReason"))
         {
             await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN ReturnReason TEXT NULL;", cancellationToken);
+        }
+
+        if (!columns.Contains("IsManualPrice"))
+        {
+            await ExecuteAsync(
+                connection,
+                "ALTER TABLE SuspendedOrderLines ADD COLUMN IsManualPrice INTEGER NOT NULL DEFAULT 0;",
+                cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 共享挂单 publication 队列与 durable claim/binding 表（只追加、幂等）：
+    /// 本地 hold guid 唯一；本地 publication 状态与 iPad M40 对齐
+    /// NeedsEvaluation/PendingPublish/Published/Blocked（Blocked 不自动重试）；
+    /// Published 必须保存服务端 RemoteRevision/RemoteUpdatedAtIso，其他状态两者为空；
+    /// PendingPublish/Published 必须携带非空 payload 密文；
+    /// ConsumedAtIso 表示本地挂单已被成交订单消费，之后不可再 recall/评估/发布；
+    /// claim 与 iPad SharedHeldOrderClaimSource/State 对齐：必带 HoldGuid 与
+    /// Source（RemoteClaim/OfflineOrigin），prepare/activate/release 三把幂等键分离；
+    /// SupersedeIdempotencyKey 供服务端 OfflineOrigin 成交调和（Prepared/Active -> Superseded）；
+    /// 每 store+device 只允许一个 Prepared/Active fence（partial unique index）；
+    /// activate/release 键全局唯一（partial unique index），状态一致性 CHECK 约束
+    /// 各终态键与绑定关系；transition trigger 只允许 Prepared/Active 之间合法迁移，
+    /// Superseded 保留 ActivateIdempotencyKey（Active 调和）且已绑定订单不可 supersede；
+    /// 终态不可重开；payload 仅存密文。订单来源表与本地订单/outbox 同事务写入且不可变。
+    /// </summary>
+    private static async Task EnsureSharedHeldOrderSchemaAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        // 旧开发库的 SharedHeldOrderClaims 缺 SupersedeIdempotencyKey（或仅被 ALTER ADD 补列），
+        // 旧 CHECK/trigger/index 仍会阻止 Active -> Superseded；必须先事务化重建表。
+        await MigrateLegacySharedHeldOrderClaimsAsync(connection, cancellationToken);
+
+        await ExecuteAsync(
+            connection,
+            $$"""
+            CREATE TABLE IF NOT EXISTS SharedHeldOrderPublications (
+                LocalHoldGuid TEXT PRIMARY KEY,
+                StoreCode TEXT NOT NULL,
+                DeviceCode TEXT NOT NULL,
+                Status TEXT NOT NULL CHECK (
+                    Status IN ('NeedsEvaluation', 'PendingPublish', 'Published', 'Blocked')),
+                Revision INTEGER NOT NULL DEFAULT 1 CHECK (Revision >= 1),
+                RetryCount INTEGER NOT NULL DEFAULT 0 CHECK (RetryCount >= 0),
+                ErrorCode TEXT NULL,
+                ErrorMessage TEXT NULL,
+                PayloadCiphertext BLOB NULL,
+                HeldAtIso TEXT NOT NULL,
+                CreatedAtIso TEXT NOT NULL,
+                UpdatedAtIso TEXT NOT NULL,
+                LastAttemptAtIso TEXT NULL,
+                NextAttemptAtIso TEXT NULL,
+                RemoteRevision INTEGER NULL,
+                RemoteUpdatedAtIso TEXT NULL,
+                ConsumedAtIso TEXT NULL,
+                CHECK (TRIM(LocalHoldGuid) <> ''),
+                CHECK (TRIM(StoreCode) <> ''),
+                CHECK (TRIM(DeviceCode) <> ''),
+                CHECK (
+                    (Status IN ('PendingPublish', 'Published')
+                        AND PayloadCiphertext IS NOT NULL
+                        AND LENGTH(PayloadCiphertext) > 0)
+                    OR Status IN ('NeedsEvaluation', 'Blocked')
+                ),
+                CHECK (
+                    (Status = 'Published'
+                        AND RemoteRevision IS NOT NULL
+                        AND RemoteUpdatedAtIso IS NOT NULL
+                        AND RemoteRevision >= 0)
+                    OR (Status <> 'Published'
+                        AND RemoteRevision IS NULL
+                        AND RemoteUpdatedAtIso IS NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_SharedHeldOrderPublications_Due
+                ON SharedHeldOrderPublications (Status, NextAttemptAtIso, UpdatedAtIso);
+
+            {{SharedHeldOrderClaimsTableStatement}}
+            {{SharedHeldOrderClaimsIndexTriggerStatements}}
+
+            CREATE TABLE IF NOT EXISTS LocalOrderHeldOrderSources (
+                OrderGuid TEXT PRIMARY KEY,
+                HoldGuid TEXT NOT NULL,
+                ClaimGuid TEXT NULL,
+                SourceKind INTEGER NOT NULL CHECK (SourceKind IN (1, 2)),
+                CreatedAtIso TEXT NOT NULL,
+                CHECK (TRIM(OrderGuid) <> ''),
+                CHECK (TRIM(HoldGuid) <> ''),
+                CHECK (ClaimGuid IS NULL OR TRIM(ClaimGuid) <> ''),
+                CHECK (TRIM(CreatedAtIso) <> ''),
+                CHECK (
+                    (SourceKind = 1 AND ClaimGuid IS NOT NULL)
+                    OR (SourceKind = 2 AND ClaimGuid IS NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_LocalOrderHeldOrderSources_Hold
+                ON LocalOrderHeldOrderSources (HoldGuid);
+
+            CREATE TRIGGER IF NOT EXISTS TRG_LocalOrderHeldOrderSources_Immutable
+            BEFORE UPDATE ON LocalOrderHeldOrderSources
+            FOR EACH ROW
+            WHEN NEW.OrderGuid <> OLD.OrderGuid
+              OR NEW.HoldGuid <> OLD.HoldGuid
+              OR NEW.ClaimGuid IS NOT OLD.ClaimGuid
+              OR NEW.SourceKind <> OLD.SourceKind
+              OR NEW.CreatedAtIso <> OLD.CreatedAtIso
+            BEGIN
+                SELECT RAISE(ABORT, 'ORDER_HELD_ORDER_SOURCE_IMMUTABLE');
+            END;
+            """,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// SharedHeldOrderClaims 新表 DDL（含 SupersedeIdempotencyKey 与新状态一致性 CHECK）。
+    /// 主建库路径与旧库迁移共用同一文本，避免两份 DDL 漂移。
+    /// </summary>
+    private const string SharedHeldOrderClaimsTableStatement =
+        """
+        CREATE TABLE IF NOT EXISTS SharedHeldOrderClaims (
+            ClaimId TEXT PRIMARY KEY,
+            HoldGuid TEXT NOT NULL,
+            StoreCode TEXT NOT NULL,
+            DeviceCode TEXT NOT NULL,
+            Source TEXT NOT NULL CHECK (
+                Source IN ('RemoteClaim', 'OfflineOrigin')),
+            Status TEXT NOT NULL CHECK (
+                Status IN ('Prepared', 'Active', 'Completed', 'Released', 'Superseded')),
+            PrepareIdempotencyKey TEXT NOT NULL UNIQUE,
+            ActivateIdempotencyKey TEXT NULL,
+            ReleaseIdempotencyKey TEXT NULL,
+            SupersedeIdempotencyKey TEXT NULL,
+            PayloadCiphertext BLOB NOT NULL,
+            ServerRevision INTEGER NULL,
+            ExpiresAtIso TEXT NULL,
+            BoundOrderGuid TEXT NULL,
+            CreatedAtIso TEXT NOT NULL,
+            UpdatedAtIso TEXT NOT NULL,
+            CHECK (TRIM(ClaimId) <> ''),
+            CHECK (TRIM(HoldGuid) <> ''),
+            CHECK (TRIM(StoreCode) <> ''),
+            CHECK (TRIM(DeviceCode) <> ''),
+            CHECK (TRIM(PrepareIdempotencyKey) <> ''),
+            CHECK (
+                ActivateIdempotencyKey IS NULL
+                OR (TRIM(ActivateIdempotencyKey) <> '' AND LENGTH(ActivateIdempotencyKey) > 0)),
+            CHECK (
+                ReleaseIdempotencyKey IS NULL
+                OR (TRIM(ReleaseIdempotencyKey) <> '' AND LENGTH(ReleaseIdempotencyKey) > 0)),
+            CHECK (
+                SupersedeIdempotencyKey IS NULL
+                OR (TRIM(SupersedeIdempotencyKey) <> '' AND LENGTH(SupersedeIdempotencyKey) > 0)),
+            CHECK (LENGTH(PayloadCiphertext) > 0),
+            CHECK (ServerRevision IS NULL OR ServerRevision >= 0),
+            CHECK (
+                (Status = 'Prepared'
+                    AND ActivateIdempotencyKey IS NULL
+                    AND ReleaseIdempotencyKey IS NULL
+                    AND BoundOrderGuid IS NULL
+                    AND SupersedeIdempotencyKey IS NULL)
+             OR (Status = 'Active'
+                    AND ActivateIdempotencyKey IS NOT NULL
+                    AND ReleaseIdempotencyKey IS NULL
+                    AND SupersedeIdempotencyKey IS NULL)
+             OR (Status = 'Completed'
+                    AND ActivateIdempotencyKey IS NOT NULL
+                    AND ReleaseIdempotencyKey IS NOT NULL
+                    AND BoundOrderGuid IS NOT NULL
+                    AND SupersedeIdempotencyKey IS NULL)
+             OR (Status = 'Released'
+                    AND ReleaseIdempotencyKey IS NOT NULL
+                    AND BoundOrderGuid IS NULL
+                    AND SupersedeIdempotencyKey IS NULL)
+             OR (Status = 'Superseded'
+                    AND ReleaseIdempotencyKey IS NULL
+                    AND BoundOrderGuid IS NULL
+                    AND SupersedeIdempotencyKey IS NOT NULL)
+            )
+        );
+        """;
+
+    /// <summary>
+    /// SharedHeldOrderClaims 新索引与 trigger（fence/幂等键唯一、状态机与首次绑定规则）。
+    /// </summary>
+    private const string SharedHeldOrderClaimsIndexTriggerStatements =
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_SharedHeldOrderClaims_OpenFence_PerDevice
+            ON SharedHeldOrderClaims (StoreCode, DeviceCode)
+            WHERE Status IN ('Prepared', 'Active');
+
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_SharedHeldOrderClaims_ActivateKey
+            ON SharedHeldOrderClaims (ActivateIdempotencyKey)
+            WHERE ActivateIdempotencyKey IS NOT NULL;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_SharedHeldOrderClaims_ReleaseKey
+            ON SharedHeldOrderClaims (ReleaseIdempotencyKey)
+            WHERE ReleaseIdempotencyKey IS NOT NULL;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_SharedHeldOrderClaims_SupersedeKey
+            ON SharedHeldOrderClaims (SupersedeIdempotencyKey)
+            WHERE SupersedeIdempotencyKey IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS IX_SharedHeldOrderClaims_MineRecovery
+            ON SharedHeldOrderClaims (StoreCode, DeviceCode, Status, UpdatedAtIso);
+
+        CREATE TRIGGER IF NOT EXISTS TRG_SharedHeldOrderClaims_StatusMachine
+        BEFORE UPDATE OF Status ON SharedHeldOrderClaims
+        FOR EACH ROW
+        WHEN NEW.Status <> OLD.Status
+        BEGIN
+            SELECT CASE
+                WHEN OLD.Status = 'Prepared'
+                    AND NEW.Status IN ('Active', 'Released')
+                THEN 0
+                WHEN OLD.Status = 'Prepared'
+                    AND NEW.Status = 'Superseded'
+                    AND NEW.ActivateIdempotencyKey IS NULL
+                    AND NEW.ReleaseIdempotencyKey IS NULL
+                    AND NEW.BoundOrderGuid IS NULL
+                    AND NEW.SupersedeIdempotencyKey IS NOT NULL
+                THEN 0
+                WHEN OLD.Status = 'Active'
+                    AND NEW.Status IN ('Completed', 'Released')
+                THEN 0
+                WHEN OLD.Status = 'Active'
+                    AND NEW.Status = 'Superseded'
+                    AND NEW.ActivateIdempotencyKey IS NOT NULL
+                    AND NEW.ActivateIdempotencyKey = OLD.ActivateIdempotencyKey
+                    AND NEW.ReleaseIdempotencyKey IS NULL
+                    AND NEW.BoundOrderGuid IS NULL
+                    AND NEW.SupersedeIdempotencyKey IS NOT NULL
+                THEN 0
+                ELSE RAISE(ABORT, 'illegal shared held order claim status transition')
+            END;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS TRG_SharedHeldOrderClaims_ActiveBindingOnly
+        BEFORE UPDATE ON SharedHeldOrderClaims
+        FOR EACH ROW
+        WHEN OLD.Status = 'Active' AND NEW.Status = 'Active'
+        BEGIN
+            SELECT CASE
+                WHEN NEW.BoundOrderGuid IS NOT NULL AND OLD.BoundOrderGuid IS NULL THEN 0
+                ELSE RAISE(ABORT, 'active claim may only change through first bind')
+            END;
+        END;
+        """;
+
+    /// <summary>
+    /// 旧开发库 SharedHeldOrderClaims 迁移：缺 SupersedeIdempotencyKey（或仅被 ALTER ADD 补列、
+    /// 旧 CHECK/trigger/index 仍在）时，事务化重建表。旧 CHECK 无法在 SQLite 中直接修改，
+    /// 只能换名 -> 建新表 -> 全量复制 -> 删旧表 -> 重建索引/trigger；任一步失败整体回滚，
+    /// 旧表与数据原样保留。旧 Superseded 行缺新 key 时按 ClaimId 派生稳定 migration-only key，
+    /// 不静默丢行；无法满足新 CHECK 的行会使迁移失败并回滚，等待人工清理后重试。
+    /// </summary>
+    private static async Task MigrateLegacySharedHeldOrderClaimsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(connection, "SharedHeldOrderClaims", cancellationToken))
+        {
+            return;
+        }
+
+        // 新表的状态一致性 CHECK 必然包含该标记；旧表即使被 ALTER ADD 补列，
+        // sqlite_master 里保存的仍是旧 CREATE TABLE（不含该 CHECK 文本）。
+        var currentTableSql = await ReadObjectSqlAsync(
+            connection,
+            "table",
+            "SharedHeldOrderClaims",
+            cancellationToken);
+        if (currentTableSql is not null
+            && currentTableSql.Contains(
+                "SupersedeIdempotencyKey IS NOT NULL",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var legacyColumns = await ReadColumnNamesAsync(
+            connection,
+            "SharedHeldOrderClaims",
+            cancellationToken);
+        var hasSupersedeKeyColumn = legacyColumns.Contains("SupersedeIdempotencyKey");
+        var supersedeExpression = hasSupersedeKeyColumn
+            ? """
+              CASE WHEN Status = 'Superseded'
+                     AND (SupersedeIdempotencyKey IS NULL OR TRIM(SupersedeIdempotencyKey) = '')
+                   THEN 'migrated-supersede:' || ClaimId
+                   ELSE SupersedeIdempotencyKey
+              END
+              """
+            : """
+              CASE WHEN Status = 'Superseded'
+                   THEN 'migrated-supersede:' || ClaimId
+                   ELSE NULL
+              END
+              """;
+
+        await using var transaction = connection.BeginTransaction();
+        try
+        {
+            // 1) 旧表先换名，释放真实表名与旧 index/trigger 全局名。
+            await ExecuteAsync(
+                connection,
+                transaction,
+                "ALTER TABLE SharedHeldOrderClaims RENAME TO SharedHeldOrderClaims_legacy;",
+                cancellationToken);
+            // 2) 按新 schema 建表（新 CHECK 立即可校验复制数据）。
+            await ExecuteAsync(
+                connection,
+                transaction,
+                SharedHeldOrderClaimsTableStatement,
+                cancellationToken);
+            // 3) 全量复制：所有列原值保留；旧 Superseded 行缺新 key 时生成稳定 migration-only key。
+            //    无法满足新 CHECK 的行 -> SQLite 约束错误 -> 事务回滚，旧表完整保留。
+            await ExecuteAsync(
+                connection,
+                transaction,
+                $"""
+                INSERT INTO SharedHeldOrderClaims (
+                    ClaimId, HoldGuid, StoreCode, DeviceCode, Source, Status,
+                    PrepareIdempotencyKey, ActivateIdempotencyKey, ReleaseIdempotencyKey, SupersedeIdempotencyKey,
+                    PayloadCiphertext, ServerRevision, ExpiresAtIso, BoundOrderGuid, CreatedAtIso, UpdatedAtIso)
+                SELECT
+                    ClaimId, HoldGuid, StoreCode, DeviceCode, Source, Status,
+                    PrepareIdempotencyKey, ActivateIdempotencyKey, ReleaseIdempotencyKey, {supersedeExpression},
+                    PayloadCiphertext, ServerRevision, ExpiresAtIso, BoundOrderGuid, CreatedAtIso, UpdatedAtIso
+                FROM SharedHeldOrderClaims_legacy;
+                """,
+                cancellationToken);
+            // 4) 删旧表（连带旧 index/trigger），避免与新 index/trigger 同名冲突。
+            await ExecuteAsync(
+                connection,
+                transaction,
+                "DROP TABLE SharedHeldOrderClaims_legacy;",
+                cancellationToken);
+            // 5) 在同一事务内重建新索引/trigger，任何唯一约束失败也整体回滚。
+            await ExecuteAsync(
+                connection,
+                transaction,
+                SharedHeldOrderClaimsIndexTriggerStatements,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 兼容早期开发库：publication 消费标记为后补列，旧表通过无损 ALTER 补齐；
+    /// claim 表的 supersede 幂等键改由事务化表重建迁移（见
+    /// MigrateLegacySharedHeldOrderClaimsAsync），此处不再 ALTER ADD，避免留下旧 CHECK/trigger。
+    /// </summary>
+    private static async Task EnsureSharedHeldOrderConsumptionColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        // 首次建库时这些表尚未创建（EnsureSharedHeldOrderSchemaAsync 在其后执行），
+        // 仅对已存在的旧表做无损补列。
+        if (await TableExistsAsync(connection, "SharedHeldOrderPublications", cancellationToken))
+        {
+            var publicationColumns = await ReadColumnNamesAsync(
+                connection,
+                "SharedHeldOrderPublications",
+                cancellationToken);
+            if (!publicationColumns.Contains("ConsumedAtIso"))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE SharedHeldOrderPublications ADD COLUMN ConsumedAtIso TEXT NULL;",
+                    cancellationToken);
+            }
         }
     }
 
@@ -533,6 +930,25 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         }
     }
 
+    private static async Task<string?> ReadObjectSqlAsync(
+        SqliteConnection connection,
+        string objectType,
+        string objectName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = $ObjectType AND name = $ObjectName;
+            """;
+        command.Parameters.AddWithValue("$ObjectType", objectType);
+        command.Parameters.AddWithValue("$ObjectName", objectName);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result as string;
+    }
+
     private static async Task<HashSet<string>> ReadColumnNamesAsync(
         SqliteConnection connection,
         string tableName,
@@ -549,6 +965,34 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         }
 
         return columns;
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = $TableName;
+            """;
+        command.Parameters.AddWithValue("$TableName", tableName);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ExecuteAsync(
@@ -997,7 +1441,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             TotalAmount TEXT NOT NULL,
             DiscountAmount TEXT NOT NULL,
             ActualAmount TEXT NOT NULL,
-            Status INTEGER NOT NULL
+            Status INTEGER NOT NULL,
+            FrozenPromotionRulesJson TEXT NULL
         );
         """,
         """
@@ -1024,7 +1469,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             ReturnSourceKey TEXT NOT NULL DEFAULT '',
             OriginalOrderGuid TEXT NULL,
             OriginalOrderDetailGuid TEXT NULL,
-            ReturnReason TEXT NULL
+            ReturnReason TEXT NULL,
+            IsManualPrice INTEGER NOT NULL DEFAULT 0
         );
         """,
         """

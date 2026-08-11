@@ -102,13 +102,73 @@ export type HeldOrderActionCode =
   | "complete-failed"
   | "rollback-failed"
   | "release-failed"
-  | "load-failed";
+  | "load-failed"
+  | "shared-prepared-awaiting-activation"
+  | "shared-fence-held"
+  | "shared-conflict"
+  | "shared-not-available"
+  | "force-released"
+  | "force-release-failed"
+  | "force-release-unavailable"
+  | "force-release-reason-required";
 
 export type HeldOrderActionResult = Readonly<{
   ok: boolean;
   code: HeldOrderActionCode;
   holdId?: string;
 }>;
+
+/**
+ * 跨设备共享挂单的远端 Pending 行（服务端 listPending 的视图投影）。
+ * 只暴露列表所需字段，绝不携带 canonical 购物车 payload。
+ */
+export type SharedHeldOrderRemoteRow = Readonly<{
+  holdGuid: string;
+  deviceCode: string;
+  cashierName: string;
+  heldAtIso: string;
+  lineCount: number;
+  actualCents: number;
+}>;
+
+/** 本地挂单的共享发布状态（可选数据源；组合根未接线时 presenter 保守合并）。 */
+export type SharedHeldOrderLocalShareRow = Readonly<{
+  holdId: string;
+  shareState: "NeedsEvaluation" | "PendingPublish" | "Published" | "Blocked";
+  blockReason: string | null;
+}>;
+
+export type SharedHeldOrderTakeViewOutcome =
+  | "restored"
+  | "prepared-awaiting-activation"
+  | "fence-held"
+  | "conflict";
+
+export type SharedHeldOrderTakeViewResult = Readonly<{
+  ok: boolean;
+  outcome: SharedHeldOrderTakeViewOutcome;
+  holdGuid: string;
+}>;
+
+/**
+ * 共享挂单视图端口：presenter 只依赖该端口，绝不在此层伪造持久能力。
+ * 组合根负责把 shared coordinator/API 适配进来；forceRelease 未接线时
+ * UI 不显示入口，presenter 返回 force-release-unavailable。
+ */
+export interface SharedHeldOrdersViewPort {
+  listRemotePending(): Promise<readonly SharedHeldOrderRemoteRow[]>;
+  listLocalShareState?(): Promise<readonly SharedHeldOrderLocalShareRow[]>;
+  takeRemoteHold(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
+  recallLocalPublication(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
+  /**
+   * 可选强制释放。实现必须由组合根包一层 supervisor/History.Recall 授权，
+   * 并在调用服务端 force-release 前拒绝空原因。
+   */
+  forceRelease?(input: Readonly<{
+    holdGuid: string;
+    reason: string;
+  }>): Promise<HeldOrderActionResult>;
+}
 
 export function heldOrderScope(identity: HeldOrderIdentity): HeldOrderScope {
   return {

@@ -135,6 +135,23 @@ public static class ServiceRegistration
         services.AddSingleton<ILocalPromotionRepository, LocalPromotionRepository>();
         services.AddSingleton<IPromotionEvaluationService, PromotionEvaluationService>();
         services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
+        services.AddSingleton<ISharedHeldOrderPayloadProtector, WindowsDpapiSharedHeldOrderPayloadProtector>();
+        services.AddSingleton<ISharedHeldOrderCanonicalSerializer, SharedHeldOrderCanonicalJsonSerializer>();
+        services.AddSingleton<ISharedHeldOrderPayloadSerializer, SharedHeldOrderJsonPayloadSerializer>();
+        services.AddSingleton<ISharedHeldOrderRepository, SharedHeldOrderRepository>();
+        services.AddSingleton<ISharedHeldOrderMapper, SharedHeldOrderMapper>();
+        services.AddSingleton<ISharedHeldOrderReverseMapper, SharedHeldOrderReverseMapper>();
+        services.AddSingleton<ISharedHeldOrderPaymentSourceResolver, SharedHeldOrderPaymentSourceResolver>();
+        services.AddSingleton<ISharedHeldOrderCoordinator, SharedHeldOrderCoordinator>();
+        services.AddSingleton<ISharedHeldOrderPublicationWorker>(sp =>
+            new SharedHeldOrderPublicationWorker(
+                sp.GetRequiredService<ISharedHeldOrderRepository>(),
+                sp.GetRequiredService<ISharedHeldOrderMapper>(),
+                sp.GetRequiredService<ISharedHeldOrderApiClient>(),
+                order => order.FrozenPromotionRules));
+        services.AddSingleton<SharedHeldOrderPublicationHostedService>();
+        services.AddSingleton<IHostedService>(sp =>
+            sp.GetRequiredService<SharedHeldOrderPublicationHostedService>());
         services.AddSingleton<ILocalCardPaymentAttemptRepository, LocalCardPaymentAttemptRepository>();
         services.AddSingleton<ILinklyPaymentAttemptContextAccessor, LinklyPaymentAttemptContextAccessor>();
         services.AddSingleton<ILocalSquarePaymentAttemptRepository, LocalSquarePaymentAttemptRepository>();
@@ -222,6 +239,13 @@ public static class ServiceRegistration
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IOrderSyncApiClient, OrderSyncApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(15);
+        })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<ISharedHeldOrderApiClient, SharedHeldOrderApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(15);
@@ -510,7 +534,10 @@ public static class ServiceRegistration
                 attendanceQrPanel: sp.GetRequiredService<AttendanceQrPanelViewModel>(),
                 linklySettlementService: sp.GetRequiredService<ILinklySettlementService>(),
                 linklySettlementUploadQueueReader: sp.GetRequiredService<ILinklySettlementUploadQueueReader>(),
-                linklySettlementUploadExecutionService: sp.GetRequiredService<ILinklySettlementUploadExecutionService>());
+                linklySettlementUploadExecutionService: sp.GetRequiredService<ILinklySettlementUploadExecutionService>(),
+                sharedHeldOrderCoordinator: sp.GetRequiredService<ISharedHeldOrderCoordinator>(),
+                sharedHeldOrderApiClient: sp.GetRequiredService<ISharedHeldOrderApiClient>(),
+                sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),

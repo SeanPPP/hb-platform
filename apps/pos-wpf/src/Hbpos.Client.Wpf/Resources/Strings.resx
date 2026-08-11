@@ -152,6 +152,7 @@
   <data name="pos.status.added" xml:space="preserve"><value>Added {0}</value></data>
   <data name="pos.status.scannerResult" xml:space="preserve"><value>Scan {0}: {1}</value></data>
   <data name="pos.status.cartCleared" xml:space="preserve"><value>Cart cleared.</value></data>
+  <data name="pos.status.sharedHeldOrderReleaseFailed" xml:space="preserve"><value>The shared held order could not be released. The cart was kept for retry.</value></data>
   <data name="pos.status.catalogSyncSkipped" xml:space="preserve"><value>Offline: catalog sync skipped.</value></data>
   <data name="pos.status.promotionFallback" xml:space="preserve"><value>Promotions not updated. Using cached local prices.</value></data>
   <data name="cart.status.zeroPriceItem" xml:space="preserve"><value>Cart contains a zero-price item. Update the price before checkout.</value></data>
@@ -570,6 +571,25 @@
   <data name="history.source.local" xml:space="preserve"><value>Local</value></data>
   <data name="history.source.online" xml:space="preserve"><value>Online</value></data>
   <data name="history.source.installments" xml:space="preserve"><value>Installments</value></data>
+  <data name="history.source.held" xml:space="preserve"><value>Held</value></data>
+  <data name="history.held.localHold" xml:space="preserve"><value>Local hold</value></data>
+  <data name="history.held.pendingPublish" xml:space="preserve"><value>Pending publish</value></data>
+  <data name="history.held.published" xml:space="preserve"><value>Published</value></data>
+  <data name="history.held.remotePending" xml:space="preserve"><value>Remote recall</value></data>
+  <data name="history.held.claimPrepared" xml:space="preserve"><value>Preparing on this device</value></data>
+  <data name="history.held.claimActive" xml:space="preserve"><value>Active on this device</value></data>
+  <data name="history.held.claimedByOther" xml:space="preserve"><value>Claimed by another terminal</value></data>
+  <data name="history.held.completed" xml:space="preserve"><value>Completed</value></data>
+  <data name="history.held.blocked" xml:space="preserve"><value>Blocked</value></data>
+  <data name="history.held.forceRelease" xml:space="preserve"><value>Force release</value></data>
+  <data name="history.held.forceReleaseReason" xml:space="preserve"><value>Force release reason</value></data>
+  <data name="history.held.forceReleaseConfirm" xml:space="preserve"><value>Confirm</value></data>
+  <data name="history.held.forceReleaseCancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="history.held.forceReleaseReasonRequired" xml:space="preserve"><value>A force-release reason is required.</value></data>
+  <data name="history.held.forceReleaseReasonTooLong" xml:space="preserve"><value>The force-release reason must not exceed 500 characters.</value></data>
+  <data name="history.held.forceReleased" xml:space="preserve"><value>Held order force-released.</value></data>
+  <data name="history.held.remoteUnavailable" xml:space="preserve"><value>Remote held orders unavailable: {0}</value></data>
+  <data name="history.held.unavailable" xml:space="preserve"><value>Shared held orders are not configured on this terminal.</value></data>
   <data name="history.installment.paid" xml:space="preserve"><value>Paid</value></data>
   <data name="history.installment.continuePayment" xml:space="preserve"><value>Continue Payment</value></data>
   <data name="history.payment.suspended" xml:space="preserve"><value>Suspended</value></data>

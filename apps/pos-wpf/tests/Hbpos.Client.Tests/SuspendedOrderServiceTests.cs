@@ -425,9 +425,135 @@ public sealed class SuspendedOrderServiceTests
         Assert.NotNull(typeof(PosCartLineSnapshot).GetProperty("ReturnReason"));
     }
 
+    [Fact]
+    public async Task SuspendCurrentOrderAsync_freezes_deep_copy_of_automatic_promotion_rules()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var session = CreateSession();
+            var rules = new List<CatalogPromotionRuleDto>
+            {
+                CreatePromotionRule(
+                    applyQuantity: 2,
+                    fixedPrice: 15m,
+                    products:
+                    [
+                        new CatalogPromotionProductDto("SKU-FREEZE-01", 1)
+                    ])
+            };
+            cart.SetAutomaticPromotionRules(rules);
+            cart.AddItem(CreateItem(productCode: "SKU-FREEZE-01", lookupCode: "freeze-01", price: 10m));
+            cart.AddItem(CreateItem(productCode: "SKU-FREEZE-01", lookupCode: "freeze-01", price: 10m));
+
+            await schema.InitializeAsync();
+            await EnsureFrozenRuleColumnsAsync(store);
+
+            var suspended = await service.SuspendCurrentOrderAsync(session);
+
+            // 挂单后修改当前目录规则，不得影响已冻结的规则副本。
+            rules[0] = rules[0] with { FixedPrice = 0m, PromotionId = "PROMO-CHANGED" };
+            rules.Add(CreatePromotionRule(
+                applyQuantity: 1,
+                fixedPrice: 1m,
+                products: [new CatalogPromotionProductDto("SKU-OTHER", 1)]));
+
+            var frozen = Assert.Single(suspended.FrozenPromotionRules ?? []);
+            Assert.Equal("PROMO-HOLD-01", frozen.PromotionId);
+            Assert.Equal(15m, frozen.FixedPrice);
+            Assert.Equal("SKU-FREEZE-01", Assert.Single(frozen.Products).ProductCode);
+
+            // 从仓储读回仍是同一份冻结规则（重启/目录刷新后的映射依据）。
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+            var savedFrozen = Assert.Single(saved?.FrozenPromotionRules ?? []);
+            Assert.Equal("PROMO-HOLD-01", savedFrozen.PromotionId);
+            Assert.Equal(15m, savedFrozen.FixedPrice);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Suspend_and_recall_preserve_manual_price_provenance()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var session = CreateSession();
+            var line = cart.AddItem(CreateItem(productCode: "SKU-MANUAL-HOLD", lookupCode: "manual-hold", price: 10m));
+            Assert.True(cart.SetLineUnitPrice(line, 6.6m));
+
+            await schema.InitializeAsync();
+            await EnsureFrozenRuleColumnsAsync(store);
+
+            var suspended = await service.SuspendCurrentOrderAsync(session);
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+
+            Assert.True(Assert.Single(saved!.Lines).IsManualPrice);
+            Assert.Equal(6.6m, Assert.Single(saved.Lines).UnitPrice);
+
+            await service.RecallOrderAsync(suspended.SuspendedOrderGuid);
+
+            var recalled = Assert.Single(cart.Lines);
+            Assert.True(recalled.IsManualPrice);
+            Assert.Equal(6.6m, recalled.UnitPrice);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+    }
+
+    /// <summary>
+    /// 测试专用：模拟主代理即将补齐的 SuspendedOrders.FrozenPromotionRulesJson 与
+    /// SuspendedOrderLines.IsManualPrice 列，验证仓储往返；不修改 LocalSchemaService。
+    /// </summary>
+    private static async Task EnsureFrozenRuleColumnsAsync(LocalSqliteStore store)
+    {
+        await using var connection = await store.OpenConnectionAsync();
+        var hasFrozenColumn = await HasColumnAsync(connection, "SuspendedOrders", "FrozenPromotionRulesJson");
+        if (!hasFrozenColumn)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SuspendedOrders ADD COLUMN FrozenPromotionRulesJson TEXT NULL;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var hasManualColumn = await HasColumnAsync(connection, "SuspendedOrderLines", "IsManualPrice");
+        if (!hasManualColumn)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SuspendedOrderLines ADD COLUMN IsManualPrice INTEGER NOT NULL DEFAULT 0;";
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task<bool> HasColumnAsync(SqliteConnection connection, string tableName, string columnName)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info($TableName) WHERE name = $ColumnName;";
+        command.Parameters.AddWithValue("$TableName", tableName);
+        command.Parameters.AddWithValue("$ColumnName", columnName);
+        return Convert.ToInt32(await command.ExecuteScalarAsync()) > 0;
     }
 
     private static SellableItemDto CreateItem(

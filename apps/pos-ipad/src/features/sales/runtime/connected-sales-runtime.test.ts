@@ -442,6 +442,118 @@ test("更新策略未启用时空车在目录查询前 fail-closed，已有购�
   assert.equal(existingCart.getSnapshot().lines.length, 2);
 });
 
+test("共享召回购物车 normal clearCart 路由到 owner release，清空购物车与 binding", async () => {
+  const sharedCart = activeCart();
+  const binding = {
+    kind: "recalled" as const,
+    scope: { storeCode: "S1", deviceCode: "IPAD1" },
+    holdId: "hold-1",
+    recallAttemptId: "recall-1",
+  };
+  sharedCart.blockForRecallRecovery(binding);
+  await sharedCart.runExclusive((lease) => {
+    lease.replace(cartWithLine().stateSnapshot(), binding);
+  });
+  const releasedHoldIds: string[] = [];
+  const presenter = createConnectedSalesPresenter({
+    activeCartSession: sharedCart,
+    identity: identity(),
+    sessionGuard: new SessionGuard(),
+    newTransactionGate: {
+      canStartNewTransaction: () => true,
+    },
+    createCheckoutIntentId: () => "intent-1",
+    createLineId: () => "line-2",
+    operationSecurity: security(),
+    releaseRecalledCart: {
+      releaseRecalledCart: async (holdGuid: string) => {
+        releasedHoldIds.push(holdGuid);
+        // 模拟真实 coordinator：lease 内清车并解除 binding。
+        await sharedCart.runExclusive((lease) => {
+          const active = lease.read();
+          lease.replace(
+            {
+              ...active.pricingState,
+              revision: active.pricingState.revision + 1,
+              lines: [],
+            },
+            active.recallBinding,
+          );
+          lease.setRecallBinding(null);
+        });
+      },
+    },
+  });
+
+  assert.equal(await presenter.clearCart(), true);
+  assert.deepEqual(releasedHoldIds, ["hold-1"]);
+  assert.equal(sharedCart.getRecallBinding(), null);
+  assert.equal(sharedCart.getSnapshot().lines.length, 0);
+});
+
+test("共享召回购物车 clearCart 释放失败：返回 false 并保持购物车和 binding", async () => {
+  const sharedCart = activeCart();
+  const binding = {
+    kind: "recalled" as const,
+    scope: { storeCode: "S1", deviceCode: "IPAD1" },
+    holdId: "hold-1",
+    recallAttemptId: "recall-1",
+  };
+  sharedCart.blockForRecallRecovery(binding);
+  await sharedCart.runExclusive((lease) => {
+    lease.replace(cartWithLine().stateSnapshot(), binding);
+  });
+  const presenter = createConnectedSalesPresenter({
+    activeCartSession: sharedCart,
+    identity: identity(),
+    sessionGuard: new SessionGuard(),
+    newTransactionGate: {
+      canStartNewTransaction: () => true,
+    },
+    createCheckoutIntentId: () => "intent-1",
+    createLineId: () => "line-2",
+    operationSecurity: security(),
+    releaseRecalledCart: {
+      releaseRecalledCart: async () => {
+        throw new Error("server down");
+      },
+    },
+  });
+
+  assert.equal(await presenter.clearCart(), false);
+  assert.equal(sharedCart.getRecallBinding()?.holdId, "hold-1");
+  assert.equal(sharedCart.getSnapshot().lines.length, 1);
+});
+
+test("共享召回购物车 clearCart 未接线 release 端口：fail-closed 不清车", async () => {
+  const sharedCart = activeCart();
+  const binding = {
+    kind: "recalled" as const,
+    scope: { storeCode: "S1", deviceCode: "IPAD1" },
+    holdId: "hold-1",
+    recallAttemptId: "recall-1",
+  };
+  sharedCart.blockForRecallRecovery(binding);
+  await sharedCart.runExclusive((lease) => {
+    lease.replace(cartWithLine().stateSnapshot(), binding);
+  });
+  const presenter = createConnectedSalesPresenter({
+    activeCartSession: sharedCart,
+    identity: identity(),
+    sessionGuard: new SessionGuard(),
+    newTransactionGate: {
+      canStartNewTransaction: () => true,
+    },
+    createCheckoutIntentId: () => "intent-1",
+    createLineId: () => "line-2",
+    operationSecurity: security(),
+  });
+
+  assert.equal(await presenter.clearCart(), false);
+  assert.equal(sharedCart.getRecallBinding()?.holdId, "hold-1");
+  assert.equal(sharedCart.getSnapshot().lines.length, 1);
+});
+
 test("目录的 referenceCode 与全部后端 priceSource 0..4 原样冻结到购物车", () => {
   for (const priceSource of [0, 1, 2, 3, 4] as const) {
     const adapter = new PricingCartSalesAdapter(

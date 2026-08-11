@@ -9,6 +9,9 @@ public sealed class PosCartService
     private readonly List<CartLine> _lines = [];
     private readonly List<OrderReturnPaymentCapacityDto> _returnPaymentCapacities = [];
     private IReadOnlyList<CatalogPromotionRuleDto> _automaticPromotionRules = [];
+    private Guid? _sharedHeldOrderClaimId;
+    private bool _preserveSharedPromotionDiscounts;
+    private bool _preserveSharedSnapshotCatalogValues;
 
     public IReadOnlyList<CartLine> Lines => _lines;
 
@@ -24,7 +27,10 @@ public sealed class PosCartService
 
     public bool HasZeroPriceLine => _lines.Any(line => line.HasZeroUnitPrice);
 
-    public bool HasNonIntegerQuantity => _lines.Any(line => !IsPositiveIntegerQuantity(line.Quantity));
+    public bool HasNonIntegerQuantity => _lines.Any(line =>
+        _sharedHeldOrderClaimId is null
+            ? !IsPositiveIntegerQuantity(line.Quantity)
+            : !IsPositiveFiniteDecimalQuantity(line.Quantity));
 
     public bool HasReturnLine => _lines.Any(line => line.IsReturnLine);
 
@@ -36,7 +42,11 @@ public sealed class PosCartService
         _automaticPromotionRules = rules
             .Where(rule => rule.Products.Count > 0)
             .ToArray();
-        RefreshAutomaticPromotionDiscounts();
+        if (!_preserveSharedPromotionDiscounts && !_preserveSharedSnapshotCatalogValues)
+        {
+            RefreshAutomaticPromotionDiscounts();
+        }
+
         OnCartChanged();
     }
 
@@ -200,25 +210,25 @@ public sealed class PosCartService
     {
         var line = FindLineByLookupCode(storeCode, lookupCode);
 
-        if (line is null)
+        if (line is null || _preserveSharedSnapshotCatalogValues)
         {
             return false;
         }
 
         line.UpdateFrom(item);
-        RefreshDiscountsAndNotify();
+        RefreshDiscountsAndNotify(preserveFrozenSharedPromotion: true);
         return true;
     }
 
     public bool UpdateLineFromRemote(CartLine line, SellableItemDto item)
     {
-        if (!_lines.Contains(line))
+        if (!_lines.Contains(line) || _preserveSharedSnapshotCatalogValues)
         {
             return false;
         }
 
         line.UpdateFrom(item);
-        RefreshDiscountsAndNotify();
+        RefreshDiscountsAndNotify(preserveFrozenSharedPromotion: true);
         return true;
     }
 
@@ -231,23 +241,39 @@ public sealed class PosCartService
             return false;
         }
 
+        // 绑定共享 claim 的购物车不能通过同步编辑清空：保持行+binding 并阻止操作，
+        // 用户必须走已有异步 ClearCart owner-release，否则会遗留服务端 Active。
+        if (_sharedHeldOrderClaimId is not null && _lines.Count == 1)
+        {
+            return false;
+        }
+
         _lines.Remove(line);
+        ClearSharedHeldOrderBindingIfCartEmpty();
         RefreshDiscountsAndNotify();
         return true;
     }
 
     public bool RemoveLine(CartLine line)
     {
-        if (!_lines.Remove(line))
+        if (!_lines.Contains(line))
         {
             return false;
         }
 
+        // 绑定共享 claim 的购物车不能通过同步编辑清空：保持行+binding 并阻止操作。
+        if (_sharedHeldOrderClaimId is not null && _lines.Count == 1)
+        {
+            return false;
+        }
+
+        _lines.Remove(line);
         if (line.IsReturnLine && !_lines.Any(existing => existing.IsReturnLine))
         {
             _returnPaymentCapacities.Clear();
         }
 
+        ClearSharedHeldOrderBindingIfCartEmpty();
         RefreshDiscountsAndNotify();
         return true;
     }
@@ -273,11 +299,19 @@ public sealed class PosCartService
 
         if (!line.Decrease(1m))
         {
+            // 绑定共享 claim 的购物车不能通过同步编辑清空：保持行+binding 并阻止操作。
+            if (_sharedHeldOrderClaimId is not null && _lines.Count == 1)
+            {
+                return false;
+            }
+
             _lines.Remove(line);
             if (line.IsReturnLine && !_lines.Any(existing => existing.IsReturnLine))
             {
                 _returnPaymentCapacities.Clear();
             }
+
+            ClearSharedHeldOrderBindingIfCartEmpty();
         }
 
         RefreshDiscountsAndNotify();
@@ -286,6 +320,8 @@ public sealed class PosCartService
 
     public bool SetLineQuantity(CartLine? line, decimal quantity)
     {
+        // 数量必须是正有限整数，0/负数/小数一律拒绝：绑定共享 claim 的购物车
+        // 永远不会通过 SetLineQuantity 被静默清空并遗留服务端 Active。
         if (line is null || line.IsLocked || !_lines.Contains(line) || !IsPositiveIntegerQuantity(quantity))
         {
             return false;
@@ -304,6 +340,8 @@ public sealed class PosCartService
         }
 
         line.SetUnitPrice(unitPrice);
+        // 手工改价：base price provenance 标记为 manual，快照/挂单持久化保留。
+        line.SetManualPrice(true);
         RefreshDiscountsAndNotify();
         return true;
     }
@@ -416,9 +454,12 @@ public sealed class PosCartService
     {
         if (_lines.Count == 0)
         {
-            if (_returnPaymentCapacities.Count > 0)
+            if (_returnPaymentCapacities.Count > 0 || _sharedHeldOrderClaimId is not null)
             {
                 _returnPaymentCapacities.Clear();
+                _sharedHeldOrderClaimId = null;
+                _preserveSharedPromotionDiscounts = false;
+                _preserveSharedSnapshotCatalogValues = false;
                 OnCartChanged();
             }
 
@@ -427,6 +468,9 @@ public sealed class PosCartService
 
         _lines.Clear();
         _returnPaymentCapacities.Clear();
+        _sharedHeldOrderClaimId = null;
+        _preserveSharedPromotionDiscounts = false;
+        _preserveSharedSnapshotCatalogValues = false;
         OnCartChanged();
     }
 
@@ -452,14 +496,19 @@ public sealed class PosCartService
                 line.OriginalOrderGuid,
                 line.OriginalOrderLineGuid,
                 line.ReturnReason,
-                MapSnapshotDiscountSource(line.DiscountSource)))
-            .ToArray());
+                MapSnapshotDiscountSource(line.DiscountSource),
+                line.IsManualPrice))
+            .ToArray(),
+            _sharedHeldOrderClaimId);
     }
 
     public void RestoreSnapshot(PosCartSnapshot snapshot)
     {
         _lines.Clear();
         _returnPaymentCapacities.Clear();
+        _sharedHeldOrderClaimId = null;
+        _preserveSharedPromotionDiscounts = false;
+        _preserveSharedSnapshotCatalogValues = false;
         foreach (var snapshotLine in snapshot.Lines)
         {
             if (!IsPositiveIntegerQuantity(snapshotLine.Quantity))
@@ -505,10 +554,53 @@ public sealed class PosCartService
                 RestoreSnapshotDiscount(line, snapshotLine);
             }
 
+            // 恢复快照时按快照还原价格 provenance（手工改价/目录价格）。
+            line.SetManualPrice(snapshotLine.IsManualPrice);
             _lines.Add(line);
         }
 
+        _sharedHeldOrderClaimId = snapshot.SharedHeldOrderClaimId;
         // 快照用于挂单和支付恢复，必须保留当时金额；后续编辑或规则刷新再重新计算满减。
+        OnCartChanged();
+    }
+
+    /// <summary>
+    /// 共享 sale 快照恢复专用入口（跨 iPad→WPF 取单/离线 recall）：
+    /// 只允许普通 sale 行与正有限小数数量；金额与折扣来源按快照精确恢复。
+    /// 普通 RestoreSnapshot、Add/SetQuantity 与 UI 数量编辑仍严格正整数。
+    /// </summary>
+    public void RestoreSharedSaleSnapshot(PosCartSnapshot snapshot)
+    {
+        _lines.Clear();
+        _returnPaymentCapacities.Clear();
+        _sharedHeldOrderClaimId = null;
+        _preserveSharedPromotionDiscounts = false;
+        _preserveSharedSnapshotCatalogValues = false;
+        foreach (var snapshotLine in snapshot.Lines)
+        {
+            if (snapshotLine.Kind != CartLineKind.Sale)
+            {
+                throw new InvalidOperationException("Shared sale restore only supports sale lines.");
+            }
+
+            if (!IsPositiveFiniteDecimalQuantity(snapshotLine.Quantity))
+            {
+                throw new InvalidOperationException("Shared sale quantity must be a positive finite number.");
+            }
+
+            var item = CreateSnapshotItem(snapshotLine);
+            var line = new CartLine(item);
+            line.SetSharedSaleQuantity(snapshotLine.Quantity);
+            line.SetUnitPrice(snapshotLine.UnitPrice);
+            // 恢复快照时按来源还原折扣，避免促销折扣被误当手工折扣。
+            RestoreSnapshotDiscount(line, snapshotLine);
+            line.SetManualPrice(snapshotLine.IsManualPrice);
+            _lines.Add(line);
+        }
+
+        _sharedHeldOrderClaimId = snapshot.SharedHeldOrderClaimId;
+        _preserveSharedPromotionDiscounts = _lines.Any(line => line.IsAutomaticPromotionDiscount);
+        _preserveSharedSnapshotCatalogValues = _lines.Count > 0;
         OnCartChanged();
     }
 
@@ -535,9 +627,61 @@ public sealed class PosCartService
         CartChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    private void ClearSharedHeldOrderBindingIfCartEmpty()
+    {
+        if (_lines.Count == 0)
+        {
+            _sharedHeldOrderClaimId = null;
+            _preserveSharedPromotionDiscounts = false;
+            _preserveSharedSnapshotCatalogValues = false;
+        }
+    }
+
+    /// <summary>
+    /// 主管强制释放后的本地 cart 清理：仅当购物车绑定到指定 claim（Active 取单购物车）
+    /// 时整单清空并解绑；其他 claim 或普通购物车一律不动，Prepared 未恢复购物车时绝不误清。
+    /// </summary>
+    public bool ClearSharedHeldOrderClaim(Guid claimId)
+    {
+        if (_sharedHeldOrderClaimId != claimId)
+        {
+            return false;
+        }
+
+        Clear();
+        return true;
+    }
+
     public static bool IsPositiveIntegerQuantity(decimal quantity)
     {
         return quantity > 0m && decimal.Truncate(quantity) == quantity;
+    }
+
+    public static bool IsPositiveFiniteDecimalQuantity(decimal quantity)
+    {
+        return quantity > 0m
+            && quantity <= SharedHeldOrderCanonicalConstants.MaxQuantity;
+    }
+
+    /// <summary>
+    /// 挂单时深拷贝当前自动促销规则：后续目录刷新/重启不得影响已冻结金额。
+    /// 无规则时返回 null（旧挂单/无促销挂单语义）。
+    /// </summary>
+    public IReadOnlyList<CatalogPromotionRuleDto>? CreateFrozenAutomaticPromotionRules()
+    {
+        if (_automaticPromotionRules.Count == 0)
+        {
+            return null;
+        }
+
+        return _automaticPromotionRules
+            .Select(rule => rule with
+            {
+                Products = rule.Products
+                    .Select(product => product with { })
+                    .ToArray()
+            })
+            .ToArray();
     }
 
     private static void RestoreSnapshotDiscount(CartLine line, PosCartLineSnapshot snapshotLine)
@@ -573,11 +717,26 @@ public sealed class PosCartService
         };
     }
 
-    private void RefreshDiscountsAndNotify()
+    private void RefreshDiscountsAndNotify(bool preserveFrozenSharedPromotion = false)
     {
-        if (_automaticPromotionRules.Count > 0)
+        if (!preserveFrozenSharedPromotion)
         {
-            // 中文注释：没有旧规则时不要抢先清掉新促销评估链路保留的折扣。
+            // 任一成功的购物车编辑都会结束共享快照保护；其后的远端目录刷新可按正常路径更新。
+            _preserveSharedSnapshotCatalogValues = false;
+        }
+
+        var releasedFrozenSharedPromotion =
+            !preserveFrozenSharedPromotion && _preserveSharedPromotionDiscounts;
+        if (releasedFrozenSharedPromotion)
+        {
+            // 冻结促销只保护刚恢复的共享快照不受当前目录刷新影响；任何成功的
+            // 用户编辑都会使原计算失效，必须切回当前规则（无规则时清掉旧促销）。
+            _preserveSharedPromotionDiscounts = false;
+        }
+
+        if (releasedFrozenSharedPromotion
+            || (_automaticPromotionRules.Count > 0 && !_preserveSharedPromotionDiscounts))
+        {
             RefreshAutomaticPromotionDiscounts();
         }
 
@@ -767,7 +926,9 @@ public sealed class PosCartService
     private sealed record PromotionCartUnit(CartLine Line, decimal UnitPrice);
 }
 
-public sealed record PosCartSnapshot(IReadOnlyList<PosCartLineSnapshot> Lines);
+public sealed record PosCartSnapshot(
+    IReadOnlyList<PosCartLineSnapshot> Lines,
+    Guid? SharedHeldOrderClaimId = null);
 
 public sealed record PosCartLineSnapshot(
     string StoreCode,
@@ -788,4 +949,5 @@ public sealed record PosCartLineSnapshot(
     Guid? OriginalOrderGuid = null,
     Guid? OriginalOrderLineGuid = null,
     string? ReturnReason = null,
-    PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None);
+    PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None,
+    bool IsManualPrice = false);

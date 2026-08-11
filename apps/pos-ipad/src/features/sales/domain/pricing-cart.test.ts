@@ -446,6 +446,64 @@ test("feature-private state restores percent behavior while frozen snapshots sta
   assert.deepEqual(restored.snapshot(), restored.snapshot());
 });
 
+test("restore 精确接受 frozen SharedSaleCartV1 的正有限小数数量（称重 1.25）", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("line-a", { unitPrice: createAud(1_000) }));
+  const state = source.stateSnapshot();
+
+  const restored = PricingCart.restore({
+    ...state,
+    lines: [{ ...state.lines[0]!, quantity: 1.25 }],
+  });
+
+  // 状态快照保留精确小数，不丢失、不取整。
+  assert.equal(restored.stateSnapshot().lines[0]!.quantity, 1.25);
+  // 展示快照按 canonical multiplyCents 语义（half-away-from-zero）计算整数分。
+  assert.equal(restored.snapshot().lines[0]!.quantity, "1.25");
+  assert.equal(restored.snapshot().lines[0]!.actualAmount.cents, 1_250);
+  // 可再恢复一次，数量仍精确。
+  assert.equal(
+    PricingCart.restore(restored.stateSnapshot()).stateSnapshot().lines[0]!
+      .quantity,
+    1.25,
+  );
+});
+
+test("restore 显示快照按 C# decimal AwayFromZero：0.29 × 50 必须为 15 分", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("line-a", { unitPrice: createAud(50) }));
+  const state = source.stateSnapshot();
+
+  const restored = PricingCart.restore({
+    ...state,
+    lines: [{ ...state.lines[0]!, quantity: 0.29 }],
+  });
+
+  // 0.29 * 50 = 14.5（decimal）→ AwayFromZero = 15；JS double 的
+  // 14.499999999999998 若走 Math.round 会错给 14。
+  assert.equal(restored.snapshot().lines[0]!.actualAmount.cents, 15);
+  assert.equal(restored.snapshot().actualAmount.cents, 15);
+  assert.equal(restored.snapshot().subtotal.cents, 15);
+});
+
+test("restore 仍拒绝 0、负数、NaN 与 Infinity 数量", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("line-a"));
+  const state = source.stateSnapshot();
+
+  for (const quantity of [0, -1, NaN, Infinity, -Infinity]) {
+    assert.throws(
+      () =>
+        PricingCart.restore({
+          ...state,
+          lines: [{ ...state.lines[0]!, quantity }],
+        }),
+      /positive finite/,
+      `quantity ${String(quantity)} 必须被拒绝`,
+    );
+  }
+});
+
 test("zero-price lines remain representable without floating point coercion", () => {
   const cart = new PricingCart({ asOfIso });
   cart.addOpenItem({

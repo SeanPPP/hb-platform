@@ -52,6 +52,7 @@ public static class ServiceRegistration
         services.AddOptions<InstallmentRepaymentClaimOptions>();
         services.AddOptions<InstallmentCancelClaimOptions>();
         services.AddOptions<InstallmentCrossDeviceLifecycleOptions>();
+        services.AddOptions<SharedHeldOrderOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -78,6 +79,7 @@ public static class ServiceRegistration
             services.Configure<InstallmentRepaymentClaimOptions>(configuration.GetSection("InstallmentRepaymentClaims"));
             services.Configure<InstallmentCancelClaimOptions>(configuration.GetSection("InstallmentCancelClaims"));
             services.Configure<InstallmentCrossDeviceLifecycleOptions>(configuration.GetSection("InstallmentCrossDeviceLifecycle"));
+            services.Configure<SharedHeldOrderOptions>(configuration.GetSection("SharedHeldOrders"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -104,6 +106,12 @@ public static class ServiceRegistration
         services.AddScoped<IAdvertisementSchemaInitializer, SqlSugarAdvertisementSchemaInitializer>();
         services.AddScoped<IOrderRepository, SqlSugarOrderRepository>();
         services.AddScoped<IOrderSyncService, OrderSyncService>();
+        services.AddScoped<ISharedHeldOrderPayloadProtector, SharedHeldOrderPayloadProtector>();
+        services.AddScoped<ISharedHeldOrderRepository, SqlSugarSharedHeldOrderRepository>();
+        services.AddScoped<ISharedHeldOrderService, SharedHeldOrderService>();
+        services.AddScoped<ISharedHeldOrderIdentityResolver, SharedHeldOrderIdentityResolver>();
+        services.AddScoped<ISharedHeldOrderSchemaSqlExecutor, SqlSugarSharedHeldOrderSchemaSqlExecutor>();
+        services.AddScoped<ISharedHeldOrderSchemaInitializer, SqlSugarSharedHeldOrderSchemaInitializer>();
         services.AddScoped<IOrderHistoryRepository, SqlSugarOrderHistoryRepository>();
         services.AddScoped<IOrderHistoryService, OrderHistoryService>();
         services.AddScoped<IOrderReturnRepository, SqlSugarOrderReturnRepository>();

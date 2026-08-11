@@ -351,6 +351,115 @@ test("稳定材料错配返回明确业务拒绝且不发送请求", async () =>
   assert.equal(transport.calls.length, 0);
 });
 
+test("resolver 返回 RemoteClaim 来源时 mapOrder 写入 heldOrderSource", async () => {
+  const { transport, adapter } = trustedOrderAdapter({
+    async resolveForSync(input) {
+      return {
+        order: input,
+        cardSyncEvidenceByTenderGuid: new Map(),
+        heldOrderSource: {
+          holdGuid: "7f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+          claimGuid: "8f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+          sourceKind: 1 as const,
+        },
+      };
+    },
+  }, order());
+  const result = await adapter.sync(orderGuid, JSON.stringify({ orderGuid }));
+  assert.deepEqual(result, { kind: "synced", alreadySynced: false });
+  const request = transport.calls[0]?.data as {
+    heldOrderSource?: {
+      holdGuid: string;
+      claimGuid: string | null;
+      sourceKind: number;
+    };
+  };
+  assert.deepEqual(request.heldOrderSource, {
+    holdGuid: "7f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+    claimGuid: "8f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+    sourceKind: 1,
+  });
+});
+
+test("OfflineOrigin 来源写入 claimGuid null + sourceKind 2；无来源时字段保持缺省", async () => {
+  const offline = trustedOrderAdapter({
+    async resolveForSync(input) {
+      return {
+        order: input,
+        cardSyncEvidenceByTenderGuid: new Map(),
+        heldOrderSource: {
+          holdGuid: "7f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+          claimGuid: null,
+          sourceKind: 2 as const,
+        },
+      };
+    },
+  }, order());
+  await offline.adapter.sync(orderGuid, JSON.stringify({ orderGuid }));
+  assert.deepEqual(
+    (offline.transport.calls[0]?.data as { heldOrderSource?: unknown })
+      .heldOrderSource,
+    {
+      holdGuid: "7f0ec0f6-7b8e-4c4a-9b2a-1a2b3c4d5e6f",
+      claimGuid: null,
+      sourceKind: 2,
+    },
+  );
+
+  const plain = orderAdapter({
+    status: 200,
+    data: {
+      success: true,
+      data: { orderGuid, accepted: true, alreadySynced: false },
+    },
+  });
+  await plain.adapter.sync(orderGuid, JSON.stringify({ orderGuid }));
+  const request = plain.transport.calls[0]?.data as {
+    heldOrderSource?: unknown;
+  };
+  assert.equal("heldOrderSource" in request, false);
+});
+
+test("响应 disposition 合法值保持 accepted/alreadySynced 旧语义，非法值拒绝", async () => {
+  const valid = orderAdapter({
+    status: 200,
+    data: {
+      success: true,
+      data: {
+        orderGuid,
+        accepted: true,
+        alreadySynced: true,
+        heldOrderDisposition: 1,
+      },
+    },
+  });
+  assert.deepEqual(
+    await valid.adapter.sync(orderGuid, JSON.stringify({ orderGuid })),
+    { kind: "synced", alreadySynced: true },
+  );
+
+  const invalid = orderAdapter({
+    status: 200,
+    data: {
+      success: true,
+      data: {
+        orderGuid,
+        accepted: true,
+        alreadySynced: false,
+        heldOrderDisposition: 9,
+      },
+    },
+  });
+  assert.deepEqual(
+    await invalid.adapter.sync(orderGuid, JSON.stringify({ orderGuid })),
+    {
+      kind: "rejected",
+      failure: "business-rejection",
+      code: "ORDER_SYNC_RESPONSE_INVALID",
+    },
+  );
+});
+
 test("意外数据库或 IO 错误向 outbox 抛出且不发送请求", async () => {
   const ioError = new Error("temporary database read failure");
   const { transport, adapter } = trustedOrderAdapter({

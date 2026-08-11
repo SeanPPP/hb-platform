@@ -63,6 +63,7 @@ public sealed class CartLine : ObservableObject
     private Guid? _originalOrderGuid;
     private Guid? _originalOrderLineGuid;
     private string? _returnReason;
+    private bool _isManualPrice;
 
     public CartLine(SellableItemDto item)
         : this(item, CartLineKind.Sale, item.RetailPrice)
@@ -241,6 +242,16 @@ public sealed class CartLine : ObservableObject
         private set => SetProperty(ref _priceSourceLabel, value);
     }
 
+    /// <summary>
+    /// base price provenance：true = 手工改价（SetLineUnitPrice），false = 目录/远端价格。
+    /// 快照与挂单持久化必须随行保留；共享映射据此输出 canonical manual/catalog。
+    /// </summary>
+    public bool IsManualPrice
+    {
+        get => _isManualPrice;
+        private set => SetProperty(ref _isManualPrice, value);
+    }
+
     public CartLineKind Kind
     {
         get => _kind;
@@ -328,10 +339,31 @@ public sealed class CartLine : ObservableObject
         Quantity = quantity;
     }
 
+    /// <summary>
+    /// 共享 sale 快照恢复专用：允许正有限小数数量（跨 iPad→WPF canonical 是 decimal）。
+    /// 仅由共享挂单恢复路径调用；普通 Add/SetQuantity/UI 编辑仍严格正整数。
+    /// </summary>
+    internal void SetSharedSaleQuantity(decimal quantity)
+    {
+        ThrowIfLocked();
+        if (!IsPositiveFiniteQuantity(quantity))
+        {
+            throw new InvalidOperationException("Shared sale quantity must be a positive finite number.");
+        }
+
+        Quantity = quantity;
+    }
+
     public void SetUnitPrice(decimal unitPrice)
     {
         ThrowIfLocked();
         UnitPrice = unitPrice;
+    }
+
+    /// <summary>快照/挂单恢复专用：按快照还原价格 provenance，不触发手工改价语义。</summary>
+    internal void SetManualPrice(bool isManualPrice)
+    {
+        IsManualPrice = isManualPrice;
     }
 
     public void SetDiscountAmount(decimal discountAmount)
@@ -386,6 +418,8 @@ public sealed class CartLine : ObservableObject
         UnitPrice = item.RetailPrice;
         PriceSource = item.PriceSource;
         PriceSourceLabel = item.PriceSourceLabel;
+        // 远端/目录刷新恢复为 catalog 来源，清除手工改价 provenance。
+        IsManualPrice = false;
     }
 
     public static string NormalizeLookupCode(string? lookupCode)
@@ -396,6 +430,13 @@ public sealed class CartLine : ObservableObject
     private static bool IsPositiveIntegerQuantity(decimal quantity)
     {
         return quantity > 0m && decimal.Truncate(quantity) == quantity;
+    }
+
+    /// <summary>正有限小数：0 &lt; quantity ≤ 共享 canonical 上限（decimal 本身无 NaN/Inf）。</summary>
+    private static bool IsPositiveFiniteQuantity(decimal quantity)
+    {
+        return quantity > 0m
+            && quantity <= SharedHeldOrderCanonicalConstants.MaxQuantity;
     }
 
     private void OnAmountPropertiesChanged()

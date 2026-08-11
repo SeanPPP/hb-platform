@@ -86,6 +86,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
+    private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
+    private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
+    private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
     private readonly bool _enforceCashierPermissions;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
@@ -409,7 +412,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         AttendanceQrPanelViewModel? attendanceQrPanel = null,
         ILinklySettlementService? linklySettlementService = null,
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
-        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null)
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null,
+        ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
+        ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
     {
         _core = core;
         _infra = infra;
@@ -472,6 +478,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cashierLoginService = cashierLoginService;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
+        _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
+        _sharedHeldOrderRepository = sharedHeldOrderRepository;
         if (runtimeEndpointState is not null && Application.Current is not null)
         {
             ProductThumbnailImageSourceConverter.ConfigureApiBaseAddressProvider(
@@ -612,7 +621,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              // 中文说明：主壳与全部子页面共享同一个单次操作授权服务，授权不会变成新的登录会话。
              operationAuthorizationService: _operationAuthorizationService,
              orderUploadExecutionService: _orderUploadExecutionService,
-             linklySettlementService: _linklySettlementService);
+             linklySettlementService: _linklySettlementService,
+             sharedHeldOrderCoordinator: _sharedHeldOrderCoordinator,
+             sharedHeldOrderApiClient: _sharedHeldOrderApiClient,
+             sharedHeldOrderRepository: _sharedHeldOrderRepository);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -1233,6 +1245,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             : _localization.T("shell.cashierLogin.status.success");
         await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
         await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
+        await RecoverSharedHeldClaimsSafelyAsync();
         return true;
     }
 
@@ -1313,6 +1326,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!startupOptions.PreviewMode)
         {
             await RecoverPendingInstallmentOperationsSafelyAsync();
+            await RecoverSharedHeldClaimsSafelyAsync();
         }
 
         _screenNavigator.ClearScreens();
@@ -1407,6 +1421,63 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ConsoleLog.WriteError(
                 "InstallmentRecovery",
                 $"startup recovery failed store={Session.StoreCode} error={ex.GetType().Name}",
+                null,
+                ex);
+        }
+    }
+
+    /// <summary>
+    /// 登录/启动恢复会话后 best-effort 执行本地共享挂单 claim 恢复：
+    /// 只恢复 OfflineOrigin 本地事实（Prepared 补激活、Active 回灌购物车），
+    /// 不访问 API，API 离线绝不能阻止登录/启动；任何异常只记录日志。
+    /// </summary>
+    private async Task RecoverSharedHeldClaimsSafelyAsync()
+    {
+        if (_sharedHeldOrderCoordinator is null || Session.CashierSession is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var recovered = await _sharedHeldOrderCoordinator.RecoverLocalClaimsAsync(
+                Session,
+                CancellationToken.None);
+            if (recovered.RestoredClaimIds.Count > 0)
+            {
+                ConsoleLog.Write(
+                    "SharedHeldRecovery",
+                    $"local claim recovery completed store={Session.StoreCode} count={recovered.RestoredClaimIds.Count}");
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.WriteError(
+                "SharedHeldRecovery",
+                $"local claim recovery failed store={Session.StoreCode} error={ex.GetType().Name}",
+                null,
+                ex);
+        }
+
+        try
+        {
+            // 本地恢复完成后再用 claims/mine 调和 RemoteClaim 崩溃窗口；
+            // API 离线只记录并保留 durable 事实，绝不回滚登录或自动释放 Active。
+            var reconciled = await _sharedHeldOrderCoordinator.ReconcileClaimsAsync(
+                Session,
+                CancellationToken.None);
+            if (reconciled.RestoredClaimIds.Count > 0)
+            {
+                ConsoleLog.Write(
+                    "SharedHeldRecovery",
+                    $"remote claim recovery completed store={Session.StoreCode} count={reconciled.RestoredClaimIds.Count}");
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.WriteError(
+                "SharedHeldRecovery",
+                $"remote claim recovery deferred store={Session.StoreCode} error={ex.GetType().Name}",
                 null,
                 ex);
         }

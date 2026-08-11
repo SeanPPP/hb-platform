@@ -1,0 +1,662 @@
+using System.Globalization;
+using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.HeldOrders;
+
+namespace Hbpos.Client.Wpf.Services;
+
+public interface ISharedHeldOrderMapper
+{
+    /// <summary>
+    /// 把普通 sale 挂单快照映射为共享挂单 canonical。
+    /// return/open-item 行拒绝；自动促销折扣只有在调用方提供完整冻结规则集合且
+    /// 与 WPF 评估结果精确对应时才发布，否则返回稳定阻断原因并保留本地。
+    /// </summary>
+    SharedHeldOrderMappingResult Map(
+        SuspendedOrder order,
+        IReadOnlyList<CatalogPromotionRuleDto>? frozenPromotionRules,
+        int revision);
+}
+
+public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
+{
+    public SharedHeldOrderMappingResult Map(
+        SuspendedOrder order,
+        IReadOnlyList<CatalogPromotionRuleDto>? frozenPromotionRules,
+        int revision)
+    {
+        foreach (var line in order.Lines)
+        {
+            if (line.Kind == CartLineKind.Return)
+            {
+                return Block(
+                    SharedHeldOrderMappingReasons.ReturnLine,
+                    $"挂单行 {line.SuspendedOrderLineGuid:D} 是退货行，共享挂单只支持普通 sale。");
+            }
+
+            if (line.Kind == CartLineKind.OpenItem)
+            {
+                return Block(
+                    SharedHeldOrderMappingReasons.OpenItemLine,
+                    $"挂单行 {line.SuspendedOrderLineGuid:D} 是 open-item，共享挂单拒绝。");
+            }
+
+            // 普通 sale 允许称重小数数量（契约 line.quantity 为 decimal，但仍有统一上限）。
+            if (line.Quantity <= 0m
+                || line.Quantity > SharedHeldOrderCanonicalConstants.MaxQuantity)
+            {
+                throw new ArgumentException("挂单行数量必须是有界正数。", nameof(order));
+            }
+        }
+
+        var lines = order.Lines.Select(ToCanonicalLine).ToArray();
+        var promotionLines = lines
+            .Where(line => line.DiscountState.Mode == SharedHeldOrderCanonicalConstants.DiscountPromotion)
+            .ToArray();
+
+        IReadOnlyList<SharedHeldOrderPromotionDefinition> promotions = [];
+        if (promotionLines.Length > 0 && (frozenPromotionRules is null || frozenPromotionRules.Count == 0))
+        {
+            return Block(
+                SharedHeldOrderMappingReasons.PromotionRulesMissing,
+                "存在自动促销折扣但未提供完整冻结促销规则集合，无法精确对应，保留本地。");
+        }
+
+        if (frozenPromotionRules is { Count: > 0 } frozenRules)
+        {
+            if (TryFindDuplicatePromotionRuleId(frozenRules) is { } duplicateId)
+            {
+                return Block(
+                    SharedHeldOrderMappingReasons.PromotionRulesMismatch,
+                    $"冻结促销规则包含重复 definition id: {duplicateId}，无法精确对应，保留本地。");
+            }
+
+            if (!TryMatchPromotionDiscounts(lines, frozenRules, out var mismatchDetail, out var promotionIdsByLine))
+            {
+                return Block(SharedHeldOrderMappingReasons.PromotionRulesMismatch, mismatchDetail!);
+            }
+
+            // 精确对应确认后，把每条促销行命中的冻结规则 id 写回 canonical。
+            lines = lines
+                .Select(line => line.DiscountState.Mode == SharedHeldOrderCanonicalConstants.DiscountPromotion
+                    ? line with
+                    {
+                        DiscountState = line.DiscountState with
+                        {
+                            PromotionIds = promotionIdsByLine![line.LineId]
+                        }
+                    }
+                    : line)
+                .ToArray();
+            // 只输出实际被促销行贡献/引用的冻结规则定义，避免向目标端泄露无关目录规则。
+            var contributingRuleIds = promotionIdsByLine!
+                .Values
+                .SelectMany(ids => ids)
+                .ToHashSet(StringComparer.Ordinal);
+            promotions = frozenRules
+                .Where(rule => contributingRuleIds.Contains(rule.PromotionId))
+                .Select(ToPromotionDefinition)
+                .ToArray();
+        }
+
+        var pricingState = new SharedHeldOrderPricingState(
+            revision,
+            SharedHeldOrderCanonicalConstants.SaleMode,
+            FormatIso(order.SuspendedAt),
+            promotions,
+            lines);
+        return new SharedHeldOrderMappingResult(
+            new SharedHeldOrderCanonicalPayload(SharedHeldOrderCanonicalPayload.CurrentVersion, pricingState),
+            null);
+    }
+
+    private static SharedHeldOrderMappingResult Block(string reason, string detail)
+    {
+        return new SharedHeldOrderMappingResult(null, new SharedHeldOrderMappingBlock(reason, detail));
+    }
+
+    private static SharedHeldOrderPricingLine ToCanonicalLine(SuspendedOrderLine line)
+    {
+        var discountAmountCents = MoneyToCents(line.DiscountAmount);
+        SharedHeldOrderDiscountState discountState;
+        if (discountAmountCents == 0)
+        {
+            discountState = new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone);
+        }
+        else if (line.DiscountSource == PosCartLineDiscountSource.Manual)
+        {
+            // 百分比只有能无损表示为整数 basisPoints（percent*100 为整数且在合法区间）
+            // 才冻结为百分比；否则（例如 10.555%）发布冻结的手工金额 cents，
+            // 避免舍入后恢复金额被静默改变。金额折扣按整数 cents。
+            discountState = line.DiscountPercent is decimal percent
+                && TryGetExactBasisPoints(percent, out var basisPoints)
+                ? new SharedHeldOrderDiscountState(
+                    SharedHeldOrderCanonicalConstants.DiscountManualPercent,
+                    BasisPoints: basisPoints)
+                : new SharedHeldOrderDiscountState(
+                    SharedHeldOrderCanonicalConstants.DiscountManualAmount,
+                    Cents: discountAmountCents);
+        }
+        else if (line.DiscountSource == PosCartLineDiscountSource.Promotion)
+        {
+            discountState = new SharedHeldOrderDiscountState(
+                SharedHeldOrderCanonicalConstants.DiscountPromotion,
+                Cents: discountAmountCents);
+        }
+        else
+        {
+            // None 来源却带折扣的旧数据按手工金额无损保留，避免静默丢失。
+            discountState = new SharedHeldOrderDiscountState(
+                SharedHeldOrderCanonicalConstants.DiscountManualAmount,
+                Cents: discountAmountCents);
+        }
+
+        return new SharedHeldOrderPricingLine(
+            line.SuspendedOrderLineGuid.ToString("D"),
+            line.ProductCode,
+            line.ItemNumber,
+            line.LookupCode,
+            line.DisplayName,
+            line.Quantity,
+            MoneyToCents(line.UnitPrice),
+            line.IsManualPrice
+                ? SharedHeldOrderCanonicalConstants.BasePriceSourceManual
+                : SharedHeldOrderCanonicalConstants.BasePriceSourceCatalog,
+            new SharedHeldOrderLineSyncProvenance(line.ReferenceCode, (int)line.PriceSource),
+            SharedHeldOrderCanonicalConstants.LineKindSale,
+            null,
+            null,
+            null,
+            discountState);
+    }
+
+    /// <summary>
+    /// 冻结规则 definition id 必须唯一：重复 id 会产生非法 canonical
+    /// （validator 也会拒绝），挂单数据属于损坏，fail-closed Blocked。
+    /// </summary>
+    private static string? TryFindDuplicatePromotionRuleId(IReadOnlyList<CatalogPromotionRuleDto> rules)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var rule in rules)
+        {
+            if (!ids.Add(rule.PromotionId))
+            {
+                return rule.PromotionId;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 用冻结规则按 WPF PromotionEvaluationService 相同的确定性算法重演，并要求
+    /// 每个促销行折扣完全等于冻结结果、非促销行不产生任何促销折扣。
+    /// </summary>
+    private static bool TryMatchPromotionDiscounts(
+        IReadOnlyList<SharedHeldOrderPricingLine> lines,
+        IReadOnlyList<CatalogPromotionRuleDto> frozenRules,
+        out string? mismatchDetail,
+        out Dictionary<string, IReadOnlyList<string>>? promotionIdsByLine)
+    {
+        var eligibleLines = lines
+            .Where(line =>
+                line.DiscountState.Mode != SharedHeldOrderCanonicalConstants.DiscountManualAmount
+                && line.DiscountState.Mode != SharedHeldOrderCanonicalConstants.DiscountManualPercent
+                && line.UnitPriceCents > 0
+                && line.Quantity > 0)
+            .ToArray();
+        var applicableRules = frozenRules
+            .Where(rule => rule.ApplyQuantity > 0 && rule.Products.Count > 0 && RuleHasEligibleProduct(rule, eligibleLines))
+            .ToArray();
+        var rulesToEvaluate = SelectRulesToEvaluate(applicableRules);
+
+        var cumulative = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var contributionsByRule = new Dictionary<string, Dictionary<string, decimal>>(StringComparer.Ordinal);
+        foreach (var rule in rulesToEvaluate)
+        {
+            var before = new Dictionary<string, decimal>(cumulative, StringComparer.Ordinal);
+            ApplyRule(cumulative, eligibleLines, rule);
+            contributionsByRule[rule.PromotionId] = cumulative
+                .Where(entry => !before.TryGetValue(entry.Key, out var previous) || entry.Value != previous)
+                .ToDictionary(entry => entry.Key, entry => entry.Value - (before.TryGetValue(entry.Key, out var previous) ? previous : 0m), StringComparer.Ordinal);
+        }
+
+        var promotionIdsByLineResult = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            var expectedCents = MoneyToCents(cumulative.TryGetValue(line.LineId, out var amount) ? amount : 0m);
+            if (line.DiscountState.Mode == SharedHeldOrderCanonicalConstants.DiscountPromotion)
+            {
+                if (expectedCents <= 0 || line.DiscountState.Cents != expectedCents)
+                {
+                    mismatchDetail = $"行 {line.LineId} 冻结规则应产生 {expectedCents} cents，挂单记录 {line.DiscountState.Cents} cents。";
+                    promotionIdsByLine = null;
+                    return false;
+                }
+
+                var contributingRuleIds = contributionsByRule
+                    .Where(entry => entry.Value.TryGetValue(line.LineId, out var contribution) && contribution > 0m)
+                    .Select(entry => entry.Key)
+                    .ToArray();
+                if (contributingRuleIds.Length == 0)
+                {
+                    mismatchDetail = $"行 {line.LineId} 无贡献规则，无法写入 promotionIds。";
+                    promotionIdsByLine = null;
+                    return false;
+                }
+
+                promotionIdsByLineResult[line.LineId] = contributingRuleIds;
+            }
+            else if (expectedCents != 0)
+            {
+                mismatchDetail = $"行 {line.LineId} 未记录促销折扣，但冻结规则会产生 {expectedCents} cents。";
+                promotionIdsByLine = null;
+                return false;
+            }
+        }
+
+        mismatchDetail = null;
+        promotionIdsByLine = promotionIdsByLineResult;
+        return true;
+    }
+
+    private static bool RuleHasEligibleProduct(
+        CatalogPromotionRuleDto rule,
+        IReadOnlyList<SharedHeldOrderPricingLine> lines)
+    {
+        var productCodes = rule.Products
+            .Select(product => NormalizeProductCode(product.ProductCode))
+            .Where(productCode => !string.IsNullOrEmpty(productCode))
+            .ToHashSet(StringComparer.Ordinal);
+        return lines.Any(line => productCodes.Contains(NormalizeProductCode(line.ProductCode)));
+    }
+
+    private static IReadOnlyList<CatalogPromotionRuleDto> SelectRulesToEvaluate(
+        IReadOnlyList<CatalogPromotionRuleDto> applicableRules)
+    {
+        var exclusiveRule = applicableRules
+            .Where(rule => rule.IsExclusive)
+            .OrderByDescending(rule => rule.Priority)
+            .ThenBy(rule => rule.PromotionId, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (exclusiveRule is not null)
+        {
+            return [exclusiveRule];
+        }
+
+        return applicableRules
+            .OrderByDescending(rule => rule.Priority)
+            .ThenBy(rule => rule.PromotionId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void ApplyRule(
+        Dictionary<string, decimal> discountsByLine,
+        IReadOnlyList<SharedHeldOrderPricingLine> lines,
+        CatalogPromotionRuleDto rule)
+    {
+        var weights = BuildRuleProductWeights(rule);
+        if (weights.Count == 0)
+        {
+            return;
+        }
+
+        var units = ExpandRuleUnits(lines, weights);
+        var applicationCount = units.Count / rule.ApplyQuantity;
+        if (rule.MaxApplicationsPerOrder is int maxApplications)
+        {
+            applicationCount = Math.Min(applicationCount, maxApplications);
+        }
+
+        for (var applicationIndex = 0; applicationIndex < applicationCount; applicationIndex++)
+        {
+            // 与 WPF 评估保持一致：每个展开单位是独立 (line, sortOrder) 组，按购物车顺序消费。
+            var selectedUnits = units
+                .Skip(applicationIndex * rule.ApplyQuantity)
+                .Take(rule.ApplyQuantity)
+                .ToArray();
+            var groupedUnitAmounts = selectedUnits
+                .GroupBy(unit => (unit.LineId, unit.SortOrder))
+                .Select(group => new GroupedUnit(
+                    group.Key.LineId,
+                    group.First().UnitPrice,
+                    group.Key.SortOrder))
+                .OrderBy(group => group.SortOrder)
+                .ToArray();
+            var groupTotal = Round2(groupedUnitAmounts.Sum(group => group.Amount));
+            var groupDiscount = Round2(groupTotal - rule.FixedPrice);
+            if (groupDiscount <= 0m)
+            {
+                continue;
+            }
+
+            var groupedLines = groupedUnitAmounts
+                .GroupBy(group => group.LineId)
+                .Select(group => new GroupedLine(
+                    group.Key,
+                    Round2(group.Sum(item => item.Amount)),
+                    group.Min(item => item.SortOrder)))
+                .Where(group => GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId) > 0m)
+                .OrderBy(group => group.SortOrder)
+                .ToArray();
+            if (groupedLines.Length == 0)
+            {
+                continue;
+            }
+
+            var remainingDiscount = groupDiscount;
+            for (var index = 0; index < groupedLines.Length && remainingDiscount > 0m; index++)
+            {
+                var group = groupedLines[index];
+                var remainingAmount = Round2(groupedLines.Skip(index).Sum(item => item.Amount));
+                if (remainingAmount <= 0m)
+                {
+                    break;
+                }
+
+                var lineDiscount = index == groupedLines.Length - 1
+                    ? remainingDiscount
+                    : Round2(remainingDiscount * group.Amount / remainingAmount);
+                lineDiscount = Math.Clamp(
+                    lineDiscount,
+                    0m,
+                    Math.Min(remainingDiscount, GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId)));
+                if (lineDiscount <= 0m)
+                {
+                    continue;
+                }
+
+                discountsByLine[group.LineId] = Round2(
+                    (discountsByLine.TryGetValue(group.LineId, out var current) ? current : 0m) + lineDiscount);
+                remainingDiscount -= lineDiscount;
+            }
+        }
+    }
+
+    private static Dictionary<string, int> BuildRuleProductWeights(CatalogPromotionRuleDto rule)
+    {
+        var weights = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var product in rule.Products)
+        {
+            var productCode = NormalizeProductCode(product.ProductCode);
+            if (string.IsNullOrEmpty(productCode))
+            {
+                continue;
+            }
+
+            weights[productCode] = product.UnitWeight > 0 ? product.UnitWeight : 1;
+        }
+
+        return weights;
+    }
+
+    private static List<RuleUnit> ExpandRuleUnits(
+        IReadOnlyList<SharedHeldOrderPricingLine> lines,
+        IReadOnlyDictionary<string, int> ruleProductWeights)
+    {
+        var expandedUnits = new List<RuleUnit>();
+        var nextExpandedId = 0;
+        foreach (var line in lines)
+        {
+            var productCode = NormalizeProductCode(line.ProductCode);
+            if (!ruleProductWeights.TryGetValue(productCode, out var unitWeight))
+            {
+                continue;
+            }
+
+            var quantity = decimal.ToInt32(line.Quantity);
+            for (var quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
+            {
+                for (var weightIndex = 0; weightIndex < unitWeight; weightIndex++)
+                {
+                    expandedUnits.Add(new RuleUnit(
+                        nextExpandedId++,
+                        line.LineId,
+                        line.UnitPriceCents / 100m,
+                        quantityIndex,
+                        weightIndex));
+                }
+            }
+        }
+
+        return expandedUnits;
+    }
+
+    private static decimal GetRemainingLineDiscountCapacity(
+        IReadOnlyDictionary<string, decimal> discountsByLine,
+        IReadOnlyList<SharedHeldOrderPricingLine> lines,
+        string lineId)
+    {
+        var line = lines.First(candidate => candidate.LineId == lineId);
+        var currentDiscount = discountsByLine.TryGetValue(lineId, out var value) ? value : 0m;
+        var gross = Round2(line.UnitPriceCents / 100m * line.Quantity);
+        return Math.Max(0m, Round2(gross - currentDiscount));
+    }
+
+    private static SharedHeldOrderPromotionDefinition ToPromotionDefinition(CatalogPromotionRuleDto rule)
+    {
+        return new SharedHeldOrderPromotionDefinition(
+            rule.PromotionId,
+            rule.Name,
+            FormatIso(rule.EffectiveStart),
+            FormatIso(rule.EffectiveEnd),
+            rule.IsExclusive,
+            rule.Priority,
+            rule.ApplyQuantity,
+            MoneyToCents(rule.FixedPrice),
+            rule.MaxApplicationsPerOrder,
+            rule.Products
+                .Select(product => new SharedHeldOrderPromotionProduct(product.ProductCode, product.UnitWeight))
+                .ToArray());
+    }
+
+    private static string FormatIso(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+    }
+
+    private static string NormalizeProductCode(string? productCode)
+    {
+        return (productCode ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    private static long MoneyToCents(decimal amount)
+    {
+        return checked((long)Math.Round(amount * 100m, 0, MidpointRounding.AwayFromZero));
+    }
+
+    private static int BasisPointsFromPercent(decimal percent)
+    {
+        return checked((int)Math.Round(percent * 100m, 0, MidpointRounding.AwayFromZero));
+    }
+
+    /// <summary>
+    /// 只有 percent*100 为整数（可无损用 basisPoints 精确表示）且在合法区间时返回 true。
+    /// 例如 10% -> 1000、10.55% -> 1055；10.555% -> 1055.5 不是整数，必须回退金额。
+    /// </summary>
+    private static bool TryGetExactBasisPoints(decimal percent, out int basisPoints)
+    {
+        var scaled = percent * 100m;
+        if (decimal.Truncate(scaled) != scaled)
+        {
+            basisPoints = 0;
+            return false;
+        }
+
+        basisPoints = BasisPointsFromPercent(percent);
+        return basisPoints is >= 1 and <= SharedHeldOrderCanonicalConstants.MaxBasisPoints;
+    }
+
+    private static decimal Round2(decimal value)
+    {
+        return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+    }
+
+    private sealed record RuleUnit(int SortOrder, string LineId, decimal UnitPrice, int QuantityIndex, int WeightIndex);
+
+    private sealed record GroupedUnit(string LineId, decimal Amount, int SortOrder);
+
+    private sealed record GroupedLine(string LineId, decimal Amount, int SortOrder);
+}
+
+/// <summary>
+/// 服务端 SharedSaleCartV1 与本地 canonical 的双向显式字段映射（仅集成所需）。
+/// 不依赖 JSON 往返：strict canonical 解析器会拒绝 discount union 的 null 字段
+/// （如 promotion 带 basisPoints:null），显式映射逐字段构造，天然避免该问题。
+/// </summary>
+public static class SharedHeldOrderContractMapper
+{
+    public static SharedHeldOrderCanonicalPayload ToCanonical(SharedSaleCartV1 cart)
+    {
+        SharedSaleCartV1Validator.Validate(cart);
+        var pricing = cart.PricingState;
+        var promotions = pricing.Promotions
+            .Select(promotion => new SharedHeldOrderPromotionDefinition(
+                promotion.Id,
+                promotion.Name,
+                promotion.EffectiveStartIso,
+                promotion.EffectiveEndIso,
+                promotion.IsExclusive,
+                promotion.Priority,
+                promotion.ApplyQuantity,
+                promotion.FixedPriceCents,
+                promotion.MaxApplicationsPerOrder,
+                promotion.Products
+                    .Select(product => new SharedHeldOrderPromotionProduct(
+                        product.ProductCode,
+                        product.UnitWeight))
+                    .ToArray()))
+            .ToArray();
+        var lines = pricing.Lines
+            .Select(line => new SharedHeldOrderPricingLine(
+                line.LineId,
+                line.ProductCode,
+                line.ItemNumber,
+                line.LookupCode,
+                line.DisplayName,
+                line.Quantity,
+                line.UnitPriceCents,
+                line.BasePriceSource,
+                line.SyncProvenance is { } provenance
+                    ? new SharedHeldOrderLineSyncProvenance(
+                        provenance.ReferenceCode,
+                        (int)provenance.PriceSource)
+                    : null,
+                line.Kind,
+                line.ReturnSourceKey,
+                line.OriginalOrderGuid,
+                line.OriginalOrderDetailGuid,
+                ToCanonicalDiscount(line.DiscountState)))
+            .ToArray();
+        var payload = new SharedHeldOrderCanonicalPayload(
+            cart.Version,
+            new SharedHeldOrderPricingState(
+                pricing.Revision,
+                pricing.Mode,
+                pricing.AsOfIso,
+                promotions,
+                lines));
+        SharedHeldOrderCanonicalValidator.Validate(payload);
+        return payload;
+    }
+
+    public static SharedSaleCartV1 ToContract(SharedHeldOrderCanonicalPayload payload)
+    {
+        SharedHeldOrderCanonicalValidator.Validate(payload);
+        var pricing = payload.PricingState;
+        var promotions = pricing.Promotions
+            .Select(promotion => new SharedPromotionV1(
+                promotion.Id,
+                promotion.Name,
+                promotion.EffectiveStartIso,
+                promotion.EffectiveEndIso,
+                promotion.IsExclusive,
+                promotion.Priority,
+                promotion.ApplyQuantity,
+                promotion.FixedPriceCents,
+                promotion.MaxApplicationsPerOrder,
+                promotion.Products
+                    .Select(product => new SharedPromotionProductV1(
+                        product.ProductCode,
+                        product.UnitWeight))
+                    .ToArray()))
+            .ToArray();
+        var lines = pricing.Lines
+            .Select(line => new SharedSaleLineV1(
+                line.LineId,
+                line.ProductCode,
+                line.ItemNumber,
+                line.LookupCode,
+                line.DisplayName,
+                line.Quantity,
+                line.UnitPriceCents,
+                line.BasePriceSource,
+                line.SyncProvenance is { } provenance
+                    ? new SharedLineSyncProvenanceV1(
+                        provenance.ReferenceCode,
+                        (PriceSourceKind)provenance.PriceSource)
+                    : null,
+                line.Kind,
+                line.ReturnSourceKey,
+                line.OriginalOrderGuid,
+                line.OriginalOrderDetailGuid,
+                ToContractDiscount(line.DiscountState)))
+            .ToArray();
+        return new SharedSaleCartV1(
+            payload.Version,
+            new SharedPricingStateV1(
+                pricing.Revision,
+                pricing.Mode,
+                pricing.AsOfIso,
+                promotions,
+                lines));
+    }
+
+    private static SharedHeldOrderDiscountState ToCanonicalDiscount(SharedLineDiscountStateV1 discount)
+    {
+        return discount.Mode switch
+        {
+            SharedSaleCartV1Constants.DiscountModeNone =>
+                new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone),
+            SharedSaleCartV1Constants.DiscountModeManualAmount =>
+                new SharedHeldOrderDiscountState(
+                    SharedHeldOrderCanonicalConstants.DiscountManualAmount,
+                    Cents: discount.Cents),
+            SharedSaleCartV1Constants.DiscountModeManualPercent =>
+                new SharedHeldOrderDiscountState(
+                    SharedHeldOrderCanonicalConstants.DiscountManualPercent,
+                    BasisPoints: discount.BasisPoints),
+            SharedSaleCartV1Constants.DiscountModePromotion =>
+                new SharedHeldOrderDiscountState(
+                    SharedHeldOrderCanonicalConstants.DiscountPromotion,
+                    Cents: discount.Cents,
+                    PromotionIds: discount.PromotionIds),
+            _ => throw new SharedHeldOrderCanonicalValidationException(
+                $"未知折扣类型: {discount.Mode}")
+        };
+    }
+
+    private static SharedLineDiscountStateV1 ToContractDiscount(SharedHeldOrderDiscountState discount)
+    {
+        return discount.Mode switch
+        {
+            SharedHeldOrderCanonicalConstants.DiscountNone =>
+                new SharedLineDiscountStateV1(SharedSaleCartV1Constants.DiscountModeNone),
+            SharedHeldOrderCanonicalConstants.DiscountManualAmount =>
+                new SharedLineDiscountStateV1(
+                    SharedSaleCartV1Constants.DiscountModeManualAmount,
+                    Cents: discount.Cents),
+            SharedHeldOrderCanonicalConstants.DiscountManualPercent =>
+                new SharedLineDiscountStateV1(
+                    SharedSaleCartV1Constants.DiscountModeManualPercent,
+                    BasisPoints: discount.BasisPoints),
+            SharedHeldOrderCanonicalConstants.DiscountPromotion =>
+                new SharedLineDiscountStateV1(
+                    SharedSaleCartV1Constants.DiscountModePromotion,
+                    Cents: discount.Cents,
+                    PromotionIds: discount.PromotionIds),
+            _ => throw new SharedHeldOrderCanonicalValidationException(
+                $"未知折扣类型: {discount.Mode}")
+        };
+    }
+}

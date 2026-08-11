@@ -81,6 +81,33 @@ public sealed class ServiceRegistrationTests
     }
 
     [Fact]
+    public void AddHbposApiServices_registers_shared_held_order_services_and_disabled_by_default()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        Assert.Equal(
+            typeof(SqlSugarSharedHeldOrderRepository),
+            Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderRepository)).ImplementationType);
+        Assert.Equal(
+            typeof(SharedHeldOrderService),
+            Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderService)).ImplementationType);
+        Assert.Equal(
+            typeof(SharedHeldOrderPayloadProtector),
+            Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderPayloadProtector)).ImplementationType);
+        Assert.Equal(
+            typeof(SharedHeldOrderIdentityResolver),
+            Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderIdentityResolver)).ImplementationType);
+        Assert.Equal(
+            typeof(SqlSugarSharedHeldOrderSchemaInitializer),
+            Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderSchemaInitializer)).ImplementationType);
+
+        using var provider = services.BuildServiceProvider();
+        Assert.False(provider.GetRequiredService<IOptions<SharedHeldOrderOptions>>().Value.Enabled);
+    }
+
+    [Fact]
     public void AddHbposApiServices_configures_linkly_cloud_backend_http_clients_above_business_wait()
     {
         var services = new ServiceCollection();

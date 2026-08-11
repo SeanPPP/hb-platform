@@ -10,7 +10,10 @@ import {
 } from "../contracts/payment";
 import type { OrderRepositoryPort } from "../contracts/repositories";
 import type { OrderSyncPort, SyncOrderResult } from "../contracts/sync";
-import { OrderSyncMaterialError } from "../db/sqlite-order-sync-material";
+import {
+  OrderSyncMaterialError,
+  type ResolvedHeldOrderSource,
+} from "../db/sqlite-order-sync-material";
 
 import type { AuditBatchUploadPort, AuditUploadResult } from "./sync-coordinator";
 
@@ -64,6 +67,8 @@ export type OrderSyncMaterialResolverPort = Readonly<{
 export type ResolvedOrderSyncMaterial = Readonly<{
   order: LocalOrder;
   cardSyncEvidenceByTenderGuid: ReadonlyMap<string, CardSyncEvidenceV1>;
+  /** 仅由解析器从数据库解析；缺省视为普通订单，wire 不携带来源。 */
+  heldOrderSource?: ResolvedHeldOrderSource | null;
 }>;
 
 export type HbposOrderSyncMaterialOptions = Readonly<{
@@ -286,6 +291,7 @@ function detachedOrder(order: LocalOrder): LocalOrder {
 function mapOrder(
   order: LocalOrder,
   cardSyncEvidenceByTenderGuid: ReadonlyMap<string, CardSyncEvidenceV1>,
+  heldOrderSource: ResolvedHeldOrderSource | null,
 ): OrderSyncRequest | AdapterFailure {
   const totalAmount = money(order.total.cents);
   const discountAmount = money(order.discount.cents);
@@ -365,11 +371,19 @@ function mapOrder(
   if (cardSyncEvidenceByTenderGuid.size !== cardTenderCount) {
     return reject("CARD_SYNC_EVIDENCE_MISMATCH");
   }
-  return {
+  const request: OrderSyncRequest = {
     orderGuid: order.orderGuid, storeCode: order.storeCode, deviceCode: order.deviceCode,
     cashierId: order.cashierId, cashierName: order.cashierName, soldAt: order.soldAtIso,
     totalAmount, discountAmount, actualAmount, lines, payments,
   };
+  if (heldOrderSource !== null) {
+    request.heldOrderSource = {
+      holdGuid: heldOrderSource.holdGuid,
+      claimGuid: heldOrderSource.claimGuid,
+      sourceKind: heldOrderSource.sourceKind,
+    };
+  }
+  return request;
 }
 
 export class HbposOrderSyncAdapter implements OrderSyncPort {
@@ -393,6 +407,7 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
       string,
       CardSyncEvidenceV1
     > = new Map();
+    let heldOrderSource: ResolvedHeldOrderSource | null = null;
     if (this.material) {
       try {
         // 解析器只能接触脱离仓储的只读快照，恢复出的敏感引用也只存活到本次 HTTP 请求结束。
@@ -404,6 +419,7 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
         cardSyncEvidenceByTenderGuid = new Map(
           resolved.cardSyncEvidenceByTenderGuid,
         );
+        heldOrderSource = resolved.heldOrderSource ?? null;
       } catch (error) {
         if (error instanceof OrderSyncMaterialError) {
           return { kind: "rejected", failure: "business-rejection", code: error.code };
@@ -412,7 +428,11 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
         throw error;
       }
     }
-    const request = mapOrder(requestOrder, cardSyncEvidenceByTenderGuid);
+    const request = mapOrder(
+      requestOrder,
+      cardSyncEvidenceByTenderGuid,
+      heldOrderSource,
+    );
     if ("kind" in request) return { kind: "rejected", failure: "business-rejection", code: request.code ?? "ORDER_MAPPING_FAILED" };
     let alreadySynced = false;
     try {
@@ -420,6 +440,18 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
       if (response.status < 200 || response.status >= 300) throw new HbposApiError("Order sync HTTP failure.", { kind: "http", status: response.status });
       const body = unwrapHbposEnvelope(response.data);
       if (body.orderGuid !== orderGuid || body.accepted !== true || typeof body.alreadySynced !== "boolean") {
+        return { kind: "rejected", failure: "business-rejection", code: "ORDER_SYNC_RESPONSE_INVALID" };
+      }
+      // disposition 为新增可选字段：出现时必须是合法枚举，旧 accepted/alreadySynced
+      // 语义保持不变，缺省 disposition 的旧服务端响应仍被接受。
+      const disposition = body.heldOrderDisposition;
+      if (
+        disposition !== undefined &&
+        (typeof disposition !== "number" ||
+          !Number.isInteger(disposition) ||
+          disposition < 0 ||
+          disposition > 3)
+      ) {
         return { kind: "rejected", failure: "business-rejection", code: "ORDER_SYNC_RESPONSE_INVALID" };
       }
       alreadySynced = body.alreadySynced === true;

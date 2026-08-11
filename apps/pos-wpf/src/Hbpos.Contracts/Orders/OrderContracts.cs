@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Contracts.Orders;
@@ -16,6 +18,39 @@ public enum OrderLineKind
     Return = 2
 }
 
+/// <summary>
+/// 订单来源的显式类型：RemoteClaim 表示来自共享挂单 claim 的远程取单，
+/// OfflineOrigin 表示设备离线恢复/无 claim 的上传来源。
+/// </summary>
+public enum HeldOrderSourceKind
+{
+    RemoteClaim = 1,
+    OfflineOrigin = 2
+}
+
+/// <summary>订单同步时的共享挂单来源；仅在末尾追加，保持旧调用源兼容。 </summary>
+public sealed record HeldOrderSourceDto(
+    Guid HoldGuid,
+    Guid? ClaimGuid = null,
+    HeldOrderSourceKind? SourceKind = null)
+{
+    /// <summary>显式 SourceKind 优先；缺省时按 ClaimGuid 是否存在推断。 </summary>
+    [JsonIgnore]
+    public HeldOrderSourceKind Kind =>
+        SourceKind ?? (ClaimGuid is null
+            ? HeldOrderSourceKind.OfflineOrigin
+            : HeldOrderSourceKind.RemoteClaim);
+}
+
+/// <summary>订单与共享挂单的关联结果，语义严格限定为四种。 </summary>
+public enum HeldOrderDisposition
+{
+    None = 0,
+    Primary = 1,
+    Duplicate = 2,
+    Unmatched = 3
+}
+
 public sealed record OrderSyncRequest(
     Guid OrderGuid,
     string StoreCode,
@@ -27,7 +62,8 @@ public sealed record OrderSyncRequest(
     decimal DiscountAmount,
     decimal ActualAmount,
     IReadOnlyList<OrderLineSyncDto> Lines,
-    IReadOnlyList<PaymentSyncDto> Payments);
+    IReadOnlyList<PaymentSyncDto> Payments,
+    HeldOrderSourceDto? HeldOrderSource = null);
 
 public sealed record OrderLineSyncDto(
     Guid OrderLineGuid,
@@ -152,7 +188,8 @@ public sealed record OrderSyncResponse(
     Guid OrderGuid,
     bool Accepted,
     bool AlreadySynced,
-    string? Message = null);
+    string? Message = null,
+    HeldOrderDisposition HeldOrderDisposition = HeldOrderDisposition.None);
 
 public sealed record OrderHistoryQueryRequest(
     string StoreCode,

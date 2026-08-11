@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Net;
 using BlazorApp.Shared.DTOs;
+using Hbpos.Contracts.HeldOrders;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
@@ -7,6 +9,9 @@ using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using InstallmentPaymentDto = Hbpos.Contracts.Installments.InstallmentPaymentDto;
+using LocalClaimStatus = Hbpos.Client.Wpf.Models.SharedHeldOrderClaimStatus;
+using HeldServerStatus = Hbpos.Contracts.HeldOrders.SharedHeldOrderStatus;
+using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
@@ -1011,6 +1016,624 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal("confirmed", viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task Held_source_merges_local_and_remote_rows_by_hold_guid_and_resolves_badges()
+    {
+        var holdGuidA = Guid.NewGuid();
+        var holdGuidB = Guid.NewGuid();
+        var holdGuidC = Guid.NewGuid();
+        var holdGuidD = Guid.NewGuid();
+        var holdGuidE = Guid.NewGuid();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders =
+            [
+                HeldSummary(holdGuidA, "POS-01", 10m, 1m, 9m, 2),
+                HeldSummary(holdGuidB, "POS-01", 20m, 0m, 20m, 1),
+                HeldSummary(holdGuidC, "POS-01", 30m, 0m, 30m, 1),
+                HeldSummary(holdGuidD, "POS-01", 40m, 0m, 40m, 1)
+            ]
+        };
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuidA] = HeldPublication(holdGuidA, SharedHeldOrderPublicationStatus.Published),
+                [holdGuidB] = HeldPublication(holdGuidB, SharedHeldOrderPublicationStatus.PendingPublish),
+                [holdGuidC] = HeldPublication(
+                    holdGuidC,
+                    SharedHeldOrderPublicationStatus.Blocked,
+                    "ReturnLineNotSupported",
+                    "return line")
+            }
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>(
+            [
+                HeldItem(holdGuidA, totalCents: 1100, discountCents: 200, actualCents: 900, lineCount: 3),
+                HeldItem(holdGuidE, totalCents: 5000, discountCents: 0, actualCents: 5000, lineCount: 2)
+            ])
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: new CapturingSharedHeldOrderCoordinator(),
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.Equal(5, viewModel.Orders.Count);
+        Assert.Equal(5, viewModel.Orders.Select(order => order.OrderGuid).Distinct().Count());
+
+        var merged = viewModel.Orders.Single(order => order.OrderGuid == holdGuidA);
+        Assert.True(merged.IsHeldOrder);
+        Assert.Equal(11m, merged.TotalAmount);
+        Assert.Equal(2m, merged.DiscountAmount);
+        Assert.Equal(9m, merged.ActualAmount);
+        Assert.Equal(3, merged.LineCount);
+        Assert.Equal(HeldOrderBadgeKind.RemotePending, merged.HeldBadgeKind);
+        Assert.True(merged.CanRemoteRecall);
+        Assert.True(merged.CanOfflineRecall);
+        Assert.Equal("Remote recall", merged.StatusLabel);
+        Assert.Equal("Suspended", merged.PaymentSummary);
+
+        var pendingPublish = viewModel.Orders.Single(order => order.OrderGuid == holdGuidB);
+        Assert.Equal(HeldOrderBadgeKind.LocalPendingPublish, pendingPublish.HeldBadgeKind);
+        Assert.Equal("Pending publish", pendingPublish.StatusLabel);
+        Assert.True(pendingPublish.CanOfflineRecall);
+        Assert.False(pendingPublish.CanLegacyRecall);
+        Assert.False(pendingPublish.CanRemoteRecall);
+
+        var blocked = viewModel.Orders.Single(order => order.OrderGuid == holdGuidC);
+        Assert.Equal(HeldOrderBadgeKind.Blocked, blocked.HeldBadgeKind);
+        Assert.Equal("Blocked: ReturnLineNotSupported return line", blocked.StatusLabel);
+        Assert.Equal("ReturnLineNotSupported return line", blocked.HeldStatusDetail);
+        Assert.True(blocked.CanLegacyRecall);
+        Assert.False(blocked.CanOfflineRecall);
+
+        var legacy = viewModel.Orders.Single(order => order.OrderGuid == holdGuidD);
+        Assert.Equal(HeldOrderBadgeKind.LocalHold, legacy.HeldBadgeKind);
+        Assert.Equal("Local hold", legacy.StatusLabel);
+        Assert.True(legacy.CanLegacyRecall);
+        Assert.False(legacy.CanOfflineRecall);
+
+        var remoteOnly = viewModel.Orders.Single(order => order.OrderGuid == holdGuidE);
+        Assert.Equal(HeldOrderBadgeKind.RemotePending, remoteOnly.HeldBadgeKind);
+        Assert.True(remoteOnly.CanRemoteRecall);
+        Assert.False(remoteOnly.CanOfflineRecall);
+        Assert.False(remoteOnly.IsSuspendedOrder);
+    }
+
+    [Fact]
+    public async Task Held_source_remote_error_keeps_local_rows_and_shows_non_blocking_status()
+    {
+        var holdGuid = Guid.NewGuid();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+        };
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.PendingPublish)
+            }
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => throw new SharedHeldOrderApiException(
+                SharedHeldOrderApiErrorKind.Retryable,
+                "remote unavailable",
+                null,
+                HttpStatusCode.BadGateway)
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.Equal(holdGuid, row.OrderGuid);
+        Assert.Equal(HeldOrderBadgeKind.LocalPendingPublish, row.HeldBadgeKind);
+        Assert.Contains("remote unavailable", viewModel.HeldOrdersRemoteStatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Held_auto_refresh_runs_every_10_seconds_while_visible_and_stops_on_hidden_dispose_and_source_change()
+    {
+        var holdGuid = Guid.NewGuid();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([])
+        };
+        var clock = new ManualTimeProvider();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: new CapturingSharedHeldOrderCoordinator(),
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository(),
+            timeProvider: clock);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        Assert.Empty(clock.Timers);
+
+        viewModel.OnScreenShown();
+        await viewModel.LastHeldAutoRefreshTask!;
+        var timer = Assert.Single(clock.Timers);
+        Assert.Equal(TimeSpan.FromSeconds(10), timer.CreatedDueTime);
+        Assert.Equal(TimeSpan.FromSeconds(10), timer.CreatedPeriod);
+
+        suspendedOrders.PendingOrders =
+        [
+            HeldSummary(Guid.NewGuid(), "POS-01", 99m, 0m, 99m, 1)
+        ];
+        timer.Fire();
+        await viewModel.LastHeldAutoRefreshTask!;
+
+        var refreshed = Assert.Single(viewModel.Orders);
+        Assert.Equal(99m, refreshed.ActualAmount);
+
+        viewModel.OnScreenHidden();
+        Assert.True(timer.IsDisposed);
+        Assert.All(clock.Timers, created => Assert.True(created.IsDisposed));
+
+        viewModel.IsLocalSourceSelected = true;
+        await viewModel.LoadAsync();
+        viewModel.OnScreenShown();
+        Assert.All(clock.Timers, created => Assert.True(created.IsDisposed));
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        viewModel.OnScreenShown();
+        var secondTimer = clock.Timers.Single(created => !created.IsDisposed);
+        Assert.False(secondTimer.IsDisposed);
+
+        viewModel.Dispose();
+        Assert.True(secondTimer.IsDisposed);
+        var countBefore = viewModel.Orders.Count;
+        secondTimer.Fire();
+        await (viewModel.LastHeldAutoRefreshTask ?? Task.CompletedTask);
+        Assert.Equal(countBefore, viewModel.Orders.Count);
+    }
+
+    [Fact]
+    public async Task Held_refresh_is_single_flight_for_concurrent_loads()
+    {
+        var gate = new TaskCompletionSource<IReadOnlyList<SharedHeldOrderListItemDto>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var callCount = 0;
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ =>
+            {
+                callCount++;
+                return gate.Task;
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository());
+
+        viewModel.IsHeldSourceSelected = true;
+        var firstLoad = viewModel.LoadAsync();
+        var secondLoad = viewModel.LoadAsync();
+        gate.SetResult([]);
+        await Task.WhenAll(firstLoad, secondLoad);
+
+        Assert.Equal(1, callCount);
+    }
+
+    [Fact]
+    public async Task Held_remote_recall_uses_coordinator_and_returns_to_pos()
+    {
+        var holdGuid = Guid.NewGuid();
+        var coordinator = new CapturingSharedHeldOrderCoordinator();
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>(
+            [
+                HeldItem(holdGuid, totalCents: 1000, discountCents: 0, actualCents: 1000, lineCount: 1)
+            ])
+        };
+        var returnedToPos = false;
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            () =>
+            {
+                returnedToPos = true;
+                return Task.CompletedTask;
+            },
+            sharedHeldOrderCoordinator: coordinator,
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository());
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanRecall);
+
+        await viewModel.RecallOrderCommand.ExecuteAsync(row);
+
+        var take = Assert.Single(coordinator.RemoteTakes);
+        Assert.Equal(holdGuid, take.HoldGuid);
+        Assert.Empty(coordinator.LocalRecalls);
+        Assert.True(returnedToPos);
+    }
+
+    [Fact]
+    public async Task Held_offline_recall_uses_local_publication_without_touching_server()
+    {
+        var holdGuid = Guid.NewGuid();
+        var coordinator = new CapturingSharedHeldOrderCoordinator();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.Published)
+            }
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([])
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession() with { IsOnline = false },
+            sharedHeldOrderCoordinator: coordinator,
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanOfflineRecall);
+        Assert.False(row.CanRemoteRecall);
+
+        await viewModel.RecallOrderCommand.ExecuteAsync(row);
+
+        var recall = Assert.Single(coordinator.LocalRecalls);
+        Assert.Equal(holdGuid, recall.HoldGuid);
+        Assert.Empty(coordinator.RemoteTakes);
+    }
+
+    [Fact]
+    public async Task Held_recall_with_publication_does_not_fall_back_to_legacy_suspended_recall()
+    {
+        var holdGuid = Guid.NewGuid();
+        var coordinator = new CapturingSharedHeldOrderCoordinator();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+        };
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.PendingPublish)
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: coordinator,
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([])
+            },
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+
+        await viewModel.RecallOrderCommand.ExecuteAsync(row);
+
+        Assert.Single(coordinator.LocalRecalls);
+        Assert.Null(suspendedOrders.RecalledOrderGuid);
+    }
+
+    [Fact]
+    public async Task Force_release_requires_non_empty_reason_and_calls_api_with_trimmed_reason()
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Claims =
+            [
+                HeldRecoveryClaim(holdGuid, claimGuid, LocalClaimStatus.Prepared)
+            ]
+        };
+        (Guid HoldGuid, Guid ClaimGuid, string Reason, PosSessionState Session)? captured = null;
+        var coordinator = new CapturingSharedHeldOrderCoordinator
+        {
+            ForceReleaseHandler = (actualHoldGuid, actualClaimGuid, reason, session) =>
+            {
+                captured = (actualHoldGuid, actualClaimGuid, reason, session);
+                return Task.CompletedTask;
+            }
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([])
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: coordinator,
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanForceRelease);
+        Assert.Equal(claimGuid, row.HeldClaimId);
+        Assert.Equal(HeldOrderBadgeKind.LocalClaimPrepared, row.HeldBadgeKind);
+
+        viewModel.ForceReleaseHeldOrderCommand.Execute(row);
+        Assert.True(viewModel.IsForceReleaseReasonPromptOpen);
+        Assert.False(viewModel.ConfirmForceReleaseCommand.CanExecute(null));
+
+        viewModel.ForceReleaseReason = "  supervisor override  ";
+        Assert.True(viewModel.ConfirmForceReleaseCommand.CanExecute(null));
+
+        await viewModel.ConfirmForceReleaseCommand.ExecuteAsync(null);
+
+        Assert.NotNull(captured);
+        Assert.Equal(holdGuid, captured!.Value.HoldGuid);
+        Assert.Equal(claimGuid, captured.Value.ClaimGuid);
+        Assert.Equal("supervisor override", captured.Value.Reason);
+        Assert.False(viewModel.IsForceReleaseReasonPromptOpen);
+        Assert.Contains("force-released", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Force_release_failure_keeps_prompt_closed_and_shows_retryable_status()
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Claims =
+            [
+                HeldRecoveryClaim(holdGuid, claimGuid, LocalClaimStatus.Active)
+            ]
+        };
+        var coordinator = new CapturingSharedHeldOrderCoordinator
+        {
+            ForceReleaseHandler = (_, _, _, _) => throw new InvalidOperationException("force release failed")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: coordinator,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+
+        viewModel.ForceReleaseHeldOrderCommand.Execute(row);
+        viewModel.ForceReleaseReason = "supervisor override";
+        await viewModel.ConfirmForceReleaseCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsForceReleaseReasonPromptOpen);
+        Assert.Equal("force release failed", viewModel.StatusMessage);
+        Assert.Single(coordinator.ForceReleases);
+    }
+
+    [Fact]
+    public async Task Held_first_load_failure_does_not_fall_back_to_local_or_online_rows()
+    {
+        var localOrder = new LocalOrderSummary(
+            Guid.NewGuid(),
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            "Synced",
+            1,
+            "Cash");
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            ThrowOnGetPendingOrders = true
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService { Orders = [localOrder] },
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession());
+
+        // 先在 Local 源加载出旧列表。
+        await viewModel.LoadAsync();
+        Assert.Single(viewModel.Orders);
+
+        // 切到 Held 且首次加载失败：不得回退显示 Local/Online 旧列表。
+        suspendedOrders.ThrowOnGetPendingOrders = true;
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.Empty(viewModel.Orders);
+        Assert.NotEmpty(viewModel.HeldOrdersRemoteStatusMessage);
+    }
+
+    [Fact]
+    public async Task Force_release_is_denied_without_recall_permission()
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Claims =
+            [
+                HeldRecoveryClaim(holdGuid, claimGuid, LocalClaimStatus.Active)
+            ]
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([]),
+            ForceRelease = (_, _, _, _) => throw new InvalidOperationException("must not be called")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            enforcePermissionsWhenNoCashier: true,
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        Assert.Equal(HeldOrderBadgeKind.LocalClaimActive, row.HeldBadgeKind);
+        Assert.True(row.CanForceRelease);
+
+        viewModel.ForceReleaseHeldOrderCommand.Execute(row);
+        viewModel.ForceReleaseReason = "supervisor override";
+        await viewModel.ConfirmForceReleaseCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsForceReleaseReasonPromptOpen);
+        Assert.NotEmpty(viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData(null, HeldServerStatus.Pending, null, HeldOrderBadgeKind.RemotePending)]
+    [InlineData(SharedHeldOrderPublicationStatus.PendingPublish, HeldServerStatus.Pending, null, HeldOrderBadgeKind.LocalPendingPublish)]
+    [InlineData(SharedHeldOrderPublicationStatus.Published, null, null, HeldOrderBadgeKind.Published)]
+    [InlineData(SharedHeldOrderPublicationStatus.Blocked, HeldServerStatus.Pending, null, HeldOrderBadgeKind.Blocked)]
+    [InlineData(null, HeldServerStatus.Pending, LocalClaimStatus.Prepared, HeldOrderBadgeKind.LocalClaimPrepared)]
+    [InlineData(null, HeldServerStatus.Pending, LocalClaimStatus.Active, HeldOrderBadgeKind.LocalClaimActive)]
+    [InlineData(null, HeldServerStatus.Claimed, null, HeldOrderBadgeKind.ClaimedByOther)]
+    [InlineData(null, HeldServerStatus.Completed, null, HeldOrderBadgeKind.Completed)]
+    [InlineData(null, null, null, HeldOrderBadgeKind.LocalHold)]
+    public void Held_badge_resolver_matches_status_combination(
+        SharedHeldOrderPublicationStatus? publication,
+        HeldServerStatus? serverStatus,
+        LocalClaimStatus? claimStatus,
+        HeldOrderBadgeKind expected)
+    {
+        Assert.Equal(expected, HeldOrderStatusResolver.Resolve(publication, serverStatus, claimStatus));
+    }
+
+    [Fact]
+    public async Task Local_source_rows_keep_legacy_shape_without_held_metadata()
+    {
+        var orderGuid = Guid.NewGuid();
+        var suspendedOrderGuid = Guid.NewGuid();
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero),
+                    16m,
+                    1m,
+                    15m,
+                    "Synced",
+                    2,
+                    "Cash")
+            ]
+        };
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders =
+            [
+                new SuspendedOrderSummary(
+                    suspendedOrderGuid,
+                    "S001",
+                    "POS-02",
+                    "Bob",
+                    new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero),
+                    12m,
+                    0m,
+                    12m,
+                    1,
+                    SuspendedOrderStatus.Pending)
+            ]
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: new CapturingSharedHeldOrderCoordinator(),
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient(),
+            sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository());
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.IsLocalSourceSelected);
+        Assert.Equal(2, viewModel.Orders.Count);
+        Assert.All(viewModel.Orders, order =>
+        {
+            Assert.False(order.IsHeldOrder);
+            Assert.False(order.CanForceRelease);
+            Assert.Null(order.HeldClaimId);
+            Assert.Equal(HeldOrderBadgeKind.LocalHold, order.HeldBadgeKind);
+            Assert.False(order.CanRemoteRecall);
+            Assert.False(order.CanOfflineRecall);
+            Assert.False(order.CanLegacyRecall);
+        });
+        Assert.Equal(
+            suspendedOrderGuid,
+            viewModel.Orders.Single(order => order.IsSuspendedOrder).OrderGuid);
+    }
+
     private static PosSessionState CreateSession(
         string storeCode = "S001",
         string storeName = "Main Store",
@@ -1113,6 +1736,8 @@ public sealed class TransactionHistoryViewModelTests
 
         public Guid? RecalledOrderGuid { get; private set; }
 
+        public bool ThrowOnGetPendingOrders { get; set; }
+
         public Task<SuspendedOrder> SuspendCurrentOrderAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
@@ -1126,6 +1751,11 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             LastDeviceCode = deviceCode;
+            if (ThrowOnGetPendingOrders)
+            {
+                throw new InvalidOperationException("simulated held local load failure");
+            }
+
             return Task.FromResult(PendingOrders);
         }
 
@@ -1352,6 +1982,416 @@ public sealed class TransactionHistoryViewModelTests
             LastConfirmPickupOrderId = orderId;
             var order = Orders.FirstOrDefault(order => order.OrderId == orderId);
             return Task.FromResult(new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
+        }
+    }
+
+    private static SuspendedOrderSummary HeldSummary(
+        Guid guid,
+        string deviceCode,
+        decimal total,
+        decimal discount,
+        decimal actual,
+        int lineCount)
+    {
+        return new SuspendedOrderSummary(
+            guid,
+            "S001",
+            deviceCode,
+            "Alice",
+            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
+            total,
+            discount,
+            actual,
+            lineCount,
+            SuspendedOrderStatus.Pending);
+    }
+
+    private static SharedHeldOrderPublication HeldPublication(
+        Guid guid,
+        SharedHeldOrderPublicationStatus status,
+        string? errorCode = null,
+        string? errorMessage = null)
+    {
+        return new SharedHeldOrderPublication(
+            guid,
+            "S001",
+            "POS-01",
+            status,
+            1,
+            0,
+            errorCode,
+            errorMessage,
+            null,
+            "2026-07-01T09:00:00.000Z",
+            "2026-07-01T09:00:00.000Z",
+            "2026-07-01T09:00:00.000Z");
+    }
+
+    private static SharedHeldOrderListItemDto HeldItem(
+        Guid guid,
+        long totalCents,
+        long discountCents,
+        long actualCents,
+        int lineCount)
+    {
+        return new SharedHeldOrderListItemDto(
+            guid,
+            "S001",
+            "POS-01",
+            "C001",
+            "Alice",
+            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 1, 9, 5, 0, TimeSpan.Zero),
+            lineCount,
+            totalCents,
+            discountCents,
+            actualCents,
+            1L);
+    }
+
+    private static SharedHeldOrderClaimRecovery HeldRecoveryClaim(
+        Guid holdGuid,
+        Guid claimGuid,
+        LocalClaimStatus status)
+    {
+        return new SharedHeldOrderClaimRecovery(
+            claimGuid,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.RemoteClaim,
+            status,
+            $"prepare:{claimGuid:D}",
+            null,
+            null,
+            SampleCanonical(),
+            1L,
+            null,
+            null,
+            null,
+            "2026-07-01T09:00:00.000Z",
+            "2026-07-01T09:00:00.000Z");
+    }
+
+    private sealed class CapturingSharedHeldOrderCoordinator : ISharedHeldOrderCoordinator
+    {
+        public List<(Guid HoldGuid, PosSessionState Session)> RemoteTakes { get; } = [];
+
+        public List<(Guid HoldGuid, PosSessionState Session)> LocalRecalls { get; } = [];
+
+        public int ReconcileCalls { get; private set; }
+
+        public List<PosSessionState> LocalRecoveries { get; } = [];
+
+        public List<(Guid HoldGuid, Guid ClaimGuid, string Reason, PosSessionState Session)> ForceReleases { get; } = [];
+
+        public Func<Guid, Guid, string, PosSessionState, Task>? ForceReleaseHandler { get; set; }
+
+        public Task<SharedHeldOrderTakeResult> TakeRemoteHoldAsync(
+            Guid holdGuid,
+            PosSessionState session,
+            Guid? claimGuid = null,
+            CancellationToken cancellationToken = default)
+        {
+            RemoteTakes.Add((holdGuid, session));
+            return Task.FromResult(new SharedHeldOrderTakeResult(
+                Guid.NewGuid(),
+                holdGuid,
+                RestoredToCart: true));
+        }
+
+        public Task<SharedHeldOrderTakeResult> RecallLocalPublicationAsync(
+            Guid localHoldGuid,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            LocalRecalls.Add((localHoldGuid, session));
+            return Task.FromResult(new SharedHeldOrderTakeResult(
+                Guid.NewGuid(),
+                localHoldGuid,
+                RestoredToCart: true));
+        }
+
+        public Task<SharedHeldOrderReconcileResult> ReconcileClaimsAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            ReconcileCalls++;
+            return Task.FromResult(new SharedHeldOrderReconcileResult([], [], []));
+        }
+
+        public Task<SharedHeldOrderLocalRecoveryResult> RecoverLocalClaimsAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            LocalRecoveries.Add(session);
+            return Task.FromResult(new SharedHeldOrderLocalRecoveryResult([], []));
+        }
+
+        public Task ReleaseActiveClaimAsync(
+            Guid claimGuid,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task ForceReleaseAsync(
+            Guid holdGuid,
+            Guid claimGuid,
+            string reason,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            ForceReleases.Add((holdGuid, claimGuid, reason, session));
+            return ForceReleaseHandler?.Invoke(holdGuid, claimGuid, reason, session)
+                ?? Task.CompletedTask;
+        }
+    }
+
+    private sealed class CapturingSharedHeldOrderRepository : ISharedHeldOrderRepository
+    {
+        public Dictionary<Guid, SharedHeldOrderPublication> Publications { get; } = [];
+
+        public IReadOnlyList<SharedHeldOrderClaimRecovery> Claims { get; init; } = [];
+
+        public Task<IReadOnlyList<SuspendedOrder>> ListLegacyOrdersNeedingEvaluationAsync(
+            string storeCode,
+            string? deviceCode = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<SuspendedOrder>>([]);
+        }
+
+        public Task<SharedHeldOrderPublication?> GetPublicationAsync(
+            Guid localHoldGuid,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Publications.GetValueOrDefault(localHoldGuid));
+        }
+
+        public Task<IReadOnlyList<SharedHeldOrderClaimRecovery>> FindRecoverableClaimsAsync(
+            string storeCode,
+            string deviceCode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Claims);
+        }
+
+        public Task<bool> TryExpirePreparedRemoteClaimAsync(
+            Guid claimId,
+            string releaseIdempotencyKey,
+            string nowIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> UpsertPublicationAsync(
+            Guid localHoldGuid,
+            string storeCode,
+            string deviceCode,
+            SharedHeldOrderPublicationStatus status,
+            byte[]? payloadCiphertext,
+            string heldAtIso,
+            string createdAtIso,
+            string updatedAtIso,
+            string? errorCode = null,
+            string? errorMessage = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<SharedHeldOrderPublication>> ListDuePublicationsAsync(
+            string nowIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryAdvancePublicationAsync(
+            Guid localHoldGuid,
+            SharedHeldOrderPublicationStatus expectedStatus,
+            int expectedRevision,
+            SharedHeldOrderPublicationStatus newStatus,
+            string updatedAtIso,
+            string? errorCode = null,
+            string? errorMessage = null,
+            string? lastAttemptAtIso = null,
+            string? nextAttemptAtIso = null,
+            long? remoteRevision = null,
+            string? remoteUpdatedAtIso = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryStagePendingPublishAsync(
+            Guid localHoldGuid,
+            int expectedRevision,
+            SharedHeldOrderCanonicalPayload payload,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryBlockPublicationAsync(
+            Guid localHoldGuid,
+            int expectedRevision,
+            string errorCode,
+            string errorMessage,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<SharedHeldOrderCanonicalPayload?> GetPublicationPayloadAsync(
+            Guid localHoldGuid,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TrySavePreparedClaimAsync(
+            SharedHeldOrderClaimDraft draft,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryActivateClaimAsync(
+            Guid claimId,
+            string prepareIdempotencyKey,
+            string activateIdempotencyKey,
+            long? serverRevision,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryBindOrderAsync(
+            Guid claimId,
+            string activateIdempotencyKey,
+            string boundOrderGuid,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryCompleteClaimAsync(
+            Guid claimId,
+            string activateIdempotencyKey,
+            string releaseIdempotencyKey,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryReleaseClaimAsync(
+            Guid claimId,
+            string releaseIdempotencyKey,
+            LocalClaimStatus expectedStatus,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TryForceReleaseClaimAsync(
+            Guid claimId,
+            string releaseIdempotencyKey,
+            LocalClaimStatus expectedStatus,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> TrySupersedeClaimAsync(
+            Guid claimId,
+            string supersedeIdempotencyKey,
+            LocalClaimStatus expectedStatus,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<SharedHeldOrderClaimRecord?> GetClaimAsync(
+            Guid claimId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        public List<ManualTimer> Timers { get; } = [];
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state, dueTime, period);
+            Timers.Add(timer);
+            return timer;
+        }
+
+        public sealed class ManualTimer : ITimer
+        {
+            private readonly TimerCallback _callback;
+            private readonly object? _state;
+
+            public ManualTimer(
+                TimerCallback callback,
+                object? state,
+                TimeSpan dueTime,
+                TimeSpan period)
+            {
+                _callback = callback;
+                _state = state;
+                CreatedDueTime = dueTime;
+                CreatedPeriod = period;
+            }
+
+            public TimeSpan CreatedDueTime { get; }
+
+            public TimeSpan CreatedPeriod { get; }
+
+            public bool IsDisposed { get; private set; }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return !IsDisposed;
+            }
+
+            public void Dispose()
+            {
+                IsDisposed = true;
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+
+            public void Fire()
+            {
+                if (!IsDisposed)
+                {
+                    _callback(_state);
+                }
+            }
         }
     }
 }

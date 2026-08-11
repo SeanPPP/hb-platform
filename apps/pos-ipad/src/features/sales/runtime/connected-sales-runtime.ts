@@ -74,6 +74,14 @@ export interface SalesHoldPort {
   hold(cart: CartSnapshot): Promise<void>;
 }
 
+/**
+ * 共享召回购物车的普通 owner release（正常清车路径）。
+ * 组合根注入共享挂单 coordinator；失败必须抛错，购物车与 binding 保持不变。
+ */
+export interface SalesRecalledCartReleasePort {
+  releaseRecalledCart(holdGuid: string): Promise<void>;
+}
+
 export interface SalesLockPort {
   lock(): Promise<void>;
 }
@@ -103,6 +111,7 @@ export type ConnectedSalesRuntimeDependencies = Readonly<{
   identity: ConnectedSalesIdentity;
   hold?: SalesHoldPort;
   lock?: SalesLockPort;
+  releaseRecalledCart?: SalesRecalledCartReleasePort | undefined;
   sessionGuard: ConnectedSalesSessionGuard;
   newTransactionGate: Readonly<{
     canStartNewTransaction(): boolean;
@@ -170,6 +179,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
     private readonly operations: AuthorizedSalesOperationExecutor,
     private readonly preparedCheckoutGate =
       new PreparedCheckoutMutationGate(),
+    private readonly releaseRecalledCart?: SalesRecalledCartReleasePort,
   ) {}
 
   public getSnapshot(): CartSnapshot {
@@ -424,6 +434,26 @@ export class PricingCartSalesAdapter implements SalesCartPort {
   }
 
   public async clearCart(): Promise<void> {
+    const binding = this.activeCart.getRecallBinding();
+    if (binding) {
+      // 共享召回购物车：普通清车路由到 owner release（服务端 owner-scoped
+      // release -> 本地 claim/fence/cart 清理）。未接线端口时 fail-closed。
+      if (!this.releaseRecalledCart) {
+        throw cartMutationRejected(
+          "Unable to clear a recalled cart without a release port.",
+        );
+      }
+      await this.runMutation(
+        SALES_PERMISSIONS.clearCart,
+        "clear-cart",
+        "CART_CLEAR",
+        () =>
+          this.releaseRecalledCart!.releaseRecalledCart(
+            binding.holdId,
+          ),
+      );
+      return;
+    }
     await this.runMutation(
       SALES_PERMISSIONS.clearCart,
       "clear-cart",
@@ -618,7 +648,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       | "CART_LINE_DISCOUNT_CHANGE"
       | "CART_ORDER_DISCOUNT_CHANGE"
       | "CART_CLEAR",
-    operation: () => void,
+    operation: () => void | Promise<void>,
   ): Promise<void> {
     this.preparedCheckoutGate.assertMutable();
     return this.operations.runCartMutation({
@@ -629,7 +659,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       operation: () => {
         // 主管授权可能延迟返回；真正写 active cart 前必须再次检查结账围栏。
         this.preparedCheckoutGate.assertMutable();
-        operation();
+        return operation();
       },
     });
   }
@@ -661,6 +691,7 @@ export function createConnectedSalesDependencies(
     input.sessionGuard,
     operations,
     preparedCheckoutGate,
+    input.releaseRecalledCart,
   );
   const workflow = new ConnectedSalesWorkflow(
     cart,

@@ -26,4 +26,11 @@
     <ProjectReference Include="..\..\src\Hbpos.Client.Wpf\Hbpos.Client.Wpf.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 跨端 frozen wire fixture：与 iPad shared-sale-cart-v1-fixture.test.ts 共用同一批 JSON。 -->
+    <None Include="..\..\..\..\test-fixtures\shared-held-orders\**\*.json"
+          Link="test-fixtures\shared-held-orders\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

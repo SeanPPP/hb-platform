@@ -2,6 +2,7 @@ using System.Text;
 using Hbpos.Api.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -25,6 +26,11 @@ public sealed class OpenApiSnapshotExportTests
         Assert.Contains("pageChecksum", document, StringComparison.Ordinal);
         Assert.Contains("LinklyCloudBackendCardTransactionDto", document, StringComparison.Ordinal);
         Assert.Contains("cardTransaction", document, StringComparison.Ordinal);
+        Assert.Contains("/api/v1/held-orders/capabilities", document, StringComparison.Ordinal);
+        Assert.Contains("/api/v1/held-orders/{holdGuid}/claims/prepare", document, StringComparison.Ordinal);
+        Assert.Contains("/api/v1/held-orders/claims/mine", document, StringComparison.Ordinal);
+        Assert.Contains("HeldOrderSourceDto", document, StringComparison.Ordinal);
+        Assert.Contains("heldOrderDisposition", document, StringComparison.Ordinal);
 
         var outputPath = Environment.GetEnvironmentVariable("HBPOS_OPENAPI_SNAPSHOT_OUTPUT");
         if (!string.IsNullOrWhiteSpace(outputPath))
@@ -38,6 +44,17 @@ public sealed class OpenApiSnapshotExportTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+            {
+                // 测试宿主必须覆盖 Development User Secrets，避免 OpenAPI 导出误连本机业务数据库。
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:MainConnection"] = string.Empty,
+                    ["ConnectionStrings:DefaultConnection"] = string.Empty,
+                    ["ConnectionStrings:PosmConnection"] = string.Empty,
+                    ["ConnectionStrings:HBPOSMConnection"] = string.Empty
+                });
+            });
             builder.ConfigureServices(services =>
             {
                 // 快照只能从测试宿主导出，所有启动期 schema 初始化均替换为无副作用实现。

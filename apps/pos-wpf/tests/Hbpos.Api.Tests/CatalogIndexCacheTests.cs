@@ -1300,6 +1300,9 @@ public sealed class CatalogIndexCacheTests
         store.CompleteFirst(new IOException("first owner failed"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
 
+        // 失效 owner 的 reservation 释放发生在后台 flight 处理持久化失败之后，
+        // 与 firstOwner 的 Invalidated 结果不是同一线性化点，必须先等待容量状态就绪。
+        await WaitUntilAsync(() => cache.PendingSnapshotOwnerCountForTests == 1, TimeSpan.FromSeconds(2));
         Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
         Assert.Null(cache.GetByVersion("S01", null, pending.CatalogIndex.CatalogVersion));
         Assert.Throws<CatalogCapacityBusyException>(() =>
@@ -1334,6 +1337,7 @@ public sealed class CatalogIndexCacheTests
 
         store.CompleteFirst();
         await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
+        await WaitUntilAsync(() => cache.PendingSnapshotOwnerCountForTests == 1, TimeSpan.FromSeconds(2));
         Assert.Equal(1, cache.PendingSnapshotOwnerCountForTests);
 
         store.CompleteSecond();
@@ -1376,6 +1380,56 @@ public sealed class CatalogIndexCacheTests
 
         store.CompleteFirst(new IOException("first owner failed"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
+        // 失效 flight 的 reservation 释放与 Invalidated 结果不同步；等待持久化失败处理完成后再准入。
+        await WaitUntilAsync(() => cache.PendingSnapshotOwnerCountForTests == 1, TimeSpan.FromSeconds(2));
+        Assert.NotNull(cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        store.CompleteSecond();
+        Assert.NotNull(await secondOwner.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(0, cache.PendingSnapshotOwnerCountForTests);
+    }
+
+    [Fact]
+    public async Task Repro_Invalidation_outcome_can_beat_pending_reservation_release()
+    {
+        var holdFailureProcessing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new OverlappingSnapshotStore(holdFailureProcessing);
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt),
+            TimeSpan.FromMinutes(20),
+            TimeSpan.FromMinutes(30),
+            maxSnapshotsPerStore: 8,
+            store,
+            softItemCapacity: 1,
+            hardItemCapacity: 5);
+        var large = CreateSizedResult("S01", "catalog-v1:shared-pending", 4);
+        var small = CreateSizedResult("S01", "catalog-v1:shared-pending", 2);
+
+        var firstOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(large),
+            CancellationToken.None);
+        await store.FirstSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cache.InvalidateStore("S01");
+        var secondOwner = cache.ForceRefreshAndPublishAsync(
+            "S01",
+            null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(small),
+            CancellationToken.None);
+        await store.SecondSaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Throws<CatalogCapacityBusyException>(() =>
+            cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
+
+        store.CompleteFirst(new IOException("first owner failed"));
+        // 失效调用方在 InvalidateStore 时就已经拿到 Invalidated 结果，
+        // 而 reservation 释放仍在后台 flight 的持久化失败处理中，两者不是同一线性化点。
+        await Assert.ThrowsAsync<InvalidOperationException>(() => firstOwner);
+        Assert.Equal(2, cache.PendingSnapshotOwnerCountForTests);
+
+        holdFailureProcessing.SetResult();
+        await WaitUntilAsync(() => cache.PendingSnapshotOwnerCountForTests == 1, TimeSpan.FromSeconds(2));
         Assert.NotNull(cache.CreateFullLease(CreateSizedResult("S02", "catalog-v1:other", 2)));
 
         store.CompleteSecond();
@@ -1394,6 +1448,22 @@ public sealed class CatalogIndexCacheTests
             store,
             softItemCapacity: 1,
             hardItemCapacity: 3);
+    }
+
+    // 等待后台 flight 把可观察状态推进到条件满足；用于失效发布中
+    // “调用方 Invalidated 结果”与“reservation 释放/durable pin”两个不同线性化点之间的同步。
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException($"等待后台状态超时：{timeout}");
+            }
+
+            await Task.Delay(10);
+        }
     }
 
     [Fact]
@@ -1517,6 +1587,10 @@ public sealed class CatalogIndexCacheTests
         allowPublish.SetResult();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => force);
+        // durable pin 发生在后台 flight 完成 Save 之后，与 force 的 Invalidated 结果不是同一线性化点。
+        await WaitUntilAsync(
+            () => cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion) is not null,
+            TimeSpan.FromSeconds(2));
         Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
     }
 
@@ -1554,6 +1628,9 @@ public sealed class CatalogIndexCacheTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => force);
         await Assert.ThrowsAsync<InvalidOperationException>(() => fresh);
         await Assert.ThrowsAsync<InvalidOperationException>(() => legacy);
+        await WaitUntilAsync(
+            () => cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion) is not null,
+            TimeSpan.FromSeconds(2));
         Assert.NotNull(cache.GetByVersion("S01", null, result.CatalogIndex.CatalogVersion));
     }
 
@@ -1896,7 +1973,13 @@ public sealed class CatalogIndexCacheTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<Exception?> _secondOutcome =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource? _holdFirstFailure;
         private int _saveCount;
+
+        public OverlappingSnapshotStore(TaskCompletionSource? holdFirstFailure = null)
+        {
+            _holdFirstFailure = holdFirstFailure;
+        }
 
         public TaskCompletionSource FirstSaveStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1918,8 +2001,8 @@ public sealed class CatalogIndexCacheTests
             var call = Interlocked.Increment(ref _saveCount);
             var outcome = call switch
             {
-                1 => WaitForOutcome(FirstSaveStarted, _firstOutcome),
-                2 => WaitForOutcome(SecondSaveStarted, _secondOutcome),
+                1 => WaitForOutcome(FirstSaveStarted, _firstOutcome, isFirstSave: true),
+                2 => WaitForOutcome(SecondSaveStarted, _secondOutcome, isFirstSave: false),
                 _ => throw new InvalidOperationException("unexpected save")
             };
             if (outcome is not null)
@@ -1953,12 +2036,21 @@ public sealed class CatalogIndexCacheTests
             _secondOutcome.TrySetResult(exception);
         }
 
-        private static Exception? WaitForOutcome(
+        private Exception? WaitForOutcome(
             TaskCompletionSource started,
-            TaskCompletionSource<Exception?> outcome)
+            TaskCompletionSource<Exception?> outcome,
+            bool isFirstSave)
         {
             started.TrySetResult();
-            return outcome.Task.GetAwaiter().GetResult();
+            var failure = outcome.Task.GetAwaiter().GetResult();
+            if (isFirstSave && failure is not null)
+            {
+                // 受控复现：让调用方已经拿到 Invalidated 结果时，
+                // 后台 flight 仍停留在“已决定失败、尚未释放 reservation”的窗口。
+                _holdFirstFailure?.Task.GetAwaiter().GetResult();
+            }
+
+            return failure;
         }
     }
 

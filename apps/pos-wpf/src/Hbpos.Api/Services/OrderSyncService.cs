@@ -29,8 +29,19 @@ public sealed class OrderSyncService(
             $"lines={request.Lines.Count} payments={request.Payments.Count}");
         if (await repository.ExistsAsync(request.OrderGuid, cancellationToken))
         {
+            // 普通订单（无共享挂单来源）不查询关联表；只有带 source 的重试才读稳定 disposition。
+            var disposition = request.HeldOrderSource is null
+                ? HeldOrderDisposition.None
+                : await repository.GetHeldOrderDispositionAsync(
+                    request.OrderGuid,
+                    cancellationToken);
             Log($"service completed orderGuid={request.OrderGuid:D} status=already-synced elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return new OrderSyncResponse(request.OrderGuid, true, true, "AlreadySynced");
+            return new OrderSyncResponse(
+                request.OrderGuid,
+                true,
+                true,
+                "AlreadySynced",
+                disposition);
         }
 
         var voucherRedemptions = await BuildVoucherRedemptionsAsync(request, cancellationToken);
@@ -39,15 +50,33 @@ public sealed class OrderSyncService(
         Log(
             $"plan created orderGuid={request.OrderGuid:D} saleLines={plan.Lines.Count} payments={plan.Payments.Count} " +
             $"bankTransactions={plan.BankTransactions.Count} returns={plan.ReturnRecords.Count}");
-        var inserted = await repository.InsertAsync(plan, voucherRedemptions, cancellationToken);
-        if (!inserted)
+        var insertResult = await repository.InsertAsync(
+            plan,
+            voucherRedemptions,
+            request.HeldOrderSource,
+            cancellationToken);
+        if (!insertResult.Inserted)
         {
             // 并发重复上传时不再消费预占令牌，直接向上层返回已同步结果。
+            var disposition = request.HeldOrderSource is null
+                ? HeldOrderDisposition.None
+                : await repository.GetHeldOrderDispositionAsync(
+                    request.OrderGuid,
+                    cancellationToken);
             Log($"service completed orderGuid={request.OrderGuid:D} status=already-synced-after-insert elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return new OrderSyncResponse(request.OrderGuid, true, true, "AlreadySynced");
+            return new OrderSyncResponse(
+                request.OrderGuid,
+                true,
+                true,
+                "AlreadySynced",
+                disposition);
         }
 
-        Log($"repository insert completed orderGuid={request.OrderGuid:D}");
+        // disposition 与订单写入同事务由 AssociateAsync 算出，提交后不再查 SQL。
+        var heldDisposition = insertResult.HeldDisposition;
+        Log(
+            $"repository insert completed orderGuid={request.OrderGuid:D} " +
+            $"heldDisposition={heldDisposition}");
 
         foreach (var redemption in voucherRedemptions)
         {
@@ -58,7 +87,12 @@ public sealed class OrderSyncService(
         }
 
         Log($"service completed orderGuid={request.OrderGuid:D} status=synced elapsedMs={stopwatch.ElapsedMilliseconds}");
-        return new OrderSyncResponse(request.OrderGuid, true, false, "Synced");
+        return new OrderSyncResponse(
+            request.OrderGuid,
+            true,
+            false,
+            "Synced",
+            heldDisposition);
     }
 
     private async Task<IReadOnlyList<StoreVoucherRedemptionCommit>> BuildVoucherRedemptionsAsync(
@@ -150,11 +184,24 @@ public interface IOrderRepository
 {
     Task<bool> ExistsAsync(Guid orderGuid, CancellationToken cancellationToken);
 
-    Task<bool> InsertAsync(
+    Task<OrderInsertResult> InsertAsync(
         OrderSyncPlan plan,
         IReadOnlyList<StoreVoucherRedemptionCommit> voucherRedemptions,
+        HeldOrderSourceDto? heldOrderSource,
+        CancellationToken cancellationToken);
+
+    Task<HeldOrderDisposition> GetHeldOrderDispositionAsync(
+        Guid orderGuid,
         CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// 订单插入的内部结果：Inserted 表示本调用真正写入了订单；
+/// HeldDisposition 与订单写入同事务计算，提交后无需再查关联表。
+/// </summary>
+public sealed record OrderInsertResult(
+    bool Inserted,
+    HeldOrderDisposition HeldDisposition);
 
 public sealed record StoreVoucherRedemptionCommit(
     string VoucherCode,
@@ -174,9 +221,10 @@ public sealed class SqlSugarOrderRepository(
             .AnyAsync(x => x.OrderGuid == orderGuidText, cancellationToken);
     }
 
-    public async Task<bool> InsertAsync(
+    public async Task<OrderInsertResult> InsertAsync(
         OrderSyncPlan plan,
         IReadOnlyList<StoreVoucherRedemptionCommit> voucherRedemptions,
+        HeldOrderSourceDto? heldOrderSource,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -189,7 +237,7 @@ public sealed class SqlSugarOrderRepository(
             plan.ReturnRecords.Count,
             voucherRedemptions.Count);
         var db = dbContext.PosmDb;
-        if (plan.ReturnRecords.Count > 0)
+        if (plan.ReturnRecords.Count > 0 || heldOrderSource is not null)
         {
             await SalesReturnRecordPersistence.BeginSerializableTransactionAsync(db);
         }
@@ -210,7 +258,7 @@ public sealed class SqlSugarOrderRepository(
                     plan.Order.OrderGuid,
                     stopwatch.ElapsedMilliseconds);
                 await db.Ado.CommitTranAsync();
-                return false;
+                return new OrderInsertResult(false, HeldOrderDisposition.None);
             }
 
             if (voucherRedemptions.Count > 0)
@@ -257,6 +305,23 @@ public sealed class SqlSugarOrderRepository(
                 await db.Insertable(returnRecordPreparation.RecordsToInsert.ToList()).ExecuteCommandAsync(cancellationToken);
             }
 
+            var heldDisposition = HeldOrderDisposition.None;
+            if (heldOrderSource is not null)
+            {
+                heldDisposition = await SharedHeldOrderAssociationStore.AssociateAsync(
+                    db,
+                    Guid.Parse(plan.Order.OrderGuid!),
+                    plan.Order.BranchCode ?? string.Empty,
+                    heldOrderSource,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+                logger.LogInformation(
+                    "OrderSyncRepository held association completed OrderGuid={OrderGuid} HoldGuid={HoldGuid} Disposition={Disposition}",
+                    plan.Order.OrderGuid,
+                    heldOrderSource.HoldGuid,
+                    heldDisposition);
+            }
+
             await db.Ado.CommitTranAsync();
             logger.LogInformation(
                 "OrderSyncRepository insert completed OrderGuid={OrderGuid} Lines={LineCount} Payments={PaymentCount} BankTransactions={BankTransactionCount} Returns={ReturnCount} ElapsedMs={ElapsedMs}",
@@ -266,7 +331,7 @@ public sealed class SqlSugarOrderRepository(
                 plan.BankTransactions.Count,
                 plan.ReturnRecords.Count,
                 stopwatch.ElapsedMilliseconds);
-            return true;
+            return new OrderInsertResult(true, heldDisposition);
         }
         catch (Exception ex)
         {
@@ -278,6 +343,16 @@ public sealed class SqlSugarOrderRepository(
                 stopwatch.ElapsedMilliseconds);
             throw;
         }
+    }
+
+    public async Task<HeldOrderDisposition> GetHeldOrderDispositionAsync(
+        Guid orderGuid,
+        CancellationToken cancellationToken)
+    {
+        return await SharedHeldOrderAssociationStore.GetDispositionAsync(
+            dbContext.PosmDb,
+            orderGuid,
+            cancellationToken);
     }
 
     private static async Task ApplyVoucherPaymentsAsync(

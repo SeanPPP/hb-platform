@@ -49,6 +49,7 @@ import {
   SETTINGS_RECEIPT_PRINTER_PERMISSION,
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
+import type { SharedHeldOrderPublicationSchedulerPort } from "../../features/shared-held-orders/shared-held-order-publication-loop";
 import type {
   LocalSyncHistoryOrder,
   LocalSyncHistorySupportContext,
@@ -436,6 +437,7 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
   );
   assert.equal("checkout" in services, false, "route 不得绕过共享购物车直接提交");
   unlockedPresenter.destroy();
+  await services.shutdownBackgroundWork();
 });
 
 test("销售履约 facade 缺少主管服务时按当前收银员权限 fail-closed", async () => {
@@ -1779,6 +1781,41 @@ test("销售挂单使用全局主管授权且只执行一次，会话失效取�
   assert.equal(holdCalls, 1);
   assert.equal(presenter.getState().cart.lines.length, 1);
   presenter.destroy();
+});
+
+test("共享挂单运行时在可信收银员下可创建协调器，API 走生产 transport", async () => {
+  const calls: string[] = [];
+  const transport: HbposTransport = {
+    async request<T>(request: HbposTransportRequest) {
+      calls.push(request.url);
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: [],
+        } as unknown as T,
+      };
+    },
+  };
+  const services = createTestComposition(databaseFor([]), {
+    forwardSharedHeldOrderClaimsMine: true,
+    transport,
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  assert.equal(
+    calls.filter((url) => url === "/api/v1/held-orders/claims/mine").length,
+    1,
+  );
+  assert.equal(typeof services.sharedHeldOrders.api.getCapabilities, "function");
+  assert.deepEqual(await services.sharedHeldOrders.listLocalShareState(), []);
+  const coordinator = services.sharedHeldOrders.createCoordinator();
+  const reconcile = await coordinator.reconcileClaims();
+  assert.deepEqual(reconcile.restoredClaimIds, []);
+  assert.deepEqual(reconcile.mismatches, []);
+  assert.ok(calls.includes("/api/v1/held-orders/claims/mine"));
+  await services.shutdownBackgroundWork();
 });
 
 test("同步历史 presenter 只使用可信收银员 lease，会话失效后拒绝读取、导出和补传", async () => {
@@ -3274,6 +3311,65 @@ test("runtime 关闭会取消并等待后台目录清理后再结束", async () 
   presenter.destroy();
 });
 
+test("共享挂单发布只在可信登录期间周期运行，并在会话失效及 runtime 关闭时停止", async () => {
+  let publicationRuns = 0;
+  let intervalTask: (() => void) | null = null;
+  let cancelled = 0;
+  let invalidate!: () => void;
+  const database = databaseFor([]);
+  const baseQueue = database.sharedHeldOrderPublicationQueue();
+  Object.assign(database, {
+    sharedHeldOrderPublicationQueue: () => ({
+      ...baseQueue,
+      async listNeedsEvaluation() {
+        publicationRuns += 1;
+        return [];
+      },
+    }),
+  });
+  const services = createTestComposition(database, {
+    captureInvalidation(listener) {
+      invalidate = listener;
+    },
+    sharedHeldOrderPublicationScheduler: {
+      every(intervalMs, task) {
+        assert.equal(intervalMs, 10_000);
+        intervalTask = task;
+        return () => {
+          cancelled += 1;
+          intervalTask = null;
+        };
+      },
+    },
+  });
+
+  await services.initialize();
+  assert.equal(publicationRuns, 0, "无可信收银员时不能调用共享 API");
+
+  await services.cashierSession.signIn("cashier-1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(publicationRuns, 1);
+  (intervalTask as (() => void) | null)?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(publicationRuns, 2);
+
+  invalidate();
+  assert.equal(cancelled, 1);
+  (intervalTask as (() => void) | null)?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(publicationRuns, 2);
+
+  await services.cashierSession.signIn("cashier-2");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(publicationRuns, 3);
+  const staleTick = intervalTask;
+  await services.shutdownBackgroundWork();
+  assert.equal(cancelled, 2);
+  (staleTick as (() => void) | null)?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(publicationRuns, 3);
+});
+
 test("settings 目录下载绑定原 cashier lease，换班到同店身份也不能激活", async () => {
   let activateCount = 0;
   let discardCount = 0;
@@ -3654,6 +3750,7 @@ function createTestComposition(
     onClearAuthorization?(): void;
     throwOnScopeInvalidation?: boolean;
     externalDisplay?: ExternalCustomerDisplayPort;
+    forwardSharedHeldOrderClaimsMine?: boolean;
     advertisementCache?: CustomerDisplayAdvertisementCachePort;
     customerDisplayAdvertisementCacheRootUri?: string;
     transport?: HbposTransport;
@@ -3668,13 +3765,30 @@ function createTestComposition(
     sha256Hex?: (material: string) => Promise<string>;
     settings?: ProductionSettingsRuntimeConfiguration;
     appUpdateTransition?: UpdateTransitionLeaseCoordinator;
+    sharedHeldOrderPublicationScheduler?: SharedHeldOrderPublicationSchedulerPort;
   }> = {},
 ) {
   let nextId = 0;
   const supervisorPermissions = options.supervisorPermissions;
+  const transport = options.transport ?? ({} as HbposTransport);
   return createProductionPosRuntimeServices({
     database,
-    transport: options.transport ?? ({} as HbposTransport),
+    transport: options.forwardSharedHeldOrderClaimsMine
+      ? transport
+      : {
+          async request<T>(request: HbposTransportRequest) {
+            if (request.url === "/api/v1/held-orders/claims/mine") {
+              return {
+                status: 200,
+                data: {
+                  success: true,
+                  data: [],
+                } as T,
+              };
+            }
+            return transport.request<T>(request);
+          },
+        },
     encryptor: encryptor(),
     syncSecurity: { async lockDevice() {} },
     auditMetadata: {
@@ -3777,6 +3891,13 @@ function createTestComposition(
     ...(options.appUpdateTransition
       ? { appUpdateTransition: options.appUpdateTransition }
       : {}),
+    sharedHeldOrderPublicationScheduler:
+      options.sharedHeldOrderPublicationScheduler ??
+      {
+        every() {
+          return () => undefined;
+        },
+      },
     ...(supervisorPermissions
       ? {
           operationAuthorization: {
@@ -4420,6 +4541,60 @@ function databaseFor(
       },
       async getSupportContext() {
         return supportContext;
+      },
+    }),
+    sharedHeldOrderClaims: () => ({
+      async prepareClaim() {
+        throw new Error("shared held order claim is not configured");
+      },
+      async activatePreparedClaim() {
+        return false;
+      },
+      async bindOrderToActiveClaim() {
+        return false;
+      },
+      async completeActiveClaim() {
+        return false;
+      },
+      async releaseClaim() {
+        return false;
+      },
+      async supersedeClaim() {
+        return false;
+      },
+      async getClaim() {
+        return null;
+      },
+      async listMine() {
+        return [];
+      },
+    }),
+    sharedHeldOrderPublicationQueue: () => ({
+      async listShareStates() {
+        return [];
+      },
+      async listNeedsEvaluation() {
+        return [];
+      },
+      async applyShareEvaluation() {
+        return "not-found";
+      },
+      async listDue() {
+        return [];
+      },
+      async markPublished() {
+        return false;
+      },
+      async recordPublishFailure() {
+        return false;
+      },
+      async blockPublication() {
+        return false;
+      },
+    }),
+    sharedHeldOrderLocalPublication: () => ({
+      async loadEligible() {
+        return { eligible: false, reason: "not-found" };
       },
     }),
   } as unknown as PosDatabase;

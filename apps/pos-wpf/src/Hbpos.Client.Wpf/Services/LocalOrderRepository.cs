@@ -3,12 +3,28 @@ using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Orders;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
+using System.IO;
 
 namespace Hbpos.Client.Wpf.Services;
 
 public interface ILocalOrderRepository
 {
     Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 持久化待上传订单；当订单来自共享挂单取单时，heldOrder 必须携带 durable claim
+    /// 事实，并与 LocalOrder/SyncQueue 同一事务写入：held-order source、完成对应 claim、
+    /// 消费本地挂单。claim 竞态/终态差异绝不回滚订单，只有来源行写失败等数据损坏才
+    /// 整体回滚，防止丢正式订单。
+    /// </summary>
+    Task SavePendingOrderWithHeldSourceAsync(
+        LocalOrder order,
+        LocalHeldOrderCompletionContext heldOrder,
+        CancellationToken cancellationToken = default)
+    {
+        // 默认实现保持旧行为（不写来源）；需要原子来源/claim/消费的仓库必须显式实现。
+        return SavePendingOrderAsync(order, cancellationToken);
+    }
 
     Task UpdatePaymentReferenceAsync(
         Guid paymentGuid,
@@ -31,6 +47,23 @@ public interface ILocalOrderRepository
 public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRepository
 {
     public async Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
+    {
+        await SavePendingOrderCoreAsync(order, heldOrder: null, cancellationToken);
+    }
+
+    public async Task SavePendingOrderWithHeldSourceAsync(
+        LocalOrder order,
+        LocalHeldOrderCompletionContext heldOrder,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(heldOrder);
+        await SavePendingOrderCoreAsync(order, heldOrder, cancellationToken);
+    }
+
+    private async Task SavePendingOrderCoreAsync(
+        LocalOrder order,
+        LocalHeldOrderCompletionContext? heldOrder,
+        CancellationToken cancellationToken)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         using var transaction = connection.BeginTransaction();
@@ -144,7 +177,226 @@ public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRe
             await queue.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        if (heldOrder is not null)
+        {
+            await CompleteHeldOrderInTransactionAsync(
+                connection,
+                transaction,
+                order,
+                heldOrder,
+                cancellationToken);
+        }
+
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 共享挂单取单完成的原子事务段（与 LocalOrder/SyncQueue 同一事务）：
+    /// 1) 读取 durable claim 事实，claim 缺失视为数据损坏整体回滚（绝不静默降级）；
+    /// 2) 写不可变 held-order source（RemoteClaim 带 claim、OfflineOrigin 不带）；
+    /// 3) Active 且未被他单绑定的 claim 绑定本订单并完成；Prepared（activate 未知）
+    ///    或已被他单绑定/终态的 claim 保留事实，供 claims/mine 对账，不阻止订单；
+    /// 4) 消费本地挂单：publication ConsumedAtIso + SuspendedOrders 置 Recalled，
+    ///    之后不可再次 recall/评估/发布。
+    /// </summary>
+    private static async Task CompleteHeldOrderInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        LocalOrder order,
+        LocalHeldOrderCompletionContext heldOrder,
+        CancellationToken cancellationToken)
+    {
+        ClaimFacts claim;
+        await using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText =
+                """
+                SELECT HoldGuid, StoreCode, DeviceCode, Source, Status,
+                       ActivateIdempotencyKey, BoundOrderGuid, ReleaseIdempotencyKey
+                FROM SharedHeldOrderClaims
+                WHERE ClaimId = $ClaimId;
+                """;
+            read.Parameters.AddWithValue("$ClaimId", heldOrder.ClaimId.ToString("D"));
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new InvalidDataException(
+                    $"共享挂单订单来源缺少 durable claim: {heldOrder.ClaimId:D}。");
+            }
+
+            claim = new ClaimFacts(
+                ReadGuid(reader, "HoldGuid"),
+                ReadString(reader, "StoreCode"),
+                ReadString(reader, "DeviceCode"),
+                ReadString(reader, "Source"),
+                ReadString(reader, "Status"),
+                ReadNullableString(reader, "ActivateIdempotencyKey"),
+                ReadNullableString(reader, "BoundOrderGuid"),
+                ReadNullableString(reader, "ReleaseIdempotencyKey"));
+        }
+
+        if (claim.HoldGuid != heldOrder.HoldGuid)
+        {
+            throw new InvalidDataException(
+                "共享挂单订单来源与 durable claim 的 HoldGuid 不一致。");
+        }
+
+        if (!string.Equals(
+                claim.StoreCode.Trim().ToUpperInvariant(),
+                order.StoreCode.Trim().ToUpperInvariant(),
+                StringComparison.Ordinal)
+            || !string.Equals(
+                claim.DeviceCode.Trim().ToUpperInvariant(),
+                order.DeviceCode.Trim().ToUpperInvariant(),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "共享挂单订单来源与 durable claim 的 store/device 不一致。");
+        }
+
+        var isRemoteClaim = string.Equals(
+            claim.Source,
+            "RemoteClaim",
+            StringComparison.Ordinal);
+        var sourceKind = isRemoteClaim ? 1 : 2;
+
+        // Active 且 activate key 匹配：绑定本订单后完成（幂等）；已绑定他单/终态则跳过完成。
+        var releaseKey = $"completed:{order.OrderGuid:D}";
+        if (string.Equals(claim.Status, "Active", StringComparison.Ordinal)
+            && string.Equals(
+                claim.ActivateIdempotencyKey,
+                heldOrder.ActivateIdempotencyKey,
+                StringComparison.Ordinal))
+        {
+            if (claim.BoundOrderGuid is null)
+            {
+                await using var bind = connection.CreateCommand();
+                bind.Transaction = transaction;
+                bind.CommandText =
+                    """
+                    UPDATE SharedHeldOrderClaims
+                    SET BoundOrderGuid = $BoundOrderGuid,
+                        UpdatedAtIso = $UpdatedAtIso
+                    WHERE ClaimId = $ClaimId
+                      AND Status = 'Active'
+                      AND ActivateIdempotencyKey = $ActivateIdempotencyKey
+                      AND BoundOrderGuid IS NULL;
+                    """;
+                bind.Parameters.AddWithValue("$BoundOrderGuid", order.OrderGuid.ToString("D"));
+                bind.Parameters.AddWithValue("$UpdatedAtIso", heldOrder.CompletedAtIso);
+                bind.Parameters.AddWithValue("$ClaimId", heldOrder.ClaimId.ToString("D"));
+                bind.Parameters.AddWithValue("$ActivateIdempotencyKey", heldOrder.ActivateIdempotencyKey);
+                await bind.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using var complete = connection.CreateCommand();
+            complete.Transaction = transaction;
+            complete.CommandText =
+                """
+                UPDATE SharedHeldOrderClaims
+                SET Status = 'Completed',
+                    ReleaseIdempotencyKey = $ReleaseIdempotencyKey,
+                    UpdatedAtIso = $UpdatedAtIso
+                WHERE ClaimId = $ClaimId
+                  AND Status = 'Active'
+                  AND ActivateIdempotencyKey = $ActivateIdempotencyKey
+                  AND BoundOrderGuid = $BoundOrderGuid
+                  AND ReleaseIdempotencyKey IS NULL;
+                """;
+            complete.Parameters.AddWithValue("$ReleaseIdempotencyKey", releaseKey);
+            complete.Parameters.AddWithValue("$UpdatedAtIso", heldOrder.CompletedAtIso);
+            complete.Parameters.AddWithValue("$ClaimId", heldOrder.ClaimId.ToString("D"));
+            complete.Parameters.AddWithValue("$ActivateIdempotencyKey", heldOrder.ActivateIdempotencyKey);
+            complete.Parameters.AddWithValue("$BoundOrderGuid", order.OrderGuid.ToString("D"));
+            await complete.ExecuteNonQueryAsync(cancellationToken);
+        }
+        else if (string.Equals(claim.Status, "Prepared", StringComparison.Ordinal)
+                 && claim.ActivateIdempotencyKey is null
+                 && claim.BoundOrderGuid is null
+                 && claim.ReleaseIdempotencyKey is null)
+        {
+            // activate 结果未知但正式订单已落盘：同事务关闭本地 fence，避免恢复出重复购物车。
+            await using var supersede = connection.CreateCommand();
+            supersede.Transaction = transaction;
+            supersede.CommandText =
+                """
+                UPDATE SharedHeldOrderClaims
+                SET Status = 'Superseded',
+                    SupersedeIdempotencyKey = $SupersedeIdempotencyKey,
+                    UpdatedAtIso = $UpdatedAtIso
+                WHERE ClaimId = $ClaimId
+                  AND Status = 'Prepared'
+                  AND ActivateIdempotencyKey IS NULL
+                  AND ReleaseIdempotencyKey IS NULL
+                  AND SupersedeIdempotencyKey IS NULL
+                  AND BoundOrderGuid IS NULL;
+                """;
+            supersede.Parameters.AddWithValue(
+                "$SupersedeIdempotencyKey",
+                releaseKey);
+            supersede.Parameters.AddWithValue("$UpdatedAtIso", heldOrder.CompletedAtIso);
+            supersede.Parameters.AddWithValue("$ClaimId", heldOrder.ClaimId.ToString("D"));
+            var changed = await supersede.ExecuteNonQueryAsync(cancellationToken);
+            if (changed != 1)
+            {
+                throw new InvalidDataException(
+                    "共享挂单 Prepared claim 在订单完成前已变化。");
+            }
+        }
+
+        // 不可变来源行：与订单同一事务写入，任何改写都被 schema trigger 拒绝。
+        await using (var source = connection.CreateCommand())
+        {
+            source.Transaction = transaction;
+            source.CommandText =
+                """
+                INSERT INTO LocalOrderHeldOrderSources (
+                    OrderGuid, HoldGuid, ClaimGuid, SourceKind, CreatedAtIso)
+                VALUES ($OrderGuid, $HoldGuid, $ClaimGuid, $SourceKind, $CreatedAtIso);
+                """;
+            source.Parameters.AddWithValue("$OrderGuid", order.OrderGuid.ToString("D"));
+            source.Parameters.AddWithValue("$HoldGuid", heldOrder.HoldGuid.ToString("D"));
+            source.Parameters.AddWithValue(
+                "$ClaimGuid",
+                isRemoteClaim ? (object)heldOrder.ClaimId.ToString("D") : DBNull.Value);
+            source.Parameters.AddWithValue("$SourceKind", sourceKind);
+            source.Parameters.AddWithValue("$CreatedAtIso", heldOrder.CompletedAtIso);
+            await source.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // 消费本地挂单：publication 标记 + SuspendedOrders 离开 Pending，单次使用。
+        await using (var consumePublication = connection.CreateCommand())
+        {
+            consumePublication.Transaction = transaction;
+            consumePublication.CommandText =
+                """
+                UPDATE SharedHeldOrderPublications
+                SET ConsumedAtIso = $ConsumedAtIso,
+                    UpdatedAtIso = $ConsumedAtIso
+                WHERE LocalHoldGuid = $HoldGuid
+                  AND ConsumedAtIso IS NULL;
+                """;
+            consumePublication.Parameters.AddWithValue("$ConsumedAtIso", heldOrder.CompletedAtIso);
+            consumePublication.Parameters.AddWithValue("$HoldGuid", heldOrder.HoldGuid.ToString("D"));
+            await consumePublication.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var consumeOrder = connection.CreateCommand())
+        {
+            consumeOrder.Transaction = transaction;
+            consumeOrder.CommandText =
+                """
+                UPDATE SuspendedOrders
+                SET Status = $RecalledStatus
+                WHERE SuspendedOrderGuid = $HoldGuid
+                  AND Status = $PendingStatus;
+                """;
+            consumeOrder.Parameters.AddWithValue("$RecalledStatus", (int)SuspendedOrderStatus.Recalled);
+            consumeOrder.Parameters.AddWithValue("$HoldGuid", heldOrder.HoldGuid.ToString("D"));
+            consumeOrder.Parameters.AddWithValue("$PendingStatus", (int)SuspendedOrderStatus.Pending);
+            await consumeOrder.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task UpdatePaymentReferenceAsync(
@@ -273,9 +525,12 @@ public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRe
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT OrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SoldAt, TotalAmount, DiscountAmount, ActualAmount, TenderedAmount, ChangeAmount
-            FROM LocalOrders
-            WHERE OrderGuid = $OrderGuid;
+            SELECT o.OrderGuid, o.StoreCode, o.DeviceCode, o.CashierId, o.CashierName, o.SoldAt,
+                   o.TotalAmount, o.DiscountAmount, o.ActualAmount, o.TenderedAmount, o.ChangeAmount,
+                   h.HoldGuid, h.ClaimGuid, h.SourceKind
+            FROM LocalOrders o
+            LEFT JOIN LocalOrderHeldOrderSources h ON h.OrderGuid = o.OrderGuid
+            WHERE o.OrderGuid = $OrderGuid;
             """;
         command.Parameters.AddWithValue("$OrderGuid", orderGuid.ToString());
 
@@ -285,6 +540,12 @@ public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRe
             return null;
         }
 
+        var heldOrderSource = ReadNullableString(reader, "HoldGuid") is { } holdGuid
+            ? new HeldOrderSourceDto(
+                Guid.Parse(holdGuid),
+                ReadNullableGuid(reader, "ClaimGuid"),
+                (HeldOrderSourceKind?)ReadNullableInt(reader, "SourceKind"))
+            : null;
         return new LocalOrder(
             ReadGuid(reader, "OrderGuid"),
             ReadString(reader, "StoreCode"),
@@ -298,7 +559,8 @@ public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRe
             [],
             [],
             ReadNullableDecimal(reader, "TenderedAmount"),
-            ReadNullableDecimal(reader, "ChangeAmount"));
+            ReadNullableDecimal(reader, "ChangeAmount"),
+            heldOrderSource);
     }
 
     private static async Task<IReadOnlyList<LocalOrderLine>> ReadOrderLinesAsync(
@@ -381,6 +643,16 @@ public sealed class LocalOrderRepository(LocalSqliteStore store) : ILocalOrderRe
 
         return payments;
     }
+
+    private sealed record ClaimFacts(
+        Guid HoldGuid,
+        string StoreCode,
+        string DeviceCode,
+        string Source,
+        string Status,
+        string? ActivateIdempotencyKey,
+        string? BoundOrderGuid,
+        string? ReleaseIdempotencyKey);
 
     private static async Task<IReadOnlyList<CardTransactionDto>> ReadCardTransactionsAsync(
         SqliteConnection connection,
