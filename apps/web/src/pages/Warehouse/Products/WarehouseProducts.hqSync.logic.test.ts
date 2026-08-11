@@ -19,6 +19,7 @@ import {
   buildTextFilterTokens,
   getSingleFilterValue,
   normalizeTableFilters,
+  normalizeWarehouseProductSortField,
   parseComparableFilterTokens,
   parseTextFilterTokens,
   resolveCategoryFilterValueFromTableFilters,
@@ -1414,6 +1415,55 @@ async function main() {
     )
   })
   if (tableChangeColumnFilterFailure) failures.push(tableChangeColumnFilterFailure)
+
+  const priceColumnSortFailure = await runTest('零售价和进口价列应使用后端价格字段排序', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    const importPriceSection = extractSection(
+      columnsSection,
+      "key: 'importPrice'",
+      "key: 'labelPrice'",
+    )
+    const labelPriceSection = extractSection(
+      columnsSection,
+      "key: 'labelPrice'",
+      "key: 'isActive'",
+    )
+    const tableSection = extractSection(
+      pageSource,
+      'onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter:',
+      '}/>',
+    )
+
+    assert(
+      importPriceSection.includes('sorter: true') && labelPriceSection.includes('sorter: true'),
+      '进口价和零售价列均应启用 AntD 服务端排序入口',
+    )
+    assert(
+      columnFiltersSource.includes('export function normalizeWarehouseProductSortField(') &&
+        tableSection.includes('normalizeWarehouseProductSortField(nextSorter?.field, sortField)'),
+      '表格排序应在请求前把 labelPrice 规范为后端 oemPrice 字段',
+    )
+    assertEqual(
+      normalizeWarehouseProductSortField('labelPrice', 'createdAt'),
+      'oemPrice',
+      '零售价排序字段应映射为后端 OEMPrice 字段',
+    )
+    assertEqual(
+      normalizeWarehouseProductSortField('importPrice', 'createdAt'),
+      'importPrice',
+      '进口价排序字段应保持不变',
+    )
+    assertEqual(
+      normalizeWarehouseProductSortField(undefined, 'createdAt'),
+      'createdAt',
+      'AntD 未返回字段时应保留当前排序字段',
+    )
+  })
+  if (priceColumnSortFailure) failures.push(priceColumnSortFailure)
 
   const columnFilterUiFailure = await runTest('仓库商品表格应为文本数字日期枚举列接入列头过滤 UI', () => {
     const columnsSection = extractSection(

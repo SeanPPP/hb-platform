@@ -34,7 +34,7 @@ import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
 import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, buildFilterCategoryTreeOptions, } from '../Categories/categoryProductFilters';
-import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
+import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, normalizeWarehouseProductSortField, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
 import { areWarehouseProductCodeSelectionsEqual, buildWarehouseProductHqPushPayload } from './hqPush';
 import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
@@ -1945,6 +1945,7 @@ export default function WarehouseProductsPage() {
             title: t('column.importPrice'),
             dataIndex: 'importPrice',
             width: 96,
+            sorter: true,
             ...numberRangeFilterProps('importPrice'),
             render: (_value, record) => renderInlineEditableNumberCell(record, 'importPrice'),
         },
@@ -1953,6 +1954,7 @@ export default function WarehouseProductsPage() {
             title: t('column.oemPrice'),
             dataIndex: 'labelPrice',
             width: 96,
+            sorter: true,
             ...numberRangeFilterProps('oemPrice'),
             render: (_value, record) => renderInlineEditableNumberCell(record, 'labelPrice'),
         },
@@ -2288,7 +2290,7 @@ export default function WarehouseProductsPage() {
                 pageSizeOptions: WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS,
             }} onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[], extra) => {
                 const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
-                const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;
+                const nextSortField = normalizeWarehouseProductSortField(nextSorter?.field, sortField);
                 const nextSortOrder = nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
                     ? nextSorter.order
                     : sortOrder;

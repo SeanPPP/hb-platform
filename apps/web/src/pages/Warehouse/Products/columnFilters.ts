@@ -151,6 +151,15 @@ export function normalizeTableFilters(filters: WarehouseProductTableFilters): Wa
   }, {});
 }
 
+export function normalizeWarehouseProductSortField(field: unknown, fallback: string) {
+  if (typeof field !== 'string') {
+    return fallback;
+  }
+
+  // 列数据保留 labelPrice 兼容现有展示和编辑逻辑，排序请求映射为后端 OEM 字段。
+  return field === 'labelPrice' ? 'oemPrice' : field;
+}
+
 export function resolveCategoryFilterValueFromTableFilters(filters: WarehouseProductTableFilters) {
   const categoryValues = filters.categoryName?.map((value) => String(value).trim()).filter(Boolean) ?? [];
   return categoryValues[0] || ALL_PRODUCTS_FILTER_KEY;

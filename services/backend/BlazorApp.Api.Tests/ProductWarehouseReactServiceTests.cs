@@ -1021,6 +1021,92 @@ namespace BlazorApp.Api.Tests
             Assert.True(string.IsNullOrWhiteSpace(Assert.Single(result.Items).UpdatedBy));
         }
 
+        [Theory]
+        [InlineData(
+            "oemPrice",
+            "ascend",
+            "P-WAREHOUSE-PRICE-LOW",
+            "P-WAREHOUSE-PRICE-MID",
+            "P-WAREHOUSE-PRICE-HIGH"
+        )]
+        [InlineData(
+            "oemPrice",
+            "descend",
+            "P-WAREHOUSE-PRICE-HIGH",
+            "P-WAREHOUSE-PRICE-MID",
+            "P-WAREHOUSE-PRICE-LOW"
+        )]
+        [InlineData(
+            "importPrice",
+            "ascend",
+            "P-WAREHOUSE-PRICE-HIGH",
+            "P-WAREHOUSE-PRICE-MID",
+            "P-WAREHOUSE-PRICE-LOW"
+        )]
+        [InlineData(
+            "importPrice",
+            "descend",
+            "P-WAREHOUSE-PRICE-LOW",
+            "P-WAREHOUSE-PRICE-MID",
+            "P-WAREHOUSE-PRICE-HIGH"
+        )]
+        public async Task GetAntdTableDataAsync_SortsWarehousePriceBeforePaging(
+            string sortBy,
+            string sortOrder,
+            string firstProductCode,
+            string secondProductCode,
+            string thirdProductCode
+        )
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-WAREHOUSE-PRICE-LOW",
+                "ITEM-WAREHOUSE-PRICE-LOW",
+                "仓库价格低",
+                null,
+                oemPrice: 10m,
+                importPrice: 30m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-WAREHOUSE-PRICE-MID",
+                "ITEM-WAREHOUSE-PRICE-MID",
+                "仓库价格中",
+                null,
+                oemPrice: 20m,
+                importPrice: 20m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-WAREHOUSE-PRICE-HIGH",
+                "ITEM-WAREHOUSE-PRICE-HIGH",
+                "仓库价格高",
+                null,
+                oemPrice: 30m,
+                importPrice: 10m
+            );
+
+            var firstPage = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 2,
+                SortBy = sortBy,
+                SortOrder = sortOrder,
+            });
+            var secondPage = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 2,
+                PageSize = 2,
+                SortBy = sortBy,
+                SortOrder = sortOrder,
+            });
+
+            Assert.Equal(3, firstPage.Total);
+            Assert.Equal(
+                new[] { firstProductCode, secondProductCode },
+                firstPage.Items.Select(item => item.ProductCode)
+            );
+            Assert.Equal(3, secondPage.Total);
+            Assert.Equal(thirdProductCode, Assert.Single(secondPage.Items).ProductCode);
+        }
+
         [Fact]
         public async Task UpdatedBy_批量修改写入传入操作人且缺失时回退System()
         {
