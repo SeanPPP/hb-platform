@@ -18,6 +18,7 @@ import {
   type SharedSaleCartV1,
 } from "./shared-sale-cart-v1";
 
+import { SqliteHeldOrderRecordRepository } from "@/core/db/sqlite-repositories";
 import type { SqliteConnectionPort } from "@/core/db/types";
 
 const SCOPE = { storeCode: "S1", deviceCode: "IPAD-01" } as const;
@@ -674,6 +675,87 @@ test("OfflineOrigin release 把真实本地 held 恢复 Pending，不删除本�
       [SCOPE.storeCode, SCOPE.deviceCode],
     ),
     null,
+  );
+});
+
+test("支付草稿已恢复相同 binding 时，原子补回 OfflineOrigin Active 孤儿的 held/fence", async () => {
+  const { connection, claims } = await openClaims({ source: "OfflineOrigin" });
+  assertPrepared(await claims.prepareClaim(prepareInput({})), "claim-1");
+  assert.equal(
+    await claims.activatePreparedClaim({
+      claimGuid: "claim-1",
+      prepareIdempotencyKey: "prepare-key-1",
+      activateIdempotencyKey: "activate-key-1",
+      serverRevision: null,
+      activatedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+  const legacyRepository = new SqliteHeldOrderRecordRepository(
+    connection,
+    fakeEncryptor,
+  );
+  assert.equal(
+    await legacyRepository.releaseRecallAfterCartCleared({
+      binding: {
+        kind: "recalled",
+        scope: SCOPE,
+        holdId: "hold-claim-1",
+        recallAttemptId: "recall-attempt-1",
+      },
+      releasedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+
+  assert.equal(
+    await claims.ensureRestoredOfflineOriginClaimFence({
+      claimGuid: "claim-1",
+      repairedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+  const held = await connection.getFirst<{
+    status: string;
+    recall_attempt_id: string | null;
+    recalling_cashier_id: string | null;
+    recalling_cashier_name: string | null;
+  }>(
+    `SELECT status, recall_attempt_id,
+            recalling_cashier_id, recalling_cashier_name
+     FROM held_order_records WHERE hold_id = ?`,
+    ["hold-claim-1"],
+  );
+  assert.deepEqual(held ? { ...held } : null, {
+    status: "Recalling",
+    recall_attempt_id: "recall-attempt-1",
+    recalling_cashier_id: "cashier-2",
+    recalling_cashier_name: "Cashier Two",
+  });
+  const fence = await connection.getFirst<{
+    kind: string;
+    hold_id: string;
+    recall_attempt_id: string | null;
+    bound_order_guid: string | null;
+  }>(
+    `SELECT kind, hold_id, recall_attempt_id, bound_order_guid
+     FROM terminal_cart_fences
+     WHERE store_code = ? AND device_code = ?`,
+    [SCOPE.storeCode, SCOPE.deviceCode],
+  );
+  assert.deepEqual(fence ? { ...fence } : null, {
+    kind: "RecallActive",
+    hold_id: "hold-claim-1",
+    recall_attempt_id: "recall-attempt-1",
+    bound_order_guid: null,
+  });
+  assert.equal((await claims.getClaim("claim-1"))?.state, "Active");
+  assert.equal(
+    await claims.ensureRestoredOfflineOriginClaimFence({
+      claimGuid: "claim-1",
+      repairedAtIso: TEST_NOW_ISO,
+    }),
+    true,
   );
 });
 

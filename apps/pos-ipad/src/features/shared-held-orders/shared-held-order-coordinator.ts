@@ -928,7 +928,63 @@ export class SharedHeldOrderCoordinator {
         }
         activeClaim = reloaded;
       }
+      const existingCartHandled =
+        await this.reconcileRestoredOfflineOriginCart(
+          activeClaim,
+          restored,
+          mismatches,
+        );
+      if (existingCartHandled) {
+        continue;
+      }
       await this.tryRestoreForReconcile(activeClaim, restored, mismatches);
+    }
+  }
+
+  /** 支付草稿已带同一 binding 时补回 durable held/fence，并保留当前购物车。 */
+  private async reconcileRestoredOfflineOriginCart(
+    claim: SharedHeldOrderClaim,
+    restored: string[],
+    mismatches: SharedHeldOrderReconcileMismatch[],
+  ): Promise<boolean> {
+    try {
+      return await this.withCartLease(async (lease) => {
+        const active = lease.read();
+        if (
+          !isSaleCart(active) ||
+          active.terminalRecoveryRequired ||
+          active.recallBinding === null ||
+          !recallBindingMatchesClaim(active.recallBinding, claim)
+        ) {
+          return false;
+        }
+        const repaired =
+          await this.options.claims.ensureRestoredOfflineOriginClaimFence({
+            claimGuid: claim.claimGuid,
+            repairedAtIso: this.options.nowIso(),
+          });
+        if (repaired) {
+          if (!restored.includes(claim.claimGuid)) {
+            restored.push(claim.claimGuid);
+          }
+        } else {
+          mismatches.push({
+            claimGuid: claim.claimGuid,
+            holdGuid: claim.holdGuid,
+            reason:
+              "购物车已恢复，但本地挂单围栏无法补回；保留 Active 与购物车等待重试。",
+          });
+        }
+        return true;
+      });
+    } catch {
+      mismatches.push({
+        claimGuid: claim.claimGuid,
+        holdGuid: claim.holdGuid,
+        reason:
+          "OfflineOrigin 旧状态修复失败；保留 Active 与购物车等待重试。",
+      });
+      return true;
     }
   }
 

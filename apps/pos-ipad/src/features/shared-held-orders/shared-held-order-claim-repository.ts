@@ -98,6 +98,14 @@ export interface SharedHeldOrderClaimRepositoryPort {
     releasedAtIso: string;
     expectedState: "Prepared" | "Active";
   }>): Promise<boolean>;
+  /**
+   * 支付草稿已恢复相同 binding 时，兼容旧版 release 留下的 Active 孤儿：
+   * 仅在 held 已回到 Pending 且 fence 缺失时原子补回 Recalling/fence。
+   */
+  ensureRestoredOfflineOriginClaimFence(input: Readonly<{
+    claimGuid: string;
+    repairedAtIso: string;
+  }>): Promise<boolean>;
   supersedeClaim(input: Readonly<{
     claimGuid: string;
     supersedeIdempotencyKey: string;
@@ -368,6 +376,120 @@ export class SqliteSharedHeldOrderClaimRepository
       if (updated.changes !== 1) {
         throw new Error("SHARED_HELD_ORDER_CLAIM_RELEASE_CHANGED");
       }
+      return true;
+    });
+  }
+
+  public async ensureRestoredOfflineOriginClaimFence(input: Readonly<{
+    claimGuid: string;
+    repairedAtIso: string;
+  }>): Promise<boolean> {
+    const claimGuid = nonBlank(input.claimGuid, "claim guid");
+    const repairedAtIso = canonicalIso(input.repairedAtIso, "repaired at");
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const claim = await this.loadByGuid(transaction, claimGuid);
+      if (
+        !claim ||
+        claim.source !== "OfflineOrigin" ||
+        claim.state !== "Active" ||
+        claim.activateIdempotencyKey === null ||
+        claim.serverRevision !== null ||
+        claim.releaseIdempotencyKey !== null ||
+        claim.supersedeIdempotencyKey !== null ||
+        claim.boundOrderGuid !== null
+      ) {
+        return false;
+      }
+
+      const fence = await transaction.getFirst<{
+        kind: string;
+        hold_id: string;
+        recall_attempt_id: string | null;
+        bound_order_guid: string | null;
+      }>(
+        `SELECT kind, hold_id, recall_attempt_id, bound_order_guid
+         FROM terminal_cart_fences
+         WHERE store_code = ? AND device_code = ?`,
+        [claim.scope.storeCode, claim.scope.deviceCode],
+      );
+      const held = await transaction.getFirst<{
+        status: string;
+        recall_attempt_id: string | null;
+        recalling_at_iso: string | null;
+        recalling_cashier_id: string | null;
+        recalling_cashier_name: string | null;
+        is_synthetic_shared_claim: number;
+      }>(
+        `SELECT status, recall_attempt_id, recalling_at_iso,
+                recalling_cashier_id, recalling_cashier_name,
+                is_synthetic_shared_claim
+         FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?`,
+        [claim.holdGuid, claim.scope.storeCode, claim.scope.deviceCode],
+      );
+
+      const healthy =
+        fence?.kind === "RecallActive" &&
+        fence.hold_id === claim.holdGuid &&
+        fence.recall_attempt_id === claim.recallAttemptId &&
+        fence.bound_order_guid === null &&
+        held?.status === "Recalling" &&
+        held.recall_attempt_id === claim.recallAttemptId &&
+        held.recalling_at_iso === claim.createdAtIso &&
+        held.recalling_cashier_id === claim.heldBy.cashierId &&
+        held.recalling_cashier_name === claim.heldBy.cashierName &&
+        held.is_synthetic_shared_claim === 0;
+      if (healthy) return true;
+
+      if (
+        fence !== null ||
+        !held ||
+        held.status !== "Pending" ||
+        held.recall_attempt_id !== null ||
+        held.recalling_at_iso !== null ||
+        held.recalling_cashier_id !== null ||
+        held.recalling_cashier_name !== null ||
+        held.is_synthetic_shared_claim !== 0
+      ) {
+        return false;
+      }
+
+      const changed = await transaction.run(
+        `UPDATE held_order_records
+         SET status = 'Recalling', recalling_at_iso = ?, recall_attempt_id = ?,
+             recalling_cashier_id = ?, recalling_cashier_name = ?,
+             updated_at_iso = ?
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND recall_attempt_id IS NULL
+           AND recalling_at_iso IS NULL AND recalling_cashier_id IS NULL
+           AND recalling_cashier_name IS NULL AND is_synthetic_shared_claim = 0`,
+        [
+          claim.createdAtIso,
+          claim.recallAttemptId,
+          claim.heldBy.cashierId,
+          claim.heldBy.cashierName,
+          repairedAtIso,
+          claim.holdGuid,
+          claim.scope.storeCode,
+          claim.scope.deviceCode,
+        ],
+      );
+      if (changed.changes !== 1) {
+        throw new Error("SHARED_HELD_ORDER_RESTORED_HELD_REPAIR_CHANGED");
+      }
+      await transaction.run(
+        `INSERT INTO terminal_cart_fences (
+          store_code, device_code, kind, hold_id, recall_attempt_id,
+          bound_order_guid, created_at_iso
+        ) VALUES (?, ?, 'RecallActive', ?, ?, NULL, ?)`,
+        [
+          claim.scope.storeCode,
+          claim.scope.deviceCode,
+          claim.holdGuid,
+          claim.recallAttemptId,
+          claim.createdAtIso,
+        ],
+      );
       return true;
     });
   }

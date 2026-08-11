@@ -271,6 +271,7 @@ class FakeClaims implements SharedHeldOrderClaimRepositoryPort {
     releaseIdempotencyKey: string;
     expectedState: "Prepared" | "Active";
   }>[] = [];
+  public readonly restoredFenceRepairCalls: string[] = [];
   public fenceWinner: SharedHeldOrderClaim | null = null;
   public failActivate = false;
   public nextPrepareOutcome: "prepared" | "replayed" | "fence-held" | null = null;
@@ -382,6 +383,20 @@ class FakeClaims implements SharedHeldOrderClaimRepositoryPort {
       updatedAtIso: input.releasedAtIso,
     });
     return true;
+  }
+
+  public async ensureRestoredOfflineOriginClaimFence(input: Readonly<{
+    claimGuid: string;
+    repairedAtIso: string;
+  }>): Promise<boolean> {
+    this.restoredFenceRepairCalls.push(input.claimGuid);
+    const claim = this.claims.get(input.claimGuid);
+    return Boolean(
+      claim &&
+      claim.source === "OfflineOrigin" &&
+      claim.state === "Active" &&
+      claim.boundOrderGuid === null,
+    );
   }
 
   public async supersedeClaim(): Promise<boolean> {
@@ -773,6 +788,48 @@ test("崩溃恢复：购物车已带相同 claim binding 与冻结快照时按�
 
   assert.deepEqual(result.restoredClaimIds, ["offline-restored"]);
   assert.equal(cart.replaceCalls.length, 0);
+});
+
+test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保留当前购物车", async () => {
+  const claims = new FakeClaims();
+  const claim = await seedOpenClaim(claims, {
+    claimGuid: "offline-restored-orphan",
+    holdGuid: "hold-offline",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+  const frozenPricingState = fromSharedSaleCartV1(claim.payload);
+  const pricingState: PricingCartStateSnapshot = {
+    ...frozenPricingState,
+    revision: frozenPricingState.revision + 1,
+    lines: frozenPricingState.lines.map((line) => ({
+      ...line,
+      quantity: 2,
+    })),
+  };
+  const cart = new FakeCart({
+    ...snapshot(0),
+    pricingState,
+    cart: cartFromPricing(pricingState),
+    recallBinding: {
+      kind: "recalled",
+      scope: SCOPE,
+      holdId: claim.holdGuid,
+      recallAttemptId: claim.recallAttemptId,
+    },
+  });
+  const { coordinator } = makeCoordinator({ claims, cart });
+
+  const result = await coordinator.reconcileClaims();
+
+  assert.deepEqual(
+    claims.restoredFenceRepairCalls,
+    ["offline-restored-orphan"],
+  );
+  assert.deepEqual(result.restoredClaimIds, ["offline-restored-orphan"]);
+  assert.equal((await claims.getClaim(claim.claimGuid))?.state, "Active");
+  assert.equal(cart.replaceCalls.length, 0);
+  assert.equal(cart.value.pricingState.lines[0]?.quantity, 2);
 });
 
 test("主管强制释放：Remote Active 先服务端释放，再精确清理匹配购物车和本地 fence", async () => {
