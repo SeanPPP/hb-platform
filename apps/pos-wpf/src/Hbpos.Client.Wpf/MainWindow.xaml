@@ -157,14 +157,11 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="32" Height="32" Background="{StaticResource PosPrimaryBrush}" CornerRadius="8" Margin="0,0,10,0">
-                        <materialDesign:PackIcon Kind="CashRegister"
-                                                 Width="18"
-                                                 Height="18"
-                                                 Foreground="White"
-                                                 HorizontalAlignment="Center"
-                                                 VerticalAlignment="Center" />
-                    </Border>
+                    <Image Width="32"
+                           Height="32"
+                           Margin="0,0,10,0"
+                           Source="pack://application:,,,/Resources/AppIcon.ico"
+                           Stretch="Uniform" />
                     <TextBlock Text="{loc:Loc AppName}"
                                FontWeight="Black"
                                FontSize="16"
@@ -2286,4 +2283,3 @@
         </Border>
     </Grid>
 </Window>
-

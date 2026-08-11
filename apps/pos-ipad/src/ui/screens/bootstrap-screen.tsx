@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Image,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -92,9 +93,13 @@ export function BootstrapScreen() {
       <PosStatusStrip />
       <View style={[styles.page, compact && styles.pageCompact]}>
         <View style={styles.brandRail}>
-          <View style={styles.brandMark}>
-            <Text style={styles.brandLetters}>HB</Text>
-          </View>
+          <Image
+            accessibilityIgnoresInvertColors
+            accessible={false}
+            resizeMode="contain"
+            source={require("../../../assets/icon.png")}
+            style={styles.brandMark}
+          />
           <View>
             <Text style={styles.brandName}>{t("app.name")}</Text>
             <Text style={styles.eyebrow}>{t("bootstrap.eyebrow")}</Text>
@@ -203,17 +208,9 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   brandMark: {
-    width: 48,
+    borderRadius: 11,
     height: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: posColors.ink,
-  },
-  brandLetters: {
-    color: "#FFFFFF",
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: 0.5,
+    width: 48,
   },
   brandName: {
     color: posColors.ink,

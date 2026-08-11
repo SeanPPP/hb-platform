@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ActivityIndicator,
+  Image,
   Keyboard,
   StyleSheet,
   Text,
@@ -282,9 +283,13 @@ export function CashierLoginScreen({
       />
       <View style={styles.page} testID="cashier-login-page">
         <View style={styles.contextPanel}>
-          <View style={styles.brandMark}>
-            <Text style={styles.brandLetters}>HB</Text>
-          </View>
+          <Image
+            accessibilityIgnoresInvertColors
+            accessible={false}
+            resizeMode="contain"
+            source={require("../../../assets/icon.png")}
+            style={styles.brandMark}
+          />
           <Text style={styles.eyebrow}>{text.eyebrow}</Text>
           <Text style={styles.title}>{text.title}</Text>
           <Text style={styles.subtitle}>{text.subtitle}</Text>
@@ -500,18 +505,10 @@ const styles = StyleSheet.create({
     padding: 48,
   },
   brandMark: {
-    alignItems: "center",
-    backgroundColor: posColors.orange,
+    borderRadius: 12,
     height: 52,
-    justifyContent: "center",
     marginBottom: 30,
     width: 52,
-  },
-  brandLetters: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: 1,
   },
   eyebrow: {
     color: "#F9C1AD",

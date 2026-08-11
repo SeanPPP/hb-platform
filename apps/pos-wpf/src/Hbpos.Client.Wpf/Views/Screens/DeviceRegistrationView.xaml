@@ -26,14 +26,11 @@
             </Border.Effect>
             <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,22">
-                    <Border Width="42" Height="42" Background="{StaticResource PosPrimaryBrush}" CornerRadius="8" Margin="0,0,12,0">
-                        <materialDesign:PackIcon Kind="CashRegister"
-                                                 Width="22"
-                                                 Height="22"
-                                                 Foreground="White"
-                                                 HorizontalAlignment="Center"
-                                                 VerticalAlignment="Center" />
-                    </Border>
+                    <Image Width="42"
+                           Height="42"
+                           Margin="0,0,12,0"
+                           Source="pack://application:,,,/Resources/AppIcon.ico"
+                           Stretch="Uniform" />
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="{Binding TitleText}"
                                    FontSize="22"

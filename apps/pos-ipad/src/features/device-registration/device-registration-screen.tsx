@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -189,9 +190,13 @@ export function DeviceRegistrationScreen() {
       </View>
       <View style={styles.page}>
         <View style={styles.contextPanel}>
-          <View style={styles.brandMark}>
-            <Text style={styles.brandLetters}>HB</Text>
-          </View>
+          <Image
+            accessibilityIgnoresInvertColors
+            accessible={false}
+            resizeMode="contain"
+            source={require("../../../assets/icon.png")}
+            style={styles.brandMark}
+          />
           <Text style={styles.eyebrow}>{t("registration.eyebrow")}</Text>
           <Text style={styles.title}>{t("registration.title")}</Text>
           <Text style={styles.subtitle}>{t("registration.subtitle")}</Text>
@@ -566,13 +571,10 @@ const styles = StyleSheet.create({
   },
   contextPanel: { flex: 1, justifyContent: "center", maxWidth: 520 },
   brandMark: {
-    width: 52,
+    borderRadius: 12,
     height: 52,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: posColors.ink,
+    width: 52,
   },
-  brandLetters: { color: "#FFFFFF", fontSize: 19, fontWeight: "900" },
   eyebrow: {
     marginTop: 28,
     color: posColors.orange,
