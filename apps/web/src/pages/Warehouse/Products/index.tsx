@@ -16,7 +16,7 @@ import { exportDomesticProductsToExcel, type ExportResult } from '../../../servi
 import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
 import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
 import { getPushToHqStoreOptions, pushProductsToHq } from '../../../services/posProductService';
-import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, patchWarehouseProduct, updateWarehouseProductFull, type PatchWarehouseProductPayload, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { batchAssignProducts, getCategoryTree, type WarehouseCategoryNode, } from '../../../services/warehouseCategoryService';
 import { useAuthStore } from '../../../store/auth';
 import type { SupplierOption, } from '../../../types/domesticProduct';
@@ -313,6 +313,31 @@ const warehouseProductsTableStyle = `
     padding-top: 10px;
     border-top: 1px solid #f0f0f0;
   }
+
+  .warehouse-products-inline-value {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    border-radius: 4px;
+  }
+
+  .warehouse-products-inline-value.is-editable {
+    cursor: text;
+  }
+
+  .warehouse-products-inline-value.is-editable:hover {
+    background: #f5f5f5;
+  }
+
+  .warehouse-products-inline-editor.ant-input-number {
+    width: 100%;
+    height: 28px;
+  }
+
+  .warehouse-products-inline-editor .ant-input-number-input {
+    height: 26px;
+    padding-inline: 6px;
+  }
 `;
 function formatDateTime(value?: string, language?: string) {
     if (!value) {
@@ -331,6 +356,13 @@ function formatPrice(value?: number) {
     }
     return value.toFixed(2);
 }
+type WarehouseProductInlineEditField = 'minOrderQuantity' | 'domesticPrice' | 'importPrice' | 'labelPrice';
+type WarehouseProductInlineEditCell = {
+    productCode: string;
+    field: WarehouseProductInlineEditField;
+    value: number | null;
+    originalValue?: number;
+};
 type SupplierSelectOption = DefaultOptionType & {
     searchText?: string;
 };
@@ -649,6 +681,8 @@ export default function WarehouseProductsPage() {
     const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>();
     const [batchCategorySaving, setBatchCategorySaving] = useState(false);
     const [data, setData] = useState<WarehouseProductListItem[]>([]);
+    const [inlineEditingCell, setInlineEditingCell] = useState<WarehouseProductInlineEditCell | null>(null);
+    const [inlineSavingCellKey, setInlineSavingCellKey] = useState<string | null>(null);
     const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
     const [searchText, setSearchText] = useState('');
     const [supplierCode, setSupplierCode] = useState<string>();
@@ -699,6 +733,8 @@ export default function WarehouseProductsPage() {
     const selectedRowKeysRef = useRef<React.Key[]>([]);
     const loadDataRef = useRef<((overrides?: Partial<WarehouseProductsTableQuery>) => Promise<void>) | null>(null);
     const listRequestGuardRef = useRef(createLatestRequestGuard());
+    const inlineSaveLockRef = useRef<string | null>(null);
+    const inlineCancelledCellRef = useRef<string | null>(null);
     useLayoutEffect(() => {
         dataRef.current = data;
         selectedRowKeysRef.current = selectedRowKeys;
@@ -708,8 +744,10 @@ export default function WarehouseProductsPage() {
             distance: 6,
         },
     }));
-    const { access } = useAuthStore();
+    const { access, currentUser } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
+    const canInlineEditWarehouseProduct = currentUser?.roleNames?.some((roleName) =>
+        roleName === 'Admin' || roleName === 'WarehouseManager') ?? false;
     const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
     const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language), [categories, i18n.language, t]);
     const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;
@@ -1112,7 +1150,7 @@ export default function WarehouseProductsPage() {
             importPrice: record.importPrice,
             packingQuantity: record.packingQty,
             unitVolume: record.volume,
-            middlePackQuantity: record.middlePackQty,
+            middlePackQuantity: record.minOrderQuantity,
             productImage: record.productImage,
             isActive: record.isActive,
         });
@@ -1140,7 +1178,7 @@ export default function WarehouseProductsPage() {
                 importPrice: values.importPrice,
                 packingQuantity: values.packingQuantity,
                 unitVolume: values.unitVolume,
-                middlePackQuantity: values.middlePackQuantity,
+                minOrderQuantity: values.middlePackQuantity,
                 packingSize: values.packingSize,
                 material: values.material,
                 remark: values.remarks,
@@ -1162,6 +1200,125 @@ export default function WarehouseProductsPage() {
         finally {
             setSaving(false);
         }
+    };
+    const getInlineCellKey = (cell: Pick<WarehouseProductInlineEditCell, 'productCode' | 'field'>) => `${cell.productCode}:${cell.field}`;
+    const handleStartInlineEdit = (record: WarehouseProductListItem, field: WarehouseProductInlineEditField) => {
+        if (!canInlineEditWarehouseProduct || inlineSaveLockRef.current) return;
+        inlineCancelledCellRef.current = null;
+        const value = record[field];
+        setInlineEditingCell({
+            productCode: record.productCode,
+            field,
+            value: value ?? null,
+            originalValue: value,
+        });
+    };
+    const handleInlineValueChange = (cell: WarehouseProductInlineEditCell, value: number | null) => {
+        const cellKey = getInlineCellKey(cell);
+        setInlineEditingCell((current) => current && getInlineCellKey(current) === cellKey
+            ? { ...current, value }
+            : current);
+    };
+    const handleCancelInlineEdit = (cell: WarehouseProductInlineEditCell) => {
+        inlineCancelledCellRef.current = getInlineCellKey(cell);
+        setInlineEditingCell(null);
+    };
+    const handleInlineSave = async (cell: WarehouseProductInlineEditCell) => {
+        const cellKey = getInlineCellKey(cell);
+        if (inlineCancelledCellRef.current === cellKey) {
+            inlineCancelledCellRef.current = null;
+            return;
+        }
+        if (inlineSaveLockRef.current) return;
+        const value = cell.value;
+        if (value === null || value === undefined) {
+            setInlineEditingCell(null);
+            return;
+        }
+        if (value < 0) {
+            message.error(t('warehouse.nonNegativeValueRequired', '请输入非负数'));
+            return;
+        }
+        if (value === cell.originalValue) {
+            setInlineEditingCell(null);
+            return;
+        }
+
+        const payload: PatchWarehouseProductPayload = cell.field === 'minOrderQuantity'
+            ? { minOrderQuantity: value }
+            : cell.field === 'domesticPrice'
+                ? { domesticPrice: value }
+                : cell.field === 'importPrice'
+                    ? { importPrice: value }
+                    : { oemPrice: value };
+
+        // Enter 可能紧接着触发 blur；ref 锁必须在第一个 await 前占用，确保只发一次 PATCH。
+        inlineSaveLockRef.current = cellKey;
+        setInlineSavingCellKey(cellKey);
+        try {
+            await patchWarehouseProduct(cell.productCode, payload);
+            if (!isMountedRef.current) return;
+            setData((current) => current.map((item) => item.productCode === cell.productCode
+                ? { ...item, [cell.field]: value }
+                : item));
+            setInlineEditingCell(null);
+            message.success(t('common.saveSuccess', '保存成功'));
+            await refreshCurrentList();
+        }
+        catch (error) {
+            if (!isMountedRef.current) return;
+            setData((current) => current.map((item) => item.productCode === cell.productCode
+                ? { ...item, [cell.field]: cell.originalValue }
+                : item));
+            inlineCancelledCellRef.current = cellKey;
+            setInlineEditingCell(null);
+            console.error(error);
+            message.error(error instanceof Error ? error.message : t('warehouse.saveProductFailed'));
+        }
+        finally {
+            inlineSaveLockRef.current = null;
+            if (isMountedRef.current) {
+                setInlineSavingCellKey(null);
+            }
+        }
+    };
+    const renderInlineEditableNumberCell = (record: WarehouseProductListItem, field: WarehouseProductInlineEditField) => {
+        const cellKey = getInlineCellKey({ productCode: record.productCode, field });
+        const cell = inlineEditingCell && getInlineCellKey(inlineEditingCell) === cellKey
+            ? inlineEditingCell
+            : null;
+        const isSaving = inlineSavingCellKey === cellKey;
+        if (cell) {
+            return (<InputNumber
+              className="warehouse-products-inline-editor"
+              value={cell.value}
+              min={0}
+              precision={field === 'minOrderQuantity' ? 0 : 2}
+              controls={false}
+              autoFocus
+              disabled={isSaving}
+              onChange={(value) => handleInlineValueChange(cell, value)}
+              onBlur={() => void handleInlineSave(cell)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleInlineSave(cell);
+                }
+                else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    handleCancelInlineEdit(cell);
+                }
+            }}/>)
+        }
+        const value = record[field];
+        return (<div
+          className={`warehouse-products-inline-value${canInlineEditWarehouseProduct ? ' is-editable' : ''}`}
+          title={canInlineEditWarehouseProduct ? t('warehouse.doubleClickToEdit', '双击编辑') : undefined}
+          onDoubleClick={canInlineEditWarehouseProduct ? () => handleStartInlineEdit(record, field) : undefined}>
+          {field === 'minOrderQuantity'
+            ? value ?? '--'
+            : formatPrice(value)}
+        </div>);
     };
     const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {
         const errors = result.errors ?? [];
@@ -1773,7 +1930,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'minOrderQuantity',
             width: 96,
             ...numberRangeFilterProps('minOrderQuantity'),
-            render: (value: number | undefined) => value !== undefined && value !== null ? value : '--',
+            render: (_value, record) => renderInlineEditableNumberCell(record, 'minOrderQuantity'),
         },
         {
             key: 'domesticPrice',
@@ -1781,7 +1938,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'domesticPrice',
             width: 96,
             ...numberRangeFilterProps('domesticPrice'),
-            render: (value: number | undefined) => formatPrice(value),
+            render: (_value, record) => renderInlineEditableNumberCell(record, 'domesticPrice'),
         },
         {
             key: 'importPrice',
@@ -1789,7 +1946,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'importPrice',
             width: 96,
             ...numberRangeFilterProps('importPrice'),
-            render: (value: number | undefined) => formatPrice(value),
+            render: (_value, record) => renderInlineEditableNumberCell(record, 'importPrice'),
         },
         {
             key: 'labelPrice',
@@ -1797,7 +1954,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'labelPrice',
             width: 96,
             ...numberRangeFilterProps('oemPrice'),
-            render: (value: number | undefined) => formatPrice(value),
+            render: (_value, record) => renderInlineEditableNumberCell(record, 'labelPrice'),
         },
         {
             key: 'isActive',
@@ -1922,7 +2079,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canWriteProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
+    ], [access.canWriteProduct, canInlineEditWarehouseProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, inlineEditingCell, inlineSavingCellKey, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
     const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
     useEffect(() => {
         setColumnOrder((current) => {

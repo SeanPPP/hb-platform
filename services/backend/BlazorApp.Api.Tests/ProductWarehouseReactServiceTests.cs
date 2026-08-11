@@ -3205,6 +3205,589 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(1, payload.ProductCount);
         }
 
+        [Fact]
+        public async Task PatchAsync_MinOrderQuantity_UpdatesWarehouseAndDomesticMiddlePackQuantity()
+        {
+            const string productCode = "P-PATCH-MIN";
+            await SeedPatchProductAsync(
+                productCode,
+                minOrderQuantity: 3,
+                middlePackQuantity: 7,
+                productMiddlePackageQuantity: 9,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m
+            );
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { MinOrderQuantity = 5 },
+                "仓库员P1"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal(5, warehouseProduct.MinOrderQuantity);
+            Assert.Equal(5, domesticProduct.MiddlePackQuantity);
+            Assert.Equal(9, product.MiddlePackageQuantity);
+            Assert.Equal("仓库员P1", warehouseProduct.UpdatedBy);
+            Assert.Equal("仓库员P1", domesticProduct.UpdatedBy);
+            Assert.Equal(2.2m, warehouseProduct.OEMPrice);
+            Assert.Equal(3.3m, warehouseProduct.ImportPrice);
+            Assert.Equal(2.2m, domesticProduct.OEMPrice);
+            Assert.Equal(3.3m, domesticProduct.ImportPrice);
+        }
+
+        [Fact]
+        public async Task PatchAsync_MinOrderQuantity_ZeroAccepted_AndNoDomesticProductCreated()
+        {
+            const string productCode = "P-PATCH-MIN-ZERO";
+            await SeedPatchProductAsync(productCode, seedDomestic: false);
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { MinOrderQuantity = 0 },
+                "仓库员P2"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal(0, warehouseProduct.MinOrderQuantity);
+            var domesticCount = await _db.Queryable<DomesticProduct>()
+                .Where(x => x.ProductCode == productCode)
+                .CountAsync();
+            Assert.Equal(0, domesticCount);
+        }
+
+        [Fact]
+        public async Task PatchAsync_DomesticPrice_UpdatesWarehouseAndValidDomesticOnly()
+        {
+            const string productCode = "P-PATCH-DOMESTIC";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { DomesticPrice = 4.4m },
+                "仓库员P3"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal(4.4m, warehouseProduct.DomesticPrice);
+            Assert.Equal(4.4m, domesticProduct.DomesticPrice);
+            Assert.Equal(2.2m, warehouseProduct.OEMPrice);
+            Assert.Equal(3.3m, warehouseProduct.ImportPrice);
+            Assert.Equal(2.2m, domesticProduct.OEMPrice);
+            Assert.Equal(3.3m, domesticProduct.ImportPrice);
+            Assert.Equal(3.3m, product.PurchasePrice);
+            Assert.Equal(2.2m, product.RetailPrice);
+        }
+
+        [Fact]
+        public async Task PatchAsync_MinOrderQuantity_NarrowUpdateDoesNotWriteOtherWarehouseColumns()
+        {
+            const string productCode = "P-PATCH-NARROW-MIN";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m
+            );
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_min_must_not_write_other_warehouse_columns
+                BEFORE UPDATE OF DomesticPrice, OEMPrice, ImportPrice, StockQuantity, PackingQuantity, Volume ON WarehouseProduct
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    SELECT RAISE(ABORT, 'MinOrderQuantity PATCH 不应写入其他仓库列');
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { MinOrderQuantity = 5 },
+                "仓库员P4"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+        }
+
+        [Fact]
+        public async Task PatchAsync_DomesticPrice_NarrowUpdateDoesNotWriteOtherDomesticColumns()
+        {
+            const string productCode = "P-PATCH-NARROW-DOMESTIC";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m
+            );
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_domestic_must_not_write_other_domestic_columns
+                BEFORE UPDATE OF OEMPrice, ImportPrice, PackingQuantity, UnitVolume, MiddlePackQuantity ON DomesticProduct
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    SELECT RAISE(ABORT, 'DomesticPrice PATCH 不应写入其他国内商品列');
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { DomesticPrice = 4.4m },
+                "仓库员P5"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+        }
+
+        [Fact]
+        public async Task PatchAsync_DomesticPrice_WhenDomesticUpdateFails_RollsBackWarehouseUpdate()
+        {
+            const string productCode = "P-PATCH-ROLLBACK-DOMESTIC";
+            await SeedPatchProductAsync(productCode, domesticPrice: 1.1m);
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_domestic_force_rollback
+                BEFORE UPDATE OF DomesticPrice ON DomesticProduct
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    SELECT RAISE(ABORT, '强制国内商品更新失败');
+                END;
+                """
+            );
+
+            await Assert.ThrowsAnyAsync<Exception>(() =>
+                CreateService().PatchAsync(
+                    productCode,
+                    new WarehouseProductPatchDto { DomesticPrice = 4.4m },
+                    "仓库员回滚测试"
+                )
+            );
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal(1.1m, warehouseProduct.DomesticPrice);
+            Assert.Equal(1.1m, domesticProduct.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task PatchAsync_ImportPrice_UpdatesPurchasePriceRangeAndCreatesMissingStoreRows()
+        {
+            const string productCode = "P-PATCH-IMPORT";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreAsync("S02", isActive: true, isDeleted: false);
+            await SeedStoreAsync("S03", isActive: false, isDeleted: false);
+            await SeedStoreAsync("S04", isActive: true, isDeleted: true);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 3.3m, retailPrice: 2.2m);
+            await SeedStoreRetailPriceAsync("S03", productCode, purchasePrice: 9.9m, retailPrice: 8.8m);
+            await SeedStoreRetailPriceAsync("S04", productCode, purchasePrice: 9.9m, retailPrice: 8.8m);
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { ImportPrice = 5.55m },
+                "仓库员P6"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var prices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.StoreCode)
+                .ToListAsync();
+
+            Assert.Equal(5.55m, product.PurchasePrice);
+            Assert.Equal(2.2m, product.RetailPrice);
+            Assert.Equal(5.55m, warehouseProduct.ImportPrice);
+            Assert.Equal(5.55m, domesticProduct.ImportPrice);
+            Assert.Equal(2.2m, warehouseProduct.OEMPrice);
+            Assert.Equal(2.2m, domesticProduct.OEMPrice);
+
+            var s01 = Assert.Single(prices, x => x.StoreCode == "S01" && !x.IsDeleted);
+            Assert.Equal(5.55m, s01.PurchasePrice);
+            Assert.Equal(2.2m, s01.StoreRetailPriceValue);
+            Assert.Equal("仓库员P6", s01.UpdatedBy);
+
+            var s02 = Assert.Single(prices, x => x.StoreCode == "S02" && !x.IsDeleted);
+            Assert.Equal("S02" + productCode, s02.StoreProductCode);
+            Assert.Equal(5.55m, s02.PurchasePrice);
+            Assert.Equal(2.2m, s02.StoreRetailPriceValue);
+            Assert.Equal("仓库员P6", s02.CreatedBy);
+            Assert.Equal("仓库员P6", s02.UpdatedBy);
+
+            var s03 = Assert.Single(prices, x => x.StoreCode == "S03");
+            Assert.Equal(9.9m, s03.PurchasePrice);
+            Assert.Equal(8.8m, s03.StoreRetailPriceValue);
+
+            var s04 = Assert.Single(prices, x => x.StoreCode == "S04");
+            Assert.Equal(9.9m, s04.PurchasePrice);
+            Assert.Equal(8.8m, s04.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task PatchAsync_ImportPrice_DoesNotResurrectSoftDeletedStorePrice()
+        {
+            const string productCode = "P-PATCH-IMPORT-SOFT";
+            await SeedPatchProductAsync(
+                productCode,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync(
+                "S01",
+                productCode,
+                purchasePrice: 1.1m,
+                retailPrice: 2.2m,
+                isDeleted: true
+            );
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { ImportPrice = 5.55m },
+                "仓库员P7"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var prices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.StoreCode)
+                .ToListAsync();
+            var softDeleted = Assert.Single(prices, x => x.IsDeleted);
+            Assert.Equal(1.1m, softDeleted.PurchasePrice);
+            Assert.Equal(2.2m, softDeleted.StoreRetailPriceValue);
+            var active = Assert.Single(prices, x => !x.IsDeleted);
+            Assert.Equal(5.55m, active.PurchasePrice);
+            Assert.Equal("仓库员P7", active.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task PatchAsync_OEMPrice_UpdatesRetailPriceRangeWithoutTouchingPurchasePrice()
+        {
+            const string productCode = "P-PATCH-OEM";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 2.2m,
+                importPrice: 3.3m,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreAsync("S02", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 3.3m, retailPrice: 2.2m);
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { OEMPrice = 6.66m },
+                "仓库员P8"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var prices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.StoreCode)
+                .ToListAsync();
+
+            Assert.Equal(6.66m, product.RetailPrice);
+            Assert.Equal(3.3m, product.PurchasePrice);
+            Assert.Equal(6.66m, warehouseProduct.OEMPrice);
+            Assert.Equal(6.66m, domesticProduct.OEMPrice);
+            Assert.Equal(3.3m, warehouseProduct.ImportPrice);
+            Assert.Equal(3.3m, domesticProduct.ImportPrice);
+
+            var s01 = Assert.Single(prices, x => x.StoreCode == "S01" && !x.IsDeleted);
+            Assert.Equal(6.66m, s01.StoreRetailPriceValue);
+            Assert.Equal(3.3m, s01.PurchasePrice);
+            Assert.Equal("仓库员P8", s01.UpdatedBy);
+
+            var s02 = Assert.Single(prices, x => x.StoreCode == "S02" && !x.IsDeleted);
+            Assert.Equal(6.66m, s02.StoreRetailPriceValue);
+            Assert.Equal(3.3m, s02.PurchasePrice);
+            Assert.Equal("仓库员P8", s02.CreatedBy);
+            Assert.Equal("仓库员P8", s02.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task PatchAsync_OEMPrice_WhenMasterPurchaseChangesAfterInitialRead_UsesCurrentPurchaseForMissingStoreRow()
+        {
+            const string productCode = "P-PATCH-OEM-CURRENT-MASTER";
+            await SeedPatchProductAsync(
+                productCode,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_oem_refresh_master_price
+                AFTER UPDATE OF OEMPrice ON WarehouseProduct
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    UPDATE Product SET PurchasePrice = 9.9 WHERE ProductCode = '{productCode}';
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { OEMPrice = 6.66m },
+                "仓库员并发测试"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var price = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.ProductCode == productCode && x.StoreCode == "S01" && !x.IsDeleted);
+            Assert.Equal(9.9m, price.PurchasePrice);
+            Assert.Equal(6.66m, price.StoreRetailPriceValue);
+        }
+
+        [Fact]
+        public async Task PatchAsync_WhenProductBecomesDeletedAfterWarehouseUpdate_RollsBackAndReturnsMissing()
+        {
+            const string productCode = "P-PATCH-CONCURRENT-DELETE";
+            await SeedPatchProductAsync(productCode, domesticPrice: 1.1m);
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_soft_delete_product
+                AFTER UPDATE OF DomesticPrice ON WarehouseProduct
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    UPDATE Product SET IsDeleted = 1 WHERE ProductCode = '{productCode}';
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { DomesticPrice = 4.4m },
+                "仓库员删除竞态"
+            );
+
+            Assert.Null(result);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal(1.1m, warehouseProduct.DomesticPrice);
+            Assert.Equal(1.1m, domesticProduct.DomesticPrice);
+            Assert.False(product.IsDeleted);
+        }
+
+        [Fact]
+        public async Task PatchAsync_ImportPrice_NarrowUpdateDoesNotWriteStoreRetailPriceValue()
+        {
+            const string productCode = "P-PATCH-IMPORT-NARROW";
+            await SeedPatchProductAsync(
+                productCode,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 3.3m, retailPrice: 2.2m);
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_import_must_not_write_retail_price
+                BEFORE UPDATE OF StoreRetailPriceValue ON StoreRetailPrice
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    SELECT RAISE(ABORT, 'ImportPrice PATCH 不应写入分店零售价');
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { ImportPrice = 5.55m },
+                "仓库员P9"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+        }
+
+        [Fact]
+        public async Task PatchAsync_OEMPrice_NarrowUpdateDoesNotWriteStorePurchasePrice()
+        {
+            const string productCode = "P-PATCH-OEM-NARROW";
+            await SeedPatchProductAsync(
+                productCode,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 2.2m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 3.3m, retailPrice: 2.2m);
+            await _db.Ado.ExecuteCommandAsync(
+                $"""
+                CREATE TRIGGER trg_patch_oem_must_not_write_purchase_price
+                BEFORE UPDATE OF PurchasePrice ON StoreRetailPrice
+                WHEN OLD.ProductCode = '{productCode}'
+                BEGIN
+                    SELECT RAISE(ABORT, 'OEMPrice PATCH 不应写入分店进货价');
+                END;
+                """
+            );
+
+            var result = await CreateService().PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { OEMPrice = 6.66m },
+                "仓库员P10"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidPatchDtos))]
+        public async Task PatchAsync_InvalidDto_ThrowsInvalidOperationException(WarehouseProductPatchDto dto)
+        {
+            const string productCode = "P-PATCH-INVALID";
+            await SeedPatchProductAsync(productCode);
+            var service = CreateService();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.PatchAsync(productCode, dto)
+            );
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task PatchAsync_ProductOrWarehouseProductMissing_ReturnsNull(
+            bool seedProduct,
+            bool seedWarehouse
+        )
+        {
+            const string productCode = "P-PATCH-MISSING";
+            if (seedProduct)
+            {
+                await _db.Insertable(new Product
+                {
+                    UUID = $"patch-{productCode}-uuid",
+                    ProductCode = productCode,
+                    ProductName = productCode,
+                    ItemNumber = $"ITEM-{productCode}",
+                    Barcode = $"BAR-{productCode}",
+                    IsActive = true,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+            if (seedWarehouse)
+            {
+                await _db.Insertable(new WarehouseProduct
+                {
+                    ProductCode = productCode,
+                    IsActive = true,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+            var service = CreateService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { DomesticPrice = 1m },
+                "仓库员P11"
+            );
+
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_MinOrderQuantity_SyncsDomesticMiddlePackQuantityWithoutChangingProductMiddlePackageQuantity()
+        {
+            const string productCode = "P-FULL-MIN";
+            await SeedPatchProductAsync(
+                productCode,
+                minOrderQuantity: 3,
+                middlePackQuantity: 7,
+                productMiddlePackageQuantity: 9
+            );
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    MinOrderQuantity = 4,
+                    IsActive = true,
+                },
+                "仓库员P12"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode);
+
+            Assert.Equal(4, warehouseProduct.MinOrderQuantity);
+            Assert.Equal(4, domesticProduct.MiddlePackQuantity);
+            Assert.Equal(9, product.MiddlePackageQuantity);
+        }
+
         public void Dispose()
         {
             _db.Dispose();
@@ -3433,6 +4016,73 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
+        private async Task SeedPatchProductAsync(
+            string productCode,
+            bool seedDomestic = true,
+            decimal? domesticPrice = null,
+            decimal? oemPrice = null,
+            decimal? importPrice = null,
+            int? minOrderQuantity = null,
+            int? middlePackQuantity = null,
+            int? productMiddlePackageQuantity = null,
+            decimal? productPurchasePrice = null,
+            decimal? productRetailPrice = null
+        )
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = $"patch-{productCode}-uuid",
+                ProductCode = productCode,
+                ProductName = productCode,
+                ItemNumber = $"ITEM-{productCode}",
+                Barcode = $"BAR-{productCode}",
+                LocalSupplierCode = "LOCAL-01",
+                PurchasePrice = productPurchasePrice,
+                RetailPrice = productRetailPrice,
+                MiddlePackageQuantity = productMiddlePackageQuantity,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = productCode,
+                DomesticPrice = domesticPrice,
+                OEMPrice = oemPrice,
+                ImportPrice = importPrice,
+                MinOrderQuantity = minOrderQuantity,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            if (seedDomestic)
+            {
+                await _db.Insertable(new DomesticProduct
+                {
+                    ProductCode = productCode,
+                    DomesticPrice = domesticPrice,
+                    OEMPrice = oemPrice,
+                    ImportPrice = importPrice,
+                    MiddlePackQuantity = middlePackQuantity,
+                    IsActive = true,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+        }
+
+        public static IEnumerable<object[]> InvalidPatchDtos()
+        {
+            yield return new object[] { new WarehouseProductPatchDto() };
+            yield return new object[]
+            {
+                new WarehouseProductPatchDto { DomesticPrice = 1m, ImportPrice = 2m },
+            };
+            yield return new object[] { new WarehouseProductPatchDto { MinOrderQuantity = -1 } };
+            yield return new object[] { new WarehouseProductPatchDto { DomesticPrice = -0.01m } };
+            yield return new object[] { new WarehouseProductPatchDto { ImportPrice = -1m } };
+            yield return new object[] { new WarehouseProductPatchDto { OEMPrice = -1m } };
+        }
+
         private async Task SeedStoreAsync(string storeCode, bool isActive, bool isDeleted)
         {
             await _db.Insertable(new Store
@@ -3449,7 +4099,9 @@ namespace BlazorApp.Api.Tests
             string storeCode,
             string productCode,
             decimal purchasePrice,
-            decimal retailPrice
+            decimal retailPrice,
+            bool isDeleted = false,
+            bool isActive = true
         )
         {
             await _db.Insertable(new StoreRetailPrice
@@ -3462,10 +4114,10 @@ namespace BlazorApp.Api.Tests
                 PurchasePrice = purchasePrice,
                 StoreRetailPriceValue = retailPrice,
                 DiscountRate = null,
-                IsActive = true,
+                IsActive = isActive,
                 IsAutoPricing = false,
                 IsSpecialProduct = false,
-                IsDeleted = false,
+                IsDeleted = isDeleted,
             }).ExecuteCommandAsync();
         }
 

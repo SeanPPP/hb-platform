@@ -392,6 +392,56 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 仓库商品窄列 PATCH 请求项：一次只能更新四个字段之一（MinOrderQuantity/DomesticPrice/ImportPrice/OEMPrice），且不能为负数。
+    /// </summary>
+    public class WarehouseProductPatchDto
+    {
+        public int? MinOrderQuantity { get; set; }
+        public decimal? DomesticPrice { get; set; }
+        public decimal? ImportPrice { get; set; }
+        public decimal? OEMPrice { get; set; }
+
+        /// <summary>
+        /// 校验 PATCH 请求：无字段、多字段或负值返回错误消息，合法返回 null。
+        /// </summary>
+        public static string? Validate(WarehouseProductPatchDto dto)
+        {
+            var fieldCount = 0;
+            if (dto.MinOrderQuantity.HasValue)
+                fieldCount++;
+            if (dto.DomesticPrice.HasValue)
+                fieldCount++;
+            if (dto.ImportPrice.HasValue)
+                fieldCount++;
+            if (dto.OEMPrice.HasValue)
+                fieldCount++;
+
+            if (fieldCount == 0)
+                return "必须且只能提供一个更新字段（MinOrderQuantity/DomesticPrice/ImportPrice/OEMPrice）";
+            if (fieldCount > 1)
+                return "一次只能更新一个字段（MinOrderQuantity/DomesticPrice/ImportPrice/OEMPrice）";
+            if (dto.MinOrderQuantity.HasValue && dto.MinOrderQuantity.Value < 0)
+                return "MinOrderQuantity 不能为负数";
+            if (dto.DomesticPrice.HasValue && dto.DomesticPrice.Value < 0)
+                return "DomesticPrice 不能为负数";
+            if (dto.ImportPrice.HasValue && dto.ImportPrice.Value < 0)
+                return "ImportPrice 不能为负数";
+            if (dto.OEMPrice.HasValue && dto.OEMPrice.Value < 0)
+                return "OEMPrice 不能为负数";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 仓库商品窄列 PATCH 结果
+    /// </summary>
+    public class WarehouseProductPatchResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 仓库商品批量上下架请求
     /// </summary>
     public class BatchToggleWarehouseProductsActiveRequestDto

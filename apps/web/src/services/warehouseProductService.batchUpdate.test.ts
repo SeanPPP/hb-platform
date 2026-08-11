@@ -1,4 +1,8 @@
-import { batchUpdateWarehouseProducts } from './warehouseProductService'
+import {
+  batchUpdateWarehouseProducts,
+  patchWarehouseProduct,
+  updateWarehouseProductFull,
+} from './warehouseProductService'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -69,6 +73,32 @@ try {
     },
     '批量更新请求体应保留数量零值和 false，并忽略 undefined 字段',
   )
+
+  capturedMethod = undefined
+  capturedBody = undefined
+  await patchWarehouseProduct('HB 001', { oemPrice: 0 })
+
+  assert(capturedBody, '应捕获仓库商品单字段更新请求体')
+  assert(capturedUrl.endsWith('/api/react/v1/product-warehouse/HB%20001'), '单字段更新应编码商品货号并调用仓库商品根 PATCH 接口')
+  assert(capturedMethod === 'PATCH', '单字段更新应使用 PATCH 方法')
+  assertDeepEqual(
+    capturedBody,
+    { OEMPrice: 0 },
+    '单字段更新应只发送一个 PascalCase 字段并保留零值',
+  )
+
+  capturedMethod = undefined
+  capturedBody = undefined
+  await updateWarehouseProductFull('P001', {
+    minOrderQuantity: 0,
+    isActive: true,
+  })
+
+  const fullUpdateBody = capturedBody as Record<string, unknown> | undefined
+  assert(fullUpdateBody, '应捕获仓库商品完整更新请求体')
+  assert(capturedMethod === 'PUT', '完整更新应继续使用 PUT 方法')
+  assert(fullUpdateBody.MinOrderQuantity === 0, '编辑弹窗完整更新应发送 MinOrderQuantity 并保留零值')
+  assert(!('MiddlePackQuantity' in fullUpdateBody), '编辑弹窗不应再把中包数发送为 Product.MiddlePackageQuantity 对应字段')
 } finally {
   globalThis.fetch = originalFetch
 }

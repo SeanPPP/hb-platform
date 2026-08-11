@@ -581,6 +581,151 @@ namespace BlazorApp.Api.Tests
             );
         }
 
+        [Fact]
+        public void Patch_仅允许Admin和WarehouseManager()
+        {
+            var authorizeAttribute = GetSingleAuthorizeAttribute(
+                nameof(ReactProductWarehouseController.Patch)
+            );
+
+            Assert.Equal("Admin,WarehouseManager", authorizeAttribute.Roles);
+        }
+
+        [Fact]
+        public async Task Patch_成功时_传递当前用户名给服务()
+        {
+            var dto = new WarehouseProductPatchDto { ImportPrice = 5.55m };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.PatchAsync("P001", dto, "商品更新人"))
+                .ReturnsAsync(new WarehouseProductPatchResultDto { Success = true, Message = "保存成功" });
+
+            var controller = CreateController(serviceMock.Object, username: "商品更新人");
+
+            var result = await controller.Patch("P001", dto);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Contains("保存成功", ok.Value?.ToString());
+            serviceMock.Verify(service => service.PatchAsync("P001", dto, "商品更新人"), Times.Once);
+        }
+
+        [Fact]
+        public async Task Patch_无字段_返回400()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            var controller = CreateController(serviceMock.Object);
+
+            var result = await controller.Patch("P001", new WarehouseProductPatchDto());
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            serviceMock.Verify(
+                service =>
+                    service.PatchAsync(
+                        It.IsAny<string>(),
+                        It.IsAny<WarehouseProductPatchDto>(),
+                        It.IsAny<string>()
+                    ),
+                Times.Never
+            );
+        }
+
+        [Fact]
+        public async Task Patch_多字段_返回400()
+        {
+            var controller = CreateController(Mock.Of<IProductWarehouseReactService>());
+
+            var result = await controller.Patch(
+                "P001",
+                new WarehouseProductPatchDto { DomesticPrice = 1m, ImportPrice = 2m }
+            );
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task Patch_负值_返回400()
+        {
+            var controller = CreateController(Mock.Of<IProductWarehouseReactService>());
+
+            var result = await controller.Patch(
+                "P001",
+                new WarehouseProductPatchDto { MinOrderQuantity = -1 }
+            );
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task Patch_商品不存在_返回404()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service =>
+                    service.PatchAsync(
+                        "P001",
+                        It.IsAny<WarehouseProductPatchDto>(),
+                        "测试用户"
+                    )
+                )
+                .ReturnsAsync((WarehouseProductPatchResultDto?)null);
+            var controller = CreateController(serviceMock.Object);
+
+            var result = await controller.Patch(
+                "P001",
+                new WarehouseProductPatchDto { OEMPrice = 1m }
+            );
+
+            Assert.IsType<NotFoundObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task Patch_服务抛InvalidOperationException_返回500()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service =>
+                    service.PatchAsync(
+                        "P001",
+                        It.IsAny<WarehouseProductPatchDto>(),
+                        It.IsAny<string>()
+                    )
+                )
+                .ThrowsAsync(new InvalidOperationException("参数无效"));
+            var controller = CreateController(serviceMock.Object);
+
+            var result = await controller.Patch(
+                "P001",
+                new WarehouseProductPatchDto { ImportPrice = 1m }
+            );
+
+            var objectResult = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(500, objectResult.StatusCode);
+        }
+
+        [Fact]
+        public async Task Patch_服务异常_返回500()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service =>
+                    service.PatchAsync(
+                        "P001",
+                        It.IsAny<WarehouseProductPatchDto>(),
+                        It.IsAny<string>()
+                    )
+                )
+                .ThrowsAsync(new Exception("boom"));
+            var controller = CreateController(serviceMock.Object);
+
+            var result = await controller.Patch(
+                "P001",
+                new WarehouseProductPatchDto { ImportPrice = 1m }
+            );
+
+            var objectResult = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(500, objectResult.StatusCode);
+        }
+
         private static AuthorizeAttribute GetSingleAuthorizeAttribute(string methodName)
         {
             var method = typeof(ReactProductWarehouseController).GetMethod(methodName);

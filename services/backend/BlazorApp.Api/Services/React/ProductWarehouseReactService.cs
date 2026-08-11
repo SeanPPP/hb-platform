@@ -27,6 +27,7 @@ namespace BlazorApp.Api.Services.React
     {
         private const int PickingLocationType = 1;
         private const string SystemUpdatedBy = "System";
+        private const string MobileWarehousePricePatchUpdatedBy = "MobileWarehousePricePatch";
 
         private readonly SqlSugarContext _context;
         private readonly HqSqlSugarContext _hqContext;
@@ -4641,29 +4642,33 @@ namespace BlazorApp.Api.Services.React
             {
                 _context.Db.Ado.BeginTran();
 
-                // 1. 顺序查询，一次性取列表（同一 db，不并行）
-                var domesticProduct = await _context
-                    .Db.Queryable<DomesticProduct>()
-                    .Where(p => p.ProductCode == productCode && !p.IsDeleted)
-                    .FirstAsync();
-                var product = await _context
-                    .Db.Queryable<Product>()
-                    .Where(p => p.ProductCode == productCode)
-                    .FirstAsync();
-                if (product == null)
-                {
-                    _context.Db.Ado.RollbackTran();
-                    result.Message = "商品不存在（Product 表无此 ProductCode）";
-                    return result;
-                }
-                var warehouseProduct = await _context
-                    .Db.Queryable<WarehouseProduct>()
-                    .Where(w => w.ProductCode == productCode)
+                // 1. WarehouseProduct 作为同商品写入门闩；统一先锁仓库商品，再读取国内商品与主商品。
+                var warehouseProduct = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<WarehouseProduct>()
+                            .Where(w => w.ProductCode == productCode)
+                    )
                     .FirstAsync();
                 if (warehouseProduct == null)
                 {
                     _context.Db.Ado.RollbackTran();
                     result.Message = "仓库商品不存在";
+                    return result;
+                }
+                var domesticProduct = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<DomesticProduct>()
+                            .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                    )
+                    .FirstAsync();
+                var product = await WithWarehouseProductUpdateLock(
+                        _context.Db.Queryable<Product>().Where(p => p.ProductCode == productCode)
+                    )
+                    .FirstAsync();
+                if (product == null)
+                {
+                    _context.Db.Ado.RollbackTran();
+                    result.Message = "商品不存在（Product 表无此 ProductCode）";
                     return result;
                 }
                 var storeRetailPrices = await _context
@@ -4701,6 +4706,9 @@ namespace BlazorApp.Api.Services.React
                         domesticProduct.PackingQuantity = dto.PackingQuantity;
                     if (dto.UnitVolume.HasValue)
                         domesticProduct.UnitVolume = dto.UnitVolume;
+                    // MinOrderQuantity 与中包数量同源：仅回写有效国内商品，不改 Product.MiddlePackageQuantity。
+                    if (dto.MinOrderQuantity.HasValue)
+                        domesticProduct.MiddlePackQuantity = dto.MinOrderQuantity;
                     if (dto.MiddlePackQuantity.HasValue)
                         domesticProduct.MiddlePackQuantity = dto.MiddlePackQuantity;
                     if (dto.ProductImage != null)
@@ -4935,6 +4943,244 @@ namespace BlazorApp.Api.Services.React
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 仓库商品窄列 PATCH：一次只更新一个非负字段，事务内窄列更新并记录当前操作人。
+        /// MinOrderQuantity 同步 WP.MinOrderQuantity 与有效 DP.MiddlePackQuantity；
+        /// DomesticPrice 同步 WP 与有效 DP；
+        /// ImportPrice 同步 WP、有效 DP、Product.PurchasePrice 与全部启用未删除分店的有效进货价（缺失补建）；
+        /// OEMPrice 同步 WP、有效 DP、Product.RetailPrice 与全部启用未删除分店的零售价（缺失补建）。
+        /// 不联动套装/多码/批量，不复活软删价格，另一列价格不动。
+        /// </summary>
+        public Task<WarehouseProductPatchResultDto?> PatchAsync(
+            string productCode,
+            WarehouseProductPatchDto dto
+        )
+        {
+            return PatchAsync(productCode, dto, SystemUpdatedBy);
+        }
+
+        public async Task<WarehouseProductPatchResultDto?> PatchAsync(
+            string productCode,
+            WarehouseProductPatchDto dto,
+            string? updatedBy
+        )
+        {
+            if (string.IsNullOrWhiteSpace(productCode))
+                throw new InvalidOperationException("商品编码不能为空");
+            if (dto == null)
+                throw new InvalidOperationException("请求数据不能为空");
+            var validationError = WarehouseProductPatchDto.Validate(dto);
+            if (validationError != null)
+                throw new InvalidOperationException(validationError);
+
+            var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var now = DateTime.Now;
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                // SQL Server 使用更新锁串行化同一商品的局部更新；其他数据库保持普通事务查询。
+                var warehouseProduct = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<WarehouseProduct>()
+                            .Where(w => w.ProductCode == productCode && !w.IsDeleted)
+                    )
+                    .FirstAsync();
+                if (warehouseProduct == null)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    return null;
+                }
+                var domesticProduct = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<DomesticProduct>()
+                            .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted)
+                    )
+                    .FirstAsync();
+                var product = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<Product>()
+                            .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                    )
+                    .FirstAsync();
+                if (product == null)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    return null;
+                }
+
+                // 窄列更新 WarehouseProduct：只写本次请求字段与审计列，避免覆盖并发库存或价格。
+                var warehouseUpdate = _context
+                    .Db.Updateable<WarehouseProduct>()
+                    .SetColumns(w => w.UpdatedAt == now)
+                    .SetColumns(w => w.UpdatedBy == effectiveUpdatedBy)
+                    .Where(w => w.ProductCode == productCode && !w.IsDeleted);
+                if (dto.MinOrderQuantity.HasValue)
+                {
+                    warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                        w.MinOrderQuantity == dto.MinOrderQuantity.Value
+                    );
+                }
+                if (dto.DomesticPrice.HasValue)
+                {
+                    warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                        w.DomesticPrice == dto.DomesticPrice.Value
+                    );
+                }
+                if (dto.ImportPrice.HasValue)
+                {
+                    warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                        w.ImportPrice == dto.ImportPrice.Value
+                    );
+                }
+                if (dto.OEMPrice.HasValue)
+                {
+                    warehouseUpdate = warehouseUpdate.SetColumns(w =>
+                        w.OEMPrice == dto.OEMPrice.Value
+                    );
+                }
+                var warehouseAffected = await warehouseUpdate.ExecuteCommandAsync();
+                if (warehouseAffected <= 0)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    return null;
+                }
+
+                // 更新触发器或并发状态可能改变主商品；复读后再计算分店缺失记录的另一列价格。
+                product = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<Product>()
+                            .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                    )
+                    .FirstAsync();
+                if (product == null)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    return null;
+                }
+
+                // 有效国内商品窄列联动；不创建 DomesticProduct。
+                if (domesticProduct != null)
+                {
+                    var domesticUpdate = _context
+                        .Db.Updateable<DomesticProduct>()
+                        .SetColumns(dp => dp.UpdatedAt == now)
+                        .SetColumns(dp => dp.UpdatedBy == effectiveUpdatedBy)
+                        .Where(dp => dp.ProductCode == productCode && !dp.IsDeleted);
+                    if (dto.MinOrderQuantity.HasValue)
+                    {
+                        domesticUpdate = domesticUpdate.SetColumns(dp =>
+                            dp.MiddlePackQuantity == dto.MinOrderQuantity.Value
+                        );
+                    }
+                    if (dto.DomesticPrice.HasValue)
+                    {
+                        domesticUpdate = domesticUpdate.SetColumns(dp =>
+                            dp.DomesticPrice == dto.DomesticPrice.Value
+                        );
+                    }
+                    if (dto.ImportPrice.HasValue)
+                    {
+                        domesticUpdate = domesticUpdate.SetColumns(dp =>
+                            dp.ImportPrice == dto.ImportPrice.Value
+                        );
+                    }
+                    if (dto.OEMPrice.HasValue)
+                    {
+                        domesticUpdate = domesticUpdate.SetColumns(dp =>
+                            dp.OEMPrice == dto.OEMPrice.Value
+                        );
+                    }
+                    await domesticUpdate.ExecuteCommandAsync();
+                }
+
+                if (dto.ImportPrice.HasValue)
+                {
+                    // 进口价同步主表进货价与全部启用未删除分店的有效进货价；另一列零售价不动。
+                    var productAffected = await _context
+                        .Db.Updateable<Product>()
+                        .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.PurchasePrice == dto.ImportPrice.Value)
+                        .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        .ExecuteCommandAsync();
+                    if (productAffected <= 0)
+                    {
+                        await _context.Db.Ado.RollbackTranAsync();
+                        return null;
+                    }
+                    product = await WithWarehouseProductUpdateLock(
+                            _context
+                                .Db.Queryable<Product>()
+                                .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        )
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        await _context.Db.Ado.RollbackTranAsync();
+                        return null;
+                    }
+                    await UpsertActiveStoreRetailPricesAsync(
+                        product,
+                        purchasePrice: dto.ImportPrice,
+                        retailPrice: null,
+                        now,
+                        effectiveUpdatedBy
+                    );
+                }
+                if (dto.OEMPrice.HasValue)
+                {
+                    // 零售价同步主表零售价与全部启用未删除分店的零售价；另一列进货价不动。
+                    var productAffected = await _context
+                        .Db.Updateable<Product>()
+                        .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.RetailPrice == dto.OEMPrice.Value)
+                        .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        .ExecuteCommandAsync();
+                    if (productAffected <= 0)
+                    {
+                        await _context.Db.Ado.RollbackTranAsync();
+                        return null;
+                    }
+                    product = await WithWarehouseProductUpdateLock(
+                            _context
+                                .Db.Queryable<Product>()
+                                .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        )
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        await _context.Db.Ado.RollbackTranAsync();
+                        return null;
+                    }
+                    await UpsertActiveStoreRetailPricesAsync(
+                        product,
+                        purchasePrice: null,
+                        retailPrice: dto.OEMPrice,
+                        now,
+                        effectiveUpdatedBy
+                    );
+                }
+
+                await _context.Db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            return new WarehouseProductPatchResultDto { Success = true, Message = "保存成功" };
+        }
+
+        private ISugarQueryable<T> WithWarehouseProductUpdateLock<T>(
+            ISugarQueryable<T> queryable
+        )
+        {
+            return _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer
+                ? queryable.With(SqlWith.UpdLock)
+                : queryable;
         }
 
         /// <summary>
@@ -5754,6 +6000,19 @@ namespace BlazorApp.Api.Services.React
             await _context.Db.Ado.BeginTranAsync();
             try
             {
+                // 与批量、完整编辑和表格 PATCH 统一先锁 WarehouseProduct，避免跨表反向等待。
+                var lockedWarehouseProduct = await WithWarehouseProductUpdateLock(
+                        _context
+                            .Db.Queryable<WarehouseProduct>()
+                            .Where(w => w.ProductCode == productCode && !w.IsDeleted)
+                    )
+                    .FirstAsync();
+                if (lockedWarehouseProduct == null)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    return null;
+                }
+
                 if (shouldUpdateProduct)
                 {
                     // 仅回写移动端本次涉及的 Product 列，避免覆盖并发修改的基础商品字段。
@@ -5897,13 +6156,26 @@ namespace BlazorApp.Api.Services.React
                         await _context.Db.Updateable(productGrade).ExecuteCommandAsync();
                     }
                 }
+                if (shouldSyncStorePurchasePrice || shouldSyncStoreRetailPrice)
+                {
+                    product = await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        await _context.Db.Ado.RollbackTranAsync();
+                        return null;
+                    }
+                }
                 if (shouldSyncStorePurchasePrice)
                 {
                     await UpsertActiveStoreRetailPricesAsync(
                         product,
                         purchasePrice: syncedPurchasePrice,
                         retailPrice: null,
-                        now
+                        now,
+                        MobileWarehousePricePatchUpdatedBy
                     );
                 }
                 if (shouldSyncStoreRetailPrice)
@@ -5912,7 +6184,8 @@ namespace BlazorApp.Api.Services.React
                         product,
                         purchasePrice: null,
                         retailPrice: syncedRetailPrice,
-                        now
+                        now,
+                        MobileWarehousePricePatchUpdatedBy
                     );
                 }
 
@@ -5946,10 +6219,10 @@ namespace BlazorApp.Api.Services.React
             Product product,
             decimal? purchasePrice,
             decimal? retailPrice,
-            DateTime now
+            DateTime now,
+            string updatedBy
         )
         {
-            const string updatedBy = "MobileWarehousePricePatch";
             if (string.IsNullOrWhiteSpace(product.ProductCode))
             {
                 return;

@@ -55,6 +55,20 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 仓库商品窄列 PATCH：一次只更新一个非负字段，事务内窄列更新并记录当前操作人。
+        /// Product 或 WarehouseProduct 不存在时返回 null。
+        /// </summary>
+        Task<WarehouseProductPatchResultDto?> PatchAsync(
+            string productCode,
+            WarehouseProductPatchDto dto
+        );
+        Task<WarehouseProductPatchResultDto?> PatchAsync(
+            string productCode,
+            WarehouseProductPatchDto dto,
+            string? updatedBy
+        );
+
+        /// <summary>
         /// 获取商品条码对应套装价/进货价列表（商品类型≠0 时编辑弹窗用）
         /// </summary>
         Task<List<BarcodePriceItemDto>> GetBarcodePricesAsync(string productCode);

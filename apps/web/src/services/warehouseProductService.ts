@@ -206,6 +206,7 @@ export interface UpdateWarehouseProductFullPayload {
   material?: string
   remark?: string
   packingQuantity?: number
+  minOrderQuantity?: number
   unitVolume?: number
   grossWeight?: number
   packingSize?: string
@@ -221,6 +222,12 @@ export interface UpdateWarehouseProductFullPayload {
   supplierCode?: string
   localSupplierCode?: string
 }
+
+export type PatchWarehouseProductPayload =
+  | { minOrderQuantity: number; domesticPrice?: never; importPrice?: never; oemPrice?: never }
+  | { minOrderQuantity?: never; domesticPrice: number; importPrice?: never; oemPrice?: never }
+  | { minOrderQuantity?: never; domesticPrice?: never; importPrice: number; oemPrice?: never }
+  | { minOrderQuantity?: never; domesticPrice?: never; importPrice?: never; oemPrice: number }
 
 export interface BatchToggleWarehouseProductsActivePayload {
   productCodes: string[]
@@ -836,6 +843,7 @@ export async function updateWarehouseProductFull(
       Material: payload.material,
       Remark: payload.remark,
       PackingQuantity: payload.packingQuantity,
+      MinOrderQuantity: payload.minOrderQuantity,
       UnitVolume: payload.unitVolume,
       GrossWeight: payload.grossWeight,
       PackingSize: payload.packingSize,
@@ -851,6 +859,18 @@ export async function updateWarehouseProductFull(
       SupplierCode: payload.supplierCode,
       LocalSupplierCode: payload.localSupplierCode,
     },
+  })
+}
+
+export async function patchWarehouseProduct(
+  productCode: string,
+  payload: PatchWarehouseProductPayload,
+): Promise<{ success: boolean; message?: string }> {
+  return request.patch(`${API_BASE}/${encodeURIComponent(productCode)}`, {
+    ...(payload.minOrderQuantity !== undefined ? { MinOrderQuantity: payload.minOrderQuantity } : {}),
+    ...(payload.domesticPrice !== undefined ? { DomesticPrice: payload.domesticPrice } : {}),
+    ...(payload.importPrice !== undefined ? { ImportPrice: payload.importPrice } : {}),
+    ...(payload.oemPrice !== undefined ? { OEMPrice: payload.oemPrice } : {}),
   })
 }
 

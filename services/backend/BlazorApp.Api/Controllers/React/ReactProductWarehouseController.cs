@@ -649,6 +649,40 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        /// <summary>
+        /// 仓库商品窄列 PATCH：一次只允许更新一个非负字段（MinOrderQuantity/DomesticPrice/ImportPrice/OEMPrice）。
+        /// </summary>
+        [HttpPatch("{productCode}")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> Patch(
+            string productCode,
+            [FromBody] WarehouseProductPatchDto dto
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(productCode))
+                    return BadRequest(new { success = false, message = "商品编码不能为空" });
+                if (dto == null)
+                    return BadRequest(new { success = false, message = "请求数据不能为空" });
+                var validationError = WarehouseProductPatchDto.Validate(dto);
+                if (validationError != null)
+                    return BadRequest(new { success = false, message = validationError });
+
+                var resp = await _service.PatchAsync(productCode, dto, GetCurrentUsername());
+                if (resp == null)
+                    return NotFound(new { success = false, message = "商品不存在" });
+                if (!resp.Success)
+                    return BadRequest(new { success = false, message = resp.Message });
+                return Ok(new { success = true, message = resp.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新仓库商品失败: {ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         [HttpPost("batch-toggle-active")]
         [Authorize(Roles = "Admin,WarehouseManager")]
         public async Task<IActionResult> BatchToggleActive(

@@ -1505,6 +1505,93 @@ async function main() {
   })
   if (resetColumnFilterFailure) failures.push(resetColumnFilterFailure)
 
+  const inlineEditFailure = await runTest('仓库商品四列应支持无确认弹窗的双击单字段保存', () => {
+    assert(
+      pageSource.includes('patchWarehouseProduct') &&
+        pageSource.includes("type WarehouseProductInlineEditField = 'minOrderQuantity' | 'domesticPrice' | 'importPrice' | 'labelPrice'"),
+      '页面应引入单字段 PATCH 服务并限定四个可编辑字段',
+    )
+    const productEditorOnlyAccess = buildAccess(createCurrentUser({ permissions: ['Products.Edit'] }))
+    assertEqual(productEditorOnlyAccess.canWriteProduct, true, 'Products.Edit 仍可用于既有商品编辑功能')
+    assertEqual(productEditorOnlyAccess.isAdmin || productEditorOnlyAccess.isWarehouseManager, false, '普通商品编辑权限不满足 PATCH 角色约束')
+    assert(
+      pageSource.includes('const { access, currentUser } = useAuthStore();') &&
+        pageSource.includes("roleName === 'Admin' || roleName === 'WarehouseManager'") &&
+        pageSource.includes('if (!canInlineEditWarehouseProduct || inlineSaveLockRef.current) return;') &&
+        pageSource.includes("className={`warehouse-products-inline-value${canInlineEditWarehouseProduct ? ' is-editable' : ''}`}") &&
+        pageSource.includes("title={canInlineEditWarehouseProduct ? t('warehouse.doubleClickToEdit', '双击编辑') : undefined}"),
+      '内联编辑入口必须与后端 Admin/WarehouseManager 角色保持一致',
+    )
+    assert(
+      pageSource.includes('const inlineSaveLockRef = useRef<string | null>(null);') &&
+        pageSource.includes('if (inlineSaveLockRef.current) return;') &&
+        pageSource.includes('inlineSaveLockRef.current = cellKey;') &&
+        pageSource.includes('inlineSaveLockRef.current = null;'),
+      'Enter 与失焦必须共享即时提交锁，避免同一单元格重复请求',
+    )
+
+    const inlineHandlers = extractSection(
+      pageSource,
+      'const handleStartInlineEdit',
+      'const showPushToHqResult',
+    )
+    assert(
+      inlineHandlers.includes('value === null || value === undefined') &&
+        inlineHandlers.includes('value < 0') &&
+        inlineHandlers.includes('patchWarehouseProduct(cell.productCode') &&
+        inlineHandlers.includes('await refreshCurrentList();'),
+      '共享保存函数应忽略空值、阻止负数、调用 PATCH，并在成功后刷新当前分页',
+    )
+    assert(
+      inlineHandlers.includes("message.success(t('common.saveSuccess', '保存成功'))") &&
+        inlineHandlers.includes('message.error(') &&
+        !inlineHandlers.includes('Modal.confirm') &&
+        !inlineHandlers.includes('Popconfirm'),
+      '单元格保存只能使用 success/error 轻提示，不能显示确认弹窗',
+    )
+    const inlineFailureSection = extractSection(inlineHandlers, 'catch (error)', 'finally')
+    assert(
+      inlineFailureSection.indexOf('inlineCancelledCellRef.current = cellKey;') <
+        inlineFailureSection.indexOf('setInlineEditingCell(null);'),
+      '失败关闭编辑器前应标记当前单元格已取消，防止卸载失焦再次提交',
+    )
+    assert(
+      inlineHandlers.includes("event.key === 'Enter'") &&
+        inlineHandlers.includes("event.key === 'Escape'") &&
+        inlineHandlers.includes('void handleInlineSave(cell);'),
+      'Enter 应触发共享保存函数，Esc 应取消当前编辑',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    for (const field of ['minOrderQuantity', 'domesticPrice', 'importPrice', 'labelPrice']) {
+      assert(
+        columnsSection.includes(`renderInlineEditableNumberCell(record, '${field}')`),
+        `${field} 列应复用双击编辑单元格`,
+      )
+    }
+    assert(
+      pageSource.includes('onDoubleClick={canInlineEditWarehouseProduct ? () => handleStartInlineEdit(record, field) : undefined}') &&
+        pageSource.includes('onBlur={() => void handleInlineSave(cell)}') &&
+        pageSource.includes('disabled={isSaving}') &&
+        pageSource.includes('warehouse-products-inline-editor'),
+      '单元格应双击进入编辑，失焦保存，保存中禁用输入且保持紧凑样式',
+    )
+
+    const openEditSection = extractSection(pageSource, 'const handleOpenEdit', 'const handleCloseModal')
+    const modalSaveSection = extractSection(pageSource, 'const handleSave = async', 'const handleStartInlineEdit')
+    assert(
+      openEditSection.includes('middlePackQuantity: record.minOrderQuantity') &&
+        modalSaveSection.includes('minOrderQuantity: values.middlePackQuantity') &&
+        !modalSaveSection.includes('middlePackQuantity: values.middlePackQuantity'),
+      '编辑弹窗应从列表 MinOrderQuantity 初始化，并仍以 MinOrderQuantity 保存',
+    )
+  })
+  if (inlineEditFailure) failures.push(inlineEditFailure)
+
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)
   }
