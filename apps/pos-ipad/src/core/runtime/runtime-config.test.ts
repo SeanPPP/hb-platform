@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "../security/pos-api-addresses";
+import {
+  DEFAULT_LOCAL_HBPOS_API_BASE_URL,
+  LEGACY_LOCAL_HBPOS_API_BASE_URL,
+} from "../security/pos-api-addresses";
 
 import {
   DEFAULT_HBPOS_API_URL,
@@ -49,6 +52,29 @@ test("runtime accepts the exact build-declared LAN API address over HTTP", () =>
   );
   assert.throws(
     () => resolveHbposApiUrl("http://192.168.31.247:5159"),
+    /HTTPS/i,
+  );
+});
+
+test("runtime accepts both trusted local 5159 and 5003 endpoints", () => {
+  assert.equal(
+    resolveHbposApiUrl(`${DEFAULT_LOCAL_HBPOS_API_BASE_URL}/pos-api/`),
+    `${DEFAULT_LOCAL_HBPOS_API_BASE_URL}/pos-api`,
+  );
+  assert.equal(
+    resolveHbposApiUrl(LEGACY_LOCAL_HBPOS_API_BASE_URL),
+    LEGACY_LOCAL_HBPOS_API_BASE_URL,
+  );
+  assert.equal(
+    resolveHbposApiUrl(`${LEGACY_LOCAL_HBPOS_API_BASE_URL}/pos-api/`),
+    `${LEGACY_LOCAL_HBPOS_API_BASE_URL}/pos-api`,
+  );
+  assert.throws(
+    () => resolveHbposApiUrl("http://192.168.31.246:5004"),
+    /HTTPS/i,
+  );
+  assert.throws(
+    () => resolveHbposApiUrl("http://192.168.31.246:5158"),
     /HTTPS/i,
   );
 });

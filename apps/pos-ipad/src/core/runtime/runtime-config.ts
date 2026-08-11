@@ -1,4 +1,4 @@
-import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "../security/pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "../security/pos-api-addresses";
 
 export const DEFAULT_HBPOS_API_URL = "https://hotbargain.vip/pos-api";
 
@@ -14,10 +14,11 @@ export function resolveHbposApiUrl(configuredUrl: string | undefined): string {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("HBPOS API address must use HTTP or HTTPS.");
   }
+  // 构建声明的本地 5159/5003 均可使用 HTTP；其他远程地址必须使用 HTTPS。
   if (
     parsed.protocol === "http:" &&
     !isLoopbackHostname(parsed.hostname) &&
-    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+    !isTrustedLocalHbposApiOrigin(parsed.origin)
   ) {
     throw new Error("Remote HBPOS API address requires HTTPS.");
   }
