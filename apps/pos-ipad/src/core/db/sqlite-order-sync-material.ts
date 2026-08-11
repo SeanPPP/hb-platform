@@ -43,11 +43,20 @@ export type OrderSyncMaterialErrorCode =
   | "ORDER_SYNC_VOUCHER_STATE_MISMATCH"
   | "ORDER_SYNC_VOUCHER_REVERSAL_UNRESOLVED"
   | "ORDER_SYNC_VOUCHER_REVERSAL_MISMATCH"
-  | "ORDER_SYNC_CARD_REVERSAL_UNSUPPORTED";
+  | "ORDER_SYNC_CARD_REVERSAL_UNSUPPORTED"
+  | "ORDER_SYNC_HELD_SOURCE_MISSING";
+
+/** 同步 wire 的不可变共享挂单来源；只从数据库解析，绝不依赖调用方内存对象。 */
+export type ResolvedHeldOrderSource = Readonly<{
+  holdGuid: string;
+  claimGuid: string | null;
+  sourceKind: 1 | 2;
+}>;
 
 export type ResolvedSqliteOrderSyncMaterial = Readonly<{
   order: LocalOrder;
   cardSyncEvidenceByTenderGuid: ReadonlyMap<string, CardSyncEvidenceV1>;
+  heldOrderSource: ResolvedHeldOrderSource | null;
 }>;
 
 /**
@@ -159,6 +168,9 @@ export class SqliteOrderSyncMaterialResolver {
     const wireOrder = await this.projectTenderReversalsForSync(
       resolvedOrder,
     );
+    const heldOrderSource = await this.resolveHeldOrderSourceForSync(
+      wireOrder.orderGuid,
+    );
     const cardTenders = new Map(
       wireOrder.tenders
         .filter((tender) => tender.method === "card")
@@ -170,6 +182,7 @@ export class SqliteOrderSyncMaterialResolver {
       return Object.freeze({
         order: wireOrder,
         cardSyncEvidenceByTenderGuid,
+        heldOrderSource,
       });
     }
 
@@ -238,6 +251,59 @@ export class SqliteOrderSyncMaterialResolver {
     return Object.freeze({
       order: wireOrder,
       cardSyncEvidenceByTenderGuid,
+      heldOrderSource,
+    });
+  }
+
+  /**
+   * 普通订单零来源查询：先读 local_orders 标记，只有挂单来源订单才查询不可变来源表。
+   * 标记为 1 但来源行缺失/损坏时稳定失败关闭，禁止按内存对象猜测 wire。
+   */
+  private async resolveHeldOrderSourceForSync(
+    orderGuidInput: string,
+  ): Promise<ResolvedHeldOrderSource | null> {
+    const orderGuid = inputText(
+      orderGuidInput,
+      "ORDER_SYNC_ORDER_MISMATCH",
+    );
+    const marker = await this.connection.getFirst<{
+      is_shared_held_origin: number;
+    }>(
+      "SELECT is_shared_held_origin FROM local_orders WHERE order_guid = ?",
+      [orderGuid],
+    );
+    if (!marker) {
+      throw materialError("ORDER_SYNC_ORDER_MISMATCH");
+    }
+    if (marker.is_shared_held_origin !== 1) {
+      return null;
+    }
+    const row = await this.connection.getFirst<{
+      hold_guid: string;
+      claim_guid: string | null;
+      source_kind: number;
+    }>(
+      `SELECT hold_guid, claim_guid, source_kind
+       FROM order_held_order_sources
+       WHERE order_guid = ?`,
+      [orderGuid],
+    );
+    if (!row) {
+      throw materialError("ORDER_SYNC_HELD_SOURCE_MISSING");
+    }
+    const sourceKind = row.source_kind;
+    if (sourceKind !== 1 && sourceKind !== 2) {
+      throw materialError("ORDER_SYNC_HELD_SOURCE_MISSING");
+    }
+    return Object.freeze({
+      holdGuid: persistedText(row.hold_guid, "ORDER_SYNC_HELD_SOURCE_MISSING"),
+      claimGuid: row.claim_guid === null
+        ? null
+        : persistedText(
+            row.claim_guid,
+            "ORDER_SYNC_HELD_SOURCE_MISSING",
+          ),
+      sourceKind: sourceKind as 1 | 2,
     });
   }
 

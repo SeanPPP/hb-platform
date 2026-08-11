@@ -31,12 +31,33 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
     public async Task SaveAsync(SuspendedOrder order, CancellationToken cancellationToken = default)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
+
+        // 新列由 LocalSchemaService 迁移补齐；列缺失时按旧库语义跳过写入（fail-closed），
+        // 不因 schema 时序破坏既有保存路径。
+        var frozenRulesColumnExists = await HasColumnAsync(
+            connection,
+            "SuspendedOrders",
+            "FrozenPromotionRulesJson",
+            cancellationToken);
+        var writeFrozenRules = frozenRulesColumnExists && order.FrozenPromotionRules is { Count: > 0 };
+        var manualPriceColumnExists = await HasColumnAsync(
+            connection,
+            "SuspendedOrderLines",
+            "IsManualPrice",
+            cancellationToken);
+        var writeManualPrice = manualPriceColumnExists && order.Lines.Any(line => line.IsManualPrice);
         using var transaction = connection.BeginTransaction();
 
         await using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
-            command.CommandText = """
+            command.CommandText = writeFrozenRules
+                ? """
+                INSERT INTO SuspendedOrders
+                (SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt, TotalAmount, DiscountAmount, ActualAmount, Status, FrozenPromotionRulesJson)
+                VALUES ($SuspendedOrderGuid, $StoreCode, $DeviceCode, $CashierId, $CashierName, $SuspendedAt, $TotalAmount, $DiscountAmount, $ActualAmount, $Status, $FrozenPromotionRulesJson);
+                """
+                : """
                 INSERT INTO SuspendedOrders
                 (SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt, TotalAmount, DiscountAmount, ActualAmount, Status)
                 VALUES ($SuspendedOrderGuid, $StoreCode, $DeviceCode, $CashierId, $CashierName, $SuspendedAt, $TotalAmount, $DiscountAmount, $ActualAmount, $Status);
@@ -51,6 +72,11 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Parameters.AddWithValue("$DiscountAmount", order.DiscountAmount);
             command.Parameters.AddWithValue("$ActualAmount", order.ActualAmount);
             command.Parameters.AddWithValue("$Status", (int)order.Status);
+            if (writeFrozenRules)
+            {
+                command.Parameters.AddWithValue("$FrozenPromotionRulesJson", SerializePromotionRules(order.FrozenPromotionRules));
+            }
+
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -58,7 +84,13 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = """
+            command.CommandText = writeManualPrice
+                ? """
+                INSERT INTO SuspendedOrderLines
+                (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice)
+                VALUES ($SuspendedOrderLineGuid, $SuspendedOrderGuid, $StoreCode, $ProductCode, $ReferenceCode, $DisplayName, $LookupCode, $ItemNumber, $ProductImage, $Quantity, $UnitPrice, $DiscountAmount, $DiscountPercent, $IsAutomaticPromotionDiscount, $DiscountSource, $ActualAmount, $PriceSource, $PriceSourceLabel, $Kind, $ReturnSourceKey, $OriginalOrderGuid, $OriginalOrderDetailGuid, $ReturnReason, $IsManualPrice);
+                """
+                : """
                 INSERT INTO SuspendedOrderLines
                 (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
                 VALUES ($SuspendedOrderLineGuid, $SuspendedOrderGuid, $StoreCode, $ProductCode, $ReferenceCode, $DisplayName, $LookupCode, $ItemNumber, $ProductImage, $Quantity, $UnitPrice, $DiscountAmount, $DiscountPercent, $IsAutomaticPromotionDiscount, $DiscountSource, $ActualAmount, $PriceSource, $PriceSourceLabel, $Kind, $ReturnSourceKey, $OriginalOrderGuid, $OriginalOrderDetailGuid, $ReturnReason);
@@ -86,6 +118,11 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Parameters.AddWithValue("$OriginalOrderGuid", line.OriginalOrderGuid?.ToString() ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$OriginalOrderDetailGuid", line.OriginalOrderDetailGuid?.ToString() ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$ReturnReason", (object?)line.ReturnReason ?? DBNull.Value);
+            if (writeManualPrice)
+            {
+                command.Parameters.AddWithValue("$IsManualPrice", line.IsManualPrice ? 1 : 0);
+            }
+
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -106,6 +143,30 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Parameters.AddWithValue("$Reference", (object?)capacity.Reference ?? DBNull.Value);
             command.Parameters.AddWithValue("$CardTransactionsJson", SerializeCardTransactions(capacity.CardTransactions) ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$OriginalOrderGuid", capacity.OriginalOrderGuid?.ToString() ?? (object)DBNull.Value);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        // 本地先存原子：同一事务内写入 NeedsEvaluation publication 行，
+        // 后台 evaluator/worker 再评估为 PendingPublish/Blocked；
+        // 任一写入失败整体回滚，绝不留下本地挂单但无 publication 的孤儿状态。
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                INSERT INTO SharedHeldOrderPublications (
+                    LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
+                    ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
+                    LastAttemptAtIso, NextAttemptAtIso)
+                VALUES (
+                    $LocalHoldGuid, $StoreCode, $DeviceCode, 'NeedsEvaluation', 1, 0,
+                    NULL, NULL, NULL, $HeldAtIso, $HeldAtIso, $HeldAtIso,
+                    NULL, NULL);
+                """;
+            command.Parameters.AddWithValue("$LocalHoldGuid", order.SuspendedOrderGuid.ToString("D"));
+            command.Parameters.AddWithValue("$StoreCode", order.StoreCode);
+            command.Parameters.AddWithValue("$DeviceCode", order.DeviceCode);
+            command.Parameters.AddWithValue("$HeldAtIso", FormatIso(order.SuspendedAt));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -224,7 +285,18 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        var hasFrozenRulesColumn = await HasColumnAsync(
+            connection,
+            "SuspendedOrders",
+            "FrozenPromotionRulesJson",
+            cancellationToken);
+        command.CommandText = hasFrozenRulesColumn
+            ? """
+            SELECT SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt, TotalAmount, DiscountAmount, ActualAmount, Status, FrozenPromotionRulesJson
+            FROM SuspendedOrders
+            WHERE SuspendedOrderGuid = $SuspendedOrderGuid;
+            """
+            : """
             SELECT SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt, TotalAmount, DiscountAmount, ActualAmount, Status
             FROM SuspendedOrders
             WHERE SuspendedOrderGuid = $SuspendedOrderGuid;
@@ -248,7 +320,12 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             ReadDecimal(reader, "DiscountAmount"),
             ReadDecimal(reader, "ActualAmount"),
             (SuspendedOrderStatus)reader.GetInt32(reader.GetOrdinal("Status")),
-            []);
+            [])
+        {
+            FrozenPromotionRules = hasFrozenRulesColumn
+                ? DeserializePromotionRules(ReadNullableString(reader, "FrozenPromotionRulesJson"))
+                : null
+        };
     }
 
     private static async Task<IReadOnlyList<SuspendedOrderLine>> ReadLinesAsync(
@@ -257,7 +334,19 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        var hasManualPriceColumn = await HasColumnAsync(
+            connection,
+            "SuspendedOrderLines",
+            "IsManualPrice",
+            cancellationToken);
+        command.CommandText = hasManualPriceColumn
+            ? """
+            SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice
+            FROM SuspendedOrderLines
+            WHERE SuspendedOrderGuid = $SuspendedOrderGuid
+            ORDER BY rowid;
+            """
+            : """
             SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason
             FROM SuspendedOrderLines
             WHERE SuspendedOrderGuid = $SuspendedOrderGuid
@@ -292,7 +381,9 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
                 ReturnSourceKey = ReadNullableString(reader, "ReturnSourceKey") ?? string.Empty,
                 OriginalOrderGuid = ReadNullableGuid(reader, "OriginalOrderGuid"),
                 OriginalOrderDetailGuid = ReadNullableGuid(reader, "OriginalOrderDetailGuid"),
-                ReturnReason = ReadNullableString(reader, "ReturnReason")
+                ReturnReason = ReadNullableString(reader, "ReturnReason"),
+                IsManualPrice = hasManualPriceColumn
+                    && reader.GetInt32(reader.GetOrdinal("IsManualPrice")) != 0
             });
         }
 
@@ -393,6 +484,37 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
     private static DateTimeOffset ReadDateTimeOffset(SqliteDataReader reader, string name)
     {
         return DateTimeOffset.Parse(ReadString(reader, name), CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<bool> HasColumnAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info($TableName) WHERE name = $ColumnName;";
+        command.Parameters.AddWithValue("$TableName", tableName);
+        command.Parameters.AddWithValue("$ColumnName", columnName);
+        var count = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(count, CultureInfo.InvariantCulture) > 0;
+    }
+
+    private static string FormatIso(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+    }
+
+    private static string SerializePromotionRules(IReadOnlyList<CatalogPromotionRuleDto>? rules)
+    {
+        return JsonSerializer.Serialize(rules);
+    }
+
+    private static IReadOnlyList<CatalogPromotionRuleDto>? DeserializePromotionRules(string? json)
+    {
+        return string.IsNullOrWhiteSpace(json)
+            ? null
+            : JsonSerializer.Deserialize<List<CatalogPromotionRuleDto>>(json);
     }
 
     private static string? SerializeCardTransactions(IReadOnlyList<CardTransactionDto>? cardTransactions)

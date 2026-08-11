@@ -1,7 +1,8 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   StyleSheet,
   Text,
@@ -14,12 +15,20 @@ import {
   resolveHeldOrdersLocale,
   type HeldOrdersCopyKey,
 } from "./held-orders-copy";
-import { HeldOrdersPresenter } from "./held-orders-presenter";
+import {
+  HeldOrdersPresenter,
+  type HeldOrderViewStatus,
+} from "./held-orders-presenter";
 
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const HELD_ORDERS_MIN_TOUCH_TARGET = 44;
+export const HELD_ORDERS_AUTO_REFRESH_INTERVAL_MS = 10_000;
 
 type HeldOrdersScreenProps = Readonly<{
   presenter: HeldOrdersPresenter;
@@ -44,7 +53,22 @@ export function HeldOrdersScreen({
 
   useEffect(() => {
     void presenter.refresh();
+    presenter.startAutoRefresh(HELD_ORDERS_AUTO_REFRESH_INTERVAL_MS);
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        presenter.startAutoRefresh(HELD_ORDERS_AUTO_REFRESH_INTERVAL_MS);
+      } else {
+        presenter.stopAutoRefresh();
+      }
+    });
+    return () => {
+      subscription.remove();
+      presenter.stopAutoRefresh();
+    };
   }, [presenter]);
+
+  const [forceReleaseFor, setForceReleaseFor] = useState<string | null>(null);
+  const [forceReleaseReason, setForceReleaseReason] = useState("");
 
   const returnToSalesAfterRestore = async (
     action: () => ReturnType<HeldOrdersPresenter["recall"]>,
@@ -63,7 +87,9 @@ export function HeldOrdersScreen({
       <View style={styles.header}>
         <View style={styles.identity}>
           <Text style={styles.title}>{t("title")}</Text>
-          <Text style={styles.subtitle}>{t("subtitle")}</Text>
+          <Text style={styles.subtitle}>
+            {t(state.sharedEnabled ? "subtitle.shared" : "subtitle")}
+          </Text>
         </View>
         <View style={styles.headerActions}>
           {onBack ? (
@@ -99,6 +125,12 @@ export function HeldOrdersScreen({
           ) : null}
         </View>
 
+        {state.refreshError ? (
+          <View style={styles.syncNotice} testID="held-orders-refresh-error">
+            <Text style={styles.syncNoticeText}>{t("error.shared-sync")}</Text>
+          </View>
+        ) : null}
+
         {state.lastAction ? (
           <Text
             style={[
@@ -130,9 +162,51 @@ export function HeldOrdersScreen({
             testID="held-orders-failed"
           />
         ) : null}
+        {forceReleaseFor ? (
+          <PosKeyboardAwareScrollView
+            contentContainerStyle={styles.forceReleasePanelContent}
+            showsVerticalScrollIndicator={false}
+            style={styles.forceReleasePanel}
+            testID="held-orders-force-release-panel"
+          >
+            <Text style={styles.forceReleaseTitle}>{t("forceRelease.title")}</Text>
+            <PosKeyboardAwareTextInput
+              accessibilityLabel={t("forceRelease.reasonAccessibility")}
+              onChangeText={setForceReleaseReason}
+              placeholder={t("forceRelease.reasonPlaceholder")}
+              style={styles.forceReleaseInput}
+              testID="held-orders-force-release-reason"
+              value={forceReleaseReason}
+            />
+            <View style={styles.forceReleaseActions}>
+              <ActionButton
+                label={t("action.back")}
+                onPress={() => {
+                  setForceReleaseFor(null);
+                  setForceReleaseReason("");
+                }}
+                testID="held-orders-force-release-cancel"
+                tone="quiet"
+              />
+              <ActionButton
+                disabled={!forceReleaseReason.trim() || state.busy}
+                label={t("forceRelease.confirm")}
+                onPress={() => {
+                  const holdId = forceReleaseFor;
+                  const reason = forceReleaseReason.trim();
+                  setForceReleaseFor(null);
+                  setForceReleaseReason("");
+                  void presenter.forceRelease(holdId, reason);
+                }}
+                testID="held-orders-force-release-confirm"
+                tone="danger"
+              />
+            </View>
+          </PosKeyboardAwareScrollView>
+        ) : null}
         {state.kind === "ready" && !state.rows.length ? (
           <CenteredState
-            hint={t("empty.hint")}
+            hint={t(state.sharedEnabled ? "empty.hint.shared" : "empty.hint")}
             message={t("empty.title")}
             testID="held-orders-empty"
           />
@@ -146,10 +220,18 @@ export function HeldOrdersScreen({
             renderItem={({ item }) => (
               <HeldOrderRow
                 busy={state.busy}
+                forceReleaseSupported={presenter.supportsForceRelease()}
                 locale={locale}
+                onForceRelease={(holdId) => {
+                  setForceReleaseFor(holdId);
+                  setForceReleaseReason("");
+                }}
                 onRecall={() =>
                   void returnToSalesAfterRestore(() =>
-                    presenter.recall(item.holdId),
+                    item.status === "published-shareable" ||
+                    item.status === "local-pending-publish"
+                      ? presenter.recallLocalShared(item.holdId)
+                      : presenter.recall(item.holdId),
                   )
                 }
                 onRecover={() =>
@@ -158,6 +240,11 @@ export function HeldOrdersScreen({
                   )
                 }
                 onRelease={() => void presenter.release(item.holdId)}
+                onTakeRemote={() =>
+                  void returnToSalesAfterRestore(() =>
+                    presenter.takeRemote(item.holdId),
+                  )
+                }
                 row={item}
               />
             )}
@@ -171,58 +258,145 @@ export function HeldOrdersScreen({
 
 function HeldOrderRow({
   busy,
+  forceReleaseSupported,
   locale,
+  onForceRelease,
   onRecall,
   onRecover,
   onRelease,
+  onTakeRemote,
   row,
 }: Readonly<{
   busy: boolean;
+  forceReleaseSupported: boolean;
   locale: ReturnType<typeof resolveHeldOrdersLocale>;
+  onForceRelease(holdId: string): void;
   onRecall(): void;
   onRecover(): void;
   onRelease(): void;
-  row: import("@/core/contracts").HeldOrderSummary;
+  onTakeRemote(): void;
+  row: import("./held-orders-presenter").HeldOrderViewRow;
 }>) {
   const t = (
     key: HeldOrdersCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ) => heldOrdersText(locale, key, values);
-  const recalling = row.status === "Recalling";
+  const claiming = row.status === "claiming-here";
+  const remoteOnly = row.status === "remote-pending";
+  const itemCount = row.local?.itemCount ?? row.remote?.lineCount ?? 0;
+  const amountCents = row.local?.actualAmountCents ?? row.remote?.actualCents ?? 0;
+  const heldAtIso = row.local?.heldAtIso ?? row.remote?.heldAtIso ?? "";
+  const statusKeyMap: Record<HeldOrderViewStatus, HeldOrdersCopyKey> = {
+    "local-pending": "status.local-pending",
+    "claiming-here": "status.claiming-here",
+    "local-pending-publish": "status.local-pending-publish",
+    "published-shareable": "status.published-shareable",
+    "remote-pending": "status.remote-pending",
+    blocked: "status.blocked",
+  };
+  const statusKey = statusKeyMap[row.status];
   return (
     <View style={styles.row} testID={`held-order-row-${row.holdId}`}>
       <View style={styles.rowIdentity}>
-        <Text style={styles.sequence}>{t("list.sequence", { sequence: row.localSequence })}</Text>
-        <Text style={[styles.status, recalling && styles.statusWarning]}>
-          {t(recalling ? "status.Recalling" : "status.Pending")}
+        <Text style={styles.sequence}>
+          {row.local
+            ? t("list.sequence", { sequence: row.local.localSequence })
+            : row.remote
+              ? t("remote.source", {
+                  device: row.remote.deviceCode,
+                  cashier: row.remote.cashierName,
+                })
+              : "—"}
         </Text>
-        <Text style={styles.itemCount}>{t("list.items", { count: row.itemCount })}</Text>
-        <Text style={styles.time}>{t("list.heldAt", { time: formatTime(row.heldAtIso, locale) })}</Text>
+        <Text
+          style={[
+            styles.status,
+            (claiming || row.status === "blocked") && styles.statusWarning,
+            row.status === "remote-pending" && styles.statusRemote,
+          ]}
+        >
+          {t(statusKey)}
+        </Text>
+        {row.remote && row.local ? (
+          <Text style={styles.itemCount}>
+            {t("remote.source", {
+              device: row.remote.deviceCode,
+              cashier: row.remote.cashierName,
+            })}
+          </Text>
+        ) : null}
+        <Text style={styles.itemCount}>{t("list.items", { count: itemCount })}</Text>
+        <Text style={styles.time}>
+          {t("list.heldAt", { time: formatTime(heldAtIso, locale) })}
+        </Text>
+        {row.status === "blocked" ? (
+          <Text style={styles.blockReason} testID={`held-order-blocked-reason-${row.holdId}`}>
+            {t(blockReasonCopyKey(row.blockReason))}
+          </Text>
+        ) : null}
       </View>
       <View style={styles.amountColumn}>
         <Text style={styles.amountLabel}>{t("list.amount")}</Text>
-        <Text style={styles.amount}>{formatAud(row.actualAmountCents, locale)}</Text>
+        <Text style={styles.amount}>{formatAud(amountCents, locale)}</Text>
       </View>
       <View style={styles.rowActions}>
         <ActionButton
           disabled={busy}
-          label={t(recalling ? "action.recover" : "action.recall")}
-          onPress={recalling ? onRecover : onRecall}
+          label={t(
+            claiming
+              ? "action.recover"
+              : remoteOnly
+                ? "action.take-remote"
+                : "action.recall",
+          )}
+          onPress={claiming ? onRecover : remoteOnly ? onTakeRemote : onRecall}
           testID={`held-order-action-${row.holdId}`}
-          tone={recalling ? "secondary" : "primary"}
+          tone={claiming ? "secondary" : "primary"}
         />
-        {recalling ? (
-          <ActionButton
-            disabled={busy}
-            label={t("action.release")}
-            onPress={onRelease}
-            testID={`held-order-release-${row.holdId}`}
-            tone="quiet"
-          />
+        {claiming ? (
+          <>
+            <ActionButton
+              disabled={busy}
+              label={t("action.release")}
+              onPress={onRelease}
+              testID={`held-order-release-${row.holdId}`}
+              tone="quiet"
+            />
+            {forceReleaseSupported ? (
+              <ActionButton
+                disabled={busy}
+                label={t("action.force-release")}
+                onPress={() => onForceRelease(row.holdId)}
+                testID={`held-order-force-release-${row.holdId}`}
+                tone="quiet"
+              />
+            ) : null}
+          </>
         ) : null}
       </View>
     </View>
   );
+}
+
+function blockReasonCopyKey(reason: string | null): HeldOrdersCopyKey {
+  switch (reason) {
+    case "LEGACY_PAYLOAD_CORRUPTED":
+      return "blocked.LEGACY_PAYLOAD_CORRUPTED";
+    case "LEGACY_PAYLOAD_VERSION_UNSUPPORTED":
+      return "blocked.LEGACY_PAYLOAD_VERSION_UNSUPPORTED";
+    case "SHARED_CART_VERSION_UNSUPPORTED":
+      return "blocked.SHARED_CART_VERSION_UNSUPPORTED";
+    case "SHARED_CART_MODE_NOT_SALE":
+      return "blocked.SHARED_CART_MODE_NOT_SALE";
+    case "SHARED_CART_LINE_KIND_NOT_SALE":
+      return "blocked.SHARED_CART_LINE_KIND_NOT_SALE";
+    case "SHARED_CART_RETURN_ORIGINAL_NOT_EMPTY":
+      return "blocked.SHARED_CART_RETURN_ORIGINAL_NOT_EMPTY";
+    case "SHARED_CART_INVALID":
+      return "blocked.SHARED_CART_INVALID";
+    default:
+      return "blocked.unknown";
+  }
 }
 
 function CenteredState({
@@ -262,7 +436,7 @@ function ActionButton({
   onPress(): void;
   sound?: "tap" | "navigate";
   testID: string;
-  tone?: "primary" | "secondary" | "quiet";
+  tone?: "primary" | "secondary" | "quiet" | "danger";
 }>) {
   return (
     <PosPressable
@@ -273,7 +447,13 @@ function ActionButton({
       sound={sound}
       style={({ pressed }) => [
         styles.button,
-        tone === "primary" ? styles.buttonPrimary : tone === "secondary" ? styles.buttonSecondary : styles.buttonQuiet,
+        tone === "primary"
+          ? styles.buttonPrimary
+          : tone === "secondary"
+            ? styles.buttonSecondary
+            : tone === "danger"
+              ? styles.buttonDanger
+              : styles.buttonQuiet,
         disabled && styles.buttonDisabled,
         pressed && !disabled && styles.pressed,
       ]}
@@ -313,6 +493,13 @@ const styles = StyleSheet.create({
   notice: { borderRadius: 4, fontSize: 15, fontWeight: "700", marginBottom: 14, padding: 12 },
   noticeSuccess: { backgroundColor: posColors.greenSoft, color: posColors.green },
   noticeDanger: { backgroundColor: posColors.redSoft, color: posColors.red },
+  syncNotice: { backgroundColor: posColors.blueSoft, borderRadius: 4, marginBottom: 14, padding: 12 },
+  syncNoticeText: { color: posColors.blue, fontSize: 14, fontWeight: "700" },
+  forceReleasePanel: { backgroundColor: posColors.surface, borderColor: posColors.red, borderRadius: 4, borderWidth: 1, marginBottom: 16 },
+  forceReleasePanelContent: { gap: 12, padding: 16 },
+  forceReleaseTitle: { color: posColors.ink, fontSize: 17, fontWeight: "800" },
+  forceReleaseInput: { borderColor: posColors.border, borderRadius: 4, borderWidth: 1, color: posColors.ink, fontSize: 15, minHeight: HELD_ORDERS_MIN_TOUCH_TARGET, paddingHorizontal: 12, paddingVertical: 10 },
+  forceReleaseActions: { alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "flex-end" },
   list: { gap: 10, paddingBottom: 28 },
   row: { alignItems: "center", backgroundColor: posColors.surface, borderColor: posColors.border, borderRadius: 4, borderWidth: 1, flexDirection: "row", gap: 20, minHeight: 106, padding: 18 },
   rowIdentity: { flex: 1, gap: 4 },
@@ -320,6 +507,8 @@ const styles = StyleSheet.create({
   sequence: { color: posColors.ink, fontSize: 16, fontWeight: "800" },
   status: { color: posColors.green, fontSize: 14, fontWeight: "700" },
   statusWarning: { color: posColors.orange },
+  statusRemote: { color: posColors.blue },
+  blockReason: { color: posColors.red, fontSize: 13, fontWeight: "600" },
   itemCount: { color: posColors.mutedInk, fontSize: 14 },
   time: { color: posColors.mutedInk, fontSize: 13 },
   amountColumn: { alignItems: "flex-end", minWidth: 126 },
@@ -329,6 +518,7 @@ const styles = StyleSheet.create({
   buttonPrimary: { backgroundColor: posColors.orange },
   buttonSecondary: { backgroundColor: posColors.blueSoft, borderColor: posColors.blue, borderWidth: 1 },
   buttonQuiet: { backgroundColor: posColors.surface, borderColor: posColors.border, borderWidth: 1 },
+  buttonDanger: { backgroundColor: posColors.red },
   buttonDisabled: { opacity: 0.45 },
   buttonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
   buttonTextDark: { color: posColors.ink },

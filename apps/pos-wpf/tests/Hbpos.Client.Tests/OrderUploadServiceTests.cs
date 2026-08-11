@@ -5,6 +5,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Orders;
+using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
@@ -578,6 +579,126 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task UploadOrderAsync_carries_held_order_source_and_accepts_all_dispositions()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-held-source-upload-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var heldRepository = new SharedHeldOrderRepository(
+                store,
+                new SharedHeldOrderClientTestSupport.TestPayloadProtector(),
+                new SharedHeldOrderClientTestSupport.TestPayloadSerializer());
+
+            await schema.InitializeAsync();
+
+            // RemoteClaim（Active）来源订单：上传请求必须携带 HoldGuid+ClaimGuid+RemoteClaim。
+            var remoteHold = Guid.NewGuid();
+            var remoteClaim = Guid.NewGuid();
+            var remoteOrder = CreateLocalOrder() with { DeviceCode = "POS-01" };
+            await SeedActiveRemoteClaimAsync(
+                heldRepository, remoteClaim, remoteHold, "POS-01", "prepare-upload-1", "activate-upload-1");
+            await orders.SavePendingOrderWithHeldSourceAsync(
+                remoteOrder,
+                new LocalHeldOrderCompletionContext(
+                    remoteHold,
+                    remoteClaim,
+                    SharedHeldOrderClaimSource.RemoteClaim,
+                    "prepare-upload-1",
+                    "activate-upload-1",
+                    BoundOrderGuid: null,
+                    "2026-07-28T00:05:00.000Z"));
+
+            var capturingClient = new CapturingOrderSyncApiClient(remoteOrder.OrderGuid);
+            var uploadService = new OrderUploadService(orders, capturingClient, uploadRepository);
+            await uploadService.UploadOrderAsync(remoteOrder.OrderGuid);
+
+            Assert.NotNull(capturingClient.LastRequest!.HeldOrderSource);
+            Assert.Equal(remoteHold, capturingClient.LastRequest.HeldOrderSource.HoldGuid);
+            Assert.Equal(remoteClaim, capturingClient.LastRequest.HeldOrderSource.ClaimGuid);
+            Assert.Equal(
+                HeldOrderSourceKind.RemoteClaim,
+                capturingClient.LastRequest.HeldOrderSource.Kind);
+
+            // OfflineOrigin 来源订单：上传请求携带 HoldGuid 且 ClaimGuid=null。
+            var offlineHold = Guid.NewGuid();
+            var offlineClaim = Guid.NewGuid();
+            var offlineOrder = CreateLocalOrder() with { DeviceCode = "POS-02" };
+            await SeedActiveRemoteClaimAsync(
+                heldRepository, offlineClaim, offlineHold, "POS-02", "prepare-upload-2", "activate-upload-2",
+                source: SharedHeldOrderClaimSource.OfflineOrigin);
+            await orders.SavePendingOrderWithHeldSourceAsync(
+                offlineOrder,
+                new LocalHeldOrderCompletionContext(
+                    offlineHold,
+                    offlineClaim,
+                    SharedHeldOrderClaimSource.OfflineOrigin,
+                    "prepare-upload-2",
+                    "activate-upload-2",
+                    BoundOrderGuid: null,
+                    "2026-07-28T00:05:00.000Z"));
+
+            var offlineCapturing = new CapturingOrderSyncApiClient(offlineOrder.OrderGuid);
+            await new OrderUploadService(orders, offlineCapturing, uploadRepository)
+                .UploadOrderAsync(offlineOrder.OrderGuid);
+            Assert.NotNull(offlineCapturing.LastRequest!.HeldOrderSource);
+            Assert.Equal(offlineHold, offlineCapturing.LastRequest.HeldOrderSource.HoldGuid);
+            Assert.Null(offlineCapturing.LastRequest.HeldOrderSource.ClaimGuid);
+            Assert.Equal(
+                HeldOrderSourceKind.OfflineOrigin,
+                offlineCapturing.LastRequest.HeldOrderSource.Kind);
+
+            // 服务端 disposition（Primary/Duplicate/Unmatched）只用于记录/调和：全部 Accepted。
+            foreach (var disposition in new[]
+                     {
+                         HeldOrderDisposition.Primary,
+                         HeldOrderDisposition.Duplicate,
+                         HeldOrderDisposition.Unmatched
+                     })
+            {
+                var hold = Guid.NewGuid();
+                var claim = Guid.NewGuid();
+                var order = CreateLocalOrder() with { DeviceCode = $"POS-{10 + (int)disposition}" };
+                var deviceCode = $"POS-{10 + (int)disposition}";
+                await SeedActiveRemoteClaimAsync(
+                    heldRepository, claim, hold, deviceCode, $"prepare-{disposition}", $"activate-{disposition}");
+                await orders.SavePendingOrderWithHeldSourceAsync(
+                    order,
+                    new LocalHeldOrderCompletionContext(
+                        hold,
+                        claim,
+                        SharedHeldOrderClaimSource.RemoteClaim,
+                        $"prepare-{disposition}",
+                        $"activate-{disposition}",
+                        BoundOrderGuid: null,
+                        "2026-07-28T00:05:00.000Z"));
+                var service = new OrderUploadService(
+                    orders,
+                    new StubOrderSyncApiClient(new OrderSyncResponse(
+                        order.OrderGuid,
+                        Accepted: true,
+                        AlreadySynced: false,
+                        Message: disposition.ToString(),
+                        HeldOrderDisposition: disposition)),
+                    uploadRepository);
+                await service.UploadOrderAsync(order.OrderGuid);
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Order_upload_execution_service_keeps_order_pending_when_cashier_authorization_is_missing()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-auth-{Guid.NewGuid():N}.db");
@@ -789,6 +910,29 @@ public sealed class OrderUploadServiceTests
                             "merchant receipt")
                     ])
             ]);
+    }
+
+    private static async Task SeedActiveRemoteClaimAsync(
+        SharedHeldOrderRepository repository,
+        Guid claimId,
+        Guid holdGuid,
+        string deviceCode,
+        string prepareKey,
+        string activateKey,
+        SharedHeldOrderClaimSource source = SharedHeldOrderClaimSource.RemoteClaim)
+    {
+        Assert.True(await repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            deviceCode,
+            source,
+            prepareKey,
+            SampleCanonical(),
+            "2026-07-28T00:00:02.000Z",
+            "2026-07-28T00:05:00.000Z")));
+        Assert.True(await repository.TryActivateClaimAsync(
+            claimId, prepareKey, activateKey, serverRevision: 7, "2026-07-28T00:00:03.000Z"));
     }
 
     private static async Task SeedLocalOrdersAsync(

@@ -17,6 +17,8 @@ import {
 export const ACTIVE_PRICING_CART_BUSY = "ACTIVE_PRICING_CART_BUSY";
 export const ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED =
   "ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED";
+export const ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED =
+  "ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED";
 export const ACTIVE_PRICING_CART_STALE_LEASE =
   "ACTIVE_PRICING_CART_STALE_LEASE";
 export const ACTIVE_PRICING_CART_STALE_SNAPSHOT =
@@ -109,6 +111,12 @@ export class ActivePricingCartSession {
   public getSnapshot(): CartSnapshot {
     this.assertDeviceScopeValid();
     return this.current.cart;
+  }
+
+  /** 当前活跃的召回 binding（无则为 null）；adapter 据此路由普通清车到 owner release。 */
+  public getRecallBinding(): RecallActiveBinding | null {
+    this.assertDeviceScopeValid();
+    return cloneRecallBinding(this.recallBinding);
   }
 
   public subscribe(listener: () => void): () => void {
@@ -238,6 +246,7 @@ export class ActivePricingCartSession {
     this.assertIdle();
     this.assertTerminalRecoveryResolved();
     this.assertCanAdvance();
+    this.assertRecalledLastLineNotRemoved(lineId, true);
     const changed = this.cart.decreaseLine(lineId);
     if (changed) this.commitCurrentCartMutation();
     return changed;
@@ -247,6 +256,7 @@ export class ActivePricingCartSession {
     this.assertIdle();
     this.assertTerminalRecoveryResolved();
     this.assertCanAdvance();
+    this.assertRecalledLastLineNotRemoved(lineId, false);
     const changed = this.cart.removeLine(lineId);
     if (changed) this.commitCurrentCartMutation();
     return changed;
@@ -674,6 +684,25 @@ export class ActivePricingCartSession {
     if (this.sessionRevision >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError("Active pricing cart revision is exhausted.");
     }
+  }
+
+  /**
+   * 已召回购物车删除/递减最后一行会留下空车 + Active binding（孤儿 Active）。
+   * 最小方案：阻止该路径并引导用户使用普通清车（owner release），
+   * 由 release 流程原子清理 claim/fence/cart；非最后一行仍可正常编辑。
+   */
+  private assertRecalledLastLineNotRemoved(
+    lineId: string,
+    wouldDecrease: boolean,
+  ): void {
+    if (this.recallBinding === null) return;
+    const lines = this.current.cart.lines;
+    if (lines.length !== 1 || lines[0]?.lineId !== lineId) return;
+    if (wouldDecrease && Number(lines[0].quantity) > 1) return;
+    throw codedError(
+      ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED,
+      "已召回购物车只剩最后一行，请使用清车完成普通释放，避免产生孤儿 Active。",
+    );
   }
 
   private advanceTransactionEpoch(): void {

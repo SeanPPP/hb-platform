@@ -1,4 +1,17 @@
 import {
+  SqliteSharedHeldOrderClaimRepository,
+  type SharedHeldOrderClaimRepositoryPort,
+  type SharedPayloadEncryptorPort,
+} from "../../features/shared-held-orders/shared-held-order-claim-repository";
+import {
+  SqliteSharedHeldOrderLocalPublication,
+  type SharedHeldOrderLocalPublicationPort,
+} from "../../features/shared-held-orders/shared-held-order-local-publication";
+import {
+  SqliteSharedHeldOrderPublicationQueue,
+  type SharedHeldOrderPublicationQueuePort,
+} from "../../features/shared-held-orders/shared-held-order-publication-queue";
+import {
   freezeAuditScope,
   type AuditScope,
 } from "../contracts/audit-scope";
@@ -73,6 +86,7 @@ import { SqlitePaymentProtectedMaterialReader } from "./sqlite-payment-protected
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import {
   createSqliteRepositories,
+  persistRecalledHoldOrderSourceAndClaim,
   type PosRepositoryBundle,
   type SensitivePayloadEncryptor,
 } from "./sqlite-repositories";
@@ -569,6 +583,33 @@ export class PosDatabase implements DatabasePort {
   /** 本机历史在 facade 构造时冻结可信门店/设备，feature 无法扩大读取范围。 */
   public localHistory(scope: LocalHistoryStoreScope): SqliteLocalHistoryStore {
     return new SqliteLocalHistoryStore(this.connection, scope);
+  }
+
+  /**
+   * 跨设备共享挂单运行时仅经此 facade 取得 claim 持久化口；绝不把裸连接交给 feature。
+   */
+  public sharedHeldOrderClaims(
+    encryptor: SharedPayloadEncryptorPort,
+  ): SharedHeldOrderClaimRepositoryPort {
+    return new SqliteSharedHeldOrderClaimRepository(
+      this.connection,
+      encryptor,
+    );
+  }
+
+  /** 发布队列：只读/退避写，绝不返回明文 payload。 */
+  public sharedHeldOrderPublicationQueue(): SharedHeldOrderPublicationQueuePort {
+    return new SqliteSharedHeldOrderPublicationQueue(this.connection);
+  }
+
+  /** 原设备离线 recall 的本地副本读取口（只读，不改变挂单状态）。 */
+  public sharedHeldOrderLocalPublication(
+    encryptor: SharedPayloadEncryptorPort,
+  ): SharedHeldOrderLocalPublicationPort {
+    return new SqliteSharedHeldOrderLocalPublication(
+      this.connection,
+      encryptor,
+    );
   }
 }
 
@@ -1632,6 +1673,13 @@ async function completeRecalledHoldInApprovedPaymentTransaction(
   if (bound.changes !== 1) {
     throw new Error("Recall fence changed before approved payment completion.");
   }
+  // 绑定后同一事务写不可变订单来源；RemoteClaim 且已 Active 的本地 claim 绑定并 Completed。
+  await persistRecalledHoldOrderSourceAndClaim(transaction, {
+    orderGuid,
+    holdId: binding.holdId,
+    recallAttemptId: binding.recallAttemptId,
+    recalledAtIso: completion.recalledAtIso,
+  });
   const changed = await transaction.run(
     `UPDATE held_order_records
      SET status = 'Recalled', recalled_at_iso = ?, updated_at_iso = ?
@@ -1699,6 +1747,13 @@ async function completeRecalledHoldInCashTransaction(
   if (changed.changes !== 1) {
     throw new Error("Recalled hold changed before cash completion.");
   }
+  // 现金路径以 held CAS 精确绑定；随后同事务写不可变来源并完成 RemoteClaim。
+  await persistRecalledHoldOrderSourceAndClaim(transaction, {
+    orderGuid: input.command.order.orderGuid,
+    holdId: binding.holdId,
+    recallAttemptId: binding.recallAttemptId,
+    recalledAtIso: completion.recalledAtIso,
+  });
   const audit = completion.recallAudit;
   await appendScopedAuditEvent(
     transaction,

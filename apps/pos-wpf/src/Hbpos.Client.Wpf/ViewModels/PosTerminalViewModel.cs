@@ -43,6 +43,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<string, CancellationToken, Task<bool>>? _tryLoginCashierFromScannerFallbackAsync;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly Func<Guid, PosSessionState, CancellationToken, Task>? _releaseSharedHeldOrderAsync;
     private readonly Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>> _searchCatalogMatches;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
@@ -122,7 +123,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         IOperationAuditLogger? operationAuditLogger = null,
         Func<Task>? onLockCashierAsync = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>>? searchCatalogMatches = null)
+        Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>>? searchCatalogMatches = null,
+        Func<Guid, PosSessionState, CancellationToken, Task>? releaseSharedHeldOrderAsync = null)
     {
         _priceIndex = priceIndex;
         _searchCatalogMatches = searchCatalogMatches ?? ((storeCode, query, cancellationToken) =>
@@ -132,6 +134,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _promotionEvaluationService = promotionEvaluationService;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        _releaseSharedHeldOrderAsync = releaseSharedHeldOrderAsync;
         _actions = PosTerminalActions.FromLegacyCallbacks(
             onOpenPayment,
             onOpenReturns,
@@ -1163,6 +1166,38 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        if (_cart.CreateSnapshot().SharedHeldOrderClaimId is Guid claimId)
+        {
+            if (_releaseSharedHeldOrderAsync is null)
+            {
+                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+                return;
+            }
+
+            try
+            {
+                await _releaseSharedHeldOrderAsync(claimId, Session, CancellationToken.None);
+            }
+            catch (Exception exception) when (
+                exception is not OutOfMemoryException
+                    and not StackOverflowException
+                    and not OperationCanceledException)
+            {
+                // 只记录 claim 标识与异常类型，禁止把 payload 或服务端响应写入日志。
+                ConsoleLog.Write(
+                    "HeldOrderRelease",
+                    $"owner release failed claimId={claimId:D} error={exception.GetType().Name}");
+                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+                return;
+            }
+
+            if (_cart.CreateSnapshot().SharedHeldOrderClaimId is not null)
+            {
+                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+                return;
+            }
+        }
+
         ExecuteCartMutation("clear-cart", () => _workflowService.ClearCart());
     }
 
@@ -2047,6 +2082,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             "pos.status.noLocalMatch" => (StatusFeedbackKind.Error, UserFeedbackCue.ScanNoMatch),
             "cart.status.zeroPriceItem" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
             "cart.status.quantityMustBeInteger" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
+            "pos.status.sharedHeldOrderReleaseFailed" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
             "pos.status.invalidKeypadValue" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
             "pos.status.selectCartLine" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),
             "pos.status.discountAmountTooHigh" => (StatusFeedbackKind.Error, UserFeedbackCue.OperationError),

@@ -5538,6 +5538,257 @@ BEGIN
 END;
 `;
 
+/**
+ * M40 挂单共享发布状态 + 跨终端取单声明：
+ * - held_order_records 旧行默认 NeedsEvaluation，未来新挂单由整合层同事务写
+ *   PendingPublish。迁移不解析、不解密、不猜测旧 payload_ciphertext。
+ * - shared_held_order_claim_records 保存终端取单声明，payload 一律只留密文；
+ *   每 store+device 至多一个 Prepared/Active（partial unique fence）。
+ * - order_held_order_sources 是不可变订单来源：与本地订单/outbox 同一事务写入，
+ *   RemoteClaim(1) 必须带 claim_guid，OfflineOrigin(2) 必须为空；普通订单不写入。
+ */
+const M40 = `
+ALTER TABLE held_order_records
+ADD COLUMN share_state TEXT NOT NULL DEFAULT 'NeedsEvaluation'
+  CHECK (share_state IN ('NeedsEvaluation','PendingPublish','Published','Blocked'));
+
+ALTER TABLE held_order_records
+ADD COLUMN remote_revision INTEGER NULL
+  CHECK (remote_revision IS NULL OR (typeof(remote_revision) = 'integer' AND remote_revision >= 0));
+
+ALTER TABLE held_order_records
+ADD COLUMN publish_attempt_count INTEGER NOT NULL DEFAULT 0
+  CHECK (typeof(publish_attempt_count) = 'integer' AND publish_attempt_count >= 0);
+
+ALTER TABLE held_order_records
+ADD COLUMN next_publish_at_iso TEXT NULL;
+
+ALTER TABLE held_order_records
+ADD COLUMN publish_error_code TEXT NULL;
+
+ALTER TABLE held_order_records
+ADD COLUMN publish_block_reason TEXT NULL;
+
+ALTER TABLE held_order_records
+ADD COLUMN remote_updated_at_iso TEXT NULL;
+
+-- 远端 prepare 创建的 synthetic 行标记；release/supersede 只清理此类行，
+-- 真实本地挂单副本恢复为 Pending，绝不被删除。
+ALTER TABLE held_order_records
+ADD COLUMN is_synthetic_shared_claim INTEGER NOT NULL DEFAULT 0
+  CHECK (is_synthetic_shared_claim IN (0, 1));
+
+-- 本地订单是否来自共享挂单取单完成；同步材料解析器据此决定是否查询来源表，
+-- 普通订单保持默认 0，绝不查询或写入来源表。
+ALTER TABLE local_orders
+ADD COLUMN is_shared_held_origin INTEGER NOT NULL DEFAULT 0
+  CHECK (is_shared_held_origin IN (0, 1));
+
+CREATE TABLE IF NOT EXISTS shared_held_order_claim_records (
+  claim_guid TEXT PRIMARY KEY,
+  -- hold_guid 语义上对应 held_order_records.hold_id；暂不设外键，允许远程声明先于本地挂单到达。
+  hold_guid TEXT NOT NULL,
+  -- 本机取单 attempt：与 terminal_cart_fences.recall_attempt_id 一致，声明身份不可变。
+  recall_attempt_id TEXT NOT NULL UNIQUE,
+  store_code TEXT NOT NULL,
+  device_code TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('RemoteClaim','OfflineOrigin')),
+  state TEXT NOT NULL CHECK (state IN ('Prepared','Active','Completed','Released','Superseded')),
+  prepare_idempotency_key TEXT NOT NULL,
+  activate_idempotency_key TEXT NULL,
+  release_idempotency_key TEXT NULL,
+  supersede_idempotency_key TEXT NULL,
+  payload_version INTEGER NOT NULL CHECK (payload_version = 1),
+  payload_ciphertext BLOB NOT NULL,
+  server_revision INTEGER NULL
+    CHECK (server_revision IS NULL OR (typeof(server_revision) = 'integer' AND server_revision >= 0)),
+  prepared_expires_at_iso TEXT NOT NULL,
+  -- 本机 held 汇总事实：与 prepare 输入严格一致，用于幂等比对和 synthetic 行重建。
+  held_at_iso TEXT NOT NULL,
+  held_by_cashier_id TEXT NOT NULL,
+  held_by_cashier_name TEXT NOT NULL,
+  bound_order_guid TEXT NULL,
+  created_at_iso TEXT NOT NULL,
+  updated_at_iso TEXT NOT NULL,
+  CHECK (TRIM(claim_guid) <> '' AND LENGTH(claim_guid) <= 128),
+  CHECK (TRIM(hold_guid) <> '' AND LENGTH(hold_guid) <= 128),
+  CHECK (TRIM(recall_attempt_id) <> '' AND LENGTH(recall_attempt_id) <= 128),
+  CHECK (TRIM(store_code) <> '' AND LENGTH(store_code) <= 64),
+  CHECK (TRIM(device_code) <> '' AND LENGTH(device_code) <= 128),
+  CHECK (TRIM(prepare_idempotency_key) <> '' AND LENGTH(prepare_idempotency_key) <= 256),
+  CHECK (activate_idempotency_key IS NULL OR (TRIM(activate_idempotency_key) <> '' AND LENGTH(activate_idempotency_key) <= 256)),
+  CHECK (release_idempotency_key IS NULL OR (TRIM(release_idempotency_key) <> '' AND LENGTH(release_idempotency_key) <= 256)),
+  CHECK (supersede_idempotency_key IS NULL OR (TRIM(supersede_idempotency_key) <> '' AND LENGTH(supersede_idempotency_key) <= 256)),
+  CHECK (TRIM(prepared_expires_at_iso) <> '' AND LENGTH(prepared_expires_at_iso) <= 64),
+  CHECK (TRIM(held_at_iso) <> '' AND LENGTH(held_at_iso) <= 64),
+  CHECK (TRIM(held_by_cashier_id) <> '' AND LENGTH(held_by_cashier_id) <= 128),
+  CHECK (TRIM(held_by_cashier_name) <> '' AND LENGTH(held_by_cashier_name) <= 256),
+  CHECK (bound_order_guid IS NULL OR (TRIM(bound_order_guid) <> '' AND LENGTH(bound_order_guid) <= 128)),
+  CHECK (TRIM(created_at_iso) <> '' AND LENGTH(created_at_iso) <= 64),
+  CHECK (TRIM(updated_at_iso) <> '' AND LENGTH(updated_at_iso) <= 64),
+  CHECK (
+    (state = 'Prepared'
+      AND activate_idempotency_key IS NULL
+      AND release_idempotency_key IS NULL
+      AND supersede_idempotency_key IS NULL
+      AND bound_order_guid IS NULL)
+    OR (state = 'Active'
+      AND activate_idempotency_key IS NOT NULL
+      AND release_idempotency_key IS NULL)
+    OR (state = 'Completed'
+      AND activate_idempotency_key IS NOT NULL
+      AND release_idempotency_key IS NOT NULL
+      AND supersede_idempotency_key IS NULL
+      AND bound_order_guid IS NOT NULL)
+    OR (state = 'Released'
+      AND release_idempotency_key IS NOT NULL
+      AND supersede_idempotency_key IS NULL
+      AND bound_order_guid IS NULL)
+    OR (state = 'Superseded'
+      AND release_idempotency_key IS NULL
+      AND supersede_idempotency_key IS NOT NULL
+      AND bound_order_guid IS NULL)
+  )
+);
+
+-- 每 store+device 至多一个 Prepared/Active 的本地 fence（唯一赢家）。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shared_held_order_claim_terminal_fence
+  ON shared_held_order_claim_records (store_code, device_code)
+  WHERE state IN ('Prepared','Active');
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shared_held_order_claim_prepare_key
+  ON shared_held_order_claim_records (prepare_idempotency_key);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shared_held_order_claim_activate_key
+  ON shared_held_order_claim_records (activate_idempotency_key)
+  WHERE activate_idempotency_key IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shared_held_order_claim_release_key
+  ON shared_held_order_claim_records (release_idempotency_key)
+  WHERE release_idempotency_key IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shared_held_order_claim_supersede_key
+  ON shared_held_order_claim_records (supersede_idempotency_key)
+  WHERE supersede_idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_shared_held_order_claim_scope
+  ON shared_held_order_claim_records (store_code, device_code, state, created_at_iso, claim_guid);
+
+CREATE INDEX IF NOT EXISTS ix_shared_held_order_claim_hold
+  ON shared_held_order_claim_records (hold_guid, recall_attempt_id, claim_guid);
+
+CREATE INDEX IF NOT EXISTS ix_shared_held_order_claim_recall
+  ON shared_held_order_claim_records (recall_attempt_id);
+
+-- 不可变列保护：声明身份、scope、源、recall attempt、prepare key、payload 与时间戳不可改写。
+CREATE TRIGGER IF NOT EXISTS trg_shared_held_order_claim_immutable
+BEFORE UPDATE ON shared_held_order_claim_records
+FOR EACH ROW
+WHEN
+  NEW.claim_guid <> OLD.claim_guid
+  OR NEW.hold_guid <> OLD.hold_guid
+  OR NEW.recall_attempt_id <> OLD.recall_attempt_id
+  OR NEW.store_code <> OLD.store_code
+  OR NEW.device_code <> OLD.device_code
+  OR NEW.source <> OLD.source
+  OR NEW.prepare_idempotency_key <> OLD.prepare_idempotency_key
+  OR NEW.payload_version <> OLD.payload_version
+  OR NEW.payload_ciphertext <> OLD.payload_ciphertext
+  OR NEW.held_at_iso <> OLD.held_at_iso
+  OR NEW.held_by_cashier_id <> OLD.held_by_cashier_id
+  OR NEW.held_by_cashier_name <> OLD.held_by_cashier_name
+  OR NEW.created_at_iso <> OLD.created_at_iso
+  OR NEW.prepared_expires_at_iso <> OLD.prepared_expires_at_iso
+BEGIN
+  SELECT RAISE(ABORT, 'SHARED_HELD_ORDER_CLAIM_IMMUTABLE');
+END;
+
+-- 状态机：Prepared->Active/Released/Superseded；Active->Active(绑定)/Completed/Released；
+-- 终态不可再转移；绑定订单后只能 complete，不能 release。
+CREATE TRIGGER IF NOT EXISTS trg_shared_held_order_claim_transition
+BEFORE UPDATE OF state, activate_idempotency_key, release_idempotency_key, supersede_idempotency_key, bound_order_guid, server_revision
+ON shared_held_order_claim_records
+FOR EACH ROW
+WHEN NOT (
+  (OLD.state = 'Prepared' AND NEW.state = 'Active'
+    AND OLD.activate_idempotency_key IS NULL AND NEW.activate_idempotency_key IS NOT NULL
+    AND NEW.release_idempotency_key IS NULL
+    AND NEW.supersede_idempotency_key IS NULL
+    AND NEW.bound_order_guid IS NULL)
+  OR (OLD.state = 'Prepared' AND NEW.state = 'Released'
+    AND NEW.activate_idempotency_key IS NULL
+    AND OLD.release_idempotency_key IS NULL AND NEW.release_idempotency_key IS NOT NULL
+    AND NEW.supersede_idempotency_key IS NULL
+    AND NEW.bound_order_guid IS NULL)
+  OR (OLD.state = 'Prepared' AND NEW.state = 'Superseded'
+    AND NEW.activate_idempotency_key IS NULL
+    AND NEW.release_idempotency_key IS NULL
+    AND OLD.supersede_idempotency_key IS NULL AND NEW.supersede_idempotency_key IS NOT NULL
+    AND NEW.bound_order_guid IS NULL)
+  OR (OLD.state = 'Active' AND NEW.state = 'Superseded'
+    AND NEW.activate_idempotency_key = OLD.activate_idempotency_key
+    AND NEW.activate_idempotency_key IS NOT NULL
+    AND NEW.release_idempotency_key IS NULL
+    AND OLD.supersede_idempotency_key IS NULL AND NEW.supersede_idempotency_key IS NOT NULL
+    AND OLD.bound_order_guid IS NULL AND NEW.bound_order_guid IS NULL)
+  OR (OLD.state = 'Active' AND NEW.state = 'Active'
+    AND NEW.activate_idempotency_key = OLD.activate_idempotency_key
+    AND OLD.release_idempotency_key IS NULL AND NEW.release_idempotency_key IS NULL
+    AND NEW.supersede_idempotency_key IS NULL
+    AND OLD.bound_order_guid IS NULL AND NEW.bound_order_guid IS NOT NULL
+    AND NEW.server_revision = OLD.server_revision)
+  OR (OLD.state = 'Active' AND NEW.state = 'Completed'
+    AND NEW.activate_idempotency_key = OLD.activate_idempotency_key
+    AND OLD.release_idempotency_key IS NULL AND NEW.release_idempotency_key IS NOT NULL
+    AND NEW.supersede_idempotency_key IS NULL
+    AND OLD.bound_order_guid IS NOT NULL AND NEW.bound_order_guid = OLD.bound_order_guid)
+  OR (OLD.state = 'Active' AND NEW.state = 'Released'
+    AND NEW.activate_idempotency_key = OLD.activate_idempotency_key
+    AND OLD.release_idempotency_key IS NULL AND NEW.release_idempotency_key IS NOT NULL
+    AND NEW.supersede_idempotency_key IS NULL
+    AND NEW.bound_order_guid IS NULL AND OLD.bound_order_guid IS NULL)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'SHARED_HELD_ORDER_CLAIM_TRANSITION_INVALID');
+END;
+
+-- 不可变订单来源表：一笔订单至多一个共享挂单来源，与本地订单/outbox 同事务写入，
+-- 之后任何列都不可改写（付款/恢复竞态只能整体回滚，不能事后修补来源）。
+CREATE TABLE IF NOT EXISTS order_held_order_sources (
+  order_guid TEXT PRIMARY KEY
+    REFERENCES local_orders(order_guid) ON DELETE CASCADE,
+  hold_guid TEXT NOT NULL,
+  claim_guid TEXT NULL
+    REFERENCES shared_held_order_claim_records(claim_guid) ON DELETE RESTRICT,
+  source_kind INTEGER NOT NULL CHECK (source_kind IN (1, 2)),
+  created_at_iso TEXT NOT NULL,
+  CHECK (TRIM(order_guid) <> '' AND LENGTH(order_guid) <= 128),
+  CHECK (TRIM(hold_guid) <> '' AND LENGTH(hold_guid) <= 128),
+  CHECK (claim_guid IS NULL OR (TRIM(claim_guid) <> '' AND LENGTH(claim_guid) <= 128)),
+  CHECK (TRIM(created_at_iso) <> '' AND LENGTH(created_at_iso) <= 64),
+  CHECK (
+    (source_kind = 1 AND claim_guid IS NOT NULL)
+    OR (source_kind = 2 AND claim_guid IS NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS ix_order_held_order_sources_hold
+  ON order_held_order_sources (hold_guid);
+
+CREATE TRIGGER IF NOT EXISTS trg_order_held_order_sources_immutable
+BEFORE UPDATE ON order_held_order_sources
+FOR EACH ROW
+WHEN
+  NEW.order_guid <> OLD.order_guid
+  OR NEW.hold_guid <> OLD.hold_guid
+  OR NEW.claim_guid <> OLD.claim_guid
+  OR NEW.source_kind <> OLD.source_kind
+  OR NEW.created_at_iso <> OLD.created_at_iso
+BEGIN
+  SELECT RAISE(ABORT, 'ORDER_HELD_ORDER_SOURCE_IMMUTABLE');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5578,6 +5829,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 37, name: "M37_installment_action_resolution_code", sql: M37 },
   { version: 38, name: "M38_repair_installment_lifecycle_actions", sql: M38 },
   { version: 39, name: "M39_mixed_cash_final_rounding", sql: M39 },
+  { version: 40, name: "M40_shared_held_order_share_state", sql: M40 },
 ];
 
 export async function applyMigrations(

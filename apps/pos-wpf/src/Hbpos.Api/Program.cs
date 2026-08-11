@@ -71,6 +71,9 @@ using (var scope = app.Services.CreateScope())
         var installmentCancelClaimSchemaInitializer = scope.ServiceProvider.GetRequiredService<IInstallmentCancelClaimSchemaInitializer>();
         await installmentCancelClaimSchemaInitializer.InitializeAsync();
 
+        var sharedHeldOrderSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISharedHeldOrderSchemaInitializer>();
+        await sharedHeldOrderSchemaInitializer.InitializeAsync();
+
         var squareWebhookSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISquareWebhookSchemaInitializer>();
         await squareWebhookSchemaInitializer.InitializeAsync();
     }

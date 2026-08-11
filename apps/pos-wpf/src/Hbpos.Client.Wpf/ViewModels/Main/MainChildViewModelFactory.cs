@@ -44,6 +44,9 @@ internal sealed class MainChildViewModelFactory
     private readonly ApiServerSettingsViewModel? _apiServerSettings;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IOrderUploadExecutionService _orderUploadExecutionService;
+    private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
+    private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
+    private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -79,7 +82,10 @@ internal sealed class MainChildViewModelFactory
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         IOrderUploadExecutionService? orderUploadExecutionService = null,
-        ILinklySettlementService? linklySettlementService = null)
+        ILinklySettlementService? linklySettlementService = null,
+        ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
+        ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -115,6 +121,9 @@ internal sealed class MainChildViewModelFactory
         _apiServerSettings = apiServerSettings;
         _operationAuthorizationService = operationAuthorizationService;
         _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
+        _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
+        _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
+        _sharedHeldOrderRepository = sharedHeldOrderRepository;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -158,7 +167,10 @@ internal sealed class MainChildViewModelFactory
             _operationAuditLogger,
             _operationAuthorizationService,
             _orderUploadExecutionService,
-            confirmationDialogService);
+            confirmationDialogService,
+            _sharedHeldOrderCoordinator,
+            _sharedHeldOrderApiClient,
+            _sharedHeldOrderRepository);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }
@@ -258,7 +270,14 @@ internal sealed class MainChildViewModelFactory
             enforcePermissionsWhenNoCashier: _enforceCashierPermissions,
             operationAuditLogger: _operationAuditLogger,
             onLockCashierAsync: onLockCashierAsync,
-            operationAuthorizationService: _operationAuthorizationService);
+            operationAuthorizationService: _operationAuthorizationService,
+            releaseSharedHeldOrderAsync: _sharedHeldOrderCoordinator is null
+                ? null
+                : (claimId, currentSession, cancellationToken) =>
+                    _sharedHeldOrderCoordinator.ReleaseActiveClaimAsync(
+                        claimId,
+                        currentSession,
+                        cancellationToken));
     }
 
     public SpecialProductsViewModel CreateSpecialProductsViewModel(

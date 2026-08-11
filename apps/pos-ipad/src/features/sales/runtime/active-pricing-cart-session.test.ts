@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ACTIVE_PRICING_CART_BUSY,
   ACTIVE_PRICING_CART_DEVICE_SCOPE_INVALIDATED,
+  ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED,
   ACTIVE_PRICING_CART_STALE_LEASE,
   ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED,
   ACTIVE_PRICING_CART_UPDATE_TRANSITION,
@@ -563,6 +564,42 @@ test("同车释放 active binding 在 lease 内递增 revision，过期 lease �
     () => retainedLease?.setRecallBinding(null),
     hasCode(ACTIVE_PRICING_CART_STALE_LEASE),
   );
+});
+
+test("已召回购物车删除最后一行/减到 0 被阻止并引导普通清车，非最后一行仍可编辑", async () => {
+  const activeCart = session();
+  const binding = recallBinding();
+  activeCart.blockForRecallRecovery(binding);
+  const recalled = cartWithLine();
+  await activeCart.runExclusive((lease) => {
+    lease.replace(recalled.stateSnapshot(), binding);
+  });
+
+  // 最后一行删除/递减会留下空车 + Active binding（孤儿 Active），必须阻止。
+  assert.throws(
+    () => activeCart.removeLine("line-1"),
+    hasCode(ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED),
+  );
+  assert.throws(
+    () => activeCart.decreaseLine("line-1"),
+    hasCode(ACTIVE_PRICING_CART_RECALLED_CART_CLEAR_REQUIRED),
+  );
+  assert.equal(activeCart.read().cart.lines.length, 1);
+  assert.equal(activeCart.read().recallBinding?.holdId, "hold-1");
+
+  // 第二行加入后删除其中一行仍允许（购物车不会因此清空）。
+  activeCart.addItem({
+    lineId: "line-2",
+    productCode: "P2",
+    itemNumber: null,
+    lookupCode: "2",
+    displayName: "Coffee",
+    unitPrice: { currency: "AUD", cents: 700 },
+    syncProvenance: { referenceCode: null, priceSource: 0 },
+  });
+  assert.equal(activeCart.removeLine("line-2"), true);
+  assert.equal(activeCart.read().cart.lines.length, 1);
+  assert.equal(activeCart.read().recallBinding?.holdId, "hold-1");
 });
 
 test("目录行校准先在副本更新再单次发布，并以交易代次隔离清车后的迟到结果", () => {

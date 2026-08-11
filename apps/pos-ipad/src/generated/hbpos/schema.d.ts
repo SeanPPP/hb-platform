@@ -911,6 +911,315 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/held-orders/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderCapabilitiesResponseApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderCapabilitiesResponseApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderCapabilitiesResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderListItemDtoIReadOnlyListApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderListItemDtoIReadOnlyListApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderListItemDtoIReadOnlyListApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SharedHeldOrderPublishRequest"];
+                    "text/json": components["schemas"]["SharedHeldOrderPublishRequest"];
+                    "application/*+json": components["schemas"]["SharedHeldOrderPublishRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderPublishResponseApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderPublishResponseApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderPublishResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders/{holdGuid}/claims/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    holdGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SharedHeldOrderClaimPrepareRequest"];
+                    "text/json": components["schemas"]["SharedHeldOrderClaimPrepareRequest"];
+                    "application/*+json": components["schemas"]["SharedHeldOrderClaimPrepareRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderClaimPrepareResponseApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderClaimPrepareResponseApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderClaimPrepareResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    holdGuid: string;
+                    claimGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    holdGuid: string;
+                    claimGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/force-release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    holdGuid: string;
+                    claimGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["SharedHeldOrderForceReleaseRequest"];
+                    "text/json": components["schemas"]["SharedHeldOrderForceReleaseRequest"];
+                    "application/*+json": components["schemas"]["SharedHeldOrderForceReleaseRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderClaimDtoApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/held-orders/claims/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/installments/capabilities": {
         parameters: {
             query?: never;
@@ -4238,6 +4547,23 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        HeldOrderDisposition: 0 | 1 | 2 | 3;
+        HeldOrderSourceDto: {
+            /** Format: uuid */
+            holdGuid?: string;
+            /** Format: uuid */
+            claimGuid?: string | null;
+            sourceKind?: components["schemas"]["HeldOrderSourceKind"];
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        HeldOrderSourceKind: 1 | 2;
         InstallmentAppendPaymentRequest: {
             /** Format: uuid */
             installmentGuid?: string;
@@ -5301,6 +5627,7 @@ export interface components {
             actualAmount?: number;
             lines?: components["schemas"]["OrderLineSyncDto"][] | null;
             payments?: components["schemas"]["PaymentSyncDto"][] | null;
+            heldOrderSource?: components["schemas"]["HeldOrderSourceDto"];
         };
         OrderSyncResponse: {
             /** Format: uuid */
@@ -5308,6 +5635,7 @@ export interface components {
             accepted?: boolean;
             alreadySynced?: boolean;
             message?: string | null;
+            heldOrderDisposition?: components["schemas"]["HeldOrderDisposition"];
         };
         OrderSyncResponseApiResult: {
             success?: boolean;
@@ -5433,6 +5761,244 @@ export interface components {
             data?: components["schemas"]["SellableItemsResponse"];
             errorCode?: string | null;
             message?: string | null;
+        };
+        SharedHeldOrderCapabilitiesResponse: {
+            enabled?: boolean;
+            /** Format: int32 */
+            payloadVersion?: number;
+            /** Format: int32 */
+            preparedTtlSeconds?: number;
+            forceReleaseSupported?: boolean;
+        };
+        SharedHeldOrderCapabilitiesResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderCapabilitiesResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        SharedHeldOrderClaimDto: {
+            /** Format: uuid */
+            holdGuid?: string;
+            /** Format: uuid */
+            claimGuid?: string;
+            status?: components["schemas"]["SharedHeldOrderClaimStatus"];
+            storeCode?: string | null;
+            claimantDeviceCode?: string | null;
+            claimantCashierId?: string | null;
+            claimantCashierName?: string | null;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            /** Format: date-time */
+            activatedAtUtc?: string | null;
+            /** Format: date-time */
+            releasedAtUtc?: string | null;
+            forceReleased?: boolean;
+            forceReleaseReason?: string | null;
+            forceReleaseCashierId?: string | null;
+            forceReleaseCashierName?: string | null;
+            /** Format: date-time */
+            forceReleasedAtUtc?: string | null;
+            /** Format: int64 */
+            revision?: number;
+            alreadyExists?: boolean;
+        };
+        SharedHeldOrderClaimDtoApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderClaimDto"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        SharedHeldOrderClaimPrepareRequest: {
+            /** Format: uuid */
+            claimGuid?: string;
+            idempotencyKey?: string | null;
+        };
+        SharedHeldOrderClaimPrepareResponse: {
+            /** Format: uuid */
+            holdGuid?: string;
+            /** Format: uuid */
+            claimGuid?: string;
+            status?: components["schemas"]["SharedHeldOrderClaimStatus"];
+            payload?: components["schemas"]["SharedSaleCartV1"];
+            claimantDeviceCode?: string | null;
+            claimantCashierId?: string | null;
+            claimantCashierName?: string | null;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            /** Format: int64 */
+            revision?: number;
+            alreadyExists?: boolean;
+        };
+        SharedHeldOrderClaimPrepareResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderClaimPrepareResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        SharedHeldOrderClaimStatus: 1 | 2 | 3 | 4 | 5;
+        SharedHeldOrderForceReleaseRequest: {
+            reason?: string | null;
+        };
+        SharedHeldOrderListItemDto: {
+            /** Format: uuid */
+            holdGuid?: string;
+            storeCode?: string | null;
+            deviceCode?: string | null;
+            heldByCashierId?: string | null;
+            heldByCashierName?: string | null;
+            /** Format: date-time */
+            heldAtUtc?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            /** Format: int32 */
+            lineCount?: number;
+            /** Format: int64 */
+            totalCents?: number;
+            /** Format: int64 */
+            discountCents?: number;
+            /** Format: int64 */
+            actualCents?: number;
+            /** Format: int64 */
+            revision?: number;
+        };
+        SharedHeldOrderListItemDtoIReadOnlyListApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderListItemDto"][] | null;
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        SharedHeldOrderPublishRequest: {
+            /** Format: uuid */
+            holdGuid?: string;
+            storeCode?: string | null;
+            deviceCode?: string | null;
+            cart?: components["schemas"]["SharedSaleCartV1"];
+            idempotencyKey?: string | null;
+        };
+        SharedHeldOrderPublishResponse: {
+            /** Format: uuid */
+            holdGuid?: string;
+            status?: components["schemas"]["SharedHeldOrderStatus"];
+            /** Format: int64 */
+            revision?: number;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            alreadyExists?: boolean;
+        };
+        SharedHeldOrderPublishResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderPublishResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        SharedHeldOrderRecoveryClaimDto: {
+            /** Format: uuid */
+            holdGuid?: string;
+            /** Format: uuid */
+            claimGuid?: string;
+            status?: components["schemas"]["SharedHeldOrderClaimStatus"];
+            storeCode?: string | null;
+            claimantDeviceCode?: string | null;
+            claimantCashierId?: string | null;
+            claimantCashierName?: string | null;
+            payload?: components["schemas"]["SharedSaleCartV1"];
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            /** Format: date-time */
+            activatedAtUtc?: string | null;
+            /** Format: int64 */
+            revision?: number;
+        };
+        SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderRecoveryClaimDto"][] | null;
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        /**
+         * Format: int32
+         * @enum {integer}
+         */
+        SharedHeldOrderStatus: 1 | 2 | 3;
+        SharedLineDiscountStateV1: {
+            mode?: string | null;
+            /** Format: int64 */
+            cents?: number | null;
+            /** Format: int32 */
+            basisPoints?: number | null;
+            promotionIds?: string[] | null;
+        };
+        SharedLineSyncProvenanceV1: {
+            referenceCode?: string | null;
+            priceSource?: components["schemas"]["PriceSourceKind"];
+        };
+        SharedPricingStateV1: {
+            /** Format: int32 */
+            revision?: number;
+            mode?: string | null;
+            asOfIso?: string | null;
+            promotions?: components["schemas"]["SharedPromotionV1"][] | null;
+            lines?: components["schemas"]["SharedSaleLineV1"][] | null;
+        };
+        SharedPromotionProductV1: {
+            productCode?: string | null;
+            /** Format: double */
+            unitWeight?: number;
+        };
+        SharedPromotionV1: {
+            id?: string | null;
+            name?: string | null;
+            effectiveStartIso?: string | null;
+            effectiveEndIso?: string | null;
+            isExclusive?: boolean;
+            /** Format: int32 */
+            priority?: number;
+            /** Format: int32 */
+            applyQuantity?: number;
+            /** Format: int64 */
+            fixedPriceCents?: number;
+            /** Format: int32 */
+            maxApplicationsPerOrder?: number | null;
+            products?: components["schemas"]["SharedPromotionProductV1"][] | null;
+        };
+        SharedSaleCartV1: {
+            /** Format: int32 */
+            version?: number;
+            pricingState?: components["schemas"]["SharedPricingStateV1"];
+        };
+        SharedSaleLineV1: {
+            lineId?: string | null;
+            productCode?: string | null;
+            itemNumber?: string | null;
+            lookupCode?: string | null;
+            displayName?: string | null;
+            /** Format: double */
+            quantity?: number;
+            /** Format: int64 */
+            unitPriceCents?: number;
+            basePriceSource?: string | null;
+            syncProvenance?: components["schemas"]["SharedLineSyncProvenanceV1"];
+            kind?: string | null;
+            returnSourceKey?: string | null;
+            /** Format: uuid */
+            originalOrderGuid?: string | null;
+            /** Format: uuid */
+            originalOrderDetailGuid?: string | null;
+            discountState?: components["schemas"]["SharedLineDiscountStateV1"];
         };
         SquareCheckoutActionRequest: {
             environment?: string | null;

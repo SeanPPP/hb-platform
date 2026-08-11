@@ -28,6 +28,9 @@ public static class CashierAuthorizationPolicies
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
     public const string DeviceRegistration = "Cashier.DeviceRegistration";
     public const string OperationAuditView = "Cashier.OperationAuditView";
+    public const string HoldOrder = "Cashier.HoldOrder";
+    public const string RecallOrder = "Cashier.RecallOrder";
+    public const string HistoryRecall = "Cashier.HistoryRecall";
 
     public static void AddPolicies(AuthorizationOptions options)
     {
@@ -56,6 +59,9 @@ public static class CashierAuthorizationPolicies
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);
         Add(options, DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration);
         Add(options, OperationAuditView, Permissions.PosTerminal.Audit.View);
+        Add(options, HoldOrder, Permissions.PosTerminal.Sales.HoldOrder);
+        Add(options, RecallOrder, Permissions.PosTerminal.Sales.RecallOrder);
+        Add(options, HistoryRecall, Permissions.PosTerminal.History.Recall);
     }
 
     private static void Add(AuthorizationOptions options, string name, params string[] permissions)

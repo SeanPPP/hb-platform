@@ -701,6 +701,96 @@ public sealed class PosCartServiceTests
         Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
     }
 
+    [Fact]
+    public void SetLineUnitPrice_marks_line_as_manual_price_provenance()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(price: 10m, priceSource: PriceSourceKind.StoreRetailPrice));
+
+        Assert.False(line.IsManualPrice);
+
+        Assert.True(cart.SetLineUnitPrice(line, 4.2m));
+
+        Assert.True(line.IsManualPrice);
+        Assert.Equal(4.2m, line.UnitPrice);
+        // 底层目录来源种类仍保留，仅 provenance 标记为手工改价。
+        Assert.Equal(PriceSourceKind.StoreRetailPrice, line.PriceSource);
+    }
+
+    [Fact]
+    public void UpdateLineFromRemote_restores_catalog_price_provenance_after_manual_override()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(price: 10m, priceSource: PriceSourceKind.StoreClearancePrice));
+        Assert.True(cart.SetLineUnitPrice(line, 4.2m));
+        Assert.True(line.IsManualPrice);
+
+        Assert.True(cart.UpdateLineFromRemote(CreateItem(
+            productCode: "SKU-001",
+            lookupCode: "690001",
+            price: 9.5m,
+            priceSource: PriceSourceKind.StoreClearancePrice)));
+
+        Assert.False(line.IsManualPrice);
+        Assert.Equal(9.5m, line.UnitPrice);
+        Assert.Equal(PriceSourceKind.StoreClearancePrice, line.PriceSource);
+    }
+
+    [Fact]
+    public void Snapshot_and_restore_preserve_manual_and_catalog_price_provenance()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem(productCode: "SKU-CATALOG", lookupCode: "catalog-01", price: 10m));
+        var manualLine = cart.AddItem(CreateItem(productCode: "SKU-MANUAL", lookupCode: "manual-01", price: 10m));
+        Assert.True(cart.SetLineUnitPrice(manualLine, 7.7m));
+
+        var snapshot = cart.CreateSnapshot();
+        var manualSnapshotLine = snapshot.Lines.Single(snapshotLine => snapshotLine.ProductCode == "SKU-MANUAL");
+        var catalogSnapshotLine = snapshot.Lines.Single(snapshotLine => snapshotLine.ProductCode == "SKU-CATALOG");
+        Assert.True(manualSnapshotLine.IsManualPrice);
+        Assert.False(catalogSnapshotLine.IsManualPrice);
+
+        var restoredCart = new PosCartService();
+        restoredCart.RestoreSnapshot(snapshot);
+
+        var restoredCatalog = restoredCart.Lines.Single(restored => restored.ProductCode == "SKU-CATALOG");
+        var restoredManual = restoredCart.Lines.Single(restored => restored.ProductCode == "SKU-MANUAL");
+        Assert.False(restoredCatalog.IsManualPrice);
+        Assert.True(restoredManual.IsManualPrice);
+        Assert.Equal(7.7m, restoredManual.UnitPrice);
+        Assert.Equal(10m, restoredCatalog.UnitPrice);
+    }
+
+    [Fact]
+    public void RestoreSharedSaleSnapshot_restores_manual_price_provenance()
+    {
+        var cart = new PosCartService();
+        var snapshot = new PosCartSnapshot(
+        [
+            new PosCartLineSnapshot(
+                "S001",
+                "P-1",
+                null,
+                "Product 1",
+                "CODE-1",
+                null,
+                null,
+                1m,
+                8.8m,
+                0m,
+                null,
+                PriceSourceKind.StoreRetailPrice,
+                "Store Retail Price",
+                IsManualPrice: true)
+        ]);
+
+        cart.RestoreSharedSaleSnapshot(snapshot);
+
+        var line = Assert.Single(cart.Lines);
+        Assert.True(line.IsManualPrice);
+        Assert.Equal(8.8m, line.UnitPrice);
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",

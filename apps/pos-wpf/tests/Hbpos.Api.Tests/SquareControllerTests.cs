@@ -881,6 +881,10 @@ public sealed class SquareControllerTests
                 services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
                 services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOpDeviceRuntimeStatusSchemaInitializer());
 
+                // 此测试宿主只验证 Square 启动门禁，不应让共享挂单 schema 访问本机业务库。
+                services.RemoveAll<ISharedHeldOrderSchemaInitializer>();
+                services.AddSingleton<ISharedHeldOrderSchemaInitializer>(new NoOpSharedHeldOrderSchemaInitializer());
+
                 services.RemoveAll<IOperationAuditSchemaInitializer>();
                 services.AddSingleton<IOperationAuditSchemaInitializer>(new TestNoOpOperationAuditSchemaInitializer());
 
@@ -996,6 +1000,14 @@ public sealed class SquareControllerTests
     }
 
     private sealed class NoOpDeviceRuntimeStatusSchemaInitializer : IDeviceRuntimeStatusSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpSharedHeldOrderSchemaInitializer : ISharedHeldOrderSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {

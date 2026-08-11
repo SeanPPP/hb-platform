@@ -8,6 +8,7 @@ import {
   type PriceSource,
   normalizeLineSyncProvenance,
 } from "../../../core/contracts";
+import { multiplyCentsAwayFromZero } from "../../../core/contracts/money";
 
 import type {
   AddCartItemInput,
@@ -100,7 +101,9 @@ function multiplySafe(
   right: number,
   label: string,
 ): number {
-  return bigIntToSafeInteger(BigInt(left) * BigInt(right), label);
+  // 与 canonical SharedSaleCartV1 multiplyCents 一致：整数走 BigInt，
+  // 称重小数按 C# decimal AwayFromZero 精确取整（0.29 * 50 = 15，不是 14）。
+  return multiplyCentsAwayFromZero(left, right, label);
 }
 
 function sumSafe(values: Iterable<number>, label: string): number {
@@ -371,8 +374,8 @@ export class PricingCart {
       seenLineIds.add(line.lineId);
       assertNonBlank(line.productCode, "cart product code");
       assertNonBlank(line.displayName, "cart display name");
-      if (!PricingCart.isPositiveQuantity(line.quantity)) {
-        throw new TypeError("cart line quantity must be a positive integer");
+      if (!PricingCart.isRestorableQuantity(line.quantity)) {
+        throw new TypeError("cart line quantity must be a positive finite number");
       }
       assertSafeInteger(line.unitPriceCents, "cart unit price");
       if (line.unitPriceCents < 0) {
@@ -961,6 +964,12 @@ export class PricingCart {
 
   private static isPositiveQuantity(quantity: number): boolean {
     return Number.isSafeInteger(quantity) && quantity > 0;
+  }
+
+  /** 恢复入口接受 frozen SharedSaleCartV1 的正有限小数（称重商品）；
+   *  普通加购/改数量仍保持整数语义（isPositiveQuantity）。 */
+  private static isRestorableQuantity(quantity: number): boolean {
+    return Number.isFinite(quantity) && quantity > 0;
   }
 
   private appendItem(

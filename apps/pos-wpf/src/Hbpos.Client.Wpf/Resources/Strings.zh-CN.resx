@@ -426,6 +426,9 @@
   <data name="pos.status.cartCleared" xml:space="preserve">
     <value>购物车已清空。</value>
   </data>
+  <data name="pos.status.sharedHeldOrderReleaseFailed" xml:space="preserve">
+    <value>共享挂单释放失败，购物车已保留，请重试。</value>
+  </data>
   <data name="pos.status.catalogSyncSkipped" xml:space="preserve">
     <value>当前离线，已跳过商品目录同步。</value>
   </data>
@@ -1618,6 +1621,63 @@
   </data>
   <data name="history.source.installments" xml:space="preserve">
     <value>分期订单</value>
+  </data>
+  <data name="history.source.held" xml:space="preserve">
+    <value>共享挂单</value>
+  </data>
+  <data name="history.held.localHold" xml:space="preserve">
+    <value>本机挂单</value>
+  </data>
+  <data name="history.held.pendingPublish" xml:space="preserve">
+    <value>待发布</value>
+  </data>
+  <data name="history.held.published" xml:space="preserve">
+    <value>已发布</value>
+  </data>
+  <data name="history.held.remotePending" xml:space="preserve">
+    <value>远程取单</value>
+  </data>
+  <data name="history.held.claimPrepared" xml:space="preserve">
+    <value>本机准备中</value>
+  </data>
+  <data name="history.held.claimActive" xml:space="preserve">
+    <value>本机取单中</value>
+  </data>
+  <data name="history.held.claimedByOther" xml:space="preserve">
+    <value>已被其他终端取单</value>
+  </data>
+  <data name="history.held.completed" xml:space="preserve">
+    <value>已完成</value>
+  </data>
+  <data name="history.held.blocked" xml:space="preserve">
+    <value>已阻断</value>
+  </data>
+  <data name="history.held.forceRelease" xml:space="preserve">
+    <value>强制释放</value>
+  </data>
+  <data name="history.held.forceReleaseReason" xml:space="preserve">
+    <value>强制释放原因</value>
+  </data>
+  <data name="history.held.forceReleaseConfirm" xml:space="preserve">
+    <value>确认</value>
+  </data>
+  <data name="history.held.forceReleaseCancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+  <data name="history.held.forceReleaseReasonRequired" xml:space="preserve">
+    <value>必须填写强制释放原因。</value>
+  </data>
+  <data name="history.held.forceReleaseReasonTooLong" xml:space="preserve">
+    <value>强制释放原因不能超过 500 个字符。</value>
+  </data>
+  <data name="history.held.forceReleased" xml:space="preserve">
+    <value>挂单已强制释放。</value>
+  </data>
+  <data name="history.held.remoteUnavailable" xml:space="preserve">
+    <value>远程共享挂单暂不可用：{0}</value>
+  </data>
+  <data name="history.held.unavailable" xml:space="preserve">
+    <value>本终端未配置共享挂单。</value>
   </data>
   <data name="history.installment.paid" xml:space="preserve">
     <value>已付</value>

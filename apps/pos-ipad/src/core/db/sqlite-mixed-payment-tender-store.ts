@@ -13,7 +13,10 @@ import {
 } from "../contracts";
 
 import { SqliteMixedPaymentOrderTruthStore } from "./sqlite-mixed-payment-order-truth-store";
-import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
+import {
+  persistRecalledHoldOrderSourceAndClaim,
+  type SensitivePayloadEncryptor,
+} from "./sqlite-repositories";
 import type { SqliteConnectionPort } from "./types";
 
 import type {
@@ -768,6 +771,13 @@ async function completeRecalledHoldInMixedCashTransaction(
   if (bound.changes !== 1) {
     throw new Error("Recall fence changed before mixed cash completion.");
   }
+  // 绑定后同一事务写不可变订单来源；RemoteClaim 且已 Active 的本地 claim 绑定并 Completed。
+  await persistRecalledHoldOrderSourceAndClaim(transaction, {
+    orderGuid,
+    holdId,
+    recallAttemptId,
+    recalledAtIso,
+  });
   const changed = await transaction.run(
     `UPDATE held_order_records
      SET status = 'Recalled', recalled_at_iso = ?, updated_at_iso = ?

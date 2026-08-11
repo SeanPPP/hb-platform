@@ -48,6 +48,8 @@ import {
   type ActivePricingCartPort,
   type HeldOrderActionResult,
   type HeldOrderAuthorizationPort,
+  RECALL_RESTORE_PERMISSION,
+  type SharedHeldOrderLocalShareRow,
 } from "../../features/held-orders/held-orders-domain";
 import { HeldOrdersOrchestrator } from "../../features/held-orders/held-orders-orchestrator";
 import { HeldOrdersPresenter } from "../../features/held-orders/held-orders-presenter";
@@ -125,6 +127,24 @@ import {
   SETTINGS_CATALOG_RESET_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
+import {
+  SharedHeldOrderCoordinator,
+  type SharedHeldOrderOwnerReleaseResult,
+  type SharedHeldOrderReconcileResult,
+  type SharedHeldOrderTakeResult,
+} from "../../features/shared-held-orders/shared-held-order-coordinator";
+import {
+  SharedHeldOrderNetworkApi,
+  type SharedHeldOrderNetworkApiPort,
+} from "../../features/shared-held-orders/shared-held-order-network-api";
+import {
+  SharedHeldOrderPublicationLoop,
+  type SharedHeldOrderPublicationSchedulerPort,
+} from "../../features/shared-held-orders/shared-held-order-publication-loop";
+import {
+  SharedHeldOrderPublicationWorker,
+  type SharedHeldOrderPublicationRunResult,
+} from "../../features/shared-held-orders/shared-held-order-publication-worker";
 import { HbposSpecialProductsApi } from "../../features/special-products/hbpos-special-products-api";
 import { SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION } from "../../features/special-products/special-products-authorization";
 import { SpecialProductsPresenter } from "../../features/special-products/special-products-presenter";
@@ -292,6 +312,22 @@ export type PosHeldOrdersRuntimeService = Readonly<{
   createPresenter(): HeldOrdersPresenter;
 }>;
 
+export type PosSharedHeldOrdersRuntimeService = Readonly<{
+  api: SharedHeldOrderNetworkApiPort;
+  listLocalShareState(): Promise<readonly SharedHeldOrderLocalShareRow[]>;
+  createCoordinator(cashierLease?: TrustedCashierLease): Readonly<{
+    takeRemoteHold(holdGuid: string): Promise<SharedHeldOrderTakeResult>;
+    recallLocalPublication(holdGuid: string): Promise<SharedHeldOrderTakeResult>;
+    reconcileClaims(): Promise<SharedHeldOrderReconcileResult>;
+    ownerRelease(holdGuid: string): Promise<SharedHeldOrderOwnerReleaseResult>;
+    forceRelease?(
+      holdGuid: string,
+      reason: string,
+    ): Promise<HeldOrderActionResult>;
+    runPublicationOnce(): Promise<SharedHeldOrderPublicationRunResult>;
+  }>;
+}>;
+
 export type PosSyncHistoryRuntimeService = Readonly<{
   createPresenter(permissionCodes: readonly string[]): SyncHistoryPresenter;
 }>;
@@ -403,6 +439,7 @@ export type ProductionPosRuntimeServices = Readonly<{
   dailyClose: DailyCloseRuntimeFactory;
   sales: PosSalesRuntimeService;
   heldOrders: PosHeldOrdersRuntimeService;
+  sharedHeldOrders: PosSharedHeldOrdersRuntimeService;
   syncHistory: PosSyncHistoryRuntimeService;
   returns: PosReturnsRuntimeService;
   installments: PosInstallmentsRuntimeService;
@@ -528,6 +565,10 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
   attendanceAudit?:
     | ProductionAttendanceAuditRuntimeConfiguration
     | undefined;
+  /** 测试可注入确定性调度器；生产默认每十秒唤醒一次耐久发布队列。 */
+  sharedHeldOrderPublicationScheduler?:
+    | SharedHeldOrderPublicationSchedulerPort
+    | undefined;
 }>;
 
 /**
@@ -555,6 +596,9 @@ export function createProductionPosRuntimeServices(
   let customerDisplayAdvertisementPlayback:
     | CustomerDisplayAdvertisementPlayback
     | null = null;
+  let sharedHeldOrderPublicationLoop: SharedHeldOrderPublicationLoop | null =
+    null;
+  let reconcileSharedHeldOrdersAfterSignIn: (() => Promise<void>) | null = null;
   const operationAuthorization = input.operationAuthorization
     ? new OperationAuthorizationService({
         cashierAuthentication:
@@ -565,6 +609,7 @@ export function createProductionPosRuntimeServices(
       })
     : null;
   const invalidateCurrentCashier = () => {
+    sharedHeldOrderPublicationLoop?.pause();
     customerDisplayAdvertisementPlayback?.stop();
     currentCashier.clear();
     operationAuthorization?.clearRequestingCashier();
@@ -724,6 +769,13 @@ export function createProductionPosRuntimeServices(
       } catch {
         // 已完成的可信登录不能因旁路审计故障被回滚或重新暴露旧会话。
       }
+      try {
+        await reconcileSharedHeldOrdersAfterSignIn?.();
+      } catch {
+        // 本地 OfflineOrigin 已在远端调用前恢复；claims/mine 离线或事实冲突
+        // 只能保留 durable 状态等待重试，不能回滚已经成功的收银员登录。
+      }
+      sharedHeldOrderPublicationLoop?.resume();
       return summary;
     },
   };
@@ -1577,6 +1629,83 @@ export function createProductionPosRuntimeServices(
       nowIso: input.clock.nowIso,
     });
   };
+  const sharedHeldOrdersApi = new SharedHeldOrderNetworkApi(input.transport);
+  const sharedHeldOrderPublicationQueue =
+    input.database.sharedHeldOrderPublicationQueue();
+  const sharedHeldOrderPublicationWorker =
+    new SharedHeldOrderPublicationWorker({
+      queue: sharedHeldOrderPublicationQueue,
+      api: sharedHeldOrdersApi,
+      encryptor: input.encryptor,
+      nowIso: input.clock.nowIso,
+      scope: {
+        storeCode: input.auditMetadata.storeCode,
+        deviceCode: input.auditMetadata.deviceCode,
+      },
+    });
+  sharedHeldOrderPublicationLoop = new SharedHeldOrderPublicationLoop({
+    worker: sharedHeldOrderPublicationWorker,
+    scheduler:
+      input.sharedHeldOrderPublicationScheduler ??
+      {
+        every(intervalMs, task) {
+          const timer = setInterval(task, intervalMs);
+          return () => clearInterval(timer);
+        },
+      },
+    intervalMs: 10_000,
+  });
+  const createSharedHeldOrdersCoordinator = (
+    cashierLease: TrustedCashierLease = currentCashier.createLease(),
+  ) => {
+    const session = trustedSalesSession(cashierLease, input.auditMetadata);
+    const claims = input.database.sharedHeldOrderClaims(input.encryptor);
+    const localPublications =
+      input.database.sharedHeldOrderLocalPublication(input.encryptor);
+    const coordinator = new SharedHeldOrderCoordinator({
+      api: sharedHeldOrdersApi,
+      claims,
+      localPublications,
+      activeCart: createHeldActiveCartPort(activePricingCart),
+      identity: session,
+      createId: input.createId,
+      nowIso: input.clock.nowIso,
+    });
+    const forceRelease = operationAuthorization
+      ? async (holdGuid: string, reason: string): Promise<HeldOrderActionResult> => {
+          const authorization = createHeldOrderAuthorization(
+            operationAuthorization,
+            input.createId,
+            cashierLease,
+          );
+          const authorized = await authorization.authorizeAndRun(
+            {
+              permissionCode: RECALL_RESTORE_PERMISSION,
+              action: "release",
+            },
+            () => coordinator.forceRelease(holdGuid, reason),
+          );
+          return authorized.authorized
+            ? { ok: true, code: "force-released", holdId: authorized.value.holdGuid }
+            : { ok: false, code: "authorization-denied", holdId: holdGuid };
+        }
+      : null;
+    return {
+      takeRemoteHold: (holdGuid: string) => coordinator.takeRemoteHold(holdGuid),
+      recallLocalPublication: (holdGuid: string) =>
+        coordinator.recallLocalPublication(holdGuid),
+      reconcileClaims: () => coordinator.reconcileClaims(),
+      ownerRelease: (holdGuid: string) => coordinator.ownerRelease(holdGuid),
+      ...(forceRelease ? { forceRelease } : {}),
+      runPublicationOnce: () => {
+        trustedSalesSession(cashierLease, input.auditMetadata);
+        return sharedHeldOrderPublicationLoop!.runNow();
+      },
+    };
+  };
+  reconcileSharedHeldOrdersAfterSignIn = async () => {
+    await createSharedHeldOrdersCoordinator().reconcileClaims();
+  };
   const capabilities: PosRuntimeCapabilities = {
     catalog: { status: "available" },
     cashCheckout: { status: "available" },
@@ -1662,7 +1791,10 @@ export function createProductionPosRuntimeServices(
       return () => {
         // runtime 重载会重新构造组合根；先解除 scope 订阅，避免旧 cashier/cart 闭包被永久保留。
         disposeDeviceScopeListener();
-        shutdown ??= catalogRefreshCoordinator.shutdown();
+        shutdown ??= Promise.all([
+          catalogRefreshCoordinator.shutdown(),
+          sharedHeldOrderPublicationLoop!.shutdown(),
+        ]).then(() => undefined);
         return shutdown;
       };
     })(),
@@ -1960,6 +2092,7 @@ export function createProductionPosRuntimeServices(
         const heldOrders = operationAuthorization
           ? createHeldOrdersOrchestrator(cashierLease)
           : null;
+        const sharedHeldOrders = createSharedHeldOrdersCoordinator(cashierLease);
         return createConnectedSalesPresenter({
           activeCartSession: activePricingCart,
           catalog,
@@ -1988,6 +2121,13 @@ export function createProductionPosRuntimeServices(
                 },
               }
             : {}),
+          // 共享召回购物车的正常清车必须走 owner release（服务端 owner-scoped
+          // release -> 本地 claim/fence/cart 清理），不是主管 force-release。
+          releaseRecalledCart: {
+            releaseRecalledCart: async (holdGuid) => {
+              await sharedHeldOrders.ownerRelease(holdGuid);
+            },
+          },
           ...(cashierLock
             ? {
                 lock: {
@@ -2020,6 +2160,21 @@ export function createProductionPosRuntimeServices(
         assertRuntimeInitialized(initialize);
         return new HeldOrdersPresenter(createHeldOrdersOrchestrator());
       },
+    },
+    sharedHeldOrders: {
+      api: sharedHeldOrdersApi,
+      listLocalShareState: () => {
+        const session = currentCashier.require();
+        assertTrustedCashierScope(session, input.auditMetadata);
+        return sharedHeldOrderPublicationQueue.listShareStates(
+          {
+            storeCode: input.auditMetadata.storeCode,
+            deviceCode: input.auditMetadata.deviceCode,
+          },
+          500,
+        );
+      },
+      createCoordinator: createSharedHeldOrdersCoordinator,
     },
     syncHistory,
     returns,

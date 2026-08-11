@@ -64,10 +64,13 @@ public sealed class SuspendedOrderService(
                 ReturnSourceKey = line.ReturnSourceKey,
                 OriginalOrderGuid = line.OriginalOrderGuid,
                 OriginalOrderDetailGuid = line.OriginalOrderLineGuid,
-                ReturnReason = line.ReturnReason
+                ReturnReason = line.ReturnReason,
+                IsManualPrice = line.IsManualPrice
             })
             .ToArray();
 
+        // 挂单时深拷贝冻结当时自动促销规则：后续目录刷新/重启不得影响已冻结金额。
+        var frozenPromotionRules = cart.CreateFrozenAutomaticPromotionRules();
         var order = new SuspendedOrder(
             orderGuid,
             sessionSnapshot.StoreCode,
@@ -81,7 +84,8 @@ public sealed class SuspendedOrderService(
             SuspendedOrderStatus.Pending,
             lines)
         {
-            ReturnPaymentCapacities = cart.ReturnPaymentCapacities.ToArray()
+            ReturnPaymentCapacities = cart.ReturnPaymentCapacities.ToArray(),
+            FrozenPromotionRules = frozenPromotionRules
         };
 
         await Task.Run(() => repository.SaveAsync(order, cancellationToken), cancellationToken);
@@ -148,7 +152,8 @@ public sealed class SuspendedOrderService(
                 line.OriginalOrderGuid,
                 line.OriginalOrderDetailGuid,
                 line.ReturnReason,
-                line.DiscountSource))
+                line.DiscountSource,
+                line.IsManualPrice))
             .ToArray()));
         cart.AddReturnPaymentCapacities(order.ReturnPaymentCapacities);
         try

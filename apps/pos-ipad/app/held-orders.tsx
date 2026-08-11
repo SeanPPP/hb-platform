@@ -1,6 +1,7 @@
 import { Redirect, type Href, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 
+import type { ExpoPosRuntimeServices } from "@/core/runtime/expo-pos-runtime";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
   resolveProtectedSalesRouteGate,
@@ -9,11 +10,16 @@ import {
 import {
   HeldOrdersScreen,
   type HeldOrdersPresenter,
+  type SharedHeldOrderRemoteRow,
+  type SharedHeldOrderTakeViewResult,
+  type SharedHeldOrdersViewPort,
 } from "@/features/held-orders";
+import type { SharedHeldOrderTakeResult } from "@/features/shared-held-orders/shared-held-order-coordinator";
+import type { SharedHeldOrderPendingListItem } from "@/features/shared-held-orders/shared-held-order-network-api";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
 type HeldOrdersPresenterBinding = Readonly<{
-  services: object;
+  services: ExpoPosRuntimeServices;
   cashier: object;
   presenter: HeldOrdersPresenter;
 }>;
@@ -54,6 +60,7 @@ export default function HeldOrdersRoute() {
     setPresenterCreationFailed(false);
     try {
       createdPresenter = services.heldOrders.createPresenter();
+      attachSharedHeldOrders(createdPresenter, services);
       if (cancelled) {
         createdPresenter.destroy();
         createdPresenter = null;
@@ -93,4 +100,59 @@ export default function HeldOrdersRoute() {
       presenter={presenter}
     />
   );
+}
+
+/**
+ * 组合根已提供 sharedHeldOrders（api + createCoordinator）；presenter 只接收
+ * 视图端口，绝不直接触碰数据库或 wire DTO。共享状态只读口不返回 payload；
+ * 强制释放仅在组合根已经包好 History.Recall 主管授权时暴露。
+ */
+function attachSharedHeldOrders(
+  presenter: HeldOrdersPresenter,
+  services: ExpoPosRuntimeServices,
+): void {
+  const shared = services.sharedHeldOrders;
+  if (!shared || typeof presenter.attachSharedOrders !== "function") return;
+  const coordinator = shared.createCoordinator();
+  const port: SharedHeldOrdersViewPort = {
+    listRemotePending: () =>
+      shared.api
+        .listPending()
+        .then((rows) => rows.map(toSharedHeldOrderRemoteRow)),
+    listLocalShareState: () => shared.listLocalShareState(),
+    takeRemoteHold: (holdGuid) =>
+      mapSharedHeldOrderTake(coordinator.takeRemoteHold(holdGuid)),
+    recallLocalPublication: (holdGuid) =>
+      mapSharedHeldOrderTake(coordinator.recallLocalPublication(holdGuid)),
+    ...(coordinator.forceRelease
+      ? {
+          forceRelease: ({ holdGuid, reason }) =>
+            coordinator.forceRelease!(holdGuid, reason),
+        }
+      : {}),
+  };
+  presenter.attachSharedOrders(port);
+}
+
+function toSharedHeldOrderRemoteRow(
+  row: SharedHeldOrderPendingListItem,
+): SharedHeldOrderRemoteRow {
+  return {
+    holdGuid: row.holdGuid,
+    deviceCode: row.deviceCode,
+    cashierName: row.heldByCashierName,
+    heldAtIso: row.heldAtIso,
+    lineCount: row.lineCount,
+    actualCents: row.actualCents,
+  };
+}
+
+function mapSharedHeldOrderTake(
+  result: Promise<SharedHeldOrderTakeResult>,
+): Promise<SharedHeldOrderTakeViewResult> {
+  return result.then((taken) => ({
+    holdGuid: taken.holdGuid,
+    ok: taken.outcome === "restored",
+    outcome: taken.outcome,
+  }));
 }

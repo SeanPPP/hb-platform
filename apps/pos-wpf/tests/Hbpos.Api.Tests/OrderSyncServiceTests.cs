@@ -1,6 +1,7 @@
 using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.HeldOrders;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Api.Tests;
@@ -586,6 +587,441 @@ public sealed class OrderSyncServiceTests
     }
 
     [Fact]
+    public async Task SyncAsync_WithoutHeldSource_ReturnsNoneDisposition()
+    {
+        var repository = new FakeOrderRepository(exists: false);
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(CreateRequest(Guid.NewGuid()), CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.False(response.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.None, response.HeldOrderDisposition);
+    }
+
+    [Fact]
+    public async Task SyncAsync_PrimaryRemoteClaim_CompletesHoldAndClaim()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(orderGuid, heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.False(response.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.Primary, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+        Assert.Equal(SharedHeldOrderClaimStatus.Completed, store.GetClaimStatus(claimGuid));
+        Assert.False(store.GetClaimBlocking(claimGuid));
+    }
+
+    [Fact]
+    public async Task SyncAsync_PreparedRemoteClaimFirstOrder_IsPrimarySupersedesClaim_AndRetryKeepsDisposition()
+    {
+        var firstOrderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Prepared);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var source = new HeldOrderSourceDto(holdGuid, claimGuid);
+
+        // 服务端 claim 仍为 Prepared：首笔真实订单必须 Primary，hold 完成、claim 推进为 Superseded。
+        var first = await service.SyncAsync(
+            CreateRequest(firstOrderGuid, heldSource: source),
+            CancellationToken.None);
+        Assert.True(first.Accepted);
+        Assert.Equal(HeldOrderDisposition.Primary, first.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+        Assert.Equal(SharedHeldOrderClaimStatus.Superseded, store.GetClaimStatus(claimGuid));
+        Assert.False(store.GetClaimBlocking(claimGuid));
+        Assert.Equal(1, store.PrimaryAssociationCount);
+
+        // 后续真实订单仍 Duplicate；同一 orderGuid 重试保持原 disposition。
+        var second = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: source),
+            CancellationToken.None);
+        Assert.True(second.Accepted);
+        Assert.Equal(HeldOrderDisposition.Duplicate, second.HeldOrderDisposition);
+
+        var retry = await service.SyncAsync(
+            CreateRequest(firstOrderGuid, heldSource: source),
+            CancellationToken.None);
+        Assert.True(retry.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.Primary, retry.HeldOrderDisposition);
+    }
+
+    [Fact]
+    public async Task SyncAsync_OfflineOrigin_CompletesPendingHoldWithoutClaim()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                heldSource: new HeldOrderSourceDto(
+                    holdGuid,
+                    SourceKind: HeldOrderSourceKind.OfflineOrigin)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Primary, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+    }
+
+    [Fact]
+    public async Task SyncAsync_SecondRealOrderOnSameHold_IsDuplicateButAccepted()
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var first = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
+            CancellationToken.None);
+        var second = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
+            CancellationToken.None);
+
+        Assert.Equal(HeldOrderDisposition.Primary, first.HeldOrderDisposition);
+        Assert.True(second.Accepted);
+        Assert.False(second.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.Duplicate, second.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+    }
+
+    [Fact]
+    public async Task SyncAsync_CrossStoreSource_IsUnmatchedButAccepted()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S02", SharedHeldOrderStatus.Pending);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                heldSource: new HeldOrderSourceDto(
+                    holdGuid,
+                    SourceKind: HeldOrderSourceKind.OfflineOrigin)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Pending, store.GetHoldStatus(holdGuid));
+    }
+
+    [Fact]
+    public async Task SyncAsync_InvalidOrForeignClaim_IsUnmatchedButAccepted()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var otherHoldGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        // claim 属于另一个 hold：来源无效，但订单照常接受。
+        store.AddClaim(claimGuid, otherHoldGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(orderGuid, heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Claimed, store.GetHoldStatus(holdGuid));
+
+        // Released claim 同样无效但订单照常接受。
+        var releasedClaimGuid = Guid.NewGuid();
+        store.AddClaim(releasedClaimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Released);
+        var second = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: new HeldOrderSourceDto(holdGuid, releasedClaimGuid)),
+            CancellationToken.None);
+        Assert.True(second.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, second.HeldOrderDisposition);
+    }
+
+    [Fact]
+    public async Task SyncAsync_SameOrderGuidRetry_KeepsOriginalDisposition()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var source = new HeldOrderSourceDto(holdGuid, claimGuid);
+
+        var first = await service.SyncAsync(
+            CreateRequest(orderGuid, heldSource: source),
+            CancellationToken.None);
+        var retry = await service.SyncAsync(
+            CreateRequest(orderGuid, heldSource: source),
+            CancellationToken.None);
+
+        Assert.Equal(HeldOrderDisposition.Primary, first.HeldOrderDisposition);
+        Assert.True(retry.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.Primary, retry.HeldOrderDisposition);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ConcurrentOrdersOnSameHold_ExactlyOnePrimary()
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var firstRepository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var secondRepository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var firstService = new OrderSyncService(firstRepository, new OrderSyncPlanner(), new FakeReservationService());
+        var secondService = new OrderSyncService(secondRepository, new OrderSyncPlanner(), new FakeReservationService());
+        var start = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new HeldOrderSourceDto(holdGuid, claimGuid);
+
+        var firstTask = Task.Run(async () =>
+        {
+            await start.Task;
+            return await firstService.SyncAsync(
+                CreateRequest(Guid.NewGuid(), heldSource: source),
+                CancellationToken.None);
+        });
+        var secondTask = Task.Run(async () =>
+        {
+            await start.Task;
+            return await secondService.SyncAsync(
+                CreateRequest(Guid.NewGuid(), heldSource: source),
+                CancellationToken.None);
+        });
+
+        start.SetResult(true);
+        var first = await firstTask;
+        var second = await secondTask;
+
+        Assert.True(first.Accepted);
+        Assert.True(second.Accepted);
+        Assert.Equal(
+            [HeldOrderDisposition.Primary, HeldOrderDisposition.Duplicate],
+            new[] { first.HeldOrderDisposition, second.HeldOrderDisposition }.OrderBy(disposition => disposition));
+        Assert.Equal(1, store.PrimaryAssociationCount);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+    }
+
+    [Fact]
+    public async Task SyncAsync_WithoutHeldSource_NeverQueriesAssociationTable()
+    {
+        // 成功插入路径：disposition 由 InsertAsync 同事务直接返回，不查关联表。
+        var insertedRepository = new FakeOrderRepository(exists: false);
+        var insertedService = new OrderSyncService(
+            insertedRepository,
+            new OrderSyncPlanner(),
+            new FakeReservationService());
+        var inserted = await insertedService.SyncAsync(
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.True(inserted.Accepted);
+        Assert.Equal(HeldOrderDisposition.None, inserted.HeldOrderDisposition);
+        Assert.Equal(0, insertedRepository.DispositionQueryCount);
+
+        // insert-loser 路径：并发重复上传同样不查关联表。
+        var loserRepository = new FakeOrderRepository(exists: false)
+        {
+            InsertResult = false
+        };
+        var loserService = new OrderSyncService(
+            loserRepository,
+            new OrderSyncPlanner(),
+            new FakeReservationService());
+        var loser = await loserService.SyncAsync(
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.True(loser.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.None, loser.HeldOrderDisposition);
+        Assert.Equal(0, loserRepository.DispositionQueryCount);
+
+        // already-exists 路径：同订单重试同样不查关联表。
+        var existingRepository = new FakeOrderRepository(exists: true);
+        var existingService = new OrderSyncService(
+            existingRepository,
+            new OrderSyncPlanner(),
+            new FakeReservationService());
+        var existing = await existingService.SyncAsync(
+            CreateRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        Assert.True(existing.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.None, existing.HeldOrderDisposition);
+        Assert.Equal(0, existingRepository.DispositionQueryCount);
+    }
+
+    [Theory]
+    [InlineData(SharedHeldOrderClaimStatus.Released)]
+    [InlineData(SharedHeldOrderClaimStatus.Superseded)]
+    public async Task SyncAsync_StaleRealOrderOnCompletedHold_IsDuplicateButAccepted(
+        SharedHeldOrderClaimStatus staleStatus)
+    {
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var source = new HeldOrderSourceDto(holdGuid, claimGuid);
+
+        var first = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: source),
+            CancellationToken.None);
+        Assert.Equal(HeldOrderDisposition.Primary, first.HeldOrderDisposition);
+
+        // 离线竞态：Primary 已创建后，另一设备把 claim 推进到 Released/Superseded。
+        store.SetHoldStatus(holdGuid, SharedHeldOrderStatus.Completed);
+        store.SetClaimStatus(claimGuid, staleStatus);
+
+        var second = await service.SyncAsync(
+            CreateRequest(Guid.NewGuid(), heldSource: source),
+            CancellationToken.None);
+
+        Assert.True(second.Accepted);
+        Assert.False(second.AlreadySynced);
+        Assert.Equal(HeldOrderDisposition.Duplicate, second.HeldOrderDisposition);
+        Assert.Equal(1, store.PrimaryAssociationCount);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExplicitOfflineOriginWithClaim_IsUnmatchedButAccepted()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                heldSource: new HeldOrderSourceDto(
+                    holdGuid,
+                    claimGuid,
+                    SourceKind: HeldOrderSourceKind.OfflineOrigin)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Pending, store.GetHoldStatus(holdGuid));
+        Assert.Equal(SharedHeldOrderClaimStatus.Active, store.GetClaimStatus(claimGuid));
+        Assert.Equal(0, store.PrimaryAssociationCount);
+    }
+
+    [Fact]
+    public async Task SyncAsync_CompletedHoldWithoutPrimary_IsUnmatchedButAccepted()
+    {
+        var orderGuid = Guid.NewGuid();
+        var holdGuid = Guid.NewGuid();
+        var claimGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        // Completed 却无 Primary 属于不一致状态：不改状态、不建 Primary，订单照常接受。
+        store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Completed);
+        store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, response.HeldOrderDisposition);
+        Assert.Equal(SharedHeldOrderStatus.Completed, store.GetHoldStatus(holdGuid));
+        Assert.Equal(SharedHeldOrderClaimStatus.Active, store.GetClaimStatus(claimGuid));
+        Assert.Equal(0, store.PrimaryAssociationCount);
+    }
+
+    [Fact]
+    public async Task SyncAsync_EmptyHoldGuidSource_IsUnmatchedButAccepted()
+    {
+        var orderGuid = Guid.NewGuid();
+        var store = new FakeHeldOrderAssociationStore();
+        var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+
+        var response = await service.SyncAsync(
+            CreateRequest(
+                orderGuid,
+                heldSource: new HeldOrderSourceDto(
+                    Guid.Empty,
+                    SourceKind: HeldOrderSourceKind.OfflineOrigin)),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal(HeldOrderDisposition.Unmatched, response.HeldOrderDisposition);
+        Assert.Equal(0, store.PrimaryAssociationCount);
+    }
+
+    [Fact]
+    public void HeldOrderCompletionSql_RequiresExactRowMatchBeforePrimary()
+    {
+        // SQL 合同：CompleteHold/CompleteClaim 必须各精确命中 1 行才允许插 Primary；
+        // 业务竞态都在锁定后预检成 Duplicate/Unmatched，0 行更新视为数据库不一致。
+        Assert.Contains(
+            "[Status] IN (N'Pending', N'Claimed')",
+            SharedHeldOrderAssociationStore.CompleteHoldSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[Revision] = @ExpectedRevision",
+            SharedHeldOrderAssociationStore.CompleteHoldSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[HoldGuid] = @HoldGuid",
+            SharedHeldOrderAssociationStore.CompleteHoldSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[ClaimGuid] = @ClaimGuid",
+            SharedHeldOrderAssociationStore.CompleteClaimSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[HoldGuid] = @HoldGuid",
+            SharedHeldOrderAssociationStore.CompleteClaimSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[Status] = N'Active'",
+            SharedHeldOrderAssociationStore.CompleteClaimSql,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Planner_WritesItemNumberAsItemNoMetadata()
     {
         var request = CreateRequest(Guid.NewGuid(), itemNumber: "ITEM-1001");
@@ -953,7 +1389,8 @@ public sealed class OrderSyncServiceTests
         IReadOnlyList<OrderLineSyncDto>? lines = null,
         string storeCode = "S01",
         string deviceCode = "POS01",
-        string cashierId = "C01")
+        string cashierId = "C01",
+        HeldOrderSourceDto? heldSource = null)
     {
         return new OrderSyncRequest(
             orderGuid,
@@ -987,7 +1424,8 @@ public sealed class OrderSyncServiceTests
                     PaymentMethodKind.Cash,
                     9.99m,
                 null)
-            ]);
+            ],
+            heldSource);
     }
 
     private static OrderLineSyncDto CreateReturnLine(
@@ -1032,6 +1470,10 @@ public sealed class OrderSyncServiceTests
 
         public IReadOnlyList<StoreVoucherRedemptionCommit> LastVoucherRedemptions { get; private set; } = [];
 
+        public FakeHeldOrderAssociationStore HeldOrderStore { get; init; } = new();
+
+        public HeldOrderDisposition LastHeldDisposition { get; private set; }
+
         public IReadOnlyList<OrderReturnOriginalOrder> OriginalOrders { get; init; } = [];
 
         public IReadOnlyList<SalesReturnRecord> ExistingReturnRecords { get; init; } = [];
@@ -1051,14 +1493,19 @@ public sealed class OrderSyncServiceTests
 
         public bool InsertResult { get; init; } = true;
 
+        public int DispositionQueryCount { get; private set; }
+
+        private readonly HashSet<Guid> _insertedOrders = [];
+
         public Task<bool> ExistsAsync(Guid orderGuid, CancellationToken cancellationToken)
         {
-            return Task.FromResult(exists);
+            return Task.FromResult(exists || _insertedOrders.Contains(orderGuid));
         }
 
-        public async Task<bool> InsertAsync(
+        public async Task<OrderInsertResult> InsertAsync(
             OrderSyncPlan plan,
             IReadOnlyList<StoreVoucherRedemptionCommit> voucherRedemptions,
+            HeldOrderSourceDto? heldOrderSource,
             CancellationToken cancellationToken)
         {
             InsertCalled = true;
@@ -1066,12 +1513,29 @@ public sealed class OrderSyncServiceTests
             LastVoucherRedemptions = voucherRedemptions;
             if (!InsertResult)
             {
-                return false;
+                return new OrderInsertResult(false, HeldOrderDisposition.None);
             }
 
             var returnRecords = await PrepareReturnRecordsAsync(plan.ReturnRecords, plan.Payments, cancellationToken);
             InsertedReturnRecordCount = returnRecords.Count;
-            return true;
+            _insertedOrders.Add(Guid.Parse(plan.Order.OrderGuid!));
+            var heldDisposition = heldOrderSource is null
+                ? HeldOrderDisposition.None
+                : await HeldOrderStore.AssociateAsync(
+                    Guid.Parse(plan.Order.OrderGuid!),
+                    plan.Order.BranchCode ?? string.Empty,
+                    heldOrderSource,
+                    cancellationToken);
+            LastHeldDisposition = heldDisposition;
+            return new OrderInsertResult(true, heldDisposition);
+        }
+
+        public Task<HeldOrderDisposition> GetHeldOrderDispositionAsync(
+            Guid orderGuid,
+            CancellationToken cancellationToken)
+        {
+            DispositionQueryCount++;
+            return Task.FromResult(HeldOrderStore.GetDisposition(orderGuid));
         }
 
         private async Task<IReadOnlyList<SalesReturnRecord>> PrepareReturnRecordsAsync(
@@ -1312,5 +1776,226 @@ public sealed class OrderSyncServiceTests
         {
             return Task.FromResult(reservations.Remove(token));
         }
+    }
+
+    /// <summary>
+    /// 进程内关联存储：以信号量模拟 applock 串行化，断言并发下单同一 hold 恰好一个 Primary。
+    /// 仅用于 fake 并发证明，不代表真实 SQL 执行。
+    /// </summary>
+    private sealed class FakeHeldOrderAssociationStore
+    {
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private readonly Dictionary<Guid, FakeHoldRow> _holds = [];
+        private readonly Dictionary<Guid, FakeClaimRow> _claims = [];
+        private readonly Dictionary<Guid, HeldOrderDisposition> _associations = [];
+        private readonly HashSet<Guid> _primaryHolds = [];
+
+        public int PrimaryAssociationCount => _primaryHolds.Count;
+
+        public void AddHold(
+            Guid holdGuid,
+            string storeCode,
+            SharedHeldOrderStatus status = SharedHeldOrderStatus.Pending)
+        {
+            _holds[holdGuid] = new FakeHoldRow(holdGuid, storeCode, status);
+        }
+
+        public void AddClaim(
+            Guid claimGuid,
+            Guid holdGuid,
+            string storeCode,
+            SharedHeldOrderClaimStatus status = SharedHeldOrderClaimStatus.Active)
+        {
+            _claims[claimGuid] = new FakeClaimRow(claimGuid, holdGuid, storeCode, status);
+        }
+
+        public SharedHeldOrderStatus GetHoldStatus(Guid holdGuid) => _holds[holdGuid].Status;
+
+        public SharedHeldOrderClaimStatus GetClaimStatus(Guid claimGuid) => _claims[claimGuid].Status;
+
+        public bool GetClaimBlocking(Guid claimGuid) => _claims[claimGuid].IsBlocking;
+
+        public void SetHoldStatus(Guid holdGuid, SharedHeldOrderStatus status)
+        {
+            _holds[holdGuid] = _holds[holdGuid] with { Status = status };
+        }
+
+        public void SetClaimStatus(Guid claimGuid, SharedHeldOrderClaimStatus status)
+        {
+            var claim = _claims[claimGuid];
+            _claims[claimGuid] = claim with
+            {
+                Status = status,
+                IsBlocking = status is SharedHeldOrderClaimStatus.Prepared
+                    or SharedHeldOrderClaimStatus.Active
+            };
+        }
+
+        public async Task<HeldOrderDisposition> AssociateAsync(
+            Guid orderGuid,
+            string storeCode,
+            HeldOrderSourceDto source,
+            CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (_associations.TryGetValue(orderGuid, out var existing))
+                {
+                    return existing;
+                }
+
+                var disposition = ComputeDisposition(storeCode, source);
+                _associations[orderGuid] = disposition;
+                if (disposition == HeldOrderDisposition.Primary)
+                {
+                    ApplyPrimary(source);
+                }
+
+                return disposition;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        public HeldOrderDisposition GetDisposition(Guid orderGuid)
+        {
+            return _associations.GetValueOrDefault(orderGuid, HeldOrderDisposition.None);
+        }
+
+        private HeldOrderDisposition ComputeDisposition(
+            string storeCode,
+            HeldOrderSourceDto source)
+        {
+            // 严格来源组合：HoldGuid 非空；RemoteClaim 必须非空 ClaimGuid；OfflineOrigin 必须 ClaimGuid=null。
+            if (source is null ||
+                source.HoldGuid == Guid.Empty ||
+                (source.Kind == HeldOrderSourceKind.RemoteClaim && source.ClaimGuid is null) ||
+                (source.Kind == HeldOrderSourceKind.OfflineOrigin && source.ClaimGuid is not null))
+            {
+                return HeldOrderDisposition.Unmatched;
+            }
+
+            if (!_holds.TryGetValue(source.HoldGuid, out var hold) ||
+                !string.Equals(hold.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return HeldOrderDisposition.Unmatched;
+            }
+
+            FakeClaimRow? claim = null;
+            if (source.Kind == HeldOrderSourceKind.RemoteClaim)
+            {
+                if (source.ClaimGuid is not { } claimGuid ||
+                    !_claims.TryGetValue(claimGuid, out var candidate) ||
+                    candidate.HoldGuid != source.HoldGuid ||
+                    !string.Equals(candidate.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
+                {
+                    return HeldOrderDisposition.Unmatched;
+                }
+
+                claim = candidate;
+            }
+
+            if (_primaryHolds.Contains(source.HoldGuid))
+            {
+                // 已有 Primary：只要 claim 归属正确即 Duplicate（离线竞态下任意终态均如此）。
+                return HeldOrderDisposition.Duplicate;
+            }
+
+            // 创建 Primary 前 hold 必须 Pending/Claimed；否则不改状态，记录 Unmatched。
+            if (hold.Status is not (SharedHeldOrderStatus.Pending or SharedHeldOrderStatus.Claimed))
+            {
+                return HeldOrderDisposition.Unmatched;
+            }
+
+            // Remote 必须 Active/Prepared claim（与生产合同一致，Prepared 也允许首笔赢下）；
+            // 其余终态先不改状态，记录 Unmatched。
+            if (source.Kind == HeldOrderSourceKind.RemoteClaim &&
+                claim!.Status is not (
+                    SharedHeldOrderClaimStatus.Active or SharedHeldOrderClaimStatus.Prepared))
+            {
+                return HeldOrderDisposition.Unmatched;
+            }
+
+            return HeldOrderDisposition.Primary;
+        }
+
+        private void ApplyPrimary(HeldOrderSourceDto source)
+        {
+            // 与 SQL 合同一致：更新 0 行的场景绝不创建 Primary。
+            var currentHold = _holds[source.HoldGuid];
+            if (currentHold.Status is not (SharedHeldOrderStatus.Pending or SharedHeldOrderStatus.Claimed))
+            {
+                throw new InvalidOperationException(
+                    "Fake SQL contract: CompleteHoldSql matched 0 rows; Primary must not be created.");
+            }
+
+            if (source.Kind == HeldOrderSourceKind.RemoteClaim)
+            {
+                if (source.ClaimGuid is not { } requiredClaimGuid ||
+                    !_claims.TryGetValue(requiredClaimGuid, out var requiredClaim))
+                {
+                    throw new InvalidOperationException(
+                        "Fake SQL contract: claim row missing; Primary must not be created.");
+                }
+
+                // Active → CompleteClaimSql（Completed）；Prepared → SupersedePreparedClaimSql（Superseded）。
+                if (requiredClaim.Status == SharedHeldOrderClaimStatus.Active)
+                {
+                    _primaryHolds.Add(source.HoldGuid);
+                    _holds[source.HoldGuid] = currentHold with { Status = SharedHeldOrderStatus.Completed };
+                    _claims[requiredClaimGuid] = requiredClaim with
+                    {
+                        Status = SharedHeldOrderClaimStatus.Completed,
+                        IsBlocking = false
+                    };
+                    return;
+                }
+
+                if (requiredClaim.Status == SharedHeldOrderClaimStatus.Prepared &&
+                    requiredClaim.IsBlocking)
+                {
+                    _primaryHolds.Add(source.HoldGuid);
+                    _holds[source.HoldGuid] = currentHold with { Status = SharedHeldOrderStatus.Completed };
+                    _claims[requiredClaimGuid] = requiredClaim with
+                    {
+                        Status = SharedHeldOrderClaimStatus.Superseded,
+                        IsBlocking = false
+                    };
+                    return;
+                }
+
+                throw new InvalidOperationException(
+                    "Fake SQL contract: claim completion/supersede update matched 0 rows; Primary must not be created.");
+            }
+
+            _primaryHolds.Add(source.HoldGuid);
+            _holds[source.HoldGuid] = currentHold with { Status = SharedHeldOrderStatus.Completed };
+            foreach (var key in _claims.Keys
+                .Where(key => _claims[key].HoldGuid == source.HoldGuid && _claims[key].IsBlocking)
+                .ToArray())
+            {
+                var blocking = _claims[key];
+                _claims[key] = blocking with
+                {
+                    Status = SharedHeldOrderClaimStatus.Superseded,
+                    IsBlocking = false
+                };
+            }
+        }
+
+        private sealed record FakeHoldRow(
+            Guid HoldGuid,
+            string StoreCode,
+            SharedHeldOrderStatus Status);
+
+        private sealed record FakeClaimRow(
+            Guid ClaimGuid,
+            Guid HoldGuid,
+            string StoreCode,
+            SharedHeldOrderClaimStatus Status,
+            bool IsBlocking = true);
     }
 }

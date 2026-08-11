@@ -74,7 +74,8 @@ public sealed class CashPaymentWorkflowService(
     ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
     ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
     ILinklyBackendTerminalClient? linklyBackendTerminalClient = null,
-    IEnumerable<ICardPaymentResultPolicy>? cardPaymentResultPolicies = null) : ICashPaymentWorkflowService
+    IEnumerable<ICardPaymentResultPolicy>? cardPaymentResultPolicies = null,
+    ISharedHeldOrderRepository? sharedHeldOrderRepository = null) : ICashPaymentWorkflowService
 {
     private static readonly JsonSerializerOptions CardAttemptJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -91,6 +92,12 @@ public sealed class CashPaymentWorkflowService(
             new SquareCardPaymentResultPolicy(),
             new FallbackCardPaymentResultPolicy()
         ]);
+    private readonly ISharedHeldOrderPaymentSourceResolver? _heldOrderPaymentSourceResolver =
+        sharedHeldOrderRepository is null
+            ? null
+            : new SharedHeldOrderPaymentSourceResolver(
+                sharedHeldOrderRepository,
+                new SharedHeldOrderReverseMapper());
 
     public bool TryParseTenderedAmount(string? amountTenderedText, out decimal tenderedAmount)
     {
@@ -317,8 +324,18 @@ public sealed class CashPaymentWorkflowService(
         }
 
         var result = checkout.CreateCashOrder(cart, session, tenderedAmount);
+        // 共享挂单取单完成：现金路径必须用正在结账的购物车快照做来源匹配，
+        // 避免把无关 open claim 误绑到普通订单。
+        var cartSnapshot = cart.CreateSnapshot();
+        // 共享挂单取单完成：现金路径与 LocalOrder 同一事务写入来源/完成 claim/消费本地挂单。
+        var heldOrder = await TryResolveHeldOrderAsync(session, cartSnapshot, cancellationToken);
         await RunLocalStoreAsync(
-            () => orderRepository.SavePendingOrderAsync(result.Order, cancellationToken),
+            () => heldOrder is null
+                ? orderRepository.SavePendingOrderAsync(result.Order, cancellationToken)
+                : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                    result.Order,
+                    heldOrder,
+                    cancellationToken),
             cancellationToken);
 
         var hasPostCommitWarning = TryClearCartAfterCommit(cart, result.Order.OrderGuid);
@@ -345,6 +362,7 @@ public sealed class CashPaymentWorkflowService(
     {
         // 中文注释：在离开 UI 线程前固定付款明细，后台 SQLite 不得枚举可能继续变化的界面集合。
         var tenderSnapshot = tenders.ToArray();
+        var cartSnapshot = cart.CreateSnapshot();
         var result = checkout.CreatePaymentOrder(cart, session, tenderSnapshot, cashTenderedAmount);
         // 退款代金券先以待发券状态落本地，确保崩溃后仍能沿用原始幂等键恢复。
         var orderForPersistence = PrepareOrderForVoucherRefundPersistence(result.Order);
@@ -359,8 +377,15 @@ public sealed class CashPaymentWorkflowService(
                     tenderSnapshot,
                     persistenceCancellationToken),
                 persistenceCancellationToken);
+            // 共享挂单取单完成：混合付款路径与 LocalOrder 同一事务写入来源/完成 claim/消费本地挂单。
+            var heldOrder = await TryResolveHeldOrderAsync(session, cartSnapshot, persistenceCancellationToken);
             await RunLocalStoreAsync(
-                () => orderRepository.SavePendingOrderAsync(order, persistenceCancellationToken),
+                () => heldOrder is null
+                    ? orderRepository.SavePendingOrderAsync(order, persistenceCancellationToken)
+                    : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                        order,
+                        heldOrder,
+                        persistenceCancellationToken),
                 persistenceCancellationToken);
         }
         catch (Exception ex) when (
@@ -540,6 +565,22 @@ public sealed class CashPaymentWorkflowService(
         ConsoleLog.Write(
             "CashPaymentWorkflow",
             $"post-commit warning stage={stage} orderGuid={orderGuid?.ToString("D") ?? "<none>"} error={ex.GetType().Name}");
+    }
+
+    private async Task<LocalHeldOrderCompletionContext?> TryResolveHeldOrderAsync(
+        PosSessionState session,
+        PosCartSnapshot cartSnapshot,
+        CancellationToken cancellationToken)
+    {
+        if (_heldOrderPaymentSourceResolver is null)
+        {
+            return null;
+        }
+
+        return await _heldOrderPaymentSourceResolver.TryResolveAsync(
+            session,
+            cartSnapshot,
+            cancellationToken);
     }
 
     private static Task RunLocalStoreAsync(Func<Task> operation, CancellationToken cancellationToken)

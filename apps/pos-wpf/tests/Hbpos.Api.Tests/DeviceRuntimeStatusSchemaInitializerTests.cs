@@ -80,6 +80,12 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
                 services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
                 services.AddSingleton(runtimeStatusSchemaInitializer);
 
+                // 本测试只验证 runtime-status 启动初始化；其余 schema initializer
+                // 必须保持无副作用，避免 macOS 测试宿主尝试连接 LocalDB。
+                services.RemoveAll<ISharedHeldOrderSchemaInitializer>();
+                services.AddSingleton<ISharedHeldOrderSchemaInitializer>(
+                    new NoOpSharedHeldOrderSchemaInitializer());
+
                 services.RemoveAll<IOperationAuditSchemaInitializer>();
                 services.AddSingleton<IOperationAuditSchemaInitializer>(new TestNoOpOperationAuditSchemaInitializer());
 
@@ -135,6 +141,14 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
     }
 
     private sealed class NoOpAdvertisementSchemaInitializer : IAdvertisementSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpSharedHeldOrderSchemaInitializer : ISharedHeldOrderSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {

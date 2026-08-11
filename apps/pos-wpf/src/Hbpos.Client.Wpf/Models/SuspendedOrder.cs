@@ -24,6 +24,12 @@ public sealed record SuspendedOrder(
     IReadOnlyList<SuspendedOrderLine> Lines)
 {
     public IReadOnlyList<OrderReturnPaymentCapacityDto> ReturnPaymentCapacities { get; init; } = [];
+
+    /// <summary>
+    /// 挂单时深拷贝冻结的自动促销规则（目录刷新/重启后仍按此精确恢复金额与促销 id）。
+    /// 旧挂单/无促销挂单允许 null。
+    /// </summary>
+    public IReadOnlyList<CatalogPromotionRuleDto>? FrozenPromotionRules { get; init; }
 }
 
 public sealed record SuspendedOrderLine(
@@ -48,6 +54,9 @@ public sealed record SuspendedOrderLine(
     public CartLineKind Kind { get; init; } = CartLineKind.Sale;
 
     public string ReturnSourceKey { get; init; } = string.Empty;
+
+    /// <summary>base price provenance：手工改价/目录价格，挂单往返必须保留。</summary>
+    public bool IsManualPrice { get; init; }
 
     // 自动满减折扣标记必须随挂单保存，取单后才会继续按规则重算。
     public bool IsAutomaticPromotionDiscount => DiscountSource == PosCartLineDiscountSource.Promotion;

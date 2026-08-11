@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.IO;
+using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
@@ -282,9 +283,41 @@ public sealed class CardPaymentRecoveryService(
     ISyncQueueRepository syncQueueRepository,
     ILocalizationService? localization = null,
     ILinklyTerminalClient? linklyTerminalClient = null,
-    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null) : ICardPaymentRecoveryService
+    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null,
+    ISharedHeldOrderRepository? sharedHeldOrderRepository = null) : ICardPaymentRecoveryService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private readonly ISharedHeldOrderPaymentSourceResolver? _heldOrderPaymentSourceResolver =
+        sharedHeldOrderRepository is null
+            ? null
+            : new SharedHeldOrderPaymentSourceResolver(
+                sharedHeldOrderRepository,
+                new SharedHeldOrderReverseMapper());
+
+    private async Task<LocalHeldOrderCompletionContext?> TryResolveHeldOrderAsync(
+        PosSessionState session,
+        PosCartSnapshot cartSnapshot,
+        CancellationToken cancellationToken)
+    {
+        if (_heldOrderPaymentSourceResolver is null)
+        {
+            // 来源解析器缺失时，已显式绑定共享 claim 的购物车绝不能静默降级为普通订单。
+            if (cartSnapshot.SharedHeldOrderClaimId is not null)
+            {
+                throw new InvalidDataException(
+                    "共享挂单购物车 binding 但来源解析器不可用，拒绝降级为普通订单。");
+            }
+
+            return null;
+        }
+
+        // 恢复路径必须使用 payment draft 中冻结的 CartSnapshot，不能用当前 UI 购物车。
+        return await _heldOrderPaymentSourceResolver.TryResolveAsync(
+            session,
+            cartSnapshot,
+            cancellationToken);
+    }
 
     public async Task<CardPaymentRecoveryResult> RecoverLatestAsync(
         PosCartService cart,
@@ -1406,8 +1439,20 @@ public sealed class CardPaymentRecoveryService(
             CancellationToken.None);
         if (existingOrder is null)
         {
+            // 仅新建订单时解析取单来源（与 LocalOrder 同一事务写入来源/完成 claim）；
+            // 订单已存在（订单已保存、attempt 未收尾）时直接走既有订单幂等收尾，
+            // 不再解析已经 Completed/bound 的 held claim。
+            var heldOrder = await TryResolveHeldOrderAsync(
+                draft.Session,
+                draft.CartSnapshot,
+                CancellationToken.None);
             await RunLocalStoreAsync(
-                () => orderRepository.SavePendingOrderAsync(order, CancellationToken.None),
+                () => heldOrder is null
+                    ? orderRepository.SavePendingOrderAsync(order, CancellationToken.None)
+                    : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                        order,
+                        heldOrder,
+                        CancellationToken.None),
                 CancellationToken.None);
         }
         else
@@ -1568,8 +1613,18 @@ public sealed class CardPaymentRecoveryService(
                 CancellationToken.None);
             if (existingOrder is null)
             {
+                // 仅新建订单时解析取单来源；订单已保存时直接走既有订单幂等收尾。
+                var heldOrder = await TryResolveHeldOrderAsync(
+                    draft.Session,
+                    draft.CartSnapshot,
+                    CancellationToken.None);
                 await RunLocalStoreAsync(
-                    () => orderRepository.SavePendingOrderAsync(order, CancellationToken.None),
+                    () => heldOrder is null
+                        ? orderRepository.SavePendingOrderAsync(order, CancellationToken.None)
+                        : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                            order,
+                            heldOrder,
+                            CancellationToken.None),
                     CancellationToken.None);
             }
             else
@@ -1707,8 +1762,18 @@ public sealed class CardPaymentRecoveryService(
                 CancellationToken.None);
             if (existingOrder is null)
             {
+                // 仅新建订单时解析取单来源；订单已保存时直接走既有订单幂等收尾。
+                var heldOrder = await TryResolveHeldOrderAsync(
+                    draft.Session,
+                    draft.CartSnapshot,
+                    CancellationToken.None);
                 await RunLocalStoreAsync(
-                    () => orderRepository.SavePendingOrderAsync(order, CancellationToken.None),
+                    () => heldOrder is null
+                        ? orderRepository.SavePendingOrderAsync(order, CancellationToken.None)
+                        : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                            order,
+                            heldOrder,
+                            CancellationToken.None),
                     CancellationToken.None);
             }
             else

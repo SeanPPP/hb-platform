@@ -5,6 +5,7 @@ using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
+using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
@@ -71,6 +72,202 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(3, result.PendingSyncCount);
         Assert.Equal(3, result.UpdatedSession.PendingSyncCount);
         Assert.Equal(savedOrder.OrderGuid, result.Order.OrderGuid);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_with_open_claim_resolves_held_source_completion_context()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-wf",
+            SampleCanonical(),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-wf", "activate-wf", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        var cart = new PosCartService();
+        // 正在结账的购物车必须确实来自该 claim：按 canonical 反向映射恢复后结账。
+        cart.RestoreSharedSaleSnapshot(
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001") with
+            {
+                SharedHeldOrderClaimId = claimId
+            });
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            sharedHeldOrderRepository: scope.Repository);
+
+        var result = await workflow.CompleteAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            "11");
+
+        var savedOrder = Assert.Single(orders.SavedOrders);
+        var heldCompletion = Assert.Single(orders.HeldSources);
+        Assert.Equal(savedOrder.OrderGuid, heldCompletion.Order.OrderGuid);
+        Assert.Equal(holdGuid, heldCompletion.Context.HoldGuid);
+        Assert.Equal(claimId, heldCompletion.Context.ClaimId);
+        Assert.Equal(SharedHeldOrderClaimSource.OfflineOrigin, heldCompletion.Context.Source);
+        Assert.Equal("prepare-wf", heldCompletion.Context.PrepareIdempotencyKey);
+        Assert.Equal("activate-wf", heldCompletion.Context.ActivateIdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_with_edited_recalled_cart_keeps_held_source_binding()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            Guid.NewGuid(),
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-wf-nomatch",
+            SampleCanonical(quantity: 2m),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-wf-nomatch", "activate-wf-nomatch", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        // 召回后允许修改数量；显式 binding 仍必须随正式订单原子落盘，不能降级普通订单。
+        var cart = new PosCartService();
+        cart.RestoreSharedSaleSnapshot(
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(quantity: 1m), "S001") with
+            {
+                SharedHeldOrderClaimId = claimId
+            });
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            sharedHeldOrderRepository: scope.Repository);
+
+        var result = await workflow.CompleteAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            "5");
+
+        Assert.Single(orders.SavedOrders);
+        var heldCompletion = Assert.Single(orders.HeldSources);
+        Assert.Equal(claimId, heldCompletion.Context.ClaimId);
+        Assert.Equal(result.Order.OrderGuid, orders.SavedOrders[0].OrderGuid);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_prepared_claim_never_binds_held_source()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            Guid.NewGuid(),
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-wf-prepared",
+            SampleCanonical(),
+            "2026-07-28T00:00:00.000Z")));
+
+        var cart = new PosCartService();
+        cart.RestoreSharedSaleSnapshot(
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001"));
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            sharedHeldOrderRepository: scope.Repository);
+
+        var result = await workflow.CompleteAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            "11");
+
+        Assert.Single(orders.SavedOrders);
+        Assert.Empty(orders.HeldSources);
+        Assert.Equal(result.Order.OrderGuid, orders.SavedOrders[0].OrderGuid);
+    }
+
+    [Fact]
+    public async Task Cash_payment_workflow_mixed_payment_binds_matching_held_source()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(new SharedHeldOrderClaimDraft(
+            claimId,
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderClaimSource.OfflineOrigin,
+            "prepare-wf-mixed",
+            SampleCanonical(),
+            "2026-07-28T00:00:00.000Z")));
+        Assert.True(await scope.Repository.TryActivateClaimAsync(
+            claimId, "prepare-wf-mixed", "activate-wf-mixed", serverRevision: null, "2026-07-28T00:00:01.000Z"));
+
+        var cart = new PosCartService();
+        cart.RestoreSharedSaleSnapshot(
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001"));
+        var attemptGuid = Guid.NewGuid();
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            attemptGuid,
+            null,
+            "TXN-MIXED",
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            11m,
+            LocalCardPaymentAttemptStatus.Approved,
+            "{}",
+            "S001",
+            "POS-01",
+            "C001",
+            null,
+            null,
+            "ANZ:TXN-MIXED",
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null));
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardPaymentAttemptRepository: attempts,
+            sharedHeldOrderRepository: scope.Repository);
+
+        var result = await workflow.CompletePaymentAsync(
+            cart,
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
+            [new PaymentTender(
+                PaymentMethodKind.Card,
+                11m,
+                "ANZ:TXN-MIXED",
+                IdempotencyKey: $"CARD_ATTEMPT:{attemptGuid:N}")],
+            cashTenderedAmount: 0m);
+
+        var savedOrder = Assert.Single(orders.SavedOrders);
+        var heldCompletion = Assert.Single(orders.HeldSources);
+        Assert.Equal(savedOrder.OrderGuid, heldCompletion.Order.OrderGuid);
+        Assert.Equal(holdGuid, heldCompletion.Context.HoldGuid);
+        Assert.Equal(claimId, heldCompletion.Context.ClaimId);
+        Assert.Equal("activate-wf-mixed", heldCompletion.Context.ActivateIdempotencyKey);
+        Assert.Empty(cart.Lines);
+        Assert.False(result.HasPostCommitWarning);
     }
 
     [Fact]
@@ -2551,6 +2748,8 @@ public sealed class CashPaymentWorkflowServiceTests
     {
         public List<LocalOrder> SavedOrders { get; } = [];
 
+        public List<(LocalOrder Order, LocalHeldOrderCompletionContext Context)> HeldSources { get; } = [];
+
         public bool RejectCancelledTokens { get; init; }
 
         public TaskCompletionSource? SaveStarted { get; init; }
@@ -2581,6 +2780,15 @@ public sealed class CashPaymentWorkflowServiceTests
             }
 
             SavedOrders.Add(order);
+        }
+
+        public async Task SavePendingOrderWithHeldSourceAsync(
+            LocalOrder order,
+            LocalHeldOrderCompletionContext heldOrder,
+            CancellationToken cancellationToken = default)
+        {
+            await SavePendingOrderAsync(order, cancellationToken);
+            HeldSources.Add((order, heldOrder));
         }
 
         public Task UpdatePaymentReferenceAsync(

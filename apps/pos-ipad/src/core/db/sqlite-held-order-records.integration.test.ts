@@ -593,6 +593,62 @@ test("真实 SQLite：M8 升级 M17 保留 legacy held_orders，V2 密文保存�
   await connection.close();
 });
 
+test("小数称重挂单发布/汇总不抛：0.29 × 50 = 15，itemCount 按行计 1", async () => {
+  const { records } = await open();
+  const decimalPayload: HeldOrderPayloadV1 = {
+    version: 1,
+    pricingState: {
+      revision: 7,
+      mode: "sale",
+      asOfIso: nowIso,
+      promotions: [],
+      lines: [
+        {
+          lineId: "line-weighed",
+          productCode: "P-WEIGHED",
+          itemNumber: null,
+          lookupCode: "W1",
+          displayName: "Weighed 0.29",
+          quantity: 0.29,
+          unitPriceCents: 50,
+          basePriceSource: "catalog",
+          syncProvenance: { referenceCode: null, priceSource: 0 },
+          kind: "sale",
+          returnSourceKey: null,
+          originalOrderGuid: null,
+          originalOrderDetailGuid: null,
+          discountState: { kind: "none" },
+        },
+      ],
+    },
+  };
+
+  await records.hold({
+    holdId: "hold-decimal-1",
+    scope,
+    heldBy,
+    payload: decimalPayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-decimal-hold", "ORDER_HOLD"),
+  });
+
+  const pending = await records.listPending(scope, 10);
+  assert.equal(pending.length, 1);
+  assert.deepEqual(pending[0], {
+    holdId: "hold-decimal-1",
+    localSequence: 1,
+    scope,
+    heldBy,
+    status: "Pending",
+    itemCount: 1,
+    subtotalCents: 15,
+    discountCents: 0,
+    actualAmountCents: 15,
+    heldAtIso: nowIso,
+    recallingAtIso: null,
+  });
+});
+
 test("真实 SQLite：M9 Recalling 升级 M13 时按持久 attempt 回填唯一 RecallActive fence", async () => {
   const connection = new NodeSqliteConnection(
     new DatabaseSync(":memory:", { enableForeignKeyConstraints: true }),
