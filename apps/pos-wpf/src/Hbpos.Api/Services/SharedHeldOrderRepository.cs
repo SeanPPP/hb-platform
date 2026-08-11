@@ -68,6 +68,14 @@ public interface ISharedHeldOrderRepository
         long expectedRevision,
         CancellationToken cancellationToken);
 
+    Task<bool> TryCancelHoldAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        long expectedRevision,
+        DateTimeOffset cancelledAtUtc,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SharedHeldOrderRecord>> ListPendingAsync(
         string storeCode,
         CancellationToken cancellationToken);
@@ -128,10 +136,22 @@ internal static class SharedHeldOrderMutationLock
         WHERE [HoldGuid] = @HoldGuid;
         """;
 
+    internal const string LockCancelHoldRowSql = """
+        SELECT TOP 1 [HoldGuid], [StoreCode], [DeviceCode], [Status], [Revision]
+        FROM [dbo].[POSM_SharedHeldOrder] WITH (UPDLOCK)
+        WHERE [HoldGuid] = @HoldGuid;
+        """;
+
     internal const string LockClaimRowSql = """
         SELECT TOP 1 [ClaimGuid], [HoldGuid], [StoreCode], [Status], [Revision]
         FROM [dbo].[POSM_SharedHeldOrderClaim] WITH (UPDLOCK)
         WHERE [ClaimGuid] = @ClaimGuid;
+        """;
+
+    internal const string LockBlockingClaimRowSql = """
+        SELECT TOP 1 [ClaimGuid], [HoldGuid], [StoreCode], [Status], [Revision]
+        FROM [dbo].[POSM_SharedHeldOrderClaim] WITH (UPDLOCK)
+        WHERE [HoldGuid] = @HoldGuid AND [IsBlocking] = 1;
         """;
 
     private static readonly object ProcessLockGate = new();
@@ -201,15 +221,49 @@ internal static class SharedHeldOrderMutationLock
             new SugarParameter("@HoldGuid", holdGuid));
     }
 
+    internal static async Task<ClaimLockRow?> LockBlockingClaimAsync(
+        ISqlSugarClient db,
+        Guid holdGuid,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var sql = GetBlockingClaimLockSql(db.CurrentConnectionConfig.DbType);
+        return await db.Ado.SqlQuerySingleAsync<ClaimLockRow>(
+            sql,
+            new SugarParameter("@HoldGuid", holdGuid));
+    }
+
+    internal static async Task<HoldLockRow?> LockCancelHoldAsync(
+        ISqlSugarClient db,
+        Guid holdGuid,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var sql = GetCancelHoldLockSql(db.CurrentConnectionConfig.DbType);
+        return await db.Ado.SqlQuerySingleAsync<HoldLockRow>(
+            sql,
+            new SugarParameter("@HoldGuid", holdGuid));
+    }
+
     internal static string GetHoldLockSql(DbType dbType) =>
         dbType == DbType.SqlServer
             ? LockHoldRowSql
             : ToNonSqlServerSql(LockHoldRowSql);
 
+    internal static string GetCancelHoldLockSql(DbType dbType) =>
+        dbType == DbType.SqlServer
+            ? LockCancelHoldRowSql
+            : ToNonSqlServerSql(LockCancelHoldRowSql);
+
     internal static string GetClaimLockSql(DbType dbType) =>
         dbType == DbType.SqlServer
             ? LockClaimRowSql
             : ToNonSqlServerSql(LockClaimRowSql);
+
+    internal static string GetBlockingClaimLockSql(DbType dbType) =>
+        dbType == DbType.SqlServer
+            ? LockBlockingClaimRowSql
+            : ToNonSqlServerSql(LockBlockingClaimRowSql);
 
     // 非 SQL Server（SQLite 等测试/开发 provider）不支持 TOP、[dbo] 前缀与 UPDLOCK 提示。
     internal static string ToNonSqlServerSql(string sql) =>
@@ -242,6 +296,8 @@ internal static class SharedHeldOrderMutationLock
         public Guid HoldGuid { get; set; }
 
         public string StoreCode { get; set; } = string.Empty;
+
+        public string DeviceCode { get; set; } = string.Empty;
 
         public string Status { get; set; } = string.Empty;
 
@@ -331,6 +387,16 @@ public sealed class SqlSugarSharedHeldOrderRepository(
         UPDATE [dbo].[POSM_SharedHeldOrder]
         SET [Status] = @Status, [UpdatedAtUtc] = @UpdatedAtUtc, [Revision] = @Revision
         WHERE [HoldGuid] = @HoldGuid AND [Revision] = @ExpectedRevision;
+        """;
+
+    internal const string CancelHoldSql = """
+        UPDATE [dbo].[POSM_SharedHeldOrder]
+        SET [Status] = @Status, [UpdatedAtUtc] = @UpdatedAtUtc, [Revision] = @Revision
+        WHERE [HoldGuid] = @HoldGuid
+          AND [StoreCode] = @StoreCode
+          AND [DeviceCode] = @DeviceCode
+          AND [Status] = @ExpectedStatus
+          AND [Revision] = @ExpectedRevision;
         """;
 
     internal const string UpdateClaimSql = """
@@ -450,6 +516,78 @@ public sealed class SqlSugarSharedHeldOrderRepository(
             new SugarParameter("@HoldGuid", hold.HoldGuid),
             new SugarParameter("@ExpectedRevision", expectedRevision));
         return updated == 1;
+    }
+
+    public async Task<bool> TryCancelHoldAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        long expectedRevision,
+        DateTimeOffset cancelledAtUtc,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var db = dbContext.PosmDb;
+        await using var processLock = await SharedHeldOrderMutationLock.AcquireProcessAsync(
+            holdGuid,
+            cancellationToken);
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
+        try
+        {
+            // 取消与 prepare 使用同一 hold 锁，避免先检查无 claim 后被并发 prepare 插入。
+            await SharedHeldOrderMutationLock.AcquireDatabaseAsync(db, holdGuid);
+            var lockedHold = await SharedHeldOrderMutationLock.LockCancelHoldAsync(
+                db,
+                holdGuid,
+                cancellationToken);
+            if (lockedHold is null ||
+                lockedHold.Revision != expectedRevision ||
+                !string.Equals(lockedHold.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(lockedHold.DeviceCode, deviceCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    lockedHold.Status,
+                    SharedHeldOrderStatus.Pending.ToString(),
+                    StringComparison.Ordinal))
+            {
+                await db.Ado.RollbackTranAsync();
+                return false;
+            }
+
+            var blockingClaim = await SharedHeldOrderMutationLock.LockBlockingClaimAsync(
+                db,
+                holdGuid,
+                cancellationToken);
+            if (blockingClaim is not null)
+            {
+                await db.Ado.RollbackTranAsync();
+                return false;
+            }
+
+            var updated = await db.Ado.ExecuteCommandAsync(
+                CancelHoldSql,
+                new SugarParameter("@Status", SharedHeldOrderStatus.Cancelled.ToString()),
+                new SugarParameter("@ExpectedStatus", SharedHeldOrderStatus.Pending.ToString()),
+                new SugarParameter("@UpdatedAtUtc", cancelledAtUtc.UtcDateTime),
+                new SugarParameter("@Revision", expectedRevision + 1),
+                new SugarParameter("@HoldGuid", holdGuid),
+                // 使用已锁定的原始值，兼容允许大小写不敏感的身份比较，同时仍由 CAS 校验数据库事实。
+                new SugarParameter("@StoreCode", lockedHold.StoreCode),
+                new SugarParameter("@DeviceCode", lockedHold.DeviceCode),
+                new SugarParameter("@ExpectedRevision", expectedRevision));
+            if (updated != 1)
+            {
+                await db.Ado.RollbackTranAsync();
+                return false;
+            }
+
+            await db.Ado.CommitTranAsync();
+            return true;
+        }
+        catch
+        {
+            await db.Ado.RollbackTranAsync();
+            throw;
+        }
     }
 
     public Task<IReadOnlyList<SharedHeldOrderRecord>> ListPendingAsync(

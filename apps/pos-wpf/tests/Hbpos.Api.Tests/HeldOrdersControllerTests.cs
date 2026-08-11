@@ -28,7 +28,8 @@ public sealed class HeldOrdersControllerTests
         AssertRoute(nameof(HeldOrdersController.Prepare), "{holdGuid:guid}/claims/prepare", false, CashierAuthorizationPolicies.RecallOrder);
         AssertRoute(nameof(HeldOrdersController.Activate), "{holdGuid:guid}/claims/{claimGuid:guid}/activate", false, CashierAuthorizationPolicies.RecallOrder);
         AssertRoute(nameof(HeldOrdersController.Release), "{holdGuid:guid}/claims/{claimGuid:guid}/release", false, CashierAuthorizationPolicies.RecallOrder);
-        AssertRoute(nameof(HeldOrdersController.ForceRelease), "{holdGuid:guid}/claims/{claimGuid:guid}/force-release", false, "Cashier.HistoryRecall");
+        AssertRoute(nameof(HeldOrdersController.ForceRelease), "{holdGuid:guid}/claims/{claimGuid:guid}/force-release", false, CashierAuthorizationPolicies.HistoryRecall);
+        AssertRoute(nameof(HeldOrdersController.Cancel), "{holdGuid:guid}/cancel", false, CashierAuthorizationPolicies.HistoryRecall);
         AssertRoute(nameof(HeldOrdersController.ClaimsMine), "claims/mine", isGet: true, CashierAuthorizationPolicies.RecallOrder);
     }
 
@@ -84,6 +85,24 @@ public sealed class HeldOrdersControllerTests
     }
 
     [Fact]
+    public async Task Cancel_returns_200_envelope_and_uses_verified_identity()
+    {
+        var service = new FakeService();
+        var identityResolver = new FakeIdentityResolver(TrustedIdentity);
+        var controller = CreateController(service, identityResolver);
+
+        var action = await controller.Cancel(HoldGuid, CancellationToken.None);
+
+        AssertOk(action, data =>
+        {
+            Assert.Equal(HoldGuid, data.HoldGuid);
+            Assert.Equal(SharedHeldOrderStatus.Cancelled, data.Status);
+        });
+        Assert.Equal(TrustedIdentity, service.LastIdentity);
+        Assert.Equal(1, identityResolver.ResolveCalls);
+    }
+
+    [Fact]
     public async Task Publish_with_forged_store_scope_returns_403_before_service_runs()
     {
         var service = new FakeService();
@@ -117,6 +136,10 @@ public sealed class HeldOrdersControllerTests
             "CASHIER_AUTH_REQUIRED");
         AssertError(
             await controller.ForceRelease(HoldGuid, ClaimGuid, new SharedHeldOrderForceReleaseRequest("原因"), CancellationToken.None),
+            StatusCodes.Status401Unauthorized,
+            "CASHIER_AUTH_REQUIRED");
+        AssertError(
+            await controller.Cancel(HoldGuid, CancellationToken.None),
             StatusCodes.Status401Unauthorized,
             "CASHIER_AUTH_REQUIRED");
         AssertError(
@@ -302,6 +325,20 @@ public sealed class HeldOrdersControllerTests
                 ForceReleased = true,
                 ForceReleaseReason = request.Reason
             });
+        }
+
+        public Task<SharedHeldOrderCancelResponse> CancelAsync(
+            Guid holdGuid,
+            SharedHeldOrderIdentity identity,
+            CancellationToken cancellationToken)
+        {
+            LastIdentity = identity;
+            ThrowIfError();
+            return Task.FromResult(new SharedHeldOrderCancelResponse(
+                holdGuid,
+                SharedHeldOrderStatus.Cancelled,
+                2,
+                DateTimeOffset.Parse("2026-08-10T02:00:00Z")));
         }
 
         public Task<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>> ListMyClaimsAsync(

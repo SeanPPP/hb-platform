@@ -15,6 +15,54 @@ namespace Hbpos.Client.Tests;
 public sealed class SharedHeldOrderPublicationWorkerTests
 {
     [Fact]
+    public async Task RunOnceAsync_waits_until_shared_publication_gate_is_released()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        await SaveSampleOrderAsync(store);
+        var gate = new SharedHeldOrderPublicationGate();
+        var cancellationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCancellation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationTask = gate.RunExclusiveAsync(async () =>
+        {
+            cancellationEntered.SetResult();
+            await releaseCancellation.Task;
+            return true;
+        });
+        await cancellationEntered.Task;
+
+        var capabilityRead = false;
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ =>
+            {
+                capabilityRead = true;
+                return Task.FromResult(EnabledCapabilities());
+            },
+            Publish = (request, _) => Task.FromResult(new SharedHeldOrderPublishResponse(
+                request.HoldGuid,
+                SharedHeldOrderStatus.Pending,
+                Revision: 1,
+                new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero)))
+        };
+        var worker = CreateWorker(scope, api, publicationGate: gate);
+
+        var runTask = worker.RunOnceAsync("S001", "POS-01");
+        await Task.Yield();
+
+        Assert.False(capabilityRead);
+        Assert.False(runTask.IsCompleted);
+
+        releaseCancellation.SetResult();
+        await cancellationTask;
+        var result = await runTask;
+        Assert.True(capabilityRead);
+        Assert.Equal(1, result.Published);
+    }
+
+    [Fact]
     public async Task RunOnceAsync_evaluates_new_hold_to_pending_publish_and_offline_api_keeps_hold()
     {
         await using var scope = await CreateRepositoryScopeAsync();
@@ -375,12 +423,14 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         RepositoryScope scope,
         StubSharedHeldOrderApiClient api,
         Func<SuspendedOrder, IReadOnlyList<CatalogPromotionRuleDto>?>? frozenPromotionRuleProvider = null,
-        FixedTimeProvider? timeProvider = null)
+        FixedTimeProvider? timeProvider = null,
+        ISharedHeldOrderPublicationGate? publicationGate = null)
     {
         return new SharedHeldOrderPublicationWorker(
             scope.Repository,
             new SharedHeldOrderMapper(),
             api,
+            publicationGate ?? new SharedHeldOrderPublicationGate(),
             frozenPromotionRuleProvider,
             timeProvider ?? new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero)));
     }

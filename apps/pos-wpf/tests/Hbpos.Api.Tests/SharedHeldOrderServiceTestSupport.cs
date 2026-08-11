@@ -231,6 +231,42 @@ internal static class SharedHeldOrderServiceTestSupport
             }
         }
 
+        public async Task<bool> TryCancelHoldAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            long expectedRevision,
+            DateTimeOffset cancelledAtUtc,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (!_holds.TryGetValue(holdGuid, out var current) ||
+                    current.Revision != expectedRevision ||
+                    current.Status != SharedHeldOrderStatus.Pending ||
+                    !string.Equals(current.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.DeviceCode, deviceCode, StringComparison.OrdinalIgnoreCase) ||
+                    _claims.Values.Any(claim => claim.HoldGuid == holdGuid && claim.IsBlocking))
+                {
+                    return false;
+                }
+
+                _holds[holdGuid] = current with
+                {
+                    Status = SharedHeldOrderStatus.Cancelled,
+                    UpdatedAtUtc = cancelledAtUtc,
+                    Revision = current.Revision + 1
+                };
+                return true;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
         public Task<IReadOnlyList<SharedHeldOrderRecord>> ListPendingAsync(
             string storeCode,
             CancellationToken cancellationToken)

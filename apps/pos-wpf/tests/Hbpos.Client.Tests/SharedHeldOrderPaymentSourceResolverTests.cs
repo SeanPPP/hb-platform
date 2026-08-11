@@ -297,6 +297,26 @@ public sealed class SharedHeldOrderPaymentSourceResolverTests
             return Task.FromException<SharedHeldOrderPublication?>(new NotSupportedException());
         }
 
+        public Task<SharedHeldOrderDeleteStage?> TryStageDeletePendingAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<SharedHeldOrderDeleteStage?>(new NotSupportedException());
+        }
+
+        public Task<bool> TryCompleteDeletePendingAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            string completedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<bool>(new NotSupportedException());
+        }
+
         public Task<bool> TryStagePendingPublishAsync(
             Guid localHoldGuid,
             int expectedRevision,

@@ -76,6 +76,88 @@ public sealed class SharedHeldOrderApiClientTests
     }
 
     [Fact]
+    public async Task CancelAsync_uses_post_and_parses_cancel_response()
+    {
+        var holdGuid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var client = CreateApiClient(new StubHttpMessageHandler((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal(
+                "/api/v1/held-orders/11111111-1111-1111-1111-111111111111/cancel",
+                request.RequestUri?.PathAndQuery);
+            return Task.FromResult(JsonResponse(new
+            {
+                success = true,
+                data = new
+                {
+                    holdGuid,
+                    status = (int)SharedHeldOrderStatus.Cancelled,
+                    revision = 8L,
+                    updatedAtUtc = "2026-08-11T01:02:03.456Z",
+                    alreadyCancelled = false
+                }
+            }));
+        }));
+
+        var response = await client.CancelAsync(holdGuid);
+
+        Assert.Equal(holdGuid, response.HoldGuid);
+        Assert.Equal(SharedHeldOrderStatus.Cancelled, response.Status);
+        Assert.Equal(8L, response.Revision);
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-08-11T01:02:03.456Z"),
+            response.UpdatedAtUtc);
+        Assert.False(response.AlreadyCancelled);
+    }
+
+    [Fact]
+    public async Task CancelAsync_waits_until_publication_gate_is_released()
+    {
+        var holdGuid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var gate = new SharedHeldOrderPublicationGate();
+        var publicationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePublication = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var publicationTask = gate.RunExclusiveAsync(async () =>
+        {
+            publicationEntered.SetResult();
+            await releasePublication.Task;
+            return true;
+        });
+        await publicationEntered.Task;
+
+        var cancelSent = false;
+        var client = CreateApiClient(new StubHttpMessageHandler((_, _) =>
+        {
+            cancelSent = true;
+            return Task.FromResult(JsonResponse(new
+            {
+                success = true,
+                data = new
+                {
+                    holdGuid,
+                    status = (int)SharedHeldOrderStatus.Cancelled,
+                    revision = 8L,
+                    updatedAtUtc = "2026-08-11T01:02:03.456Z",
+                    alreadyCancelled = false
+                }
+            }));
+        }), gate);
+
+        var cancelTask = client.CancelAsync(holdGuid);
+        await Task.Yield();
+
+        Assert.False(cancelSent);
+        Assert.False(cancelTask.IsCompleted);
+
+        releasePublication.SetResult();
+        await publicationTask;
+        await cancelTask;
+        Assert.True(cancelSent);
+    }
+
+    [Fact]
     public async Task PrepareAsync_returns_decrypted_payload_and_claim_fields()
     {
         var client = CreateApiClient(new StubHttpMessageHandler((request, _) =>

@@ -408,6 +408,128 @@ public sealed class SharedHeldOrderRepositoryTests
     }
 
     [Fact]
+    public async Task Stage_delete_of_published_order_blocks_republish_and_keeps_remote_cancel_intent()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid, [1, 2, 3]));
+        Assert.True(await scope.Repository.TryAdvancePublicationAsync(
+            holdGuid,
+            SharedHeldOrderPublicationStatus.NeedsEvaluation,
+            1,
+            SharedHeldOrderPublicationStatus.PendingPublish,
+            "2026-08-11T01:00:00.000Z"));
+        Assert.True(await scope.Repository.TryAdvancePublicationAsync(
+            holdGuid,
+            SharedHeldOrderPublicationStatus.PendingPublish,
+            2,
+            SharedHeldOrderPublicationStatus.Published,
+            "2026-08-11T01:00:01.000Z",
+            remoteRevision: 7,
+            remoteUpdatedAtIso: "2026-08-11T01:00:01.000Z"));
+
+        var staged = await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "s001",
+            "pos-01",
+            "2026-08-11T01:00:02.000Z");
+
+        Assert.NotNull(staged);
+        Assert.True(staged!.RemoteCancellationRequired);
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderPublicationStatus.Blocked, publication!.Status);
+        Assert.Equal("LOCAL_DELETE_PENDING_REMOTE", publication.ErrorCode);
+        Assert.Null(publication.RemoteRevision);
+        Assert.Null(publication.RemoteUpdatedAtIso);
+        Assert.Empty(await scope.Repository.ListDuePublicationsAsync("2026-08-11T01:10:00.000Z"));
+
+        // 网络取消失败后重试仍必须记得服务端已发布，不能退化成本地直接删除。
+        var retry = await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:03.000Z");
+        Assert.NotNull(retry);
+        Assert.True(retry!.RemoteCancellationRequired);
+    }
+
+    [Fact]
+    public async Task Local_only_delete_completes_as_canceled_and_disappears_from_pending_orders()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+
+        var staged = await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:00.000Z");
+
+        Assert.NotNull(staged);
+        Assert.False(staged!.RemoteCancellationRequired);
+        Assert.True(await scope.Repository.TryCompleteDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:01.000Z"));
+
+        var suspended = await new SuspendedOrderRepository(scope.Store).GetAsync(holdGuid);
+        Assert.NotNull(suspended);
+        Assert.Equal(SuspendedOrderStatus.Canceled, suspended!.Status);
+        Assert.Empty(await new SuspendedOrderRepository(scope.Store).GetPendingAsync("S001", "POS-01"));
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderPublicationStatus.Blocked, publication!.Status);
+        Assert.Equal("LOCAL_DELETE_PENDING_LOCAL", publication.ErrorCode);
+        Assert.Equal("2026-08-11T01:00:01.000Z", publication.ConsumedAtIso);
+    }
+
+    [Fact]
+    public async Task Delete_staging_rejects_other_device_open_claim_and_unstaged_completion()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid));
+
+        Assert.Null(await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-02",
+            "2026-08-11T01:00:00.000Z"));
+        Assert.False(await scope.Repository.TryCompleteDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:00.000Z"));
+
+        var claimId = Guid.NewGuid();
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(Draft(
+            claimId,
+            holdGuid: holdGuid,
+            source: SharedHeldOrderClaimSource.RemoteClaim)));
+        Assert.Null(await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:01.000Z"));
+
+        Assert.True(await scope.Repository.TryReleaseClaimAsync(
+            claimId,
+            "release-for-delete",
+            SharedHeldOrderClaimStatus.Prepared,
+            "2026-08-11T01:00:02.000Z"));
+        Assert.NotNull(await scope.Repository.TryStageDeletePendingAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            "2026-08-11T01:00:03.000Z"));
+    }
+
+    [Fact]
     public async Task Prepared_claim_fence_has_single_winner_per_store_device()
     {
         await using var scope = await CreateScopeAsync();

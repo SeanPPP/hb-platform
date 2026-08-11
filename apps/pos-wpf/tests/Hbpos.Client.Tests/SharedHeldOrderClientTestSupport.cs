@@ -286,12 +286,16 @@ public static class SharedHeldOrderClientTestSupport
             statusCode);
     }
 
-    public static SharedHeldOrderApiClient CreateApiClient(StubHttpMessageHandler handler)
+    public static SharedHeldOrderApiClient CreateApiClient(
+        StubHttpMessageHandler handler,
+        ISharedHeldOrderPublicationGate? publicationGate = null)
     {
-        return new SharedHeldOrderApiClient(new HttpClient(handler)
-        {
-            BaseAddress = new Uri("http://test.local")
-        });
+        return new SharedHeldOrderApiClient(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("http://test.local")
+            },
+            publicationGate ?? new SharedHeldOrderPublicationGate());
     }
 
     public sealed class StubSharedHeldOrderApiClient : ISharedHeldOrderApiClient
@@ -299,6 +303,8 @@ public static class SharedHeldOrderClientTestSupport
         public Func<CancellationToken, Task<SharedHeldOrderCapabilitiesResponse>>? Capabilities { get; set; }
 
         public Func<SharedHeldOrderPublishRequest, CancellationToken, Task<SharedHeldOrderPublishResponse>>? Publish { get; set; }
+
+        public Func<Guid, CancellationToken, Task<SharedHeldOrderCancelResponse>>? Cancel { get; set; }
 
         public Func<CancellationToken, Task<IReadOnlyList<SharedHeldOrderListItemDto>>>? ListPending { get; set; }
 
@@ -325,6 +331,14 @@ public static class SharedHeldOrderClientTestSupport
         {
             return Publish?.Invoke(request, cancellationToken)
                 ?? throw new InvalidOperationException("Publish stub not configured.");
+        }
+
+        public Task<SharedHeldOrderCancelResponse> CancelAsync(
+            Guid holdGuid,
+            CancellationToken cancellationToken = default)
+        {
+            return Cancel?.Invoke(holdGuid, cancellationToken)
+                ?? throw new InvalidOperationException("Cancel stub not configured.");
         }
 
         public Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(

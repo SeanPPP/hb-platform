@@ -588,6 +588,14 @@
   <data name="history.held.forceReleaseReasonRequired" xml:space="preserve"><value>A force-release reason is required.</value></data>
   <data name="history.held.forceReleaseReasonTooLong" xml:space="preserve"><value>The force-release reason must not exceed 500 characters.</value></data>
   <data name="history.held.forceReleased" xml:space="preserve"><value>Held order force-released.</value></data>
+  <data name="history.held.delete" xml:space="preserve"><value>Delete</value></data>
+  <data name="history.held.deleteConfirmTitle" xml:space="preserve"><value>Delete held sale?</value></data>
+  <data name="history.held.deleteConfirmMessage" xml:space="preserve"><value>This permanently removes the local hold. A shared hold is cancelled online first.</value></data>
+  <data name="history.held.deleteConfirmAction" xml:space="preserve"><value>Delete held sale</value></data>
+  <data name="history.held.deleted" xml:space="preserve"><value>Held sale deleted.</value></data>
+  <data name="history.held.deleteFailed" xml:space="preserve"><value>The held sale was not deleted.</value></data>
+  <data name="history.held.deleteOnlineRequired" xml:space="preserve"><value>This shared held sale must be cancelled while online.</value></data>
+  <data name="history.held.deletePending" xml:space="preserve"><value>Deletion is pending; choose Delete to retry.</value></data>
   <data name="history.held.remoteUnavailable" xml:space="preserve"><value>Remote held orders unavailable: {0}</value></data>
   <data name="history.held.unavailable" xml:space="preserve"><value>Shared held orders are not configured on this terminal.</value></data>
   <data name="history.installment.paid" xml:space="preserve"><value>Paid</value></data>

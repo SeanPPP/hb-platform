@@ -6831,6 +6831,11 @@ public sealed class MainViewModelScannerTests
             return Task.FromResult(false);
         }
 
+        public Task<bool> ConfirmHeldOrderCancellationAsync()
+        {
+            return Task.FromResult(false);
+        }
+
         public Task<bool> ConfirmOrderDateRangeReuploadAsync(
             int orderCount,
             int batchCount,

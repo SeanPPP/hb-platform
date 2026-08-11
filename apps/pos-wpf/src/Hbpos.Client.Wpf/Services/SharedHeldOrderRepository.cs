@@ -122,6 +122,29 @@ public interface ISharedHeldOrderRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 删除第一阶段：只允许本店、本机、Pending 且无 Prepared/Active claim 的本地挂单；
+    /// 同一事务把 publication 暂存为 Blocked，确保后台不再发布。返回值指示是否还需
+    /// 调用服务端 cancel；远端取消失败时可安全重试，意图不会丢失。
+    /// </summary>
+    Task<SharedHeldOrderDeleteStage?> TryStageDeletePendingAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string updatedAtIso,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 删除第二阶段：仅已暂存删除且无活动 claim 的本机挂单可完成；
+    /// 将本地挂单标记 Canceled 并消费 publication，使其从待取列表与发布队列消失。
+    /// </summary>
+    Task<bool> TryCompleteDeletePendingAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string completedAtIso,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 评估结果原子落库：NeedsEvaluation -> PendingPublish 与 payload 密文一次性写入
     /// （CAS 校验 revision，避免两段式写入的崩溃窗口）。只接受 NeedsEvaluation；
     /// Blocked/PendingPublish/Published 均返回 false。失败原因不写入错误字段。
@@ -271,6 +294,8 @@ public sealed class SharedHeldOrderRepository(
     private const string PublicationPendingPublish = "PendingPublish";
     private const string PublicationPublished = "Published";
     private const string PublicationBlocked = "Blocked";
+    private const string LocalDeletePendingRemote = "LOCAL_DELETE_PENDING_REMOTE";
+    private const string LocalDeletePendingLocal = "LOCAL_DELETE_PENDING_LOCAL";
 
     private const string ClaimPrepared = "Prepared";
     private const string ClaimActive = "Active";
@@ -585,6 +610,276 @@ public sealed class SharedHeldOrderRepository(
         command.Parameters.AddWithValue("$LocalHoldGuid", localHoldGuid.ToString("D"));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? ReadPublication(reader) : null;
+    }
+
+    public async Task<SharedHeldOrderDeleteStage?> TryStageDeletePendingAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string updatedAtIso,
+        CancellationToken cancellationToken = default)
+    {
+        if (holdGuid == Guid.Empty ||
+            string.IsNullOrWhiteSpace(storeCode) ||
+            string.IsNullOrWhiteSpace(deviceCode) ||
+            string.IsNullOrWhiteSpace(updatedAtIso))
+        {
+            return null;
+        }
+
+        var normalizedStoreCode = storeCode.Trim().ToUpperInvariant();
+        var normalizedDeviceCode = deviceCode.Trim().ToUpperInvariant();
+        var holdGuidText = holdGuid.ToString("D");
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(deferred: false);
+
+        string suspendedAtIso;
+        await using (var orderCommand = connection.CreateCommand())
+        {
+            orderCommand.Transaction = transaction;
+            orderCommand.CommandText =
+                """
+                SELECT SuspendedAt
+                FROM SuspendedOrders
+                WHERE SuspendedOrderGuid = $HoldGuid
+                  AND UPPER(StoreCode) = $StoreCode
+                  AND UPPER(DeviceCode) = $DeviceCode
+                  AND Status = $PendingStatus;
+                """;
+            orderCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            orderCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            orderCommand.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            orderCommand.Parameters.AddWithValue("$PendingStatus", (int)SuspendedOrderStatus.Pending);
+            var suspendedAt = await orderCommand.ExecuteScalarAsync(cancellationToken);
+            if (suspendedAt is not string value)
+            {
+                return null;
+            }
+
+            suspendedAtIso = value;
+        }
+
+        await using (var claimCommand = connection.CreateCommand())
+        {
+            claimCommand.Transaction = transaction;
+            claimCommand.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM SharedHeldOrderClaims
+                WHERE HoldGuid = $HoldGuid
+                  AND Status IN ('Prepared', 'Active');
+                """;
+            claimCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            if (Convert.ToInt64(await claimCommand.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) > 0)
+            {
+                return null;
+            }
+        }
+
+        var publicationExists = false;
+        var remoteCancellationRequired = false;
+        await using (var publicationCommand = connection.CreateCommand())
+        {
+            publicationCommand.Transaction = transaction;
+            publicationCommand.CommandText =
+                """
+                SELECT StoreCode, DeviceCode, Status, ErrorCode, RemoteRevision, ConsumedAtIso
+                FROM SharedHeldOrderPublications
+                WHERE LocalHoldGuid = $HoldGuid;
+                """;
+            publicationCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            await using var reader = await publicationCommand.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                publicationExists = true;
+                if (!ReadString(reader, "StoreCode").Equals(normalizedStoreCode, StringComparison.OrdinalIgnoreCase) ||
+                    !ReadString(reader, "DeviceCode").Equals(normalizedDeviceCode, StringComparison.OrdinalIgnoreCase) ||
+                    ReadNullableString(reader, "ConsumedAtIso") is not null)
+                {
+                    return null;
+                }
+
+                var status = ReadString(reader, "Status");
+                var errorCode = ReadNullableString(reader, "ErrorCode");
+                remoteCancellationRequired =
+                    errorCode == LocalDeletePendingRemote ||
+                    status is PublicationPendingPublish or PublicationPublished ||
+                    ReadNullableInt64(reader, "RemoteRevision") is not null;
+            }
+        }
+
+        var deleteMarker = remoteCancellationRequired
+            ? LocalDeletePendingRemote
+            : LocalDeletePendingLocal;
+        await using (var stageCommand = connection.CreateCommand())
+        {
+            stageCommand.Transaction = transaction;
+            if (publicationExists)
+            {
+                stageCommand.CommandText =
+                    """
+                    UPDATE SharedHeldOrderPublications
+                    SET Status = 'Blocked',
+                        Revision = Revision + 1,
+                        RetryCount = 0,
+                        ErrorCode = $DeleteMarker,
+                        ErrorMessage = NULL,
+                        UpdatedAtIso = $UpdatedAtIso,
+                        LastAttemptAtIso = NULL,
+                        NextAttemptAtIso = NULL,
+                        RemoteRevision = NULL,
+                        RemoteUpdatedAtIso = NULL
+                    WHERE LocalHoldGuid = $HoldGuid
+                      AND UPPER(StoreCode) = $StoreCode
+                      AND UPPER(DeviceCode) = $DeviceCode
+                      AND ConsumedAtIso IS NULL;
+                    """;
+            }
+            else
+            {
+                stageCommand.CommandText =
+                    """
+                    INSERT INTO SharedHeldOrderPublications (
+                        LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
+                        ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso,
+                        UpdatedAtIso, LastAttemptAtIso, NextAttemptAtIso,
+                        RemoteRevision, RemoteUpdatedAtIso, ConsumedAtIso)
+                    VALUES (
+                        $HoldGuid, $StoreCode, $DeviceCode, 'Blocked', 1, 0,
+                        $DeleteMarker, NULL, NULL, $HeldAtIso, $UpdatedAtIso,
+                        $UpdatedAtIso, NULL, NULL, NULL, NULL, NULL);
+                    """;
+                stageCommand.Parameters.AddWithValue("$HeldAtIso", suspendedAtIso);
+            }
+
+            stageCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            stageCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            stageCommand.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            stageCommand.Parameters.AddWithValue("$DeleteMarker", deleteMarker);
+            stageCommand.Parameters.AddWithValue("$UpdatedAtIso", updatedAtIso);
+            if (await stageCommand.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                return null;
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new SharedHeldOrderDeleteStage(holdGuid, remoteCancellationRequired);
+    }
+
+    public async Task<bool> TryCompleteDeletePendingAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string completedAtIso,
+        CancellationToken cancellationToken = default)
+    {
+        if (holdGuid == Guid.Empty ||
+            string.IsNullOrWhiteSpace(storeCode) ||
+            string.IsNullOrWhiteSpace(deviceCode) ||
+            string.IsNullOrWhiteSpace(completedAtIso))
+        {
+            return false;
+        }
+
+        var normalizedStoreCode = storeCode.Trim().ToUpperInvariant();
+        var normalizedDeviceCode = deviceCode.Trim().ToUpperInvariant();
+        var holdGuidText = holdGuid.ToString("D");
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(deferred: false);
+
+        await using (var claimCommand = connection.CreateCommand())
+        {
+            claimCommand.Transaction = transaction;
+            claimCommand.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM SharedHeldOrderClaims
+                WHERE HoldGuid = $HoldGuid
+                  AND Status IN ('Prepared', 'Active');
+                """;
+            claimCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            if (Convert.ToInt64(await claimCommand.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) > 0)
+            {
+                return false;
+            }
+        }
+
+        await using (var publicationCommand = connection.CreateCommand())
+        {
+            publicationCommand.Transaction = transaction;
+            publicationCommand.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM SharedHeldOrderPublications
+                WHERE LocalHoldGuid = $HoldGuid
+                  AND UPPER(StoreCode) = $StoreCode
+                  AND UPPER(DeviceCode) = $DeviceCode
+                  AND Status = 'Blocked'
+                  AND ErrorCode IN ('LOCAL_DELETE_PENDING_REMOTE', 'LOCAL_DELETE_PENDING_LOCAL')
+                  AND ConsumedAtIso IS NULL;
+                """;
+            publicationCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            publicationCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            publicationCommand.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            if (Convert.ToInt64(await publicationCommand.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 1)
+            {
+                return false;
+            }
+        }
+
+        await using (var orderCommand = connection.CreateCommand())
+        {
+            orderCommand.Transaction = transaction;
+            orderCommand.CommandText =
+                """
+                UPDATE SuspendedOrders
+                SET Status = $CanceledStatus
+                WHERE SuspendedOrderGuid = $HoldGuid
+                  AND UPPER(StoreCode) = $StoreCode
+                  AND UPPER(DeviceCode) = $DeviceCode
+                  AND Status = $PendingStatus;
+                """;
+            orderCommand.Parameters.AddWithValue("$CanceledStatus", (int)SuspendedOrderStatus.Canceled);
+            orderCommand.Parameters.AddWithValue("$PendingStatus", (int)SuspendedOrderStatus.Pending);
+            orderCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            orderCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            orderCommand.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            if (await orderCommand.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                return false;
+            }
+        }
+
+        await using (var publicationCommand = connection.CreateCommand())
+        {
+            publicationCommand.Transaction = transaction;
+            publicationCommand.CommandText =
+                """
+                UPDATE SharedHeldOrderPublications
+                SET Revision = Revision + 1,
+                    PayloadCiphertext = NULL,
+                    ConsumedAtIso = $CompletedAtIso,
+                    UpdatedAtIso = $CompletedAtIso
+                WHERE LocalHoldGuid = $HoldGuid
+                  AND UPPER(StoreCode) = $StoreCode
+                  AND UPPER(DeviceCode) = $DeviceCode
+                  AND Status = 'Blocked'
+                  AND ErrorCode IN ('LOCAL_DELETE_PENDING_REMOTE', 'LOCAL_DELETE_PENDING_LOCAL')
+                  AND ConsumedAtIso IS NULL;
+                """;
+            publicationCommand.Parameters.AddWithValue("$CompletedAtIso", completedAtIso);
+            publicationCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            publicationCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            publicationCommand.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            if (await publicationCommand.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                return false;
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task<bool> TryStagePendingPublishAsync(

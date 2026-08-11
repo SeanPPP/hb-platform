@@ -15,6 +15,18 @@ public sealed class SharedHeldOrderRepositoryTests
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-08-10T01:00:00Z");
 
     [Fact]
+    public void Cancel_path_locks_hold_and_blocking_claim_before_revision_cas()
+    {
+        Assert.Contains("DeviceCode", SharedHeldOrderMutationLock.LockCancelHoldRowSql);
+        Assert.Contains("WITH (UPDLOCK)", SharedHeldOrderMutationLock.LockBlockingClaimRowSql);
+        Assert.Contains("[IsBlocking] = 1", SharedHeldOrderMutationLock.LockBlockingClaimRowSql);
+        Assert.Contains("[StoreCode] = @StoreCode", SqlSugarSharedHeldOrderRepository.CancelHoldSql);
+        Assert.Contains("[DeviceCode] = @DeviceCode", SqlSugarSharedHeldOrderRepository.CancelHoldSql);
+        Assert.Contains("[Revision] = @ExpectedRevision", SqlSugarSharedHeldOrderRepository.CancelHoldSql);
+        Assert.Contains("[Status] = @ExpectedStatus", SqlSugarSharedHeldOrderRepository.CancelHoldSql);
+    }
+
+    [Fact]
     public async Task AssociateAsync_remote_claim_on_sqlite_records_primary_with_portable_claim_lock_sql()
     {
         await using var fixture = new AssociationSqliteFixture();

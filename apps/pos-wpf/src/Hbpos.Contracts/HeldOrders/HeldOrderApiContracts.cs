@@ -4,7 +4,8 @@ public enum SharedHeldOrderStatus
 {
     Pending = 1,
     Claimed = 2,
-    Completed = 3
+    Completed = 3,
+    Cancelled = 4
 }
 
 public enum SharedHeldOrderClaimStatus
@@ -35,6 +36,13 @@ public sealed record SharedHeldOrderPublishResponse(
     long Revision,
     DateTimeOffset CreatedAtUtc,
     bool AlreadyExists = false);
+
+public sealed record SharedHeldOrderCancelResponse(
+    Guid HoldGuid,
+    SharedHeldOrderStatus Status,
+    long Revision,
+    DateTimeOffset UpdatedAtUtc,
+    bool AlreadyCancelled = false);
 
 /// <summary>列表 DTO 仅含汇总，禁止携带明文或密文 payload。 </summary>
 public sealed record SharedHeldOrderListItemDto(

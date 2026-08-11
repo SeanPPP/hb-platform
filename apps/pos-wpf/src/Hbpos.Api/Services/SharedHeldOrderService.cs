@@ -51,6 +51,11 @@ public interface ISharedHeldOrderService
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken);
 
+    Task<SharedHeldOrderCancelResponse> CancelAsync(
+        Guid holdGuid,
+        SharedHeldOrderIdentity identity,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken);
@@ -166,6 +171,71 @@ public sealed class SharedHeldOrderService(
         throw Busy("Hold was concurrently created; retry with the same idempotency key.");
     }
 
+    public async Task<SharedHeldOrderCancelResponse> CancelAsync(
+        Guid holdGuid,
+        SharedHeldOrderIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        EnsureEnabled();
+        var normalizedIdentity = NormalizeIdentity(identity);
+        var hold = await GetRequiredHoldAsync(holdGuid, normalizedIdentity, cancellationToken);
+        ValidateCancelOrigin(hold, normalizedIdentity);
+
+        if (hold.Status == SharedHeldOrderStatus.Cancelled)
+        {
+            return MapCancel(hold, alreadyCancelled: true);
+        }
+
+        if (hold.Status != SharedHeldOrderStatus.Pending)
+        {
+            throw hold.Status == SharedHeldOrderStatus.Completed
+                ? Mismatch("A completed held order cannot be cancelled.")
+                : Busy("Held order is already claimed and cannot be cancelled.");
+        }
+
+        // 过期 Prepared 沿用既有 TTL 释放逻辑；仍为 Prepared/Active 的 blocking claim 必须拒绝。
+        var blocking = await repository.GetBlockingClaimAsync(holdGuid, cancellationToken);
+        if (blocking is not null)
+        {
+            blocking = await ExpirePreparedAsync(blocking, cancellationToken);
+            if (blocking.IsBlocking &&
+                blocking.Status is SharedHeldOrderClaimStatus.Prepared or SharedHeldOrderClaimStatus.Active)
+            {
+                throw Busy("Hold has a blocking claim and cannot be cancelled.");
+            }
+        }
+
+        var cancelledAtUtc = _timeProvider.GetUtcNow();
+        if (await repository.TryCancelHoldAsync(
+                holdGuid,
+                hold.StoreCode,
+                hold.DeviceCode,
+                hold.Revision,
+                cancelledAtUtc,
+                cancellationToken))
+        {
+            return new SharedHeldOrderCancelResponse(
+                holdGuid,
+                SharedHeldOrderStatus.Cancelled,
+                hold.Revision + 1,
+                cancelledAtUtc);
+        }
+
+        // 原子仓储检查失败后只重读权威状态：并发取消返回幂等成功，其他状态返回明确拒绝。
+        var current = await repository.GetHoldAsync(holdGuid, cancellationToken)
+            ?? throw NotFound("Held order disappeared while cancelling.");
+        ValidateSameStore(current, normalizedIdentity);
+        ValidateCancelOrigin(current, normalizedIdentity);
+        if (current.Status == SharedHeldOrderStatus.Cancelled)
+        {
+            return MapCancel(current, alreadyCancelled: true);
+        }
+
+        throw current.Status == SharedHeldOrderStatus.Completed
+            ? Mismatch("A completed held order cannot be cancelled.")
+            : Busy("Held order changed while cancelling; retry.");
+    }
+
     public async Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken)
@@ -209,8 +279,8 @@ public sealed class SharedHeldOrderService(
         // 新建 claim 只允许 Pending hold；Completed/Claimed 不得创建新 claim。
         if (hold.Status != SharedHeldOrderStatus.Pending)
         {
-            throw hold.Status == SharedHeldOrderStatus.Completed
-                ? Mismatch("A completed held order cannot be prepared.")
+            throw hold.Status is SharedHeldOrderStatus.Completed or SharedHeldOrderStatus.Cancelled
+                ? Mismatch("A completed or cancelled held order cannot be prepared.")
                 : Busy("Hold already has a blocking claim from another device.");
         }
 
@@ -243,8 +313,8 @@ public sealed class SharedHeldOrderService(
             ?? throw NotFound("Held order disappeared during claim preparation.");
         if (currentHold.Status != SharedHeldOrderStatus.Pending)
         {
-            throw currentHold.Status == SharedHeldOrderStatus.Completed
-                ? Mismatch("A completed held order cannot be prepared.")
+            throw currentHold.Status is SharedHeldOrderStatus.Completed or SharedHeldOrderStatus.Cancelled
+                ? Mismatch("A completed or cancelled held order cannot be prepared.")
                 : Busy("Hold already has a blocking claim from another device.");
         }
 
@@ -519,6 +589,16 @@ public sealed class SharedHeldOrderService(
         }
     }
 
+    private static void ValidateCancelOrigin(
+        SharedHeldOrderRecord hold,
+        SharedHeldOrderIdentity identity)
+    {
+        if (!string.Equals(hold.DeviceCode, identity.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw PermissionDenied("Only the device that published the held order can cancel it.");
+        }
+    }
+
     private static void ValidatePublishReplay(
         SharedHeldOrderRecord existing,
         SharedHeldOrderPublishRequest request,
@@ -753,6 +833,15 @@ public sealed class SharedHeldOrderService(
         hold.Revision,
         hold.CreatedAtUtc,
         alreadyExists);
+
+    private static SharedHeldOrderCancelResponse MapCancel(
+        SharedHeldOrderRecord hold,
+        bool alreadyCancelled) => new(
+        hold.HoldGuid,
+        hold.Status,
+        hold.Revision,
+        hold.UpdatedAtUtc,
+        alreadyCancelled);
 
     private static SharedHeldOrderListItemDto MapListItem(SharedHeldOrderRecord hold) => new(
         hold.HoldGuid,

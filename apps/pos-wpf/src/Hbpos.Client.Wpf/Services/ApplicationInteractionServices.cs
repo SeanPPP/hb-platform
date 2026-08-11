@@ -23,6 +23,8 @@ public interface IConfirmationDialogService
 
     Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate);
 
+    Task<bool> ConfirmHeldOrderCancellationAsync();
+
     Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,
         int batchCount,
@@ -192,6 +194,13 @@ public sealed class WpfConfirmationDialogService :
             "dailyClose.linklySettlement.settleAndPrint",
             isDestructive: true,
             messageFormatArguments: [businessDate]);
+
+    public Task<bool> ConfirmHeldOrderCancellationAsync() =>
+        ShowAsync(
+            "history.held.deleteConfirmTitle",
+            "history.held.deleteConfirmMessage",
+            "history.held.deleteConfirmAction",
+            isDestructive: true);
 
     public Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,

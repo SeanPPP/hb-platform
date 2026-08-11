@@ -58,6 +58,14 @@ public sealed record SharedHeldOrderPublication(
     string? RemoteUpdatedAtIso = null,
     string? ConsumedAtIso = null);
 
+/// <summary>
+/// 本地删除暂存结果：先阻断后台发布，再由调用方按需取消服务端挂单；
+/// 只有远端取消成功后才可完成本地删除。
+/// </summary>
+public sealed record SharedHeldOrderDeleteStage(
+    Guid HoldGuid,
+    bool RemoteCancellationRequired);
+
 public sealed record SharedHeldOrderClaimDraft(
     Guid ClaimId,
     Guid HoldGuid,

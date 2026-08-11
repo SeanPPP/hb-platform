@@ -143,11 +143,13 @@ public static class ServiceRegistration
         services.AddSingleton<ISharedHeldOrderReverseMapper, SharedHeldOrderReverseMapper>();
         services.AddSingleton<ISharedHeldOrderPaymentSourceResolver, SharedHeldOrderPaymentSourceResolver>();
         services.AddSingleton<ISharedHeldOrderCoordinator, SharedHeldOrderCoordinator>();
+        services.AddSingleton<ISharedHeldOrderPublicationGate, SharedHeldOrderPublicationGate>();
         services.AddSingleton<ISharedHeldOrderPublicationWorker>(sp =>
             new SharedHeldOrderPublicationWorker(
                 sp.GetRequiredService<ISharedHeldOrderRepository>(),
                 sp.GetRequiredService<ISharedHeldOrderMapper>(),
                 sp.GetRequiredService<ISharedHeldOrderApiClient>(),
+                sp.GetRequiredService<ISharedHeldOrderPublicationGate>(),
                 order => order.FrozenPromotionRules));
         services.AddSingleton<SharedHeldOrderPublicationHostedService>();
         services.AddSingleton<IHostedService>(sp =>

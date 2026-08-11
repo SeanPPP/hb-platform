@@ -24,6 +24,10 @@ public sealed class SharedHeldOrderSchemaInitializerTests
         Assert.Contains("[DiscountCents] BIGINT NOT NULL", sql);
         Assert.Contains("[ActualCents] BIGINT NOT NULL", sql);
         Assert.Contains("N'Pending', N'Claimed', N'Completed'", sql);
+        Assert.Contains("N'Cancelled'", sql);
+        Assert.Contains("sys.check_constraints", sql);
+        Assert.Contains("DROP CONSTRAINT [CK_POSM_SharedHeldOrder_Status]", sql);
+        Assert.Contains("ADD CONSTRAINT [CK_POSM_SharedHeldOrder_Status]", sql);
         Assert.Contains("N'Prepared', N'Active', N'Released', N'Completed', N'Superseded'", sql);
         Assert.Contains("[Revision] BIGINT NOT NULL", sql);
         Assert.Contains("UX_POSM_SharedHeldOrder_Idempotency", sql);

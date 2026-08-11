@@ -54,13 +54,41 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
                 [DiscountCents] BIGINT NOT NULL,
                 [ActualCents] BIGINT NOT NULL,
                 CONSTRAINT [CK_POSM_SharedHeldOrder_Status]
-                    CHECK ([Status] IN (N'Pending', N'Claimed', N'Completed')),
+                    CHECK ([Status] IN (N'Pending', N'Claimed', N'Completed', N'Cancelled')),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_Revision] CHECK ([Revision] > 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_LineCount] CHECK ([LineCount] > 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_TotalCents] CHECK ([TotalCents] >= 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_DiscountCents] CHECK ([DiscountCents] >= 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_ActualCents] CHECK ([ActualCents] >= 0)
             );
+        END;
+
+        -- 旧库可能仍带有不允许 Cancelled 的状态约束；在同一启动事务内安全替换，失败则由 XACT_ABORT 回滚。
+        IF OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U') IS NOT NULL
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM sys.check_constraints
+                WHERE [parent_object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
+                  AND [name] = N'CK_POSM_SharedHeldOrder_Status')
+               AND NOT EXISTS (
+                SELECT 1 FROM sys.check_constraints
+                WHERE [parent_object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
+                  AND [name] = N'CK_POSM_SharedHeldOrder_Status'
+                  AND [definition] LIKE N'%Cancelled%')
+            BEGIN
+                ALTER TABLE [dbo].[POSM_SharedHeldOrder]
+                    DROP CONSTRAINT [CK_POSM_SharedHeldOrder_Status];
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.check_constraints
+                WHERE [parent_object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
+                  AND [name] = N'CK_POSM_SharedHeldOrder_Status')
+            BEGIN
+                ALTER TABLE [dbo].[POSM_SharedHeldOrder]
+                    ADD CONSTRAINT [CK_POSM_SharedHeldOrder_Status]
+                    CHECK ([Status] IN (N'Pending', N'Claimed', N'Completed', N'Cancelled'));
+            END;
         END;
 
         IF OBJECT_ID(N'[dbo].[POSM_SharedHeldOrderClaim]', N'U') IS NULL

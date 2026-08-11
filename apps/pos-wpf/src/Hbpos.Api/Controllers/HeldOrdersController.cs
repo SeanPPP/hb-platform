@@ -189,6 +189,32 @@ public sealed class HeldOrdersController(
         }
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.HistoryRecall)]
+    [HttpPost("{holdGuid:guid}/cancel")]
+    public async Task<ActionResult<ApiResult<SharedHeldOrderCancelResponse>>> Cancel(
+        Guid holdGuid,
+        CancellationToken cancellationToken)
+    {
+        var identity = await ResolveIdentityAsync(cancellationToken);
+        if (identity is null)
+        {
+            return CashierIdentityRequired<SharedHeldOrderCancelResponse>();
+        }
+
+        try
+        {
+            var response = await RequireService().CancelAsync(
+                holdGuid,
+                identity,
+                cancellationToken);
+            return Ok(ApiResult<SharedHeldOrderCancelResponse>.Ok(response));
+        }
+        catch (SharedHeldOrderException ex)
+        {
+            return Error<SharedHeldOrderCancelResponse>(ex);
+        }
+    }
+
     [Authorize(Policy = CashierAuthorizationPolicies.RecallOrder)]
     [HttpGet("claims/mine")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>>>> ClaimsMine(

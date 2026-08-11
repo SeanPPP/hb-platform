@@ -37,15 +37,27 @@ public sealed class SharedHeldOrderPublicationWorker(
     ISharedHeldOrderRepository repository,
     ISharedHeldOrderMapper mapper,
     ISharedHeldOrderApiClient apiClient,
+    ISharedHeldOrderPublicationGate publicationGate,
     Func<SuspendedOrder, IReadOnlyList<CatalogPromotionRuleDto>?>? frozenPromotionRuleProvider = null,
     TimeProvider? timeProvider = null) : ISharedHeldOrderPublicationWorker
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
-    public async Task<SharedHeldOrderPublicationRunResult> RunOnceAsync(
+    public Task<SharedHeldOrderPublicationRunResult> RunOnceAsync(
         string storeCode,
         string? deviceCode = null,
         CancellationToken cancellationToken = default)
+    {
+        // 整轮评估/发布持有同一互斥门；删除先落 Blocked 后，后续轮次不会再选中该挂单。
+        return publicationGate.RunExclusiveAsync(
+            () => RunOnceCoreAsync(storeCode, deviceCode, cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<SharedHeldOrderPublicationRunResult> RunOnceCoreAsync(
+        string storeCode,
+        string? deviceCode,
+        CancellationToken cancellationToken)
     {
         var nowIso = FormatIso(_timeProvider.GetUtcNow());
         var evaluated = 0;

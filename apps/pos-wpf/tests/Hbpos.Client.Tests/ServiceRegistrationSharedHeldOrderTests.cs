@@ -23,6 +23,8 @@ public sealed class ServiceRegistrationSharedHeldOrderTests
         Assert.IsType<SharedHeldOrderPaymentSourceResolver>(
             provider.GetRequiredService<ISharedHeldOrderPaymentSourceResolver>());
         Assert.IsType<SharedHeldOrderCoordinator>(provider.GetRequiredService<ISharedHeldOrderCoordinator>());
+        Assert.IsType<SharedHeldOrderPublicationGate>(
+            provider.GetRequiredService<ISharedHeldOrderPublicationGate>());
         Assert.IsType<SharedHeldOrderPublicationWorker>(
             provider.GetRequiredService<ISharedHeldOrderPublicationWorker>());
 

@@ -56,7 +56,8 @@ public sealed record HistoryOrderListItem(
     bool CanForceRelease = false,
     bool CanRemoteRecall = false,
     bool CanOfflineRecall = false,
-    bool CanLegacyRecall = false)
+    bool CanLegacyRecall = false,
+    bool CanDeleteHeldOrder = false)
 {
     public RowSelectionState Selection { get; } = new();
 
@@ -288,6 +289,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         SelectAllReuploadableCommand = new RelayCommand(SelectAllReuploadable, CanStartReupload);
         ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync, CanStartReupload);
         ReuploadDateRangeCommand = new AsyncRelayCommand(ReuploadDateRangeAsync, CanReuploadDateRange);
+        DeleteHeldOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(DeleteHeldOrderAsync, CanDeleteHeldOrder);
         ForceReleaseHeldOrderCommand = new RelayCommand<HistoryOrderListItem>(RequestForceRelease, CanForceReleaseOrder);
         ConfirmForceReleaseCommand = new AsyncRelayCommand(ConfirmForceReleaseAsync, CanConfirmForceRelease);
         CancelForceReleaseCommand = new RelayCommand(CancelForceRelease, CanCancelForceRelease);
@@ -328,6 +330,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public IAsyncRelayCommand ReuploadSelectedCommand { get; }
 
     public IAsyncRelayCommand ReuploadDateRangeCommand { get; }
+
+    public IAsyncRelayCommand<HistoryOrderListItem> DeleteHeldOrderCommand { get; }
 
     public IRelayCommand<HistoryOrderListItem> ForceReleaseHeldOrderCommand { get; }
 
@@ -398,6 +402,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public bool IsForceReleaseVisible => SelectedOrder?.CanForceRelease == true;
 
     public string HeldOrdersSourceLabel => T("history.source.held");
+
+    public string DeleteHeldOrderLabel => T("history.held.delete");
 
     public string ForceReleaseLabel => T("history.held.forceRelease");
 
@@ -475,6 +481,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
+        DeleteHeldOrderCommand?.NotifyCanExecuteChanged();
         ConfirmForceReleaseCommand?.NotifyCanExecuteChanged();
         CancelForceReleaseCommand?.NotifyCanExecuteChanged();
         ReprintCommand?.NotifyCanExecuteChanged();
@@ -498,6 +505,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
         ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
+        DeleteHeldOrderCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
         OnPropertyChanged(nameof(IsForceReleaseVisible));
@@ -948,24 +956,39 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         var holdGuid = remote?.HoldGuid ?? local!.SuspendedOrderGuid;
         var serverStatus = remote is null ? null : (HeldServerStatus?)HeldServerStatus.Pending;
         var badge = HeldOrderStatusResolver.Resolve(publication?.Status, serverStatus, claimStatus);
-        var blockDetail = publication is null
+        var isDeletePending = publication is
+        {
+            Status: HeldPublicationStatus.Blocked,
+            ErrorCode: "LOCAL_DELETE_PENDING_REMOTE" or "LOCAL_DELETE_PENDING_LOCAL"
+        };
+        var blockDetail = isDeletePending
+            ? T("history.held.deletePending")
+            : publication is null
             ? string.Empty
             : string.Join(
                 " ",
                 new[] { publication.ErrorCode, publication.ErrorMessage }
                     .Where(value => !string.IsNullOrWhiteSpace(value)));
         var hasLocalCopy = local is not null;
-        var canRemoteRecall = serverStatus == HeldServerStatus.Pending &&
+        var canRemoteRecall = !isDeletePending &&
+            serverStatus == HeldServerStatus.Pending &&
             claimStatus is null &&
             Session.IsOnline;
-        var canOfflineRecall = hasLocalCopy &&
+        var canOfflineRecall = !isDeletePending &&
+            hasLocalCopy &&
             publication?.Status is HeldPublicationStatus.PendingPublish or HeldPublicationStatus.Published &&
             claimStatus is null;
         var canLegacyRecall = hasLocalCopy &&
+            !isDeletePending &&
             !canRemoteRecall &&
             !canOfflineRecall &&
             (publication is null ||
              publication.Status is HeldPublicationStatus.NeedsEvaluation or HeldPublicationStatus.Blocked);
+        var canDeleteHeldOrder = hasLocalCopy &&
+            string.Equals(local!.StoreCode, Session.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(local.DeviceCode, Session.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+            publication?.ConsumedAtIso is null &&
+            claimStatus is null;
 
         return new HistoryOrderListItem(
             holdGuid,
@@ -990,7 +1013,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             CanForceRelease: claimStatus is HeldClaimStatus.Prepared or HeldClaimStatus.Active,
             CanRemoteRecall: canRemoteRecall,
             CanOfflineRecall: canOfflineRecall,
-            CanLegacyRecall: canLegacyRecall);
+            CanLegacyRecall: canLegacyRecall,
+            CanDeleteHeldOrder: canDeleteHeldOrder);
     }
 
     private static decimal? ToMoney(long? cents)
@@ -1352,6 +1376,126 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
             StatusMessage = ex.Message;
+        }
+    }
+
+    private bool CanDeleteHeldOrder(HistoryOrderListItem? order)
+    {
+        return order?.CanDeleteHeldOrder == true;
+    }
+
+    /// <summary>
+    /// 与 iPad 对齐的两阶段删除：先在本地事务中阻断发布；若已经或可能发布到服务端，
+    /// 再在线取消；最后才把本地挂单标记为 Canceled。任一步失败都保留暂存状态供重试。
+    /// </summary>
+    private async Task DeleteHeldOrderAsync(HistoryOrderListItem? order)
+    {
+        if (!CanDeleteHeldOrder(order))
+        {
+            return;
+        }
+
+        var candidate = order!;
+
+        using var authorization = await AuthorizeAsync(
+            Permissions.PosTerminal.History.Recall,
+            "delete-held-order");
+        if (authorization is null)
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        if (_confirmationDialogService is null ||
+            !await _confirmationDialogService.ConfirmHeldOrderCancellationAsync())
+        {
+            return;
+        }
+
+        if (_sharedHeldOrderRepository is null)
+        {
+            StatusMessage = T("history.held.unavailable");
+            return;
+        }
+
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        var deleteStaged = false;
+        try
+        {
+            var timestamp = _timeProvider
+                .GetUtcNow()
+                .ToUniversalTime()
+                .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+            var staged = await _sharedHeldOrderRepository.TryStageDeletePendingAsync(
+                candidate.OrderGuid,
+                Session.StoreCode,
+                Session.DeviceCode,
+                timestamp,
+                CancellationToken.None);
+            if (staged is null)
+            {
+                throw new InvalidOperationException(T("history.held.deleteFailed"));
+            }
+            deleteStaged = true;
+
+            if (staged.RemoteCancellationRequired)
+            {
+                if (!Session.IsOnline || _sharedHeldOrderApiClient is null)
+                {
+                    throw new InvalidOperationException(T("history.held.deleteOnlineRequired"));
+                }
+
+                var cancelled = await _sharedHeldOrderApiClient.CancelAsync(
+                    candidate.OrderGuid,
+                    CancellationToken.None);
+                if (cancelled.HoldGuid != candidate.OrderGuid ||
+                    cancelled.Status != HeldServerStatus.Cancelled)
+                {
+                    throw new InvalidOperationException(T("history.held.deleteFailed"));
+                }
+            }
+
+            if (!await _sharedHeldOrderRepository.TryCompleteDeletePendingAsync(
+                    candidate.OrderGuid,
+                    Session.StoreCode,
+                    Session.DeviceCode,
+                    timestamp,
+                    CancellationToken.None))
+            {
+                throw new InvalidOperationException(T("history.held.deleteFailed"));
+            }
+
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.OrderCancel,
+                "Succeeded",
+                Session,
+                reasonCode: "SHARED_HELD_ORDER",
+                orderGuid: candidate.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            await LoadAsync();
+            StatusMessage = T("history.held.deleted");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var failureMessage = ex.Message;
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.OrderCancel,
+                "Failed",
+                Session,
+                reasonCode: "SHARED_HELD_ORDER",
+                safeMessage: ex.GetType().Name,
+                orderGuid: candidate?.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            if (deleteStaged)
+            {
+                // 暂存已把 publication 置为 Blocked；立即重读，禁止失败窗口内继续取回。
+                await LoadAsync();
+            }
+            StatusMessage = failureMessage;
         }
     }
 
@@ -1742,6 +1886,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsHeldSourceSelected));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(HeldOrdersSourceLabel));
+        OnPropertyChanged(nameof(DeleteHeldOrderLabel));
         OnPropertyChanged(nameof(ForceReleaseLabel));
         OnPropertyChanged(nameof(ForceReleaseHeaderLabel));
         OnPropertyChanged(nameof(ForceReleaseReasonLabel));
@@ -1815,6 +1960,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "history.held.forceReleaseReasonRequired" => "A force-release reason is required.",
             "history.held.forceReleaseReasonTooLong" => "The force-release reason must not exceed 500 characters.",
             "history.held.forceReleased" => "Held order force-released.",
+            "history.held.delete" => "Delete",
+            "history.held.deleteConfirmTitle" => "Delete held sale?",
+            "history.held.deleteConfirmMessage" => "This permanently removes the local hold. A shared hold is cancelled online first.",
+            "history.held.deleteConfirmAction" => "Delete held sale",
+            "history.held.deleted" => "Held sale deleted.",
+            "history.held.deleteFailed" => "The held sale was not deleted.",
+            "history.held.deleteOnlineRequired" => "This shared held sale must be cancelled while online.",
+            "history.held.deletePending" => "Deletion is pending; choose Delete to retry.",
             "history.held.remoteUnavailable" => "Remote held orders unavailable: {0}",
             "history.held.unavailable" => "Shared held orders are not configured on this terminal.",
             "Customer" => "Customer",

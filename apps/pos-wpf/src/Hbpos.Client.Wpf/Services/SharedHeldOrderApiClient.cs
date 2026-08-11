@@ -48,6 +48,10 @@ public interface ISharedHeldOrderApiClient
         SharedHeldOrderPublishRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<SharedHeldOrderCancelResponse> CancelAsync(
+        Guid holdGuid,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(
         CancellationToken cancellationToken = default);
 
@@ -82,7 +86,9 @@ public interface ISharedHeldOrderApiClient
 /// 状态/Guid/revision/时间/summary/payload；任何路径不记录 payload（异常消息只含
 /// 服务端通用文案，绝不拼接 canonical/购物车 JSON）。
 /// </summary>
-public sealed class SharedHeldOrderApiClient(HttpClient httpClient) : ISharedHeldOrderApiClient
+public sealed class SharedHeldOrderApiClient(
+    HttpClient httpClient,
+    ISharedHeldOrderPublicationGate publicationGate) : ISharedHeldOrderApiClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -101,6 +107,19 @@ public sealed class SharedHeldOrderApiClient(HttpClient httpClient) : ISharedHel
         return PostAsync<SharedHeldOrderPublishRequest, SharedHeldOrderPublishResponse>(
             "api/v1/held-orders",
             request,
+            cancellationToken);
+    }
+
+    public Task<SharedHeldOrderCancelResponse> CancelAsync(
+        Guid holdGuid,
+        CancellationToken cancellationToken = default)
+    {
+        // 等待正在进行的发布轮次结束，再发送取消；与 iPad 的 pause-and-wait 语义一致。
+        return publicationGate.RunExclusiveAsync(
+            () => PostAsync<object?, SharedHeldOrderCancelResponse>(
+                $"api/v1/held-orders/{holdGuid:D}/cancel",
+                null,
+                cancellationToken),
             cancellationToken);
     }
 

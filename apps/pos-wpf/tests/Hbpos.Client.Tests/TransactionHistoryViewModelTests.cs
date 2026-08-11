@@ -1366,6 +1366,262 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Held_delete_is_only_available_for_unclaimed_local_order_from_this_device()
+    {
+        var localHoldGuid = Guid.NewGuid();
+        var otherDeviceHoldGuid = Guid.NewGuid();
+        var remoteOnlyHoldGuid = Guid.NewGuid();
+        var claimedHoldGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Claims =
+            [
+                HeldRecoveryClaim(claimedHoldGuid, Guid.NewGuid(), LocalClaimStatus.Prepared)
+            ],
+            Publications =
+            {
+                [localHoldGuid] = HeldPublication(localHoldGuid, SharedHeldOrderPublicationStatus.Published),
+                [otherDeviceHoldGuid] = HeldPublication(otherDeviceHoldGuid, SharedHeldOrderPublicationStatus.NeedsEvaluation),
+                [claimedHoldGuid] = HeldPublication(claimedHoldGuid, SharedHeldOrderPublicationStatus.Published)
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders =
+                [
+                    HeldSummary(localHoldGuid, "POS-01", 10m, 0m, 10m, 1),
+                    HeldSummary(otherDeviceHoldGuid, "POS-02", 20m, 0m, 20m, 1),
+                    HeldSummary(claimedHoldGuid, "POS-01", 40m, 0m, 40m, 1)
+                ]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>
+                ([HeldItem(remoteOnlyHoldGuid, 3000, 0, 3000, 1)])
+            },
+            sharedHeldOrderRepository: repository);
+
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.Orders.Single(order => order.OrderGuid == localHoldGuid).CanDeleteHeldOrder);
+        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == otherDeviceHoldGuid).CanDeleteHeldOrder);
+        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == remoteOnlyHoldGuid).CanDeleteHeldOrder);
+        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimedHoldGuid).CanDeleteHeldOrder);
+    }
+
+    [Fact]
+    public async Task Held_delete_pending_row_can_retry_delete_but_cannot_be_recalled()
+    {
+        var holdGuid = Guid.NewGuid();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>
+                ([HeldItem(holdGuid, 1000, 0, 1000, 1)])
+            },
+            sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository
+            {
+                Publications =
+                {
+                    [holdGuid] = HeldPublication(
+                        holdGuid,
+                        SharedHeldOrderPublicationStatus.Blocked,
+                        "LOCAL_DELETE_PENDING_REMOTE")
+                }
+            });
+
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanDeleteHeldOrder);
+        Assert.False(row.CanRecall);
+        Assert.DoesNotContain("LOCAL_DELETE_PENDING", row.StatusLabel, StringComparison.Ordinal);
+        Assert.Contains("retry", row.StatusLabel, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Held_delete_confirmed_cancels_remote_then_completes_local_and_refreshes()
+    {
+        var holdGuid = Guid.NewGuid();
+        var remoteCancelled = false;
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+        };
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.Published)
+            },
+            StageDelete = (actualHoldGuid, _, _, _) => new SharedHeldOrderDeleteStage(actualHoldGuid, true),
+            CompleteDelete = (_, _, _, _) =>
+            {
+                suspendedOrders.PendingOrders = [];
+                return true;
+            }
+        };
+        var confirmation = new CapturingConfirmationDialogService
+        {
+            HeldOrderCancellationResult = true
+        };
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>(
+                remoteCancelled ? [] : [HeldItem(holdGuid, 1000, 0, 1000, 1)]),
+            Cancel = (actualHoldGuid, _) =>
+            {
+                Assert.Equal(holdGuid, actualHoldGuid);
+                remoteCancelled = true;
+                return Task.FromResult(new SharedHeldOrderCancelResponse(
+                    actualHoldGuid,
+                    HeldServerStatus.Cancelled,
+                    2,
+                    new DateTimeOffset(2026, 8, 11, 1, 0, 0, TimeSpan.Zero)));
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            confirmationDialogService: confirmation,
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: repository);
+
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+
+        await viewModel.DeleteHeldOrderCommand.ExecuteAsync(row);
+
+        Assert.Equal(1, confirmation.HeldOrderCancellationCallCount);
+        Assert.Single(repository.DeleteStages);
+        Assert.Single(repository.DeleteCompletions);
+        Assert.Empty(viewModel.Orders);
+        Assert.Equal("Held sale deleted.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Held_delete_remote_failure_keeps_staged_local_order_for_retry()
+    {
+        var holdGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.Published)
+            },
+            CompleteDelete = (_, _, _, _) => throw new InvalidOperationException("must not complete")
+        };
+        repository.StageDelete = (actualHoldGuid, _, _, _) =>
+        {
+            // 真实 repository 会在远端取消前先落 Blocked 删除意图；失败后页面必须立即重读。
+            repository.Publications[actualHoldGuid] = HeldPublication(
+                actualHoldGuid,
+                SharedHeldOrderPublicationStatus.Blocked,
+                "LOCAL_DELETE_PENDING_REMOTE");
+            return new SharedHeldOrderDeleteStage(actualHoldGuid, true);
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            confirmationDialogService: new CapturingConfirmationDialogService
+            {
+                HeldOrderCancellationResult = true
+            },
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>
+                ([HeldItem(holdGuid, 1000, 0, 1000, 1)]),
+                Cancel = (_, _) => throw new InvalidOperationException("cancel failed")
+            },
+            sharedHeldOrderRepository: repository);
+
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        await viewModel.DeleteHeldOrderCommand.ExecuteAsync(Assert.Single(viewModel.Orders));
+
+        Assert.Single(repository.DeleteStages);
+        Assert.Empty(repository.DeleteCompletions);
+        var retryRow = Assert.Single(viewModel.Orders);
+        Assert.False(retryRow.CanRecall);
+        Assert.True(retryRow.CanDeleteHeldOrder);
+        Assert.Equal("Deletion is pending; choose Delete to retry.", retryRow.HeldStatusDetail);
+        Assert.Equal("cancel failed", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Held_delete_cancelled_confirmation_does_not_stage_or_call_server()
+    {
+        var holdGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            Publications =
+            {
+                [holdGuid] = HeldPublication(holdGuid, SharedHeldOrderPublicationStatus.NeedsEvaluation)
+            }
+        };
+        var confirmation = new CapturingConfirmationDialogService
+        {
+            HeldOrderCancellationResult = false
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService
+            {
+                PendingOrders = [HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)]
+            },
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            confirmationDialogService: confirmation,
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([]),
+                Cancel = (_, _) => throw new InvalidOperationException("must not cancel")
+            },
+            sharedHeldOrderRepository: repository);
+
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        await viewModel.DeleteHeldOrderCommand.ExecuteAsync(Assert.Single(viewModel.Orders));
+
+        Assert.Equal(1, confirmation.HeldOrderCancellationCallCount);
+        Assert.Empty(repository.DeleteStages);
+        Assert.Empty(repository.DeleteCompletions);
+    }
+
+    [Fact]
     public async Task Force_release_requires_non_empty_reason_and_calls_api_with_trimmed_reason()
     {
         var holdGuid = Guid.NewGuid();
@@ -1870,7 +2126,11 @@ public sealed class TransactionHistoryViewModelTests
     {
         public bool Result { get; set; }
 
+        public bool HeldOrderCancellationResult { get; set; }
+
         public int CallCount { get; private set; }
+
+        public int HeldOrderCancellationCallCount { get; private set; }
 
         public int OrderCount { get; private set; }
 
@@ -1885,6 +2145,12 @@ public sealed class TransactionHistoryViewModelTests
         public Task<bool> ConfirmInstallmentPickupAfterPaidOffAsync() => throw new NotSupportedException();
 
         public Task<bool> ConfirmLinklySettlementAsync(DateTime businessDate) => throw new NotSupportedException();
+
+        public Task<bool> ConfirmHeldOrderCancellationAsync()
+        {
+            HeldOrderCancellationCallCount++;
+            return Task.FromResult(HeldOrderCancellationResult);
+        }
 
         public Task<bool> ConfirmOrderDateRangeReuploadAsync(
             int orderCount,
@@ -2155,6 +2421,14 @@ public sealed class TransactionHistoryViewModelTests
 
         public IReadOnlyList<SharedHeldOrderClaimRecovery> Claims { get; init; } = [];
 
+        public List<(Guid HoldGuid, string StoreCode, string DeviceCode, string Timestamp)> DeleteStages { get; } = [];
+
+        public List<(Guid HoldGuid, string StoreCode, string DeviceCode, string Timestamp)> DeleteCompletions { get; } = [];
+
+        public Func<Guid, string, string, string, SharedHeldOrderDeleteStage?>? StageDelete { get; set; }
+
+        public Func<Guid, string, string, string, bool>? CompleteDelete { get; set; }
+
         public Task<IReadOnlyList<SuspendedOrder>> ListLegacyOrdersNeedingEvaluationAsync(
             string storeCode,
             string? deviceCode = null,
@@ -2168,6 +2442,28 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Publications.GetValueOrDefault(localHoldGuid));
+        }
+
+        public Task<SharedHeldOrderDeleteStage?> TryStageDeletePendingAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            string updatedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            DeleteStages.Add((holdGuid, storeCode, deviceCode, updatedAtIso));
+            return Task.FromResult(StageDelete?.Invoke(holdGuid, storeCode, deviceCode, updatedAtIso));
+        }
+
+        public Task<bool> TryCompleteDeletePendingAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            string completedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            DeleteCompletions.Add((holdGuid, storeCode, deviceCode, completedAtIso));
+            return Task.FromResult(CompleteDelete?.Invoke(holdGuid, storeCode, deviceCode, completedAtIso) ?? false);
         }
 
         public Task<IReadOnlyList<SharedHeldOrderClaimRecovery>> FindRecoverableClaimsAsync(

@@ -64,6 +64,171 @@ public sealed class SharedHeldOrderServiceTests
     }
 
     [Fact]
+    public async Task Cancel_changes_pending_to_cancelled_and_retries_idempotently()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var request = SharedHeldOrderServiceTestSupport.PublishRequest();
+        await harness.Service.PublishAsync(request, harness.Identity, CancellationToken.None);
+
+        var cancelled = await harness.Service.CancelAsync(
+            request.HoldGuid,
+            harness.Identity,
+            CancellationToken.None);
+        var replay = await harness.Service.CancelAsync(
+            request.HoldGuid,
+            harness.Identity,
+            CancellationToken.None);
+
+        Assert.Equal(4, (int)SharedHeldOrderStatus.Cancelled);
+        Assert.Equal(SharedHeldOrderStatus.Cancelled, cancelled.Status);
+        Assert.Equal(2, cancelled.Revision);
+        Assert.False(cancelled.AlreadyCancelled);
+        Assert.True(replay.AlreadyCancelled);
+        Assert.Equal(cancelled.UpdatedAtUtc, replay.UpdatedAtUtc);
+        Assert.Equal(SharedHeldOrderStatus.Cancelled,
+            (await harness.Repository.GetHoldAsync(request.HoldGuid, CancellationToken.None))?.Status);
+        Assert.Empty(await harness.Service.ListPendingAsync(harness.Identity, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Cancel_requires_same_store_and_original_publish_device_even_for_cancelled_replay()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var request = SharedHeldOrderServiceTestSupport.PublishRequest();
+        await harness.Service.PublishAsync(request, harness.Identity, CancellationToken.None);
+
+        var otherDevice = SharedHeldOrderServiceTestSupport.Identity(
+            storeCode: "S01",
+            deviceCode: "POS-02");
+        var crossStore = SharedHeldOrderServiceTestSupport.Identity(
+            storeCode: "S02",
+            deviceCode: "POS-02");
+
+        var deviceDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(request.HoldGuid, otherDevice, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.PermissionDenied, deviceDenied.Code);
+
+        var storeDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(request.HoldGuid, crossStore, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.CrossStore, storeDenied.Code);
+
+        await harness.Service.CancelAsync(request.HoldGuid, harness.Identity, CancellationToken.None);
+        var replayDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(request.HoldGuid, otherDevice, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.PermissionDenied, replayDenied.Code);
+    }
+
+    [Fact]
+    public async Task Cancel_rejects_prepared_and_active_blocking_claims()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var preparedRequest = SharedHeldOrderServiceTestSupport.PublishRequest(
+            holdGuid: Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            idempotencyKey: "publish-prepared-cancel");
+        await harness.Service.PublishAsync(preparedRequest, harness.Identity, CancellationToken.None);
+        await harness.Service.PrepareAsync(
+            preparedRequest.HoldGuid,
+            SharedHeldOrderServiceTestSupport.PrepareRequest(),
+            harness.Identity,
+            CancellationToken.None);
+
+        var preparedDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(preparedRequest.HoldGuid, harness.Identity, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Busy, preparedDenied.Code);
+
+        var activeRequest = SharedHeldOrderServiceTestSupport.PublishRequest(
+            holdGuid: Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            idempotencyKey: "publish-active-cancel");
+        await harness.Service.PublishAsync(activeRequest, harness.Identity, CancellationToken.None);
+        var prepared = await harness.Service.PrepareAsync(
+            activeRequest.HoldGuid,
+            SharedHeldOrderServiceTestSupport.PrepareRequest(
+                claimGuid: Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                idempotencyKey: "claim-active-cancel"),
+            harness.Identity,
+            CancellationToken.None);
+        await harness.Service.ActivateAsync(
+            activeRequest.HoldGuid,
+            prepared.ClaimGuid,
+            harness.Identity,
+            CancellationToken.None);
+
+        var activeDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(activeRequest.HoldGuid, harness.Identity, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Busy, activeDenied.Code);
+    }
+
+    [Fact]
+    public async Task Expired_prepared_claim_is_released_before_cancel_continues()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var request = SharedHeldOrderServiceTestSupport.PublishRequest();
+        await harness.Service.PublishAsync(request, harness.Identity, CancellationToken.None);
+        var prepared = await harness.Service.PrepareAsync(
+            request.HoldGuid,
+            SharedHeldOrderServiceTestSupport.PrepareRequest(),
+            harness.Identity,
+            CancellationToken.None);
+
+        harness.Time.UtcNow = harness.Time.UtcNow.AddSeconds(121);
+        var cancelled = await harness.Service.CancelAsync(
+            request.HoldGuid,
+            harness.Identity,
+            CancellationToken.None);
+
+        Assert.Equal(SharedHeldOrderStatus.Cancelled, cancelled.Status);
+        Assert.Equal(SharedHeldOrderClaimStatus.Released,
+            (await harness.Repository.GetClaimAsync(prepared.ClaimGuid, CancellationToken.None))?.Status);
+        Assert.False((await harness.Repository.GetClaimAsync(prepared.ClaimGuid, CancellationToken.None))?.IsBlocking);
+    }
+
+    [Fact]
+    public async Task Cancel_rejects_claimed_and_completed_holds()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var claimedRequest = SharedHeldOrderServiceTestSupport.PublishRequest(
+            holdGuid: Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            idempotencyKey: "publish-claimed-cancel");
+        await harness.Service.PublishAsync(claimedRequest, harness.Identity, CancellationToken.None);
+        var claim = await harness.Service.PrepareAsync(
+            claimedRequest.HoldGuid,
+            SharedHeldOrderServiceTestSupport.PrepareRequest(
+                claimGuid: Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                idempotencyKey: "claim-claimed-cancel"),
+            harness.Identity,
+            CancellationToken.None);
+        await harness.Service.ActivateAsync(
+            claimedRequest.HoldGuid,
+            claim.ClaimGuid,
+            harness.Identity,
+            CancellationToken.None);
+
+        var claimedDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(claimedRequest.HoldGuid, harness.Identity, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Busy, claimedDenied.Code);
+
+        var completedRequest = SharedHeldOrderServiceTestSupport.PublishRequest(
+            holdGuid: Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            idempotencyKey: "publish-completed-cancel");
+        await harness.Service.PublishAsync(completedRequest, harness.Identity, CancellationToken.None);
+        var completedHold = await harness.Repository.GetHoldAsync(completedRequest.HoldGuid, CancellationToken.None);
+        Assert.NotNull(completedHold);
+        Assert.True(await harness.Repository.TryUpdateHoldAsync(
+            completedHold! with
+            {
+                Status = SharedHeldOrderStatus.Completed,
+                Revision = completedHold.Revision + 1,
+                UpdatedAtUtc = harness.Time.UtcNow
+            },
+            completedHold.Revision,
+            CancellationToken.None));
+
+        var completedDenied = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.CancelAsync(completedRequest.HoldGuid, harness.Identity, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Mismatch, completedDenied.Code);
+    }
+
+    [Fact]
     public async Task Publish_rejects_request_scope_that_conflicts_with_device_claims()
     {
         var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
