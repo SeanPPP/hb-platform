@@ -1,5 +1,6 @@
 import {
   AudioOutlined,
+  CameraOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   ScanOutlined,
@@ -10,6 +11,7 @@ import { useState } from 'react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 import type { StoreOrderScanStatus } from '../types/storeOrder'
+import ShopCameraScanner, { type ShopCameraSubmitOutcome } from './ShopCameraScanner'
 
 const { Text } = Typography
 
@@ -25,9 +27,14 @@ interface ShopScanBarProps {
   enabled: boolean
   soundEnabled: boolean
   busy: boolean
+  cameraEnabled: boolean
+  cameraPaused: boolean
+  cameraSessionKey: string
   onToggleEnabled: () => void
+  onToggleCamera: () => void
   onUnlockSound: () => void
-  onManualSubmit: (barcode: string) => void
+  onManualSubmit: (barcode: string) => Promise<ShopCameraSubmitOutcome>
+  onCameraSubmit: (barcode: string) => Promise<ShopCameraSubmitOutcome>
 }
 
 function getStatusTag(status: StoreOrderScanStatus, enabled: boolean, t: TFunction) {
@@ -63,26 +70,52 @@ export default function ShopScanBar({
   enabled,
   soundEnabled,
   busy,
+  cameraEnabled,
+  cameraPaused,
+  cameraSessionKey,
   onToggleEnabled,
+  onToggleCamera,
   onUnlockSound,
   onManualSubmit,
+  onCameraSubmit,
 }: ShopScanBarProps) {
   const { t } = useTranslation()
   const [manualValue, setManualValue] = useState('')
   const [desktopVisible, setDesktopVisible] = useState(false)
 
-  const helperText = enabled
-    ? t('shop.scan.listeningHint', 'Scanner is listening when no text input is focused.')
-    : t('shop.scan.pausedHint', 'Scanner is paused.')
+  const helperText = cameraEnabled
+    ? t('shop.scan.cameraActiveHint', 'Camera scanning is active; scanner and manual input are paused.')
+    : enabled
+      ? t('shop.scan.listeningHint', 'Scanner is listening when no text input is focused.')
+      : t('shop.scan.pausedHint', 'Scanner is paused.')
 
   const hasProduct = status === 'added' || status === 'multiple'
+  const manualDisabled = cameraEnabled || cameraPaused
+
+  const submitManualValue = () => {
+    const nextValue = manualValue.trim()
+    if (!nextValue) {
+      return
+    }
+
+    void onManualSubmit(nextValue).then((outcome) => {
+      if (outcome !== 'ignored') {
+        setManualValue((current) => current.trim() === nextValue ? '' : current)
+      }
+    })
+  }
 
   return (
     <>
       <Button
         className="shop-scan-toggle-btn"
         icon={<ScanOutlined />}
-        onClick={() => setDesktopVisible((v) => !v)}
+        onClick={() => {
+          if (desktopVisible && cameraEnabled) {
+            onToggleCamera()
+          }
+          setDesktopVisible((current) => !current)
+        }}
       >
         {desktopVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : t('shop.scan.scanner', 'Scanner')}
       </Button>
@@ -102,15 +135,35 @@ export default function ShopScanBar({
             {getStatusTag(status, enabled, t)}
             <Button
               icon={enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+              disabled={cameraEnabled}
               onClick={onToggleEnabled}
             >
               {enabled ? t('shop.scan.pause', 'Pause') : t('shop.scan.resume', 'Resume')}
+            </Button>
+            <Button
+              icon={<CameraOutlined />}
+              type={cameraEnabled ? 'primary' : 'default'}
+              disabled={!cameraEnabled && (busy || cameraPaused)}
+              onClick={onToggleCamera}
+            >
+              {cameraEnabled
+                ? t('shop.scan.cameraStop', 'Close Camera')
+                : t('shop.scan.cameraStart', 'Open Camera')}
             </Button>
             <Button icon={<SoundOutlined />} type={soundEnabled ? 'default' : 'primary'} onClick={onUnlockSound}>
               {soundEnabled ? t('shop.scan.soundReady', 'Sound Ready') : t('shop.scan.enableSound', 'Enable Sound')}
             </Button>
           </Space>
         </div>
+
+        {cameraEnabled ? (
+          <ShopCameraScanner
+            paused={cameraPaused}
+            sessionKey={cameraSessionKey}
+            onRequestClose={onToggleCamera}
+            onSubmit={onCameraSubmit}
+          />
+        ) : null}
 
         <div className="shop-scan-bar-body">
           <div className="shop-scan-bar-feedback">
@@ -152,31 +205,17 @@ export default function ShopScanBar({
           <div className="shop-scan-bar-manual">
             <Input
               value={manualValue}
+              disabled={manualDisabled}
               onChange={(event) => setManualValue(event.target.value)}
               placeholder={t('shop.scan.manualInput', 'Manual barcode input')}
               prefix={<AudioOutlined />}
-              onPressEnter={() => {
-                const nextValue = manualValue.trim()
-                if (!nextValue) {
-                  return
-                }
-
-                onManualSubmit(nextValue)
-                setManualValue('')
-              }}
+              onPressEnter={submitManualValue}
             />
             <Button
               type="primary"
               loading={busy}
-              onClick={() => {
-                const nextValue = manualValue.trim()
-                if (!nextValue) {
-                  return
-                }
-
-                onManualSubmit(nextValue)
-                setManualValue('')
-              }}
+              disabled={manualDisabled}
+              onClick={submitManualValue}
             >
               {t('common.search', 'Search')}
             </Button>

@@ -3,7 +3,13 @@ import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Toolti
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  shouldIgnoreShopBarcodeSubmit,
+  type ShopBarcodeSubmitSource,
+} from '../../components/shopBarcodeSubmitGate'
+import { withShopBarcodeRequestTimeout } from '../../components/shopBarcodeRequestTimeout'
 import ShopScanBar from '../../components/ShopScanBar'
+import type { ShopCameraSubmitOutcome } from '../../components/ShopCameraScanner'
 import ShopScanResultPicker from '../../components/ShopScanResultPicker'
 import { PRODUCT_GRADE_CONFIG } from '../../types/productGrade'
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner'
@@ -79,6 +85,8 @@ export default function ShopHomePage() {
   const [scanStatus, setScanStatus] = useState<StoreOrderScanStatus>('ready')
   const [scanEnabled, setScanEnabled] = useState(false)
   const [scanBusy, setScanBusy] = useState(false)
+  const [cameraEnabled, setCameraEnabled] = useState(false)
+  const [cameraSessionKey, setCameraSessionKey] = useState('')
   const [scanMessage, setScanMessage] = useState(t('shop.scan.waiting'))
   const [lastScannedCode, setLastScannedCode] = useState('')
   const [lastScannedProduct, setLastScannedProduct] = useState('')
@@ -98,12 +106,37 @@ export default function ShopHomePage() {
   const [cartOnlyFilter, setCartOnlyFilter] = useState(false)
   const quantityUpdateTimersRef = useRef<Record<string, number>>({})
   const quantityUpdateVersionRef = useRef<Record<string, number>>({})
+  const scanBusyRef = useRef(false)
+  const cameraActiveRef = useRef(false)
+  const pickerOpenRef = useRef(false)
+  const pickerLoadingRef = useRef(false)
   const selectedStore = useShopStore((state) => state.selectedStore)
   const selectedStoreCodeRef = useRef<string | null>(null)
+  const previousSelectedStoreCodeRef = useRef(selectedStore?.storeCode ?? null)
   const cart = useShopStore((state) => state.cart)
   const setCart = useShopStore((state) => state.setCart)
   const shouldShowCategoryPath = Boolean(keyword)
   selectedStoreCodeRef.current = selectedStore?.storeCode ?? null
+
+  const cameraIsActive = cameraEnabled && cameraSessionKey === (selectedStore?.storeCode ?? '')
+  cameraActiveRef.current = cameraIsActive
+
+  useEffect(() => {
+    const nextStoreCode = selectedStore?.storeCode ?? null
+    if (previousSelectedStoreCodeRef.current === nextStoreCode) {
+      return
+    }
+
+    previousSelectedStoreCodeRef.current = nextStoreCode
+    setCameraEnabled(false)
+    setCameraSessionKey('')
+    cameraActiveRef.current = false
+    pickerOpenRef.current = false
+    pickerLoadingRef.current = false
+    setPickerOpen(false)
+    setPickerLoading(false)
+    setScanCandidates([])
+  }, [selectedStore?.storeCode])
 
   useEffect(() => {
     return () => {
@@ -517,22 +550,31 @@ export default function ShopHomePage() {
   )
 
   const addScannedProductToCart = useCallback(
-    async (product: StoreOrderProductItem, barcode: string) => {
-      if (!selectedStore?.storeCode) {
+    async (
+      product: StoreOrderProductItem,
+      barcode: string,
+      storeCode: string | null = selectedStoreCodeRef.current,
+    ): Promise<ShopCameraSubmitOutcome> => {
+      if (!storeCode) {
         updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
           barcode,
           tone: 'blocked',
         })
-        return false
+        return 'blocked'
       }
       const quantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
 
       try {
         const nextCart = await addStoreOrderCartItem({
-          storeCode: selectedStore.storeCode,
+          storeCode,
           productCode: product.productCode,
           quantity,
         })
+
+        if (selectedStoreCodeRef.current !== storeCode) {
+          return 'ignored'
+        }
+
         setCart(nextCart)
 
         const cartTotalQty = nextCart?.items.find((ci) => ci.productCode === product.productCode)?.quantity
@@ -547,70 +589,128 @@ export default function ShopHomePage() {
           tone: 'success',
         })
         refreshDynamicDataForProducts([product.productCode]).catch(() => {})
-        return true
+        return 'added'
       } catch {
+        if (selectedStoreCodeRef.current !== storeCode) {
+          return 'ignored'
+        }
+
         updateScanFeedback('error', t('shop.scan.addItemFailed'), {
           barcode,
           productName: product.productName || product.productCode,
           tone: 'error',
         })
-        return false
+        return 'error'
       }
     },
-    [refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t, updateScanFeedback],
+    [refreshDynamicDataForProducts, setCart, t, updateScanFeedback],
   )
 
   const handleBarcodeSubmit = useCallback(
-    async (rawBarcode: string) => {
+    async (
+      rawBarcode: string,
+      source: ShopBarcodeSubmitSource,
+    ): Promise<ShopCameraSubmitOutcome> => {
       const barcode = rawBarcode.trim()
-      if (!barcode || scanBusy) {
-        return
+      if (shouldIgnoreShopBarcodeSubmit({
+        barcode,
+        busy: scanBusyRef.current,
+        cameraActive: cameraActiveRef.current,
+        pickerOpen: pickerOpenRef.current,
+        source,
+      })) {
+        return 'ignored'
       }
 
+      // state 更新前先占用同步门闩，连续解码回调不得穿过同一渲染帧并发提交。
+      scanBusyRef.current = true
       setScanBusy(true)
       setScanStatus('scanning')
       setScanMessage(t('shop.scan.lookingUp', { barcode }))
 
-      if (!selectedStore?.storeCode) {
-        updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
-          barcode,
-          tone: 'blocked',
-        })
-        setScanBusy(false)
-        return
-      }
+      const storeCode = selectedStoreCodeRef.current
       try {
-        const result = await lookupStoreOrderProductsByBarcode(barcode)
+        if (!storeCode) {
+          updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
+            barcode,
+            tone: 'blocked',
+          })
+          return 'blocked'
+        }
+
+        const result = await withShopBarcodeRequestTimeout(
+          (signal) => lookupStoreOrderProductsByBarcode(barcode, signal),
+        )
+        if (selectedStoreCodeRef.current !== storeCode) {
+          return 'ignored'
+        }
 
         if (!result.items.length) {
           updateScanFeedback('not_found', t('shop.scan.barcodeNotFound'), {
             barcode,
             tone: 'not-found',
           })
-          return
+          return 'not_found'
         }
 
         if (result.items.length === 1) {
-          await addScannedProductToCart(result.items[0], barcode)
-          return
+          return await addScannedProductToCart(result.items[0], barcode, storeCode)
         }
 
         setScanCandidates(result.items)
+        pickerOpenRef.current = true
         setPickerOpen(true)
         updateScanFeedback('multiple', t('shop.scan.multipleMatchesFound'), {
           barcode,
           tone: 'multiple',
         })
-      } catch (error) {
+        return 'multiple'
+      } catch {
+        if (selectedStoreCodeRef.current !== storeCode) {
+          return 'ignored'
+        }
+
         updateScanFeedback('error', t('shop.scan.lookupFailed'), {
           barcode,
           tone: 'error',
         })
+        return 'error'
       } finally {
+        scanBusyRef.current = false
         setScanBusy(false)
       }
     },
-    [addScannedProductToCart, scanBusy, selectedStore?.storeCode, t, updateScanFeedback],
+    [addScannedProductToCart, t, updateScanFeedback],
+  )
+
+  const handleToggleCamera = useCallback(() => {
+    if (cameraEnabled) {
+      cameraActiveRef.current = false
+      setCameraEnabled(false)
+      setCameraSessionKey('')
+      return
+    }
+
+    if (pickerOpenRef.current) {
+      return
+    }
+
+    const storeCode = selectedStoreCodeRef.current
+    if (!storeCode) {
+      updateScanFeedback('blocked', t('shop.scan.selectStoreFirst'), {
+        tone: 'blocked',
+      })
+      return
+    }
+
+    cameraActiveRef.current = true
+    setCameraSessionKey(storeCode)
+    setCameraEnabled(true)
+  }, [cameraEnabled, t, updateScanFeedback])
+
+  const handleCameraBarcodeSubmit = useCallback(
+    (barcode: string) => handleBarcodeSubmit(barcode, 'camera'),
+    [handleBarcodeSubmit],
   )
 
   const handleUnlockSound = useCallback(async () => {
@@ -620,11 +720,11 @@ export default function ShopHomePage() {
   }, [t])
 
   useBarcodeScanner({
-    enabled: scanEnabled && !scanBusy,
+    enabled: scanEnabled && !scanBusy && !cameraIsActive && !pickerOpen,
     idleMs: 300,
     resetMs: 2000,
     onScan: (value) => {
-      void handleBarcodeSubmit(value)
+      void handleBarcodeSubmit(value, 'hid')
     },
   })
 
@@ -869,13 +969,18 @@ export default function ShopHomePage() {
         enabled={scanEnabled}
         soundEnabled={soundEnabled}
         busy={scanBusy}
+        cameraEnabled={cameraIsActive}
+        cameraPaused={pickerOpen || pickerLoading}
+        cameraSessionKey={cameraSessionKey}
         onToggleEnabled={() => setScanEnabled((current) => !current)}
+        onToggleCamera={handleToggleCamera}
         onUnlockSound={() => {
           void handleUnlockSound()
         }}
         onManualSubmit={(barcode) => {
-          void handleBarcodeSubmit(barcode)
+          return handleBarcodeSubmit(barcode, 'manual')
         }}
+        onCameraSubmit={handleCameraBarcodeSubmit}
       />
 
       <div className="shop-home-header">
@@ -1038,12 +1143,23 @@ export default function ShopHomePage() {
         items={scanCandidates}
         dynamicDataMap={pickerDynamicDataMap}
         onCancel={() => {
+          if (pickerLoadingRef.current) {
+            return
+          }
+          pickerOpenRef.current = false
           setPickerOpen(false)
           setPickerLoading(false)
         }}
         onSelect={(product) => {
+          if (pickerLoadingRef.current) {
+            return
+          }
+          pickerLoadingRef.current = true
           setPickerLoading(true)
-          void addScannedProductToCart(product, lastScannedCode).finally(() => {
+          const storeCode = selectedStoreCodeRef.current
+          void addScannedProductToCart(product, lastScannedCode, storeCode).finally(() => {
+            pickerLoadingRef.current = false
+            pickerOpenRef.current = false
             setPickerLoading(false)
             setPickerOpen(false)
           })

@@ -701,10 +701,11 @@ export async function batchLookupStoreOrderProducts(payload: StoreOrderBatchLook
   return normalizeResult<StoreOrderBatchLookupItem[]>(response)
 }
 
-export async function lookupStoreOrderProductsByBarcode(barcode: string) {
+export async function lookupStoreOrderProductsByBarcode(barcode: string, signal?: AbortSignal) {
   const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products/scan-lookup`, {
     method: 'POST',
     data: { barcode },
+    signal,
   })
 
   const result = normalizeResult<Partial<StoreOrderScanLookupResult> | null>(response)

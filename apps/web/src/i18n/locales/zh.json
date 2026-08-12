@@ -4581,7 +4581,27 @@
       "multipleMatchesFound": "找到多个匹配商品",
       "lookupFailed": "查询失败",
       "soundFeedbackReady": "声音反馈已就绪",
-      "soundUnavailable": "当前设备不支持声音反馈"
+      "soundUnavailable": "当前设备不支持声音反馈",
+      "cameraStart": "开启相机",
+      "cameraStop": "关闭相机",
+      "cameraPreview": "相机条码预览",
+      "cameraActiveHint": "相机扫码已开启，扫码枪和手动输入已暂停。",
+      "cameraStarting": "正在启动相机",
+      "cameraScanning": "扫描中",
+      "cameraProcessing": "处理中",
+      "cameraWaitingSelection": "等待选择商品",
+      "cameraError": "相机不可用",
+      "cameraRetry": "重试",
+      "cameraHint": "请将 EAN-13 或 Code 128 条码放入取景框。",
+      "cameraQueue": "队列 {{count}}",
+      "cameraQueueFull": "扫码队列已满，请稍候。",
+      "cameraFailure": {
+        "insecure": "相机扫码仅支持 HTTPS 或 localhost 安全来源。",
+        "permission_denied": "相机权限被拒绝，请在浏览器设置中允许相机后重试。",
+        "unavailable": "当前设备未找到可用摄像头。",
+        "in_use": "摄像头正被其他应用占用，请关闭占用后重试。",
+        "unknown": "无法启动相机，请检查浏览器相机权限后重试。"
+      }
     },
     "loadStoresFailed": "加载分店失败",
     "qty": "数量",

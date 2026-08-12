@@ -3195,6 +3195,85 @@ body {
   min-width: 0;
 }
 
+.shop-camera-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.shop-camera-viewport {
+  position: relative;
+  width: min(100%, 720px);
+  aspect-ratio: 4 / 3;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #0f172a;
+}
+
+.shop-camera-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.shop-camera-frame {
+  position: absolute;
+  inset: 24% 10%;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  box-shadow: 0 0 0 999px rgba(15, 23, 42, 0.3);
+  pointer-events: none;
+}
+
+.shop-camera-frame::after {
+  position: absolute;
+  top: 50%;
+  right: 8%;
+  left: 8%;
+  height: 2px;
+  background: #ff4d4f;
+  content: '';
+  transform: translateY(-50%);
+}
+
+.shop-camera-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px;
+  background: rgba(248, 250, 252, 0.92);
+  text-align: center;
+}
+
+.shop-camera-overlay-error {
+  background: #fff7f7;
+}
+
+.shop-camera-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shop-camera-status-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 .shop-scan-picker-list {
   display: flex;
   flex-direction: column;
@@ -3283,6 +3362,21 @@ body {
 
   .shop-scan-picker-item .ant-btn {
     width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .shop-camera-scanner {
+    padding: 10px;
+  }
+
+  .shop-camera-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .shop-camera-status > .ant-tag {
+    align-self: flex-start;
   }
 }
 

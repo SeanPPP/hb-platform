@@ -4581,7 +4581,27 @@
       "multipleMatchesFound": "Multiple matches found",
       "lookupFailed": "Lookup failed",
       "soundFeedbackReady": "Sound feedback is ready",
-      "soundUnavailable": "Sound is unavailable on this device"
+      "soundUnavailable": "Sound is unavailable on this device",
+      "cameraStart": "Open Camera",
+      "cameraStop": "Close Camera",
+      "cameraPreview": "Camera barcode preview",
+      "cameraActiveHint": "Camera scanning is active; scanner and manual input are paused.",
+      "cameraStarting": "Starting camera",
+      "cameraScanning": "Scanning",
+      "cameraProcessing": "Processing",
+      "cameraWaitingSelection": "Waiting for item selection",
+      "cameraError": "Camera unavailable",
+      "cameraRetry": "Try Again",
+      "cameraHint": "Hold an EAN-13 or Code 128 barcode inside the frame.",
+      "cameraQueue": "{{count}} queued",
+      "cameraQueueFull": "The scan queue is full. Please wait.",
+      "cameraFailure": {
+        "insecure": "Camera scanning requires HTTPS or localhost.",
+        "permission_denied": "Camera access was denied. Allow camera access in browser settings and try again.",
+        "unavailable": "No available camera was found on this device.",
+        "in_use": "The camera is being used by another application. Close it there and try again.",
+        "unknown": "The camera could not be started. Check browser camera access and try again."
+      }
     },
     "loadStoresFailed": "Failed to load stores",
     "qty": "Qty",
