@@ -13,6 +13,16 @@ import { usePosSound } from "@/ui/feedback/pos-sound-context";
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
 
+jest.mock("@expo/vector-icons", () => ({
+  MaterialCommunityIcons: ({ name }: { name: string }) => {
+    const { Text } = jest.requireActual<typeof import("react-native")>(
+      "react-native",
+    );
+
+    return <Text>{name}</Text>;
+  },
+}));
+
 const mockUsePosSound = jest.mocked(usePosSound);
 const play = jest.fn();
 
@@ -26,7 +36,16 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.device": "Device",
       "status.device.authorized": "Authorized",
       "status.deviceCode": "Device code",
+      "status.display": "Display",
+      "status.network": "Network",
+      "status.network.online": "Online",
+      "status.peripheral.disconnected": "Disconnected",
+      "status.printer": "Printer",
+      "status.scanner": "Scanner",
+      "status.scanner.inactive": "Unfocused",
       "status.storeName": "Branch name",
+      "status.sync": "Sync",
+      "status.sync.pending": "0 pending",
     },
     zh: {
       "status.languageSwitchHint": "将所有界面文字显示为英文。",
@@ -140,6 +159,53 @@ test("终端身份空值显示破折号，且绝不以 storeCode 冒充分店名
   expect(screen.queryByText("S001")).toBeNull();
   expect(screen.getByLabelText("分店名称: —")).toBeTruthy();
   expect(screen.getByLabelText("设备代码: —")).toBeTruthy();
+});
+
+test("英文状态栏用语义图标替代长分类标签，同时保留完整无障碍文案", async () => {
+  mockLanguage = "en";
+  const shell = usePosShellStore.getState();
+  shell.setConnectivity("online");
+  shell.setDeviceGate("authorized");
+  shell.setDisplay("disconnected");
+  shell.setPrinter("disconnected");
+  shell.setScanner("inactive");
+  shell.setTerminalPresentation({
+    storeName: "Brisbane Central Superstore",
+    deviceCode: "POS_1042_0547",
+  });
+
+  const screen = await render(
+    <PosStatusStrip language="en" showTerminalIdentity />,
+  );
+
+  for (const icon of [
+    "tablet",
+    "store-outline",
+    "identifier",
+    "wifi",
+    "sync",
+    "printer-outline",
+    "barcode-scan",
+    "monitor",
+  ]) {
+    expect(screen.getByText(icon)).toBeTruthy();
+  }
+  for (const label of [
+    "Device",
+    "Branch name",
+    "Device code",
+    "Network",
+    "Sync",
+    "Printer",
+    "Scanner",
+    "Display",
+  ]) {
+    expect(screen.queryByText(label)).toBeNull();
+  }
+  expect(
+    screen.getByLabelText("Branch name: Brisbane Central Superstore"),
+  ).toBeTruthy();
+  expect(screen.getByLabelText("Network: Online")).toBeTruthy();
 });
 
 test("中文界面显示目标 EN 图标，并保留完整无障碍文案和 44pt 触控目标", async () => {

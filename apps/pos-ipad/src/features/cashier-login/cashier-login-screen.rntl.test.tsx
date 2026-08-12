@@ -16,7 +16,19 @@ import { posColors } from "@/ui/theme";
 let mockStatusStripProps: any;
 
 jest.mock("@expo/vector-icons", () => ({
-  MaterialCommunityIcons: () => null,
+  MaterialCommunityIcons: ({
+    name,
+    testID,
+  }: {
+    name: string;
+    testID?: string;
+  }) => {
+    const { View } = jest.requireActual<typeof import("react-native")>(
+      "react-native",
+    );
+
+    return <View accessibilityLabel={name} testID={testID} />;
+  },
 }));
 
 jest.mock("@/ui/shell/status-strip", () => ({
@@ -185,7 +197,7 @@ test("扫码默认不弹软键盘，常驻键盘按钮可手动开启且失焦�
     />,
   );
 
-  expect(screen.getByText("默认使用扫码枪；手动输入请点“键盘”。")).toBeTruthy();
+  expect(screen.getByText("默认使用扫码枪；手动输入请点键盘图标。")).toBeTruthy();
   const keyboardButton = screen.getByTestId("cashier-login-show-keyboard");
   expect(keyboardButton.props.accessibilityRole).toBe("button");
   expect(keyboardButton.props.accessibilityLabel).toBe("键盘");
@@ -227,6 +239,34 @@ test("扫码默认不弹软键盘，常驻键盘按钮可手动开启且失焦�
   expect(
     screen.getByTestId("cashier-login-barcode").props.showSoftInputOnFocus,
   ).toBe(false);
+});
+
+test("英文扫码提示完整保留，键盘入口只显示图标并让出输入宽度", async () => {
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="en"
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  expect(screen.getByTestId("cashier-login-barcode").props.placeholder).toBe(
+    "Scan cashier barcode",
+  );
+  expect(
+    screen.getByText("Scanner ready; tap the keyboard icon for manual entry."),
+  ).toBeTruthy();
+  expect(screen.queryByText("Keyboard")).toBeNull();
+  expect(
+    screen.getByTestId("cashier-login-keyboard-icon").props.accessibilityLabel,
+  ).toBe("keyboard-outline");
+  const keyboardButton = screen.getByTestId("cashier-login-show-keyboard");
+  expect(keyboardButton.props.accessibilityLabel).toBe("Keyboard");
+  expect(StyleSheet.flatten(keyboardButton.props.style)).toMatchObject({
+    minHeight: 62,
+    minWidth: 62,
+  });
 });
 
 test("手动软键盘聚焦时滚动表单揭示条码输入，HID 聚焦保持静默", async () => {
@@ -524,7 +564,7 @@ test("明确拒绝显示错误且不进入 sales", async () => {
     />,
   );
   expect(
-    screen.getByText('Scanner ready; tap "Keyboard" for manual entry.'),
+    screen.getByText("Scanner ready; tap the keyboard icon for manual entry."),
   ).toBeTruthy();
   expect(
     screen.getByTestId("cashier-login-toggle-barcode-visibility").props

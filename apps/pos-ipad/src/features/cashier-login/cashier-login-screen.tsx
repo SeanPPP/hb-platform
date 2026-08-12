@@ -70,7 +70,7 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     keyboard: "Keyboard",
     showBarcode: "Show cashier barcode",
     hideBarcode: "Hide cashier barcode",
-    manualEntryHint: 'Scanner ready; tap "Keyboard" for manual entry.',
+    manualEntryHint: "Scanner ready; tap the keyboard icon for manual entry.",
     submit: "Sign in to checkout",
     submitting: "Checking authorization…",
     offline: "Offline sign-in uses this iPad's encrypted cashier cache.",
@@ -101,7 +101,7 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     keyboard: "键盘",
     showBarcode: "显示收银员条码",
     hideBarcode: "隐藏收银员条码",
-    manualEntryHint: "默认使用扫码枪；手动输入请点“键盘”。",
+    manualEntryHint: "默认使用扫码枪；手动输入请点键盘图标。",
     submit: "进入收银",
     submitting: "正在核验授权…",
     offline: "离线登录只使用本 iPad 加密保存的收银员缓存。",
@@ -385,11 +385,12 @@ export function CashierLoginScreen({
               testID="cashier-login-show-keyboard"
             >
               <MaterialCommunityIcons
+                accessible={false}
                 color={posColors.blue}
                 name="keyboard-outline"
-                size={22}
+                size={26}
+                testID="cashier-login-keyboard-icon"
               />
-              <Text style={styles.keyboardLabel}>{text.keyboard}</Text>
             </PosPressable>
           </View>
           {error ? (
@@ -587,15 +588,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderColor: posColors.blue,
     borderWidth: 1,
-    flexDirection: "row",
-    gap: 8,
     justifyContent: "center",
     minHeight: 62,
-    minWidth: 116,
-    paddingHorizontal: 16,
+    minWidth: 62,
   },
   keyboardButtonPressed: { opacity: 0.62 },
-  keyboardLabel: { color: posColors.blue, fontSize: 16, fontWeight: "800" },
   submit: {
     alignItems: "center",
     backgroundColor: posColors.orange,

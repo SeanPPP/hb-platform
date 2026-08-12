@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -7,8 +8,10 @@ import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 type IndicatorTone = "good" | "warning" | "neutral" | "danger";
+type StatusIconName = keyof typeof MaterialCommunityIcons.glyphMap;
 
 type StatusIndicatorProps = {
+  icon: StatusIconName;
   label: string;
   value: string;
   tone: IndicatorTone;
@@ -21,22 +24,26 @@ type PosStatusStripProps = Readonly<{
 }>;
 
 type StaticIdentityProps = Readonly<{
+  icon: StatusIconName;
   label: string;
   testID: string;
   truncate?: boolean;
   value: string | null | undefined;
 }>;
 
-function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
+function StatusIndicator({ icon, label, tone, value }: StatusIndicatorProps) {
   return (
     <View
       accessibilityLabel={`${label}: ${value}`}
       style={styles.indicator}
     >
       <View style={[styles.dot, toneStyles[tone]]} />
-      <Text numberOfLines={1} style={styles.label}>
-        {label}
-      </Text>
+      <MaterialCommunityIcons
+        accessible={false}
+        color="#B9C5D1"
+        name={icon}
+        size={14}
+      />
       <Text numberOfLines={1} style={styles.value}>
         {value}
       </Text>
@@ -45,6 +52,7 @@ function StatusIndicator({ label, tone, value }: StatusIndicatorProps) {
 }
 
 function StaticIdentity({
+  icon,
   label,
   testID,
   truncate = false,
@@ -63,9 +71,12 @@ function StaticIdentity({
       ]}
       testID={testID}
     >
-      <Text numberOfLines={1} style={styles.label}>
-        {label}
-      </Text>
+      <MaterialCommunityIcons
+        accessible={false}
+        color="#B9C5D1"
+        name={icon}
+        size={14}
+      />
       <Text
         numberOfLines={1}
         style={[
@@ -107,6 +118,7 @@ export function PosStatusStrip({
   return (
     <View style={styles.container}>
       <StatusIndicator
+        icon="tablet"
         label={t("status.device")}
         tone={deviceGate === "authorized" ? "good" : deviceGate === "locked" ? "danger" : "warning"}
         value={t(`status.device.${deviceGate}`)}
@@ -117,12 +129,14 @@ export function PosStatusStrip({
           testID="status-strip-terminal-identity"
         >
           <StaticIdentity
+            icon="store-outline"
             label={t("status.storeName")}
             testID="status-strip-store-identity"
             truncate
             value={terminalPresentation?.storeName}
           />
           <StaticIdentity
+            icon="identifier"
             label={t("status.deviceCode")}
             testID="status-strip-device-code-identity"
             value={terminalPresentation?.deviceCode}
@@ -130,26 +144,31 @@ export function PosStatusStrip({
         </View>
       ) : null}
       <StatusIndicator
+        icon="wifi"
         label={t("status.network")}
         tone={connectivity === "online" ? "good" : connectivity === "offline" ? "danger" : "neutral"}
         value={t(`status.network.${connectivity}`)}
       />
       <StatusIndicator
+        icon="sync"
         label={t("status.sync")}
         tone={pendingSyncCount === 0 ? "good" : "warning"}
         value={t("status.sync.pending", { count: pendingSyncCount })}
       />
       <StatusIndicator
+        icon="printer-outline"
         label={t("status.printer")}
         tone={printer === "ready" ? "good" : printer === "failed" ? "danger" : "neutral"}
         value={t(`status.peripheral.${printer}`)}
       />
       <StatusIndicator
+        icon="barcode-scan"
         label={t("status.scanner")}
         tone={scanner === "capturing" || scanner === "camera" ? "good" : "neutral"}
         value={t(`status.scanner.${scanner}`)}
       />
       <StatusIndicator
+        icon="monitor"
         label={t("status.display")}
         tone={display === "ready" ? "good" : display === "failed" ? "danger" : "neutral"}
         value={t(`status.peripheral.${display}`)}
@@ -233,11 +252,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "900",
     lineHeight: 16,
-  },
-  label: {
-    color: "#B9C5D1",
-    fontSize: 11,
-    fontWeight: "700",
   },
   staticIdentity: {
     alignItems: "center",
