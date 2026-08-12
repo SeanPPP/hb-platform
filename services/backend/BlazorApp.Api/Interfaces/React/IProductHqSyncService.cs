@@ -16,6 +16,16 @@ namespace BlazorApp.Api.Interfaces.React
 
         Task<ApiResponse<PushProductsToHqResult>> PushToHqAsync(PushProductsToHqRequest request);
 
+        Task<ApiResponse<WarehouseStorePriceHqValidationResultDto>> ValidateWarehouseStorePriceTargetsAsync(
+            IReadOnlyCollection<string> targetStoreCodes,
+            CancellationToken cancellationToken = default
+        );
+
+        Task<ApiResponse<WarehouseStorePriceHqSyncResultDto>> SyncWarehouseStorePricesAsync(
+            WarehouseStorePriceHqSyncRequestDto request,
+            CancellationToken cancellationToken = default
+        );
+
         Task<List<ProductHqStoreOptionDto>> GetHqStoreOptionsAsync();
     }
 }

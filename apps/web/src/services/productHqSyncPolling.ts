@@ -40,6 +40,8 @@ interface HqSyncJobLike {
 interface CreateHqSyncJobPollerOptions<TJob extends HqSyncJobLike> extends HqProductSyncPollingOptions {
   jobId: string
   getJob: (jobId: string) => Promise<TJob>
+  // 个别后台 job 有额外终态（例如 PartiallySucceeded），默认仍保持旧终态集合。
+  isTerminalStatus?: (status: TJob['status']) => boolean
 }
 
 function isTerminalStatus(status: HqSyncJobLike['status']) {
@@ -49,6 +51,7 @@ function isTerminalStatus(status: HqSyncJobLike['status']) {
 export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
   jobId,
   getJob,
+  isTerminalStatus: isTerminalStatusOverride,
   pollIntervalMs = PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
   timeoutMs = PRODUCT_HQ_SYNC_TIMEOUT_MS,
   setTimeoutFn = setTimeout,
@@ -58,6 +61,7 @@ export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
   let timeoutTimer: HqProductSyncTimerId | null = null
   let stopped = false
   let rejectPromise: ((reason?: unknown) => void) | null = null
+  const isJobTerminalStatus = isTerminalStatusOverride ?? isTerminalStatus
 
   const clearTimers = () => {
     if (pollingTimer) {
@@ -82,7 +86,7 @@ export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
             return
           }
 
-          if (isTerminalStatus(result.status)) {
+          if (isJobTerminalStatus(result.status)) {
             clearTimers()
             resolve(result)
             return

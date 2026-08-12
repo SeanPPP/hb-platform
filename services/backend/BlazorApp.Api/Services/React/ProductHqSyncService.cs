@@ -13,11 +13,13 @@ namespace BlazorApp.Api.Services.React
     /// 商品 HQ 同步统一实现。
     /// 旧入口只委托到这里，避免继续使用 Product/价格/分店多码混合同步链路。
     /// </summary>
-    public class ProductHqSyncService : IProductHqSyncService
+    public partial class ProductHqSyncService : IProductHqSyncService
     {
         private const string ShadowTableName = "Product_Shadow";
         private const int HqReadBatchSize = 5000;
+        private const int HqCodeBatchSize = 500;
         private const int WriteBatchSize = 1000;
+        private const int HqWriteBatchSize = 40;
         private const string HqFieldItemNumber = "itemNumber";
         private const string HqFieldBarcode = "barcode";
         private const string HqFieldProductName = "productName";
@@ -799,12 +801,16 @@ namespace BlazorApp.Api.Services.React
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                var productSetCodes = await localDb.Queryable<ProductSetCode>()
-                    .Where(row =>
-                        activeProductCodes.Contains(row.ProductCode)
-                        && !row.IsDeleted
-                    )
-                    .ToListAsync();
+                var productSetCodes = new List<ProductSetCode>();
+                foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
+                {
+                    var codes = codeBatch.ToList();
+                    productSetCodes.AddRange(
+                        await localDb.Queryable<ProductSetCode>()
+                            .Where(row => codes.Contains(row.ProductCode) && !row.IsDeleted)
+                            .ToListAsync()
+                    );
+                }
                 productSetCodes = DeduplicateByBusinessKey(
                     productSetCodes,
                     row => BuildProductSetCodeBusinessKey(row.ProductCode, row.SetProductCode)
@@ -844,17 +850,26 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                var storeMultiCodes = activeStoreCodes.Count == 0
-                    ? new List<StoreMultiCodeProduct>()
-                    : await localDb.Queryable<StoreMultiCodeProduct>()
-                        .Where(row =>
-                            row.ProductCode != null
-                            && activeProductCodes.Contains(row.ProductCode)
-                            && row.StoreCode != null
-                            && activeStoreCodes.Contains(row.StoreCode)
-                            && !row.IsDeleted
-                        )
-                        .ToListAsync();
+                var storeMultiCodes = new List<StoreMultiCodeProduct>();
+                foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
+                {
+                    var codes = codeBatch.ToList();
+                    foreach (var storeBatch in activeStoreCodes.Chunk(HqCodeBatchSize))
+                    {
+                        var stores = storeBatch.ToList();
+                        storeMultiCodes.AddRange(
+                            await localDb.Queryable<StoreMultiCodeProduct>()
+                                .Where(row =>
+                                    row.ProductCode != null
+                                    && codes.Contains(row.ProductCode)
+                                    && row.StoreCode != null
+                                    && stores.Contains(row.StoreCode)
+                                    && !row.IsDeleted
+                                )
+                                .ToListAsync()
+                        );
+                    }
+                }
                 storeMultiCodes = DeduplicateByBusinessKey(
                     storeMultiCodes,
                     row => BuildStoreMultiCodeKey(row.StoreCode, row.ProductCode, row.MultiCodeProductCode)
@@ -866,16 +881,23 @@ namespace BlazorApp.Api.Services.React
                     // 事务内、紧邻 upsert 前快照 HQ 已存在商品：已有商品的分店维度只写目标分店，
                     // 新 HQ 商品始终为全部 HQ 分店创建必要记录，混合批次按新旧商品拆分。
                     // 快照与写入同事务并尽量缩短判定窗口；跨实例/HQ 外部写入仍依赖数据库业务键约束兜底。
-                    var existingHqProductCodes = (await hqDb.Queryable<DIC_商品信息字典表>()
-                            .Where(row =>
-                                row.H商品编码 != null
-                                && activeProductCodes.Contains(row.H商品编码)
-                            )
+                    var existingHqProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
+                    {
+                        var codes = codeBatch.ToList();
+                        var existingCodes = await hqDb.Queryable<DIC_商品信息字典表>()
+                            .Where(row => row.H商品编码 != null && codes.Contains(row.H商品编码))
                             .Select(row => row.H商品编码)
-                            .ToListAsync())
-                        .Where(code => !string.IsNullOrWhiteSpace(code))
-                        .Select(code => code!)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                            .ToListAsync();
+                        foreach (var code in existingCodes)
+                        {
+                            var normalizedCode = NormalizeCode(code);
+                            if (normalizedCode != null)
+                            {
+                                existingHqProductCodes.Add(normalizedCode);
+                            }
+                        }
+                    }
                     var storeCodesByProduct = new Dictionary<string, List<string>>(
                         StringComparer.OrdinalIgnoreCase
                     );
@@ -1157,25 +1179,40 @@ namespace BlazorApp.Api.Services.React
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var queriedProducts =
-                requestedProductCodes.Count == 0
-                && requestedSupplierCodes.Count == 0
-                && requestedItemNumbers.Count == 0
-                    ? new List<Product>()
-                    : await localDb.Queryable<Product>()
+            var queriedProducts = new List<Product>();
+            foreach (var codeBatch in requestedProductCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                queriedProducts.AddRange(
+                    await localDb.Queryable<Product>()
                         .Where(row =>
                             !row.IsDeleted
-                            && (
-                                (row.ProductCode != null && requestedProductCodes.Contains(row.ProductCode))
-                                || (
-                                    row.LocalSupplierCode != null
-                                    && requestedSupplierCodes.Contains(row.LocalSupplierCode)
-                                    && row.ItemNumber != null
-                                    && requestedItemNumbers.Contains(row.ItemNumber)
-                                )
-                            )
+                            && row.ProductCode != null
+                            && codes.Contains(row.ProductCode)
                         )
-                        .ToListAsync();
+                        .ToListAsync()
+                );
+            }
+
+            foreach (var supplierBatch in requestedSupplierCodes.Chunk(HqCodeBatchSize))
+            {
+                var suppliers = supplierBatch.ToList();
+                foreach (var itemBatch in requestedItemNumbers.Chunk(HqCodeBatchSize))
+                {
+                    var itemNumbers = itemBatch.ToList();
+                    queriedProducts.AddRange(
+                        await localDb.Queryable<Product>()
+                            .Where(row =>
+                                !row.IsDeleted
+                                && row.LocalSupplierCode != null
+                                && suppliers.Contains(row.LocalSupplierCode)
+                                && row.ItemNumber != null
+                                && itemNumbers.Contains(row.ItemNumber)
+                            )
+                            .ToListAsync()
+                    );
+                }
+            }
             var deduplicatedProducts = queriedProducts
                 .Select(row => new
                 {
@@ -1304,11 +1341,14 @@ namespace BlazorApp.Api.Services.React
                 .Select(code => code!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            var domesticProductRows = productCodesForDomesticData.Count == 0
-                ? new List<DomesticProduct>()
-                : await localDb.Queryable<DomesticProduct>()
-                    .Where(row => productCodesForDomesticData.Contains(row.ProductCode) && !row.IsDeleted)
-                    .ToListAsync();
+            var domesticProductRows = new List<DomesticProduct>();
+            foreach (var codeBatch in productCodesForDomesticData.Chunk(HqCodeBatchSize))
+            {
+                var batch = codeBatch.ToList();
+                domesticProductRows.AddRange(await localDb.Queryable<DomesticProduct>()
+                    .Where(row => batch.Contains(row.ProductCode) && !row.IsDeleted)
+                    .ToListAsync());
+            }
             var domesticProductImages = domesticProductRows
                 .Where(row => !string.IsNullOrWhiteSpace(row.ProductImage))
                 .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
@@ -1408,10 +1448,12 @@ namespace BlazorApp.Api.Services.React
             IReadOnlyDictionary<string, string> domesticSupplierCodes,
             PushToHqUpdateFieldSelection updateFields,
             HqProductSyncResult result,
-            HashSet<string> existingProductCodes
+            HashSet<string> existingProductCodes,
+            string auditUser = "HBweb"
         )
         {
             var existingCodes = existingProductCodes;
+            var effectiveAuditUser = NormalizeCode(auditUser) ?? "HBweb";
 
             var inserts = new List<DIC_商品信息字典表>();
             foreach (var product in products)
@@ -1428,6 +1470,8 @@ namespace BlazorApp.Api.Services.React
                     ResolvePushCandidate(product, pushCandidates),
                     ResolveDomesticProductImage(product, domesticProductImages)
                 );
+                hqProduct.FGC_Creator = effectiveAuditUser;
+                hqProduct.FGC_LastModifier = effectiveAuditUser;
                 if (!existingCodes.Contains(code))
                 {
                     inserts.Add(hqProduct);
@@ -1544,9 +1588,12 @@ namespace BlazorApp.Api.Services.React
 
             if (inserts.Count > 0)
             {
-                await hqDb.Insertable(inserts)
-                    .IgnoreColumns(row => row.ID)
-                    .ExecuteCommandAsync();
+                foreach (var batch in inserts.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Insertable(batch.ToList())
+                        .IgnoreColumns(row => row.ID)
+                        .ExecuteCommandAsync();
+                }
                 result.ProductsAdded += inserts.Count;
             }
         }
@@ -1556,7 +1603,8 @@ namespace BlazorApp.Api.Services.React
             List<Product> products,
             IReadOnlyDictionary<string, PushProductsToHqItem> inventoryCandidates,
             PushToHqUpdateFieldSelection updateFields,
-            PushProductsToHqResult result
+            PushProductsToHqResult result,
+            string auditUser = "HBweb"
         )
         {
             var inventoryProductCodes = products
@@ -1573,9 +1621,17 @@ namespace BlazorApp.Api.Services.React
             var productByCode = products
                 .Where(row => NormalizeCode(row.ProductCode) != null)
                 .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
-            var existingInventories = await hqDb.Queryable<CBP_DIC_商品库存表>()
-                .Where(row => row.H商品编码 != null && inventoryProductCodes.Contains(row.H商品编码))
-                .ToListAsync();
+            var effectiveAuditUser = NormalizeCode(auditUser) ?? "HBweb";
+            var existingInventories = new List<CBP_DIC_商品库存表>();
+            foreach (var codeBatch in inventoryProductCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                existingInventories.AddRange(
+                    await hqDb.Queryable<CBP_DIC_商品库存表>()
+                        .Where(row => row.H商品编码 != null && codes.Contains(row.H商品编码))
+                        .ToListAsync()
+                );
+            }
             var existingInventoryByCode = existingInventories
                 .Where(row => !string.IsNullOrWhiteSpace(row.H商品编码))
                 .ToDictionary(row => row.H商品编码!, StringComparer.OrdinalIgnoreCase);
@@ -1595,7 +1651,7 @@ namespace BlazorApp.Api.Services.React
                     var update = hqDb.Updateable<CBP_DIC_商品库存表>()
                         .SetColumns(row => new CBP_DIC_商品库存表
                         {
-                            FGC_LastModifier = "HBweb",
+                            FGC_LastModifier = effectiveAuditUser,
                             FGC_LastModifyDate = now,
                         });
                     if (updateFields.IsAll || updateFields.Has(HqFieldInventoryDomesticPrice))
@@ -1639,18 +1695,21 @@ namespace BlazorApp.Api.Services.React
                     H库存预警数 = 0,
                     // 新增库存记录仍按本地商品启用状态初始化，后续货柜发送不再改动该状态。
                     H使用状态 = product.IsActive ? 1 : 0,
-                    FGC_Creator = "HBweb",
+                    FGC_Creator = effectiveAuditUser,
                     FGC_CreateDate = now,
-                    FGC_LastModifier = "HBweb",
+                    FGC_LastModifier = effectiveAuditUser,
                     FGC_LastModifyDate = now,
                 });
             }
 
             if (inserts.Count > 0)
             {
-                await hqDb.Insertable(inserts)
-                    .IgnoreColumns(row => row.ID)
-                    .ExecuteCommandAsync();
+                foreach (var batch in inserts.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Insertable(batch.ToList())
+                        .IgnoreColumns(row => row.ID)
+                        .ExecuteCommandAsync();
+                }
                 result.WarehouseInventoriesCreated += inserts.Count;
             }
         }
@@ -1678,17 +1737,28 @@ namespace BlazorApp.Api.Services.React
                 .Where(code => code != null)
                 .Select(code => code!)
                 .ToList();
-            var existingRows = await hqDb.Queryable<DIC_商品零售价表>()
-                .Where(row =>
-                    activeStoreCodes.Contains(row.H分店代码)
-                    && productCodes.Contains(row.H商品编码)
-                )
-                .Select(row => new DIC_商品零售价表
+            var existingRows = new List<DIC_商品零售价表>();
+            foreach (var codeBatch in productCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                foreach (var storeBatch in activeStoreCodes.Chunk(HqCodeBatchSize))
                 {
-                    H分店代码 = row.H分店代码,
-                    H商品编码 = row.H商品编码,
-                })
-                .ToListAsync();
+                    var stores = storeBatch.ToList();
+                    existingRows.AddRange(
+                        await hqDb.Queryable<DIC_商品零售价表>()
+                            .Where(row =>
+                                stores.Contains(row.H分店代码)
+                                && codes.Contains(row.H商品编码)
+                            )
+                            .Select(row => new DIC_商品零售价表
+                            {
+                                H分店代码 = row.H分店代码,
+                                H商品编码 = row.H商品编码,
+                            })
+                            .ToListAsync()
+                    );
+                }
+            }
             var existingKeys = existingRows
                 .Select(row => BuildStoreProductKey(row.H分店代码, row.H商品编码))
                 .Where(key => key != null)
@@ -1781,9 +1851,12 @@ namespace BlazorApp.Api.Services.React
 
             if (inserts.Count > 0)
             {
-                await hqDb.Insertable(inserts)
-                    .IgnoreColumns(row => row.ID)
-                    .ExecuteCommandAsync();
+                foreach (var batch in inserts.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Insertable(batch.ToList())
+                        .IgnoreColumns(row => row.ID)
+                        .ExecuteCommandAsync();
+                }
                 result.StoreRetailPricesCreated += inserts.Count;
             }
         }
@@ -1792,7 +1865,8 @@ namespace BlazorApp.Api.Services.React
             ISqlSugarClient hqDb,
             List<Product> products,
             List<ProductSetCode> productSetCodes,
-            HqProductSyncResult result
+            HqProductSyncResult result,
+            string auditUser = "HBweb"
         )
         {
             if (productSetCodes.Count == 0)
@@ -1804,17 +1878,25 @@ namespace BlazorApp.Api.Services.React
                 .Where(row => NormalizeCode(row.ProductCode) != null)
                 .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
             var productCodes = productByCode.Keys.ToList();
-            var existingRows = await hqDb.Queryable<DIC_一品多码表>()
-                .Where(row => row.H商品编码 != null && productCodes.Contains(row.H商品编码))
-                .Select(row => new DIC_一品多码表
-                {
-                    ID = row.ID,
-                    HGUID = row.HGUID,
-                    H商品编码 = row.H商品编码,
-                    H多码商品编号 = row.H多码商品编号,
-                    H多条形码 = row.H多条形码,
-                })
-                .ToListAsync();
+            var effectiveAuditUser = NormalizeCode(auditUser) ?? "HBweb";
+            var existingRows = new List<DIC_一品多码表>();
+            foreach (var codeBatch in productCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                existingRows.AddRange(
+                    await hqDb.Queryable<DIC_一品多码表>()
+                        .Where(row => row.H商品编码 != null && codes.Contains(row.H商品编码))
+                        .Select(row => new DIC_一品多码表
+                        {
+                            ID = row.ID,
+                            HGUID = row.HGUID,
+                            H商品编码 = row.H商品编码,
+                            H多码商品编号 = row.H多码商品编号,
+                            H多条形码 = row.H多条形码,
+                        })
+                        .ToListAsync()
+                );
+            }
             var existingByBusinessKey = existingRows
                 .Select(row => new
                 {
@@ -1894,6 +1976,8 @@ namespace BlazorApp.Api.Services.React
                     product,
                     allocatedProductSetPurchasePrices.ContainsKey(key) ? allocatedPurchasePrice : null
                 );
+                hqSetCode.FGC_Creator = effectiveAuditUser;
+                hqSetCode.FGC_LastModifier = effectiveAuditUser;
                 var guidKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.HGUID);
                 var barcodeKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.H多条形码);
                 var existing =
@@ -1935,9 +2019,12 @@ namespace BlazorApp.Api.Services.React
 
             if (inserts.Count > 0)
             {
-                await hqDb.Insertable(inserts)
-                    .IgnoreColumns(row => row.ID)
-                    .ExecuteCommandAsync();
+                foreach (var batch in inserts.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Insertable(batch.ToList())
+                        .IgnoreColumns(row => row.ID)
+                        .ExecuteCommandAsync();
+                }
                 result.ProductSetCodesCreated += inserts.Count;
             }
         }
@@ -1949,7 +2036,8 @@ namespace BlazorApp.Api.Services.React
             List<StoreMultiCodeProduct> storeMultiCodes,
             IReadOnlyDictionary<string, List<string>> storeCodesByProduct,
             List<string> activeStoreCodes,
-            HqProductSyncResult result
+            HqProductSyncResult result,
+            string auditUser = "HBweb"
         )
         {
             if (
@@ -1965,24 +2053,36 @@ namespace BlazorApp.Api.Services.React
                 .Where(row => NormalizeCode(row.ProductCode) != null)
                 .ToDictionary(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase);
             var productCodes = productByCode.Keys.ToList();
-            var existingRows = await hqDb.Queryable<DIC_分店一品多码表>()
-                .Where(row =>
-                    row.H分店代码 != null
-                    && activeStoreCodes.Contains(row.H分店代码)
-                    && row.H商品编码 != null
-                    && productCodes.Contains(row.H商品编码)
-                )
-                .Select(row => new DIC_分店一品多码表
+            var effectiveAuditUser = NormalizeCode(auditUser) ?? "HBweb";
+            var existingRows = new List<DIC_分店一品多码表>();
+            foreach (var codeBatch in productCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                foreach (var storeBatch in activeStoreCodes.Chunk(HqCodeBatchSize))
                 {
-                    ID = row.ID,
-                    HGUID = row.HGUID,
-                    H分店代码 = row.H分店代码,
-                    H商品编码 = row.H商品编码,
-                    H多码商品编码 = row.H多码商品编码,
-                    H分店多码商品编码 = row.H分店多码商品编码,
-                    H多条形码 = row.H多条形码,
-                })
-                .ToListAsync();
+                    var stores = storeBatch.ToList();
+                    existingRows.AddRange(
+                        await hqDb.Queryable<DIC_分店一品多码表>()
+                            .Where(row =>
+                                row.H分店代码 != null
+                                && stores.Contains(row.H分店代码)
+                                && row.H商品编码 != null
+                                && codes.Contains(row.H商品编码)
+                            )
+                            .Select(row => new DIC_分店一品多码表
+                            {
+                                ID = row.ID,
+                                HGUID = row.HGUID,
+                                H分店代码 = row.H分店代码,
+                                H商品编码 = row.H商品编码,
+                                H多码商品编码 = row.H多码商品编码,
+                                H分店多码商品编码 = row.H分店多码商品编码,
+                                H多条形码 = row.H多条形码,
+                            })
+                            .ToListAsync()
+                    );
+                }
+            }
             var existingByBusinessKey = existingRows
                 .Select(row => new
                 {
@@ -2112,6 +2212,8 @@ namespace BlazorApp.Api.Services.React
                             storeMultiCode,
                             allocatedStoreMultiPurchasePrices.ContainsKey(key) ? allocatedPurchasePrice : null
                         );
+                        hqStoreMultiCode.FGC_Creator = effectiveAuditUser;
+                        hqStoreMultiCode.FGC_LastModifier = effectiveAuditUser;
                         var guidKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.HGUID);
                         var barcodeKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H多条形码);
                         var storeMultiProductKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H分店多码商品编码);
@@ -2169,9 +2271,12 @@ namespace BlazorApp.Api.Services.React
 
             if (inserts.Count > 0)
             {
-                await hqDb.Insertable(inserts)
-                    .IgnoreColumns(row => row.ID)
-                    .ExecuteCommandAsync();
+                foreach (var batch in inserts.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Insertable(batch.ToList())
+                        .IgnoreColumns(row => row.ID)
+                        .ExecuteCommandAsync();
+                }
                 result.StoreMultiCodesCreated += inserts.Count;
             }
         }

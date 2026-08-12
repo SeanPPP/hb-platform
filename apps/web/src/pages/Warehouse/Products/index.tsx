@@ -38,6 +38,7 @@ import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTo
 import { areWarehouseProductCodeSelectionsEqual, buildWarehouseProductHqPushPayload } from './hqPush';
 import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
+import WarehouseProductStorePriceSyncModal from './WarehouseProductStorePriceSyncModal';
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -722,6 +723,7 @@ export default function WarehouseProductsPage() {
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
     const [syncingFromHq, setSyncingFromHq] = useState(false);
     const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
+    const [storePriceSyncOpen, setStorePriceSyncOpen] = useState(false);
     const [columnOrder, setColumnOrder] = useState<WarehouseProductTableColumnKey[]>([]);
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
     const pushToHqLoadingRef = useRef(false);
@@ -746,6 +748,7 @@ export default function WarehouseProductsPage() {
     }));
     const { access, currentUser } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
+    const canManageWarehouseStorePriceSync = access.isAdmin || access.isWarehouseManager;
     const canInlineEditWarehouseProduct = currentUser?.roleNames?.some((roleName) =>
         roleName === 'Admin' || roleName === 'WarehouseManager') ?? false;
     const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
@@ -2150,6 +2153,9 @@ export default function WarehouseProductsPage() {
           {access.canManagePosProducts ? (<Button icon={<CloudUploadOutlined />} loading={pushToHqLoading} disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen} onClick={() => void handlePushToHq()}>
             {t('posAdmin.products.pushToHq', '发送到HQ')}
           </Button>) : null}
+          {canManageWarehouseStorePriceSync ? (<Button icon={<CloudSyncOutlined />} disabled={storePriceSyncOpen} onClick={() => setStorePriceSyncOpen(true)}>
+            {t('warehouse.storePriceSync.title', '更新分店价格')}
+          </Button>) : null}
           <Button icon={<DownloadOutlined />} loading={exporting} disabled={exporting} onClick={() => setExportConfigOpen(true)}>
             {t('warehouse.exportExcel')}
           </Button>
@@ -2480,6 +2486,15 @@ export default function WarehouseProductsPage() {
         onConfirm={handlePushToHqConfirm}
         onCancel={handlePushToHqCancel}
       />
+      {canManageWarehouseStorePriceSync ? (<WarehouseProductStorePriceSyncModal
+        open={storePriceSyncOpen}
+        selectedProductCodes={selectedRowKeys.map(String)}
+        onCancel={() => setStorePriceSyncOpen(false)}
+        onSuccess={() => {
+            setSelectedRowKeys([]);
+            void refreshCurrentList({ page: 1 });
+        }}
+      />) : null}
       </PageContainer>
     </>);
 }

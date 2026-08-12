@@ -687,6 +687,8 @@ builder.Services.AddSingleton<IProductStoreSyncJobService, ProductStoreSyncJobSe
 builder.Services.AddSingleton<IProductPushToHqJobService, ProductPushToHqJobService>();
 builder.Services.AddSingleton<IStorePriceTransferJobService, StorePriceTransferJobService>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
+builder.Services.AddScoped<IWarehouseStorePriceSyncService, WarehouseStorePriceSyncService>();
+builder.Services.AddSingleton<IWarehouseStorePriceSyncJobService, WarehouseStorePriceSyncJobService>();
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.Configure<StoreRetailPriceHqSyncOptions>(
     builder.Configuration.GetSection("StoreRetailPriceHqSync")
