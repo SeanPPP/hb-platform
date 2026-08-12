@@ -10,6 +10,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -26,32 +27,38 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly IProductWarehouseReactService _service;
         private readonly IWarehouseProductHqSyncJobService _hqSyncJobService;
+        private readonly IWarehouseProductBatchUpdateJobService _batchUpdateJobService;
         private readonly ILogger<ReactProductWarehouseController> _logger;
         private readonly IDeviceRegistrationService _deviceRegistrationService;
         private readonly IMapper _mapper;
         private readonly TencentCloudUploadService _uploadService;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ICurrentUserService _currentUserService;
+        private readonly IProductHqSyncService _productHqSyncService;
 
         public ReactProductWarehouseController(
             IProductWarehouseReactService service,
             IWarehouseProductHqSyncJobService hqSyncJobService,
+            IWarehouseProductBatchUpdateJobService batchUpdateJobService,
             ILogger<ReactProductWarehouseController> logger,
             IDeviceRegistrationService deviceRegistrationService,
             IMapper mapper,
             TencentCloudUploadService uploadService,
             IWarehouseProductChangeHistoryService changeHistoryService,
-            ICurrentUserService currentUserService
+            ICurrentUserService currentUserService,
+            IProductHqSyncService productHqSyncService
         )
         {
             _service = service;
             _hqSyncJobService = hqSyncJobService;
+            _batchUpdateJobService = batchUpdateJobService;
             _logger = logger;
             _deviceRegistrationService = deviceRegistrationService;
             _mapper = mapper;
             _uploadService = uploadService;
             _changeHistoryService = changeHistoryService;
             _currentUserService = currentUserService;
+            _productHqSyncService = productHqSyncService;
         }
 
         [HttpGet("mobile/lookup")]
@@ -315,7 +322,110 @@ namespace BlazorApp.Api.Controllers.React
                         item.SyncStorePurchasePrice ??= request.SyncStorePurchasePrice;
                 }
 
-                var resp = await _service.BatchUpdateAsync(request.Items, GetCurrentUsername());
+                if (request.SyncImageToHq && !request.GenerateImageUrls)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            success = false,
+                            message = "同步 HQ 图片前必须启用图片地址生成",
+                        }
+                    );
+                }
+
+                var options = new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = request.GenerateImageUrls,
+                    ImageBaseUrl = request.ImageBaseUrl,
+                    SyncImageToHq = request.SyncImageToHq,
+                };
+                if (options.GenerateImageUrls)
+                {
+                    if (
+                        !WarehouseProductBatchImageUrlBuilder.TryNormalizeBaseUrl(
+                            options.ImageBaseUrl,
+                            out var normalizedBaseUrl,
+                            out var imageBaseUrlError
+                        )
+                    )
+                    {
+                        return BadRequest(
+                            new { success = false, message = imageBaseUrlError }
+                        );
+                    }
+                    options.ImageBaseUrl = normalizedBaseUrl;
+                }
+
+                var currentUsername = GetCurrentUsername();
+                WarehouseProductBatchUpdateResultDto resp;
+                if (options.GenerateImageUrls)
+                {
+                    resp = await _service.BatchUpdateAsync(
+                        request.Items,
+                        currentUsername,
+                        options
+                    );
+                }
+                else
+                {
+                    // 旧请求继续走原重载，避免改变其他页面与测试替身的既有契约。
+                    var legacyResult = await _service.BatchUpdateAsync(
+                        request.Items,
+                        currentUsername
+                    );
+                    resp = new WarehouseProductBatchUpdateResultDto
+                    {
+                        Success = legacyResult.Success,
+                        Message = legacyResult.Message,
+                        SuccessCount = legacyResult.SuccessCount,
+                        FailedCount = legacyResult.FailedCount,
+                        SkippedCount = legacyResult.SkippedCount,
+                        Errors = legacyResult.Errors,
+                        SkippedItems = legacyResult.SkippedItems,
+                    };
+                }
+
+                if (options.SyncImageToHq)
+                {
+                    if (!resp.Success)
+                    {
+                        resp.HqImageSync = new ProductHqImageSyncResultDto
+                        {
+                            Requested = true,
+                            Success = false,
+                            ErrorCode = "HQ_IMAGE_SYNC_LOCAL_UPDATE_FAILED",
+                            Errors = new List<string>
+                            {
+                                "本地图片更新失败，未执行 HQ 图片同步",
+                            },
+                        };
+                    }
+                    else if (resp.ImageUpdates.Count == 0)
+                    {
+                        resp.HqImageSync = new ProductHqImageSyncResultDto
+                        {
+                            Requested = true,
+                            Success = false,
+                            ErrorCode = "HQ_IMAGE_SYNC_NO_LOCAL_IMAGES",
+                            Errors = new List<string>
+                            {
+                                "没有本地成功更新的图片可同步至 HQ",
+                            },
+                        };
+                    }
+                    else
+                    {
+                        resp.HqImageSync = await _productHqSyncService.SyncProductImagesAsync(
+                            resp.ImageUpdates,
+                            currentUsername
+                        );
+                        if (!resp.HqImageSync.Success)
+                        {
+                            resp.Message = "本地更新完成，HQ 图片同步存在失败";
+                        }
+                    }
+                }
+
                 return Ok(
                     new
                     {
@@ -324,12 +434,110 @@ namespace BlazorApp.Api.Controllers.React
                         successCount = resp.SuccessCount,
                         failedCount = resp.FailedCount,
                         errors = resp.Errors,
+                        imageUpdatedCount = resp.ImageUpdatedCount,
+                        hqImageSync = resp.HqImageSync,
                     }
                 );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建仓库商品批量修改后台任务。
+        /// </summary>
+        [HttpPost("batch-update/jobs")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> StartBatchUpdateJob(
+            [FromBody] BatchUpdateRequest request,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (request == null || request.Items == null || !request.Items.Any())
+                {
+                    return BadRequest(new { success = false, message = "请求数据不能为空" });
+                }
+
+                var job = await _batchUpdateJobService.StartJobAsync(
+                    new WarehouseProductBatchUpdateJobRequestDto
+                    {
+                        Items = request.Items,
+                        SyncStorePurchasePrice = request.SyncStorePurchasePrice,
+                        GenerateImageUrls = request.GenerateImageUrls,
+                        ImageBaseUrl = request.ImageBaseUrl,
+                        SyncImageToHq = request.SyncImageToHq,
+                    },
+                    GetCurrentUsername(),
+                    cancellationToken
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = job,
+                        message = job.IsDuplicateRequest
+                            ? "相同批量修改任务正在后台执行"
+                            : "仓库商品批量修改任务已提交",
+                    }
+                );
+            }
+            catch (WarehouseProductBatchUpdateQueueFullException ex)
+            {
+                return StatusCode(
+                    StatusCodes.Status429TooManyRequests,
+                    new { success = false, message = ex.Message }
+                );
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "提交仓库商品批量修改后台任务失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询仓库商品批量修改后台任务。
+        /// </summary>
+        [HttpGet("batch-update/jobs/{jobId}")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> GetBatchUpdateJob(
+            string jobId,
+            CancellationToken cancellationToken
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(jobId))
+                {
+                    return BadRequest(new { success = false, message = "jobId 不能为空" });
+                }
+
+                var job = await _batchUpdateJobService.GetJobAsync(jobId, cancellationToken);
+                if (job == null)
+                {
+                    return NotFound(
+                        new
+                        {
+                            success = false,
+                            message = "批量修改任务不存在、已过期或服务已重启",
+                        }
+                    );
+                }
+
+                return Ok(new { success = true, data = job, message = "查询成功" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询仓库商品批量修改后台任务失败: {JobId}", jobId);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -945,6 +1153,21 @@ namespace BlazorApp.Api.Controllers.React
             /// 是否同步更新分店进货价；为空时保持旧行为。
             /// </summary>
             public bool? SyncStorePurchasePrice { get; set; }
+
+            /// <summary>
+            /// 是否按数据库中的货号批量覆盖商品图片地址。
+            /// </summary>
+            public bool GenerateImageUrls { get; set; }
+
+            /// <summary>
+            /// 图片目录基础地址；启用图片生成时必填。
+            /// </summary>
+            public string? ImageBaseUrl { get; set; }
+
+            /// <summary>
+            /// 本地提交后是否只同步 HQ 的 H商品图片字段。
+            /// </summary>
+            public bool SyncImageToHq { get; set; }
         }
 
         public class BatchCreateRequest

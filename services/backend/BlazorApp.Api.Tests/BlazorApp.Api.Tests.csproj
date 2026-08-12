@@ -69,6 +69,7 @@
     <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />
     <Compile Include="ProductServiceChangeHistoryTests.cs" />
     <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
+    <Compile Include="WarehouseProductBatchUpdateJobServiceTests.cs" />
     <Compile Include="WarehouseStorePriceSyncContractTests.cs" />
     <Compile Include="WarehouseStorePriceSyncServiceTests.cs" />
     <Compile Include="WarehouseStorePriceHqSyncTests.cs" />

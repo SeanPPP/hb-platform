@@ -61,6 +61,148 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncProductImagesAsync_只覆盖唯一匹配的HQ图片字段并报告逐项失败()
+    {
+        await _hqDb.Insertable(new[]
+        {
+            CreateHqImageRow(1, "HB-IMAGE-OK", "https://old/ok.jpg", "https://keep/tencent-ok.jpg"),
+            CreateHqImageRow(2, "HB-IMAGE-DUP", "https://old/dup-1.jpg", "https://keep/tencent-dup-1.jpg"),
+            CreateHqImageRow(3, "HB-IMAGE-DUP", "https://old/dup-2.jpg", "https://keep/tencent-dup-2.jpg"),
+        }).ExecuteCommandAsync();
+
+        var items = new List<ProductHqImageUpdateItemDto>();
+        foreach (var (productCode, imageUrl) in new[]
+        {
+            ("HB-IMAGE-OK", "https://new/ok.jpg"),
+            ("HB-IMAGE-DUP", "https://new/dup.jpg"),
+            ("HB-IMAGE-MISSING", "https://new/missing.jpg"),
+        })
+        {
+            items.Add(new ProductHqImageUpdateItemDto
+            {
+                ProductCode = productCode,
+                ImageUrl = imageUrl,
+            });
+        }
+
+        var result = await CreateService().SyncProductImagesAsync(items, "仓库经理A");
+        var unique = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(item => item.H商品编码 == "HB-IMAGE-OK");
+        var duplicates = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .Where(item => item.H商品编码 == "HB-IMAGE-DUP")
+            .OrderBy(item => item.ID)
+            .ToListAsync();
+
+        Assert.False(result.Success);
+        Assert.Equal(1, result.UpdatedCount);
+        Assert.Equal(2, result.FailedCount);
+        Assert.Equal("HQ_IMAGE_SYNC_PARTIAL", result.ErrorCode);
+        Assert.Equal("https://new/ok.jpg", unique.H商品图片);
+        Assert.Equal("https://keep/tencent-ok.jpg", unique.H腾讯云图地址);
+        Assert.Equal("仓库经理A", unique.FGC_LastModifier);
+        Assert.Collection(
+            duplicates,
+            first => Assert.Equal("https://old/dup-1.jpg", first.H商品图片),
+            second => Assert.Equal("https://old/dup-2.jpg", second.H商品图片)
+        );
+    }
+
+    [Fact]
+    public async Task SyncProductImagesAsync_同步锁占用时立即返回忙碌且不写HQ()
+    {
+        await _hqDb.Insertable(
+            CreateHqImageRow(
+                11,
+                "HB-IMAGE-BUSY",
+                "https://old/busy.jpg",
+                "https://keep/tencent-busy.jpg"
+            )
+        ).ExecuteCommandAsync();
+        var syncLock = Assert.IsType<SemaphoreSlim>(
+            typeof(ProductHqSyncService)
+                .GetField("SyncLock", BindingFlags.NonPublic | BindingFlags.Static)!
+                .GetValue(null)
+        );
+        await syncLock.WaitAsync();
+        try
+        {
+            var result = await CreateService().SyncProductImagesAsync(
+                new List<ProductHqImageUpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "HB-IMAGE-BUSY",
+                        ImageUrl = "https://new/busy.jpg",
+                    },
+                },
+                "仓库经理A"
+            );
+
+            var row = await _hqDb.Queryable<DIC_商品信息字典表>()
+                .SingleAsync(item => item.H商品编码 == "HB-IMAGE-BUSY");
+            Assert.False(result.Success);
+            Assert.Equal("HQ_IMAGE_SYNC_BUSY", result.ErrorCode);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Equal("https://old/busy.jpg", row.H商品图片);
+        }
+        finally
+        {
+            syncLock.Release();
+        }
+    }
+
+    [Fact]
+    public async Task SyncProductImagesAsync_HQ写入异常时回滚本批全部图片()
+    {
+        await _hqDb.Insertable(new[]
+        {
+            CreateHqImageRow(21, "HB-IMAGE-ROLLBACK-1", "https://old/rollback-1.jpg", string.Empty),
+            CreateHqImageRow(22, "HB-IMAGE-ROLLBACK-2", "https://old/rollback-2.jpg", string.Empty),
+        }).ExecuteCommandAsync();
+        _hqDb.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER fail_hq_image_update
+            BEFORE UPDATE OF "H商品图片" ON "DIC_商品信息字典表"
+            WHEN NEW."H商品编码" = 'HB-IMAGE-ROLLBACK-2'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced hq image failure');
+            END
+            """
+        );
+
+        var result = await CreateService().SyncProductImagesAsync(
+            new List<ProductHqImageUpdateItemDto>
+            {
+                new()
+                {
+                    ProductCode = "HB-IMAGE-ROLLBACK-1",
+                    ImageUrl = "https://new/rollback-1.jpg",
+                },
+                new()
+                {
+                    ProductCode = "HB-IMAGE-ROLLBACK-2",
+                    ImageUrl = "https://new/rollback-2.jpg",
+                },
+            },
+            "仓库经理A"
+        );
+
+        var rows = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .Where(item => item.H商品编码 != null && item.H商品编码.StartsWith("HB-IMAGE-ROLLBACK"))
+            .OrderBy(item => item.ID)
+            .ToListAsync();
+        Assert.False(result.Success);
+        Assert.Equal("HQ_IMAGE_SYNC_ERROR", result.ErrorCode);
+        Assert.Equal(0, result.UpdatedCount);
+        Assert.Equal(2, result.FailedCount);
+        Assert.Collection(
+            rows,
+            first => Assert.Equal("https://old/rollback-1.jpg", first.H商品图片),
+            second => Assert.Equal("https://old/rollback-2.jpg", second.H商品图片)
+        );
+    }
+
+    [Fact]
     public async Task PushToHqAsync_空商品编码_返回验证错误()
     {
         var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest());
@@ -2199,6 +2341,39 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             UpdatedAt = DateTime.UtcNow,
         }).ExecuteCommandAsync();
     }
+
+    private static DIC_商品信息字典表 CreateHqImageRow(
+        int id,
+        string productCode,
+        string imageUrl,
+        string tencentImageUrl
+    ) => new()
+    {
+        ID = id,
+        HGUID = $"hq-image-{id}",
+        H商品标签GUID = string.Empty,
+        H商品分类码GUID = string.Empty,
+        H供货商编码 = "200",
+        H商品编码 = productCode,
+        H货号 = productCode,
+        H主条形码 = string.Empty,
+        H商品名称 = productCode,
+        H大写名称 = productCode,
+        H规格 = string.Empty,
+        H单位 = "个",
+        H商品图片 = imageUrl,
+        H腾讯云图地址 = tencentImageUrl,
+        H进货单主表GUID = string.Empty,
+        H进货单详情GUID = string.Empty,
+        CBP商品中文名称 = productCode,
+        CBP供应商编码 = string.Empty,
+        CBP商品分类码GUID = string.Empty,
+        FGC_Creator = "seed",
+        FGC_CreateDate = DateTime.UtcNow,
+        FGC_LastModifier = "seed",
+        FGC_LastModifyDate = DateTime.UtcNow,
+        FGC_UpdateHelp = string.Empty,
+    };
 
     private ProductHqSyncService CreateService(ILogger<ProductHqSyncService>? logger = null)
     {

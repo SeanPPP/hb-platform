@@ -238,7 +238,37 @@ export interface WarehouseProductHqSyncJobResult {
 }
 
 export type WarehouseProductHqSyncPollingOptions = HqProductSyncPollingOptions
+
+export type WarehouseProductBatchUpdateJobStatus =
+  | 'Queued'
+  | 'Running'
+  | 'PartiallySucceeded'
+  | 'Succeeded'
+  | 'Failed'
+
+export interface WarehouseProductBatchUpdateJobResult {
+  jobId: string
+  operationId?: string
+  status: WarehouseProductBatchUpdateJobStatus
+  isDuplicateRequest?: boolean
+  createdAt?: string
+  startedAt?: string
+  completedAt?: string
+  expiresAt?: string
+  message?: string
+  result?: WarehouseImportActionResult
+}
+
+export type WarehouseProductBatchUpdatePollingOptions = HqProductSyncPollingOptions
 export { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError }
+
+const WAREHOUSE_PRODUCT_BATCH_UPDATE_JOB_STATUSES: readonly WarehouseProductBatchUpdateJobStatus[] = [
+  'Queued',
+  'Running',
+  'PartiallySucceeded',
+  'Succeeded',
+  'Failed',
+]
 
 export interface UpdateWarehouseProductFullPayload {
   productName?: string
@@ -356,6 +386,30 @@ export interface WarehouseProductBatchUpdateItem {
 
 export interface WarehouseProductBatchUpdateOptions {
   syncStorePurchasePrice?: boolean
+  /** 开启后按货号批量生成本地商品图片地址（Product.ProductImage）。 */
+  generateImageUrls?: boolean
+  /** 生成图片地址使用的基础地址，示例 https://host/YW200/ 。 */
+  imageBaseUrl?: string
+  /** 开启后把 H 商品图片地址同步到 HQ 数据库。 */
+  syncImageToHq?: boolean
+}
+
+export interface WarehouseProductHqImageSyncItem {
+  productCode: string
+  success: boolean
+  message?: string
+}
+
+export interface WarehouseProductHqImageSyncResult {
+  requested?: boolean
+  success?: boolean
+  updatedCount?: number
+  successCount?: number
+  failedCount?: number
+  totalCount?: number
+  errorCode?: string
+  errors?: string[]
+  items?: WarehouseProductHqImageSyncItem[]
 }
 
 export interface WarehouseImportListResult<T> {
@@ -375,6 +429,12 @@ export interface WarehouseImportActionResult {
   Errors?: string[]
   results?: Array<{ productCode: string; success: boolean; message?: string }>
   message?: string
+  /** 本次批量更新的本地商品图片地址条数。 */
+  imageUpdatedCount?: number
+  ImageUpdatedCount?: number
+  /** 勾选同步 HQ 时的 HQ 图片同步结果（逐项失败不抛错，由调用方读取明细）。 */
+  hqImageSync?: WarehouseProductHqImageSyncResult
+  HqImageSync?: WarehouseProductHqImageSyncResult
 }
 
 interface WarehouseImportListQuery {
@@ -572,6 +632,92 @@ function readStringArray(...values: unknown[]): string[] | undefined {
   return undefined
 }
 
+function normalizeWarehouseProductHqImageSync(raw: unknown): WarehouseProductHqImageSyncResult | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined
+  }
+
+  const value = raw as Record<string, unknown>
+  const rawItems = Array.isArray(value.items)
+    ? value.items
+    : Array.isArray(value.Items)
+      ? value.Items
+      : undefined
+
+  return {
+    requested: value.requested === undefined && value.Requested === undefined
+      ? undefined
+      : toBoolean(value.requested ?? value.Requested),
+    success: value.success === undefined && value.Success === undefined
+      ? undefined
+      : toBoolean(value.success ?? value.Success),
+    updatedCount: toNumber(value.updatedCount ?? value.UpdatedCount),
+    successCount: toNumber(value.successCount ?? value.SuccessCount),
+    failedCount: toNumber(value.failedCount ?? value.FailedCount),
+    totalCount: toNumber(value.totalCount ?? value.TotalCount),
+    errorCode: readString(value.errorCode, value.ErrorCode),
+    errors: readStringArray(value.errors, value.Errors) ?? [],
+    items: Array.isArray(rawItems)
+      ? rawItems
+          .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+          .map((item) => ({
+            productCode: readString(item.productCode, item.ProductCode) ?? '',
+            success: toBoolean(item.success ?? item.Success, false),
+            message: readString(item.message, item.Message),
+          }))
+      : undefined,
+  }
+}
+
+function normalizeWarehouseProductBatchUpdateResult(raw: unknown): WarehouseImportActionResult | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined
+  }
+
+  const value = raw as Record<string, unknown>
+  const successCount = toNumber(value.successCount ?? value.SuccessCount)
+  const failedCount = toNumber(value.failedCount ?? value.FailedCount ?? value.failed ?? value.Failed)
+  const imageUpdatedCount = toNumber(value.imageUpdatedCount ?? value.ImageUpdatedCount)
+  const hqImageSync = normalizeWarehouseProductHqImageSync(value.hqImageSync ?? value.HqImageSync)
+
+  return {
+    ...value,
+    success: toBoolean(value.success ?? value.Success, false),
+    ...(successCount === undefined ? {} : { successCount }),
+    ...(failedCount === undefined ? {} : { failedCount }),
+    errors: readStringArray(value.errors, value.Errors) ?? [],
+    ...(imageUpdatedCount === undefined ? {} : { imageUpdatedCount }),
+    hqImageSync,
+  }
+}
+
+function normalizeWarehouseProductBatchUpdateJob(
+  raw: unknown,
+  fallbackJobId = '',
+): WarehouseProductBatchUpdateJobResult {
+  const value = readRecord(raw)
+  const rawStatus = readString(value.status, value.Status)
+  const rawResult = value.result ?? value.Result
+  if (!WAREHOUSE_PRODUCT_BATCH_UPDATE_JOB_STATUSES.includes(rawStatus as WarehouseProductBatchUpdateJobStatus)) {
+    throw new Error(`未知的仓库商品批量修改任务状态: ${rawStatus ?? ''}`)
+  }
+
+  return {
+    jobId: readString(value.jobId, value.JobId) ?? fallbackJobId,
+    operationId: readString(value.operationId, value.OperationId),
+    status: rawStatus as WarehouseProductBatchUpdateJobStatus,
+    isDuplicateRequest: value.isDuplicateRequest === undefined && value.IsDuplicateRequest === undefined
+      ? undefined
+      : toBoolean(value.isDuplicateRequest ?? value.IsDuplicateRequest),
+    createdAt: readString(value.createdAt, value.CreatedAt),
+    startedAt: readString(value.startedAt, value.StartedAt),
+    completedAt: readString(value.completedAt, value.CompletedAt),
+    expiresAt: readString(value.expiresAt, value.ExpiresAt),
+    message: readString(value.message, value.Message),
+    result: normalizeWarehouseProductBatchUpdateResult(rawResult),
+  }
+}
+
 function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProductListItem {
   const localSupplier = readRecord(raw.localSupplier ?? raw.LocalSupplier)
 
@@ -753,18 +899,68 @@ export async function batchUpdateWarehouseProducts(
     data: {
       Items: items,
       ...(options.syncStorePurchasePrice === undefined ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice }),
+      ...(options.generateImageUrls === undefined ? {} : { GenerateImageUrls: options.generateImageUrls }),
+      ...(options.imageBaseUrl === undefined ? {} : { ImageBaseUrl: options.imageBaseUrl }),
+      ...(options.syncImageToHq === undefined ? {} : { SyncImageToHq: options.syncImageToHq }),
     },
   })
   const raw = response as { success?: boolean; isSuccess?: boolean; message?: string } | undefined
   ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')
   const result = unwrapResponse<WarehouseImportActionResult>(response, { success: false })
   ensureApiSuccess(result.success, result.message, '仓库批量更新失败')
-  const failedCount = Number(result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0)
-  const errors = result.errors ?? result.Errors ?? []
-  if (failedCount > 0) {
-    throw new Error(result.message || errors.join('；') || '仓库批量更新部分失败')
+  // 图片地址/HQ 同步的逐项失败不在这里抛错，由调用方读取 imageUpdatedCount/hqImageSync 明细。
+  const imageUpdatedCount = toNumber(result.imageUpdatedCount ?? result.ImageUpdatedCount)
+  const hqImageSync = normalizeWarehouseProductHqImageSync(result.hqImageSync ?? result.HqImageSync)
+  return {
+    ...result,
+    ...(imageUpdatedCount === undefined ? {} : { imageUpdatedCount }),
+    hqImageSync,
   }
-  return result
+}
+
+export function createWarehouseProductBatchUpdateJobPoller({
+  jobId,
+  getJob,
+  ...options
+}: WarehouseProductBatchUpdatePollingOptions & {
+  jobId: string
+  getJob: (jobId: string) => Promise<WarehouseProductBatchUpdateJobResult>
+}) {
+  return createHqSyncJobPoller<WarehouseProductBatchUpdateJobResult>({
+    jobId,
+    getJob,
+    isTerminalStatus: (status) =>
+      status === 'Succeeded' || status === 'PartiallySucceeded' || status === 'Failed',
+    ...options,
+  })
+}
+
+export async function createWarehouseProductBatchUpdateJob(
+  items: WarehouseProductBatchUpdateItem[],
+  options: WarehouseProductBatchUpdateOptions = {},
+): Promise<WarehouseProductBatchUpdateJobResult> {
+  const response = await request.post<ApiResponse<WarehouseProductBatchUpdateJobResult>>(
+    `${API_BASE}/batch-update/jobs`,
+    {
+      Items: items,
+      ...(options.syncStorePurchasePrice === undefined ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice }),
+      ...(options.generateImageUrls === undefined ? {} : { GenerateImageUrls: options.generateImageUrls }),
+      ...(options.imageBaseUrl === undefined ? {} : { ImageBaseUrl: options.imageBaseUrl }),
+      ...(options.syncImageToHq === undefined ? {} : { SyncImageToHq: options.syncImageToHq }),
+    },
+  )
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, '创建仓库商品批量修改任务失败')
+  return normalizeWarehouseProductBatchUpdateJob(response.data, '')
+}
+
+export async function getWarehouseProductBatchUpdateJob(
+  jobId: string,
+): Promise<WarehouseProductBatchUpdateJobResult> {
+  const response = await request.get<ApiResponse<WarehouseProductBatchUpdateJobResult>>(
+    `${API_BASE}/batch-update/jobs/${encodeURIComponent(jobId)}`,
+  )
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, '查询仓库商品批量修改任务失败')
+  return normalizeWarehouseProductBatchUpdateJob(response.data, jobId)
 }
 
 export async function getWarehouseProductsTable(

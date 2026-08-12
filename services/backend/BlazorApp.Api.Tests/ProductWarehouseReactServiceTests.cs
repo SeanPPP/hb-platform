@@ -2705,6 +2705,303 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateAsync_按数据库货号生成图片地址并覆盖本地商品图片()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE",
+                "MC 164/3",
+                "图片批量测试商品",
+                warehouseCategoryGuid: null,
+                supplierCode: "SUP-BATCH-IMAGE"
+            );
+            await _db
+                .Updateable<Product>()
+                .SetColumns(product => new Product { ProductImage = "https://old/product.jpg" })
+                .Where(product => product.ProductCode == "P-BATCH-IMAGE")
+                .ExecuteCommandAsync();
+            await _db
+                .Updateable<DomesticProduct>()
+                .SetColumns(product => new DomesticProduct
+                {
+                    ProductImage = "https://old/domestic.jpg",
+                })
+                .Where(product => product.ProductCode == "P-BATCH-IMAGE")
+                .ExecuteCommandAsync();
+
+            var service = CreateService(
+                changeHistoryService: CreateRealChangeHistoryService(
+                    userGuid: "batch-image-user-guid",
+                    username: "仓库经理A"
+                )
+            );
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = "P-BATCH-IMAGE" },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog///",
+                }
+            );
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE");
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE");
+            var history = await _db.Queryable<WarehouseProductChangeHistory>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE");
+            const string expectedUrl = "https://images.example.com/catalog/MC%20164%2F3.jpg";
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.ImageUpdatedCount);
+            Assert.Equal(expectedUrl, product.ProductImage);
+            Assert.Equal("仓库经理A", product.UpdatedBy);
+            Assert.Equal(expectedUrl, domesticProduct.ProductImage);
+            Assert.Equal("仓库经理A", domesticProduct.UpdatedBy);
+            Assert.Equal("BatchUpdate", history.Action);
+            Assert.Contains("\"fieldKey\":\"productImage\"", history.ChangesJson);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_生成图片时忽略同编码软删除商品并更新有效主档()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "P-BATCH-IMAGE-ACTIVE-deleted-uuid",
+                ProductCode = "P-BATCH-IMAGE-ACTIVE",
+                ItemNumber = "DELETED-ITEM",
+                ProductName = "已删除历史商品",
+                ProductImage = "https://old/deleted-product.jpg",
+                IsDeleted = true,
+                CreatedAt = DateTime.UtcNow.AddDays(-2),
+                UpdatedAt = DateTime.UtcNow.AddDays(1),
+            }).ExecuteCommandAsync();
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE-ACTIVE",
+                "ACTIVE-ITEM",
+                "有效商品主档",
+                warehouseCategoryGuid: null,
+                updatedAt: DateTime.UtcNow.AddDays(-1)
+            );
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = "P-BATCH-IMAGE-ACTIVE" },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/",
+                }
+            );
+
+            var activeProduct = await _db.Queryable<Product>()
+                .SingleAsync(item =>
+                    item.ProductCode == "P-BATCH-IMAGE-ACTIVE" && !item.IsDeleted
+                );
+            var deletedProduct = await _db.Queryable<Product>()
+                .SingleAsync(item =>
+                    item.ProductCode == "P-BATCH-IMAGE-ACTIVE" && item.IsDeleted
+                );
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.ImageUpdatedCount);
+            Assert.Equal(
+                "https://images.example.com/catalog/ACTIVE-ITEM.jpg",
+                activeProduct.ProductImage
+            );
+            Assert.Equal("https://old/deleted-product.jpg", deletedProduct.ProductImage);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_图片基础地址无效时在事务前拒绝且不修改商品()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE-INVALID",
+                "ITEM-INVALID",
+                "图片地址校验商品",
+                warehouseCategoryGuid: null,
+                domesticPrice: 2.5m
+            );
+            await _db
+                .Updateable<Product>()
+                .SetColumns(product => new Product { ProductImage = "https://old/image.jpg" })
+                .Where(product => product.ProductCode == "P-BATCH-IMAGE-INVALID")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-IMAGE-INVALID",
+                        DomesticPrice = 9.9m,
+                    },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/?token=secret",
+                }
+            );
+
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-INVALID");
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-INVALID");
+
+            Assert.False(result.Success);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains("查询参数", result.Message);
+            Assert.Equal("https://old/image.jpg", product.ProductImage);
+            Assert.Equal(2.5m, warehouseProduct.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_货号缺失时整项跳过其他字段()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE-NO-ITEM",
+                "TEMP-ITEM",
+                "无货号商品",
+                warehouseCategoryGuid: null,
+                domesticPrice: 3.5m
+            );
+            await _db
+                .Updateable<Product>()
+                .SetColumns(product => new Product
+                {
+                    ItemNumber = null,
+                    ProductImage = "https://old/no-item.jpg",
+                })
+                .Where(product => product.ProductCode == "P-BATCH-IMAGE-NO-ITEM")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-IMAGE-NO-ITEM",
+                        DomesticPrice = 8.8m,
+                    },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/",
+                }
+            );
+
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-NO-ITEM");
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-NO-ITEM");
+
+            Assert.True(result.Success);
+            Assert.Equal(0, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Equal(0, result.ImageUpdatedCount);
+            Assert.Contains(result.Errors, error => error.Contains("货号为空"));
+            Assert.Equal("https://old/no-item.jpg", product.ProductImage);
+            Assert.Equal(3.5m, warehouseProduct.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_生成图片地址超过字段长度时整项跳过()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE-LONG",
+                "ITEM-NUMBER-IS-TOO-LONG",
+                "图片地址超长商品",
+                warehouseCategoryGuid: null,
+                domesticPrice: 4.5m
+            );
+            var longBaseUrl = $"https://images.example.com/{new string('a', 170)}/";
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-IMAGE-LONG",
+                        DomesticPrice = 9.9m,
+                    },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = longBaseUrl,
+                }
+            );
+
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-LONG");
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-LONG");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Contains(result.Errors, error => error.Contains("超过 200"));
+            Assert.Null(product.ProductImage);
+            Assert.Equal(4.5m, warehouseProduct.DomesticPrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_生成图片时不修改已软删除国内商品()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-BATCH-IMAGE-DELETED-DOMESTIC",
+                "ITEM-DELETED-DOMESTIC",
+                "软删除国内商品",
+                warehouseCategoryGuid: null,
+                supplierCode: "SUP-BATCH-IMAGE-DELETED",
+                domesticProductIsDeleted: true
+            );
+            await _db
+                .Updateable<DomesticProduct>()
+                .SetColumns(product => new DomesticProduct
+                {
+                    ProductImage = "https://old/deleted-domestic.jpg",
+                })
+                .Where(product => product.ProductCode == "P-BATCH-IMAGE-DELETED-DOMESTIC")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = "P-BATCH-IMAGE-DELETED-DOMESTIC" },
+                },
+                "仓库经理A",
+                new WarehouseProductBatchUpdateOptionsDto
+                {
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/",
+                }
+            );
+
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-DELETED-DOMESTIC");
+            var deletedDomestic = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(item => item.ProductCode == "P-BATCH-IMAGE-DELETED-DOMESTIC");
+
+            Assert.True(result.Success);
+            Assert.Equal(
+                "https://images.example.com/catalog/ITEM-DELETED-DOMESTIC.jpg",
+                product.ProductImage
+            );
+            Assert.Equal("https://old/deleted-domestic.jpg", deletedDomestic.ProductImage);
+            Assert.True(deletedDomestic.IsDeleted);
+        }
+
+        [Fact]
         public async Task BatchUpdateAsync_WhenImportPriceChanges_UpdatesWarehouseProductProductAndStoreRetailPrices()
         {
             await SeedPriceSyncProductAsync(

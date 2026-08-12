@@ -68,6 +68,26 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void BatchUpdate_仅允许Admin和WarehouseManager调用()
+        {
+            var authorize = GetSingleAuthorizeAttribute(
+                nameof(ReactProductWarehouseController.BatchUpdate)
+            );
+
+            Assert.Equal("Admin,WarehouseManager", authorize.Roles);
+        }
+
+        [Theory]
+        [InlineData(nameof(ReactProductWarehouseController.StartBatchUpdateJob))]
+        [InlineData(nameof(ReactProductWarehouseController.GetBatchUpdateJob))]
+        public void BatchUpdateJob_仅允许Admin和WarehouseManager调用(string methodName)
+        {
+            var authorize = GetSingleAuthorizeAttribute(methodName);
+
+            Assert.Equal("Admin,WarehouseManager", authorize.Roles);
+        }
+
+        [Fact]
         public async Task Table_服务抛异常时_记录日志前先设置500且包含失败阶段()
         {
             var timings = new WarehouseProductTableTimingSnapshot(
@@ -532,6 +552,266 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdate_图片本地成功但HQ失败时仍返回200和分级结果()
+        {
+            var items = new List<UpdateItemDto> { new() { ProductCode = "P-IMAGE-HQ" } };
+            var serviceMock = new Mock<IProductWarehouseReactService>(MockBehavior.Strict);
+            serviceMock
+                .Setup(service =>
+                    service.BatchUpdateAsync(
+                        items,
+                        "仓库经理A",
+                        It.Is<WarehouseProductBatchUpdateOptionsDto>(options =>
+                            options.GenerateImageUrls
+                            && options.SyncImageToHq
+                            && options.ImageBaseUrl == "https://images.example.com/catalog/"
+                        )
+                    )
+                )
+                .ReturnsAsync(
+                    new WarehouseProductBatchUpdateResultDto
+                    {
+                        Success = true,
+                        SuccessCount = 1,
+                        ImageUpdatedCount = 1,
+                        ImageUpdates = new List<ProductHqImageUpdateItemDto>
+                        {
+                            new()
+                            {
+                                ProductCode = "P-IMAGE-HQ",
+                                ImageUrl = "https://images.example.com/catalog/ITEM-1.jpg",
+                            },
+                        },
+                    }
+                );
+            var hqSync = new Mock<IProductHqSyncService>(MockBehavior.Strict);
+            hqSync
+                .Setup(service =>
+                    service.SyncProductImagesAsync(
+                        It.Is<IReadOnlyCollection<ProductHqImageUpdateItemDto>>(updates =>
+                            updates.Count == 1
+                            && updates.Single().ProductCode == "P-IMAGE-HQ"
+                        ),
+                        "仓库经理A",
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(
+                    new ProductHqImageSyncResultDto
+                    {
+                        Requested = true,
+                        Success = false,
+                        FailedCount = 1,
+                        ErrorCode = "HQ_IMAGE_SYNC_ITEM_ERRORS",
+                        Errors = new List<string> { "HQ 商品不存在: P-IMAGE-HQ" },
+                    }
+                );
+            var controller = CreateController(
+                serviceMock.Object,
+                username: "仓库经理A",
+                productHqSyncService: hqSync.Object
+            );
+
+            var actionResult = await controller.BatchUpdate(
+                new ReactProductWarehouseController.BatchUpdateRequest
+                {
+                    Items = items,
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog///",
+                    SyncImageToHq = true,
+                }
+            );
+
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var payload = ok.Value!;
+            Assert.True((bool)payload.GetType().GetProperty("success")!.GetValue(payload)!);
+            Assert.Equal(
+                "本地更新完成，HQ 图片同步存在失败",
+                payload.GetType().GetProperty("message")!.GetValue(payload)
+            );
+            var hqPayload = payload.GetType().GetProperty("hqImageSync")!.GetValue(payload)!;
+            Assert.False((bool)hqPayload.GetType().GetProperty("Success")!.GetValue(hqPayload)!);
+            Assert.Equal(
+                "HQ_IMAGE_SYNC_ITEM_ERRORS",
+                hqPayload.GetType().GetProperty("ErrorCode")!.GetValue(hqPayload)
+            );
+            serviceMock.VerifyAll();
+            hqSync.VerifyAll();
+        }
+
+        [Fact]
+        public async Task BatchUpdate_同步HQ但未启用图片生成时返回400且不调用服务()
+        {
+            var serviceMock = new Mock<IProductWarehouseReactService>(MockBehavior.Strict);
+            var controller = CreateController(serviceMock.Object, username: "仓库经理A");
+
+            var actionResult = await controller.BatchUpdate(
+                new ReactProductWarehouseController.BatchUpdateRequest
+                {
+                    Items = new List<UpdateItemDto> { new() { ProductCode = "P-IMAGE-HQ" } },
+                    SyncImageToHq = true,
+                }
+            );
+
+            var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult);
+            Assert.Contains(
+                "必须启用图片地址生成",
+                badRequest.Value!.GetType().GetProperty("message")!.GetValue(badRequest.Value)!.ToString()
+            );
+            serviceMock.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task BatchUpdate_本地事务失败时不调用HQ图片同步()
+        {
+            var items = new List<UpdateItemDto> { new() { ProductCode = "P-IMAGE-LOCAL-FAIL" } };
+            var serviceMock = new Mock<IProductWarehouseReactService>(MockBehavior.Strict);
+            serviceMock
+                .Setup(service =>
+                    service.BatchUpdateAsync(
+                        items,
+                        "仓库经理A",
+                        It.IsAny<WarehouseProductBatchUpdateOptionsDto>()
+                    )
+                )
+                .ReturnsAsync(
+                    new WarehouseProductBatchUpdateResultDto
+                    {
+                        Success = false,
+                        Message = "批量更新失败: history insert failed",
+                    }
+                );
+            var hqSync = new Mock<IProductHqSyncService>(MockBehavior.Strict);
+            var controller = CreateController(
+                serviceMock.Object,
+                username: "仓库经理A",
+                productHqSyncService: hqSync.Object
+            );
+
+            var actionResult = await controller.BatchUpdate(
+                new ReactProductWarehouseController.BatchUpdateRequest
+                {
+                    Items = items,
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/",
+                    SyncImageToHq = true,
+                }
+            );
+
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var payload = ok.Value!;
+            Assert.False((bool)payload.GetType().GetProperty("success")!.GetValue(payload)!);
+            Assert.Equal(
+                "批量更新失败: history insert failed",
+                payload.GetType().GetProperty("message")!.GetValue(payload)
+            );
+            var hqPayload = payload.GetType().GetProperty("hqImageSync")!.GetValue(payload)!;
+            Assert.Equal(
+                "HQ_IMAGE_SYNC_LOCAL_UPDATE_FAILED",
+                hqPayload.GetType().GetProperty("ErrorCode")!.GetValue(hqPayload)
+            );
+            serviceMock.VerifyAll();
+            hqSync.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task StartBatchUpdateJob_传递完整请求与Claim用户名给后台任务()
+        {
+            var jobService = new Mock<IWarehouseProductBatchUpdateJobService>(MockBehavior.Strict);
+            jobService
+                .Setup(service => service.StartJobAsync(
+                    It.Is<WarehouseProductBatchUpdateJobRequestDto>(request =>
+                        request.Items.Count == 1
+                        && request.Items[0].ProductCode == "P-JOB-1"
+                        && request.GenerateImageUrls
+                        && request.SyncImageToHq
+                        && request.ImageBaseUrl == "https://images.example.com/catalog/"
+                    ),
+                    "后台操作员",
+                    It.IsAny<CancellationToken>()
+                ))
+                .ReturnsAsync(new WarehouseProductBatchUpdateJobDto
+                {
+                    JobId = "batch-job-1",
+                    OperationId = "warehouse-product-batch-update:test",
+                    Status = WarehouseProductBatchUpdateJobStatusConstants.Queued,
+                    CreatedAt = DateTime.UtcNow,
+                });
+            var controller = CreateController(
+                Mock.Of<IProductWarehouseReactService>(),
+                batchUpdateJobService: jobService.Object,
+                username: "后台操作员"
+            );
+
+            var actionResult = await controller.StartBatchUpdateJob(
+                new ReactProductWarehouseController.BatchUpdateRequest
+                {
+                    Items = [new UpdateItemDto { ProductCode = "P-JOB-1" }],
+                    GenerateImageUrls = true,
+                    ImageBaseUrl = "https://images.example.com/catalog/",
+                    SyncImageToHq = true,
+                },
+                CancellationToken.None
+            );
+
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var payload = ok.Value!;
+            var data = payload.GetType().GetProperty("data")!.GetValue(payload)!;
+            Assert.Equal("batch-job-1", data.GetType().GetProperty("JobId")!.GetValue(data));
+            jobService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task GetBatchUpdateJob_任务不存在时返回404()
+        {
+            var jobService = new Mock<IWarehouseProductBatchUpdateJobService>();
+            jobService
+                .Setup(service => service.GetJobAsync("missing-job", It.IsAny<CancellationToken>()))
+                .ReturnsAsync((WarehouseProductBatchUpdateJobDto?)null);
+            var controller = CreateController(
+                Mock.Of<IProductWarehouseReactService>(),
+                batchUpdateJobService: jobService.Object
+            );
+
+            var actionResult = await controller.GetBatchUpdateJob(
+                "missing-job",
+                CancellationToken.None
+            );
+
+            var notFound = Assert.IsType<NotFoundObjectResult>(actionResult);
+            Assert.Contains("已过期或服务已重启", notFound.Value!.ToString());
+        }
+
+        [Fact]
+        public async Task StartBatchUpdateJob_队列已满时返回429()
+        {
+            var jobService = new Mock<IWarehouseProductBatchUpdateJobService>();
+            jobService
+                .Setup(service => service.StartJobAsync(
+                    It.IsAny<WarehouseProductBatchUpdateJobRequestDto>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ))
+                .ThrowsAsync(new WarehouseProductBatchUpdateQueueFullException());
+            var controller = CreateController(
+                Mock.Of<IProductWarehouseReactService>(),
+                batchUpdateJobService: jobService.Object
+            );
+
+            var actionResult = await controller.StartBatchUpdateJob(
+                new ReactProductWarehouseController.BatchUpdateRequest
+                {
+                    Items = [new UpdateItemDto { ProductCode = "P-JOB-2" }],
+                },
+                CancellationToken.None
+            );
+
+            var tooManyRequests = Assert.IsType<ObjectResult>(actionResult);
+            Assert.Equal(StatusCodes.Status429TooManyRequests, tooManyRequests.StatusCode);
+            Assert.Contains("队列已满", tooManyRequests.Value!.ToString());
+        }
+
+        [Fact]
         public async Task BatchCreate_传递当前用户名给服务()
         {
             var items = new List<CreateItemDto> { new() };
@@ -819,13 +1099,15 @@ namespace BlazorApp.Api.Tests
             IProductWarehouseReactService service,
             TencentCloudUploadService? uploadService = null,
             IWarehouseProductHqSyncJobService? jobService = null,
+            IWarehouseProductBatchUpdateJobService? batchUpdateJobService = null,
             IDeviceRegistrationService? deviceService = null,
             IMapper? mapper = null,
             string[]? roles = null,
             string username = "测试用户",
             ILogger<ReactProductWarehouseController>? logger = null,
             IWarehouseProductChangeHistoryService? changeHistoryService = null,
-            ICurrentUserService? currentUserService = null
+            ICurrentUserService? currentUserService = null,
+            IProductHqSyncService? productHqSyncService = null
         )
         {
             roles ??= new[] { "Admin" };
@@ -840,6 +1122,7 @@ namespace BlazorApp.Api.Tests
             var controller = new ReactProductWarehouseController(
                 service,
                 jobService ?? Mock.Of<IWarehouseProductHqSyncJobService>(),
+                batchUpdateJobService ?? Mock.Of<IWarehouseProductBatchUpdateJobService>(),
                 logger ?? Mock.Of<ILogger<ReactProductWarehouseController>>(),
                 deviceService ?? Mock.Of<IDeviceRegistrationService>(),
                 mapper ?? Mock.Of<IMapper>(),
@@ -848,7 +1131,8 @@ namespace BlazorApp.Api.Tests
                 currentUserService ?? Mock.Of<ICurrentUserService>(service =>
                     service.GetCurrentUsername() == username
                     && service.GetCurrentUserGuid() == string.Empty
-                )
+                ),
+                productHqSyncService ?? Mock.Of<IProductHqSyncService>()
             );
             controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
             return controller;

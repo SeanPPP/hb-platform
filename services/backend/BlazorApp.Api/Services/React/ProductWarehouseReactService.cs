@@ -750,9 +750,53 @@ namespace BlazorApp.Api.Services.React
             string? updatedBy
         )
         {
-            var result = new BatchOperationResultDto { Success = true, Message = "更新完成" };
+            return await BatchUpdateAsync(
+                items,
+                updatedBy,
+                new WarehouseProductBatchUpdateOptionsDto()
+            );
+        }
+
+        public async Task<WarehouseProductBatchUpdateResultDto> BatchUpdateAsync(
+            List<UpdateItemDto> items,
+            string? updatedBy,
+            WarehouseProductBatchUpdateOptionsDto options
+        )
+        {
+            options ??= new WarehouseProductBatchUpdateOptionsDto();
+            var result = new WarehouseProductBatchUpdateResultDto
+            {
+                Success = true,
+                Message = "更新完成",
+            };
             if (items == null || items.Count == 0)
                 return result;
+
+            if (options.SyncImageToHq && !options.GenerateImageUrls)
+            {
+                result.Success = false;
+                result.Message = "同步 HQ 图片前必须启用图片地址生成";
+                result.FailedCount = items.Count;
+                result.Errors.Add(result.Message);
+                return result;
+            }
+
+            string? normalizedImageBaseUrl = null;
+            if (
+                options.GenerateImageUrls
+                && !WarehouseProductBatchImageUrlBuilder.TryNormalizeBaseUrl(
+                    options.ImageBaseUrl,
+                    out normalizedImageBaseUrl,
+                    out var imageBaseUrlError
+                )
+            )
+            {
+                result.Success = false;
+                result.Message = imageBaseUrlError;
+                result.FailedCount = items.Count;
+                result.Errors.Add(imageBaseUrlError);
+                return result;
+            }
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
             var batchGuid = Guid.NewGuid();
@@ -824,6 +868,56 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                var imageProductsByCode = new Dictionary<string, Product>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                if (options.GenerateImageUrls)
+                {
+                    var imageProductCodes = productCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .Concat(itemToCode.Values)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    foreach (var codeBatch in imageProductCodes.Chunk(500))
+                    {
+                        var codes = codeBatch.ToList();
+                        var products = await _context
+                            .Db.Queryable<Product>()
+                            .Where(product =>
+                                product.ProductCode != null
+                                && codes.Contains(product.ProductCode)
+                                && !product.IsDeleted
+                            )
+                            .ToListAsync();
+                        foreach (
+                            var product in products
+                                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                                .GroupBy(
+                                    product => product.ProductCode!,
+                                    StringComparer.OrdinalIgnoreCase
+                                )
+                                .Select(group => group
+                                    .OrderByDescending(product =>
+                                        product.UpdatedAt ?? product.CreatedAt
+                                    )
+                                    .ThenByDescending(product => product.CreatedAt)
+                                    .First()
+                                )
+                        )
+                        {
+                            if (
+                                !string.IsNullOrWhiteSpace(product.ProductCode)
+                                && !imageProductsByCode.ContainsKey(product.ProductCode)
+                            )
+                            {
+                                imageProductsByCode[product.ProductCode] = product;
+                            }
+                        }
+                    }
+                }
+
                 // 先按最终可解析的商品编码一次性读取旧快照；非法、重复或最终无变化项不会产生事件。
                 var auditProductCodes = productCodes
                     .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -840,6 +934,9 @@ namespace BlazorApp.Api.Services.React
                 var codesWithImportPrice = new List<string>();
                 var codesWithStorePurchasePrice = new List<string>();
                 var packingQuantityByCode = new Dictionary<string, int>();
+                var imageUrlByCode = new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
                 var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in items)
@@ -907,6 +1004,34 @@ namespace BlazorApp.Api.Services.React
                         result.Errors.Add($"批次内商品编码重复: {targetCode}");
                         result.FailedCount++;
                         continue;
+                    }
+
+                    if (options.GenerateImageUrls)
+                    {
+                        if (!imageProductsByCode.TryGetValue(targetCode, out var imageProduct))
+                        {
+                            result.Errors.Add(
+                                $"未找到本地商品主档，无法生成图片地址: ProductCode={targetCode}"
+                            );
+                            result.FailedCount++;
+                            continue;
+                        }
+
+                        if (
+                            !WarehouseProductBatchImageUrlBuilder.TryBuild(
+                                normalizedImageBaseUrl!,
+                                imageProduct.ItemNumber,
+                                out var imageUrl,
+                                out var imageUrlError
+                            )
+                        )
+                        {
+                            result.Errors.Add($"{imageUrlError}: ProductCode={targetCode}");
+                            result.FailedCount++;
+                            continue;
+                        }
+
+                        imageUrlByCode[targetCode] = imageUrl;
                     }
 
                     if (wp == null)
@@ -1038,6 +1163,76 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                if (imageUrlByCode.Any())
+                {
+                    var imageUpdatedAt = DateTime.Now;
+                    var imageProducts = imageUrlByCode.Keys
+                        .Select(code => imageProductsByCode[code])
+                        .ToList();
+                    foreach (var product in imageProducts)
+                    {
+                        product.ProductImage = imageUrlByCode[product.ProductCode!];
+                        product.UpdatedAt = imageUpdatedAt;
+                        product.UpdatedBy = effectiveUpdatedBy;
+                    }
+                    foreach (var productBatch in imageProducts.Chunk(200))
+                    {
+                        await _context
+                            .Db.Updateable(productBatch.ToList())
+                            .UpdateColumns(product => new
+                            {
+                                product.ProductImage,
+                                product.UpdatedAt,
+                                product.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
+                    }
+
+                    var imageProductCodes = imageUrlByCode.Keys.ToList();
+                    var imageDomesticProducts = new List<DomesticProduct>();
+                    foreach (var codeBatch in imageProductCodes.Chunk(500))
+                    {
+                        var codes = codeBatch.ToList();
+                        imageDomesticProducts.AddRange(
+                            await _context
+                                .Db.Queryable<DomesticProduct>()
+                                .Where(product =>
+                                    codes.Contains(product.ProductCode) && !product.IsDeleted
+                                )
+                                .ToListAsync()
+                        );
+                    }
+                    foreach (var domesticProduct in imageDomesticProducts)
+                    {
+                        domesticProduct.ProductImage = imageUrlByCode[
+                            domesticProduct.ProductCode
+                        ];
+                        domesticProduct.UpdatedAt = imageUpdatedAt;
+                        domesticProduct.UpdatedBy = effectiveUpdatedBy;
+                    }
+                    foreach (var domesticBatch in imageDomesticProducts.Chunk(200))
+                    {
+                        await _context
+                            .Db.Updateable(domesticBatch.ToList())
+                            .UpdateColumns(product => new
+                            {
+                                product.ProductImage,
+                                product.UpdatedAt,
+                                product.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
+                    }
+
+                    result.ImageUpdatedCount = imageProducts.Count;
+                    result.ImageUpdates = imageUrlByCode
+                        .Select(pair => new ProductHqImageUpdateItemDto
+                        {
+                            ProductCode = pair.Key,
+                            ImageUrl = pair.Value,
+                        })
+                        .ToList();
+                }
+
                 if (codesWithImportPrice.Any())
                 {
                     var products = await _context
@@ -1130,6 +1325,8 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "批量更新失败");
                 result.Success = false;
                 result.SuccessCount = 0;
+                result.ImageUpdatedCount = 0;
+                result.ImageUpdates.Clear();
                 result.Message = "批量更新失败: " + ex.Message;
             }
 

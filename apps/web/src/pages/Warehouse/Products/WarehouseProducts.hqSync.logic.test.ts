@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import './WarehouseProducts.batchImageUrl.uiContract.test'
 import {
   createWarehouseProductHqSyncJob,
   getWarehouseProductHqSyncJob,
@@ -562,8 +563,9 @@ async function main() {
 
   const batchEditFailure = await runTest('仓库商品页应支持按选中商品批量修改常用字段', () => {
     assert(
-      pageSource.includes('batchUpdateWarehouseProducts'),
-      '页面应引入仓库商品批量更新服务',
+      pageSource.includes('createWarehouseProductBatchUpdateJob') &&
+        pageSource.includes('createWarehouseProductBatchUpdateJobPoller'),
+      '页面应引入仓库商品后台批量更新服务与轮询器',
     )
     assert(
       pageSource.includes('interface BatchEditFormValues') &&
@@ -573,14 +575,15 @@ async function main() {
 
     const saveSection = extractSection(
       pageSource,
-      'const handleBatchEditSave = async () => {',
+      'const submitBatchEdit = async',
       'const handleToggleSingleActive',
     )
     assert(
       saveSection.includes('MinOrderQuantity: values.minOrderQuantity') &&
         saveSection.includes('PackingQuantity: values.packingQuantity') &&
-        saveSection.includes('batchUpdateWarehouseProducts(items)'),
-      '批量保存应把中包数提交为 MinOrderQuantity，并复用仓库商品批量更新服务',
+        saveSection.includes('createWarehouseProductBatchUpdateJob(items, options)') &&
+        saveSection.includes('startBatchUpdateJobPolling(activeJob)'),
+      '批量保存应把中包数提交为 MinOrderQuantity，并通过后台任务执行与轮询',
     )
     assert(
       saveSection.includes('只传用户填写的字段') &&

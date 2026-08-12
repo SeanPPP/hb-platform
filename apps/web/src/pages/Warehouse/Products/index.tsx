@@ -16,7 +16,7 @@ import { exportDomesticProductsToExcel, type ExportResult } from '../../../servi
 import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
 import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
 import { getPushToHqStoreOptions, pushProductsToHq } from '../../../services/posProductService';
-import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, patchWarehouseProduct, updateWarehouseProductFull, type PatchWarehouseProductPayload, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, createWarehouseProductBatchUpdateJob, createWarehouseProductBatchUpdateJobPoller, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductBatchUpdateJob, getWarehouseProductHqSyncJob, getWarehouseProductsTable, patchWarehouseProduct, updateWarehouseProductFull, type PatchWarehouseProductPayload, type WarehouseProductBatchUpdateItem, type WarehouseProductBatchUpdateJobResult, type WarehouseProductBatchUpdateJobStatus, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { batchAssignProducts, getCategoryTree, type WarehouseCategoryNode, } from '../../../services/warehouseCategoryService';
 import { useAuthStore } from '../../../store/auth';
 import type { SupplierOption, } from '../../../types/domesticProduct';
@@ -25,6 +25,7 @@ import type { MulticodeSetItem } from '../../../types/multiCodeSet';
 import type { PushProductsToHqResult, PushProductsToHqStoreOption, PushProductsToHqUpdateField, } from '../../../types/posProduct';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard';
+import { RequestError } from '../../../utils/request';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import CategoryTreePicker from './CategoryTreePicker';
@@ -113,6 +114,36 @@ interface BatchEditFormValues {
     minOrderQuantity?: number;
     unitVolume?: number;
     isActive?: boolean;
+    generateImageUrls?: boolean;
+    imageBaseUrl?: string;
+    syncImageToHq?: boolean;
+}
+const WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/';
+const WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE = 'MC164-3.jpg';
+function normalizeWarehouseProductImageBaseUrl(value?: string): string | undefined {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) {
+        return undefined;
+    }
+    return `${trimmed.replace(/\/+$/, '')}/`;
+}
+function isValidWarehouseProductImageBaseUrl(value?: string): boolean {
+    const normalized = normalizeWarehouseProductImageBaseUrl(value);
+    if (!normalized) return false;
+    try {
+        const url = new URL(normalized);
+        return (url.protocol === 'http:' || url.protocol === 'https:')
+            && !url.search
+            && !url.hash
+            && !url.username
+            && !url.password;
+    }
+    catch {
+        return false;
+    }
+}
+function isWarehouseProductBatchImageField(field: string): boolean {
+    return field === 'generateImageUrls' || field === 'imageBaseUrl' || field === 'syncImageToHq';
 }
 const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
     { value: true, label: getShelfStatusLabel(true, t) },
@@ -381,10 +412,21 @@ type ActiveWarehouseProductHqSyncJob = {
     status?: WarehouseProductHqSyncJobStatus | string;
     message?: string;
 };
+type ActiveWarehouseProductBatchUpdateJob = {
+    jobId: string;
+    operationId: string;
+    createdAt: string;
+    status?: WarehouseProductBatchUpdateJobStatus | string;
+    message?: string;
+    submittedProductCodes: string[];
+};
 const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeHqSyncJob';
+const WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeBatchUpdateJob';
 const WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID = 'warehouse-products-hq-sync';
 const WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000;
 const WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+const WAREHOUSE_PRODUCT_BATCH_UPDATE_POLL_INTERVAL_MS = 2000;
+const WAREHOUSE_PRODUCT_BATCH_UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 // 仓库商品主表数据量大，默认展示 100 条并保留大分页选项，继续依赖现有虚拟表格和服务端分页。
 const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100;
 const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000'];
@@ -466,6 +508,45 @@ function saveActiveWarehouseProductHqSyncJob(job: ActiveWarehouseProductHqSyncJo
         return;
     }
     window.localStorage.setItem(WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY, JSON.stringify(job));
+}
+function readActiveWarehouseProductBatchUpdateJob(): ActiveWarehouseProductBatchUpdateJob | null {
+    if (typeof window === 'undefined') {
+        return null;
+    }
+    try {
+        const raw = window.localStorage.getItem(WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY);
+        if (!raw) {
+            return null;
+        }
+        const parsed = JSON.parse(raw) as Partial<ActiveWarehouseProductBatchUpdateJob>;
+        if (!parsed.jobId || !parsed.operationId || !parsed.createdAt || !Array.isArray(parsed.submittedProductCodes)) {
+            return null;
+        }
+        return {
+            ...parsed,
+            submittedProductCodes: parsed.submittedProductCodes.map(String).filter(Boolean),
+        } as ActiveWarehouseProductBatchUpdateJob;
+    }
+    catch {
+        return null;
+    }
+}
+function saveActiveWarehouseProductBatchUpdateJob(job: ActiveWarehouseProductBatchUpdateJob | null): boolean {
+    if (typeof window === 'undefined') {
+        return false;
+    }
+    try {
+        if (!job) {
+            window.localStorage.removeItem(WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY);
+            return true;
+        }
+        window.localStorage.setItem(WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY, JSON.stringify(job));
+        return true;
+    }
+    catch {
+        // 浏览器禁用存储时仍继续当前页面轮询，只失去跨刷新恢复能力。
+        return false;
+    }
 }
 function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption[] {
     return suppliers.map((item) => ({
@@ -670,6 +751,8 @@ export default function WarehouseProductsPage() {
     const productTypeOptions = getProductTypeOptions(t);
     const [form] = Form.useForm<ProductFormValues>();
     const [batchEditForm] = Form.useForm<BatchEditFormValues>();
+    const batchGenerateImageUrls = Form.useWatch('generateImageUrls', batchEditForm) === true;
+    const batchImageBaseUrl = Form.useWatch('imageBaseUrl', batchEditForm);
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
@@ -719,6 +802,12 @@ export default function WarehouseProductsPage() {
     const [batchActionLoading, setBatchActionLoading] = useState(false);
     const [batchEditOpen, setBatchEditOpen] = useState(false);
     const [batchEditSaving, setBatchEditSaving] = useState(false);
+    const [hqImageSyncFailOpen, setHqImageSyncFailOpen] = useState(false);
+    const [hqImageSyncFailDetail, setHqImageSyncFailDetail] = useState<{
+        localFailedCount: number;
+        errors: string[];
+        items: Array<{ productCode: string; message?: string }>;
+    }>({ localFailedCount: 0, errors: [], items: [] });
     const [pushToHqLoading, setPushToHqLoading] = useState(false);
     const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);
     const [pushToHqStoreOptions, setPushToHqStoreOptions] = useState<PushProductsToHqStoreOption[]>([]);
@@ -730,10 +819,12 @@ export default function WarehouseProductsPage() {
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
     const [syncingFromHq, setSyncingFromHq] = useState(false);
     const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
+    const [activeBatchUpdateJob, setActiveBatchUpdateJob] = useState<ActiveWarehouseProductBatchUpdateJob | null>(() => readActiveWarehouseProductBatchUpdateJob());
     const [storePriceSyncOpen, setStorePriceSyncOpen] = useState(false);
     const [changeHistoryProduct, setChangeHistoryProduct] = useState<WarehouseProductListItem | null>(null);
     const [columnOrder, setColumnOrder] = useState<WarehouseProductTableColumnKey[]>([]);
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
+    const stopBatchUpdateJobPollingRef = useRef<(() => void) | null>(null);
     const pushToHqLoadingRef = useRef(false);
     const pushToHqProductCodesRef = useRef<string[]>([]);
     const pushToHqConfirmLoadingRef = useRef(false);
@@ -1090,6 +1181,189 @@ export default function WarehouseProductsPage() {
             placement: 'topRight',
         });
     }, [activeHqSyncJob, i18n.language, t]);
+    const stopBatchUpdateJobPolling = useCallback(() => {
+        stopBatchUpdateJobPollingRef.current?.();
+        stopBatchUpdateJobPollingRef.current = null;
+    }, []);
+    const saveActiveBatchUpdateJob = useCallback((job: ActiveWarehouseProductBatchUpdateJob) => {
+        const persisted = saveActiveWarehouseProductBatchUpdateJob(job);
+        if (isMountedRef.current) {
+            setActiveBatchUpdateJob(job);
+        }
+        return persisted;
+    }, []);
+    const clearActiveBatchUpdateJob = useCallback(() => {
+        saveActiveWarehouseProductBatchUpdateJob(null);
+        if (isMountedRef.current) {
+            setActiveBatchUpdateJob(null);
+        }
+    }, []);
+    const refreshBatchUpdateListWithSelection = useCallback((productCodes: string[]) => {
+        const keysToKeep = Array.from(new Set(productCodes));
+        setSelectedRowKeys(keysToKeep);
+        void refreshCurrentList().finally(() => {
+            if (isMountedRef.current) {
+                setSelectedRowKeys(keysToKeep);
+            }
+        });
+    }, [refreshCurrentList]);
+    const clearSubmittedBatchUpdateSelection = useCallback((submittedProductCodes: string[]) => {
+        const submittedCodeSet = new Set(submittedProductCodes);
+        const keysToKeep = selectedRowKeysRef.current
+            .map(String)
+            .filter((productCode) => !submittedCodeSet.has(productCode));
+        refreshBatchUpdateListWithSelection(keysToKeep);
+    }, [refreshBatchUpdateListWithSelection]);
+    const restoreSubmittedBatchUpdateSelection = useCallback((submittedProductCodes: string[]) => {
+        const keysToKeep = Array.from(new Set([
+            ...selectedRowKeysRef.current.map(String),
+            ...submittedProductCodes,
+        ]));
+        refreshBatchUpdateListWithSelection(keysToKeep);
+    }, [refreshBatchUpdateListWithSelection]);
+    const showBatchUpdateJobResult = useCallback((
+        result: WarehouseProductBatchUpdateJobResult,
+        submittedProductCodes: string[],
+    ) => {
+        const batchResult = result.result;
+        const localFailedCount = Number(batchResult?.failedCount ?? batchResult?.FailedCount ?? batchResult?.failed ?? batchResult?.Failed ?? 0);
+        const localErrors = batchResult?.errors ?? batchResult?.Errors ?? [];
+        const localFailedItems = batchResult?.results
+            ?.filter((item) => !item.success)
+            .map((item) => ({ productCode: item.productCode, message: item.message })) ?? [];
+        const hqSync = batchResult?.hqImageSync;
+        const hqFailedCount = Number(hqSync?.failedCount ?? 0);
+        const hqFailedItems = hqSync?.items
+            ?.filter((item) => !item.success)
+            .map((item) => ({ productCode: item.productCode, message: item.message })) ?? [];
+        const hqErrors = hqSync?.errors ?? [];
+        const hasHqFailure = Boolean(hqSync?.success === false
+            || hqFailedCount > 0
+            || hqFailedItems.length > 0
+            || hqErrors.length > 0);
+        const isPartial = result.status === 'PartiallySucceeded';
+        const isFailed = result.status === 'Failed';
+        if (isPartial || isFailed || localFailedCount > 0 || hasHqFailure) {
+            setHqImageSyncFailDetail({
+                localFailedCount,
+                errors: [...localErrors, ...hqErrors, ...(!batchResult && result.message ? [result.message] : [])],
+                items: [...localFailedItems, ...hqFailedItems],
+            });
+            setHqImageSyncFailOpen(true);
+            restoreSubmittedBatchUpdateSelection(submittedProductCodes);
+            notification[isFailed ? 'error' : 'warning']({
+                message: isFailed
+                    ? t('warehouse.batchUpdateJobFailed', '仓库商品批量修改失败')
+                    : t('warehouse.batchUpdateJobPartialSucceeded', '仓库商品批量修改部分完成'),
+                description: result.message
+                    ?? batchResult?.message
+                    ?? t('warehouse.batchUpdateJobRetryHint', '失败商品已保留选择，请查看明细后重试。'),
+                duration: 0,
+                placement: 'topRight',
+            });
+            return;
+        }
+        clearSubmittedBatchUpdateSelection(submittedProductCodes);
+        notification.success({
+            message: t('warehouse.batchUpdateJobSucceeded', '仓库商品批量修改完成'),
+            description: batchResult?.message ?? result.message ?? t('warehouse.batchEditSuccess', '批量修改成功'),
+            duration: 6,
+            placement: 'topRight',
+        });
+        if (batchResult?.imageUpdatedCount != null) {
+            message.info(t('warehouse.batchImageUpdatedCount', '本地图片地址更新 {{count}} 条', { count: batchResult.imageUpdatedCount }));
+        }
+    }, [clearSubmittedBatchUpdateSelection, restoreSubmittedBatchUpdateSelection, t]);
+    const startBatchUpdateJobPolling = useCallback((job: ActiveWarehouseProductBatchUpdateJob) => {
+        stopBatchUpdateJobPolling();
+        const persisted = saveActiveBatchUpdateJob(job);
+        if (!persisted) {
+            notification.warning({
+                message: t('warehouse.batchUpdateJobStorageUnavailable', '无法持久化后台任务状态'),
+                description: t('warehouse.batchUpdateJobStorageUnavailableDescription', '任务仍会在当前页面继续跟踪，但刷新页面后无法自动恢复。'),
+                duration: 0,
+                placement: 'topRight',
+            });
+        }
+        const poller = createWarehouseProductBatchUpdateJobPoller({
+            jobId: job.jobId,
+            getJob: async (jobId) => {
+                const result = await getWarehouseProductBatchUpdateJob(jobId);
+                saveActiveBatchUpdateJob({
+                    ...job,
+                    status: result.status,
+                    message: result.message,
+                });
+                return result;
+            },
+            pollIntervalMs: WAREHOUSE_PRODUCT_BATCH_UPDATE_POLL_INTERVAL_MS,
+            timeoutMs: WAREHOUSE_PRODUCT_BATCH_UPDATE_TIMEOUT_MS,
+        });
+        stopBatchUpdateJobPollingRef.current = poller.stop;
+        void poller.promise
+            .then((result) => {
+            if (!isMountedRef.current) {
+                return;
+            }
+            clearActiveBatchUpdateJob();
+            stopBatchUpdateJobPollingRef.current = null;
+            showBatchUpdateJobResult(result, job.submittedProductCodes);
+        })
+            .catch((error) => {
+            if (!isMountedRef.current || error instanceof HqProductSyncPollingCancelledError) {
+                return;
+            }
+            stopBatchUpdateJobPollingRef.current = null;
+            if (error instanceof RequestError && error.status === 404) {
+                clearActiveBatchUpdateJob();
+                restoreSubmittedBatchUpdateSelection(job.submittedProductCodes);
+                notification.error({
+                    message: t('warehouse.batchUpdateJobQueryFailed', '查询批量修改任务失败'),
+                    description: t('warehouse.batchUpdateJobMissing', '任务不存在、已过期或服务已重启；已保留商品选择。'),
+                    duration: 0,
+                    placement: 'topRight',
+                });
+                return;
+            }
+            // 超时、临时网络错误与 5xx 不删除 jobId，刷新页面后可以继续查询现有任务。
+            saveActiveBatchUpdateJob(job);
+            if (error instanceof HqProductSyncPollingTimeoutError) {
+                notification.warning({
+                    message: t('warehouse.batchUpdateJobTimeoutTitle', '批量修改任务仍可能在后台执行'),
+                    description: t('warehouse.batchUpdateJobTimeout', '前端轮询已超时，已保留商品选择。请稍后刷新页面确认结果后再决定是否重试。'),
+                    duration: 0,
+                    placement: 'topRight',
+                });
+                return;
+            }
+            notification.warning({
+                message: t('warehouse.batchUpdateJobQueryFailed', '查询批量修改任务失败'),
+                description: (<Space direction="vertical" size={4}>
+              <div>{error instanceof Error ? error.message : t('warehouse.batchUpdateJobQueryFailed', '查询批量修改任务失败')}</div>
+              <div>{t('warehouse.batchUpdateJobQueryInterrupted', '任务 ID 已保留，刷新页面可继续跟踪。')}</div>
+            </Space>),
+                duration: 0,
+                placement: 'topRight',
+            });
+        });
+    }, [clearActiveBatchUpdateJob, restoreSubmittedBatchUpdateSelection, saveActiveBatchUpdateJob, showBatchUpdateJobResult, stopBatchUpdateJobPolling, t]);
+    const showActiveBatchUpdateJobStatus = useCallback((job: ActiveWarehouseProductBatchUpdateJob | null = activeBatchUpdateJob) => {
+        if (!job) {
+            return;
+        }
+        notification.info({
+            message: t('warehouse.batchUpdateJobStatusTitle', '仓库商品批量修改正在后台执行'),
+            description: (<Space direction="vertical" size={4}>
+          <div>{t('warehouse.batchUpdateJobId', '任务 ID')}: {job.jobId}</div>
+          <div>{t('warehouse.batchUpdateJobStatus', '任务状态')}: {job.status ?? 'Running'}</div>
+          <div>{t('warehouse.batchUpdateJobStartedAt', '提交时间')}: {formatDateTime(job.createdAt, i18n.language)}</div>
+          <div>{t('warehouse.batchUpdateJobProductCount', '商品数量')}: {job.submittedProductCodes.length}</div>
+          {job.message ? <div>{job.message}</div> : null}
+        </Space>),
+            duration: 5,
+            placement: 'topRight',
+        });
+    }, [activeBatchUpdateJob, i18n.language, t]);
     useEffect(() => {
         setCategoryLoading(true);
         void Promise.all([
@@ -1144,6 +1418,15 @@ export default function WarehouseProductsPage() {
             stopHqSyncJobPolling();
         };
     }, [startHqSyncJobPolling, stopHqSyncJobPolling]);
+    useEffect(() => {
+        const restoredJob = readActiveWarehouseProductBatchUpdateJob();
+        if (restoredJob?.jobId) {
+            startBatchUpdateJobPolling(restoredJob);
+        }
+        return () => {
+            stopBatchUpdateJobPolling();
+        };
+    }, [startBatchUpdateJobPolling, stopBatchUpdateJobPolling]);
     const handleOpenCreate = () => {
         setCreateModalOpen(true);
     };
@@ -1531,11 +1814,21 @@ export default function WarehouseProductsPage() {
         }
     };
     const openBatchEdit = () => {
+        if (activeBatchUpdateJob) {
+            showActiveBatchUpdateJobStatus(activeBatchUpdateJob);
+            return;
+        }
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
             return;
         }
         batchEditForm.resetFields();
+        // 每次打开批量修改都重置图片生成选项：默认关闭生成，基础地址回到默认值，HQ 同步默认关闭。
+        batchEditForm.setFieldsValue({
+            generateImageUrls: false,
+            imageBaseUrl: WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL,
+            syncImageToHq: false,
+        });
         setBatchEditOpen(true);
     };
     const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {
@@ -1600,22 +1893,21 @@ export default function WarehouseProductsPage() {
             setBatchCategorySaving(false);
         }
     };
-    const handleBatchEditSave = async () => {
+    const submitBatchEdit = async (values: BatchEditFormValues, options: {
+        generateImageUrls?: boolean;
+        imageBaseUrl?: string;
+        syncImageToHq?: boolean;
+    }) => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
             return;
         }
         try {
-            const values = await batchEditForm.validateFields();
-            const hasChanges = Object.values(values).some((value) => value !== undefined && value !== null);
-            if (!hasChanges) {
-                message.warning(t('warehouse.batchEditNoChanges', '请至少填写一个修改字段'));
-                return;
-            }
             setBatchEditSaving(true);
-            const items = selectedRowKeys.map((code) => {
+            const submittedProductCodes = selectedRowKeys.map(String);
+            const items = submittedProductCodes.map((code) => {
                 const rawItem: WarehouseProductBatchUpdateItem = {
-                    ProductCode: String(code),
+                    ProductCode: code,
                     DomesticPrice: values.domesticPrice,
                     OEMPrice: values.oemPrice,
                     ImportPrice: values.importPrice,
@@ -1627,15 +1919,35 @@ export default function WarehouseProductsPage() {
                 };
                 return Object.fromEntries(Object.entries(rawItem).filter(([, value]) => value !== undefined && value !== null)) as WarehouseProductBatchUpdateItem;
             });
-            const result = await batchUpdateWarehouseProducts(items);
-            message.success(result.message || t('warehouse.batchEditSuccess', '批量修改成功'));
-            if ((result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0) > 0) {
-                message.warning(t('warehouse.batchUpdatePartialFailed', '{{count}} 个商品更新失败', { count: result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0 }));
+            const job = await createWarehouseProductBatchUpdateJob(items, options);
+            if (!job.jobId) {
+                notification.error({
+                    message: t('warehouse.batchUpdateJobCreateFailed', '创建仓库商品批量修改任务失败'),
+                    description: job.message ?? t('warehouse.batchEditFailed', '批量修改失败'),
+                    duration: 0,
+                    placement: 'topRight',
+                });
+                return;
             }
+            const activeJob: ActiveWarehouseProductBatchUpdateJob = {
+                jobId: job.jobId,
+                operationId: job.operationId ?? job.jobId,
+                createdAt: job.createdAt ?? new Date().toISOString(),
+                status: job.status,
+                message: job.message,
+                submittedProductCodes,
+            };
             setBatchEditOpen(false);
             batchEditForm.resetFields();
-            setSelectedRowKeys([]);
-            void refreshCurrentList();
+            notification.info({
+                message: t('warehouse.batchUpdateJobSubmitted', '批量修改任务已提交，正在后台执行'),
+                description: job.isDuplicateRequest
+                    ? t('warehouse.batchUpdateJobDuplicate', '相同任务已在后台执行，已继续跟踪现有任务。')
+                    : t('warehouse.batchUpdateJobSubmittedDescription', '完成后会在右上角通知结果；执行期间保留当前商品选择。'),
+                duration: 4,
+                placement: 'topRight',
+            });
+            startBatchUpdateJobPolling(activeJob);
         }
         catch (error) {
             if (typeof error === 'object' && error !== null && 'errorFields' in error) {
@@ -1647,6 +1959,67 @@ export default function WarehouseProductsPage() {
         finally {
             setBatchEditSaving(false);
         }
+    };
+    const handleBatchEditSave = async () => {
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        let values: BatchEditFormValues;
+        try {
+            values = await batchEditForm.validateFields();
+        }
+        catch (error) {
+            if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+                return;
+            }
+            throw error;
+        }
+        const generateImageUrls = values.generateImageUrls === true;
+        const hasChanges = Object.entries(values).some(([field, value]) => {
+            if (isWarehouseProductBatchImageField(field)) {
+                if (generateImageUrls) {
+                    return field === 'generateImageUrls';
+                }
+                // 图片关闭时默认基础地址不算变更。
+                return false;
+            }
+            return value !== undefined && value !== null;
+        });
+        if (!hasChanges) {
+            message.warning(t('warehouse.batchEditNoChanges', '请至少填写一个修改字段'));
+            return;
+        }
+        const imageBaseUrl = generateImageUrls
+            ? normalizeWarehouseProductImageBaseUrl(values.imageBaseUrl)
+            : undefined;
+        if (generateImageUrls && !imageBaseUrl) {
+            message.warning(t('warehouse.batchImageBaseUrlRequired', '请输入基础图片地址'));
+            return;
+        }
+        if (generateImageUrls && !isValidWarehouseProductImageBaseUrl(imageBaseUrl)) {
+            message.warning(t('warehouse.batchImageBaseUrlInvalid', '请输入不含查询参数或片段的 HTTP(S) 目录地址'));
+            return;
+        }
+        const syncImageToHq = generateImageUrls && values.syncImageToHq === true;
+        Modal.confirm({
+            title: t('warehouse.batchEditConfirmTitle', '确认批量修改'),
+            content: (<Space direction="vertical" size={8}>
+            <div>{t('warehouse.batchImageConfirmCount', '商品数量：{{count}} 个', { count: selectedRowKeys.length })}</div>
+            {generateImageUrls ? (<>
+              <div>{t('warehouse.batchImageConfirmBaseUrl', '基础图片地址：{{url}}', { url: imageBaseUrl })}</div>
+              <div>{t('warehouse.batchImageConfirmOverwrite', '本地覆盖：是（将覆盖选中商品现有图片地址）')}</div>
+              <div>{t('warehouse.batchImageConfirmHq', '同步 HQ：{{value}}', { value: syncImageToHq ? t('common.yes') : t('common.no') })}</div>
+            </>) : null}
+          </Space>),
+            okText: t('warehouse.batchEditConfirmOk', '确认保存'),
+            cancelText: t('common.cancel'),
+            onOk: () => submitBatchEdit(values, {
+                generateImageUrls,
+                imageBaseUrl,
+                syncImageToHq,
+            }),
+        });
     };
     const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
         try {
@@ -2194,7 +2567,7 @@ export default function WarehouseProductsPage() {
                 {t('warehouse.batchDeactivate')}
               </Button>
             </Popconfirm>) : null}
-          {access.canWriteProduct ? (<Button loading={batchEditSaving} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
+          {access.canWriteProduct ? (<Button loading={batchEditSaving || Boolean(activeBatchUpdateJob)} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
               {t('warehouse.batchEdit', '批量修改')}
             </Button>) : null}
           {access.canWriteProduct ? (<Button icon={<AppstoreOutlined />} loading={batchCategorySaving} disabled={!selectedRowKeys.length || batchCategorySaving} onClick={openBatchCategory}>
@@ -2421,7 +2794,53 @@ export default function WarehouseProductsPage() {
               <Select.Option value={false}>{getShelfStatusLabel(false, t)}</Select.Option>
             </Select>
           </Form.Item>
+          <Form.Item name="generateImageUrls" label={t('warehouse.batchImageGenerate', '按货号生成图片地址')} valuePropName="checked">
+            <Switch/>
+          </Form.Item>
+          {batchGenerateImageUrls ? (<Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 16 }}>
+            <Form.Item name="imageBaseUrl" label={t('warehouse.batchImageBaseUrl', '基础图片地址')} style={{ marginBottom: 0 }}>
+              <Input placeholder={WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL}/>
+            </Form.Item>
+            <Typography.Text type="secondary">
+              {t('warehouse.batchImageExample', '示例：{{url}}', {
+                  url: `${normalizeWarehouseProductImageBaseUrl(batchImageBaseUrl) ?? WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL}${WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE}`,
+              })}
+            </Typography.Text>
+            <Typography.Text type="warning">
+              {t('warehouse.batchImageOverwriteWarning', '开启后将用「{{baseUrl}}货号.jpg」覆盖选中商品现有图片地址。', {
+                  baseUrl: normalizeWarehouseProductImageBaseUrl(batchImageBaseUrl) ?? WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL,
+              })}
+            </Typography.Text>
+            {access.isAdmin || access.isWarehouseManager ? (<Form.Item name="syncImageToHq" label={t('warehouse.batchImageSyncHq', '同步 HQ 数据库（仅 H商品图片）')} valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Switch disabled={!batchGenerateImageUrls}/>
+            </Form.Item>) : null}
+          </Space>) : null}
         </Form>
+      </Modal>
+
+      <Modal title={hqImageSyncFailDetail.localFailedCount > 0 ? t('warehouse.batchUpdateFailDetailTitle', '批量修改失败明细') : t('warehouse.batchImageHqFailTitle', 'HQ 图片同步失败')} open={hqImageSyncFailOpen} footer={null} onCancel={() => setHqImageSyncFailOpen(false)}>
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {hqImageSyncFailDetail.errors.map((error, index) => (
+            <Typography.Text key={`hq-error-${index}`} type="danger">
+              {error}
+            </Typography.Text>
+          ))}
+          {hqImageSyncFailDetail.items.map((item) => (
+            <div key={item.productCode}>
+              <Typography.Text strong>
+                {item.productCode}
+              </Typography.Text>
+              {item.message ? (<Typography.Text type="danger">
+                ：{item.message}
+              </Typography.Text>) : null}
+            </div>
+          ))}
+          {!hqImageSyncFailDetail.errors.length && !hqImageSyncFailDetail.items.length ? (
+            <Typography.Text type="secondary">
+              {t('warehouse.batchImageHqFailNoItems', '无失败明细')}
+            </Typography.Text>
+          ) : null}
+        </Space>
       </Modal>
 
       <Modal title={t('warehouse.batchCategoryTitle', '批量设置分类 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchCategoryOpen} width={640} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchCategorySaving} okButtonProps={{ disabled: !targetCategoryGuid || !categories.length }} onCancel={() => {
