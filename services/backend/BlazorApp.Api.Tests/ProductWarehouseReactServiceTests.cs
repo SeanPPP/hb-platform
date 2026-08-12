@@ -861,6 +861,336 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetAntdTableDataAsync_DomesticPriceUsesActiveDomesticProductAsNullFallback()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-PRICE-FALLBACK",
+                "ITEM-DOMESTIC-PRICE-FALLBACK",
+                "国内价兜底商品",
+                null,
+                supplierCode: "CN-DOMESTIC-PRICE-FALLBACK",
+                domesticProductPrice: 8.88m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-PRICE-WAREHOUSE",
+                "ITEM-DOMESTIC-PRICE-WAREHOUSE",
+                "仓库国内价优先商品",
+                null,
+                supplierCode: "CN-DOMESTIC-PRICE-WAREHOUSE",
+                domesticPrice: 4.44m,
+                domesticProductPrice: 8.88m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-PRICE-ZERO",
+                "ITEM-DOMESTIC-PRICE-ZERO",
+                "仓库零国内价商品",
+                null,
+                supplierCode: "CN-DOMESTIC-PRICE-ZERO",
+                domesticPrice: 0m,
+                domesticProductPrice: 8.88m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-PRICE-NO-DOMESTIC",
+                "ITEM-DOMESTIC-PRICE-NO-DOMESTIC",
+                "无国内商品记录",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-PRICE-DELETED",
+                "ITEM-DOMESTIC-PRICE-DELETED",
+                "已删除国内商品记录",
+                null,
+                supplierCode: "CN-DOMESTIC-PRICE-DELETED",
+                domesticProductPrice: 9.99m,
+                domesticProductIsDeleted: true
+            );
+
+            var result = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+            });
+            var items = result.Items.ToDictionary(item => item.ProductCode);
+
+            Assert.Equal(8.88m, items["P-DOMESTIC-PRICE-FALLBACK"].DomesticPrice);
+            Assert.Equal(4.44m, items["P-DOMESTIC-PRICE-WAREHOUSE"].DomesticPrice);
+            Assert.Equal(0m, items["P-DOMESTIC-PRICE-ZERO"].DomesticPrice);
+            Assert.Null(items["P-DOMESTIC-PRICE-NO-DOMESTIC"].DomesticPrice);
+            Assert.Null(items["P-DOMESTIC-PRICE-DELETED"].DomesticPrice);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_DomesticPriceFilterUsesEffectiveDisplayedPrice()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-FILTER-FALLBACK",
+                "ITEM-DOMESTIC-FILTER-FALLBACK",
+                "国内价兜底筛选命中",
+                null,
+                supplierCode: "CN-DOMESTIC-FILTER-FALLBACK",
+                domesticProductPrice: 12.50m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-FILTER-COLLISION",
+                "ITEM-DOMESTIC-FILTER-COLLISION",
+                "仓库价覆盖国内价",
+                null,
+                supplierCode: "CN-DOMESTIC-FILTER-COLLISION",
+                domesticPrice: 35m,
+                domesticProductPrice: 12.50m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-FILTER-WAREHOUSE",
+                "ITEM-DOMESTIC-FILTER-WAREHOUSE",
+                "仓库价筛选命中",
+                null,
+                supplierCode: "CN-DOMESTIC-FILTER-WAREHOUSE",
+                domesticPrice: 13.50m,
+                domesticProductPrice: 99m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-FILTER-ZERO",
+                "ITEM-DOMESTIC-FILTER-ZERO",
+                "仓库零价筛选命中",
+                null,
+                supplierCode: "CN-DOMESTIC-FILTER-ZERO",
+                domesticPrice: 0m,
+                domesticProductPrice: 12.50m
+            );
+
+            var exactResult = await CreateService().GetAntdTableDataAsync(
+                new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    Filters = new Dictionary<string, string[]>
+                    {
+                        ["domesticPrice"] = new[] { "__filter:eq:12.50" },
+                    },
+                }
+            );
+            var rangeResult = await CreateService().GetAntdTableDataAsync(
+                new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    Filters = new Dictionary<string, string[]>
+                    {
+                        ["domesticPrice"] = new[] { "gte:10", "lte:15" },
+                    },
+                }
+            );
+            var zeroResult = await CreateService().GetAntdTableDataAsync(
+                new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    Filters = new Dictionary<string, string[]>
+                    {
+                        ["domesticPrice"] = new[] { "__filter:eq:0" },
+                    },
+                }
+            );
+
+            Assert.Equal(
+                "P-DOMESTIC-FILTER-FALLBACK",
+                Assert.Single(exactResult.Items).ProductCode
+            );
+            Assert.Equal(
+                new[] { "P-DOMESTIC-FILTER-FALLBACK", "P-DOMESTIC-FILTER-WAREHOUSE" },
+                rangeResult.Items.Select(item => item.ProductCode).OrderBy(code => code)
+            );
+            Assert.Equal("P-DOMESTIC-FILTER-ZERO", Assert.Single(zeroResult.Items).ProductCode);
+        }
+
+        [Theory]
+        [InlineData(
+            "ascend",
+            "P-DOMESTIC-SORT-ZERO",
+            "P-DOMESTIC-SORT-WAREHOUSE",
+            "P-DOMESTIC-SORT-FALLBACK-MID",
+            "P-DOMESTIC-SORT-FALLBACK-HIGH"
+        )]
+        [InlineData(
+            "descend",
+            "P-DOMESTIC-SORT-FALLBACK-HIGH",
+            "P-DOMESTIC-SORT-FALLBACK-MID",
+            "P-DOMESTIC-SORT-WAREHOUSE",
+            "P-DOMESTIC-SORT-ZERO"
+        )]
+        public async Task GetAntdTableDataAsync_SortsEffectiveDomesticPriceBeforePaging(
+            string sortOrder,
+            string firstProductCode,
+            string secondProductCode,
+            string thirdProductCode,
+            string fourthProductCode
+        )
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-SORT-ZERO",
+                "ITEM-DOMESTIC-SORT-ZERO",
+                "国内价排序零值",
+                null,
+                supplierCode: "CN-DOMESTIC-SORT-ZERO",
+                domesticPrice: 0m,
+                domesticProductPrice: 50m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-SORT-WAREHOUSE",
+                "ITEM-DOMESTIC-SORT-WAREHOUSE",
+                "国内价排序仓库值",
+                null,
+                supplierCode: "CN-DOMESTIC-SORT-WAREHOUSE",
+                domesticPrice: 10m,
+                domesticProductPrice: 99m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-SORT-FALLBACK-MID",
+                "ITEM-DOMESTIC-SORT-FALLBACK-MID",
+                "国内价排序兜底中值",
+                null,
+                supplierCode: "CN-DOMESTIC-SORT-FALLBACK-MID",
+                domesticProductPrice: 20m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-SORT-FALLBACK-HIGH",
+                "ITEM-DOMESTIC-SORT-FALLBACK-HIGH",
+                "国内价排序兜底高值",
+                null,
+                supplierCode: "CN-DOMESTIC-SORT-FALLBACK-HIGH",
+                domesticProductPrice: 30m
+            );
+
+            var firstPage = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 2,
+                SortBy = "domesticPrice",
+                SortOrder = sortOrder,
+            });
+            var secondPage = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 2,
+                PageSize = 2,
+                SortBy = "domesticPrice",
+                SortOrder = sortOrder,
+            });
+
+            Assert.Equal(4, firstPage.Total);
+            Assert.Equal(
+                new[] { firstProductCode, secondProductCode },
+                firstPage.Items.Select(item => item.ProductCode)
+            );
+            Assert.Equal(4, secondPage.Total);
+            Assert.Equal(
+                new[] { thirdProductCode, fourthProductCode },
+                secondPage.Items.Select(item => item.ProductCode)
+            );
+        }
+
+        [Theory]
+        [InlineData("ascend")]
+        [InlineData("descend")]
+        public async Task GetAntdTableDataAsync_DomesticPriceSortUsesStableProductCodeTieBreaker(
+            string sortOrder
+        )
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-TIE-D",
+                "ITEM-DOMESTIC-TIE-D",
+                "国内价同值排序 D",
+                null,
+                supplierCode: "CN-DOMESTIC-TIE-D",
+                domesticPrice: 10m,
+                domesticProductPrice: 99m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-TIE-B",
+                "ITEM-DOMESTIC-TIE-B",
+                "国内价同值排序 B",
+                null,
+                supplierCode: "CN-DOMESTIC-TIE-B",
+                domesticProductPrice: 10m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-TIE-C",
+                "ITEM-DOMESTIC-TIE-C",
+                "国内价同值排序 C",
+                null,
+                supplierCode: "CN-DOMESTIC-TIE-C",
+                domesticPrice: 10m,
+                domesticProductPrice: 5m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DOMESTIC-TIE-A",
+                "ITEM-DOMESTIC-TIE-A",
+                "国内价同值排序 A",
+                null,
+                supplierCode: "CN-DOMESTIC-TIE-A",
+                domesticProductPrice: 10m
+            );
+
+            var executedSql = new List<string>();
+            _db.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+            ReactTableResponseDto<WarehouseProductReactListDto> firstPage;
+            ReactTableResponseDto<WarehouseProductReactListDto> secondPage;
+            try
+            {
+                var service = CreateService();
+                firstPage = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 2,
+                    SortBy = "domesticPrice",
+                    SortOrder = sortOrder,
+                });
+                secondPage = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+                {
+                    Page = 2,
+                    PageSize = 2,
+                    SortBy = "domesticPrice",
+                    SortOrder = sortOrder,
+                });
+            }
+            finally
+            {
+                _db.Aop.OnLogExecuting = null;
+            }
+
+            Assert.Equal(4, firstPage.Total);
+            Assert.Equal(
+                new[] { "P-DOMESTIC-TIE-A", "P-DOMESTIC-TIE-B" },
+                firstPage.Items.Select(item => item.ProductCode)
+            );
+            Assert.Equal(4, secondPage.Total);
+            Assert.Equal(
+                new[] { "P-DOMESTIC-TIE-C", "P-DOMESTIC-TIE-D" },
+                secondPage.Items.Select(item => item.ProductCode)
+            );
+
+            var pageQueries = executedSql
+                .Where(sql =>
+                    sql.Contains("ORDER BY", StringComparison.OrdinalIgnoreCase)
+                    && sql.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                )
+                .ToList();
+            Assert.Equal(2, pageQueries.Count);
+            Assert.All(
+                pageQueries,
+                sql =>
+                {
+                    var orderByIndex = sql.IndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase);
+                    var orderByClause = sql[orderByIndex..];
+                    Assert.Contains(
+                        "ProductCode",
+                        orderByClause,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+                }
+            );
+        }
+
+        [Fact]
         public async Task GetAntdTableDataAsync_FiltersUpdatedAtByEqualDateToken()
         {
             await SeedWarehouseTableProductAsync(
@@ -4069,7 +4399,9 @@ namespace BlazorApp.Api.Tests
             DateTime? createdAt = null,
             DateTime? updatedAt = null,
             string? createdBy = null,
-            string? updatedBy = null
+            string? updatedBy = null,
+            decimal? domesticProductPrice = null,
+            bool domesticProductIsDeleted = false
         )
         {
             if (!string.IsNullOrWhiteSpace(supplierCode))
@@ -4100,10 +4432,11 @@ namespace BlazorApp.Api.Tests
                         HBProductNo = itemNumber,
                         Barcode = barcode,
                         ProductType = productType ?? 0,
+                        DomesticPrice = domesticProductPrice,
                         PackingQuantity = packingQuantity,
                         UnitVolume = volume,
                         IsActive = isActive,
-                        IsDeleted = false,
+                        IsDeleted = domesticProductIsDeleted,
                     })
                     .ExecuteCommandAsync();
             }

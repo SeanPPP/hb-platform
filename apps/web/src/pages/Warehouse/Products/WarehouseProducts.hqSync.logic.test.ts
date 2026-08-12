@@ -1555,6 +1555,32 @@ async function main() {
   })
   if (resetColumnFilterFailure) failures.push(resetColumnFilterFailure)
 
+  const priceCurrencyFailure = await runTest('仓库商品国内价显示 ¥ 且其他价格显示 $', () => {
+    const currencyHelper = extractSection(
+      pageSource,
+      'function getWarehouseProductPricePrefix',
+      'type SupplierSelectOption',
+    )
+    assert(
+      currencyHelper.includes("field === 'minOrderQuantity'") &&
+        currencyHelper.includes("return field === 'domesticPrice' ? '¥' : '$'"),
+      '中包数量不应显示货币符号；国内价应使用 ¥，进口价和零售价应使用 $',
+    )
+
+    const inlineHandlers = extractSection(
+      pageSource,
+      'const handleStartInlineEdit',
+      'const showPushToHqResult',
+    )
+    assert(
+      inlineHandlers.includes('const pricePrefix = getWarehouseProductPricePrefix(field);') &&
+        inlineHandlers.includes('prefix={pricePrefix}') &&
+        inlineHandlers.includes("formatPrice(value, pricePrefix ?? '$')"),
+      '价格单元格的只读文本与双击编辑器应使用同一货币符号',
+    )
+  })
+  if (priceCurrencyFailure) failures.push(priceCurrencyFailure)
+
   const inlineEditFailure = await runTest('仓库商品四列应支持无确认弹窗的双击单字段保存', () => {
     assert(
       pageSource.includes('patchWarehouseProduct') &&

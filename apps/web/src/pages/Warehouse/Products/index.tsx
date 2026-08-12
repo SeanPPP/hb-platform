@@ -351,11 +351,11 @@ function formatDateTime(value?: string, language?: string) {
     const locale = language === 'en' ? 'en-AU' : 'zh-CN';
     return date.toLocaleString(locale, { hour12: false });
 }
-function formatPrice(value?: number) {
+function formatPrice(value: number | undefined, pricePrefix: '¥' | '$') {
     if (value === undefined || value === null) {
         return '--';
     }
-    return value.toFixed(2);
+    return `${pricePrefix}${value.toFixed(2)}`;
 }
 type WarehouseProductInlineEditField = 'minOrderQuantity' | 'domesticPrice' | 'importPrice' | 'labelPrice';
 type WarehouseProductInlineEditCell = {
@@ -364,6 +364,12 @@ type WarehouseProductInlineEditCell = {
     value: number | null;
     originalValue?: number;
 };
+function getWarehouseProductPricePrefix(field: WarehouseProductInlineEditField): '¥' | '$' | undefined {
+    if (field === 'minOrderQuantity') {
+        return undefined;
+    }
+    return field === 'domesticPrice' ? '¥' : '$';
+}
 type SupplierSelectOption = DefaultOptionType & {
     searchText?: string;
 };
@@ -1291,12 +1297,14 @@ export default function WarehouseProductsPage() {
             ? inlineEditingCell
             : null;
         const isSaving = inlineSavingCellKey === cellKey;
+        const pricePrefix = getWarehouseProductPricePrefix(field);
         if (cell) {
             return (<InputNumber
               className="warehouse-products-inline-editor"
               value={cell.value}
               min={0}
               precision={field === 'minOrderQuantity' ? 0 : 2}
+              prefix={pricePrefix}
               controls={false}
               autoFocus
               disabled={isSaving}
@@ -1320,7 +1328,7 @@ export default function WarehouseProductsPage() {
           onDoubleClick={canInlineEditWarehouseProduct ? () => handleStartInlineEdit(record, field) : undefined}>
           {field === 'minOrderQuantity'
             ? value ?? '--'
-            : formatPrice(value)}
+            : formatPrice(value, pricePrefix ?? '$')}
         </div>);
     };
     const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {

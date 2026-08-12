@@ -1924,15 +1924,40 @@ namespace BlazorApp.Api.Services.React
                             query = ApplyWarehouseDecimalRangeFilter(
                                 query,
                                 values,
+                                // 显式分支保持数值列比较语义：仓库值优先，仅 null 时使用国内商品值。
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value >= value,
+                                        (
+                                            w.DomesticPrice.HasValue
+                                            && w.DomesticPrice.Value >= value
+                                        )
+                                        || (
+                                            w.DomesticPrice == null
+                                            && dp.DomesticPrice != null
+                                            && dp.DomesticPrice.Value >= value
+                                        ),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value <= value,
+                                        (
+                                            w.DomesticPrice.HasValue
+                                            && w.DomesticPrice.Value <= value
+                                        )
+                                        || (
+                                            w.DomesticPrice == null
+                                            && dp.DomesticPrice != null
+                                            && dp.DomesticPrice.Value <= value
+                                        ),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value == value
+                                        (
+                                            w.DomesticPrice.HasValue
+                                            && w.DomesticPrice.Value == value
+                                        )
+                                        || (
+                                            w.DomesticPrice == null
+                                            && dp.DomesticPrice != null
+                                            && dp.DomesticPrice.Value == value
+                                        )
                             );
                             break;
                         case "oemprice":
@@ -2157,8 +2182,24 @@ namespace BlazorApp.Api.Services.React
                         : query.OrderBy((w, dp, s, p, c, ls) => ls.Name, OrderByType.Asc);
                 else if (sort == "domesticprice")
                     query = orderDesc
-                        ? query.OrderBy(w => w.DomesticPrice, OrderByType.Desc)
-                        : query.OrderBy(w => w.DomesticPrice, OrderByType.Asc);
+                        ? query.OrderBy(
+                            (w, dp, s, p, c, ls) =>
+                                SqlFunc.IsNull(w.DomesticPrice, dp.DomesticPrice),
+                            OrderByType.Desc
+                        )
+                            .OrderBy(
+                                (w, dp, s, p, c, ls) => w.ProductCode,
+                                OrderByType.Asc
+                            )
+                        : query.OrderBy(
+                            (w, dp, s, p, c, ls) =>
+                                SqlFunc.IsNull(w.DomesticPrice, dp.DomesticPrice),
+                            OrderByType.Asc
+                        )
+                            .OrderBy(
+                                (w, dp, s, p, c, ls) => w.ProductCode,
+                                OrderByType.Asc
+                            );
                 else if (sort == "oemprice")
                     query = orderDesc
                         ? query.OrderBy(w => w.OEMPrice, OrderByType.Desc)
@@ -2301,7 +2342,11 @@ namespace BlazorApp.Api.Services.React
                                     DomesticSupplierCode = s.SupplierCode,
                                     LocalSupplierCode = p.LocalSupplierCode,
                                     LocalSupplierName = ls.Name ?? p.LocalSupplierCode,
-                                    DomesticPrice = w.DomesticPrice,
+                                    // 列表返回值与国内价筛选、排序保持同一兜底语义。
+                                    DomesticPrice = SqlFunc.IsNull(
+                                        w.DomesticPrice,
+                                        dp.DomesticPrice
+                                    ),
                                     OEMPrice = w.OEMPrice,
                                     ImportPrice = w.ImportPrice,
                                     WarehouseVolume = w.Volume,
