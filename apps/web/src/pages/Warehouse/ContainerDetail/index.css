@@ -86,6 +86,11 @@
   vertical-align: middle;
 }
 
+/* 虚拟表格使用 flex 行；居中不同高度的文本和输入框，确保文字落在同一水平轴线上。 */
+.container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row {
+  align-items: center;
+}
+
 .container-detail-table .ant-table-tbody > tr > td .ant-image {
   display: inline-flex;
   align-items: center;

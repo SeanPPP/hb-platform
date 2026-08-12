@@ -3863,6 +3863,21 @@ assertEqual(
   true,
   '零售价应按新商品/已有商品分流显示和编辑，不再沿用仓库快照来源底色',
 )
+const retailPriceColumnsSource = pageSource.slice(
+  pageSource.indexOf("renderColumnTitle('oemPrice'"),
+  pageSource.indexOf("renderColumnTitle('newProduct'"),
+)
+assertEqual(
+  !retailPriceColumnsSource.includes('className="container-detail-price-cell"') &&
+  !pageStyleSource.includes('.container-detail-price-cell {') &&
+  pageSource.includes('virtual') &&
+  pageStyleSource.includes(
+    '.container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row {\n  align-items: center;\n}',
+  ) &&
+  !pageStyleSource.includes('.ant-table-tbody > tr > td .ant-input-number-input'),
+  true,
+  '虚拟表格行应垂直居中所有单元格，使数字输入文字与普通文本同轴对齐',
+)
 assertEqual(
   pageSource.includes('handleWarehouseStatusChange'),
   true,
