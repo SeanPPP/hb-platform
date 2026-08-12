@@ -3,6 +3,7 @@ import {
   DownOutlined,
   FileTextOutlined,
   GiftOutlined,
+  HomeOutlined,
   MenuOutlined,
   ShoppingCartOutlined,
   UserOutlined,
@@ -481,9 +482,13 @@ export default function ShopLayout() {
           <LanguageSwitch className="shop-mobile-language-switch" size="small" compact />
         </div>
         <div className="shop-mobile-grid">
+          <div className="shop-mobile-grid-item" onClick={() => navigate('/shop')}>
+            <HomeOutlined className="icon" />
+            <span>{t('shop.shopHome', 'Shop Home')}</span>
+          </div>
           <div className="shop-mobile-grid-item" onClick={() => setMobileCategoryVisible(true)}>
             <MenuOutlined className="icon" />
-            <span>{t('shop.products', 'Products')}</span>
+            <span>{t('shop.categories', 'Categories')}</span>
           </div>
           <div className="shop-mobile-grid-item" onClick={handleOpenPreorder}>
             <GiftOutlined className="icon" />
@@ -702,7 +707,7 @@ export default function ShopLayout() {
       />
 
       <Drawer
-        title={t('shop.products', 'Products')}
+        title={t('shop.categories', 'Categories')}
         placement="left"
         onClose={() => setMobileCategoryVisible(false)}
         open={mobileCategoryVisible}
