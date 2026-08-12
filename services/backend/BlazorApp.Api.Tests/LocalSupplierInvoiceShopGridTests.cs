@@ -232,7 +232,8 @@ public sealed class LocalSupplierInvoiceShopGridTests : IDisposable
             CreateHqSqlSugarContext(),
             Mock.Of<IMapper>(),
             NullLogger<LocalSupplierInvoicesReactService>.Instance,
-            Mock.Of<IAutoPricingService>()
+            Mock.Of<IAutoPricingService>(),
+            WarehouseProductChangeHistoryTestDouble.CreateNoop()
         );
     }
 

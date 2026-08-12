@@ -4,7 +4,9 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -323,6 +325,7 @@ namespace BlazorApp.Api.Tests
             var products = await database.Db.Queryable<DomesticProduct>().ToListAsync();
             var setProducts = await database.Db.Queryable<DomesticSetProduct>().ToListAsync();
             var logs = await database.Db.Queryable<DomesticProductCreationLog>().ToListAsync();
+            var histories = await database.Db.Queryable<WarehouseProductChangeHistory>().ToListAsync();
 
             var parent = Assert.Single(products);
             Assert.Equal(2, setProducts.Count);
@@ -338,10 +341,67 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(childRelation.SetProductNo, childLog.HBProductNo);
             Assert.Equal(childRelation.SetBarcode, childLog.Barcode);
             Assert.Equal("套装子项", childRelation.SetProductName);
+            var history = Assert.Single(histories);
+            Assert.Equal(parent.ProductCode, history.ProductCode);
+            Assert.Equal("Create", history.Action);
+            Assert.Equal("DomesticProductCreation", history.Source);
+            Assert.NotNull(history.BatchGuid);
         }
 
         [Fact]
-        public async Task GetBatchDetailAsync_子日志共享父商品编码时从套装关系读取子项价格()
+        public async Task CreateBatchAsync_历史写入失败时回滚主档关系和创建日志()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            database.Db.Ado.ExecuteCommand(
+                "CREATE TRIGGER block_history_insert BEFORE INSERT ON WarehouseProductChangeHistory "
+                    + "BEGIN SELECT RAISE(ABORT, 'forced history failure'); END;"
+            );
+
+            var result = await database.CreateService().CreateBatchAsync(
+                new CreateDomesticProductBatchRequest
+                {
+                    SupplierCode = "HB001",
+                    Items = new List<CreateBatchItemDto>
+                    {
+                        new() { ProductName = "历史失败商品", ProductType = 0 },
+                    },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Empty(await database.Db.Queryable<DomesticProduct>().ToListAsync());
+        Assert.Empty(await database.Db.Queryable<DomesticProductCreationLog>().ToListAsync());
+        Assert.Empty(await database.Db.Queryable<WarehouseProductChangeHistory>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task CreateBatchAsync_历史记录使用当前请求操作人和用户GUID()
+    {
+        using var database = new DomesticProductCreationTestDatabase();
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(item => item.GetCurrentUsername()).Returns("创建请求用户");
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("creation-user-guid");
+
+        var result = await database.CreateService(currentUser.Object).CreateBatchAsync(
+            new CreateDomesticProductBatchRequest
+            {
+                SupplierCode = "HB001",
+                Items = new List<CreateBatchItemDto>
+                {
+                    new() { ProductName = "操作人商品", ProductType = 0 },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var history = await database.Db.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal("creation-user-guid", history.ActorUserGuid);
+        Assert.Equal("创建请求用户", history.ActorName);
+        Assert.Equal("User", history.ActorType);
+    }
+
+    [Fact]
+    public async Task GetBatchDetailAsync_子日志共享父商品编码时从套装关系读取子项价格()
         {
             using var database = new DomesticProductCreationTestDatabase();
             const string batchNumber = "B20260724001";
@@ -885,7 +945,27 @@ namespace BlazorApp.Api.Tests
                     typeof(ChinaSupplier),
                     typeof(DomesticProduct),
                     typeof(DomesticSetProduct),
-                    typeof(DomesticProductCreationLog)
+                    typeof(DomesticProductCreationLog),
+                    typeof(Product),
+                    typeof(WarehouseProduct)
+                );
+                Db.Ado.ExecuteCommand(
+                    """
+                    CREATE TABLE WarehouseProductChangeHistory (
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        EventGuid TEXT NOT NULL,
+                        ProductCode TEXT NOT NULL,
+                        Action TEXT NOT NULL,
+                        Source TEXT NOT NULL,
+                        SourceReference TEXT NULL,
+                        BatchGuid TEXT NULL,
+                        ActorUserGuid TEXT NULL,
+                        ActorName TEXT NOT NULL,
+                        ActorType TEXT NOT NULL,
+                        OccurredAtUtc TEXT NOT NULL,
+                        ChangesJson TEXT NOT NULL
+                    )
+                    """
                 );
                 _configuration = new ConfigurationBuilder()
                     .AddInMemoryCollection(
@@ -899,12 +979,23 @@ namespace BlazorApp.Api.Tests
 
             public SqlSugarClient Db { get; }
 
-            public DomesticProductCreationService CreateService() =>
-                new(
+            public DomesticProductCreationService CreateService(
+                ICurrentUserService? currentUserService = null
+            )
+            {
+                var resolvedCurrentUserService = currentUserService ?? Mock.Of<ICurrentUserService>();
+                return new DomesticProductCreationService(
                     CreateSqlSugarContext(Db),
                     CreateItemBarcodeService(),
-                    NullLogger<DomesticProductCreationService>.Instance
+                    NullLogger<DomesticProductCreationService>.Instance,
+                    new WarehouseProductChangeHistoryService(
+                        CreateSqlSugarContext(Db),
+                        NullLogger<WarehouseProductChangeHistoryService>.Instance,
+                        resolvedCurrentUserService
+                    ),
+                    resolvedCurrentUserService
                 );
+            }
 
             public ItemBarcodeService CreateItemBarcodeService() =>
                 new(

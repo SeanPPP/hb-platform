@@ -3,8 +3,10 @@ using System.Reflection;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Data.Sqlite;
@@ -93,6 +95,49 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
         hqSyncService.VerifyAll();
     }
 
+    [Fact]
+    public void DataSyncIncrementalService_商品增量审计应在整轮事务结束后统一写入()
+    {
+        var source = File.ReadAllText(ResolveIncrementalServicePath());
+
+        AssertAllProductIncrementalMethodsUseWholeTaskTransaction(source);
+    }
+
+    [Fact]
+    public async Task DataSyncIncrementalService_actorName回退System但有用户Guid时仍保留用户身份()
+    {
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => capturedContext = context)
+            .ReturnsAsync(0);
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(service => service.GetCurrentUserGuid()).Returns("sync-user-guid");
+        currentUser.Setup(service => service.GetCurrentUsername()).Returns("System");
+        var service = CreateService(
+            Mock.Of<IStoreRetailPriceHqSyncService>(),
+            historyService.Object,
+            currentUser.Object
+        );
+
+        await InvokeRecordChangeHistoryAsync(service);
+
+        Assert.NotNull(capturedContext);
+        Assert.Equal("sync-user-guid", capturedContext!.ActorUserGuid);
+        Assert.Equal("User", capturedContext.ActorType);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -118,7 +163,11 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private DataSyncIncrementalService CreateService(IStoreRetailPriceHqSyncService hqSyncService)
+    private DataSyncIncrementalService CreateService(
+        IStoreRetailPriceHqSyncService hqSyncService,
+        IWarehouseProductChangeHistoryService? historyService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         var localContext = CreateSqlSugarContext(_db);
         return new DataSyncIncrementalService(
@@ -134,8 +183,111 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
                 NullLogger<ScheduledTaskLogService>.Instance
             ),
             hqSyncService,
-            new MemoryCache(new MemoryCacheOptions())
+            new MemoryCache(new MemoryCacheOptions()),
+            historyService ?? Mock.Of<IWarehouseProductChangeHistoryService>(),
+            currentUserService ?? Mock.Of<ICurrentUserService>()
         );
+    }
+
+    private static void AssertAllProductIncrementalMethodsUseWholeTaskTransaction(string source)
+    {
+        foreach (var methodName in new[]
+                 {
+                     "SyncProductsFromHqIncrementalAsync",
+                     "SyncDomesticProductsFromHqIncrementalAsync",
+                     "SyncWarehouseProductsFromHqIncrementalAsync",
+                 })
+        {
+            var method = ExtractMethod(source, methodName);
+            var transactionStart = method.IndexOf("UseTranAsync", StringComparison.Ordinal);
+            var pageLoopStart = method.IndexOf("for (var page = 1; page <= pages; page++)", StringComparison.Ordinal);
+
+            Assert.True(transactionStart >= 0, $"{methodName} 缺少本地事务");
+            Assert.True(
+                transactionStart < pageLoopStart,
+                $"{methodName} 仍在每页内开启事务，无法保证整轮原子性"
+            );
+            Assert.Equal(1, CountOccurrences(method, "RecordChangeHistoryAsync("));
+            Assert.Equal(1, CountOccurrences(method, "var afterSnapshots ="));
+            Assert.Contains(
+                "Where(code => auditedProductCodes.Add(code))",
+                method,
+                StringComparison.Ordinal
+            );
+            Assert.Contains("StringComparer.OrdinalIgnoreCase", method, StringComparison.Ordinal);
+            Assert.DoesNotContain("页{Page}出错", method, StringComparison.Ordinal);
+            Assert.Contains("result.AddedCount = 0;", method, StringComparison.Ordinal);
+            Assert.Contains("result.UpdatedCount = 0;", method, StringComparison.Ordinal);
+        }
+    }
+
+    private static async Task InvokeRecordChangeHistoryAsync(DataSyncIncrementalService service)
+    {
+        var method = typeof(DataSyncIncrementalService).GetMethod(
+            "RecordChangeHistoryAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        )!;
+        var task = (Task)method.Invoke(
+            service,
+            new object?[]
+            {
+                new Dictionary<string, WarehouseProductChangeSnapshotDto>(),
+                new Dictionary<string, WarehouseProductChangeSnapshotDto>(),
+                "Sync",
+                "DataSyncIncremental",
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+            }
+        )!;
+        await task;
+    }
+
+    private static string ExtractMethod(string source, string methodName)
+    {
+        var start = source.IndexOf($" {methodName}(", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"未找到 {methodName}");
+        var openingBrace = source.IndexOf('{', start);
+        var depth = 0;
+        for (var index = openingBrace; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+                depth++;
+            else if (source[index] == '}' && --depth == 0)
+                return source[start..(index + 1)];
+        }
+
+        throw new InvalidOperationException($"无法读取 {methodName} 方法体");
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while ((start = source.IndexOf(value, start, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            start += value.Length;
+        }
+
+        return count;
+    }
+
+    private static string ResolveIncrementalServicePath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            var candidate = Path.Combine(
+                directory.FullName,
+                "services/backend/BlazorApp.Api/Services/React/DataSyncIncrementalService.cs"
+            );
+            if (File.Exists(candidate))
+                return candidate;
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException("未找到 DataSyncIncrementalService.cs");
     }
 
     private static ConnectionConfig CreateConnectionConfig(string connectionString) =>

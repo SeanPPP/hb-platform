@@ -28,8 +28,11 @@ public class ReactProductHqSyncContractTests
     {
         var legacyProductService = new Mock<IProductReactService>(MockBehavior.Strict);
         var hqSyncService = new Mock<IProductHqSyncService>(MockBehavior.Strict);
+        var currentUserService = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUserService.Setup(service => service.GetCurrentUserGuid()).Returns("user-guid-001");
+        currentUserService.Setup(service => service.GetCurrentUsername()).Returns("同步操作员");
         hqSyncService
-            .Setup(service => service.SyncIncrementalAsync(null))
+            .Setup(service => service.SyncIncrementalAsync(null, "user-guid-001", "同步操作员"))
             .ReturnsAsync(
                 ApiResponse<HqProductSyncResult>.OK(
                     new HqProductSyncResult { ProductsAdded = 1 },
@@ -42,13 +45,17 @@ public class ReactProductHqSyncContractTests
             Mock.Of<IProductStoreSyncService>(),
             hqSyncService.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            Mock.Of<ILogger<ReactProductController>>()
+            Mock.Of<ILogger<ReactProductController>>(),
+            currentUserService.Object
         );
 
         var response = await controller.SyncFromHq();
 
         Assert.IsType<OkObjectResult>(response);
-        hqSyncService.Verify(service => service.SyncIncrementalAsync(null), Times.Once);
+        hqSyncService.Verify(
+            service => service.SyncIncrementalAsync(null, "user-guid-001", "同步操作员"),
+            Times.Once
+        );
         legacyProductService.VerifyNoOtherCalls();
     }
 
@@ -78,7 +85,8 @@ public class ReactProductHqSyncContractTests
             Mock.Of<IProductStoreSyncService>(),
             hqSyncService.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            Mock.Of<ILogger<ReactProductController>>()
+            Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>()
         );
 
         var response = await controller.SyncSelectedFromHq(new SyncSelectedProductsFromHqRequest
@@ -117,7 +125,8 @@ public class ReactProductHqSyncContractTests
             Mock.Of<IProductStoreSyncService>(),
             hqSyncService.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            Mock.Of<ILogger<ReactProductController>>()
+            Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>()
         );
 
         var response = await controller.GetPushToHqStoreOptions();

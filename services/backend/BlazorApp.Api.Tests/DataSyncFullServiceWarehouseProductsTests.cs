@@ -4,8 +4,10 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings.Profiles.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Data.Sqlite;
@@ -237,6 +239,75 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncWarehouseProductsFromHqAsync_跨页重复商品同批次只写一条最终历史()
+    {
+        await SeedHqStockAsync(
+            "P-AUDIT-DUP",
+            domesticPrice: 601m,
+            oemPrice: 602m,
+            importPrice: 603m,
+            stockQuantity: 604m,
+            minOrderQuantity: 605m,
+            stockValue: 606m,
+            stockAlertQuantity: 607,
+            isActive: 1
+        );
+        await SeedHqStockAsync(
+            "p-audit-dup",
+            domesticPrice: 701m,
+            oemPrice: 702m,
+            importPrice: 703m,
+            stockQuantity: 704m,
+            minOrderQuantity: 705m,
+            stockValue: 706m,
+            stockAlertQuantity: 707,
+            isActive: 0
+        );
+
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Returns((IEnumerable<string> codes, CancellationToken _) =>
+                Task.FromResult<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(
+                    codes.Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            code => code,
+                            code => new WarehouseProductChangeSnapshotDto { ProductCode = code },
+                            StringComparer.OrdinalIgnoreCase
+                        )
+                )
+            );
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.Is<WarehouseProductChangeHistoryContextDto>(context =>
+                    context.BatchGuid.HasValue && context.Source == "DataSyncFull"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(1);
+
+        var result = await CreateService(historyService: historyService.Object)
+            .SyncWarehouseProductsFromHqAsync(1, 1);
+
+        Assert.True(result.IsSuccess, result.Message);
+        historyService.Verify(service => service.RecordChangesAsync(
+            It.Is<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(snapshots =>
+                snapshots.Count == 1 && snapshots.ContainsKey("P-AUDIT-DUP")
+            ),
+            It.Is<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(snapshots =>
+                snapshots.Count == 1 && snapshots.ContainsKey("P-AUDIT-DUP")
+            ),
+            It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Once);
+    }
+
+    [Fact]
     public async Task SyncWarehouseProductsFromHqAsync_异常失败时返回错误计数()
     {
         var result = await CreateService(CreateContext<HqSqlSugarContext>())
@@ -244,6 +315,96 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
 
         Assert.False(result.IsSuccess);
         Assert.Equal(1, result.ErrorCount);
+    }
+
+    [Fact]
+    public async Task SyncWarehouseProductsFromHqAsync_使用入队身份写入历史上下文()
+    {
+        await SeedLocalWarehouseProductAsync(
+            "P-ACTOR",
+            domesticPrice: 1m,
+            oemPrice: 2m,
+            importPrice: 3m,
+            stockQuantity: 4,
+            minOrderQuantity: 5,
+            stockValue: 6m,
+            stockAlertQuantity: 7,
+            isActive: true,
+            volume: 8m,
+            packingQuantity: 9,
+            createdAt: new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+            createdBy: "原创建人",
+            isDeleted: false
+        );
+        await SeedHqStockAsync(
+            "P-ACTOR",
+            domesticPrice: 101m,
+            oemPrice: 102m,
+            importPrice: 103m,
+            stockQuantity: 104m,
+            minOrderQuantity: 105m,
+            stockValue: 106m,
+            stockAlertQuantity: 107,
+            isActive: 1
+        );
+
+        // 同构模拟生产 SqlSugarContext 的审计拦截器；未开启 Preserve scope 时会覆盖入队操作人。
+        _localDb.Aop.DataExecuting = (_, entityInfo) =>
+        {
+            if (
+                entityInfo.EntityValue is not BaseEntity
+                || entityInfo.OperationType != DataFilterType.UpdateByObject
+                || SqlSugarAuditScope.ShouldPreserveExplicitAuditFields
+            )
+            {
+                return;
+            }
+
+            if (entityInfo.PropertyName == "UpdatedBy")
+            {
+                entityInfo.SetValue("AOP-System");
+            }
+            if (entityInfo.PropertyName == "UpdatedAt")
+            {
+                entityInfo.SetValue(new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            }
+        };
+
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => capturedContext = context)
+            .ReturnsAsync(0);
+
+        var result = await CreateService(historyService: historyService.Object)
+            .SyncWarehouseProductsFromHqAsync(10, 10, "user-guid-warehouse", "仓库操作员");
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.NotNull(capturedContext);
+        Assert.Equal("user-guid-warehouse", capturedContext!.ActorUserGuid);
+        Assert.Equal("仓库操作员", capturedContext.ActorName);
+        Assert.Equal("User", capturedContext.ActorType);
+        var inserted = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(item => item.ProductCode == "P-ACTOR");
+        Assert.Equal("原创建人", inserted.CreatedBy);
+        Assert.Equal("仓库操作员", inserted.UpdatedBy);
     }
 
     public void Dispose()
@@ -256,7 +417,11 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
         SqliteTempFileCleanup.DeleteIfExists(_hqDbPath);
     }
 
-    private DataSyncFullService CreateService(HqSqlSugarContext? hqContext = null)
+    private DataSyncFullService CreateService(
+        HqSqlSugarContext? hqContext = null,
+        IWarehouseProductChangeHistoryService? historyService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         var localContext = CreateSqlSugarContext(_localDb);
         var configuration = CreateHqConfiguration(_hqConnection.ConnectionString);
@@ -274,8 +439,42 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
                 NullLogger<ScheduledTaskLogService>.Instance
             ),
             Mock.Of<IStoreRetailPriceHqSyncService>(),
-            new MemoryCache(new MemoryCacheOptions())
+            new MemoryCache(new MemoryCacheOptions()),
+            historyService ?? CreateNoopChangeHistoryService(),
+            currentUserService ?? Mock.Of<ICurrentUserService>()
         );
+    }
+
+    private static IWarehouseProductChangeHistoryService CreateNoopChangeHistoryService()
+    {
+        var service = new Mock<IWarehouseProductChangeHistoryService>();
+        service
+            .Setup(item =>
+                item.CaptureSnapshotsAsync(
+                    It.IsAny<IEnumerable<string>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                    StringComparer.OrdinalIgnoreCase
+                )
+            );
+        service
+            .Setup(item =>
+                item.RecordChangesAsync(
+                    It.IsAny<
+                        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                    >(),
+                    It.IsAny<
+                        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                    >(),
+                    It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(0);
+        return service.Object;
     }
 
     private async Task SeedLocalWarehouseProductAsync(

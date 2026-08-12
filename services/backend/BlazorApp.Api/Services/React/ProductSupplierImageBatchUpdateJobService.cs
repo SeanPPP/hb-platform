@@ -47,6 +47,17 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
+            // 未携带用户身份的调用是计划任务入口，后台明确按 System 处理。
+            return StartJobAsync(request, null, null, cancellationToken);
+        }
+
+        public Task<BatchUpdateSupplierImagesJobDto> StartJobAsync(
+            BatchUpdateSupplierImagesJobRequest request,
+            string? actorUserGuid,
+            string? actorName,
+            CancellationToken cancellationToken = default
+        )
+        {
             CleanupExpiredJobs();
 
             var normalizedRequest = CloneRequest(request);
@@ -59,6 +70,8 @@ namespace BlazorApp.Api.Services.React
                 OperationId = operationId,
                 SupplierKey = supplierKey,
                 Request = normalizedRequest,
+                ActorUserGuid = NormalizeActorGuid(actorUserGuid),
+                ActorName = NormalizeActorName(actorName),
                 CreatedAt = now,
                 Status = BatchUpdateSupplierImagesJobStatusConstants.Queued,
                 Message = "供应商商品图片批量更新任务已提交",
@@ -108,7 +121,13 @@ namespace BlazorApp.Api.Services.React
 
                 using var scope = _serviceScopeFactory.CreateScope();
                 var service = scope.ServiceProvider.GetRequiredService<IProductReactService>();
-                var response = await service.BatchUpdateSupplierImagesAsync(CloneRequest(jobState.Request));
+                var response = jobState.ActorUserGuid == null && jobState.ActorName == null
+                    ? await service.BatchUpdateSupplierImagesAsync(CloneRequest(jobState.Request))
+                    : await service.BatchUpdateSupplierImagesAsync(
+                        CloneRequest(jobState.Request),
+                        jobState.ActorUserGuid,
+                        jobState.ActorName
+                    );
 
                 CompleteJob(
                     jobState,
@@ -299,6 +318,16 @@ namespace BlazorApp.Api.Services.React
             return (supplierCode ?? string.Empty).Trim().ToUpperInvariant();
         }
 
+        private static string? NormalizeActorGuid(string? actorUserGuid)
+        {
+            return string.IsNullOrWhiteSpace(actorUserGuid) ? null : actorUserGuid.Trim();
+        }
+
+        private static string? NormalizeActorName(string? actorName)
+        {
+            return string.IsNullOrWhiteSpace(actorName) ? null : actorName.Trim();
+        }
+
         private static BatchUpdateSupplierImagesRequest CloneRequest(
             BatchUpdateSupplierImagesRequest? request
         )
@@ -336,6 +365,8 @@ namespace BlazorApp.Api.Services.React
             public string JobId { get; init; } = string.Empty;
             public string OperationId { get; init; } = string.Empty;
             public string SupplierKey { get; init; } = string.Empty;
+            public string? ActorUserGuid { get; init; }
+            public string? ActorName { get; init; }
             public string Status { get; set; } = BatchUpdateSupplierImagesJobStatusConstants.Queued;
             public BatchUpdateSupplierImagesRequest Request { get; init; } = new();
             public BatchUpdateSupplierImagesResult? Result { get; set; }

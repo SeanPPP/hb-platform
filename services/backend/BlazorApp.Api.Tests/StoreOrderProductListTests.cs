@@ -29,6 +29,8 @@ public sealed class StoreOrderProductListTests : IDisposable
     private readonly List<string> _sqlLogs = new();
     private IStoreOrderLocationProductLookupService _locationLookupService =
         Mock.Of<IStoreOrderLocationProductLookupService>();
+    private IWarehouseProductChangeHistoryService _changeHistoryService =
+        WarehouseProductChangeHistoryTestDouble.CreateNoop();
 
     public StoreOrderProductListTests()
     {
@@ -4930,6 +4932,131 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    [Fact]
+    public async Task UpdateProductStatusAsync_记录订货页来源和操作人()
+    {
+        await _db.Insertable(new Product
+        {
+            UUID = "UUID-STATUS-1",
+            ProductCode = "P-STATUS-1",
+            ProductName = "Status Product",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var history = CreateStatusHistoryMock();
+        WarehouseProductChangeHistoryContextDto? recordedContext = null;
+        history
+            .Setup(x =>
+                x.RecordChangesAsync(
+                    It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                    It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                    It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => recordedContext = context)
+            .ReturnsAsync(1);
+        _changeHistoryService = history.Object;
+
+        var result = await CreateService("status-user", "WarehouseStaff")
+            .UpdateProductStatusAsync(new UpdateProductStatusDto
+            {
+                ProductCode = "P-STATUS-1",
+                IsActive = false,
+            });
+
+        Assert.True(result.Success, result.Message);
+        var product = await _db.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-STATUS-1");
+        Assert.False(product.IsActive);
+        Assert.Equal("status-user", product.UpdatedBy);
+        Assert.Equal("Update", recordedContext?.Action);
+        Assert.Equal("StoreOrderProductStatus", recordedContext?.Source);
+        Assert.Equal("P-STATUS-1", recordedContext?.SourceReference);
+        Assert.Equal("status-user", recordedContext?.ActorName);
+        Assert.NotNull(recordedContext?.BatchGuid);
+    }
+
+    [Fact]
+    public async Task BatchUpdateProductStatusAsync_历史失败回滚整个批次()
+    {
+        await _db.Insertable(new[]
+        {
+            new Product
+            {
+                UUID = "UUID-STATUS-2",
+                ProductCode = "P-STATUS-2",
+                ProductName = "Status Product 2",
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new Product
+            {
+                UUID = "UUID-STATUS-3",
+                ProductCode = "P-STATUS-3",
+                ProductName = "Status Product 3",
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        var history = CreateStatusHistoryMock();
+        history
+            .Setup(x =>
+                x.RecordChangesAsync(
+                    It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                    It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                    It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("history failed"));
+        _changeHistoryService = history.Object;
+
+        var result = await CreateService("status-user", "WarehouseStaff")
+            .BatchUpdateProductStatusAsync(new BatchUpdateProductStatusDto
+            {
+                ProductCodes = new List<string> { "P-STATUS-2", "P-STATUS-3", "P-STATUS-2" },
+                IsActive = false,
+            });
+
+        Assert.False(result.Success);
+        var products = await _db.Queryable<Product>()
+            .Where(x => new[] { "P-STATUS-2", "P-STATUS-3" }.Contains(x.ProductCode))
+            .ToListAsync();
+        Assert.All(products, product => Assert.True(product.IsActive));
+    }
+
+    private static Mock<IWarehouseProductChangeHistoryService> CreateStatusHistoryMock()
+    {
+        var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        history
+            .Setup(x =>
+                x.CaptureSnapshotsAsync(
+                    It.IsAny<IEnumerable<string>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                (IEnumerable<string> codes, CancellationToken _) =>
+                    (IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>)codes
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            code => code,
+                            code => new WarehouseProductChangeSnapshotDto
+                            {
+                                ProductCode = code,
+                            },
+                            StringComparer.OrdinalIgnoreCase
+                        )
+            );
+        return history;
+    }
+
     private StoreOrderReactService CreateService(
         string userGuid = "user-1",
         params string[] roleNames
@@ -4976,7 +5103,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>(),
-            _locationLookupService
+            _locationLookupService,
+            _changeHistoryService
         );
 
         var hqField = typeof(StoreOrderReactService).GetField(

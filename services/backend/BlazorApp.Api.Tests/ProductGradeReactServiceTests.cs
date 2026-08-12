@@ -5,6 +5,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings.Profiles.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -808,7 +809,9 @@ public sealed class ProductGradeReactServiceTests : IDisposable
             CreateSqlSugarContext(_db),
             CreateHqSqlSugarContext(),
             CreateMapper(),
-            NullLogger<ProductGradeReactService>.Instance
+            NullLogger<ProductGradeReactService>.Instance,
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 

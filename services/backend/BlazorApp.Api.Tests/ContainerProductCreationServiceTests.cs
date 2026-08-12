@@ -267,7 +267,7 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task JobService_PassesUpdatedByToScopedExecutor()
+    public async Task JobService_PassesActorGuidAndUpdatedByToScopedExecutor()
     {
         var executor = new BlockingContainerProductCreationExecutor();
         var services = new ServiceCollection();
@@ -289,6 +289,7 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             }
         );
 
+        Assert.Equal("claim-user-id", await executor.WaitForActorUserGuidAsync());
         Assert.Equal("操作员 A", await executor.WaitForUpdatedByAsync());
         executor.Release();
     }
@@ -1114,6 +1115,70 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_SubmitContainer_名称缺失但有入队Guid时保留用户型审计身份()
+    {
+        await InsertContainerAsync("C-ACTOR-GUID", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync(
+            "D-ACTOR-GUID",
+            "C-ACTOR-GUID",
+            "P-ACTOR-GUID",
+            "普通商品",
+            8.8m,
+            9.9m,
+            domesticPrice: 10.1m
+        );
+        await InsertDomesticProductAsync("P-ACTOR-GUID", "HB-ACTOR-GUID", "国内名称", "Domestic Name", 0);
+        await InsertExistingProductAsync("P-ACTOR-GUID", "HB-ACTOR-GUID", 1.1m, 2.2m);
+        await InsertExistingWarehouseProductAsync(
+            "P-ACTOR-GUID",
+            domesticPrice: 3.3m,
+            importPrice: 4.4m,
+            oemPrice: 5.5m
+        );
+
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => capturedContext = context)
+            .ReturnsAsync(1);
+
+        var result = await CreateService(historyService.Object).ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-ACTOR-GUID",
+                ContainerGuid = "C-ACTOR-GUID",
+                SubmitContainer = true,
+            },
+            "queued-user-guid",
+            null,
+            CancellationToken.None
+        );
+
+        Assert.Equal(0, result.FailedCount);
+        Assert.NotNull(capturedContext);
+        Assert.Equal("queued-user-guid", capturedContext!.ActorUserGuid);
+        Assert.Equal("User", capturedContext.ActorType);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SubmitContainer_DoesNotCompleteContainerWhenFailureExists()
     {
         await InsertContainerAsync("C-FAIL", status: 1);
@@ -1529,7 +1594,9 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private ContainerProductCreationExecutorService CreateService()
+    private ContainerProductCreationExecutorService CreateService(
+        IWarehouseProductChangeHistoryService? historyService = null
+    )
     {
         var configuration = new ConfigurationBuilder().Build();
         var context = CreateSqlSugarContext(_db);
@@ -1545,14 +1612,16 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             configuration,
             itemBarcodeService,
             Mock.Of<IMapper>(),
-            Mock.Of<IDataSyncFullService>()
+            Mock.Of<IDataSyncFullService>(),
+            Mock.Of<IWarehouseProductChangeHistoryService>()
         );
 
         return new ContainerProductCreationExecutorService(
             context,
             CreateHBSalesSqlSugarContext(_hbSalesDb),
             warehouseService,
-            NullLogger<ContainerProductCreationExecutorService>.Instance
+            NullLogger<ContainerProductCreationExecutorService>.Instance,
+            historyService ?? Mock.Of<IWarehouseProductChangeHistoryService>()
         );
     }
 
@@ -1577,7 +1646,9 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
-            CreateTranslationServiceMock()
+            CreateTranslationServiceMock(),
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 
@@ -1639,27 +1710,43 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         private readonly TaskCompletionSource<string?> _updatedByReceived = new(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
+        private readonly TaskCompletionSource<string?> _actorUserGuidReceived = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public Task<ContainerProductCreationResultDto> ExecuteAsync(
             ContainerProductCreationJobRequestDto request,
             CancellationToken cancellationToken = default
         )
         {
-            return ExecuteAsync(request, null, cancellationToken);
+            return ExecuteAsync(request, null, null, cancellationToken);
         }
 
-        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+        public Task<ContainerProductCreationResultDto> ExecuteAsync(
             ContainerProductCreationJobRequestDto request,
             string? updatedBy,
             CancellationToken cancellationToken = default
         )
         {
+            return ExecuteAsync(request, null, updatedBy, cancellationToken);
+        }
+
+        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+            ContainerProductCreationJobRequestDto request,
+            string? actorUserGuid,
+            string? updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
+            _actorUserGuidReceived.TrySetResult(actorUserGuid);
             _updatedByReceived.TrySetResult(updatedBy);
             await _release.Task.WaitAsync(cancellationToken);
             return new ContainerProductCreationResultDto();
         }
 
         public Task<string?> WaitForUpdatedByAsync() => _updatedByReceived.Task;
+
+        public Task<string?> WaitForActorUserGuidAsync() => _actorUserGuidReceived.Task;
 
         public void Release() => _release.TrySetResult();
     }

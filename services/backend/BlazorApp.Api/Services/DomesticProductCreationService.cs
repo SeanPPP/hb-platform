@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using ClosedXML.Excel;
@@ -21,16 +22,86 @@ namespace BlazorApp.Api.Services
         private readonly SqlSugarContext _context;
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly ILogger<DomesticProductCreationService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public DomesticProductCreationService(
             SqlSugarContext context,
             ItemBarcodeService itemBarcodeService,
-            ILogger<DomesticProductCreationService> logger
+            ILogger<DomesticProductCreationService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
             _itemBarcodeService = itemBarcodeService;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
+        }
+
+        /// <summary>
+        /// 在调用方已经开启的业务事务内记录批量创建服务的统一快照历史。
+        /// </summary>
+        private async Task RecordDomesticProductChangesAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IEnumerable<string> productCodes,
+            string action,
+            Guid batchGuid,
+            string? sourceReference = null
+        )
+        {
+            var normalizedCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedCodes.Count == 0)
+            {
+                return;
+            }
+
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(normalizedCodes);
+            var actorName = ResolveActorName();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = "DomesticProductCreation",
+                    SourceReference = sourceReference,
+                    BatchGuid = batchGuid,
+                    ActorUserGuid = string.IsNullOrWhiteSpace(actorGuid) ? null : actorGuid,
+                    ActorName = actorName,
+                    ActorType = string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+                        ? "System"
+                        : "User",
+                    OccurredAtUtc = DateTime.UtcNow,
+                }
+            );
+        }
+
+        /// <summary>
+        /// 从服务端请求上下文解析操作人；无 HTTP 用户时才回退到后台 System。
+        /// </summary>
+        private string ResolveActorName()
+        {
+            var actorName = _currentUserService.GetCurrentUsername();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+            if (
+                !string.IsNullOrWhiteSpace(actorGuid)
+                && (
+                    string.IsNullOrWhiteSpace(actorName)
+                    || string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+                )
+            )
+            {
+                return actorGuid;
+            }
+
+            return string.IsNullOrWhiteSpace(actorName) ? "System" : actorName;
         }
 
         /// <summary>
@@ -43,6 +114,9 @@ namespace BlazorApp.Api.Services
             try
             {
                 var batchNumber = await GenerateBatchNumberAsync();
+                var auditBatchGuid = Guid.NewGuid();
+                var currentUser = ResolveActorName();
+                var now = DateTime.UtcNow;
 
                 var supplier = await _context.ChinaSupplierDb.GetFirstAsync(x =>
                     x.SupplierCode == request.SupplierCode
@@ -90,6 +164,10 @@ namespace BlazorApp.Api.Services
                                 ProductType = 0,
                                 OEMPrice = item.PrivateLabelPrice,
                                 IsActive = true,
+                                CreatedAt = now,
+                                CreatedBy = currentUser,
+                                UpdatedAt = now,
+                                UpdatedBy = currentUser,
                             }
                         );
 
@@ -166,6 +244,10 @@ namespace BlazorApp.Api.Services
                                 ProductType = 1,
                                 OEMPrice = item.PrivateLabelPrice,
                                 IsActive = true,
+                                CreatedAt = now,
+                                CreatedBy = currentUser,
+                                UpdatedAt = now,
+                                UpdatedBy = currentUser,
                             }
                         );
 
@@ -300,6 +382,12 @@ namespace BlazorApp.Api.Services
                 _context.Db.Ado.BeginTran();
                 try
                 {
+                    // 只对 DomesticProduct 主档取快照；套装子项仅存在于关系表，明确排除。
+                    var productCodes = allProducts.Select(product => product.ProductCode).ToList();
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        productCodes
+                    );
+
                     if (allProducts.Any())
                         await _context
                             .Db.Fastest<DomesticProduct>()
@@ -318,6 +406,14 @@ namespace BlazorApp.Api.Services
                             .AS("DomesticProductCreationLog")
                             .PageSize(500)
                             .BulkCopyAsync(allLogs);
+
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        productCodes,
+                        "Create",
+                        auditBatchGuid,
+                        batchNumber
+                    );
 
                     _context.Db.Ado.CommitTran();
                 }
@@ -1102,14 +1198,27 @@ namespace BlazorApp.Api.Services
                 }
 
                 var updatedCount = 0;
+                var auditBatchGuid = Guid.NewGuid();
+                var currentUser = ResolveActorName();
+                var updatedAt = DateTime.UtcNow;
+                var parentProductCodes = itemsToUpdate
+                    .Where(item => item.SetSubItem == null)
+                    .Select(item => item.Item.ProductCode)
+                    .ToList();
                 _context.Db.Ado.BeginTran();
                 try
                 {
+                    // 子项只更新 DomesticSetProduct；仅对实际更新 DomesticProduct 的父项审计。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        parentProductCodes
+                    );
                     foreach (var (item, setSubItem) in itemsToUpdate)
                     {
                         if (setSubItem != null)
                         {
                             setSubItem.OEMPrice = item.PrivateLabelPrice;
+                            setSubItem.UpdatedAt = updatedAt;
+                            setSubItem.UpdatedBy = currentUser;
                             await _context.DomesticSetProductDb.UpdateAsync(setSubItem);
                             updatedCount++;
                             continue;
@@ -1122,6 +1231,8 @@ namespace BlazorApp.Api.Services
                         if (product != null)
                         {
                             product.OEMPrice = item.PrivateLabelPrice;
+                            product.UpdatedAt = updatedAt;
+                            product.UpdatedBy = currentUser;
                             await _context.DomesticProductDb.UpdateAsync(product);
 
                             await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
@@ -1129,6 +1240,14 @@ namespace BlazorApp.Api.Services
                             updatedCount++;
                         }
                     }
+
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        parentProductCodes,
+                        "BatchUpdate",
+                        auditBatchGuid,
+                        batchNumber
+                    );
 
                     _context.Db.Ado.CommitTran();
                 }
@@ -1229,9 +1348,23 @@ namespace BlazorApp.Api.Services
 
                 // 商品、关系行和创建日志必须在同一客户端事务中写入，任何一步失败都回滚整批。
                 var updatedCount = 0;
+                var auditBatchGuid = Guid.NewGuid();
+                var currentUser = ResolveActorName();
+                var updatedAt = DateTime.UtcNow;
+                var parentProductCodes = itemsToUpdate
+                    .Where(item =>
+                        item.SetSubItem == null
+                        || item.SetSubItem.ProductNo == item.SetSubItem.SetProductNo
+                    )
+                    .Select(item => item.Log.ProductCode)
+                    .ToList();
                 _context.Db.Ado.BeginTran();
                 try
                 {
+                    // 套装子项不拥有 DomesticProduct 主档，不生成统一快照历史。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        parentProductCodes
+                    );
                     foreach (var (item, log, setSubItem) in itemsToUpdate)
                     {
                         var productName = item.ProductName ?? "";
@@ -1239,6 +1372,8 @@ namespace BlazorApp.Api.Services
                         {
                             setSubItem.SetProductName = productName;
                             setSubItem.OEMPrice = item.PrivateLabelPrice;
+                            setSubItem.UpdatedAt = updatedAt;
+                            setSubItem.UpdatedBy = currentUser;
                             await _context.DomesticSetProductDb.UpdateAsync(setSubItem);
                             updatedCount++;
                         }
@@ -1251,6 +1386,8 @@ namespace BlazorApp.Api.Services
                             {
                                 product.ProductName = productName;
                                 product.OEMPrice = item.PrivateLabelPrice;
+                                product.UpdatedAt = updatedAt;
+                                product.UpdatedBy = currentUser;
                                 await _context.DomesticProductDb.UpdateAsync(product);
 
                                 await UpdateSetProductOemPricesAsync(product, item.PrivateLabelPrice);
@@ -1260,8 +1397,18 @@ namespace BlazorApp.Api.Services
                         }
 
                         log.ProductName = productName;
+                        log.UpdatedAt = updatedAt;
+                        log.UpdatedBy = currentUser;
                         await _context.DomesticProductCreationLogDb.UpdateAsync(log);
                     }
+
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        parentProductCodes,
+                        "BatchUpdate",
+                        auditBatchGuid,
+                        batchNumber
+                    );
 
                     _context.Db.Ado.CommitTran();
                 }

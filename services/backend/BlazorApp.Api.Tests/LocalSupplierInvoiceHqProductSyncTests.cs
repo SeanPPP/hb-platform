@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.ComponentModel.DataAnnotations;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -12,6 +13,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -964,6 +966,183 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateHqProductsAsync_新建本地主档_写入统一历史上下文()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-history", "S01", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-history",
+            InvoiceGUID = "invoice-history",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-HISTORY",
+            Barcode = "930000001234",
+            ProductName = "历史商品",
+            PurchasePrice = 4.20m,
+            RetailPrice = 9.90m,
+            IsDeleted = false,
+        });
+
+        var capturedCodes = new List<IReadOnlyCollection<string>>();
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<IEnumerable<string>, CancellationToken>((codes, _) =>
+                capturedCodes.Add(codes.ToArray())
+            )
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.Is<WarehouseProductChangeHistoryContextDto>(context =>
+                    context.Action == "Create"
+                    && context.Source == "LocalSupplierInvoiceHqProductSync"
+                    && context.SourceReference == "invoice-history"
+                    && context.BatchGuid.HasValue
+                    && context.ActorUserGuid == "actor-guid-history"
+                    && context.ActorName == "历史审计操作员"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => capturedContext = context)
+            .ReturnsAsync(1);
+
+        var result = await CreateSyncService(historyService.Object).UpdateHqProductsAsync(
+            "invoice-history",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-history" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields { UpdatePurchasePrice = true },
+            },
+            "actor-guid-history",
+            "历史审计操作员"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ItemNumber == "ITEM-HISTORY");
+        Assert.Equal(2, capturedCodes.Count);
+        Assert.Contains(product.ProductCode!, capturedCodes[1]);
+        Assert.NotNull(capturedContext);
+        historyService.VerifyAll();
+    }
+
+    [Fact]
+    public async Task EnsureHqProductsAsync_已有本地主档_不写统一历史事件()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-existing-history", "S01", "SUP01");
+        await SeedExistingProductAsync("P-EXISTING-HISTORY", "SUP01", "ITEM-EXISTING-HISTORY");
+        await SeedHqProductAsync("P-EXISTING-HISTORY", 5m, 10m, "ITEM-EXISTING-HISTORY");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-existing-history",
+            InvoiceGUID = "invoice-existing-history",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-EXISTING-HISTORY",
+            ItemNumber = "ITEM-EXISTING-HISTORY",
+            Barcode = "930000000000",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+
+        var result = await CreateSyncService(historyService.Object).EnsureHqProductsAsync(
+            "invoice-existing-history",
+            new EnsureHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-existing-history" },
+                TargetStoreCodes = new List<string> { "S01" },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        historyService.Verify(service => service.RecordChangesAsync(
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Never);
+    }
+
+    [Fact]
+    public async Task EnsureHqProductsAsync_历史写入失败_回滚本地主档创建()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-history-rollback", "S01", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-history-rollback",
+            InvoiceGUID = "invoice-history-rollback",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-HISTORY-ROLLBACK",
+            Barcode = "930000005555",
+            ProductName = "回滚历史商品",
+            PurchasePrice = 4.20m,
+            RetailPrice = 9.90m,
+            IsDeleted = false,
+        });
+
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("历史写入失败"));
+
+        var result = await CreateSyncService(historyService.Object).EnsureHqProductsAsync(
+            "invoice-history-rollback",
+            new EnsureHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-history-rollback" },
+                TargetStoreCodes = new List<string> { "S01" },
+            },
+            "tester"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<Product>()
+                .Where(item => item.ItemNumber == "ITEM-HISTORY-ROLLBACK")
+                .CountAsync()
+        );
+        historyService.VerifyAll();
+    }
+
+    [Fact]
     public async Task EnsureHqProductsAsync_已有商品_只更新请求目标分店()
     {
         await SeedStoreAsync("S01", true);
@@ -1183,12 +1362,15 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.Equal(new[] { "S01", "S02" }, localPrices.Select(x => x.StoreCode).ToArray());
     }
 
-    private LocalSupplierInvoiceHqProductSyncService CreateSyncService()
+    private LocalSupplierInvoiceHqProductSyncService CreateSyncService(
+        IWarehouseProductChangeHistoryService? historyService = null
+    )
     {
         return new LocalSupplierInvoiceHqProductSyncService(
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb),
-            NullLogger<LocalSupplierInvoiceHqProductSyncService>.Instance
+            NullLogger<LocalSupplierInvoiceHqProductSyncService>.Instance,
+            historyService ?? WarehouseProductChangeHistoryTestDouble.CreateNoop()
         );
     }
 

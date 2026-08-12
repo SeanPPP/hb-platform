@@ -343,6 +343,7 @@ public class ReactProductStoreSyncJobContractTests
             Mock.Of<IProductHqSyncService>(),
             scopeService.Object,
             Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>(),
             supplierImageJobService: null,
             productStoreSyncJobService: jobService
         );

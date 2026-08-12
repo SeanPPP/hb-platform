@@ -131,6 +131,33 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
     }
 
     [Fact]
+    public async Task StartUpdateHqProductsJobAsync_指定审计操作者后向后台同步传递GUID和姓名()
+    {
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                "actor-guid-1",
+                "审计操作员"
+            ))
+            .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 1 }));
+
+        var service = CreateService(hqService: hqService);
+
+        var started = await service.StartUpdateHqProductsJobAsync(
+            "invoice-1",
+            BuildHqRequest(),
+            "actor-guid-1",
+            "审计操作员"
+        );
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        hqService.VerifyAll();
+    }
+
+    [Fact]
     public async Task StartUpdateHqProductsJobAsync_相同Operation运行中时复用任务()
     {
         var release = new TaskCompletionSource<ApiResponse<UpdateHqProductsResult>>(

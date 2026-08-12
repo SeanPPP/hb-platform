@@ -10,7 +10,18 @@ namespace BlazorApp.Api.Interfaces.React
     {
         Task<ApiResponse<HqProductSyncResult>> SyncFullAsync();
 
+        Task<ApiResponse<HqProductSyncResult>> SyncFullAsync(
+            string? actorUserGuid,
+            string? actorName
+        );
+
         Task<ApiResponse<HqProductSyncResult>> SyncIncrementalAsync(DateTime? startDate = null);
+
+        Task<ApiResponse<HqProductSyncResult>> SyncIncrementalAsync(
+            DateTime? startDate,
+            string? actorUserGuid,
+            string? actorName
+        );
 
         Task<ApiResponse<HqProductSyncResult>> SyncSelectedFromHqAsync(List<string> productCodes);
 

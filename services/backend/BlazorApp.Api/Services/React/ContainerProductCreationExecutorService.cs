@@ -18,18 +18,21 @@ namespace BlazorApp.Api.Services.React
         private readonly HBSalesSqlSugarContext _hbSalesContext;
         private readonly IProductWarehouseReactService _productWarehouseService;
         private readonly ILogger<ContainerProductCreationExecutorService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
 
         public ContainerProductCreationExecutorService(
             SqlSugarContext context,
             HBSalesSqlSugarContext hbSalesContext,
             IProductWarehouseReactService productWarehouseService,
-            ILogger<ContainerProductCreationExecutorService> logger
+            ILogger<ContainerProductCreationExecutorService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService
         )
         {
             _context = context;
             _hbSalesContext = hbSalesContext;
             _productWarehouseService = productWarehouseService;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
         }
 
         public async Task<ContainerProductCreationResultDto> ExecuteAsync(
@@ -37,7 +40,7 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
-            return await ExecuteAsync(request, null, cancellationToken);
+            return await ExecuteAsync(request, null, null, cancellationToken);
         }
 
         public async Task<ContainerProductCreationResultDto> ExecuteAsync(
@@ -46,8 +49,19 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
+            return await ExecuteAsync(request, null, updatedBy, cancellationToken);
+        }
+
+        public async Task<ContainerProductCreationResultDto> ExecuteAsync(
+            ContainerProductCreationJobRequestDto request,
+            string? actorUserGuid,
+            string? updatedBy,
+            CancellationToken cancellationToken = default
+        )
+        {
             var result = new ContainerProductCreationResultDto();
             var effectiveUpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy.Trim();
+            var batchGuid = Guid.NewGuid();
             var isSubmitContainer = request.SubmitContainer;
             var normalizedDetailHguids = NormalizeDetailHguids(request.DetailHguids);
 
@@ -143,6 +157,13 @@ namespace BlazorApp.Api.Services.React
                     .Select(itemNumber => itemNumber!)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots =
+                new Dictionary<string, WarehouseProductChangeSnapshotDto>(StringComparer.OrdinalIgnoreCase);
+            if (isSubmitContainer && existingProductCodes.Count > 0)
+            {
+                beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(existingProductCodes);
+            }
+
             var setRelationsByProductCode = productCodes.Count == 0
                 ? new Dictionary<string, List<DomesticSetProduct>>(StringComparer.OrdinalIgnoreCase)
                 : (
@@ -190,6 +211,7 @@ namespace BlazorApp.Api.Services.React
                             existingProductCodes,
                             setRelationsByProductCode,
                             result,
+                            effectiveUpdatedBy,
                             addResultItem: false
                         );
                     }
@@ -206,13 +228,14 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                // 已存在的套装主商品不再按重复商品跳过；这里只补齐子码链路，不更新主商品主档或价格。
+                // 已存在的套装主商品不再按重复商品跳过；仅修正类型并补齐子码链路，不更新其他主档字段或价格。
                 if (
                     await TryCompleteExistingSetProductCodesAsync(
                         row,
                         existingProductCodes,
                         setRelationsByProductCode,
-                        result
+                        result,
+                        effectiveUpdatedBy
                     )
                 )
                 {
@@ -250,7 +273,11 @@ namespace BlazorApp.Api.Services.React
                         createItems,
                         useTransaction: !isSubmitContainer,
                         // 保留整柜事务边界，同时将 job 捕获的真实操作人写入审计字段。
-                        updatedBy: effectiveUpdatedBy
+                        updatedBy: effectiveUpdatedBy,
+                        auditSource: "ContainerSubmit",
+                        sourceReference: containerGuid,
+                        batchGuid: batchGuid,
+                        actorUserGuid: actorUserGuid
                     );
                     if (!batchResult.Success)
                     {
@@ -319,6 +346,32 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
+            if (isSubmitContainer && existingProductCodes.Count > 0)
+            {
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(existingProductCodes);
+                await _changeHistoryService.RecordChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    new WarehouseProductChangeHistoryContextDto
+                    {
+                        Action = "BatchUpdate",
+                        Source = "ContainerSubmit",
+                        SourceReference = containerGuid,
+                        BatchGuid = batchGuid,
+                        ActorUserGuid = actorUserGuid,
+                        ActorName = effectiveUpdatedBy,
+                        ActorType = !string.IsNullOrWhiteSpace(actorUserGuid)
+                            || !string.Equals(
+                                effectiveUpdatedBy,
+                                "System",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                                ? "User"
+                                : "System",
+                    }
+                );
+            }
+
             return CompleteSubmitTransaction(
                 await FinalizeSubmitResultAsync(containerGuid, isSubmitContainer, result),
                 submitTransactionStarted
@@ -381,6 +434,7 @@ namespace BlazorApp.Api.Services.React
             HashSet<string> existingProductCodes,
             Dictionary<string, List<DomesticSetProduct>> setRelationsByProductCode,
             ContainerProductCreationResultDto result,
+            string updatedBy,
             bool addResultItem = true
         )
         {
@@ -397,7 +451,7 @@ namespace BlazorApp.Api.Services.React
                 return false;
             }
 
-            var productTypeChanged = await EnsureExistingSetProductTypeAsync(productCode);
+            var productTypeChanged = await EnsureExistingSetProductTypeAsync(productCode, updatedBy);
 
             // 已存在套装主商品每次按主商品编码实时查子项表，避免继续依赖货柜同组明细或旧缓存。
             var setRelations = await EnsureSetRelationsFromSetChildTableAsync(
@@ -429,7 +483,10 @@ namespace BlazorApp.Api.Services.React
             return true;
         }
 
-        private async Task<bool> EnsureExistingSetProductTypeAsync(string productCode)
+        private async Task<bool> EnsureExistingSetProductTypeAsync(
+            string productCode,
+            string updatedBy
+        )
         {
             var product = await _context.Db.Queryable<Product>()
                 .Where(item => item.ProductCode == productCode && !item.IsDeleted)
@@ -442,8 +499,9 @@ namespace BlazorApp.Api.Services.React
             // 已存在套装主商品只修正 POS 商品类型，避免再次创建时改动价格、名称、图片等主档字段。
             product.ProductType = 1;
             product.UpdatedAt = DateTime.Now;
+            product.UpdatedBy = updatedBy;
             await _context.Db.Updateable(product)
-                .UpdateColumns(item => new { item.ProductType, item.UpdatedAt })
+                .UpdateColumns(item => new { item.ProductType, item.UpdatedAt, item.UpdatedBy })
                 .ExecuteCommandAsync();
             return true;
         }
@@ -1236,6 +1294,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     product.PurchasePrice = item.ImportPrice;
                     product.UpdatedAt = now;
+                    product.UpdatedBy = effectiveUpdatedBy;
                     productsToUpdate.Add(product);
                 }
 

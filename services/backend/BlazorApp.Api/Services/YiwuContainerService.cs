@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using SqlSugar;
@@ -17,19 +18,25 @@ namespace BlazorApp.Api.Services
         private readonly ILogger<YiwuContainerService> _logger;
         private readonly ContainerExportService _exportService;
         private readonly ITranslationService _translationService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public YiwuContainerService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<YiwuContainerService> logger,
             ContainerExportService exportService,
-            ITranslationService translationService)
+            ITranslationService translationService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService)
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
             _exportService = exportService;
             _translationService = translationService;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         #region 货柜主表操作
@@ -1258,70 +1265,130 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始批量更新 {Count} 个国内商品信息", products.Count);
 
-                var successCount = 0;
                 var failedCount = 0;
                 var errors = new List<string>();
+                var productCodes = products
+                    .Select(product => product.ProductCode)
+                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var existingProducts = productCodes.Count == 0
+                    ? new List<DomesticProduct>()
+                    : await _context.Db.Queryable<DomesticProduct>()
+                        .Where(product => productCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                var productMap = existingProducts
+                    .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+                var validProducts = new List<(DomesticProductDto Request, DomesticProduct Product)>();
+                var seenProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var productDto in products)
                 {
-                    try
+                    // 参数错误保持逐条收集并继续，只有有效批次的写入错误才要求整体回滚。
+                    if (string.IsNullOrWhiteSpace(productDto.ProductCode))
                     {
-                        // 验证商品编码
-                        if (string.IsNullOrWhiteSpace(productDto.ProductCode))
-                        {
-                            errors.Add("商品编码不能为空");
-                            failedCount++;
-                            continue;
-                        }
+                        errors.Add("商品编码不能为空");
+                        failedCount++;
+                        continue;
+                    }
 
-                        // 查找现有商品
-                        var existingProduct = await _context.Db.Queryable<DomesticProduct>()
-                            .Where(p => p.ProductCode == productDto.ProductCode)
-                            .FirstAsync();
+                    if (!seenProductCodes.Add(productDto.ProductCode))
+                    {
+                        errors.Add($"商品 {productDto.ProductCode} 在本批次内重复");
+                        failedCount++;
+                        continue;
+                    }
 
-                        if (existingProduct == null)
-                        {
-                            errors.Add($"商品 {productDto.ProductCode} 不存在");
-                            failedCount++;
-                            continue;
-                        }
+                    if (!productMap.TryGetValue(productDto.ProductCode, out var existingProduct))
+                    {
+                        errors.Add($"商品 {productDto.ProductCode} 不存在");
+                        failedCount++;
+                        continue;
+                    }
 
-                        // 更新商品信息
+                    validProducts.Add((productDto, existingProduct));
+                }
+
+                if (validProducts.Count == 0)
+                {
+                    response.Success = false;
+                    response.SuccessCount = 0;
+                    response.FailedCount = failedCount;
+                    response.Errors = errors;
+                    response.Message = $"成功更新 0 个商品，失败 {failedCount} 个";
+                    return response;
+                }
+
+                var validProductCodes = validProducts
+                    .Select(item => item.Product.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var auditBatchGuid = Guid.NewGuid();
+                var auditActorGuid = _currentUserService.GetCurrentUserGuid();
+                var auditActorName = _currentUserService.GetCurrentUsername();
+
+                await _context.Db.Ado.BeginTranAsync();
+                try
+                {
+                    // 统一前快照、商品写入和历史插入的事务边界，历史失败时商品也必须回滚。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(validProductCodes);
+                    foreach (var (productDto, existingProduct) in validProducts)
+                    {
                         existingProduct.ProductName = productDto.ProductName;
                         existingProduct.EnglishProductName = productDto.EnglishProductName;
                         existingProduct.OEMPrice = productDto.OEMPrice;
                         existingProduct.ImportPrice = productDto.ImportPrice;
                         existingProduct.UpdatedAt = DateTime.UtcNow;
 
-                        // 保存更改
                         await _context.Db.Updateable(existingProduct)
-                            .UpdateColumns(p => new
+                            .UpdateColumns(product => new
                             {
-                                p.ProductName,
-                                p.EnglishProductName,
-                                p.OEMPrice,
-                                p.ImportPrice,
-                                p.UpdatedAt
+                                product.ProductName,
+                                product.EnglishProductName,
+                                product.OEMPrice,
+                                product.ImportPrice,
+                                product.UpdatedAt,
                             })
+                            .Where(product => product.ProductCode == existingProduct.ProductCode)
                             .ExecuteCommandAsync();
+                    }
 
-                        successCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "更新商品 {ProductCode} 失败", productDto.ProductCode);
-                        errors.Add($"更新商品 {productDto.ProductCode} 失败: {ex.Message}");
-                        failedCount++;
-                    }
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(validProductCodes);
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "BatchUpdate",
+                            Source = "YiwuContainerBatch",
+                            SourceReference = $"Batch:{auditBatchGuid:N}",
+                            BatchGuid = auditBatchGuid,
+                            ActorUserGuid = auditActorGuid,
+                            ActorName = auditActorName,
+                        }
+                    );
+                    await _context.Db.Ado.CommitTranAsync();
+                }
+                catch (Exception ex)
+                {
+                    await _context.Db.Ado.RollbackTranAsync();
+                    _logger.LogError(ex, "批量更新国内商品信息的有效批次失败，已回滚");
+                    response.Success = false;
+                    response.SuccessCount = 0;
+                    response.FailedCount = failedCount + validProducts.Count;
+                    response.Errors = errors.Append($"有效商品批量更新失败: {ex.Message}").ToList();
+                    response.Message = $"成功更新 0 个商品，失败 {response.FailedCount} 个";
+                    return response;
                 }
 
-                response.Success = successCount > 0;
-                response.SuccessCount = successCount;
+                response.Success = true;
+                response.SuccessCount = validProducts.Count;
                 response.FailedCount = failedCount;
                 response.Errors = errors;
-                response.Message = $"成功更新 {successCount} 个商品，失败 {failedCount} 个";
+                response.Message = $"成功更新 {response.SuccessCount} 个商品，失败 {failedCount} 个";
 
-                _logger.LogInformation("批量更新国内商品信息完成: 成功 {SuccessCount}，失败 {FailedCount}", successCount, failedCount);
+                _logger.LogInformation("批量更新国内商品信息完成: 成功 {SuccessCount}，失败 {FailedCount}", response.SuccessCount, failedCount);
                 return response;
             }
             catch (Exception ex)

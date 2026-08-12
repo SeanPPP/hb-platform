@@ -147,6 +147,47 @@ export interface WarehouseProductListItem {
   middlePackQty?: number
 }
 
+export type WarehouseProductChangeHistoryValue = string | number | boolean | null
+
+export interface WarehouseProductChangeHistoryItem {
+  fieldKey: string
+  valueType: string
+  beforeValue: WarehouseProductChangeHistoryValue
+  afterValue: WarehouseProductChangeHistoryValue
+}
+
+export interface WarehouseProductChangeHistoryEvent {
+  eventGuid: string
+  action: string
+  source: string
+  sourceReference?: string | null
+  batchGuid?: string | null
+  actorUserGuid?: string | null
+  actorName?: string | null
+  actorType?: string | null
+  occurredAtUtc: string
+  changes: WarehouseProductChangeHistoryItem[]
+}
+
+export interface WarehouseProductChangeHistoryResult {
+  productCode: string
+  itemNumber?: string | null
+  productName?: string | null
+  pageNumber: number
+  pageSize: number
+  total: number
+  events: WarehouseProductChangeHistoryEvent[]
+}
+
+export interface WarehouseProductChangeHistoryQuery {
+  pageNumber?: number
+  pageSize?: number
+}
+
+export interface WarehouseProductChangeHistoryRequestOptions {
+  signal?: AbortSignal
+}
+
 export interface WarehouseProductsTableQuery {
   page: number
   pageSize: number
@@ -767,6 +808,31 @@ export async function getWarehouseProductsTable(
   })
 
   return normalizeWarehouseProductsTableResponse(response, query.page, query.pageSize)
+}
+
+export async function getWarehouseProductChangeHistory(
+  productCode: string,
+  query: WarehouseProductChangeHistoryQuery = {},
+  options: WarehouseProductChangeHistoryRequestOptions = {},
+): Promise<WarehouseProductChangeHistoryResult> {
+  const pageNumber = Math.max(1, Math.floor(query.pageNumber ?? 1))
+  const pageSize = Math.min(100, Math.max(1, Math.floor(query.pageSize ?? 20)))
+  const response = await request.get<
+    ApiResponse<WarehouseProductChangeHistoryResult> | WarehouseProductChangeHistoryResult
+  >(`${API_BASE}/${encodeURIComponent(productCode)}/change-history`, {
+    params: { pageNumber, pageSize },
+    signal: options.signal,
+  })
+
+  return unwrapResponse(response, {
+    productCode,
+    itemNumber: null,
+    productName: null,
+    pageNumber,
+    pageSize,
+    total: 0,
+    events: [],
+  })
 }
 
 export async function syncWarehouseProductsFromHq(): Promise<SyncResult> {

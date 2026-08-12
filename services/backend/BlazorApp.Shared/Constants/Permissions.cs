@@ -311,6 +311,8 @@ namespace BlazorApp.Shared.Constants
                 [LocalPurchase.View] = ["LocalInvocie.View"],
                 [LocalPurchase.Edit] = ["LocalInvocie.Edit"],
                 [Reports.ProductMovementView] = [Reports.View],
+                // 前端仓库商品页面兼容旧的仓库总管理权限，API 使用同一访问边界。
+                [Warehouse.ManageProducts] = [Warehouse.Manage],
                 // 管理下载权限天然包含查看下载，保证菜单可见性和列表 GET 授权一致。
                 [System.ViewAppDownloads] = [System.ManageAppDownloads],
             };

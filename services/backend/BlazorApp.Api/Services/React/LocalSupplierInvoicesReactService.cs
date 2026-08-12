@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<LocalSupplierInvoicesReactService> _logger;
         private readonly IAutoPricingService _autoPricingService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
 
         public LocalSupplierInvoicesReactService(
@@ -31,6 +32,7 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<LocalSupplierInvoicesReactService> logger,
             IAutoPricingService autoPricingService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
             ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
         )
         {
@@ -39,6 +41,8 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _logger = logger;
             _autoPricingService = autoPricingService;
+            _changeHistoryService = changeHistoryService
+                ?? throw new ArgumentNullException(nameof(changeHistoryService));
             _hqProductSyncService = hqProductSyncService;
         }
 
@@ -4191,6 +4195,9 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var successfulDetailGuids = new List<string>();
+                var changedProductCodes = new HashSet<string>(StringComparer.Ordinal);
+                var auditBatchGuid = Guid.NewGuid();
+                var auditOccurredAtUtc = DateTime.UtcNow;
                 await db.Ado.BeginTranAsync();
                 try
                 {
@@ -4211,6 +4218,11 @@ namespace BlazorApp.Api.Services.React
                             result
                         );
                     }
+
+                    // 审计快照必须和主档写入处于同一事务；新建商品尚无编码，创建后再并入后快照。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        productCodes
+                    );
 
                     // 4. 按用户保存的 ActivityType 分组，不能在执行阶段重新推导覆盖用户选择。
                     var groupedDetails =
@@ -4246,6 +4258,7 @@ namespace BlazorApp.Api.Services.React
                         result.Errors.AddRange(createResult.Errors);
                         result.Skipped += createResult.SkippedCount;
                         successfulDetailGuids.AddRange(createResult.SuccessfulDetailGuids);
+                        changedProductCodes.UnionWith(createResult.ChangedProductCodes);
                     }
 
                     // ========== 更新进货价 ==========
@@ -4260,6 +4273,7 @@ namespace BlazorApp.Api.Services.React
                         result.Errors.AddRange(priceResult.Errors);
                         result.Skipped += priceResult.SkippedCount;
                         successfulDetailGuids.AddRange(priceResult.SuccessfulDetailGuids);
+                        changedProductCodes.UnionWith(priceResult.ChangedProductCodes);
                     }
 
                     // ========== 更新货号 ==========
@@ -4278,6 +4292,7 @@ namespace BlazorApp.Api.Services.React
                         result.Errors.AddRange(itemResult.Errors);
                         result.Skipped += itemResult.SkippedCount;
                         successfulDetailGuids.AddRange(itemResult.SuccessfulDetailGuids);
+                        changedProductCodes.UnionWith(itemResult.ChangedProductCodes);
                     }
 
                     // ========== 添加多码 ==========
@@ -4296,6 +4311,7 @@ namespace BlazorApp.Api.Services.React
                         result.Errors.AddRange(multiCodeResult.Errors);
                         result.Skipped += multiCodeResult.SkippedCount;
                         successfulDetailGuids.AddRange(multiCodeResult.SuccessfulDetailGuids);
+                        changedProductCodes.UnionWith(multiCodeResult.ChangedProductCodes);
                     }
 
                     if (result.Failed > 0)
@@ -4322,6 +4338,26 @@ namespace BlazorApp.Api.Services.React
                     if (successfulDetailGuids.Count > 0)
                     {
                         await BatchUpdateDetailActivityTypeAsync(successfulDetailGuids, userName);
+                    }
+
+                    if (changedProductCodes.Count > 0)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            changedProductCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "BatchUpdate",
+                                Source = "LocalSupplierInvoice",
+                                SourceReference = invoiceGuid,
+                                BatchGuid = auditBatchGuid,
+                                ActorName = userName,
+                                OccurredAtUtc = auditOccurredAtUtc,
+                            }
+                        );
                     }
 
                     await db.Ado.CommitTranAsync();
@@ -5162,6 +5198,7 @@ namespace BlazorApp.Api.Services.React
                 result.SuccessCount++;
                 result.AddedMultiCodeCount += additionalBarcodes.Count;
                 result.SuccessfulDetailGuids.Add(detail.DetailGUID);
+                result.ChangedProductCodes.Add(productUUID);
             }
 
             if (productsToCreate.Count > 0)
@@ -5282,6 +5319,7 @@ namespace BlazorApp.Api.Services.React
                 storePricesToUpdate[storePriceKey] = storePrice;
                 result.SuccessCount++;
                 result.SuccessfulDetailGuids.Add(detail.DetailGUID);
+                result.ChangedProductCodes.Add(detail.ProductCode!);
             }
 
             if (productsToUpdate.Count > 0)
@@ -5364,6 +5402,7 @@ namespace BlazorApp.Api.Services.React
                 productsToUpdate[detail.ProductCode!] = product;
                 result.SuccessCount++;
                 result.SuccessfulDetailGuids.Add(detail.DetailGUID);
+                result.ChangedProductCodes.Add(detail.ProductCode!);
             }
 
             if (productsToUpdate.Count > 0)
@@ -5469,6 +5508,7 @@ namespace BlazorApp.Api.Services.React
 
                 result.SuccessCount += barcodesToAdd.Count;
                 result.SuccessfulDetailGuids.Add(detail.DetailGUID);
+                result.ChangedProductCodes.Add(detail.ProductCode!);
             }
 
             // 4. 批量插入 StoreMultiCodeProduct
@@ -5568,6 +5608,7 @@ namespace BlazorApp.Api.Services.React
             public int SkippedCount { get; set; }
             public List<string> Errors { get; set; } = new();
             public List<string> SuccessfulDetailGuids { get; set; } = new();
+            public HashSet<string> ChangedProductCodes { get; set; } = new(StringComparer.Ordinal);
         }
 
         public async Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids)

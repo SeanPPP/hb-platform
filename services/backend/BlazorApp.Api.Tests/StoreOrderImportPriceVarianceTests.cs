@@ -91,7 +91,7 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
     {
         await SeedProductsAndStoreAsync();
 
-        var service = CreateService();
+        var service = CreateService(userName: "variance-user");
         var result = await service.UpdateImportPriceVarianceDomesticPriceAsync(
             new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
             {
@@ -107,8 +107,8 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
 
         var warehouseProduct = await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P1");
         Assert.Equal(12.35m, warehouseProduct.DomesticPrice);
-        Assert.Equal("seed-user", warehouseProduct.UpdatedBy);
-        Assert.Equal(new DateTime(2024, 1, 1), warehouseProduct.UpdatedAt);
+        Assert.Equal("variance-user", warehouseProduct.UpdatedBy);
+        Assert.True(warehouseProduct.UpdatedAt > new DateTime(2024, 1, 1));
 
         var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P1");
         Assert.Equal(99m, domesticProduct.DomesticPrice);
@@ -787,7 +787,8 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>(),
-            Mock.Of<IStoreOrderLocationProductLookupService>()
+            Mock.Of<IStoreOrderLocationProductLookupService>(),
+            Mock.Of<IWarehouseProductChangeHistoryService>()
         );
     }
 

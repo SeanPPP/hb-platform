@@ -3,7 +3,9 @@ using System.Linq;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
@@ -25,6 +27,8 @@ namespace BlazorApp.Api.Services.React
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
         private readonly IMemoryCache _cache;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
         private const string StoreRetailPricesIncrementalTaskType = "SyncStoreRetailPricesIncremental";
 
         public DataSyncIncrementalService(
@@ -37,9 +41,13 @@ namespace BlazorApp.Api.Services.React
             ILogger<DataSyncIncrementalService> logger,
             ScheduledTaskLogService taskLogService,
             IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService,
-            IMemoryCache cache
+            IMemoryCache cache,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
+            ArgumentNullException.ThrowIfNull(currentUserService);
+
             _localContext = localContext;
             _hqContext = hqContext;
             _hbSalesContext = hbSalesContext;
@@ -50,6 +58,8 @@ namespace BlazorApp.Api.Services.React
             _taskLogService = taskLogService;
             _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
             _cache = cache;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         public async Task<SyncResult> SyncPosmProductSupplierMappingsIncrementalAsync(
@@ -1245,6 +1255,7 @@ namespace BlazorApp.Api.Services.React
                 var added = 0;
                 var updated = 0;
                 var errors = 0;
+                var syncBatchGuid = Guid.NewGuid();
 
                 var existingProducts = await _localContext
                     .Db.Queryable<Product>()
@@ -1253,35 +1264,74 @@ namespace BlazorApp.Api.Services.React
                 var existingCodes = new HashSet<string>(
                     existingProducts
                         .Where(code => !string.IsNullOrWhiteSpace(code))
-                        .Select(code => code!)
+                        .Select(code => code!),
+                    StringComparer.OrdinalIgnoreCase
                 );
-
-                for (var page = 1; page <= pages; page++)
+                var auditedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var beforeSnapshots =
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var occurredAtUtc = DateTime.UtcNow;
+                var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var batch = await hqDb.Queryable<DIC_商品信息字典表>()
-                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
-                        .OrderBy(x => x.FGC_LastModifyDate)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    hqDb.Dispose();
-
-                    if (!batch.Any())
-                        continue;
-
-                    var localBatch = _mapper.Map<List<Product>>(batch);
-
-                    var toInsert = localBatch
-                        .Where(x => !existingCodes.Contains(x.ProductCode!))
-                        .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingCodes.Contains(x.ProductCode!))
-                        .ToList();
-
-                    try
+                    // 所有分页复用同一个本地事务，确保业务数据和历史记录要么一起提交，要么一起回滚。
+                    for (var page = 1; page <= pages; page++)
                     {
+                        var skip = (page - 1) * hqBatchSize;
+                        hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                        var batch = await hqDb.Queryable<DIC_商品信息字典表>()
+                            .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                            .OrderBy(x => x.FGC_LastModifyDate)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        hqDb.Dispose();
+
+                        if (!batch.Any())
+                            continue;
+
+                        var localBatch = _mapper.Map<List<Product>>(batch);
+
+                        var toInsert = localBatch
+                            .Where(x => !existingCodes.Contains(x.ProductCode!))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingCodes.Contains(x.ProductCode!))
+                            .ToList();
+
+                        var pageAuditCodes = toInsert
+                            .Concat(toUpdate)
+                            .Select(item => item.ProductCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var firstAuditCodes = pageAuditCodes
+                            .Where(code => auditedProductCodes.Add(code))
+                            .ToList();
+                        if (firstAuditCodes.Any())
+                        {
+                            var pageBeforeSnapshots = await CaptureChangeSnapshotsAsync(firstAuditCodes);
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                beforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
+
+                        foreach (var item in toInsert)
+                        {
+                            item.CreatedAt = occurredAtUtc;
+                            item.CreatedBy = "System";
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+                        foreach (var item in toUpdate)
+                        {
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+                        using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -1289,7 +1339,6 @@ namespace BlazorApp.Api.Services.React
                                 .AS("Product")
                                 .PageSize(writePageSize)
                                 .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
                         }
                         if (toInsert.Any())
                         {
@@ -1298,7 +1347,16 @@ namespace BlazorApp.Api.Services.React
                                 .AS("Product")
                                 .PageSize(writePageSize)
                                 .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
+                        }
+
+                        added += toInsert.Count;
+                        updated += toUpdate.Count;
+                        foreach (var item in toInsert)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item.ProductCode))
+                            {
+                                existingCodes.Add(item.ProductCode!);
+                            }
                         }
                         _logger.LogInformation(
                             "[ReactSync] 商品增量页{Page}: 插入{Inserted}, 更新{Updated}",
@@ -1307,16 +1365,21 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
                     }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 商品增量页{Page}出错: {Error}",
-                            page,
-                            ex.Message
-                        );
-                    }
+                    // 所有业务写入完成后才读取最终快照，整轮只生成一次历史事件。
+                    var afterSnapshots = await CaptureChangeSnapshotsAsync(auditedProductCodes);
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        "Sync",
+                        "DataSyncIncremental",
+                        syncBatchGuid,
+                        occurredAtUtc
+                    );
+                });
+                if (!transactionResult.IsSuccess)
+                {
+                    throw transactionResult.ErrorException
+                        ?? new InvalidOperationException("商品增量事务失败");
                 }
 
                 result.IsSuccess = errors == 0;
@@ -1341,6 +1404,9 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
+                result.AddedCount = 0;
+                result.UpdatedCount = 0;
+                result.ErrorCount = 1;
                 return result;
             }
         }
@@ -1501,42 +1567,81 @@ namespace BlazorApp.Api.Services.React
                 var added = 0;
                 var updated = 0;
                 var errors = 0;
+                var syncBatchGuid = Guid.NewGuid();
 
                 var existingCodes = await _localContext
                     .Db.Queryable<DomesticProduct>()
                     .Select(x => x.ProductCode)
                     .ToListAsync();
-                var existingSet = new HashSet<string>(existingCodes);
-
-                for (var page = 1; page <= pages; page++)
+                var existingSet = new HashSet<string>(existingCodes, StringComparer.OrdinalIgnoreCase);
+                var auditedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var beforeSnapshots =
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var occurredAtUtc = DateTime.UtcNow;
+                var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    // 【批次查询】从HQ获取增量数据
-                    var batch = await _hbSalesContext
-                        .Db.Queryable<CPT_DIC_商品信息字典表>()
-                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
-                        .Where(x => !string.IsNullOrEmpty(x.商品编码))
-                        .OrderBy(x => x.FGC_LastModifyDate)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-
-                    if (!batch.Any())
-                        continue;
-
-                    // 【AutoMapper映射】HQ实体 → 本地实体
-                    var localBatch = _mapper.Map<List<DomesticProduct>>(batch);
-
-                    // 【数据分类】根据ProductCode判断是新增还是更新
-                    var toInsert = localBatch
-                        .Where(x => !existingSet.Contains(x.ProductCode!))
-                        .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingSet.Contains(x.ProductCode!))
-                        .ToList();
-
-                    try
+                    // 所有分页复用同一个本地事务，确保业务数据和历史记录要么一起提交，要么一起回滚。
+                    for (var page = 1; page <= pages; page++)
                     {
+                        var skip = (page - 1) * hqBatchSize;
+                        // 【批次查询】从HQ获取增量数据
+                        var batch = await _hbSalesContext
+                            .Db.Queryable<CPT_DIC_商品信息字典表>()
+                            .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                            .Where(x => !string.IsNullOrEmpty(x.商品编码))
+                            .OrderBy(x => x.FGC_LastModifyDate)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+
+                        if (!batch.Any())
+                            continue;
+
+                        // 【AutoMapper映射】HQ实体 → 本地实体
+                        var localBatch = _mapper.Map<List<DomesticProduct>>(batch);
+
+                        // 【数据分类】根据ProductCode判断是新增还是更新
+                        var toInsert = localBatch
+                            .Where(x => !existingSet.Contains(x.ProductCode!))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingSet.Contains(x.ProductCode!))
+                            .ToList();
+
+                        var pageAuditCodes = toInsert
+                            .Concat(toUpdate)
+                            .Select(item => item.ProductCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var firstAuditCodes = pageAuditCodes
+                            .Where(code => auditedProductCodes.Add(code))
+                            .ToList();
+                        if (firstAuditCodes.Any())
+                        {
+                            var pageBeforeSnapshots = await CaptureChangeSnapshotsAsync(firstAuditCodes);
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                beforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
+
+                        foreach (var item in toInsert)
+                        {
+                            item.CreatedAt = occurredAtUtc;
+                            item.CreatedBy = "System";
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+                        foreach (var item in toUpdate)
+                        {
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+                        using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -1544,7 +1649,6 @@ namespace BlazorApp.Api.Services.React
                                 .AS("DomesticProduct")
                                 .PageSize(writePageSize)
                                 .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
                         }
                         if (toInsert.Any())
                         {
@@ -1553,7 +1657,16 @@ namespace BlazorApp.Api.Services.React
                                 .AS("DomesticProduct")
                                 .PageSize(writePageSize)
                                 .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
+                        }
+
+                        added += toInsert.Count;
+                        updated += toUpdate.Count;
+                        foreach (var item in toInsert)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item.ProductCode))
+                            {
+                                existingSet.Add(item.ProductCode!);
+                            }
                         }
                         _logger.LogInformation(
                             "[ReactSync] 国货商品增量页{Page}: 插入{Inserted}, 更新{Updated}",
@@ -1562,16 +1675,21 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
                     }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 国货商品增量页{Page}出错: {Error}",
-                            page,
-                            ex.Message
-                        );
-                    }
+                    // 所有业务写入完成后才读取最终快照，整轮只生成一次历史事件。
+                    var afterSnapshots = await CaptureChangeSnapshotsAsync(auditedProductCodes);
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        "Sync",
+                        "DataSyncIncremental",
+                        syncBatchGuid,
+                        occurredAtUtc
+                    );
+                });
+                if (!transactionResult.IsSuccess)
+                {
+                    throw transactionResult.ErrorException
+                        ?? new InvalidOperationException("国货商品增量事务失败");
                 }
 
                 result.IsSuccess = errors == 0;
@@ -1596,6 +1714,9 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
+                result.AddedCount = 0;
+                result.UpdatedCount = 0;
+                result.ErrorCount = 1;
                 return result;
             }
         }
@@ -2081,39 +2202,79 @@ namespace BlazorApp.Api.Services.React
                 var updated = 0;
                 var errors = 0;
 
+                var syncBatchGuid = Guid.NewGuid();
                 var existingCodes = await _localContext
                     .Db.Queryable<WarehouseProduct>()
                     .Select(x => x.ProductCode)
                     .ToListAsync();
-                var existingSet = new HashSet<string>(existingCodes);
-
-                for (var page = 1; page <= pages; page++)
+                var existingSet = new HashSet<string>(existingCodes, StringComparer.OrdinalIgnoreCase);
+                var auditedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var beforeSnapshots =
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var occurredAtUtc = DateTime.UtcNow;
+                var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
-                    var skip = (page - 1) * hqBatchSize;
-                    hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var batch = await hqDb.Queryable<CBP_DIC_商品库存表>()
-                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
-                        .Where(x => SqlFunc.HasValue(x.H商品编码))
-                        .OrderBy(x => x.FGC_LastModifyDate)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    hqDb.Dispose();
-
-                    if (!batch.Any())
-                        continue;
-
-                    var localBatch = _mapper.Map<List<WarehouseProduct>>(batch);
-
-                    var toInsert = localBatch
-                        .Where(x => !existingSet.Contains(x.ProductCode!))
-                        .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingSet.Contains(x.ProductCode!))
-                        .ToList();
-
-                    try
+                    // 所有分页复用同一个本地事务，确保业务数据和历史记录要么一起提交，要么一起回滚。
+                    for (var page = 1; page <= pages; page++)
                     {
+                        var skip = (page - 1) * hqBatchSize;
+                        hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                        var batch = await hqDb.Queryable<CBP_DIC_商品库存表>()
+                            .Where(x => x.FGC_LastModifyDate >= effectiveStart)
+                            .Where(x => SqlFunc.HasValue(x.H商品编码))
+                            .OrderBy(x => x.FGC_LastModifyDate)
+                            .Skip(skip)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        hqDb.Dispose();
+
+                        if (!batch.Any())
+                            continue;
+
+                        var localBatch = _mapper.Map<List<WarehouseProduct>>(batch);
+
+                        var toInsert = localBatch
+                            .Where(x => !existingSet.Contains(x.ProductCode!))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingSet.Contains(x.ProductCode!))
+                            .ToList();
+
+                        var pageAuditCodes = toInsert
+                            .Concat(toUpdate)
+                            .Select(item => item.ProductCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var firstAuditCodes = pageAuditCodes
+                            .Where(code => auditedProductCodes.Add(code))
+                            .ToList();
+                        if (firstAuditCodes.Any())
+                        {
+                            var pageBeforeSnapshots = await CaptureChangeSnapshotsAsync(firstAuditCodes);
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                beforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
+
+                        foreach (var item in toInsert)
+                        {
+                            item.CreatedAt = occurredAtUtc;
+                            item.CreatedBy = "System";
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+                        foreach (var item in toUpdate)
+                        {
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = "System";
+                        }
+
+                        using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -2121,7 +2282,6 @@ namespace BlazorApp.Api.Services.React
                                 .AS("WarehouseProduct")
                                 .PageSize(writePageSize)
                                 .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
                         }
                         if (toInsert.Any())
                         {
@@ -2130,7 +2290,16 @@ namespace BlazorApp.Api.Services.React
                                 .AS("WarehouseProduct")
                                 .PageSize(writePageSize)
                                 .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
+                        }
+
+                        added += toInsert.Count;
+                        updated += toUpdate.Count;
+                        foreach (var item in toInsert)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item.ProductCode))
+                            {
+                                existingSet.Add(item.ProductCode!);
+                            }
                         }
                         _logger.LogInformation(
                             "[ReactSync] 仓库商品增量页{Page}: 插入{Inserted}, 更新{Updated}",
@@ -2139,16 +2308,21 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
                     }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 仓库商品增量页{Page}出错: {Error}",
-                            page,
-                            ex.Message
-                        );
-                    }
+                    // 所有业务写入完成后才读取最终快照，整轮只生成一次历史事件。
+                    var afterSnapshots = await CaptureChangeSnapshotsAsync(auditedProductCodes);
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        "Sync",
+                        "DataSyncIncremental",
+                        syncBatchGuid,
+                        occurredAtUtc
+                    );
+                });
+                if (!transactionResult.IsSuccess)
+                {
+                    throw transactionResult.ErrorException
+                        ?? new InvalidOperationException("仓库商品增量事务失败");
                 }
 
                 result.IsSuccess = errors == 0;
@@ -2173,6 +2347,9 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
+                result.AddedCount = 0;
+                result.UpdatedCount = 0;
+                result.ErrorCount = 1;
                 return result;
             }
         }
@@ -4260,6 +4437,42 @@ namespace BlazorApp.Api.Services.React
                 result.Message = $"同步失败: {ex.Message}";
                 return result;
             }
+        }
+
+        private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
+            CaptureChangeSnapshotsAsync(IEnumerable<string> productCodes)
+        {
+            return await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+        }
+
+        private async Task RecordChangeHistoryAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+            string action,
+            string source,
+            Guid batchGuid,
+            DateTime? occurredAtUtc = null
+        )
+        {
+            // 历史操作人只能由服务端当前请求上下文提供，计划任务会自然回退为 System。
+            var actorUserGuid = _currentUserService.GetCurrentUserGuid();
+            var actorName = _currentUserService.GetCurrentUsername();
+            // 是否是系统任务只由用户 GUID 决定；显示名缺失时由统一历史服务使用 GUID 回退。
+            var isSystem = string.IsNullOrWhiteSpace(actorUserGuid);
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    BatchGuid = batchGuid,
+                    ActorUserGuid = isSystem ? null : actorUserGuid,
+                    ActorName = isSystem ? "System" : actorName,
+                    ActorType = isSystem ? "System" : "User",
+                    OccurredAtUtc = occurredAtUtc,
+                }
+            );
         }
     }
 }

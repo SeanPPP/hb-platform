@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <Compile Include="StoreProductMaintenanceWarehousePriceSyncTests.cs" />
+    <Compile Include="ProductChangeHistoryLegacyEntryPointTests.cs" />
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
     <Compile Include="ReactLocationControllerTests.cs" />
@@ -66,6 +67,7 @@
     <Compile Include="ReactImageProxyControllerTests.cs" />
     <Compile Include="ProductWarehouseReactServiceNonHotbargainTests.cs" />
     <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />
+    <Compile Include="ProductServiceChangeHistoryTests.cs" />
     <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
     <Compile Include="WarehouseStorePriceSyncContractTests.cs" />
     <Compile Include="WarehouseStorePriceSyncServiceTests.cs" />
@@ -74,6 +76,7 @@
     <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
     <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
+    <Compile Include="DataSyncLegacyHistoryTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentBackgroundRecalculateServiceTests.cs" />
@@ -160,11 +163,14 @@
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
     <Compile Include="ContainerCreateDuplicateTests.cs" />
+    <Compile Include="LegacyContainerProductChangeHistoryTests.cs" />
     <Compile Include="ContainerReactServiceDetailQueryTests.cs" />
     <Compile Include="ContainerReactServiceLocalSupplierCodeTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />
     <Compile Include="ReactContainerControllerSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />
+    <Compile Include="WarehouseProductChangeHistoryServiceTests.cs" />
+    <Compile Include="WarehouseProductChangeHistoryTestDouble.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />
   </ItemGroup>
 </Project>

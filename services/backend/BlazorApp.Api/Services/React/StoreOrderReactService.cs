@@ -37,6 +37,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly IInvoiceEmailService _invoiceEmailService;
         private readonly IStoreOrderLocationProductLookupService _locationProductLookupService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private Func<ISqlSugarClient> _createHqConnection;
 
         private sealed class StoreOrderDynamicHistoryRow
@@ -268,7 +269,8 @@ namespace BlazorApp.Api.Services.React
             IConfiguration configuration,
             IMapper mapper,
             IInvoiceEmailService invoiceEmailService,
-            IStoreOrderLocationProductLookupService locationProductLookupService
+            IStoreOrderLocationProductLookupService locationProductLookupService,
+            IWarehouseProductChangeHistoryService changeHistoryService
         )
         {
             _db = context.Db;
@@ -279,6 +281,7 @@ namespace BlazorApp.Api.Services.React
             _mapper = mapper;
             _invoiceEmailService = invoiceEmailService;
             _locationProductLookupService = locationProductLookupService;
+            _changeHistoryService = changeHistoryService;
             _createHqConnection = () => HqSqlSugarContext.CreateConcurrentConnection(_configuration);
         }
 
@@ -4910,27 +4913,58 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
-                    .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
-                if (warehouseProduct == null)
-                {
-                    return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
-                    {
-                        Success = false,
-                        Message = "未找到仓库商品，无法更新国内价格",
-                    };
-                }
-
                 var normalizedPrice = Math.Round(request.DomesticPrice.Value, 2, MidpointRounding.AwayFromZero);
-                warehouseProduct.DomesticPrice = normalizedPrice;
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var batchGuid = Guid.NewGuid();
 
                 // 该页面编辑的是仓库商品国内价格，严格只回写 WarehouseProduct.DomesticPrice。
-                await _db.Updateable(warehouseProduct)
-                    .UpdateColumns(wp => new
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                        .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
+                    if (warehouseProduct == null)
                     {
-                        wp.DomesticPrice,
-                    })
-                    .ExecuteCommandAsync();
+                        await _db.Ado.RollbackTranAsync();
+                        return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                        {
+                            Success = false,
+                            Message = "未找到仓库商品，无法更新国内价格",
+                        };
+                    }
+
+                    warehouseProduct.DomesticPrice = normalizedPrice;
+                    warehouseProduct.UpdatedAt = DateTime.UtcNow;
+                    warehouseProduct.UpdatedBy = currentUser;
+                    await _db.Updateable(warehouseProduct)
+                        .UpdateColumns(wp => new
+                        {
+                            wp.DomesticPrice,
+                            wp.UpdatedAt,
+                            wp.UpdatedBy,
+                        })
+                        .ExecuteCommandAsync();
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Update",
+                            Source = "StoreOrderImportPriceVariance",
+                            SourceReference = $"StoreOrderImportPriceVariance:{productCode}",
+                            BatchGuid = batchGuid,
+                            ActorName = currentUser,
+                        }
+                    );
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>.OK(
                     new StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
@@ -4986,32 +5020,58 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
-                    .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
-                if (warehouseProduct == null)
-                {
-                    return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
-                    {
-                        Success = false,
-                        Message = "未找到仓库商品，无法更新仓库进货价格",
-                    };
-                }
-
                 var normalizedPrice = Math.Round(requestedWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
                 var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-                warehouseProduct.ImportPrice = normalizedPrice;
-                warehouseProduct.UpdatedAt = DateTime.UtcNow;
-                warehouseProduct.UpdatedBy = currentUser;
+                var batchGuid = Guid.NewGuid();
 
                 // 该页面编辑的是仓库商品当前进货价格，只更新 WarehouseProduct.ImportPrice。
-                await _db.Updateable(warehouseProduct)
-                    .UpdateColumns(wp => new
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                        .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
+                    if (warehouseProduct == null)
                     {
-                        wp.ImportPrice,
-                        wp.UpdatedAt,
-                        wp.UpdatedBy,
-                    })
-                    .ExecuteCommandAsync();
+                        await _db.Ado.RollbackTranAsync();
+                        return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                        {
+                            Success = false,
+                            Message = "未找到仓库商品，无法更新仓库进货价格",
+                        };
+                    }
+
+                    warehouseProduct.ImportPrice = normalizedPrice;
+                    warehouseProduct.UpdatedAt = DateTime.UtcNow;
+                    warehouseProduct.UpdatedBy = currentUser;
+                    await _db.Updateable(warehouseProduct)
+                        .UpdateColumns(wp => new
+                        {
+                            wp.ImportPrice,
+                            wp.UpdatedAt,
+                            wp.UpdatedBy,
+                        })
+                        .ExecuteCommandAsync();
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Update",
+                            Source = "StoreOrderImportPriceVariance",
+                            SourceReference = $"StoreOrderImportPriceVariance:{productCode}",
+                            BatchGuid = batchGuid,
+                            ActorName = currentUser,
+                        }
+                    );
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.OK(
                     new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
@@ -5083,8 +5143,12 @@ namespace BlazorApp.Api.Services.React
 
             var normalizedPrice = Math.Round(requestedBatchWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
             var transactionStarted = false;
+            var batchGuid = Guid.NewGuid();
             try
             {
+                _db.Ado.BeginTran();
+                transactionStarted = true;
+
                 var warehouseProducts = await _db.Queryable<WarehouseProduct>()
                     .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
                     .ToListAsync();
@@ -5094,6 +5158,8 @@ namespace BlazorApp.Api.Services.React
                 var missingCodes = productCodes.Where(code => !existingCodeSet.Contains(code)).ToList();
                 if (missingCodes.Any())
                 {
+                    _db.Ado.RollbackTran();
+                    transactionStarted = false;
                     return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
                     {
                         Success = false,
@@ -5102,6 +5168,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
                 var now = DateTime.UtcNow;
                 foreach (var warehouseProduct in warehouseProducts)
                 {
@@ -5109,9 +5176,6 @@ namespace BlazorApp.Api.Services.React
                     warehouseProduct.UpdatedAt = now;
                     warehouseProduct.UpdatedBy = currentUser;
                 }
-
-                _db.Ado.BeginTran();
-                transactionStarted = true;
 
                 // 该批量入口只修改 WarehouseProduct 当前参考进货价，避免误联动商品主档、分店价格或历史订单。
                 await _db.Updateable(warehouseProducts)
@@ -5122,6 +5186,20 @@ namespace BlazorApp.Api.Services.React
                         wp.UpdatedBy,
                     })
                     .ExecuteCommandAsync();
+
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                await _changeHistoryService.RecordChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    new WarehouseProductChangeHistoryContextDto
+                    {
+                        Action = "Update",
+                        Source = "StoreOrderImportPriceVariance",
+                        SourceReference = $"StoreOrderImportPriceVariance:{string.Join(",", productCodes)}",
+                        BatchGuid = batchGuid,
+                        ActorName = currentUser,
+                    }
+                );
 
                 _db.Ado.CommitTran();
                 transactionStarted = false;
@@ -7533,9 +7611,19 @@ FinalRows AS (
                         Message = "Order not found or not editable",
                     };
 
+                var syncImportPrice = request.SyncImportPrice == true && request.ImportPrice.HasValue;
+                var batchGuid = Guid.NewGuid();
                 _db.Ado.BeginTran();
                 try
                 {
+                    IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? beforeSnapshots = null;
+                    if (syncImportPrice)
+                    {
+                        beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            new[] { request.ProductCode }
+                        );
+                    }
+
                     await AddOrUpdateDetailAsync(
                         order,
                         request.ProductCode,
@@ -7544,15 +7632,33 @@ FinalRows AS (
                         isUpdate: true
                     );
 
-                    if (request.SyncImportPrice == true && request.ImportPrice.HasValue)
+                    if (syncImportPrice)
                     {
                         await SyncOrderImportPriceToProductTablesAsync(
                             request.ProductCode,
-                            request.ImportPrice.Value
+                            request.ImportPrice!.Value
                         );
                     }
 
                     await UpdateOrderTotalAsync(order.OrderGUID);
+                    if (syncImportPrice)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            new[] { request.ProductCode }
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots!,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "Update",
+                                Source = "StoreOrderImportPriceVariance",
+                                SourceReference = $"StoreOrderImportPriceVariance:{order.OrderGUID}:{request.ProductCode}",
+                                BatchGuid = batchGuid,
+                                ActorName = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System",
+                            }
+                        );
+                    }
                     _db.Ado.CommitTran();
                 }
                 catch
@@ -7639,9 +7745,23 @@ FinalRows AS (
                     return await BatchUpdateOrderLineByDetailGuidAsync(order, request);
                 }
 
+                var syncProductCodes = request.Items
+                    .Where(item => item.SyncImportPrice == true && item.ImportPrice.HasValue)
+                    .Select(item => item.ProductCode?.Trim())
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var batchGuid = Guid.NewGuid();
                 _db.Ado.BeginTran();
                 try
                 {
+                    IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? beforeSnapshots = null;
+                    if (syncProductCodes.Count > 0)
+                    {
+                        beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(syncProductCodes);
+                    }
+
                     foreach (var item in request.Items)
                     {
                         await AddOrUpdateDetailAsync(
@@ -7664,6 +7784,22 @@ FinalRows AS (
                     }
 
                     await UpdateOrderTotalAsync(order.OrderGUID);
+                    if (syncProductCodes.Count > 0)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(syncProductCodes);
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots!,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "Update",
+                                Source = "StoreOrderImportPriceVariance",
+                                SourceReference = $"StoreOrderImportPriceVariance:{order.OrderGUID}:{string.Join(",", syncProductCodes)}",
+                                BatchGuid = batchGuid,
+                                ActorName = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System",
+                            }
+                        );
+                    }
                     _db.Ado.CommitTran();
                 }
                 catch
@@ -8082,26 +8218,62 @@ FinalRows AS (
         {
             try
             {
-                var now = DateTime.Now;
+                if (string.IsNullOrWhiteSpace(request.ProductCode))
+                {
+                    return new ApiResponse<bool> { Success = false, Message = "Product code is required" };
+                }
+
+                var productCode = request.ProductCode.Trim();
+                var now = DateTime.UtcNow;
                 var currentUser =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
-                // 更新 Product 表
-                var result = await _db.Updateable<Product>()
-                    .SetColumns(p => new Product
-                    {
-                        IsActive = request.IsActive,
-                        UpdatedAt = now,
-                        UpdatedBy = currentUser,
-                    })
-                    .Where(p => p.ProductCode == request.ProductCode)
-                    .ExecuteCommandAsync();
-
-                if (result > 0)
+                await _db.Ado.BeginTranAsync();
+                try
                 {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { productCode }
+                    );
+                    var result = await _db.Updateable<Product>()
+                        .SetColumns(p => new Product
+                        {
+                            IsActive = request.IsActive,
+                            UpdatedAt = now,
+                            UpdatedBy = currentUser,
+                        })
+                        .Where(p => p.ProductCode == productCode)
+                        .ExecuteCommandAsync();
+
+                    if (result == 0)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return new ApiResponse<bool> { Success = false, Message = "Product not found" };
+                    }
+
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { productCode }
+                    );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Update",
+                            Source = "StoreOrderProductStatus",
+                            SourceReference = productCode,
+                            BatchGuid = Guid.NewGuid(),
+                            ActorName = currentUser,
+                            OccurredAtUtc = now,
+                        }
+                    );
+                    await _db.Ado.CommitTranAsync();
                     return new ApiResponse<bool> { Success = true, Data = true };
                 }
-                return new ApiResponse<bool> { Success = false, Message = "Product not found" };
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -8116,7 +8288,7 @@ FinalRows AS (
         {
             try
             {
-                var now = DateTime.Now;
+                var now = DateTime.UtcNow;
                 var currentUser =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
@@ -8125,20 +8297,55 @@ FinalRows AS (
                     return new ApiResponse<bool> { Success = true, Data = true };
                 }
 
-                // 批量更新 Product 表
-                await _db.Updateable<Product>()
-                    .SetColumns(p => new Product
-                    {
-                        IsActive = request.IsActive,
-                        UpdatedAt = now,
-                        UpdatedBy = currentUser,
-                    })
-                    .Where(p =>
-                        p.ProductCode != null && request.ProductCodes.Contains(p.ProductCode)
-                    )
-                    .ExecuteCommandAsync();
+                var productCodes = request.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (productCodes.Count == 0)
+                {
+                    return new ApiResponse<bool> { Success = true, Data = true };
+                }
 
-                return new ApiResponse<bool> { Success = true, Data = true };
+                var batchGuid = Guid.NewGuid();
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        productCodes
+                    );
+                    await _db.Updateable<Product>()
+                        .SetColumns(p => new Product
+                        {
+                            IsActive = request.IsActive,
+                            UpdatedAt = now,
+                            UpdatedBy = currentUser,
+                        })
+                        .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                        .ExecuteCommandAsync();
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        productCodes
+                    );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "BatchUpdate",
+                            Source = "StoreOrderProductStatus",
+                            BatchGuid = batchGuid,
+                            ActorName = currentUser,
+                            OccurredAtUtc = now,
+                        }
+                    );
+                    await _db.Ado.CommitTranAsync();
+                    return new ApiResponse<bool> { Success = true, Data = true };
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {

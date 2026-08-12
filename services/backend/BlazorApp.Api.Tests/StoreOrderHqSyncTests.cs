@@ -1013,7 +1013,8 @@ public sealed class StoreOrderHqSyncTests : IDisposable
             CreateHqConfiguration(_hqConnection.ConnectionString),
             _mapper,
             Mock.Of<IInvoiceEmailService>(),
-            Mock.Of<IStoreOrderLocationProductLookupService>()
+            Mock.Of<IStoreOrderLocationProductLookupService>(),
+            Mock.Of<IWarehouseProductChangeHistoryService>()
         );
 
         var factoryField = typeof(StoreOrderReactService).GetField(

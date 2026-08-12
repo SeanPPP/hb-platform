@@ -116,6 +116,37 @@ public class PermissionAuthorizationHandlerTests
     }
 
     [Fact]
+    public async Task WarehouseManageProductsPolicy_AllowsLegacyWarehouseManagePermission()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.ManageProducts))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.Manage))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.Warehouse.ManageProducts);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.ManageProducts),
+            Times.Once
+        );
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.Manage),
+            Times.Once
+        );
+    }
+
+    [Fact]
     public async Task LocalPurchaseViewPolicy_DeniesWithoutCanonicalOrLegacyPermission()
     {
         var roleService = new Mock<IRoleService>();

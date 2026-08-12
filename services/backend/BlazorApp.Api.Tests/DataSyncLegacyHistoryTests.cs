@@ -1,0 +1,778 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using AutoMapper;
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Mappings.Profiles;
+using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
+using SqlSugar;
+using Xunit;
+
+namespace BlazorApp.Api.Tests;
+
+public sealed class DataSyncLegacyHistoryTests : IDisposable
+{
+    private readonly string _localDbPath;
+    private readonly string _hqDbPath;
+    private readonly string _hbSalesDbPath;
+    private readonly SqliteConnection _localConnection;
+    private readonly SqliteConnection _hqConnection;
+    private readonly SqliteConnection _hbSalesConnection;
+    private readonly SqlSugarClient _localDb;
+    private readonly SqlSugarClient _hqDb;
+    private readonly SqlSugarScope _hbSalesDb;
+    private readonly IMapper _mapper;
+
+    public DataSyncLegacyHistoryTests()
+    {
+        _localDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+        _hqDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+        _hbSalesDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+        _localConnection = new SqliteConnection($"Data Source={_localDbPath}");
+        _hqConnection = new SqliteConnection($"Data Source={_hqDbPath}");
+        _hbSalesConnection = new SqliteConnection($"Data Source={_hbSalesDbPath}");
+        _localConnection.Open();
+        _hqConnection.Open();
+        _hbSalesConnection.Open();
+
+        _localDb = new SqlSugarClient(CreateConnectionConfig(_localConnection.ConnectionString));
+        _hqDb = new SqlSugarClient(CreateConnectionConfig(_hqConnection.ConnectionString));
+        _hbSalesDb = new SqlSugarScope(CreateConnectionConfig(_hbSalesConnection.ConnectionString));
+        _localDb.CodeFirst.InitTables(
+            typeof(Product),
+            typeof(WarehouseProduct),
+            typeof(DomesticProduct),
+            typeof(ProductSetCode)
+        );
+        _localDb.Ado.ExecuteCommand(
+            """
+            CREATE TABLE WarehouseProductChangeHistory (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                EventGuid TEXT NOT NULL,
+                ProductCode TEXT NOT NULL,
+                Action TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                SourceReference TEXT NULL,
+                BatchGuid TEXT NULL,
+                ActorUserGuid TEXT NULL,
+                ActorName TEXT NOT NULL,
+                ActorType TEXT NOT NULL,
+                OccurredAtUtc TEXT NOT NULL,
+                ChangesJson TEXT NOT NULL
+            )
+            """
+        );
+        _hqDb.CodeFirst.InitTables(
+            typeof(CBP_DIC_商品库存表),
+            typeof(CPT_DIC_商品信息字典表),
+            typeof(DIC_商品信息字典表),
+            typeof(DIC_一品多码表)
+        );
+        _hbSalesDb.CodeFirst.InitTables(typeof(CPT_DIC_商品信息字典表));
+        _mapper = new MapperConfiguration(
+            cfg =>
+            {
+                cfg.AddProfile<ProductMappingProfile>();
+                cfg.AddProfile<WarehouseMappingProfile>();
+                cfg.AddProfile<DomesticProductMappingProfile>();
+            },
+            NullLoggerFactory.Instance
+        ).CreateMapper();
+    }
+
+    [Fact]
+    public void DataSyncService_历史服务依赖为空时立即拒绝()
+    {
+        Assert.Throws<ArgumentNullException>(() => CreateService(null!));
+    }
+
+    [Fact]
+    public void DataSyncService_当前用户服务依赖为空时立即拒绝()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new DataSyncService(
+                CreateSqlSugarContext(_localDb),
+                CreateHqSqlSugarContext(_hqDb),
+                CreateHBSalesSqlSugarContext(_hbSalesDb),
+                NullLogger<DataSyncService>.Instance,
+                _mapper,
+                Mock.Of<ITranslationService>(),
+                new ConfigurationBuilder().Build(),
+                CreateRealHistoryService(),
+                null!
+            )
+        );
+    }
+
+    [Fact]
+    public async Task SyncProductStocksIncrementalFromHqAsync_只改变库存时不写历史且恢复仓库审计字段()
+    {
+        var originalUpdatedAt = new DateTime(2026, 8, 12, 1, 2, 3, DateTimeKind.Utc);
+        await _localDb.Insertable(
+                new WarehouseProduct
+                {
+                    ProductCode = "P-STOCK-ONLY",
+                    DomesticPrice = 1m,
+                    OEMPrice = 2m,
+                    ImportPrice = 3m,
+                    StockQuantity = 10,
+                    MinOrderQuantity = 4,
+                    StockValue = 30m,
+                    StockAlertQuantity = 5,
+                    IsActive = true,
+                    Volume = 0m,
+                    CreatedAt = originalUpdatedAt,
+                    UpdatedAt = originalUpdatedAt,
+                    CreatedBy = "旧创建人",
+                    UpdatedBy = "旧操作人",
+                }
+            )
+            .ExecuteCommandAsync();
+        await _hqDb.Insertable(
+                new CBP_DIC_商品库存表
+                {
+                    HGUID = "HQ-STOCK-ONLY",
+                    H商品编码 = "P-STOCK-ONLY",
+                    H国内价格 = 1m,
+                    H贴牌价格 = 2m,
+                    H进口价格 = 3m,
+                    H库存 = 20m,
+                    H最小订货量 = 4m,
+                    H库存金额 = 30m,
+                    H库存预警数 = 5,
+                    H使用状态 = 1,
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12, 2, 0, 0),
+                }
+            )
+            .ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService()).SyncProductStocksIncrementalFromHqAsync(
+            new DateTime(2026, 8, 12, 0, 0, 0)
+        );
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(0, await _localDb.Queryable<WarehouseProductChangeHistory>().CountAsync());
+        var synced = await _localDb.Queryable<WarehouseProduct>().SingleAsync();
+        Assert.Equal(20, synced.StockQuantity);
+        Assert.Equal(originalUpdatedAt, synced.UpdatedAt);
+        Assert.Equal("旧操作人", synced.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task SyncProductStocksIncrementalFromHqAsync_价格变化时使用服务端批次和System写历史且不记录库存数量()
+    {
+        await _localDb.Insertable(
+                new WarehouseProduct
+                {
+                    ProductCode = "P-PRICE",
+                    DomesticPrice = 1m,
+                    OEMPrice = 2m,
+                    ImportPrice = 3m,
+                    StockQuantity = 10,
+                    MinOrderQuantity = 4,
+                    StockValue = 30m,
+                    StockAlertQuantity = 5,
+                    IsActive = true,
+                    Volume = 0m,
+                }
+            )
+            .ExecuteCommandAsync();
+        await _hqDb.Insertable(
+                new CBP_DIC_商品库存表
+                {
+                    HGUID = "HQ-PRICE",
+                    H商品编码 = "P-PRICE",
+                    H国内价格 = 1m,
+                    H贴牌价格 = 2m,
+                    H进口价格 = 4m,
+                    H库存 = 20m,
+                    H最小订货量 = 4m,
+                    H库存金额 = 30m,
+                    H库存预警数 = 5,
+                    H使用状态 = 1,
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12, 2, 0, 0),
+                }
+            )
+            .ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService()).SyncProductStocksIncrementalFromHqAsync(
+            new DateTime(2026, 8, 12, 0, 0, 0)
+        );
+
+        Assert.True(result.IsSuccess, result.Message);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal("BatchUpdate", history.Action);
+        Assert.Equal("DataSyncLegacyIncremental", history.Source);
+        Assert.Null(history.ActorUserGuid);
+        Assert.Equal("System", history.ActorName);
+        Assert.Equal("System", history.ActorType);
+        Assert.NotNull(history.BatchGuid);
+        using var changes = JsonDocument.Parse(history.ChangesJson);
+        Assert.Contains(
+            changes.RootElement.EnumerateArray(),
+            item => item.GetProperty("fieldKey").GetString() == "importPrice"
+        );
+        Assert.DoesNotContain(
+            changes.RootElement.EnumerateArray(),
+            item => item.GetProperty("fieldKey").GetString() == "stockQuantity"
+        );
+    }
+
+    [Fact]
+    public async Task SyncProductStocksFromHqAsync_历史写入失败时回滚整次全量同步()
+    {
+        await _localDb.Insertable(
+                new WarehouseProduct
+                {
+                    ProductCode = "P-OLD",
+                    DomesticPrice = 1m,
+                    StockQuantity = 10,
+                }
+            )
+            .ExecuteCommandAsync();
+        await _hqDb.Insertable(
+                new CBP_DIC_商品库存表
+                {
+                    HGUID = "HQ-NEW",
+                    H商品编码 = "P-NEW",
+                    H国内价格 = 9m,
+                    H库存 = 99m,
+                    H使用状态 = 1,
+                }
+            )
+            .ExecuteCommandAsync();
+
+        var result = await CreateService(new ThrowingHistoryService()).SyncProductStocksFromHqAsync();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(1, await _localDb.Queryable<WarehouseProduct>().CountAsync());
+        var original = await _localDb.Queryable<WarehouseProduct>().SingleAsync();
+        Assert.Equal("P-OLD", original.ProductCode);
+        Assert.Equal(1m, original.DomesticPrice);
+        Assert.Equal(10, original.StockQuantity);
+    }
+
+    [Fact]
+    public async Task SyncProductsFromHqAsync_全量同步使用当前请求用户历史上下文()
+    {
+        await _hqDb.Insertable(
+                new DIC_商品信息字典表
+                {
+                    ID = 1,
+                    HGUID = "HQ-FULL",
+                    H商品标签GUID = "",
+                    H商品分类码GUID = "",
+                    H供货商编码 = "",
+                    H商品编码 = "P-FULL",
+                    H货号 = "ITEM-FULL",
+                    H主条形码 = "",
+                    H商品名称 = "全量商品",
+                    H大写名称 = "",
+                    H规格 = "",
+                    H单位 = "",
+                    H进货价 = 1m,
+                    H零售价 = 2m,
+                    H使用状态 = true,
+                    H商品图片 = "",
+                    H腾讯云图地址 = "",
+                    H进货单主表GUID = "",
+                    H进货单详情GUID = "",
+                    CBP商品中文名称 = "",
+                    CBP供应商编码 = "",
+                    CBP商品分类码GUID = "",
+                    FGC_Creator = "",
+                    FGC_LastModifier = "",
+                    FGC_UpdateHelp = "",
+                    FGC_CreateDate = new DateTime(2026, 8, 12),
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12),
+                }
+        )
+            .ExecuteCommandAsync();
+        var history = new RecordingHistoryService();
+        var currentUser = CreateCurrentUser("user-guid-001", "同步操作员");
+
+        var result = await CreateService(history, currentUser).SyncProductsFromHqAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        var context = Assert.Single(history.Contexts);
+        Assert.Equal("BatchUpdate", context.Action);
+        Assert.Equal("DataSyncLegacyFull", context.Source);
+        Assert.Equal("user-guid-001", context.ActorUserGuid);
+        Assert.Equal("同步操作员", context.ActorName);
+        Assert.Equal("User", context.ActorType);
+        Assert.NotNull(context.BatchGuid);
+        Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncProductsIncrementalFromHqAsync_增量同步使用服务端批次和System历史上下文()
+    {
+        await _hqDb.Insertable(
+                new DIC_商品信息字典表
+                {
+                    ID = 1,
+                    HGUID = "HQ-INCREMENTAL",
+                    H商品标签GUID = "",
+                    H商品分类码GUID = "",
+                    H供货商编码 = "",
+                    H商品编码 = "P-INCREMENTAL",
+                    H货号 = "ITEM-INCREMENTAL",
+                    H主条形码 = "",
+                    H商品名称 = "增量商品",
+                    H大写名称 = "",
+                    H规格 = "",
+                    H单位 = "",
+                    H进货价 = 1m,
+                    H零售价 = 2m,
+                    H使用状态 = true,
+                    H商品图片 = "",
+                    H腾讯云图地址 = "",
+                    H进货单主表GUID = "",
+                    H进货单详情GUID = "",
+                    CBP商品中文名称 = "",
+                    CBP供应商编码 = "",
+                    CBP商品分类码GUID = "",
+                    FGC_Creator = "",
+                    FGC_LastModifier = "",
+                    FGC_UpdateHelp = "",
+                    FGC_CreateDate = new DateTime(2026, 8, 12),
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12, 2, 0, 0),
+                }
+            )
+            .ExecuteCommandAsync();
+        var history = new RecordingHistoryService();
+
+        var result = await CreateService(history).SyncProductsIncrementalFromHqAsync(
+            new DateTime(2026, 8, 12)
+        );
+
+        Assert.True(result.IsSuccess, result.Message);
+        var context = Assert.Single(history.Contexts);
+        Assert.Equal("BatchUpdate", context.Action);
+        Assert.Equal("DataSyncLegacyIncremental", context.Source);
+        Assert.Equal("System", context.ActorName);
+        Assert.Equal("System", context.ActorType);
+        Assert.NotNull(context.BatchGuid);
+        Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncProductsIncrementalFromHqAsync_跨页重复编码只捕获首次Before并在全部写入后记录一次历史()
+    {
+        const string repeatedCode = "P-PAGED-00000";
+        await _hqDb.Insertable(
+                Enumerable.Range(0, 5001)
+                    .Select(index =>
+                        CreateIncrementalProduct(
+                            index + 1,
+                            index == 5000 ? repeatedCode : $"P-PAGED-{index:D5}"
+                        )
+                    )
+                    .ToList()
+            )
+            .ExecuteCommandAsync();
+        var history = new RecordingHistoryService();
+
+        var result = await CreateService(history).SyncProductsIncrementalFromHqAsync(
+            new DateTime(2026, 8, 12)
+        );
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(2, history.SnapshotCaptureRequests.Count);
+        Assert.All(history.SnapshotCaptureRequests, request => Assert.Equal(5000, request.Count));
+        Assert.Contains(repeatedCode, history.SnapshotCaptureRequests[0]);
+        Assert.Contains(repeatedCode, history.SnapshotCaptureRequests[1]);
+        Assert.Single(history.Recordings);
+        Assert.Equal(5000, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncProductStocksIncrementalFromHqAsync_跨页重复编码只捕获首次Before并在全部写入后记录一次历史()
+    {
+        const string repeatedCode = "W-PAGED-00000";
+        await _hqDb.Insertable(
+                Enumerable.Range(0, 10001)
+                    .Select(index =>
+                        CreateIncrementalWarehouseStock(
+                            index + 1,
+                            index == 10000 ? repeatedCode : $"W-PAGED-{index:D5}"
+                        )
+                    )
+                    .ToList()
+            )
+            .ExecuteCommandAsync();
+        var history = new RecordingHistoryService();
+
+        var result = await CreateService(history).SyncProductStocksIncrementalFromHqAsync(
+            new DateTime(2026, 8, 12)
+        );
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(2, history.SnapshotCaptureRequests.Count);
+        Assert.All(history.SnapshotCaptureRequests, request => Assert.Equal(10000, request.Count));
+        Assert.Contains(repeatedCode, history.SnapshotCaptureRequests[0]);
+        Assert.Contains(repeatedCode, history.SnapshotCaptureRequests[1]);
+        Assert.Single(history.Recordings);
+        Assert.Equal(10000, await _localDb.Queryable<WarehouseProduct>().CountAsync());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("System")]
+    public async Task SyncProductsIncrementalFromHqAsync_有当前用户Guid但名称缺失或System时保留用户审计身份(
+        string? actorName
+    )
+    {
+        await _hqDb.Insertable(CreateIncrementalProduct(1, "P-ACTOR-GUID")).ExecuteCommandAsync();
+        var currentUser = CreateCurrentUser("actor-guid-001", actorName);
+
+        var result = await CreateService(CreateRealHistoryService(), currentUser)
+            .SyncProductsIncrementalFromHqAsync(new DateTime(2026, 8, 12));
+
+        Assert.True(result.IsSuccess, result.Message);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal("actor-guid-001", history.ActorUserGuid);
+        Assert.Equal("actor-guid-001", history.ActorName);
+        Assert.Equal("User", history.ActorType);
+    }
+
+    [Fact]
+    public async Task SyncProductsIncrementalFromHqAsync_历史写入失败时回滚全部业务写入并清零成功数()
+    {
+        await _hqDb.Insertable(CreateIncrementalProduct(1, "P-ROLLBACK-HISTORY")).ExecuteCommandAsync();
+
+        var result = await CreateService(new ThrowingHistoryService())
+            .SyncProductsIncrementalFromHqAsync(new DateTime(2026, 8, 12));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(0, result.AddedCount);
+        Assert.Equal(0, result.UpdatedCount);
+        Assert.Equal(0, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncDomesticProductsFromHqAsync_国内商品同步使用全量System历史上下文()
+    {
+        await _hbSalesDb.Insertable(
+                new CPT_DIC_商品信息字典表
+                {
+                    商品编码 = "P-DOMESTIC",
+                    供应商编码 = "SUP-01",
+                    HB货号 = "HB-DOMESTIC",
+                    中文名称 = "国内商品",
+                    国内价格 = 1m,
+                    进口价格 = 2m,
+                    贴牌价格 = 3m,
+                    使用状态 = 1,
+                }
+            )
+            .ExecuteCommandAsync();
+        var history = new RecordingHistoryService();
+
+        var result = await CreateService(history).SyncDomesticProductsFromHqAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        var context = Assert.Single(history.Contexts);
+        Assert.Equal("BatchUpdate", context.Action);
+        Assert.Equal("DataSyncLegacyFull", context.Source);
+        Assert.Equal("System", context.ActorName);
+        Assert.Equal("System", context.ActorType);
+        Assert.NotNull(context.BatchGuid);
+        Assert.Equal(1, await _localDb.Queryable<DomesticProduct>().CountAsync());
+    }
+
+    [Fact]
+    public async Task TranslateAllProductNamesAsync_批量翻译记录当前用户和共享批次()
+    {
+        await _localDb.Insertable(new Product
+        {
+            UUID = "UUID-TRANSLATE-1",
+            ProductCode = "P-TRANSLATE-1",
+            ProductName = "中文商品",
+            EnglishName = null,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var translation = CreateTranslationService("中文商品", "Chinese Product");
+        var history = new RecordingHistoryService();
+
+        var result = await CreateService(
+                history,
+                CreateCurrentUser("translator-guid", "translator-user"),
+                translation
+            )
+            .TranslateAllProductNamesAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(1, result.UpdatedCount);
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-TRANSLATE-1");
+        Assert.Equal("Chinese Product", product.EnglishName);
+        Assert.Equal("translator-user", product.UpdatedBy);
+        var context = Assert.Single(history.Contexts);
+        Assert.Equal("BatchUpdate", context.Action);
+        Assert.Equal("ProductTranslation", context.Source);
+        Assert.Equal("translator-guid", context.ActorUserGuid);
+        Assert.Equal("translator-user", context.ActorName);
+        Assert.Equal("User", context.ActorType);
+        Assert.NotNull(context.BatchGuid);
+    }
+
+    [Fact]
+    public async Task TranslateProductNamesAsync_历史失败回滚英文名称()
+    {
+        await _localDb.Insertable(new Product
+        {
+            UUID = "UUID-TRANSLATE-ROLLBACK",
+            ProductCode = "P-TRANSLATE-ROLLBACK",
+            ProductName = "回滚商品",
+            EnglishName = null,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var translation = CreateTranslationService("回滚商品", "Rollback Product");
+
+        var result = await CreateService(
+                new ThrowingHistoryService(),
+                CreateCurrentUser("translator-guid", "translator-user"),
+                translation
+            )
+            .TranslateProductNamesAsync("untranslated");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(0, result.UpdatedCount);
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-TRANSLATE-ROLLBACK");
+        Assert.Null(product.EnglishName);
+    }
+
+    public void Dispose()
+    {
+        _localDb.Dispose();
+        _hqDb.Dispose();
+        _hbSalesDb.Dispose();
+        _localConnection.Dispose();
+        _hqConnection.Dispose();
+        _hbSalesConnection.Dispose();
+        File.Delete(_localDbPath);
+        File.Delete(_hqDbPath);
+        File.Delete(_hbSalesDbPath);
+    }
+
+    private DataSyncService CreateService(
+        IWarehouseProductChangeHistoryService historyService,
+        ICurrentUserService? currentUserService = null,
+        ITranslationService? translationService = null
+    )
+    {
+        var localContext = CreateSqlSugarContext(_localDb);
+        var hqContext = CreateHqSqlSugarContext(_hqDb);
+        return new DataSyncService(
+            localContext,
+            hqContext,
+            CreateHBSalesSqlSugarContext(_hbSalesDb),
+            NullLogger<DataSyncService>.Instance,
+            _mapper,
+            translationService ?? Mock.Of<ITranslationService>(),
+            new ConfigurationBuilder().Build(),
+            historyService,
+            currentUserService ?? Mock.Of<ICurrentUserService>()
+        );
+    }
+
+    private static ITranslationService CreateTranslationService(
+        string source,
+        string translated
+    )
+    {
+        var translation = new Mock<ITranslationService>(MockBehavior.Strict);
+        translation.Setup(service => service.ContainsChinese(source)).Returns(true);
+        translation
+            .Setup(service =>
+                service.BatchTranslateToEnglishAsync(
+                    It.Is<List<string>>(names => names.SequenceEqual(new[] { source }))
+                )
+            )
+            .ReturnsAsync(new Dictionary<string, string> { [source] = translated });
+        return translation.Object;
+    }
+
+    private static DIC_商品信息字典表 CreateIncrementalProduct(int id, string productCode) =>
+        new()
+        {
+            ID = id,
+            HGUID = $"HQ-PRODUCT-{id}",
+            H商品标签GUID = string.Empty,
+            H商品分类码GUID = string.Empty,
+            H供货商编码 = string.Empty,
+            H商品编码 = productCode,
+            H货号 = $"ITEM-{id}",
+            H主条形码 = string.Empty,
+            H商品名称 = $"分页商品-{id}",
+            H大写名称 = string.Empty,
+            H规格 = string.Empty,
+            H单位 = string.Empty,
+            H进货价 = 1m,
+            H零售价 = 2m,
+            H使用状态 = true,
+            H商品图片 = string.Empty,
+            H腾讯云图地址 = string.Empty,
+            H进货单主表GUID = string.Empty,
+            H进货单详情GUID = string.Empty,
+            CBP商品中文名称 = string.Empty,
+            CBP供应商编码 = string.Empty,
+            CBP商品分类码GUID = string.Empty,
+            FGC_Creator = string.Empty,
+            FGC_LastModifier = string.Empty,
+            FGC_UpdateHelp = string.Empty,
+            FGC_CreateDate = new DateTime(2026, 8, 12),
+            FGC_LastModifyDate = new DateTime(2026, 8, 12, 2, 0, 0),
+        };
+
+    private static CBP_DIC_商品库存表 CreateIncrementalWarehouseStock(int id, string productCode) =>
+        new()
+        {
+            ID = id,
+            HGUID = $"HQ-WAREHOUSE-{id}",
+            H商品编码 = productCode,
+            H国内价格 = 1m,
+            H贴牌价格 = 2m,
+            H进口价格 = 3m,
+            H库存 = 10m,
+            H最小订货量 = 4m,
+            H库存金额 = 30m,
+            H库存预警数 = 5,
+            H使用状态 = 1,
+            FGC_LastModifyDate = new DateTime(2026, 8, 12, 2, 0, 0),
+        };
+
+    private static ICurrentUserService CreateCurrentUser(string userGuid, string? username)
+    {
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(service => service.GetCurrentUserGuid()).Returns(userGuid);
+        currentUser.Setup(service => service.GetCurrentUsername()).Returns(username!);
+        return currentUser.Object;
+    }
+
+    private IWarehouseProductChangeHistoryService CreateRealHistoryService() =>
+        new WarehouseProductChangeHistoryService(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<WarehouseProductChangeHistoryService>.Instance,
+            Mock.Of<ICurrentUserService>()
+        );
+
+    private static ConnectionConfig CreateConnectionConfig(string connectionString) =>
+        new()
+        {
+            ConnectionString = connectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false,
+            InitKeyType = InitKeyType.Attribute,
+        };
+
+    private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
+    {
+        var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
+        typeof(SqlSugarContext)
+            .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(context, db);
+        return context;
+    }
+
+    private static HqSqlSugarContext CreateHqSqlSugarContext(ISqlSugarClient db)
+    {
+        var context = (HqSqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(HqSqlSugarContext));
+        typeof(HqSqlSugarContext)
+            .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(context, db);
+        return context;
+    }
+
+    private static HBSalesSqlSugarContext CreateHBSalesSqlSugarContext(SqlSugarScope db)
+    {
+        var context = (HBSalesSqlSugarContext)
+            RuntimeHelpers.GetUninitializedObject(typeof(HBSalesSqlSugarContext));
+        typeof(HBSalesSqlSugarContext)
+            .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(context, db);
+        return context;
+    }
+
+    private static TContext CreateContext<TContext>()
+        where TContext : class =>
+        (TContext)RuntimeHelpers.GetUninitializedObject(typeof(TContext));
+
+    private sealed class ThrowingHistoryService : IWarehouseProductChangeHistoryService
+    {
+        public Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>> CaptureSnapshotsAsync(
+            IEnumerable<string> productCodes,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(
+            new Dictionary<string, WarehouseProductChangeSnapshotDto>(StringComparer.OrdinalIgnoreCase)
+        );
+
+        public Task<int> RecordChangesAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+            WarehouseProductChangeHistoryContextDto context,
+            CancellationToken cancellationToken = default
+        ) => throw new InvalidOperationException("历史写入失败");
+
+        public Task<WarehouseProductChangeHistoryPageDto> GetChangeHistoryAsync(
+            string productCode,
+            int pageNumber,
+            int pageSize,
+            CancellationToken cancellationToken = default
+        ) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingHistoryService : IWarehouseProductChangeHistoryService
+    {
+        public List<WarehouseProductChangeHistoryContextDto> Contexts { get; } = [];
+        public List<IReadOnlySet<string>> SnapshotCaptureRequests { get; } = [];
+        public List<WarehouseProductChangeHistoryContextDto> Recordings { get; } = [];
+
+        public Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>> CaptureSnapshotsAsync(
+            IEnumerable<string> productCodes,
+            CancellationToken cancellationToken = default
+        )
+        {
+            SnapshotCaptureRequests.Add(
+                new HashSet<string>(
+                    productCodes.Where(code => !string.IsNullOrWhiteSpace(code)),
+                    StringComparer.OrdinalIgnoreCase
+                )
+            );
+            return Task.FromResult<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(
+                new Dictionary<string, WarehouseProductChangeSnapshotDto>(StringComparer.OrdinalIgnoreCase)
+            );
+        }
+
+        public Task<int> RecordChangesAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+            WarehouseProductChangeHistoryContextDto context,
+            CancellationToken cancellationToken = default
+        )
+        {
+            Contexts.Add(context);
+            Recordings.Add(context);
+            return Task.FromResult(0);
+        }
+
+        public Task<WarehouseProductChangeHistoryPageDto> GetChangeHistoryAsync(
+            string productCode,
+            int pageNumber,
+            int pageSize,
+            CancellationToken cancellationToken = default
+        ) => throw new NotSupportedException();
+    }
+}

@@ -1,7 +1,9 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
@@ -24,6 +26,8 @@ namespace BlazorApp.Api.Services.React
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
         private readonly IMemoryCache _cache;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public DataSyncFullService(
             SqlSugarContext localContext,
@@ -35,7 +39,9 @@ namespace BlazorApp.Api.Services.React
             ILogger<DataSyncFullService> logger,
             ScheduledTaskLogService taskLogService,
             IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService,
-            IMemoryCache cache
+            IMemoryCache cache,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _localContext = localContext;
@@ -48,6 +54,8 @@ namespace BlazorApp.Api.Services.React
             _taskLogService = taskLogService;
             _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
             _cache = cache;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -68,6 +76,185 @@ namespace BlazorApp.Api.Services.React
         /// 5) 统计新增/错误数与耗时。
         /// </summary>
         public async Task<SyncResult> SyncProductsFromHqAsync()
+        {
+            const int hqBatchSize = 40000;
+            const int writePageSize = 10000;
+            var result = new SyncResult { StartTime = DateTime.Now };
+            var batchGuid = Guid.NewGuid();
+            var (auditActorGuid, auditActorName) = GetCurrentAuditActor();
+
+            try
+            {
+                _hqContext.CheckConnection();
+                using var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(
+                    _configuration
+                );
+                var total = await hqCountDb.Queryable<DIC_商品信息字典表>().CountAsync();
+                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                var initialProducts = await _localContext.Db.Queryable<Product>()
+                    .Where(item => item.ProductCode != null)
+                    .Select(item => new { item.UUID, item.ProductCode })
+                    .ToListAsync();
+                var existingByCode = initialProducts
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().UUID,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                var hqCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchAuditCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchBeforeSnapshots = new Dictionary<
+                    string,
+                    WarehouseProductChangeSnapshotDto
+                >(StringComparer.OrdinalIgnoreCase);
+                var added = 0;
+                var updated = 0;
+
+                var transaction = await _localContext.Db.Ado.UseTranAsync(async () =>
+                {
+                    for (var page = 1; page <= pages; page++)
+                    {
+                        using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
+                            _configuration
+                        );
+                        var hqBatch = await hqDb.Queryable<DIC_商品信息字典表>()
+                            .OrderBy(item => item.ID)
+                            .Skip((page - 1) * hqBatchSize)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        if (hqBatch.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var localBatch = _mapper.Map<List<Product>>(hqBatch)
+                            .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                            .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                            .Select(group => group.Last())
+                            .ToList();
+                        var auditCodes = localBatch
+                            .Select(item => item.ProductCode!.Trim())
+                            .ToList();
+                        var firstSeenAuditCodes = auditCodes
+                            .Where(code => batchAuditCodes.Add(code))
+                            .ToList();
+                        if (firstSeenAuditCodes.Count > 0)
+                        {
+                            var pageBeforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                                firstSeenAuditCodes
+                            );
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                batchBeforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
+                        var occurredAtUtc = DateTime.UtcNow;
+                        var toInsert = new List<Product>();
+                        var toUpdate = new List<Product>();
+                        foreach (var item in localBatch)
+                        {
+                            var productCode = item.ProductCode!.Trim();
+                            item.ProductCode = productCode;
+                            hqCodes.Add(productCode);
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = auditActorName;
+                            if (existingByCode.TryGetValue(productCode, out var existingUuid))
+                            {
+                                item.UUID = existingUuid;
+                                toUpdate.Add(item);
+                            }
+                            else
+                            {
+                                item.CreatedAt = occurredAtUtc;
+                                item.CreatedBy = auditActorName;
+                                toInsert.Add(item);
+                                existingByCode[productCode] = item.UUID;
+                            }
+                        }
+
+                        using (SqlSugarAuditScope.PreserveExplicitAuditFields())
+                        {
+                            if (toUpdate.Count > 0)
+                            {
+                                await _localContext.Db.Fastest<Product>()
+                                    .AS("Product")
+                                    .PageSize(writePageSize)
+                                    .BulkUpdateAsync(toUpdate);
+                            }
+                            if (toInsert.Count > 0)
+                            {
+                                await _localContext.Db.Fastest<Product>()
+                                    .AS("Product")
+                                    .PageSize(writePageSize)
+                                    .BulkCopyAsync(toInsert);
+                            }
+                        }
+
+                        added += toInsert.Count;
+                        updated += toUpdate.Count;
+                    }
+
+                    var staleCodes = initialProducts
+                        .Select(item => item.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code) && !hqCodes.Contains(code!))
+                        .Select(code => code!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (staleCodes.Count > 0)
+                    {
+                        // 本期只记录新建和修改；HQ 已移除商品的物理删除不生成字段变空事件。
+                        await DeleteProductsByCodeInBatchesAsync(staleCodes);
+                    }
+
+                    if (batchAuditCodes.Count > 0)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            batchAuditCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            batchBeforeSnapshots,
+                            afterSnapshots,
+                            CreateSystemSyncContext(
+                                "DataSyncFull",
+                                batchGuid,
+                                DateTime.UtcNow,
+                                auditActorGuid,
+                                auditActorName
+                            )
+                        );
+                    }
+                });
+                if (!transaction.IsSuccess)
+                {
+                    throw transaction.ErrorException
+                        ?? new InvalidOperationException("Product 全量同步事务失败");
+                }
+
+                result.AddedCount = added;
+                result.UpdatedCount = updated;
+                result.IsSuccess = true;
+                result.Message = $"商品同步成功，新增 {added} 条，更新 {updated} 条";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] 商品全量同步异常");
+                result.IsSuccess = false;
+                result.ErrorCount = 1;
+                result.Message = "商品同步异常";
+            }
+            finally
+            {
+                result.EndTime = DateTime.Now;
+                result.Duration = result.EndTime - result.StartTime;
+            }
+
+            return result;
+        }
+
+        // 保留旧并发实现供性能对比；生产接口统一走上面的事务化审计实现。
+        private async Task<SyncResult> SyncProductsFromHqLegacyConcurrentAsync()
         {
             var result = new SyncResult { StartTime = DateTime.Now };
             Console.WriteLine("📦 [商品同步] ===== 开始全量同步商品 =====");
@@ -1425,6 +1612,176 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            var batchGuid = Guid.NewGuid();
+            var (auditActorGuid, auditActorName) = GetCurrentAuditActor();
+            try
+            {
+                if (!(await _hbSalesContext.TestConnectionAsync()))
+                {
+                    throw new InvalidOperationException("HBSales 数据库连接失败");
+                }
+
+                var total = await _hbSalesContext.Db.Queryable<CPT_DIC_商品信息字典表>()
+                    .Where(item => !string.IsNullOrEmpty(item.商品编码))
+                    .CountAsync();
+                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
+                var initialCodes = await _localContext.Db.Queryable<DomesticProduct>()
+                    .Select(item => item.ProductCode)
+                    .ToListAsync();
+                var existingCodes = new HashSet<string>(
+                    initialCodes,
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var hqCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchAuditCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchBeforeSnapshots = new Dictionary<
+                    string,
+                    WarehouseProductChangeSnapshotDto
+                >(StringComparer.OrdinalIgnoreCase);
+                var added = 0;
+                var updated = 0;
+
+                var transaction = await _localContext.Db.Ado.UseTranAsync(async () =>
+                {
+                    for (var page = 1; page <= pages; page++)
+                    {
+                        var batch = await _hbSalesContext.Db.Queryable<CPT_DIC_商品信息字典表>()
+                            .Where(item => !string.IsNullOrEmpty(item.商品编码))
+                            .OrderBy(item => item.ID)
+                            .Skip((page - 1) * hqBatchSize)
+                            .Take(hqBatchSize)
+                            .ToListAsync();
+                        if (batch.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var localBatch = _mapper.Map<List<DomesticProduct>>(batch)
+                            .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                            .GroupBy(item => item.ProductCode, StringComparer.OrdinalIgnoreCase)
+                            .Select(group => group.Last())
+                            .ToList();
+                        var auditCodes = localBatch
+                            .Select(item => item.ProductCode.Trim())
+                            .ToList();
+                        var firstSeenAuditCodes = auditCodes
+                            .Where(code => batchAuditCodes.Add(code))
+                            .ToList();
+                        if (firstSeenAuditCodes.Count > 0)
+                        {
+                            var pageBeforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                                firstSeenAuditCodes
+                            );
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                batchBeforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
+                        var occurredAtUtc = DateTime.UtcNow;
+                        var toInsert = new List<DomesticProduct>();
+                        var toUpdate = new List<DomesticProduct>();
+                        foreach (var item in localBatch)
+                        {
+                            item.ProductCode = item.ProductCode.Trim();
+                            hqCodes.Add(item.ProductCode);
+                            item.UpdatedAt = occurredAtUtc;
+                            item.UpdatedBy = auditActorName;
+                            if (existingCodes.Contains(item.ProductCode))
+                            {
+                                toUpdate.Add(item);
+                            }
+                            else
+                            {
+                                item.CreatedAt = occurredAtUtc;
+                                item.CreatedBy = auditActorName;
+                                toInsert.Add(item);
+                                existingCodes.Add(item.ProductCode);
+                            }
+                        }
+
+                        using (SqlSugarAuditScope.PreserveExplicitAuditFields())
+                        {
+                            if (toUpdate.Count > 0)
+                            {
+                                await _localContext.Db.Fastest<DomesticProduct>()
+                                    .AS("DomesticProduct")
+                                    .PageSize(writePageSize)
+                                    .BulkUpdateAsync(toUpdate);
+                            }
+                            if (toInsert.Count > 0)
+                            {
+                                await _localContext.Db.Fastest<DomesticProduct>()
+                                    .AS("DomesticProduct")
+                                    .PageSize(writePageSize)
+                                    .BulkCopyAsync(toInsert);
+                            }
+                        }
+
+                        added += toInsert.Count;
+                        updated += toUpdate.Count;
+                    }
+
+                    var staleCodes = initialCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code) && !hqCodes.Contains(code))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (staleCodes.Count > 0)
+                    {
+                        // 本期只记录新建和修改；HQ 已移除商品的物理删除不生成字段变空事件。
+                        await DeleteDomesticProductsByCodeInBatchesAsync(staleCodes);
+                    }
+
+                    if (batchAuditCodes.Count > 0)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            batchAuditCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            batchBeforeSnapshots,
+                            afterSnapshots,
+                            CreateSystemSyncContext(
+                                "DataSyncFull",
+                                batchGuid,
+                                DateTime.UtcNow,
+                                auditActorGuid,
+                                auditActorName
+                            )
+                        );
+                    }
+                });
+                if (!transaction.IsSuccess)
+                {
+                    throw transaction.ErrorException
+                        ?? new InvalidOperationException("DomesticProduct 全量同步事务失败");
+                }
+
+                result.AddedCount = added;
+                result.UpdatedCount = updated;
+                result.IsSuccess = true;
+                result.Message = $"DomesticProduct 同步成功，新增 {added} 条，更新 {updated} 条";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ReactSync] DomesticProduct 全量同步异常");
+                result.IsSuccess = false;
+                result.ErrorCount = 1;
+                result.Message = "DomesticProduct 同步异常";
+            }
+            finally
+            {
+                result.EndTime = DateTime.Now;
+                result.Duration = result.EndTime - result.StartTime;
+            }
+
+            return result;
+        }
+
+        private async Task<SyncResult> SyncDomesticProductsFromHqLegacyAsync(
+            int hqBatchSize = 50000,
+            int writePageSize = 10000
+        )
+        {
+            var result = new SyncResult { StartTime = DateTime.Now };
             try
             {
                 if (!(await _hbSalesContext.TestConnectionAsync()))
@@ -2244,12 +2601,24 @@ namespace BlazorApp.Api.Services.React
         /// 全量同步仓库商品：HQ `CBP_DIC_商品库存表` → 本地 `WarehouseProduct`
         /// 按商品编码新增/更新库存业务字段，保留本地库位、体积、装箱数等人工维护字段。
         /// </summary>
-        public async Task<SyncResult> SyncWarehouseProductsFromHqAsync(
+        public Task<SyncResult> SyncWarehouseProductsFromHqAsync(
             int hqBatchSize = 50000,
             int writePageSize = 10000
+        ) => SyncWarehouseProductsFromHqAsync(hqBatchSize, writePageSize, null, null);
+
+        public async Task<SyncResult> SyncWarehouseProductsFromHqAsync(
+            int hqBatchSize,
+            int writePageSize,
+            string? actorUserGuid,
+            string? actorName
         )
         {
             var result = new SyncResult { StartTime = DateTime.Now };
+            var auditActorName = !string.IsNullOrWhiteSpace(actorName)
+                ? actorName.Trim()
+                : !string.IsNullOrWhiteSpace(actorUserGuid)
+                    ? actorUserGuid.Trim()
+                    : "System";
             try
             {
                 _hqContext.CheckConnection();
@@ -2281,8 +2650,14 @@ namespace BlazorApp.Api.Services.React
                 );
                 var countedAddedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var countedUpdatedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchAuditCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var batchBeforeSnapshots = new Dictionary<
+                    string,
+                    WarehouseProductChangeSnapshotDto
+                >(StringComparer.OrdinalIgnoreCase);
                 var added = 0;
                 var updated = 0;
+                var syncBatchGuid = Guid.NewGuid();
                 var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
                     for (var page = 1; page <= pages; page++)
@@ -2313,6 +2688,22 @@ namespace BlazorApp.Api.Services.React
                             continue;
 
                         var now = DateTime.UtcNow;
+                        var auditProductCodes = localBatch
+                            .Select(entry => entry.NormalizedCode!)
+                            .ToList();
+                        var firstSeenAuditCodes = auditProductCodes
+                            .Where(code => batchAuditCodes.Add(code))
+                            .ToList();
+                        if (firstSeenAuditCodes.Count > 0)
+                        {
+                            var pageBeforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                                firstSeenAuditCodes
+                            );
+                            foreach (var snapshot in pageBeforeSnapshots)
+                            {
+                                batchBeforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                            }
+                        }
                         var toInsert = new List<WarehouseProduct>();
                         var toUpdate = new List<WarehouseProduct>();
                         foreach (var entry in localBatch)
@@ -2320,7 +2711,7 @@ namespace BlazorApp.Api.Services.React
                             var item = entry.Item;
                             var normalizedCode = entry.NormalizedCode!;
                             item.UpdatedAt = now;
-                            item.UpdatedBy = "System";
+                            item.UpdatedBy = auditActorName;
                             if (existingCodeMap.TryGetValue(normalizedCode, out var existingCode))
                             {
                                 item.ProductCode = existingCode;
@@ -2330,61 +2721,68 @@ namespace BlazorApp.Api.Services.React
                             {
                                 item.ProductCode = normalizedCode;
                                 item.CreatedAt = now;
-                                item.CreatedBy = "System";
+                                item.CreatedBy = auditActorName;
                                 toInsert.Add(item);
                             }
                         }
 
-                        if (toUpdate.Any())
+                        using (SqlSugarAuditScope.PreserveExplicitAuditFields())
                         {
-                            // 只更新 HQ 库存业务字段，避免覆盖本地维护的体积、装箱数、库位等信息。
-                            await _localContext
-                                .Db.Updateable(toUpdate)
-                                .AS("WarehouseProduct")
-                                .UpdateColumns(w => new
-                                {
-                                    w.DomesticPrice,
-                                    w.OEMPrice,
-                                    w.ImportPrice,
-                                    w.StockQuantity,
-                                    w.MinOrderQuantity,
-                                    w.StockValue,
-                                    w.StockAlertQuantity,
-                                    w.IsActive,
-                                    w.UpdatedAt,
-                                    w.UpdatedBy,
-                                })
-                                .ExecuteCommandAsync();
-                            foreach (var item in toUpdate)
+                            if (toUpdate.Any())
                             {
-                                var normalizedCode = NormalizeWarehouseProductCode(item.ProductCode);
-                                if (
-                                    normalizedCode != null
-                                    && initiallyExistingCodes.Contains(normalizedCode)
-                                    && countedUpdatedCodes.Add(normalizedCode)
-                                )
+                                // 只更新 HQ 库存业务字段，避免覆盖本地维护的体积、装箱数、库位等信息。
+                                await _localContext
+                                    .Db.Updateable(toUpdate)
+                                    .AS("WarehouseProduct")
+                                    .UpdateColumns(w => new
+                                    {
+                                        w.DomesticPrice,
+                                        w.OEMPrice,
+                                        w.ImportPrice,
+                                        w.StockQuantity,
+                                        w.MinOrderQuantity,
+                                        w.StockValue,
+                                        w.StockAlertQuantity,
+                                        w.IsActive,
+                                        w.UpdatedAt,
+                                        w.UpdatedBy,
+                                    })
+                                    .ExecuteCommandAsync();
+                                foreach (var item in toUpdate)
                                 {
-                                    updated++;
+                                    var normalizedCode = NormalizeWarehouseProductCode(
+                                        item.ProductCode
+                                    );
+                                    if (
+                                        normalizedCode != null
+                                        && initiallyExistingCodes.Contains(normalizedCode)
+                                        && countedUpdatedCodes.Add(normalizedCode)
+                                    )
+                                    {
+                                        updated++;
+                                    }
                                 }
                             }
-                        }
 
-                        if (toInsert.Any())
-                        {
-                            await _localContext
-                                .Db.Insertable(toInsert)
-                                .AS("WarehouseProduct")
-                                .PageSize(writePageSize)
-                                .ExecuteCommandAsync();
-                            foreach (var item in toInsert)
+                            if (toInsert.Any())
                             {
-                                var normalizedCode = NormalizeWarehouseProductCode(item.ProductCode);
-                                if (normalizedCode == null)
-                                    continue;
-                                existingCodeMap[normalizedCode] = item.ProductCode;
-                                if (countedAddedCodes.Add(normalizedCode))
+                                await _localContext
+                                    .Db.Insertable(toInsert)
+                                    .AS("WarehouseProduct")
+                                    .PageSize(writePageSize)
+                                    .ExecuteCommandAsync();
+                                foreach (var item in toInsert)
                                 {
-                                    added++;
+                                    var normalizedCode = NormalizeWarehouseProductCode(
+                                        item.ProductCode
+                                    );
+                                    if (normalizedCode == null)
+                                        continue;
+                                    existingCodeMap[normalizedCode] = item.ProductCode;
+                                    if (countedAddedCodes.Add(normalizedCode))
+                                    {
+                                        added++;
+                                    }
                                 }
                             }
                         }
@@ -2394,6 +2792,24 @@ namespace BlazorApp.Api.Services.React
                             page,
                             toInsert.Count,
                             toUpdate.Count
+                        );
+                    }
+
+                    if (batchAuditCodes.Count > 0)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            batchAuditCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            batchBeforeSnapshots,
+                            afterSnapshots,
+                            CreateSystemSyncContext(
+                                "DataSyncFull",
+                                syncBatchGuid,
+                                DateTime.UtcNow,
+                                actorUserGuid,
+                                auditActorName
+                            )
                         );
                     }
                 });
@@ -3961,6 +4377,80 @@ namespace BlazorApp.Api.Services.React
             }
 
             return result;
+        }
+
+        private (string? UserGuid, string Name) GetCurrentAuditActor()
+        {
+            // 请求作用域内使用当前用户；后台新 scope 没有 HttpContext 时由 CurrentUserService 回退 System。
+            var actorName = _currentUserService.GetCurrentUsername();
+            actorName = string.IsNullOrWhiteSpace(actorName) ? "System" : actorName.Trim();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+            if (
+                !string.IsNullOrWhiteSpace(actorGuid)
+                && string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                actorName = actorGuid.Trim();
+            }
+            return (
+                string.IsNullOrWhiteSpace(actorGuid) ? null : actorGuid.Trim(),
+                actorName
+            );
+        }
+
+        private static WarehouseProductChangeHistoryContextDto CreateSystemSyncContext(
+            string source,
+            Guid batchGuid,
+            DateTime occurredAtUtc,
+            string? actorUserGuid = null,
+            string? actorName = null
+        )
+        {
+            // 后台计划任务不带身份时使用 System；用户入队任务使用已保存的服务端身份。
+            var resolvedActorName = string.IsNullOrWhiteSpace(actorName) ? "System" : actorName.Trim();
+            var resolvedActorGuid = string.IsNullOrWhiteSpace(actorUserGuid)
+                ? null
+                : actorUserGuid.Trim();
+            var isSystem = resolvedActorGuid == null
+                && string.Equals(
+                    resolvedActorName,
+                    "System",
+                    StringComparison.OrdinalIgnoreCase
+                );
+            return new WarehouseProductChangeHistoryContextDto
+            {
+                Action = "Sync",
+                Source = source,
+                BatchGuid = batchGuid,
+                ActorUserGuid = resolvedActorGuid,
+                ActorName = resolvedActorName,
+                ActorType = isSystem ? "System" : "User",
+                OccurredAtUtc = occurredAtUtc,
+            };
+        }
+
+        private async Task DeleteProductsByCodeInBatchesAsync(IReadOnlyList<string> productCodes)
+        {
+            foreach (var codeBatch in productCodes.Chunk(1000))
+            {
+                var codes = codeBatch.ToList();
+                await _localContext.Db.Deleteable<Product>()
+                    .Where(item => item.ProductCode != null && codes.Contains(item.ProductCode))
+                    .ExecuteCommandAsync();
+            }
+        }
+
+        private async Task DeleteDomesticProductsByCodeInBatchesAsync(
+            IReadOnlyList<string> productCodes
+        )
+        {
+            foreach (var codeBatch in productCodes.Chunk(1000))
+            {
+                var codes = codeBatch.ToList();
+                await _localContext.Db.Deleteable<DomesticProduct>()
+                    .Where(item => codes.Contains(item.ProductCode))
+                    .ExecuteCommandAsync();
+            }
         }
     }
 }

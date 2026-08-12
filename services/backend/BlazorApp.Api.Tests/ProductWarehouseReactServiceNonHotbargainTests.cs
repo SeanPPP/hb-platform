@@ -329,8 +329,48 @@ namespace BlazorApp.Api.Tests
                 configuration,
                 itemBarcodeService,
                 Mock.Of<IMapper>(),
-                Mock.Of<IDataSyncFullService>()
+                Mock.Of<IDataSyncFullService>(),
+                CreateNoopChangeHistoryService()
             );
+        }
+
+        private static IWarehouseProductChangeHistoryService CreateNoopChangeHistoryService()
+        {
+            var service = new Mock<IWarehouseProductChangeHistoryService>();
+            service
+                .Setup(item =>
+                    item.CaptureSnapshotsAsync(
+                        It.IsAny<System.Collections.Generic.IEnumerable<string>>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(
+                    new System.Collections.Generic.Dictionary<
+                        string,
+                        WarehouseProductChangeSnapshotDto
+                    >(StringComparer.OrdinalIgnoreCase)
+                );
+            service
+                .Setup(item =>
+                    item.RecordChangesAsync(
+                        It.IsAny<
+                            System.Collections.Generic.IReadOnlyDictionary<
+                                string,
+                                WarehouseProductChangeSnapshotDto
+                            >
+                        >(),
+                        It.IsAny<
+                            System.Collections.Generic.IReadOnlyDictionary<
+                                string,
+                                WarehouseProductChangeSnapshotDto
+                            >
+                        >(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(0);
+            return service.Object;
         }
 
         private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

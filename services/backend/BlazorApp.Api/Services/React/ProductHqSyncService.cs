@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -42,18 +43,84 @@ namespace BlazorApp.Api.Services.React
         private readonly HqSqlSugarContext _hqContext;
         private readonly IMapper _mapper;
         private readonly ILogger<ProductHqSyncService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ProductHqSyncService(
             SqlSugarContext localContext,
             HqSqlSugarContext hqContext,
             IMapper mapper,
-            ILogger<ProductHqSyncService> logger
+            ILogger<ProductHqSyncService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _localContext = localContext;
             _hqContext = hqContext;
             _mapper = mapper;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
+        }
+
+        private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
+            CaptureProductSnapshotsAsync(
+                IEnumerable<string> productCodes,
+                CancellationToken cancellationToken = default
+            )
+        {
+            return await _changeHistoryService.CaptureSnapshotsAsync(
+                productCodes,
+                cancellationToken
+            );
+        }
+
+        private async Task RecordProductChangesAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+            string action,
+            string source,
+            Guid batchGuid,
+            DateTime occurredAtUtc,
+            string? actorUserGuid = null,
+            string? actorName = null,
+            CancellationToken cancellationToken = default
+        )
+        {
+            // 未显式传入服务端身份时读取当前请求；真正计划任务通过 actorName=System 显式标记。
+            var resolvedActorName = string.IsNullOrWhiteSpace(actorName)
+                ? _currentUserService.GetCurrentUsername()
+                : actorName.Trim();
+            if (string.IsNullOrWhiteSpace(resolvedActorName))
+            {
+                resolvedActorName = "System";
+            }
+            var resolvedActorGuid = string.IsNullOrWhiteSpace(actorUserGuid)
+                ? _currentUserService.GetCurrentUserGuid()
+                : actorUserGuid.Trim();
+            var isSystem = string.IsNullOrWhiteSpace(resolvedActorGuid)
+                && string.Equals(
+                    resolvedActorName,
+                    "System",
+                    StringComparison.OrdinalIgnoreCase
+                );
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    BatchGuid = batchGuid,
+                    ActorUserGuid = string.IsNullOrWhiteSpace(resolvedActorGuid)
+                        ? null
+                        : resolvedActorGuid,
+                    ActorName = resolvedActorName,
+                    ActorType = isSystem ? "System" : "User",
+                    OccurredAtUtc = occurredAtUtc,
+                },
+                cancellationToken
+            );
         }
 
         private sealed class PushToHqUpdateFieldSelection
@@ -88,7 +155,15 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
-        public async Task<ApiResponse<HqProductSyncResult>> SyncFullAsync()
+        public Task<ApiResponse<HqProductSyncResult>> SyncFullAsync()
+        {
+            return SyncFullAsync(null, null);
+        }
+
+        public async Task<ApiResponse<HqProductSyncResult>> SyncFullAsync(
+            string? actorUserGuid,
+            string? actorName
+        )
         {
             if (!await SyncLock.WaitAsync(0))
             {
@@ -103,10 +178,35 @@ namespace BlazorApp.Api.Services.React
             var db = _localContext.Db;
             var originalTimeout = db.Ado.CommandTimeOut;
             db.Ado.CommandTimeOut = 1800;
+            var transactionStarted = false;
+            var auditBatchGuid = Guid.NewGuid();
+            var auditOccurredAtUtc = DateTime.UtcNow;
 
             try
             {
                 _hqContext.CheckConnection();
+                var activeHqProductCodes = (await QueryActiveHqProductsAsync())
+                    .Select(row => NormalizeCode(row.H商品编码))
+                    .Where(code => code != null)
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var localActiveProductCodes = (await db.Queryable<Product>()
+                        .Where(row => !row.IsDeleted && row.ProductCode != null)
+                        .Select(row => row.ProductCode)
+                        .ToListAsync())
+                    .Select(NormalizeCode)
+                    .Where(code => code != null)
+                    .Select(code => code!);
+                // 全量影子表交换会停用 HQ 已移除的本地商品，审计集合必须包含同步前本地编码。
+                var auditProductCodes = activeHqProductCodes
+                    .Concat(localActiveProductCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                db.Ado.BeginTran();
+                transactionStarted = true;
+                var beforeSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
                 if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                 {
                     await SyncFullWithShadowAsync(db, result);
@@ -117,11 +217,36 @@ namespace BlazorApp.Api.Services.React
                     await SyncFullDirectAsync(db, result);
                 }
 
+                var afterSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
+                await RecordProductChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    "Update",
+                    "ProductHqSync.Full",
+                    auditBatchGuid,
+                    auditOccurredAtUtc,
+                    actorUserGuid,
+                    actorName
+                );
+                db.Ado.CommitTran();
+                transactionStarted = false;
+
                 result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 return ApiResponse<HqProductSyncResult>.OK(result, "商品HQ全量同步完成");
             }
             catch (Exception ex)
             {
+                if (transactionStarted)
+                {
+                    try
+                    {
+                        db.Ado.RollbackTran();
+                    }
+                    catch (Exception rollbackException)
+                    {
+                        _logger.LogError(rollbackException, "商品HQ全量同步回滚失败");
+                    }
+                }
                 _logger.LogError(ex, "商品HQ全量同步失败");
                 result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 result.Errors.Add(ex.Message);
@@ -138,8 +263,15 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public Task<ApiResponse<HqProductSyncResult>> SyncIncrementalAsync(DateTime? startDate = null)
+        {
+            return SyncIncrementalAsync(startDate, null, null);
+        }
+
         public async Task<ApiResponse<HqProductSyncResult>> SyncIncrementalAsync(
-            DateTime? startDate = null
+            DateTime? startDate,
+            string? actorUserGuid,
+            string? actorName
         )
         {
             if (!await SyncLock.WaitAsync(0))
@@ -160,10 +292,46 @@ namespace BlazorApp.Api.Services.React
             {
                 _hqContext.CheckConnection();
                 var effectiveStart = startDate ?? DateTime.UtcNow.AddDays(-30);
+                var auditBatchGuid = Guid.NewGuid();
+                var auditOccurredAtUtc = DateTime.UtcNow;
 
                 db.Ado.BeginTran();
                 try
                 {
+                    var changedHqProductCodes = (await _hqContext.Db.Queryable<DIC_商品信息字典表>()
+                            .Where(row =>
+                                row.H使用状态 == true
+                                && !string.IsNullOrEmpty(row.H商品编码)
+                                && row.FGC_LastModifyDate >= effectiveStart
+                            )
+                            .Select(row => row.H商品编码)
+                            .ToListAsync())
+                        .Select(NormalizeCode)
+                        .Where(code => code != null)
+                        .Select(code => code!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var activeHqCodeSet = (await _hqContext.Db.Queryable<DIC_商品信息字典表>()
+                            .Where(row => row.H使用状态 == true && !string.IsNullOrEmpty(row.H商品编码))
+                            .Select(row => row.H商品编码)
+                            .ToListAsync())
+                        .Select(NormalizeCode)
+                        .Where(code => code != null)
+                        .Select(code => code!)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var staleLocalProductCodes = (await db.Queryable<Product>()
+                            .Where(row => !row.IsDeleted && row.ProductCode != null)
+                            .Select(row => row.ProductCode)
+                            .ToListAsync())
+                        .Select(NormalizeCode)
+                        .Where(code => code != null)
+                        .Select(code => code!)
+                        .Where(code => !activeHqCodeSet.Contains(code));
+                    var auditProductCodes = changedHqProductCodes
+                        .Concat(staleLocalProductCodes)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var beforeSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
                     var productSnapshot = await SyncProductsIncrementalCoreAsync(
                         db,
                         effectiveStart,
@@ -175,6 +343,17 @@ namespace BlazorApp.Api.Services.React
                         productSnapshot.ActiveProductCodes,
                         productSnapshot.SoftDeletedProductCodes,
                         result
+                    );
+                    var afterSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
+                    await RecordProductChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        "Update",
+                        "ProductHqSync.Incremental",
+                        auditBatchGuid,
+                        auditOccurredAtUtc,
+                        actorUserGuid,
+                        actorName
                     );
                     db.Ado.CommitTran();
                 }
@@ -358,14 +537,32 @@ namespace BlazorApp.Api.Services.React
                     .Select(group => group.OrderByDescending(row => row.FGC_LastModifyDate).First())
                     .ToList();
                 result.TotalHqProducts = hqProducts.Count;
+                var auditProductCodes = hqProducts
+                    .Select(row => NormalizeCode(row.H商品编码))
+                    .Where(code => code != null)
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var auditBatchGuid = Guid.NewGuid();
+                var auditOccurredAtUtc = DateTime.UtcNow;
 
                 db.Ado.BeginTran();
                 try
                 {
+                    var beforeSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
                     var activeProductCodes = await UpsertSelectedProductsFromHqAsync(db, hqProducts, result);
                     await SyncSelectedProductSetCodesFromHqAsync(db, activeProductCodes, result);
                     await SyncSelectedStoreRetailPricesFromHqAsync(db, activeProductCodes, result);
                     await SyncSelectedStoreMultiCodesFromHqAsync(db, activeProductCodes, result);
+                    var afterSnapshots = await CaptureProductSnapshotsAsync(auditProductCodes);
+                    await RecordProductChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        "Update",
+                        "ProductHqSync.Selected",
+                        auditBatchGuid,
+                        auditOccurredAtUtc
+                    );
                     db.Ado.CommitTran();
                 }
                 catch

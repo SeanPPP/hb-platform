@@ -15,5 +15,12 @@ namespace BlazorApp.Api.Interfaces.React
             UpdateHqProductsRequest? request,
             string updatedBy
         );
+
+        Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest? request,
+            string? actorUserGuid,
+            string actorName
+        );
     }
 }

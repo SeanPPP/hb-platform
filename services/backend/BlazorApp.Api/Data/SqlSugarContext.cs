@@ -441,6 +441,9 @@ namespace BlazorApp.Api.Data
 
         private void InitializeTablesIfNeeded()
         {
+            // 修改历史首次建表必须和后续索引迁移使用同一跨实例锁，避免多实例同时 CodeFirst 建表。
+            InitializeWarehouseProductChangeHistoryTable();
+
             // 定义表的创建顺序（考虑外键依赖）
             var tableTypes = new Type[]
             {
@@ -576,6 +579,80 @@ namespace BlazorApp.Api.Data
                         Console.WriteLine($"⚠️ {tableName} 表结构更新时出现警告: {ex.Message}");
                     }
                 }
+            }
+        }
+
+        private void InitializeWarehouseProductChangeHistoryTable()
+        {
+            if (_db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                InitializeWarehouseProductChangeHistoryTableUnderLock();
+                return;
+            }
+
+            _db.Ado.BeginTran();
+            try
+            {
+                var lockResult = _db.Ado.GetInt(
+                    """
+                    DECLARE @Result int;
+                    EXEC @Result = sys.sp_getapplock
+                        @Resource = N'WarehouseProductChangeHistory_Schema_Initialization',
+                        @LockMode = N'Exclusive',
+                        @LockOwner = N'Transaction',
+                        @LockTimeout = 30000;
+                    SELECT @Result;
+                    """
+                );
+                if (lockResult < 0)
+                {
+                    throw new InvalidOperationException("获取仓库商品修改历史建表锁失败");
+                }
+
+                InitializeWarehouseProductChangeHistoryTableUnderLock();
+                _db.Ado.CommitTran();
+            }
+            catch
+            {
+                try
+                {
+                    _db.Ado.RollbackTran();
+                }
+                catch
+                {
+                    // 原异常包含真正的建表或锁失败原因，回滚失败不覆盖它。
+                }
+                throw;
+            }
+        }
+
+        private void InitializeWarehouseProductChangeHistoryTableUnderLock()
+        {
+            var tableType = typeof(WarehouseProductChangeHistory);
+            var tableName = _db.EntityMaintenance.GetTableName(tableType);
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                Console.WriteLine($"表 {tableName} 不存在，正在创建...");
+                _db.CodeFirst.InitTables(tableType);
+                Console.WriteLine($"✓ {tableName} 表创建成功");
+                return;
+            }
+
+            Console.WriteLine($"✓ {tableName} 表已存在");
+            if (!_syncExistingTableStructureOnStartup)
+            {
+                return;
+            }
+
+            try
+            {
+                CleanupLegacyIndexesBeforeSmartInit(tableName);
+                _db.CodeFirst.InitTables(tableType);
+                Console.WriteLine($"✓ {tableName} 表结构检查完成");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ {tableName} 表结构更新时出现警告: {ex.Message}");
             }
         }
 

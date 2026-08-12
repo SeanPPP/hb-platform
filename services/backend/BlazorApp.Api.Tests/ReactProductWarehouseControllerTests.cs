@@ -138,7 +138,12 @@ namespace BlazorApp.Api.Tests
                 AddedCount = 3,
             };
             var serviceMock = new Mock<IProductWarehouseReactService>();
-            serviceMock.Setup(service => service.SyncFromHqAsync()).ReturnsAsync(expected);
+            serviceMock
+                .Setup(service => service.SyncFromHqAsync(
+                    It.IsAny<string?>(),
+                    It.Is<string?>(name => name == "测试用户")
+                ))
+                .ReturnsAsync(expected);
 
             var controller = CreateController(serviceMock.Object);
 
@@ -155,7 +160,12 @@ namespace BlazorApp.Api.Tests
         public async Task SyncFromHq_服务抛异常时_返回500统一错误响应()
         {
             var serviceMock = new Mock<IProductWarehouseReactService>();
-            serviceMock.Setup(service => service.SyncFromHqAsync()).ThrowsAsync(new Exception("boom"));
+            serviceMock
+                .Setup(service => service.SyncFromHqAsync(
+                    It.IsAny<string?>(),
+                    It.Is<string?>(name => name == "测试用户")
+                ))
+                .ThrowsAsync(new Exception("boom"));
 
             var controller = CreateController(serviceMock.Object);
 
@@ -195,19 +205,26 @@ namespace BlazorApp.Api.Tests
             };
             var jobServiceMock = new Mock<IWarehouseProductHqSyncJobService>();
             jobServiceMock
-                .Setup(service =>
+            .Setup(service =>
                     service.StartJobAsync(
                         It.Is<WarehouseProductHqSyncJobRequestDto>(request =>
                             request.OperationId == "warehouse-sync"
                         ),
+                        "warehouse-user-guid",
+                        "仓库管理员",
                         It.IsAny<CancellationToken>()
                     )
                 )
                 .ReturnsAsync(expected);
 
+            var currentUserService = new Mock<ICurrentUserService>(MockBehavior.Strict);
+            currentUserService.Setup(service => service.GetCurrentUserGuid()).Returns("warehouse-user-guid");
+            currentUserService.Setup(service => service.GetCurrentUsername()).Returns("仓库管理员");
+
             var controller = CreateController(
                 Mock.Of<IProductWarehouseReactService>(),
-                jobService: jobServiceMock.Object
+                jobService: jobServiceMock.Object,
+                currentUserService: currentUserService.Object
             );
 
             var result = await controller.StartSyncFromHqJob(
@@ -806,7 +823,9 @@ namespace BlazorApp.Api.Tests
             IMapper? mapper = null,
             string[]? roles = null,
             string username = "测试用户",
-            ILogger<ReactProductWarehouseController>? logger = null
+            ILogger<ReactProductWarehouseController>? logger = null,
+            IWarehouseProductChangeHistoryService? changeHistoryService = null,
+            ICurrentUserService? currentUserService = null
         )
         {
             roles ??= new[] { "Admin" };
@@ -824,7 +843,12 @@ namespace BlazorApp.Api.Tests
                 logger ?? Mock.Of<ILogger<ReactProductWarehouseController>>(),
                 deviceService ?? Mock.Of<IDeviceRegistrationService>(),
                 mapper ?? Mock.Of<IMapper>(),
-                uploadService ?? CreateUploadService()
+                uploadService ?? CreateUploadService(),
+                changeHistoryService ?? Mock.Of<IWarehouseProductChangeHistoryService>(),
+                currentUserService ?? Mock.Of<ICurrentUserService>(service =>
+                    service.GetCurrentUsername() == username
+                    && service.GetCurrentUserGuid() == string.Empty
+                )
             );
             controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
             return controller;

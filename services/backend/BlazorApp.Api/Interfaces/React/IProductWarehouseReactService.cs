@@ -22,6 +22,23 @@ namespace BlazorApp.Api.Interfaces.React
             bool useTransaction,
             string? updatedBy
         );
+        Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy,
+            string auditSource,
+            string? sourceReference,
+            System.Guid? batchGuid
+        );
+        Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy,
+            string auditSource,
+            string? sourceReference,
+            System.Guid? batchGuid,
+            string? actorUserGuid
+        );
         Task<ReactTableResponseDto<WarehouseProductReactListDto>> GetAntdTableDataAsync(
             ReactTableRequestDto request
         );
@@ -98,6 +115,7 @@ namespace BlazorApp.Api.Interfaces.React
         /// 从 HQ 商品库存表全量同步到本地仓库商品表
         /// </summary>
         Task<SyncResult> SyncFromHqAsync();
+        Task<SyncResult> SyncFromHqAsync(string? actorUserGuid, string? actorName);
         Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword);
         Task<WarehouseMobileProductDto?> GetMobileProductAsync(string productCode);
         Task<WarehouseMobileProductDto?> PatchMobileProductAsync(

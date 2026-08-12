@@ -55,7 +55,26 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             typeof(DomesticProduct),
             typeof(DomesticSetProduct),
             typeof(Product),
-            typeof(ChinaSupplier)
+            typeof(ChinaSupplier),
+            typeof(WarehouseProduct)
+        );
+        _localDb.Ado.ExecuteCommand(
+            """
+            CREATE TABLE WarehouseProductChangeHistory (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                EventGuid TEXT NOT NULL,
+                ProductCode TEXT NOT NULL,
+                Action TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                SourceReference TEXT NULL,
+                BatchGuid TEXT NULL,
+                ActorUserGuid TEXT NULL,
+                ActorName TEXT NOT NULL,
+                ActorType TEXT NOT NULL,
+                OccurredAtUtc TEXT NOT NULL,
+                ChangesJson TEXT NOT NULL
+            )
+            """
         );
         _hbSalesDb.CodeFirst.InitTables(
             typeof(CPT_DIC_商品信息字典表),
@@ -870,6 +889,237 @@ public sealed class DomesticProductReactServiceTests : IDisposable
         var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
         Assert.Equal("HB001-EXPLICIT", product.HBProductNo);
         Assert.Equal("9527999900001", product.Barcode);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal(product.ProductCode, history.ProductCode);
+        Assert.Equal("Create", history.Action);
+        Assert.Equal("DomesticProduct", history.Source);
+        Assert.NotNull(history.BatchGuid);
+        Assert.Equal("System", history.ActorName);
+        Assert.Equal("System", history.ActorType);
+    }
+
+    [Fact]
+    public async Task 单条创建_历史记录使用当前请求操作人和用户GUID()
+    {
+        await SeedChinaSupplierAsync();
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(item => item.GetCurrentUsername()).Returns("请求用户");
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("request-user-guid");
+
+        var result = await CreateDomesticProductService(
+            currentUserService: currentUser.Object
+        ).CreateDomesticProductAsync(CreateDomesticProductRequest());
+
+        Assert.True(result.Success);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal("请求用户", product.UpdatedBy);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal("request-user-guid", history.ActorUserGuid);
+        Assert.Equal("请求用户", history.ActorName);
+        Assert.Equal("User", history.ActorType);
+    }
+
+    [Fact]
+    public async Task React批量名称更新_历史记录使用当前请求操作人和用户GUID()
+    {
+        await SeedHbwebProductAsync("HB-ACTOR", "旧名称");
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(item => item.GetCurrentUsername()).Returns("React请求用户");
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("react-user-guid");
+
+        var result = await CreateService(currentUserService: currentUser.Object)
+            .BatchUpdateHbwebProductNamesAsync(new BatchUpdateHbwebProductNamesDto
+            {
+                Products = new List<HbwebProductNameUpdateItemDto>
+                {
+                    new() { SupplierCode = "SUP-A", ItemNumber = "HB-ACTOR", ProductName = "新名称" },
+                },
+            });
+
+        Assert.True(result.Success);
+        var product = await _localDb.Queryable<Product>().SingleAsync();
+        Assert.Equal("React请求用户", product.UpdatedBy);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal(product.ProductCode, history.ProductCode);
+        Assert.Equal("react-user-guid", history.ActorUserGuid);
+        Assert.Equal("React请求用户", history.ActorName);
+        Assert.Equal("User", history.ActorType);
+    }
+
+    [Fact]
+    public async Task 批量创建更新_数据库异常时回滚且不返回成功()
+    {
+        await SeedChinaSupplierAsync();
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DP-BATCH-DB-FAIL",
+            SupplierCode = "HB001",
+            ProductName = "旧名称",
+            HBProductNo = "HB001-BATCH-DB-FAIL",
+            Barcode = "9527999900099",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        _localDb.Ado.ExecuteCommand(
+            "CREATE TRIGGER block_domestic_product_update BEFORE UPDATE ON DomesticProduct "
+                + "BEGIN SELECT RAISE(ABORT, 'forced batch update failure'); END;"
+        );
+
+        var result = await CreateDomesticProductService().BatchCreateAndUpdateProductsAsync(
+            new BatchProductOperationDto
+            {
+                SupplierCode = "HB001",
+                UpdateProducts = new List<BatchProductUpdateDto>
+                {
+                    new() { ProductCode = "DP-BATCH-DB-FAIL", ProductName = "新名称" },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("BATCH_OPERATION_PRODUCTS_ERROR", result.ErrorCode);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal("旧名称", product.ProductName);
+        Assert.Empty(await _localDb.Queryable<WarehouseProductChangeHistory>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task React批量字段更新_数据库异常时回滚且不返回成功()
+    {
+        await SeedChinaSupplierAsync();
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DP-REACT-BATCH-DB-FAIL",
+            SupplierCode = "HB001",
+            ProductName = "旧名称",
+            HBProductNo = "HB001-REACT-BATCH-DB-FAIL",
+            Barcode = "9527999900098",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        _localDb.Ado.ExecuteCommand(
+            "CREATE TRIGGER block_react_domestic_product_update BEFORE UPDATE ON DomesticProduct "
+                + "BEGIN SELECT RAISE(ABORT, 'forced react batch update failure'); END;"
+        );
+
+        var result = await CreateService().BatchUpdateDomesticProductsAsync(
+            new BatchUpdateDomesticProductsDto
+            {
+                Products = new List<BatchProductUpdateDto>
+                {
+                    new() { ProductCode = "DP-REACT-BATCH-DB-FAIL", ProductName = "新名称" },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("BATCH_UPDATE_PRODUCTS_ERROR", result.ErrorCode);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal("旧名称", product.ProductName);
+        Assert.Empty(await _localDb.Queryable<WarehouseProductChangeHistory>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task 单条创建_历史写入失败时回滚国内商品()
+    {
+        await SeedChinaSupplierAsync();
+        var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        history
+            .Setup(item => item.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        history
+            .Setup(item => item.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("历史写入失败"));
+
+        var result = await CreateDomesticProductService(history.Object).CreateDomesticProductAsync(
+            CreateDomesticProductRequest()
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("CREATE_PRODUCT_ERROR", result.ErrorCode);
+        Assert.Empty(await _localDb.Queryable<DomesticProduct>().ToListAsync());
+        history.VerifyAll();
+    }
+
+    [Fact]
+    public async Task 图片URL修复_写入统一历史并使用服务端批次和System操作人()
+    {
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DP-IMAGE-001",
+            SupplierCode = "HB001",
+            ProductName = "图片修复商品",
+            HBProductNo = "HB001-IMAGE",
+            ProductImage = "https://old.example/path/https://cdn.example/item.jpg",
+            UpdatedBy = "seed",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateDomesticProductService().FixDuplicateImageUrlsAsync(false);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.Data!.SuccessfullyFixed);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal("https://cdn.example/item.jpg", product.ProductImage);
+        Assert.Equal("System", product.UpdatedBy);
+        var history = await _localDb.Queryable<WarehouseProductChangeHistory>().SingleAsync();
+        Assert.Equal("DP-IMAGE-001", history.ProductCode);
+        Assert.Equal("Update", history.Action);
+        Assert.Equal("DomesticProduct", history.Source);
+        Assert.Equal("FixDuplicateImageUrls", history.SourceReference);
+        Assert.NotNull(history.BatchGuid);
+        Assert.Equal("System", history.ActorName);
+        Assert.Equal("System", history.ActorType);
+    }
+
+    [Fact]
+    public async Task 图片URL修复_历史写入失败时回滚商品图片()
+    {
+        const string originalImage = "https://old.example/path/https://cdn.example/item.jpg";
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DP-IMAGE-ROLLBACK",
+            SupplierCode = "HB001",
+            ProductName = "图片回滚商品",
+            HBProductNo = "HB001-IMAGE-ROLLBACK",
+            ProductImage = originalImage,
+            UpdatedBy = "seed",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        history
+            .Setup(item => item.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        history
+            .Setup(item => item.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("历史写入失败"));
+
+        var result = await CreateDomesticProductService(history.Object).FixDuplicateImageUrlsAsync(
+            false
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("FIX_DUPLICATE_URL_ERROR", result.ErrorCode);
+        var product = await _localDb.Queryable<DomesticProduct>().SingleAsync();
+        Assert.Equal(originalImage, product.ProductImage);
+        Assert.Equal("seed", product.UpdatedBy);
+        Assert.Empty(await _localDb.Queryable<WarehouseProductChangeHistory>().ToListAsync());
+        history.VerifyAll();
     }
 
     [Theory]
@@ -1177,10 +1427,21 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             SqliteTempFileCleanup.DeleteIfExists(_hqDbPath);
     }
 
-    private DomesticProductReactService CreateService(HqSqlSugarContext? hqContext = null)
+    private DomesticProductReactService CreateService(
+        HqSqlSugarContext? hqContext = null,
+        IWarehouseProductChangeHistoryService? changeHistoryService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         var configuration = new ConfigurationBuilder().Build();
         var localContext = CreateSqlSugarContext(_localDb);
+        var resolvedCurrentUserService = currentUserService ?? Mock.Of<ICurrentUserService>();
+        var resolvedChangeHistoryService = changeHistoryService
+            ?? new WarehouseProductChangeHistoryService(
+                localContext,
+                NullLogger<WarehouseProductChangeHistoryService>.Instance,
+                resolvedCurrentUserService
+            );
         var itemBarcodeService = new ItemBarcodeService(
             localContext,
             NullLogger<ItemBarcodeService>.Instance,
@@ -1193,14 +1454,26 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             Mock.Of<AutoMapper.IMapper>(),
             NullLogger<DomesticProductReactService>.Instance,
             itemBarcodeService,
-            hqContext ?? CreateHqSqlSugarContext(_hqDb)
+            hqContext ?? CreateHqSqlSugarContext(_hqDb),
+            resolvedChangeHistoryService,
+            resolvedCurrentUserService
         );
     }
 
-    private DomesticProductService CreateDomesticProductService()
+    private DomesticProductService CreateDomesticProductService(
+        IWarehouseProductChangeHistoryService? changeHistoryService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         var configuration = new ConfigurationBuilder().Build();
         var localContext = CreateSqlSugarContext(_localDb);
+        var resolvedCurrentUserService = currentUserService ?? Mock.Of<ICurrentUserService>();
+        var resolvedChangeHistoryService = changeHistoryService
+            ?? new WarehouseProductChangeHistoryService(
+                localContext,
+                NullLogger<WarehouseProductChangeHistoryService>.Instance,
+                resolvedCurrentUserService
+            );
         var itemBarcodeService = new ItemBarcodeService(
             localContext,
             NullLogger<ItemBarcodeService>.Instance,
@@ -1211,7 +1484,9 @@ public sealed class DomesticProductReactServiceTests : IDisposable
             localContext,
             CreateDomesticProductMapper(),
             NullLogger<DomesticProductService>.Instance,
-            itemBarcodeService
+            itemBarcodeService,
+            resolvedChangeHistoryService,
+            resolvedCurrentUserService
         );
     }
 

@@ -9,6 +9,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -29,6 +30,8 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IDeviceRegistrationService _deviceRegistrationService;
         private readonly IMapper _mapper;
         private readonly TencentCloudUploadService _uploadService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ReactProductWarehouseController(
             IProductWarehouseReactService service,
@@ -36,7 +39,9 @@ namespace BlazorApp.Api.Controllers.React
             ILogger<ReactProductWarehouseController> logger,
             IDeviceRegistrationService deviceRegistrationService,
             IMapper mapper,
-            TencentCloudUploadService uploadService
+            TencentCloudUploadService uploadService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _service = service;
@@ -45,6 +50,8 @@ namespace BlazorApp.Api.Controllers.React
             _deviceRegistrationService = deviceRegistrationService;
             _mapper = mapper;
             _uploadService = uploadService;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         [HttpGet("mobile/lookup")]
@@ -758,7 +765,10 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 // 这里返回统一响应，便于前端沿用现有同步结果处理。
-                var result = await _service.SyncFromHqAsync();
+                var result = await _service.SyncFromHqAsync(
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername()
+                );
                 var message = result.IsSuccess ? "仓库商品同步成功" : "仓库商品同步完成，但存在错误";
                 return Ok(ApiResponse<SyncResult>.OK(result, message));
             }
@@ -794,7 +804,12 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "operationId 不能为空" });
                 }
 
-                var job = await _hqSyncJobService.StartJobAsync(request, cancellationToken);
+                var job = await _hqSyncJobService.StartJobAsync(
+                    request,
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername(),
+                    cancellationToken
+                );
                 return Ok(new { success = true, data = job, message = "仓库商品同步任务已提交" });
             }
             catch (Exception ex)
@@ -853,6 +868,59 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取条码价列表失败 ProductCode={ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询仓库商品主档字段修改历史。返回字段保持前端约定的扁平 data 契约。
+        /// </summary>
+        [HttpGet("{productCode}/change-history")]
+        [Authorize(Policy = Permissions.Warehouse.ManageProducts)]
+        public async Task<IActionResult> GetChangeHistory(
+            string productCode,
+            [FromQuery] int pageNumber = 1,
+            [FromQuery] int pageSize = 20,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                return BadRequest(new { success = false, message = "商品编码不能为空" });
+            }
+
+            if (pageNumber < 1 || pageSize is < 1 or > 100)
+            {
+                return BadRequest(new { success = false, message = "分页参数无效" });
+            }
+
+            try
+            {
+                var page = await _changeHistoryService.GetChangeHistoryAsync(
+                    productCode,
+                    pageNumber,
+                    pageSize,
+                    cancellationToken
+                );
+                var data = new
+                {
+                    productCode = page.ProductSummary.ProductCode,
+                    itemNumber = page.ProductSummary.ItemNumber,
+                    productName = page.ProductSummary.ProductName,
+                    pageNumber = page.PageNumber,
+                    pageSize = page.PageSize,
+                    total = page.TotalCount,
+                    events = page.Events,
+                };
+                return Ok(new { success = true, data, message = "查询成功" });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查询仓库商品修改历史失败: {ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

@@ -1234,6 +1234,104 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchExecuteActionsAsync_商品主档变化记录共享批次和发票来源()
+        {
+            await SeedExecutableItemNumberUpdatesAsync();
+            var history = CreateSnapshotHistoryMock();
+            WarehouseProductChangeHistoryContextDto? recordedContext = null;
+            history
+                .Setup(x =>
+                    x.RecordChangesAsync(
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Callback<
+                    IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                    IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                    WarehouseProductChangeHistoryContextDto,
+                    CancellationToken
+                >((_, _, context, _) => recordedContext = context)
+                .ReturnsAsync(2);
+
+            var result = await CreateService(changeHistoryService: history.Object)
+                .BatchExecuteActionsAsync(
+                    "invoice-item-update",
+                    new List<string> { "detail-item-1", "detail-item-2" },
+                    "audit-user"
+                );
+
+            Assert.True(result.Success, result.Message);
+            Assert.NotNull(recordedContext);
+            Assert.Equal("BatchUpdate", recordedContext!.Action);
+            Assert.Equal("LocalSupplierInvoice", recordedContext.Source);
+            Assert.Equal("invoice-item-update", recordedContext.SourceReference);
+            Assert.Equal("audit-user", recordedContext.ActorName);
+            Assert.NotNull(recordedContext.BatchGuid);
+            history.Verify(
+                x =>
+                    x.CaptureSnapshotsAsync(
+                        It.Is<IEnumerable<string>>(codes =>
+                            codes.OrderBy(code => code)
+                                .SequenceEqual(new[] { "PITEM1", "PITEM2" })
+                        ),
+                        It.IsAny<CancellationToken>()
+                    ),
+                Times.Exactly(2)
+            );
+            history.Verify(
+                x =>
+                    x.RecordChangesAsync(
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<CancellationToken>()
+                    ),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_历史写入失败回滚商品和明细()
+        {
+            await SeedExecutableItemNumberUpdatesAsync();
+            var history = CreateSnapshotHistoryMock();
+            history
+                .Setup(x =>
+                    x.RecordChangesAsync(
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .ThrowsAsync(new InvalidOperationException("history failed"));
+
+            var result = await CreateService(changeHistoryService: history.Object)
+                .BatchExecuteActionsAsync(
+                    "invoice-item-update",
+                    new List<string> { "detail-item-1", "detail-item-2" },
+                    "audit-user"
+                );
+
+            Assert.False(result.Success);
+            var products = await _db.Queryable<Product>()
+                .Where(x => new[] { "PITEM1", "PITEM2" }.Contains(x.ProductCode))
+                .OrderBy(x => x.ProductCode)
+                .ToListAsync();
+            var details = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(x => new[] { "detail-item-1", "detail-item-2" }.Contains(x.DetailGUID))
+                .OrderBy(x => x.DetailGUID)
+                .ToListAsync();
+            Assert.Equal(new[] { "ITEM-OLD-1", "ITEM-OLD-2" }, products.Select(x => x.ItemNumber));
+            Assert.All(details, detail =>
+                Assert.Equal((int)DetailAction.UpdateItemNumber, detail.ActivityType)
+            );
+        }
+
+        [Fact]
         public async Task BatchExecuteActionsAsync_WhenAnySelectedDetailIsInvalid_RollsBackAllChanges()
         {
             await SeedExecutablePriceUpdateAsync();
@@ -2890,6 +2988,52 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateHqProductsJobEndpoints_提交时固化当前审计操作者()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-hq-job", "INV-HQ-JOB", new DateTime(2026, 1, 20));
+            var jobService = new Mock<ILocalSupplierInvoiceBatchUpdateJobService>(MockBehavior.Strict);
+            jobService
+                .Setup(service => service.StartUpdateHqProductsJobAsync(
+                    "invoice-hq-job",
+                    It.Is<UpdateHqProductsRequest>(request =>
+                        request.DetailGuids.SequenceEqual(new[] { "detail-1" })
+                        && request.TargetStoreCodes.SequenceEqual(new[] { "S01" })
+                    ),
+                    "actor-guid-controller",
+                    "后台审计操作员",
+                    It.IsAny<CancellationToken>()
+                ))
+                .ReturnsAsync(new LocalSupplierInvoiceUpdateHqProductsJobDto
+                {
+                    JobId = "hq-job-1",
+                    InvoiceGuid = "invoice-hq-job",
+                    OperationId = "update-hq-products|invoice-hq-job",
+                    Status = LocalSupplierInvoiceBatchUpdateJobStatusConstants.Running,
+                });
+            var controller = CreateControllerWithJobService(
+                jobService.Object,
+                new Claim(ClaimTypes.Name, "后台审计操作员"),
+                new Claim("userId", "actor-guid-controller"),
+                new Claim(ClaimTypes.Role, "Admin")
+            );
+
+            var actionResult = await controller.StartUpdateHqProductsJob(
+                "invoice-hq-job",
+                new UpdateHqProductsRequest
+                {
+                    DetailGuids = new List<string> { "detail-1" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields { UpdatePurchasePrice = true },
+                },
+                CancellationToken.None
+            );
+
+            Assert.IsType<OkObjectResult>(actionResult);
+            jobService.VerifyAll();
+        }
+
+        [Fact]
         public async Task CheckProductsJobEndpoints_创建和查询任务委托后台服务()
         {
             await SeedStoreAndSupplierAsync();
@@ -3155,7 +3299,8 @@ namespace BlazorApp.Api.Tests
         }
 
         private LocalSupplierInvoicesReactService CreateService(
-            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null
+            ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null,
+            IWarehouseProductChangeHistoryService? changeHistoryService = null
         )
         {
             var autoPricing = new Mock<IAutoPricingService>();
@@ -3174,8 +3319,35 @@ namespace BlazorApp.Api.Tests
                 Mock.Of<IMapper>(),
                 NullLogger<LocalSupplierInvoicesReactService>.Instance,
                 autoPricing.Object,
+                changeHistoryService ?? WarehouseProductChangeHistoryTestDouble.CreateNoop(),
                 hqProductSyncService
             );
+        }
+
+        private static Mock<IWarehouseProductChangeHistoryService> CreateSnapshotHistoryMock()
+        {
+            var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+            history
+                .Setup(x =>
+                    x.CaptureSnapshotsAsync(
+                        It.IsAny<IEnumerable<string>>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(
+                    (IEnumerable<string> codes, CancellationToken _) =>
+                        (IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>)codes
+                            .Distinct(StringComparer.Ordinal)
+                            .ToDictionary(
+                                code => code,
+                                code => new WarehouseProductChangeSnapshotDto
+                                {
+                                    ProductCode = code,
+                                },
+                                StringComparer.Ordinal
+                            )
+                );
+            return history;
         }
 
         private ReactLocalSupplierInvoicesController CreateController(params Claim[] claims)

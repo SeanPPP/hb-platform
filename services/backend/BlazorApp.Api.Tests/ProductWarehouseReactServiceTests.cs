@@ -59,6 +59,24 @@ namespace BlazorApp.Api.Tests
                 typeof(HBLocalSupplier),
                 typeof(ProductSetCode)
             );
+            _db.Ado.ExecuteCommand(
+                """
+                CREATE TABLE WarehouseProductChangeHistory (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    EventGuid TEXT NOT NULL,
+                    ProductCode TEXT NOT NULL,
+                    Action TEXT NOT NULL,
+                    Source TEXT NOT NULL,
+                    SourceReference TEXT NULL,
+                    BatchGuid TEXT NULL,
+                    ActorUserGuid TEXT NULL,
+                    ActorName TEXT NOT NULL,
+                    ActorType TEXT NOT NULL,
+                    OccurredAtUtc TEXT NOT NULL,
+                    ChangesJson TEXT NOT NULL
+                )
+                """
+            );
         }
 
         [Fact]
@@ -2983,6 +3001,108 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateAsync_WritesOneHistoryPerChangedProductWithSharedBatchGuid()
+        {
+            const string importCode = "P-BATCH-HISTORY-IMPORT";
+            const string retailCode = "P-BATCH-HISTORY-RETAIL";
+            const string noChangeCode = "P-BATCH-HISTORY-NO-CHANGE";
+            await SeedPriceSyncProductAsync(importCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await SeedPriceSyncProductAsync(retailCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            await SeedPriceSyncProductAsync(noChangeCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            var service = CreateService(
+                changeHistoryService: CreateRealChangeHistoryService(
+                    userGuid: "history-user-guid",
+                    username: "history-current-user"
+                )
+            );
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = importCode, ImportPrice = 6.66m },
+                    new() { ProductCode = retailCode, OEMPrice = 15.55m },
+                    new() { ProductCode = noChangeCode, ImportPrice = 4.28m },
+                },
+                "batch-operator"
+            );
+
+            var histories = await _db
+                .Queryable<WarehouseProductChangeHistory>()
+                .OrderBy(item => item.ProductCode)
+                .ToListAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(3, result.SuccessCount);
+            Assert.Equal(2, histories.Count);
+            Assert.All(histories, history =>
+            {
+                Assert.Equal("BatchUpdate", history.Action);
+                Assert.Equal("WarehouseProducts", history.Source);
+                Assert.Equal("batch-operator", history.ActorName);
+                Assert.Equal("history-user-guid", history.ActorUserGuid);
+                Assert.NotNull(history.BatchGuid);
+            });
+            Assert.Equal(histories[0].BatchGuid, histories[1].BatchGuid);
+            Assert.Contains("\"fieldKey\":\"importPrice\"", histories[0].ChangesJson);
+            Assert.Contains("\"fieldKey\":\"retailPrice\"", histories[1].ChangesJson);
+            Assert.DoesNotContain(histories, history => history.ProductCode == noChangeCode);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_WhenHistoryWriteFails_RollsBackAllValidProductsAndClearsSuccessCount()
+        {
+            const string productCode = "P-BATCH-HISTORY-ROLLBACK";
+            await SeedPriceSyncProductAsync(productCode, 4.28m, 11.99m, 4.28m, 11.99m);
+            var historyService = new Mock<IWarehouseProductChangeHistoryService>();
+            historyService
+                .Setup(item =>
+                    item.CaptureSnapshotsAsync(
+                        It.IsAny<IEnumerable<string>>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                );
+            historyService
+                .Setup(item =>
+                    item.RecordChangesAsync(
+                        It.IsAny<
+                            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                        >(),
+                        It.IsAny<
+                            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                        >(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ThrowsAsync(new InvalidOperationException("history insert failed"));
+            var service = CreateService(changeHistoryService: historyService.Object);
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new() { ProductCode = productCode, ImportPrice = 9.99m },
+                },
+                "batch-operator"
+            );
+            var warehouseProduct = await _db
+                .Queryable<WarehouseProduct>()
+                .SingleAsync(item => item.ProductCode == productCode);
+            var product = await _db
+                .Queryable<Product>()
+                .SingleAsync(item => item.ProductCode == productCode);
+
+            Assert.False(result.Success);
+            Assert.Equal(0, result.SuccessCount);
+            Assert.Equal(4.28m, warehouseProduct.ImportPrice);
+            Assert.Equal(4.28m, product.PurchasePrice);
+        }
+
+        [Fact]
         public async Task BatchUpdateAsync_WhenMissingProductResolvesByItemAndCode_RejectsDuplicateCreateOnly()
         {
             const string firstCode = "P-BATCH-DUPLICATE-NEW";
@@ -4686,7 +4806,8 @@ namespace BlazorApp.Api.Tests
             ITranslationService? translationService = null,
             IConfiguration? configuration = null,
             ILogger<ProductWarehouseReactService>? logger = null,
-            ISqlSugarClient? database = null
+            ISqlSugarClient? database = null,
+            IWarehouseProductChangeHistoryService? changeHistoryService = null
         )
         {
             configuration ??= new ConfigurationBuilder().Build();
@@ -4705,7 +4826,55 @@ namespace BlazorApp.Api.Tests
                 itemBarcodeService,
                 Mock.Of<IMapper>(),
                 Mock.Of<IDataSyncFullService>(),
+                changeHistoryService ?? CreateNoopChangeHistoryService(),
                 translationService ?? CreateDefaultTranslationService()
+            );
+        }
+
+        private static IWarehouseProductChangeHistoryService CreateNoopChangeHistoryService()
+        {
+            var service = new Mock<IWarehouseProductChangeHistoryService>();
+            service
+                .Setup(item =>
+                    item.CaptureSnapshotsAsync(
+                        It.IsAny<IEnumerable<string>>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                );
+            service
+                .Setup(item =>
+                    item.RecordChangesAsync(
+                        It.IsAny<
+                            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                        >(),
+                        It.IsAny<
+                            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>
+                        >(),
+                        It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                        It.IsAny<System.Threading.CancellationToken>()
+                    )
+                )
+                .ReturnsAsync(0);
+            return service.Object;
+        }
+
+        private IWarehouseProductChangeHistoryService CreateRealChangeHistoryService(
+            string userGuid,
+            string username
+        )
+        {
+            var currentUserService = new Mock<ICurrentUserService>();
+            currentUserService.Setup(item => item.GetCurrentUserGuid()).Returns(userGuid);
+            currentUserService.Setup(item => item.GetCurrentUsername()).Returns(username);
+            return new WarehouseProductChangeHistoryService(
+                CreateSqlSugarContext(_db),
+                NullLogger<WarehouseProductChangeHistoryService>.Instance,
+                currentUserService.Object
             );
         }
 

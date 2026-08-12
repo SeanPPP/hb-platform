@@ -472,7 +472,9 @@ public sealed class WarehouseStorePriceHqSyncTests : IDisposable
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb, _hqConnection.ConnectionString),
             Mock.Of<IMapper>(),
-            Mock.Of<ILogger<ProductHqSyncService>>()
+            Mock.Of<ILogger<ProductHqSyncService>>(),
+            new ProductAuditNoopHistoryService(),
+            new ProductAuditSystemCurrentUserService()
         );
     }
 

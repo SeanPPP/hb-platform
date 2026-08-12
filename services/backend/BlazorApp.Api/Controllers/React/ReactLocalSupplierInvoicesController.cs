@@ -1167,13 +1167,15 @@ namespace BlazorApp.Api.Controllers.React
             if (dto.TargetStoreCodes == null || !await CanAccessAllStoresAsync(dto.TargetStoreCodes))
                 return Forbid();
 
-            var user = User.Identity?.Name ?? "system";
+            var actorUserGuid = GetCurrentUserGuid();
+            var actorName = User.Identity?.Name ?? "system";
             try
             {
                 var job = await _batchUpdateJobService.StartUpdateHqProductsJobAsync(
                     invoiceGuid,
                     dto,
-                    user,
+                    actorUserGuid,
+                    actorName,
                     cancellationToken
                 );
                 return Ok(new { success = true, data = job, message = "更新HQ商品任务已提交" });

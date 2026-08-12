@@ -12,6 +12,11 @@ namespace BlazorApp.Api.Data
         {
             // 即使通用迁移仅在 SQL Server 执行，也必须先验证 Preorder 的 Provider 契约，禁止 early return 静默放行未知数据库。
             PreorderSchemaBootstrap.EnsureSupportedProvider(db.CurrentConnectionConfig.DbType);
+            if (db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                await EnsureWarehouseProductChangeHistorySqliteSchemaAsync(db, logger);
+                return;
+            }
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
             {
                 return;
@@ -34,6 +39,116 @@ namespace BlazorApp.Api.Data
             await EnsureEmployeeProfileSensitiveChangeSchemaAsync(db, logger);
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
             await EnsurePreorderSchemaAsync(db, logger);
+            await EnsureWarehouseProductChangeHistoryIndexesAsync(db, logger);
+        }
+
+        private static async Task EnsureWarehouseProductChangeHistoryIndexesAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+SET XACT_ABORT ON;
+BEGIN TRY
+BEGIN TRANSACTION;
+DECLARE @WarehouseProductHistorySchemaLockResult int;
+EXEC @WarehouseProductHistorySchemaLockResult = sys.sp_getapplock
+    @Resource = N'WarehouseProductChangeHistory_Schema_Initialization',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Transaction',
+    @LockTimeout = 30000;
+IF @WarehouseProductHistorySchemaLockResult < 0
+    THROW 51059, N'Unable to acquire warehouse product history schema lock.', 1;
+
+IF OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U') IS NOT NULL
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.indexes
+        WHERE name = N'IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id'
+          AND object_id = OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U')
+    )
+        CREATE INDEX [IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id]
+            ON [dbo].[WarehouseProductChangeHistory]([ProductCode], [OccurredAtUtc] DESC, [Id] DESC);
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.indexes
+        WHERE name = N'IX_WarehouseProductChangeHistory_BatchGuid'
+          AND object_id = OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U')
+    )
+        CREATE INDEX [IX_WarehouseProductChangeHistory_BatchGuid]
+            ON [dbo].[WarehouseProductChangeHistory]([BatchGuid]);
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.indexes
+        WHERE name = N'UX_WarehouseProductChangeHistory_BatchGuid_ProductCode'
+          AND object_id = OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U')
+    )
+        CREATE UNIQUE INDEX [UX_WarehouseProductChangeHistory_BatchGuid_ProductCode]
+            ON [dbo].[WarehouseProductChangeHistory]([BatchGuid], [ProductCode])
+            WHERE [BatchGuid] IS NOT NULL;
+
+    -- 修改历史只允许追加；通过数据库触发器阻止应用缺陷或人工 SQL 覆盖、删除历史。
+    EXEC(N'CREATE OR ALTER TRIGGER [dbo].[TR_WarehouseProductChangeHistory_AppendOnly]
+        ON [dbo].[WarehouseProductChangeHistory]
+        INSTEAD OF UPDATE, DELETE
+        AS
+        BEGIN
+            SET NOCOUNT ON;
+            THROW 51060, N''WarehouseProductChangeHistory is append-only.'', 1;
+        END');
+END;
+
+COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+""";
+
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("仓库商品修改历史索引检查完成");
+        }
+
+        private static async Task EnsureWarehouseProductChangeHistorySqliteSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            var tableExists = await db.Ado.GetIntAsync(
+                "SELECT COUNT(1) FROM sqlite_master "
+                    + "WHERE type = 'table' AND name = 'WarehouseProductChangeHistory'"
+            );
+            if (tableExists == 0)
+            {
+                return;
+            }
+
+            const string sql = """
+CREATE INDEX IF NOT EXISTS "IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id"
+    ON "WarehouseProductChangeHistory"("ProductCode", "OccurredAtUtc" DESC, "Id" DESC);
+CREATE INDEX IF NOT EXISTS "IX_WarehouseProductChangeHistory_BatchGuid"
+    ON "WarehouseProductChangeHistory"("BatchGuid");
+CREATE UNIQUE INDEX IF NOT EXISTS "UX_WarehouseProductChangeHistory_BatchGuid_ProductCode"
+    ON "WarehouseProductChangeHistory"("BatchGuid", "ProductCode")
+    WHERE "BatchGuid" IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS "TR_WarehouseProductChangeHistory_AppendOnly_Update"
+    BEFORE UPDATE ON "WarehouseProductChangeHistory"
+    BEGIN
+        SELECT RAISE(ABORT, 'WarehouseProductChangeHistory is append-only.');
+    END;
+CREATE TRIGGER IF NOT EXISTS "TR_WarehouseProductChangeHistory_AppendOnly_Delete"
+    BEFORE DELETE ON "WarehouseProductChangeHistory"
+    BEGIN
+        SELECT RAISE(ABORT, 'WarehouseProductChangeHistory is append-only.');
+    END;
+""";
+
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("SQLite 仓库商品修改历史索引与只追加触发器检查完成");
         }
 
         private static async Task EnsureStoreTimeZoneSchemaAsync(

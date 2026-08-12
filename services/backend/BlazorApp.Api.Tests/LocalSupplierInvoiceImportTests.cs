@@ -487,7 +487,8 @@ namespace BlazorApp.Api.Tests
                 CreateHqSqlSugarContext(),
                 Mock.Of<IMapper>(),
                 NullLogger<LocalSupplierInvoicesReactService>.Instance,
-                autoPricing.Object
+                autoPricing.Object,
+                WarehouseProductChangeHistoryTestDouble.CreateNoop()
             );
         }
 

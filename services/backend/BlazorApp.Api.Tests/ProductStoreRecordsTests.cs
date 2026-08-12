@@ -4,6 +4,8 @@ using System.Security.Claims;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Controllers.React;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Mappings.Profiles.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
@@ -14,6 +16,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -1077,6 +1080,80 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateAsync_仅改商品编码时向历史服务保留旧编码快照()
+    {
+        const string oldCode = "P-CODE-OLD";
+        const string newCode = "P-CODE-NEW";
+        await SeedProductAsync(oldCode, "A-CODE", localSupplierCode: "200");
+
+        var beforeSnapshots = new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+            StringComparer.OrdinalIgnoreCase
+        )
+        {
+            [oldCode] = new WarehouseProductChangeSnapshotDto
+            {
+                ProductCode = oldCode,
+                ProductName = $"商品{oldCode}",
+            },
+        };
+        var afterSnapshots = new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+            StringComparer.OrdinalIgnoreCase
+        )
+        {
+            [newCode] = new WarehouseProductChangeSnapshotDto
+            {
+                ProductCode = newCode,
+                ProductName = $"商品{oldCode}",
+            },
+        };
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? recordedBefore = null;
+        var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        history
+            .SetupSequence(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(beforeSnapshots)
+            .ReturnsAsync(afterSnapshots);
+        history
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback((
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> before,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> _,
+                WarehouseProductChangeHistoryContextDto _,
+                CancellationToken _
+            ) => recordedBefore = before)
+            .ReturnsAsync(1);
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(service => service.GetCurrentUsername()).Returns("updater");
+        currentUser.Setup(service => service.GetCurrentUserGuid()).Returns("updater-guid");
+
+        var response = await CreateService("updater", history.Object, currentUser.Object)
+            .UpdateAsync(oldCode, new UpdateProductDto
+            {
+                ProductCode = newCode,
+                ProductName = $"商品{oldCode}",
+                LocalSupplierCode = "200",
+                ItemNumber = "A-CODE",
+                Barcode = $"barcode-{oldCode}",
+                PurchasePrice = 1m,
+                RetailPrice = 2m,
+                IsActive = true,
+            });
+
+        Assert.True(response.Success, response.Message);
+        Assert.NotNull(recordedBefore);
+        Assert.True(recordedBefore!.TryGetValue(newCode, out var rebound));
+        Assert.Equal(oldCode, rebound!.ProductCode);
+        history.VerifyAll();
+    }
+
+    [Fact]
     public async Task BatchUpdateAsync_LocalSupplierCode显式空写200且未传字段保持原值()
     {
         await SeedProductAsync("P-BATCH-EMPTY", "A-BATCH-EMPTY", localSupplierCode: "SUP01");
@@ -1130,7 +1207,9 @@ public sealed class ProductStoreRecordsTests : IDisposable
         await SeedStoreAsync("S01", "分店一");
         var controller = new ReactProductsController(
             CreateSqlSugarContext(_localDb),
-            NullLogger<ReactProductsController>.Instance
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>()
         )
         {
             ControllerContext = new ControllerContext
@@ -1170,7 +1249,9 @@ public sealed class ProductStoreRecordsTests : IDisposable
 
         var controller = new ReactProductsController(
             CreateSqlSugarContext(_localDb),
-            NullLogger<ReactProductsController>.Instance
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>()
         )
         {
             ControllerContext = new ControllerContext
@@ -1227,14 +1308,20 @@ public sealed class ProductStoreRecordsTests : IDisposable
         SqliteTempFileCleanup.DeleteIfExists(_hqDbPath);
     }
 
-    private ProductReactService CreateService(string? identityName = null)
+    private ProductReactService CreateService(
+        string? identityName = null,
+        IWarehouseProductChangeHistoryService? historyService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         return new ProductReactService(
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             _mapper,
             NullLogger<ProductReactService>.Instance,
-            CreateHttpContextAccessor(identityName)
+            CreateHttpContextAccessor(identityName),
+            historyService ?? new ProductAuditNoopHistoryService(),
+            currentUserService ?? new ProductAuditSystemCurrentUserService()
         );
     }
 

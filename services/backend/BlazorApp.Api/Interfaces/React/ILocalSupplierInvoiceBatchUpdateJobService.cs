@@ -25,6 +25,14 @@ namespace BlazorApp.Api.Interfaces.React
             CancellationToken cancellationToken = default
         );
 
+        Task<LocalSupplierInvoiceUpdateHqProductsJobDto> StartUpdateHqProductsJobAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest request,
+            string? actorUserGuid,
+            string actorName,
+            CancellationToken cancellationToken = default
+        );
+
         Task<LocalSupplierInvoiceUpdateHqProductsJobDto?> GetUpdateHqProductsJobAsync(
             string jobId,
             CancellationToken cancellationToken = default

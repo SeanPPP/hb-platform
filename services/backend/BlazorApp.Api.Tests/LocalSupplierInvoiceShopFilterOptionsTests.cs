@@ -148,7 +148,8 @@ public sealed class LocalSupplierInvoiceShopFilterOptionsTests : IDisposable
             CreateHqSqlSugarContext(),
             Mock.Of<IMapper>(),
             NullLogger<LocalSupplierInvoicesReactService>.Instance,
-            Mock.Of<IAutoPricingService>()
+            Mock.Of<IAutoPricingService>(),
+            WarehouseProductChangeHistoryTestDouble.CreateNoop()
         );
     }
 

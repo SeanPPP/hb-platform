@@ -30,8 +30,12 @@ namespace BlazorApp.Api.Tests
             _loggerMock = new Mock<ILogger<ProductReactService>>();
             _service = new ProductReactService(
                 new Mock<SqlSugarContext>().Object,
+                new Mock<BlazorApp.Api.Data.HqSqlSugarContext>().Object,
+                new Mock<AutoMapper.IMapper>().Object,
                 _loggerMock.Object,
-                new Mock<Microsoft.AspNetCore.Http.IHttpContextAccessor>().Object
+                new Mock<Microsoft.AspNetCore.Http.IHttpContextAccessor>().Object,
+                new ProductAuditNoopHistoryService(),
+                new ProductAuditSystemCurrentUserService()
             );
         }
 

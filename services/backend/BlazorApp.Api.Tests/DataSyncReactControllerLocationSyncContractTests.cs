@@ -1,6 +1,7 @@
 using System.Reflection;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -132,7 +133,8 @@ public class DataSyncReactControllerLocationSyncContractTests
             Mock.Of<IDataSyncFullService>(),
             incrementalService,
             Mock.Of<IProductHqSyncService>(),
-            Mock.Of<ILogger<DataSyncReactController>>()
+            Mock.Of<ILogger<DataSyncReactController>>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 }

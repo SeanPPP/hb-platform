@@ -1506,7 +1506,8 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductStoreSyncService>(),
             service.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            Mock.Of<ILogger<ReactProductController>>()
+            Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>()
         );
 
         var response = await controller.PushToHq(new PushProductsToHqRequest
@@ -1539,7 +1540,8 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductStoreSyncService>(),
             service.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            Mock.Of<ILogger<ReactProductController>>()
+            Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>()
         );
 
         var response = await controller.PushToHq(new PushProductsToHqRequest
@@ -1581,6 +1583,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductHqSyncService>(),
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
             Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>(),
             productPushToHqJobService: jobService.Object
         );
 
@@ -1614,6 +1617,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductHqSyncService>(),
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
             Mock.Of<ILogger<ReactProductController>>(),
+            Mock.Of<ICurrentUserService>(),
             productPushToHqJobService: jobService.Object
         );
 
@@ -1652,7 +1656,8 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             Mock.Of<IProductStoreSyncService>(),
             service.Object,
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
-            logger.Object
+            logger.Object,
+            Mock.Of<ICurrentUserService>()
         )
         {
             ControllerContext = new ControllerContext
@@ -2201,7 +2206,9 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             Mock.Of<IMapper>(),
-            logger ?? Mock.Of<ILogger<ProductHqSyncService>>()
+            logger ?? Mock.Of<ILogger<ProductHqSyncService>>(),
+            new ProductAuditNoopHistoryService(),
+            new ProductAuditSystemCurrentUserService()
         );
     }
 

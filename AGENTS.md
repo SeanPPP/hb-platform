@@ -44,7 +44,6 @@ This project is indexed by GitNexus as **hb-platform-main** (84637 symbols, 2766
 
 ## Notes
 
-- 提交添加 reasonix
 - 涉及 UI 层、界面、视觉或交互体验的任务，自动使用全局 `taste-skill` 技能。
 
 ## 个性化代理策略

@@ -7,6 +7,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  HistoryOutlined,
   ReloadOutlined,
   SaveOutlined,
   SearchOutlined,
@@ -217,6 +218,7 @@ import {
 } from './containerDetailLogic'
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip } from '../Products/categoryPath'
 import CategoryTreePicker from '../Products/CategoryTreePicker'
+import WarehouseProductChangeHistoryDrawer from '../Products/WarehouseProductChangeHistoryDrawer'
 import {
   defaultPushProductsToHqUpdateFields,
   pushProductsToHqUpdateFieldOptions,
@@ -652,6 +654,11 @@ export default function ContainerDetailPage() {
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
+  const [changeHistoryProduct, setChangeHistoryProduct] = useState<{
+    productCode: string
+    itemNumber?: string
+    productName?: string
+  } | null>(null)
   const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
@@ -3610,11 +3617,38 @@ export default function ContainerDetailPage() {
     },
     {
       title: renderColumnTitle('itemNumber', t('containers.fields.itemNumber')),
-      width: 130,
+      width: 156,
       fixed: 'left',
       ...makeSortProps('itemNumber'),
       ...textFilterProps('itemNumber', t('containers.placeholders.filterItemNumber')),
-      render: (_, row) => <CopyableText value={getContainerDetailItemNumber(row)} />,
+      render: (_, row) => {
+        const productCode = getContainerDetailProductCode(row)
+        const itemNumber = getContainerDetailItemNumber(row)
+        const productName = getContainerDetailProductName(row)
+        const canViewHistory = access.canManageWarehouseProducts && Boolean(productCode) && !row.是否新商品
+
+        return (
+          <span className="container-detail-copyable">
+            <span style={{ minWidth: 0, flex: '1 1 auto', overflow: 'hidden' }}>
+              <CopyableText value={itemNumber} />
+            </span>
+            {canViewHistory ? (
+              <Tooltip title={t('containers.actions.viewProductHistory', '查看商品修改记录')}>
+                <Button
+                  type="text"
+                  size="small"
+                  aria-label={t('containers.actions.viewProductHistory', '查看商品修改记录')}
+                  icon={<HistoryOutlined />}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setChangeHistoryProduct({ productCode: productCode!, itemNumber, productName })
+                  }}
+                />
+              </Tooltip>
+            ) : null}
+          </span>
+        )
+      },
     },
     {
       title: renderColumnTitle('englishName', t('containers.fields.englishName')),
@@ -4732,6 +4766,13 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      <WarehouseProductChangeHistoryDrawer
+        open={Boolean(changeHistoryProduct)}
+        productCode={changeHistoryProduct?.productCode}
+        itemNumber={changeHistoryProduct?.itemNumber}
+        productName={changeHistoryProduct?.productName}
+        onClose={() => setChangeHistoryProduct(null)}
+      />
       <Modal
         title={t('containers.modals.exportColumnsTitle', '选择导出列')}
         open={exportColumnModalOpen}

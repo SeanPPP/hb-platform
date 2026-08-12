@@ -1,4 +1,4 @@
-import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -39,6 +39,7 @@ import { areWarehouseProductCodeSelectionsEqual, buildWarehouseProductHqPushPayl
 import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
 import WarehouseProductStorePriceSyncModal from './WarehouseProductStorePriceSyncModal';
+import WarehouseProductChangeHistoryDrawer from './WarehouseProductChangeHistoryDrawer';
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -730,6 +731,7 @@ export default function WarehouseProductsPage() {
     const [syncingFromHq, setSyncingFromHq] = useState(false);
     const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
     const [storePriceSyncOpen, setStorePriceSyncOpen] = useState(false);
+    const [changeHistoryProduct, setChangeHistoryProduct] = useState<WarehouseProductListItem | null>(null);
     const [columnOrder, setColumnOrder] = useState<WarehouseProductTableColumnKey[]>([]);
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
     const pushToHqLoadingRef = useRef(false);
@@ -2077,11 +2079,14 @@ export default function WarehouseProductsPage() {
         {
             key: 'action',
             title: t('column.action'),
-            width: 190,
+            width: 280,
             fixed: 'right',
             render: (_, record) => (<Space size={0}>
             {access.canWriteProduct ? (<Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>
                 {t('common.edit')}
+              </Button>) : null}
+            {access.canManageWarehouseProducts ? (<Button type="link" icon={<HistoryOutlined />} onClick={() => setChangeHistoryProduct(record)}>
+                {t('warehouse.changeHistory.action', '修改记录')}
               </Button>) : null}
             {canManageProductDetails(record.productType) ? (<Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
                 {getProductDetailsActionLabel(record.productType, t)}
@@ -2092,7 +2097,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canWriteProduct, canInlineEditWarehouseProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, inlineEditingCell, inlineSavingCellKey, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
+    ], [access.canManageWarehouseProducts, access.canWriteProduct, canInlineEditWarehouseProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, inlineEditingCell, inlineSavingCellKey, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
     const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
     useEffect(() => {
         setColumnOrder((current) => {
@@ -2344,6 +2349,14 @@ export default function WarehouseProductsPage() {
             setCreateModalOpen(false);
             void refreshCurrentList({ page: 1 });
         }}/>
+
+      <WarehouseProductChangeHistoryDrawer
+        open={Boolean(changeHistoryProduct)}
+        productCode={changeHistoryProduct?.productCode}
+        itemNumber={changeHistoryProduct?.itemNumber}
+        productName={changeHistoryProduct?.name}
+        onClose={() => setChangeHistoryProduct(null)}
+      />
 
       <SetItemsModal open={setItemsOpen} loading={setItemsLoading} saving={setItemsSaving} product={currentSetProduct} items={setItemsDraft} canEdit={access.canWriteProduct} onCancel={() => {
             setSetItemsOpen(false);

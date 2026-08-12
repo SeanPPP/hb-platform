@@ -67,6 +67,13 @@ namespace BlazorApp.Api.Interfaces.React
             int writePageSize = 10000
         );
 
+        Task<SyncResult> SyncWarehouseProductsFromHqAsync(
+            int hqBatchSize,
+            int writePageSize,
+            string? actorUserGuid,
+            string? actorName
+        );
+
         Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqAsync(
             int hqBatchSize = 50000,
             int writePageSize = 10000

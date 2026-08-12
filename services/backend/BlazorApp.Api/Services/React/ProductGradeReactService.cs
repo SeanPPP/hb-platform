@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -14,18 +15,24 @@ namespace BlazorApp.Api.Services.React
         private readonly HqSqlSugarContext _hqContext;
         private readonly IMapper _mapper;
         private readonly ILogger<ProductGradeReactService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ProductGradeReactService(
             SqlSugarContext context,
             HqSqlSugarContext hqContext,
             IMapper mapper,
-            ILogger<ProductGradeReactService> logger
+            ILogger<ProductGradeReactService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
             _hqContext = hqContext;
             _mapper = mapper;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         public async Task<ApiResponse<PagedResult<ProductGradeDto>>> GetProductGradesAsync(
@@ -771,8 +778,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    await db.Ado.UseTranAsync(async () =>
+                    var batchGuid = Guid.NewGuid();
+                    var actorName = _currentUserService.GetCurrentUsername();
+                    var actorGuid = _currentUserService.GetCurrentUserGuid();
+                    var transactionResult = await db.Ado.UseTranAsync(async () =>
                     {
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
                         if (dto.ImportPrice.HasValue || dto.OEMPrice.HasValue)
                         {
                             var dpUpdate = db.Updateable<DomesticProduct>()
@@ -785,7 +796,8 @@ namespace BlazorApp.Api.Services.React
                                 dpUpdate = dpUpdate.SetColumns(d =>
                                     d.OEMPrice == dto.OEMPrice.Value
                                 );
-                            dpUpdate = dpUpdate.SetColumns(d => d.UpdatedAt == DateTime.UtcNow);
+                            dpUpdate = dpUpdate.SetColumns(d => d.UpdatedAt == DateTime.UtcNow)
+                                .SetColumns(d => d.UpdatedBy == actorName);
                             totalAffected += await dpUpdate.ExecuteCommandAsync();
 
                             if (dto.ImportPrice.HasValue)
@@ -804,6 +816,7 @@ namespace BlazorApp.Api.Services.React
                                     if (dto.OEMPrice.HasValue)
                                         wp.OEMPrice = dto.OEMPrice.Value;
                                     wp.UpdatedAt = DateTime.UtcNow;
+                                    wp.UpdatedBy = actorName;
                                 }
                                 if (wpList.Count > 0)
                                     totalAffected += await db.Updateable(wpList)
@@ -816,7 +829,8 @@ namespace BlazorApp.Api.Services.React
                                         && wp.StockQuantity == null
                                     )
                                     .SetColumns(wp => wp.ImportPrice == dto.ImportPrice.Value)
-                                    .SetColumns(wp => wp.UpdatedAt == DateTime.UtcNow);
+                                        .SetColumns(wp => wp.UpdatedAt == DateTime.UtcNow)
+                                        .SetColumns(wp => wp.UpdatedBy == actorName);
                                 if (dto.OEMPrice.HasValue)
                                     wpNoStock = wpNoStock.SetColumns(wp =>
                                         wp.OEMPrice == dto.OEMPrice.Value
@@ -830,7 +844,8 @@ namespace BlazorApp.Api.Services.React
                                         productCodes.Contains(wp.ProductCode) && !wp.IsDeleted
                                     )
                                     .SetColumns(wp => wp.OEMPrice == dto.OEMPrice.Value)
-                                    .SetColumns(wp => wp.UpdatedAt == DateTime.UtcNow);
+                                    .SetColumns(wp => wp.UpdatedAt == DateTime.UtcNow)
+                                    .SetColumns(wp => wp.UpdatedBy == actorName);
                                 totalAffected += await wpUpdate.ExecuteCommandAsync();
                             }
 
@@ -844,7 +859,8 @@ namespace BlazorApp.Api.Services.React
                                 pUpdate = pUpdate.SetColumns(p =>
                                     p.RetailPrice == dto.OEMPrice.Value
                                 );
-                            pUpdate = pUpdate.SetColumns(p => p.UpdatedAt == DateTime.UtcNow);
+                            pUpdate = pUpdate.SetColumns(p => p.UpdatedAt == DateTime.UtcNow)
+                                .SetColumns(p => p.UpdatedBy == actorName);
                             totalAffected += await pUpdate.ExecuteCommandAsync();
 
                             var srpUpdate = db.Updateable<StoreRetailPrice>()
@@ -866,7 +882,27 @@ namespace BlazorApp.Api.Services.React
                             );
                             totalAffected += await srpUpdate.ExecuteCommandAsync();
                         }
+
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "BatchUpdate",
+                                Source = "ProductGrade",
+                                SourceReference = $"ProductGrade:{string.Join(",", productCodes)}",
+                                BatchGuid = batchGuid,
+                                ActorUserGuid = actorGuid,
+                                ActorName = actorName,
+                            }
+                        );
                     });
+                    if (!transactionResult.IsSuccess)
+                    {
+                        throw transactionResult.ErrorException
+                            ?? new InvalidOperationException("商品等级批量改价事务失败");
+                    }
                 }
 
                 _logger.LogInformation(

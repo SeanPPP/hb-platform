@@ -119,7 +119,11 @@ namespace BlazorApp.Api.Services.React
                 using var scope = _serviceScopeFactory.CreateScope();
                 var executor = scope.ServiceProvider.GetRequiredService<IContainerProductCreationExecutorService>();
                 // 后台 scope 没有原始 HttpContext，必须从 job state 传递可信的更新人。
-                var result = await executor.ExecuteAsync(jobState.Request, jobState.UpdatedBy);
+                var result = await executor.ExecuteAsync(
+                    jobState.Request,
+                    jobState.UserId,
+                    jobState.UpdatedBy
+                );
                 var status = result.FailedCount > 0
                     ? ContainerProductCreationJobStatusConstants.Failed
                     : ContainerProductCreationJobStatusConstants.Succeeded;

@@ -26,6 +26,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IProductSupplierImageBatchUpdateJobService? _supplierImageJobService;
         private readonly IProductStoreSyncJobService? _productStoreSyncJobService;
         private readonly ILogger<ReactProductController> _logger;
+        private readonly ICurrentUserService _currentUserService;
 
         public ReactProductController(
             IProductReactService service,
@@ -33,6 +34,7 @@ namespace BlazorApp.Api.Controllers.React
             IProductHqSyncService productHqSyncService,
             ICurrentUserManageableStoreScopeService storeScopeService,
             ILogger<ReactProductController> logger,
+            ICurrentUserService currentUserService,
             IProductSupplierImageBatchUpdateJobService? supplierImageJobService = null,
             IProductStoreSyncJobService? productStoreSyncJobService = null,
             IProductPushToHqJobService? productPushToHqJobService = null
@@ -46,6 +48,7 @@ namespace BlazorApp.Api.Controllers.React
             _supplierImageJobService = supplierImageJobService;
             _productStoreSyncJobService = productStoreSyncJobService;
             _logger = logger;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -343,14 +346,18 @@ namespace BlazorApp.Api.Controllers.React
 
                 // 兼容入口也统一进入后台任务，避免绕过同供应商互斥。
                 var jobService = ResolveSupplierImageJobService();
-                var job = await jobService.StartJobAsync(new BatchUpdateSupplierImagesJobRequest
-                {
-                    LocalSupplierCode = request.LocalSupplierCode,
-                    UrlTemplate = request.UrlTemplate,
-                    UpdateHbweb = request.UpdateHbweb,
-                    UpdateHq = request.UpdateHq,
-                    SaveSupplierImageBaseUrl = request.SaveSupplierImageBaseUrl,
-                });
+                var job = await jobService.StartJobAsync(
+                    new BatchUpdateSupplierImagesJobRequest
+                    {
+                        LocalSupplierCode = request.LocalSupplierCode,
+                        UrlTemplate = request.UrlTemplate,
+                        UpdateHbweb = request.UpdateHbweb,
+                        UpdateHq = request.UpdateHq,
+                        SaveSupplierImageBaseUrl = request.SaveSupplierImageBaseUrl,
+                    },
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername()
+                );
                 return Ok(new { success = true, data = job, message = "供应商商品图片批量更新任务已提交" });
             }
             catch (Exception ex)
@@ -375,7 +382,12 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var jobService = ResolveSupplierImageJobService();
-                var job = await jobService.StartJobAsync(request, cancellationToken);
+                var job = await jobService.StartJobAsync(
+                    request,
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername(),
+                    cancellationToken
+                );
                 return Ok(new { success = true, data = job, message = "供应商商品图片批量更新任务已提交" });
             }
             catch (Exception ex)
@@ -675,7 +687,11 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("收到从HQ同步商品的请求");
-                var result = await _productHqSyncService.SyncIncrementalAsync();
+                var result = await _productHqSyncService.SyncIncrementalAsync(
+                    null,
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername()
+                );
                 if (result.Success)
                 {
                     return Ok(new

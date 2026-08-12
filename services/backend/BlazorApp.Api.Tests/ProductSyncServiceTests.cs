@@ -1,11 +1,13 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -132,7 +134,12 @@ public sealed class ProductSyncServiceTests : IDisposable
     }
 
     private ProductSyncService CreateService() =>
-        new(CreateSqlSugarContext(_db), NullLogger<ProductSyncService>.Instance);
+        new(
+            CreateSqlSugarContext(_db),
+            NullLogger<ProductSyncService>.Instance,
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
+        );
 
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
     {

@@ -5,6 +5,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings.Profiles;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -1286,7 +1287,9 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             mapper ?? Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
-            CreateTranslationServiceMock()
+            CreateTranslationServiceMock(),
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 

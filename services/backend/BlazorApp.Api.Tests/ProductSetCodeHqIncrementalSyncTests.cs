@@ -114,7 +114,9 @@ public sealed class ProductSetCodeHqIncrementalSyncTests : IDisposable
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             _mapper,
-            NullLogger<ProductHqSyncService>.Instance
+            NullLogger<ProductHqSyncService>.Instance,
+            new ProductAuditNoopHistoryService(),
+            new ProductAuditSystemCurrentUserService()
         );
     }
 

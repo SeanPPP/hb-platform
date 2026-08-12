@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -213,7 +214,21 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             SupplierCode = "200",
             IsDeleted = false,
         }).ExecuteCommandAsync();
-        var service = CreateService();
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? recordedBefore = null;
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? recordedAfter = null;
+        WarehouseProductChangeHistoryContextDto? recordedContext = null;
+        var history = CreateAlignHistoryMock(
+            "DOM-OLD",
+            "LOCAL-NEW",
+            (before, after, context) =>
+            {
+                recordedBefore = before;
+                recordedAfter = after;
+                recordedContext = context;
+            }
+        );
+        var currentUser = CreateCurrentUser("align-user-guid", "对齐操作员");
+        var service = CreateService(history.Object, currentUser);
 
         var result = await service.AlignDomesticProductCodeAsync(
             new AlignDomesticProductCodeRequestDto
@@ -238,6 +253,66 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.True(await _localDb.Queryable<DomesticSetProduct>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
         Assert.True(await _localDb.Queryable<ProductGrade>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
         Assert.True(await _localDb.Queryable<DomesticProductCreationLog>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
+        Assert.NotNull(recordedBefore);
+        Assert.NotNull(recordedAfter);
+        Assert.True(recordedBefore!.TryGetValue("LOCAL-NEW", out var reboundBefore));
+        Assert.True(recordedAfter!.TryGetValue("LOCAL-NEW", out var capturedAfter));
+        Assert.Equal("DOM-OLD", reboundBefore!.ProductCode);
+        Assert.Equal("LOCAL-NEW", capturedAfter!.ProductCode);
+        Assert.Equal("Update", recordedContext?.Action);
+        Assert.Equal("ContainerDetail", recordedContext?.Source);
+        Assert.Equal("C-TEST", recordedContext?.SourceReference);
+        Assert.Equal("align-user-guid", recordedContext?.ActorUserGuid);
+        Assert.Equal("对齐操作员", recordedContext?.ActorName);
+        history.VerifyAll();
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_历史失败时回滚国内商品和引用改码()
+    {
+        await SeedDetailAsync("D-ALIGN-ROLLBACK", "DOM-ROLLBACK");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-ROLLBACK",
+            HBProductNo = "ITEM-ROLLBACK",
+            SupplierCode = "200",
+            ProductName = "回滚商品",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync(
+            "LOCAL-ROLLBACK",
+            "本地主档回滚商品",
+            null,
+            "ITEM-ROLLBACK",
+            "200"
+        );
+        var history = CreateAlignHistoryMock(
+            "DOM-ROLLBACK",
+            "LOCAL-ROLLBACK",
+            (_, _, _) => { },
+            throwWhenRecording: true
+        );
+        var service = CreateService(history.Object, CreateCurrentUser("rollback-guid", "回滚操作员"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-ROLLBACK",
+                    ExpectedDomesticProductCode = "DOM-ROLLBACK",
+                    TargetProductCode = "LOCAL-ROLLBACK",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.True(await _localDb.Queryable<DomesticProduct>()
+            .AnyAsync(item => item.ProductCode == "DOM-ROLLBACK"));
+        Assert.False(await _localDb.Queryable<DomesticProduct>()
+            .AnyAsync(item => item.ProductCode == "LOCAL-ROLLBACK"));
+        Assert.True(await _localDb.Queryable<ContainerDetail>()
+            .AnyAsync(item => item.DetailCode == "D-ALIGN-ROLLBACK" && item.ProductCode == "DOM-ROLLBACK"));
+        history.VerifyAll();
     }
 
     [Fact]
@@ -1753,7 +1828,10 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         SqliteTempFileCleanup.DeleteIfExists(_hbSalesDbPath);
     }
 
-    private ContainerReactService CreateService()
+    private ContainerReactService CreateService(
+        IWarehouseProductChangeHistoryService? historyService = null,
+        ICurrentUserService? currentUserService = null
+    )
     {
         return new ContainerReactService(
             CreateSqlSugarContext(_localDb),
@@ -1763,8 +1841,84 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
-            CreateTranslationServiceMock()
+            CreateTranslationServiceMock(),
+            historyService ?? Mock.Of<IWarehouseProductChangeHistoryService>(),
+            currentUserService ?? Mock.Of<ICurrentUserService>()
         );
+    }
+
+    private static Mock<IWarehouseProductChangeHistoryService> CreateAlignHistoryMock(
+        string oldProductCode,
+        string targetProductCode,
+        Action<
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+            WarehouseProductChangeHistoryContextDto
+        > onRecord,
+        bool throwWhenRecording = false
+    )
+    {
+        var history = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        history
+            .SetupSequence(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                StringComparer.OrdinalIgnoreCase
+            )
+            {
+                [oldProductCode] = new WarehouseProductChangeSnapshotDto
+                {
+                    ProductCode = oldProductCode,
+                    ProductName = "国内商品",
+                },
+                [targetProductCode] = new WarehouseProductChangeSnapshotDto
+                {
+                    ProductCode = targetProductCode,
+                    ProductName = "本地主档商品",
+                },
+            })
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                StringComparer.OrdinalIgnoreCase
+            )
+            {
+                [targetProductCode] = new WarehouseProductChangeSnapshotDto
+                {
+                    ProductCode = targetProductCode,
+                    ProductName = "本地主档商品",
+                },
+            });
+        var setup = history.Setup(service => service.RecordChangesAsync(
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+            It.IsAny<CancellationToken>()
+        ));
+        setup.Callback((
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> before,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> after,
+            WarehouseProductChangeHistoryContextDto context,
+            CancellationToken _
+        ) => onRecord(before, after, context));
+        if (throwWhenRecording)
+        {
+            setup.ThrowsAsync(new InvalidOperationException("历史写入失败"));
+        }
+        else
+        {
+            setup.ReturnsAsync(1);
+        }
+
+        return history;
+    }
+
+    private static ICurrentUserService CreateCurrentUser(string userGuid, string username)
+    {
+        var currentUser = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUser.Setup(service => service.GetCurrentUserGuid()).Returns(userGuid);
+        currentUser.Setup(service => service.GetCurrentUsername()).Returns(username);
+        return currentUser.Object;
     }
 
     private static ITranslationService CreateTranslationServiceMock()

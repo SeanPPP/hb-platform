@@ -635,6 +635,10 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IProductWarehouseReactService,
     BlazorApp.Api.Services.React.ProductWarehouseReactService
 >();
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IWarehouseProductChangeHistoryService,
+    BlazorApp.Api.Services.React.WarehouseProductChangeHistoryService
+>();
 builder.Services.AddSingleton<IWarehouseProductHqSyncJobService, WarehouseProductHqSyncJobService>();
 builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>(); // POSM设备注册管理服务
 builder.Services.AddScoped<MobileAppDeviceStatusService>(sp =>

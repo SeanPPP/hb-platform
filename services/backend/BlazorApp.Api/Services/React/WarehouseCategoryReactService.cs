@@ -2,6 +2,7 @@ using System.Diagnostics;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Caching.Memory;
@@ -17,18 +18,24 @@ namespace BlazorApp.Api.Services.React
         private readonly IMapper _mapper;
         private readonly ILogger<WarehouseCategoryReactService> _logger;
         private readonly IMemoryCache _cache;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public WarehouseCategoryReactService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<WarehouseCategoryReactService> logger,
-            IMemoryCache cache
+            IMemoryCache cache,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
             _cache = cache;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         public async Task<List<WarehouseCategoryDto>> GetTreeAsync()
@@ -413,30 +420,154 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<int> BatchAssignProductsAsync(BatchAssignProductsRequestDto dto)
         {
-            var affected = await _context
-                .ProductDb.AsUpdateable()
-                .SetColumns(p => new Product
+            var productCodes = dto.ProductCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var batchGuid = Guid.NewGuid();
+            var actorName = _currentUserService.GetCurrentUsername();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                var now = DateTime.UtcNow;
+                var changedProductCodes = (await _context.Db.Queryable<Product>()
+                        .Where(product =>
+                            product.ProductCode != null && productCodes.Contains(product.ProductCode)
+                        )
+                        .ToListAsync())
+                    .Where(product =>
+                        !string.Equals(
+                            product.WarehouseCategoryGUID,
+                            dto.CategoryGuid,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    .Select(product => product.ProductCode!)
+                    .ToList();
+                var affected = await _context
+                    .ProductDb.AsUpdateable()
+                    .SetColumns(p => new Product
+                    {
+                        WarehouseCategoryGUID = dto.CategoryGuid,
+                        UpdatedAt = now,
+                        UpdatedBy = actorName,
+                    })
+                    .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                    .ExecuteCommandAsync();
+                if (changedProductCodes.Count > 0)
                 {
-                    WarehouseCategoryGUID = dto.CategoryGuid,
-                    UpdatedAt = DateTime.UtcNow,
-                })
-                .Where(p => p.ProductCode != null && dto.ProductCodes.Contains(p.ProductCode))
-                .ExecuteCommandAsync();
-            return affected;
+                    await _context.Db.Updateable<WarehouseProduct>()
+                        .SetColumns(product => new WarehouseProduct
+                        {
+                            UpdatedAt = now,
+                            UpdatedBy = actorName,
+                        })
+                        .Where(product =>
+                            product.ProductCode != null
+                            && changedProductCodes.Contains(product.ProductCode)
+                            && !product.IsDeleted
+                        )
+                        .ExecuteCommandAsync();
+                }
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                await _changeHistoryService.RecordChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    new WarehouseProductChangeHistoryContextDto
+                    {
+                        Action = "BatchUpdate",
+                        Source = "WarehouseCategory",
+                        SourceReference = $"WarehouseCategory:{dto.CategoryGuid}",
+                        BatchGuid = batchGuid,
+                        ActorUserGuid = actorGuid,
+                        ActorName = actorName,
+                    }
+                );
+                await _context.Db.Ado.CommitTranAsync();
+                return affected;
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
         }
 
         public async Task<int> BatchUnassignProductsAsync(BatchUnassignProductsRequestDto dto)
         {
-            var affected = await _context
-                .ProductDb.AsUpdateable()
-                .SetColumns(p => new Product
+            var productCodes = dto.ProductCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var batchGuid = Guid.NewGuid();
+            var actorName = _currentUserService.GetCurrentUsername();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                var now = DateTime.UtcNow;
+                var changedProductCodes = (await _context.Db.Queryable<Product>()
+                        .Where(product =>
+                            product.ProductCode != null && productCodes.Contains(product.ProductCode)
+                        )
+                        .ToListAsync())
+                    .Where(product => !string.IsNullOrWhiteSpace(product.WarehouseCategoryGUID))
+                    .Select(product => product.ProductCode!)
+                    .ToList();
+                var affected = await _context
+                    .ProductDb.AsUpdateable()
+                    .SetColumns(p => new Product
+                    {
+                        WarehouseCategoryGUID = null,
+                        UpdatedAt = now,
+                        UpdatedBy = actorName,
+                    })
+                    .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                    .ExecuteCommandAsync();
+                if (changedProductCodes.Count > 0)
                 {
-                    WarehouseCategoryGUID = null,
-                    UpdatedAt = DateTime.UtcNow,
-                })
-                .Where(p => p.ProductCode != null && dto.ProductCodes.Contains(p.ProductCode))
-                .ExecuteCommandAsync();
-            return affected;
+                    await _context.Db.Updateable<WarehouseProduct>()
+                        .SetColumns(product => new WarehouseProduct
+                        {
+                            UpdatedAt = now,
+                            UpdatedBy = actorName,
+                        })
+                        .Where(product =>
+                            product.ProductCode != null
+                            && changedProductCodes.Contains(product.ProductCode)
+                            && !product.IsDeleted
+                        )
+                        .ExecuteCommandAsync();
+                }
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                await _changeHistoryService.RecordChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    new WarehouseProductChangeHistoryContextDto
+                    {
+                        Action = "BatchUpdate",
+                        Source = "WarehouseCategory",
+                        SourceReference = "WarehouseCategory:Unassign",
+                        BatchGuid = batchGuid,
+                        ActorUserGuid = actorGuid,
+                        ActorName = actorName,
+                    }
+                );
+                await _context.Db.Ado.CommitTranAsync();
+                return affected;
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
         }
 
         private ISugarQueryable<WarehouseCategory> ApplySorting(

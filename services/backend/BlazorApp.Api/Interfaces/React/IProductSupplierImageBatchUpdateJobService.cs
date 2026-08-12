@@ -12,6 +12,13 @@ namespace BlazorApp.Api.Interfaces.React
             CancellationToken cancellationToken = default
         );
 
+        Task<BatchUpdateSupplierImagesJobDto> StartJobAsync(
+            BatchUpdateSupplierImagesJobRequest request,
+            string? actorUserGuid,
+            string? actorName,
+            CancellationToken cancellationToken = default
+        );
+
         Task<BatchUpdateSupplierImagesJobDto?> GetJobAsync(
             string jobId,
             CancellationToken cancellationToken = default

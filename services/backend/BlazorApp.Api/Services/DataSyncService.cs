@@ -3,6 +3,8 @@ using System.Data; // 其他方法仍需要DataTable
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
@@ -22,6 +24,8 @@ namespace BlazorApp.Api.Services
         private readonly IMapper _mapper;
         private readonly ITranslationService _translationService;
         private readonly IConfiguration _configuration;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         /// <summary>
         /// 构造函数，初始化数据同步服务
@@ -33,6 +37,8 @@ namespace BlazorApp.Api.Services
         /// <param name="mapper">AutoMapper实例</param>
         /// <param name="translationService">翻译服务</param>
         /// <param name="configuration">配置对象</param>
+        /// <param name="changeHistoryService">商品变更历史服务</param>
+        /// <param name="currentUserService">当前请求用户服务</param>
         public DataSyncService(
             SqlSugarContext localContext,
             HqSqlSugarContext hqContext,
@@ -40,9 +46,14 @@ namespace BlazorApp.Api.Services
             ILogger<DataSyncService> logger,
             IMapper mapper,
             ITranslationService translationService,
-            IConfiguration configuration
+            IConfiguration configuration,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
+            ArgumentNullException.ThrowIfNull(changeHistoryService);
+            ArgumentNullException.ThrowIfNull(currentUserService);
+
             _localContext = localContext;
             _hqContext = hqContext;
             _hbSalesContext = hbSalesContext;
@@ -50,6 +61,8 @@ namespace BlazorApp.Api.Services
             _mapper = mapper;
             _translationService = translationService;
             _configuration = configuration;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -822,6 +835,7 @@ namespace BlazorApp.Api.Services
                 UpdatedCount = 0,
                 ErrorCount = 0,
             };
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -837,6 +851,22 @@ namespace BlazorApp.Api.Services
 
                 try
                 {
+                    // 事务内先批量预取旧快照，确保清空重建与历史写入使用同一事务。
+                    var existingProductCodes = await _localContext
+                        .Db.Queryable<Product>()
+                        .Where(item => item.ProductCode != null)
+                        .Select(item => item.ProductCode)
+                        .ToListAsync();
+                    var auditProductCodes = new HashSet<string>(
+                        existingProductCodes
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code!.Trim()),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
+                    );
+
                     // 2. 先清空相关表数据
                     _logger.LogInformation("清空本地ProductSetCode表和Product表数据...");
                     await _localContext.Db.Deleteable<ProductSetCode>().ExecuteCommandAsync();
@@ -877,6 +907,13 @@ namespace BlazorApp.Api.Services
                             var localProducts = hqProductsBatch
                                 .Select(hqProduct => _mapper.Map<Product>(hqProduct))
                                 .ToList();
+                            foreach (var product in localProducts)
+                            {
+                                if (!string.IsNullOrWhiteSpace(product.ProductCode))
+                                {
+                                    auditProductCodes.Add(product.ProductCode.Trim());
+                                }
+                            }
 
                             // 2. 批量插入Product数据
                             await _localContext
@@ -905,9 +942,8 @@ namespace BlazorApp.Api.Services
                         {
                             _logger.LogError(ex, $"第 {pageNumber} 批商品数据处理失败");
                             totalErrors += hqProductsBatch.Count;
-
-                            // 出现错误后延迟更长时间再继续
-                            await Task.Delay(2000);
+                            // 任意一页失败都必须让本次全量同步整体回滚。
+                            throw;
                         }
 
                         pageNumber++;
@@ -986,9 +1022,8 @@ namespace BlazorApp.Api.Services
                         {
                             _logger.LogError(ex, $"第 {pageNumber} 批一品多码数据处理失败");
                             totalErrors += hqMultiCodesBatch.Count;
-
-                            // 出现错误后延迟更长时间再继续
-                            await Task.Delay(3000);
+                            // 任意一页失败都必须让本次全量同步整体回滚。
+                            throw;
                         }
 
                         pageNumber++;
@@ -996,6 +1031,19 @@ namespace BlazorApp.Api.Services
 
                     _logger.LogInformation(
                         $"一品多码表同步完成 - ProductSetCode: {totalMultiCodeAdded} 条"
+                    );
+
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
+                    );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        CreateLegacySyncContext(
+                            "DataSyncLegacyFull",
+                            batchGuid,
+                            DateTime.UtcNow
+                        )
                     );
 
                     // 🎉 提交事务
@@ -1194,6 +1242,7 @@ namespace BlazorApp.Api.Services
                 UpdatedCount = 0,
                 ErrorCount = 0,
             };
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -1204,47 +1253,66 @@ namespace BlazorApp.Api.Services
                 // 1. 检查HQ数据库连接
                 _hqContext.CheckConnection();
 
-                // 2. 先清空本地WarehouseProduct表
-                _logger.LogInformation("清空本地WarehouseProduct表...");
-                var deletedCount = await _localContext
-                    .Db.Deleteable<WarehouseProduct>()
-                    .ExecuteCommandAsync();
-                _logger.LogInformation($"已清空 {deletedCount} 条WarehouseProduct记录");
-
-                // 3. 从HQ数据库获取所有商品库存数据
-                var totalInserted = 0;
-                var totalErrors = 0;
-                const int batchSize = 5000; // 每批处理5000条记录
-                var pageNumber = 1;
-
-                while (true)
+                // 全量清空、写入、快照和历史必须由同一个事务覆盖。
+                await _localContext.Db.Ado.BeginTranAsync();
+                try
                 {
-                    // 🚀 使用导航查询，同时获取库存信息和关联的商品信息
-                    var hqStocksBatch = await _hqContext
-                        .CBP_DIC_商品库存表Db.AsQueryable()
-                        .Includes(x => x.商品信息) // 使用导航属性加载关联的商品信息
-                        .Skip((pageNumber - 1) * batchSize)
-                        .Take(batchSize)
+                    var existingProductCodes = await _localContext
+                        .Db.Queryable<WarehouseProduct>()
+                        .Select(item => item.ProductCode)
                         .ToListAsync();
-
-                    if (!hqStocksBatch.Any())
-                        break; // 没有更多数据
-
-                    var withProductInfoCount = hqStocksBatch.Count(x => x.商品信息 != null);
-                    _logger.LogInformation(
-                        $"从HQ数据库获取到第 {pageNumber} 批商品库存，共 {hqStocksBatch.Count} 条，其中 {withProductInfoCount} 条有关联的商品信息"
+                    var auditProductCodes = new HashSet<string>(
+                        existingProductCodes
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code.Trim()),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
                     );
 
-                    // 🚀 使用AutoMapper将HQ实体转换为本地实体列表
-                    var warehouseProducts = _mapper.Map<List<WarehouseProduct>>(hqStocksBatch);
+                    // 先清空本地WarehouseProduct表，失败时由外层回滚恢复原数据。
+                    _logger.LogInformation("清空本地WarehouseProduct表...");
+                    var deletedCount = await _localContext
+                        .Db.Deleteable<WarehouseProduct>()
+                        .ExecuteCommandAsync();
+                    _logger.LogInformation($"已清空 {deletedCount} 条WarehouseProduct记录");
 
-                    _logger.LogInformation(
-                        $"AutoMapper转换完成，生成 {warehouseProducts.Count} 个WarehouseProduct对象"
-                    );
+                    // 从HQ数据库获取所有商品库存数据。
+                    var totalInserted = 0;
+                    const int batchSize = 5000; // 每批处理5000条记录
+                    var pageNumber = 1;
 
-                    // 🚀 执行批量插入操作（使用对象列表而非DataTable）
-                    try
+                    while (true)
                     {
+                        var hqStocksBatch = await _hqContext
+                            .CBP_DIC_商品库存表Db.AsQueryable()
+                            .Includes(x => x.商品信息) // 使用导航属性加载关联的商品信息
+                            .Skip((pageNumber - 1) * batchSize)
+                            .Take(batchSize)
+                            .ToListAsync();
+
+                        if (!hqStocksBatch.Any())
+                            break; // 没有更多数据
+
+                        var withProductInfoCount = hqStocksBatch.Count(x => x.商品信息 != null);
+                        _logger.LogInformation(
+                            $"从HQ数据库获取到第 {pageNumber} 批商品库存，共 {hqStocksBatch.Count} 条，其中 {withProductInfoCount} 条有关联的商品信息"
+                        );
+
+                        var warehouseProducts = _mapper.Map<List<WarehouseProduct>>(hqStocksBatch);
+                        foreach (var product in warehouseProducts)
+                        {
+                            if (!string.IsNullOrWhiteSpace(product.ProductCode))
+                            {
+                                auditProductCodes.Add(product.ProductCode.Trim());
+                            }
+                        }
+
+                        _logger.LogInformation(
+                            $"AutoMapper转换完成，生成 {warehouseProducts.Count} 个WarehouseProduct对象"
+                        );
+
                         await _localContext.Db.Insertable(warehouseProducts).ExecuteCommandAsync();
 
                         totalInserted += warehouseProducts.Count;
@@ -1259,23 +1327,38 @@ namespace BlazorApp.Api.Services
                                 $"   示例商品: {product.ProductCode} (库存: {product.StockQuantity}, 价格: {product.OEMPrice:C2})"
                             );
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"第 {pageNumber} 批商品库存AutoMapper批量插入失败");
-                        totalErrors += hqStocksBatch.Count;
+
+                        pageNumber++;
                     }
 
-                    pageNumber++;
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
+                    );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        CreateLegacySyncContext(
+                            "DataSyncLegacyFull",
+                            batchGuid,
+                            DateTime.UtcNow
+                        )
+                    );
+
+                    await _localContext.Db.Ado.CommitTranAsync();
+
+                    result.AddedCount = totalInserted;
+                    result.UpdatedCount = 0; // 清空重建模式下没有更新操作
+                    result.ErrorCount = 0;
+                    result.IsSuccess = true;
+                    result.Message =
+                        $"商品库存同步完成（使用AutoMapper转换）！清空: {deletedCount} 条，新增: {totalInserted} 条，错误: 0 条";
+                    _logger.LogInformation(result.Message);
                 }
-
-                result.AddedCount = totalInserted;
-                result.UpdatedCount = 0; // 清空重建模式下没有更新操作
-                result.ErrorCount = totalErrors;
-                result.IsSuccess = totalErrors == 0;
-                result.Message =
-                    $"商品库存同步完成（使用AutoMapper转换）！清空: {deletedCount} 条，新增: {totalInserted} 条，错误: {totalErrors} 条";
-                _logger.LogInformation(result.Message);
+                catch (Exception)
+                {
+                    await _localContext.Db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1452,6 +1535,7 @@ namespace BlazorApp.Api.Services
                 UpdatedCount = 0,
                 ErrorCount = 0,
             };
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -1474,6 +1558,11 @@ namespace BlazorApp.Api.Services
                     var totalProductUpdated = 0;
                     var totalErrors = 0;
                     var pageNumber = 1;
+                    var auditProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var beforeSnapshots =
+                        new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                            StringComparer.OrdinalIgnoreCase
+                        );
 
                     _logger.LogInformation("开始增量同步商品字典表数据...");
 
@@ -1500,6 +1589,29 @@ namespace BlazorApp.Api.Services
                             var localProducts = hqProductsBatch
                                 .Select(hqProduct => _mapper.Map<Product>(hqProduct))
                                 .ToList();
+                            var pageAuditProductCodes = new HashSet<string>(
+                                localProducts
+                                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                                    .Select(product => product.ProductCode!.Trim()),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            var firstSeenProductCodes = pageAuditProductCodes
+                                .Where(code => !auditProductCodes.Contains(code))
+                                .ToList();
+                            if (firstSeenProductCodes.Count > 0)
+                            {
+                                // 跨页重复商品只能使用本任务首次遇到时的 before，避免中间状态污染审计。
+                                var pageBeforeSnapshots =
+                                    await _changeHistoryService.CaptureSnapshotsAsync(
+                                        firstSeenProductCodes
+                                    );
+                                foreach (var snapshot in pageBeforeSnapshots)
+                                {
+                                    beforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                                }
+
+                                auditProductCodes.UnionWith(firstSeenProductCodes);
+                            }
 
                             // 2. 处理Product增量同步
                             var productStorageResult = await _localContext
@@ -1540,9 +1652,8 @@ namespace BlazorApp.Api.Services
                         {
                             _logger.LogError(ex, $"第 {pageNumber} 批商品信息增量同步失败");
                             totalErrors += hqProductsBatch.Count;
-
-                            // 出现错误后延迟再继续
-                            await Task.Delay(1000);
+                            // 历史或业务写入失败时回滚整个增量调用，不能继续提交后续页。
+                            throw;
                         }
 
                         totalProcessed += hqProductsBatch.Count;
@@ -1633,9 +1744,8 @@ namespace BlazorApp.Api.Services
                         {
                             _logger.LogError(ex, $"第 {pageNumber} 批一品多码数据增量同步失败");
                             totalErrors += hqMultiCodesBatch.Count;
-
-                            // 出现错误后延迟再继续
-                            await Task.Delay(1500);
+                            // 历史或业务写入失败时回滚整个增量调用，不能继续提交后续页。
+                            throw;
                         }
 
                         pageNumber++;
@@ -1644,6 +1754,23 @@ namespace BlazorApp.Api.Services
                     _logger.LogInformation(
                         $"一品多码表增量同步完成 - ProductSetCode新增: {totalMultiCodeAdded}, 更新: {totalMultiCodeUpdated}"
                     );
+
+                    if (auditProductCodes.Count > 0)
+                    {
+                        // 所有 Product 与 ProductSetCode 业务写入完成后才采集最终 after，并只记录一次批次历史。
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            auditProductCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            CreateLegacySyncContext(
+                                "DataSyncLegacyIncremental",
+                                batchGuid,
+                                DateTime.UtcNow
+                            )
+                        );
+                    }
 
                     // 🎉 提交事务
                     await _localContext.Db.Ado.CommitTranAsync();
@@ -1696,6 +1823,7 @@ namespace BlazorApp.Api.Services
                 UpdatedCount = 0,
                 ErrorCount = 0,
             };
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -1706,82 +1834,137 @@ namespace BlazorApp.Api.Services
                 // 1. 检查HQ数据库连接
                 _hqContext.CheckConnection();
 
-                // 2. 从HQ数据库获取指定日期后更新的库存信息数据
-                const int batchSize = 10000; // 每批处理10000条记录
-                var totalProcessed = 0;
-                var totalAdded = 0;
-                var totalUpdated = 0;
-                var totalErrors = 0;
-                var pageNumber = 1;
-
-                while (true)
+                // 增量调用的所有分页共用一个事务，历史失败时整体回滚。
+                await _localContext.Db.Ado.BeginTranAsync();
+                try
                 {
-                    // 🚀 使用导航查询，同时获取库存信息和关联的商品信息，筛选指定日期后更新的记录
-                    var hqStocksBatch = await _hqContext
-                        .CBP_DIC_商品库存表Db.AsQueryable()
-                        .Includes(x => x.商品信息) // 使用导航属性获取商品信息
-                        .Where(x =>
-                            !string.IsNullOrEmpty(x.H商品编码)
-                            && x.FGC_LastModifyDate >= lastUpdateDate
-                        ) // 只获取指定日期后更新的库存
-                        .Skip((pageNumber - 1) * batchSize)
-                        .Take(batchSize)
-                        .ToListAsync();
-
-                    if (!hqStocksBatch.Any())
-                        break; // 没有更多数据
-
-                    _logger.LogInformation(
-                        $"从HQ数据库获取到第 {pageNumber} 批更新的库存信息，共 {hqStocksBatch.Count} 条"
-                    );
-
-                    // 🚀 使用AutoMapper进行批量转换
-                    var warehouseProducts = _mapper.Map<List<WarehouseProduct>>(hqStocksBatch);
-
-                    // 🚀 使用Storageable处理Insert/Update逻辑（根据商品编码判断）
-                    try
-                    {
-                        var storageResult = await _localContext
-                            .Db.Storageable(warehouseProducts)
-                            .WhereColumns(x => x.ProductCode) // 基于商品编码进行判断
-                            .ToStorageAsync();
-
-                        // 执行插入和更新
-                        var insertResult = storageResult.AsInsertable.ExecuteCommand();
-                        var updateResult = storageResult.AsUpdateable.ExecuteCommand();
-
-                        totalAdded += insertResult;
-                        totalUpdated += updateResult;
-
-                        _logger.LogInformation(
-                            $"第 {pageNumber} 批库存信息增量同步完成 - 新增: {insertResult}, 更新: {updateResult}"
+                    // 从HQ数据库获取指定日期后更新的库存信息数据
+                    const int batchSize = 10000; // 每批处理10000条记录
+                    var totalProcessed = 0;
+                    var totalAdded = 0;
+                    var totalUpdated = 0;
+                    var totalErrors = 0;
+                    var pageNumber = 1;
+                    var auditProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var beforeSnapshots =
+                        new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                            StringComparer.OrdinalIgnoreCase
                         );
 
-                        // 🚀 输出前3个处理结果的示例（用于调试）
-                        foreach (var stock in warehouseProducts.Take(3))
-                        {
-                            _logger.LogDebug(
-                                $"   示例库存: {stock.ProductCode} (库存量: {stock.StockQuantity})"
-                            );
-                        }
-                    }
-                    catch (Exception ex)
+                    while (true)
                     {
-                        _logger.LogError(ex, $"第 {pageNumber} 批库存信息增量同步失败");
-                        totalErrors += hqStocksBatch.Count;
+                        var hqStocksBatch = await _hqContext
+                            .CBP_DIC_商品库存表Db.AsQueryable()
+                            .Includes(x => x.商品信息) // 使用导航查询，同时获取商品信息
+                            .Where(x =>
+                                !string.IsNullOrEmpty(x.H商品编码)
+                                && x.FGC_LastModifyDate >= lastUpdateDate
+                            )
+                            .Skip((pageNumber - 1) * batchSize)
+                            .Take(batchSize)
+                            .ToListAsync();
+
+                        if (!hqStocksBatch.Any())
+                            break; // 没有更多数据
+
+                        _logger.LogInformation(
+                            $"从HQ数据库获取到第 {pageNumber} 批更新的库存信息，共 {hqStocksBatch.Count} 条"
+                        );
+
+                        var warehouseProducts = _mapper.Map<List<WarehouseProduct>>(hqStocksBatch);
+
+                        try
+                        {
+                            var pageAuditProductCodes = new HashSet<string>(
+                                warehouseProducts
+                                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                                    .Select(product => product.ProductCode.Trim()),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            var firstSeenProductCodes = pageAuditProductCodes
+                                .Where(code => !auditProductCodes.Contains(code))
+                                .ToList();
+                            if (firstSeenProductCodes.Count > 0)
+                            {
+                                // 同一编码跨页出现时保留最初快照，最终只和全部写入后的 after 对比。
+                                var pageBeforeSnapshots =
+                                    await _changeHistoryService.CaptureSnapshotsAsync(
+                                        firstSeenProductCodes
+                                    );
+                                foreach (var snapshot in pageBeforeSnapshots)
+                                {
+                                    beforeSnapshots.TryAdd(snapshot.Key, snapshot.Value);
+                                }
+
+                                auditProductCodes.UnionWith(firstSeenProductCodes);
+                            }
+
+                            var storageResult = await _localContext
+                                .Db.Storageable(warehouseProducts)
+                                .WhereColumns(x => x.ProductCode) // 基于商品编码进行判断
+                                .ToStorageAsync();
+
+                            var insertResult = storageResult.AsInsertable.ExecuteCommand();
+                            var updateResult = storageResult.AsUpdateable.ExecuteCommand();
+
+                            totalAdded += insertResult;
+                            totalUpdated += updateResult;
+
+                            _logger.LogInformation(
+                                $"第 {pageNumber} 批库存信息增量同步完成 - 新增: {insertResult}, 更新: {updateResult}"
+                            );
+
+                            foreach (var stock in warehouseProducts.Take(3))
+                            {
+                                _logger.LogDebug(
+                                    $"   示例库存: {stock.ProductCode} (库存量: {stock.StockQuantity})"
+                                );
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"第 {pageNumber} 批库存信息增量同步失败");
+                            totalErrors += hqStocksBatch.Count;
+                            // 历史或业务写入失败时回滚整个增量调用，不能继续提交后续页。
+                            throw;
+                        }
+
+                        totalProcessed += hqStocksBatch.Count;
+                        pageNumber++;
                     }
 
-                    totalProcessed += hqStocksBatch.Count;
-                    pageNumber++;
-                }
+                    if (auditProductCodes.Count > 0)
+                    {
+                        // 全部库存分页写入结束后统一采集 after，确保一个 BatchGuid 只产生一次审计写入。
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            auditProductCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            CreateLegacySyncContext(
+                                "DataSyncLegacyIncremental",
+                                batchGuid,
+                                DateTime.UtcNow
+                            )
+                        );
+                    }
 
-                result.AddedCount = totalAdded;
-                result.UpdatedCount = totalUpdated;
-                result.ErrorCount = totalErrors;
-                result.IsSuccess = totalErrors == 0;
-                result.Message =
-                    $"库存信息增量同步完成！总共处理: {totalProcessed}, 新增: {totalAdded}, 更新: {totalUpdated}, 错误: {totalErrors}";
-                _logger.LogInformation(result.Message);
+                    await _localContext.Db.Ado.CommitTranAsync();
+
+                    result.AddedCount = totalAdded;
+                    result.UpdatedCount = totalUpdated;
+                    result.ErrorCount = totalErrors;
+                    result.IsSuccess = totalErrors == 0;
+                    result.Message =
+                        $"库存信息增量同步完成！总共处理: {totalProcessed}, 新增: {totalAdded}, 更新: {totalUpdated}, 错误: {totalErrors}";
+                    _logger.LogInformation(result.Message);
+                }
+                catch (Exception)
+                {
+                    await _localContext.Db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1856,7 +2039,7 @@ namespace BlazorApp.Api.Services
                 );
 
                 // 更新商品英文名称（现在更新 Product 表）
-                int updatedCount = 0;
+                var translatedProducts = new List<Product>();
                 foreach (var product in chineseProducts)
                 {
                     if (translations.ContainsKey(product.ProductName))
@@ -1865,22 +2048,20 @@ namespace BlazorApp.Api.Services
                         if (
                             !string.IsNullOrEmpty(englishName)
                             && englishName != product.ProductName
+                            && !string.Equals(
+                                product.EnglishName,
+                                englishName,
+                                StringComparison.Ordinal
+                            )
                         )
                         {
                             product.EnglishName = englishName;
-                            updatedCount++;
+                            translatedProducts.Add(product);
                         }
                     }
                 }
 
-                // 批量更新数据库（更新 Product 表）
-                if (updatedCount > 0)
-                {
-                    await _localContext
-                        .Db.Updateable(chineseProducts)
-                        .UpdateColumns(p => new { p.EnglishName })
-                        .ExecuteCommandAsync();
-                }
+                var updatedCount = await SaveTranslatedProductsAsync(translatedProducts);
 
                 result.UpdatedCount = updatedCount;
                 result.IsSuccess = true;
@@ -2017,28 +2198,28 @@ namespace BlazorApp.Api.Services
                 );
 
                 // 更新仓库商品英文名称
-                int updatedCount = 0;
+                var translatedProducts = new List<Product>();
                 foreach (var product in productsToTranslate)
                 {
                     if (translations.ContainsKey(product.ProductName))
                     {
                         var englishName = translations[product.ProductName];
-                        if (!string.IsNullOrEmpty(englishName))
+                        if (
+                            !string.IsNullOrEmpty(englishName)
+                            && !string.Equals(
+                                product.EnglishName,
+                                englishName,
+                                StringComparison.Ordinal
+                            )
+                        )
                         {
                             product.EnglishName = englishName;
-                            updatedCount++;
+                            translatedProducts.Add(product);
                         }
                     }
                 }
 
-                // 批量更新数据库（更新 Product 表）
-                if (updatedCount > 0)
-                {
-                    await _localContext
-                        .Db.Updateable(productsToTranslate)
-                        .UpdateColumns(p => new { p.EnglishName })
-                        .ExecuteCommandAsync();
-                }
+                var updatedCount = await SaveTranslatedProductsAsync(translatedProducts);
 
                 result.UpdatedCount = updatedCount;
                 result.IsSuccess = true;
@@ -2060,6 +2241,61 @@ namespace BlazorApp.Api.Services
             return result;
         }
 
+        private async Task<int> SaveTranslatedProductsAsync(List<Product> translatedProducts)
+        {
+            var products = translatedProducts
+                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                .GroupBy(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+            if (products.Count == 0)
+            {
+                return 0;
+            }
+
+            var productCodes = products.Select(product => product.ProductCode!).ToList();
+            var occurredAtUtc = DateTime.UtcNow;
+            var actorName = _currentUserService.GetCurrentUsername();
+            foreach (var product in products)
+            {
+                product.UpdatedAt = occurredAtUtc;
+                product.UpdatedBy = string.IsNullOrWhiteSpace(actorName) ? "System" : actorName;
+            }
+
+            await _localContext.Db.Ado.BeginTranAsync();
+            try
+            {
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    productCodes
+                );
+                await _localContext.Db.Updateable(products)
+                    .UpdateColumns(product => new
+                    {
+                        product.EnglishName,
+                        product.UpdatedAt,
+                        product.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                await _changeHistoryService.RecordChangesAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    CreateLegacySyncContext(
+                        "ProductTranslation",
+                        Guid.NewGuid(),
+                        occurredAtUtc
+                    )
+                );
+                await _localContext.Db.Ado.CommitTranAsync();
+                return products.Count;
+            }
+            catch
+            {
+                await _localContext.Db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
         /// <summary>
         /// 从HQ同步国内商品数据（新版本：先从HBSales获取，再从HQ获取，根据商品编码更新）
         /// </summary>
@@ -2072,6 +2308,7 @@ namespace BlazorApp.Api.Services
                 IsSuccess = false,
                 Message = "开始同步国内商品数据",
             };
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -2347,6 +2584,16 @@ namespace BlazorApp.Api.Services
                     await _localContext.Db.Ado.BeginTranAsync();
                     try
                     {
+                        var auditProductCodes = new HashSet<string>(
+                            localProducts
+                                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                                .Select(product => product.ProductCode.Trim()),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            auditProductCodes
+                        );
+                        var occurredAtUtc = DateTime.UtcNow;
                         int insertedCount = 0;
                         int updatedCount = 0;
 
@@ -2373,6 +2620,19 @@ namespace BlazorApp.Api.Services
                                 updatedCount
                             );
                         }
+
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            auditProductCodes
+                        );
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            CreateLegacySyncContext(
+                                "DataSyncLegacyFull",
+                                batchGuid,
+                                occurredAtUtc
+                            )
+                        );
 
                         await _localContext.Db.Ado.CommitTranAsync();
 
@@ -4598,6 +4858,35 @@ namespace BlazorApp.Api.Services
             }
 
             return result;
+        }
+
+        // 同步入口不接受客户端操作人；仅从当前服务器请求上下文生成审计操作人。
+        private WarehouseProductChangeHistoryContextDto CreateLegacySyncContext(
+            string source,
+            Guid batchGuid,
+            DateTime occurredAtUtc
+        )
+        {
+            var actorUserGuid = _currentUserService.GetCurrentUserGuid();
+            var actorName = _currentUserService.GetCurrentUsername();
+            var hasActorUserGuid = !string.IsNullOrWhiteSpace(actorUserGuid);
+            var isSystem = !hasActorUserGuid
+                && (
+                    string.IsNullOrWhiteSpace(actorName)
+                    || string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+                );
+
+            return new WarehouseProductChangeHistoryContextDto
+            {
+                Action = "BatchUpdate",
+                Source = source,
+                BatchGuid = batchGuid,
+                // 身份 GUID 比显示名更可靠；名称缺失时由统一历史服务回退为 GUID。
+                ActorUserGuid = hasActorUserGuid ? actorUserGuid : null,
+                ActorName = isSystem ? "System" : actorName,
+                ActorType = hasActorUserGuid || !isSystem ? "User" : "System",
+                OccurredAtUtc = occurredAtUtc,
+            };
         }
     }
 

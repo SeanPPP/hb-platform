@@ -13,16 +13,19 @@ namespace BlazorApp.Api.Services.React
         private readonly SqlSugarContext _context;
         private readonly HqSqlSugarContext _hqContext;
         private readonly ILogger<LocalSupplierInvoiceHqProductSyncService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
 
         public LocalSupplierInvoiceHqProductSyncService(
             SqlSugarContext context,
             HqSqlSugarContext hqContext,
-            ILogger<LocalSupplierInvoiceHqProductSyncService> logger
+            ILogger<LocalSupplierInvoiceHqProductSyncService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService
         )
         {
             _context = context;
             _hqContext = hqContext;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
         }
 
         public async Task<ApiResponse<EnsureHqProductsResult>> EnsureHqProductsAsync(
@@ -91,23 +94,39 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var syncItems = new List<PreparedSyncItem>();
+                var candidateProductCodes = details.Select(_ => UuidHelper.GenerateUuid7()).ToList();
+                var auditBatchGuid = Guid.NewGuid();
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    foreach (var detail in details)
+                    // 先为本次可能的新商品批量取快照；最终只会为实际插入的商品写历史。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        candidateProductCodes
+                    );
+                    for (var index = 0; index < details.Count; index++)
                     {
+                        var detail = details[index];
                         var prepared = await PrepareLocalProductAsync(
                             header,
                             detail,
                             activeStoreCodes,
                             targetStoreCodes,
                             updatedBy,
-                            result
+                            result,
+                            candidateProductCodes[index]
                         );
                         if (prepared != null)
                             syncItems.Add(prepared);
                     }
 
+                    await RecordCreatedLocalProductHistoryAsync(
+                        beforeSnapshots,
+                        syncItems,
+                        invoiceGuid,
+                        auditBatchGuid,
+                        actorUserGuid: null,
+                        actorName: updatedBy
+                    );
                     await db.Ado.CommitTranAsync();
                 }
                 catch
@@ -161,6 +180,33 @@ namespace BlazorApp.Api.Services.React
             string invoiceGuid,
             UpdateHqProductsRequest? request,
             string updatedBy
+        ) => await UpdateHqProductsAsyncCore(
+            invoiceGuid,
+            request,
+            updatedBy,
+            actorUserGuid: null,
+            actorName: updatedBy
+        );
+
+        public async Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest? request,
+            string? actorUserGuid,
+            string actorName
+        ) => await UpdateHqProductsAsyncCore(
+            invoiceGuid,
+            request,
+            actorName,
+            actorUserGuid,
+            actorName
+        );
+
+        private async Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsyncCore(
+            string invoiceGuid,
+            UpdateHqProductsRequest? request,
+            string updatedBy,
+            string? actorUserGuid,
+            string actorName
         )
         {
             var result = new UpdateHqProductsResult();
@@ -230,22 +276,38 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var updateItems = new List<PreparedSyncItem>();
+                var candidateProductCodes = details.Select(_ => UuidHelper.GenerateUuid7()).ToList();
+                var auditBatchGuid = Guid.NewGuid();
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    foreach (var detail in details)
+                    // 先为本次可能的新商品批量取快照；最终只会为实际插入的商品写历史。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        candidateProductCodes
+                    );
+                    for (var index = 0; index < details.Count; index++)
                     {
+                        var detail = details[index];
                         var prepared = await PrepareLocalProductForHqUpdateAsync(
                             header,
                             detail,
                             activeStoreCodes,
                             updatedBy,
-                            result
+                            result,
+                            candidateProductCodes[index]
                         );
                         if (prepared != null)
                             updateItems.Add(prepared);
                     }
 
+                    await RecordCreatedLocalProductHistoryAsync(
+                        beforeSnapshots,
+                        updateItems,
+                        invoiceGuid,
+                        auditBatchGuid,
+                        actorUserGuid,
+                        actorName
+                    );
                     await db.Ado.CommitTranAsync();
                 }
                 catch
@@ -308,7 +370,8 @@ namespace BlazorApp.Api.Services.React
             StoreLocalSupplierInvoiceDetails detail,
             List<string> activeStoreCodes,
             string updatedBy,
-            UpdateHqProductsResult result
+            UpdateHqProductsResult result,
+            string generatedProductCode
         )
         {
             var db = _context.Db;
@@ -340,7 +403,6 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
                     UUID = generatedProductCode,
@@ -388,7 +450,8 @@ namespace BlazorApp.Api.Services.React
             List<string> activeStoreCodes,
             List<string> targetStoreCodes,
             string updatedBy,
-            EnsureHqProductsResult result
+            EnsureHqProductsResult result,
+            string generatedProductCode
         )
         {
             if (detail.PurchasePrice == null || detail.PurchasePrice <= 0)
@@ -421,7 +484,6 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
                     UUID = generatedProductCode,
@@ -471,6 +533,49 @@ namespace BlazorApp.Api.Services.React
             await UpsertLocalStorePricesAsync(detail, product, localPriceScope, updatedBy);
 
             return new PreparedSyncItem(detail, product, isNewProduct);
+        }
+
+        private async Task RecordCreatedLocalProductHistoryAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IEnumerable<PreparedSyncItem> preparedItems,
+            string invoiceGuid,
+            Guid batchGuid,
+            string? actorUserGuid,
+            string actorName
+        )
+        {
+            var createdProductCodes = preparedItems
+                .Where(item => item.IsNewProduct && !string.IsNullOrWhiteSpace(item.Product.ProductCode))
+                .Select(item => item.Product.ProductCode!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (createdProductCodes.Count == 0)
+            {
+                return;
+            }
+
+            var createdCodeSet = createdProductCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var createdBeforeSnapshots = beforeSnapshots
+                .Where(pair => createdCodeSet.Contains(pair.Key))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(createdProductCodes);
+
+            // 历史服务在同一本地事务内落库；一旦失败，商品主档、明细和分店价格全部回滚。
+            await _changeHistoryService.RecordChangesAsync(
+                createdBeforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = "Create",
+                    Source = "LocalSupplierInvoiceHqProductSync",
+                    SourceReference = invoiceGuid,
+                    BatchGuid = batchGuid,
+                    // 后台任务没有可靠的请求上下文，审计身份必须来自提交时显式传入的快照。
+                    ActorUserGuid = actorUserGuid,
+                    ActorName = actorName,
+                    OccurredAtUtc = DateTime.UtcNow,
+                }
+            );
         }
 
         private async Task UpsertLocalStorePricesAsync(

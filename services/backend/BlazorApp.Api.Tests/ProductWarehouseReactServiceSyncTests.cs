@@ -27,7 +27,7 @@ namespace BlazorApp.Api.Tests
             };
             var fullSyncServiceMock = new Mock<IDataSyncFullService>();
             fullSyncServiceMock
-                .Setup(service => service.SyncWarehouseProductsFromHqAsync(50000, 10000))
+                .Setup(service => service.SyncWarehouseProductsFromHqAsync(50000, 10000, null, null))
                 .ReturnsAsync(expected);
 
             var localContext = CreateContext<SqlSugarContext>();
@@ -45,14 +45,15 @@ namespace BlazorApp.Api.Tests
                     configuration
                 ),
                 Mock.Of<IMapper>(),
-                fullSyncServiceMock.Object
+                fullSyncServiceMock.Object,
+                Mock.Of<IWarehouseProductChangeHistoryService>()
             );
 
             var result = await service.SyncFromHqAsync();
 
             Assert.Same(expected, result);
             fullSyncServiceMock.Verify(
-                service => service.SyncWarehouseProductsFromHqAsync(50000, 10000),
+                service => service.SyncWarehouseProductsFromHqAsync(50000, 10000, null, null),
                 Times.Once
             );
         }

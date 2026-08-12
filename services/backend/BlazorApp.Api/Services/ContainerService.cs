@@ -2,6 +2,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 
@@ -16,17 +17,23 @@ namespace BlazorApp.Api.Services
         private readonly IMapper _mapper;
         private readonly ILogger<ContainerService> _logger;
         private readonly ITranslationService _translationService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ContainerService(
             SqlSugarContext localContext,
             IMapper mapper,
             ILogger<ContainerService> logger,
-            ITranslationService translationService)
+            ITranslationService translationService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService)
         {
             _localContext = localContext;
             _mapper = mapper;
             _logger = logger;
             _translationService = translationService;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -418,81 +425,131 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始批量更新货柜明细，数量: {Count}", updates.Count);
 
-                int totalUpdated = 0;
+                var detailCodes = updates
+                    .Select(update => update.HGUID)
+                    .Where(detailCode => !string.IsNullOrWhiteSpace(detailCode))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                var details = await _localContext.Db.Queryable<ContainerDetail>()
+                    .Where(detail => detailCodes.Contains(detail.DetailCode))
+                    .ToListAsync();
+                var detailMap = details.ToDictionary(detail => detail.DetailCode, StringComparer.Ordinal);
+                var productCodes = updates
+                    .Where(update => !string.IsNullOrEmpty(update.商品名称) || !string.IsNullOrEmpty(update.英文名称))
+                    .Select(update => detailMap.TryGetValue(update.HGUID, out var detail) ? detail.ProductCode : null)
+                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                    .Select(productCode => productCode!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var products = productCodes.Count == 0
+                    ? new List<DomesticProduct>()
+                    : await _localContext.Db.Queryable<DomesticProduct>()
+                        .Where(product => productCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                var productMap = products
+                    .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+                var auditBatchGuid = Guid.NewGuid();
+                var auditActorGuid = _currentUserService.GetCurrentUserGuid();
+                var auditActorName = _currentUserService.GetCurrentUsername();
+                var sourceReference = string.Join(",", details
+                    .Select(detail => detail.ContainerCode)
+                    .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+                var totalUpdated = 0;
 
-                // 批量更新明细
-                foreach (var update in updates)
+                await _localContext.Db.Ado.BeginTranAsync();
+                try
                 {
-                    var detail = await _localContext.Db.Queryable<ContainerDetail>()
-                        .Where(x => x.DetailCode == update.HGUID)
-                        .FirstAsync();
+                    // 前快照和业务写入处于同一事务，避免审计记录跨越并发修改。
+                    var beforeSnapshots = productCodes.Count == 0
+                        ? null
+                        : await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
 
-                    if (detail == null)
+                    // 保留旧接口“单条不存在则跳过”的参数错误部分继续语义。
+                    foreach (var update in updates)
                     {
-                        _logger.LogWarning("明细不存在: {DetailGuid}", update.HGUID);
-                        continue;
-                    }
-
-                    // 更新明细字段
-                    if (update.调整浮率.HasValue)
-                    {
-                        detail.AdjustmentRate = update.调整浮率.Value;
-                    }
-
-                    if (update.进口价格.HasValue)
-                    {
-                        detail.ImportPrice = update.进口价格.Value;
-                    }
-
-                    if (update.运输成本.HasValue)
-                    {
-                        detail.TransportCost = update.运输成本.Value;
-                    }
-
-                    if (update.贴牌价格.HasValue)
-                    {
-                        detail.OEMPrice = update.贴牌价格.Value;
-                    }
-
-                    // 保存更改
-                    var rowsAffected = await _localContext.Db.Updateable(detail)
-                        .UpdateColumns(x => new { x.AdjustmentRate, x.ImportPrice, x.TransportCost, x.OEMPrice })
-                        .Where(x => x.DetailCode == update.HGUID)
-                        .ExecuteCommandAsync();
-
-                    if (rowsAffected > 0)
-                    {
-                        totalUpdated++;
-                    }
-
-                    // 如果有商品名称或英文名称需要更新，更新关联的商品信息
-                    if (!string.IsNullOrEmpty(update.商品名称) || !string.IsNullOrEmpty(update.英文名称))
-                    {
-                        if (!string.IsNullOrEmpty(detail.ProductCode))
+                        if (!detailMap.TryGetValue(update.HGUID, out var detail))
                         {
-                            var product = await _localContext.Db.Queryable<DomesticProduct>()
-                                .Where(x => x.ProductCode == detail.ProductCode)
-                                .FirstAsync();
+                            _logger.LogWarning("明细不存在: {DetailGuid}", update.HGUID);
+                            continue;
+                        }
 
-                            if (product != null)
+                        if (update.调整浮率.HasValue)
+                        {
+                            detail.AdjustmentRate = update.调整浮率.Value;
+                        }
+
+                        if (update.进口价格.HasValue)
+                        {
+                            detail.ImportPrice = update.进口价格.Value;
+                        }
+
+                        if (update.运输成本.HasValue)
+                        {
+                            detail.TransportCost = update.运输成本.Value;
+                        }
+
+                        if (update.贴牌价格.HasValue)
+                        {
+                            detail.OEMPrice = update.贴牌价格.Value;
+                        }
+
+                        var rowsAffected = await _localContext.Db.Updateable(detail)
+                            .UpdateColumns(item => new { item.AdjustmentRate, item.ImportPrice, item.TransportCost, item.OEMPrice })
+                            .Where(item => item.DetailCode == update.HGUID)
+                            .ExecuteCommandAsync();
+                        if (rowsAffected > 0)
+                        {
+                            totalUpdated++;
+                        }
+
+                        if ((!string.IsNullOrEmpty(update.商品名称) || !string.IsNullOrEmpty(update.英文名称))
+                            && !string.IsNullOrEmpty(detail.ProductCode)
+                            && productMap.TryGetValue(detail.ProductCode, out var product))
+                        {
+                            if (!string.IsNullOrEmpty(update.商品名称))
                             {
-                                if (!string.IsNullOrEmpty(update.商品名称))
-                                {
-                                    product.ProductName = update.商品名称;
-                                }
-
-                                if (!string.IsNullOrEmpty(update.英文名称))
-                                {
-                                    product.EnglishProductName = update.英文名称;
-                                }
-
-                                await _localContext.Db.Updateable(product)
-                                    .UpdateColumns(x => new { x.ProductName, x.EnglishProductName })
-                                    .Where(x => x.ProductCode == detail.ProductCode)
-                                    .ExecuteCommandAsync();
+                                product.ProductName = update.商品名称;
                             }
+
+                            if (!string.IsNullOrEmpty(update.英文名称))
+                            {
+                                product.EnglishProductName = update.英文名称;
+                            }
+
+                            await _localContext.Db.Updateable(product)
+                                .UpdateColumns(item => new { item.ProductName, item.EnglishProductName })
+                                .Where(item => item.ProductCode == detail.ProductCode)
+                                .ExecuteCommandAsync();
                         }
                     }
+
+                    if (beforeSnapshots != null)
+                    {
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                        // 中心历史服务会过滤无字段变化的商品，确保每个实际变化商品仅一条事件。
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "BatchUpdate",
+                                Source = "ContainerLegacyDetail",
+                                SourceReference = sourceReference,
+                                BatchGuid = auditBatchGuid,
+                                ActorUserGuid = auditActorGuid,
+                                ActorName = auditActorName,
+                            }
+                        );
+                    }
+
+                    await _localContext.Db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _localContext.Db.Ado.RollbackTranAsync();
+                    throw;
                 }
 
                 _logger.LogInformation("批量更新货柜明细完成，成功更新: {TotalUpdated}/{Total}", totalUpdated, updates.Count);

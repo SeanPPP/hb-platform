@@ -2,6 +2,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -24,6 +25,8 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<ContainerReactService> _logger;
         private readonly IContainerHqSyncService _containerHqSyncService;
         private readonly ITranslationService _translationService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ContainerReactService(
             SqlSugarContext context,
@@ -33,7 +36,9 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<ContainerReactService> logger,
             IContainerHqSyncService containerHqSyncService,
-            ITranslationService translationService
+            ITranslationService translationService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
@@ -44,6 +49,8 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _containerHqSyncService = containerHqSyncService;
             _translationService = translationService;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         private bool IsValidEnglishName(string? englishName)
@@ -1667,6 +1674,14 @@ namespace BlazorApp.Api.Services.React
                     throw new InvalidOperationException("原国内商品编码已存在本地主档或仓库商品，不能自动改码");
                 }
 
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { oldProductCode, targetProductCode }
+                );
+                if (!beforeSnapshots.TryGetValue(targetProductCode, out var targetBeforeSnapshot))
+                {
+                    throw new InvalidOperationException("无法读取本地主档审计快照，请刷新后重试");
+                }
+
                 // Product.ProductCode 是权威主键；确认后只把国内侧引用从旧编码迁到本地主档编码。
                 var updatedDomesticProducts = await _context.Db.Ado.ExecuteCommandAsync(
                     "UPDATE DomesticProduct SET ProductCode = @TargetProductCode WHERE ProductCode = @OldProductCode AND SupplierCode = @SupplierCode AND IsDeleted = 0",
@@ -1702,6 +1717,48 @@ namespace BlazorApp.Api.Services.React
                     .SetColumns(p => p.ProductCode == targetProductCode)
                     .Where(p => p.ProductCode == oldProductCode && !p.IsDeleted)
                     .ExecuteCommandAsync();
+
+                var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { targetProductCode }
+                );
+                var auditActorName = _currentUserService.GetCurrentUsername();
+                auditActorName = string.IsNullOrWhiteSpace(auditActorName)
+                    ? "System"
+                    : auditActorName.Trim();
+                var isSystemActor = string.Equals(
+                    auditActorName,
+                    "System",
+                    StringComparison.OrdinalIgnoreCase
+                );
+                var auditActorUserGuid = _currentUserService.GetCurrentUserGuid();
+                isSystemActor = string.IsNullOrWhiteSpace(auditActorUserGuid) && isSystemActor;
+                // 事件挂在仍然有效的新编码下；旧编码保留在 before 快照中形成单条编码差异。
+                await _changeHistoryService.RecordChangesAsync(
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                    {
+                        [targetProductCode] = targetBeforeSnapshot with
+                        {
+                            ProductCode = oldProductCode,
+                        },
+                    },
+                    afterSnapshots,
+                    new WarehouseProductChangeHistoryContextDto
+                    {
+                        Action = "Update",
+                        Source = "ContainerDetail",
+                        SourceReference = string.IsNullOrWhiteSpace(transactionalDetail.ContainerCode)
+                            ? detailHguid
+                            : transactionalDetail.ContainerCode,
+                        ActorUserGuid = string.IsNullOrWhiteSpace(auditActorUserGuid)
+                            ? null
+                            : auditActorUserGuid,
+                        ActorName = auditActorName,
+                        ActorType = isSystemActor ? "System" : "User",
+                        OccurredAtUtc = DateTime.UtcNow,
+                    }
+                );
 
                 await _context.Db.Ado.CommitTranAsync();
 
@@ -1983,6 +2040,10 @@ namespace BlazorApp.Api.Services.React
                     .Select(x => x.ProductCode!)
                     .Distinct()
                     .ToList();
+                var auditBatchGuid = Guid.NewGuid();
+                var auditActorName = _currentUserService.GetCurrentUsername();
+                var auditActorGuid = _currentUserService.GetCurrentUserGuid();
+                var now = DateTime.UtcNow;
                 // SkipRelatedProductSync 只允许写货柜明细，关联主数据回填必须统一走这个过滤集合。
                 var relatedSyncDetailUpdates = validDetailUpdates
                     .Where(x => x.Update.SkipRelatedProductSync != true)
@@ -2226,6 +2287,8 @@ namespace BlazorApp.Api.Services.React
                     {
                         // 已有商品立即同步仓库分类；未匹配商品只保留明细目标分类等待创建。
                         localProduct.WarehouseCategoryGUID = nextCategoryGuid;
+                        localProduct.UpdatedAt = now;
+                        localProduct.UpdatedBy = auditActorName;
                         changedLocalCategoryProducts[item.ProductCode!] = localProduct;
                         updatedRequestGuids.Add(item.Update.HGUID);
                     }
@@ -2249,6 +2312,8 @@ namespace BlazorApp.Api.Services.React
                     if (product.MiddlePackQuantity != nextMiddlePackQuantity)
                     {
                         product.MiddlePackQuantity = nextMiddlePackQuantity;
+                        product.UpdatedAt = now;
+                        product.UpdatedBy = auditActorName;
                         if (changedProductCodes.Add(item.ProductCode!))
                         {
                             changedProducts.Add(product);
@@ -2263,6 +2328,8 @@ namespace BlazorApp.Api.Services.React
                     )
                     {
                         warehouseProduct.MinOrderQuantity = nextMiddlePackQuantity;
+                        warehouseProduct.UpdatedAt = now;
+                        warehouseProduct.UpdatedBy = auditActorName;
                         changedMiddlePackWarehouseProducts[item.ProductCode!] = warehouseProduct;
                         middlePackChanged = true;
                     }
@@ -2288,6 +2355,8 @@ namespace BlazorApp.Api.Services.React
                     )
                     {
                         product.ProductName = productUpdate.商品名称;
+                        product.UpdatedAt = now;
+                        product.UpdatedBy = auditActorName;
                         productChanged = true;
                     }
                     if (
@@ -2298,12 +2367,16 @@ namespace BlazorApp.Api.Services.React
                         if (product != null && product.EnglishProductName != null)
                         {
                             product.EnglishProductName = null;
+                            product.UpdatedAt = now;
+                            product.UpdatedBy = auditActorName;
                             productChanged = true;
                         }
                         if (localProduct != null && localProduct.EnglishName != null)
                         {
                             // 清空英文名称只清本地英文名，保留 ProductName，避免 POS 显示名被清空。
                             localProduct.EnglishName = null;
+                            localProduct.UpdatedAt = now;
+                            localProduct.UpdatedBy = auditActorName;
                             localProductChanged = true;
                         }
                     }
@@ -2322,6 +2395,8 @@ namespace BlazorApp.Api.Services.React
                             if (product != null && product.EnglishProductName != normalizedEnglishName)
                             {
                                 product.EnglishProductName = normalizedEnglishName;
+                                product.UpdatedAt = now;
+                                product.UpdatedBy = auditActorName;
                                 productChanged = true;
                             }
                             if (localProduct != null)
@@ -2330,11 +2405,15 @@ namespace BlazorApp.Api.Services.React
                                 if (localProduct.ProductName != normalizedEnglishName)
                                 {
                                     localProduct.ProductName = normalizedEnglishName;
+                                    localProduct.UpdatedAt = now;
+                                    localProduct.UpdatedBy = auditActorName;
                                     localProductChanged = true;
                                 }
                                 if (localProduct.EnglishName != normalizedEnglishName)
                                 {
                                     localProduct.EnglishName = normalizedEnglishName;
+                                    localProduct.UpdatedAt = now;
+                                    localProduct.UpdatedBy = auditActorName;
                                     localProductChanged = true;
                                 }
                             }
@@ -2391,6 +2470,9 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Ado.BeginTranAsync();
                     try
                     {
+                        // 快照必须在同一事务内、任何业务写入前读取，避免并发写入污染 before 状态。
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+
                         // 第二步：更新货柜明细表
                         if (changedDetails.Count > 0)
                         {
@@ -2430,6 +2512,8 @@ namespace BlazorApp.Api.Services.React
                                     x.ProductName,
                                     x.EnglishProductName,
                                     x.MiddlePackQuantity,
+                                    x.UpdatedAt,
+                                    x.UpdatedBy,
                                 })
                                 .WhereColumns(x => new { x.ProductCode })
                                 .ExecuteCommandAsync();
@@ -2444,6 +2528,8 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     x.ProductName,
                                     x.EnglishName,
+                                    x.UpdatedAt,
+                                    x.UpdatedBy,
                                 })
                                 .WhereColumns(x => new { x.ProductCode })
                                 .ExecuteCommandAsync();
@@ -2454,7 +2540,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             await _context
                                 .Db.Updateable(changedMiddlePackWarehouseProducts.Values.ToList())
-                                .UpdateColumns(x => new { x.MinOrderQuantity })
+                                .UpdateColumns(x => new { x.MinOrderQuantity, x.UpdatedAt, x.UpdatedBy })
                                 .WhereColumns(x => new { x.ProductCode })
                                 .ExecuteCommandAsync();
                         }
@@ -2464,8 +2550,34 @@ namespace BlazorApp.Api.Services.React
                         {
                             await _context
                                 .Db.Updateable(changedLocalCategoryProducts.Values.ToList())
-                                .UpdateColumns(x => new { x.WarehouseCategoryGUID })
+                                .UpdateColumns(x => new { x.WarehouseCategoryGUID, x.UpdatedAt, x.UpdatedBy })
                                 .WhereColumns(x => new { x.ProductCode })
+                                .ExecuteCommandAsync();
+                        }
+
+                        // 名称/英文名/分类可能只写 Product 或 DomesticProduct；同时刷新对应仓库商品的审计列，
+                        // 让列表更新时间/更新人与本次历史事件保持一致。窄列更新不改变仓库商品业务字段。
+                        var warehouseProductAuditCodes = changedProducts
+                            .Select(product => product.ProductCode)
+                            .Concat(changedLocalNameProducts.Keys)
+                            .Concat(changedLocalCategoryProducts.Keys)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Where(code => !changedMiddlePackWarehouseProducts.ContainsKey(code))
+                            .ToList();
+                        if (warehouseProductAuditCodes.Count > 0)
+                        {
+                            await _context.Db.Updateable<WarehouseProduct>()
+                                .SetColumns(product => new WarehouseProduct
+                                {
+                                    UpdatedAt = now,
+                                    UpdatedBy = auditActorName,
+                                })
+                                .Where(product =>
+                                    product.ProductCode != null
+                                    && warehouseProductAuditCodes.Contains(product.ProductCode)
+                                    && !product.IsDeleted
+                                )
                                 .ExecuteCommandAsync();
                         }
 
@@ -2527,14 +2639,18 @@ namespace BlazorApp.Api.Services.React
                                     }
                                 }
 
+                                var setClause = new List<string>();
+                                pList.Add(new SugarParameter("@UpdatedAt", now));
+                                pList.Add(new SugarParameter("@UpdatedBy", auditActorName));
+                                setClause.Add("UpdatedAt = @UpdatedAt");
+                                setClause.Add("UpdatedBy = @UpdatedBy");
+
                                 var inClause = string.Join(
                                     ", ",
                                     Enumerable
                                         .Range(0, warehouseUpdates.Count)
                                         .Select(i => $"@Pc{i}")
                                 );
-                                var setClause = new List<string>();
-
                                 if (importCases.Count > 0)
                                     setClause.Add(
                                         $"ImportPrice = CASE {string.Join(" ", importCases)} ELSE ImportPrice END"
@@ -2591,6 +2707,8 @@ namespace BlazorApp.Api.Services.React
                                     pList.Add(new SugarParameter($"@RetailPc{i}", oemPriceUpdates[i].Detail.ProductCode));
                                     pList.Add(new SugarParameter($"@RetailPrice{i}", oemPriceUpdates[i].Update.贴牌价格!.Value));
                                 }
+                                pList.Add(new SugarParameter("@ProductUpdatedAt", now));
+                                pList.Add(new SugarParameter("@ProductUpdatedBy", auditActorName));
                                 var inClause = string.Join(
                                     ", ",
                                     Enumerable
@@ -2602,6 +2720,8 @@ namespace BlazorApp.Api.Services.React
                                     setClause.Add($"PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END");
                                 if (oemPriceUpdates.Count > 0)
                                     setClause.Add($"RetailPrice = CASE {retailCaseBuilder} ELSE RetailPrice END");
+                                setClause.Add("UpdatedAt = @ProductUpdatedAt");
+                                setClause.Add("UpdatedBy = @ProductUpdatedBy");
                                 var sql =
                                     $"UPDATE Product SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
@@ -2643,6 +2763,24 @@ namespace BlazorApp.Api.Services.React
                                 existingProductUpdates.Count
                             );
                         }
+
+                        var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+                        await _changeHistoryService.RecordChangesAsync(
+                            beforeSnapshots,
+                            afterSnapshots,
+                            new WarehouseProductChangeHistoryContextDto
+                            {
+                                Action = "BatchUpdate",
+                                Source = "ContainerDetail",
+                                SourceReference = string.Join(",", validDetailUpdates
+                                    .Select(item => item.Detail.ContainerCode)
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)),
+                                BatchGuid = auditBatchGuid,
+                                ActorUserGuid = auditActorGuid,
+                                ActorName = auditActorName,
+                            }
+                        );
 
                         await _context.Db.Ado.CommitTranAsync();
                     }

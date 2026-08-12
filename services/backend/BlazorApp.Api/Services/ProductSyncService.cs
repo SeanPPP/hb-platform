@@ -2,6 +2,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using SqlSugar;
 using Microsoft.Extensions.Logging;
 
@@ -15,11 +16,20 @@ namespace BlazorApp.Api.Services
     {
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ProductSyncService> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
-        public ProductSyncService(SqlSugarContext context, ILogger<ProductSyncService> logger)
+        public ProductSyncService(
+            SqlSugarContext context,
+            ILogger<ProductSyncService> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
+        )
         {
             _db = context.Db;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         #region 检测商品
@@ -136,7 +146,9 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation("开始批量更新仓库商品，共 {Count} 个商品", request.Items.Count);
 
                 var errors = new List<string>();
-                var updateTime = DateTime.Now;
+                var updateTime = DateTime.UtcNow;
+                var batchGuid = Guid.NewGuid();
+                var actorName = ResolveActorName();
 
                 // 🔥 第一步：批量查询所有需要更新的WarehouseProduct（支持商品编码和货号双重查询）
                 var productCodes = request.Items.Select(x => x.ProductCode).ToList();
@@ -176,6 +188,8 @@ namespace BlazorApp.Api.Services
                         .ToListAsync()
                     : new List<WarehouseProduct>();
 
+                var beforeSnapshots = await CaptureChangeSnapshotsAsync(lookupProductCodes);
+
                 _logger.LogInformation("查询到 {Count} 个仓库商品", allWarehouseProducts.Count);
 
                 // 转换为字典，方便快速查找
@@ -185,6 +199,7 @@ namespace BlazorApp.Api.Services
                 var warehousesToUpdate = new List<WarehouseProduct>();
                 var productsToUpdate = new List<Product>();
                 var productCodesWithImportPrice = new List<string>();
+                var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in request.Items)
                 {
@@ -216,6 +231,14 @@ namespace BlazorApp.Api.Services
                         continue;
                     }
 
+                    if (!processedProductCodes.Add(warehouse.ProductCode))
+                    {
+                        var duplicateError = $"批次内商品重复: {warehouse.ProductCode}";
+                        errors.Add(duplicateError);
+                        _logger.LogWarning(duplicateError);
+                        continue;
+                    }
+
                     // 更新仓库商品字段
                     warehouse.DomesticPrice = item.DomesticPrice ?? warehouse.DomesticPrice;
                     warehouse.ImportPrice = item.ImportPrice ?? warehouse.ImportPrice;
@@ -227,6 +250,7 @@ namespace BlazorApp.Api.Services
                         warehouse.IsActive = item.IsActive.Value;
                     }
                     warehouse.UpdatedAt = updateTime;
+                    warehouse.UpdatedBy = actorName;
 
                     warehousesToUpdate.Add(warehouse);
 
@@ -241,7 +265,8 @@ namespace BlazorApp.Api.Services
                         {
                             ProductCode = warehouse.ProductCode, // 使用实际商品编码
                             PurchasePrice = item.ImportPrice.Value,
-                            UpdatedAt = updateTime
+                            UpdatedAt = updateTime,
+                            UpdatedBy = actorName,
                         });
 
                         _logger.LogDebug("准备更新商品 {ProductCode}（通过{MatchType}匹配）的进货价为 {PurchasePrice}",
@@ -253,7 +278,7 @@ namespace BlazorApp.Api.Services
                 if (warehousesToUpdate.Any())
                 {
                     await _db.Updateable(warehousesToUpdate)
-                        .UpdateColumns(w => new { w.DomesticPrice, w.ImportPrice, w.OEMPrice, w.Volume, w.IsActive, w.UpdatedAt })
+                        .UpdateColumns(w => new { w.DomesticPrice, w.ImportPrice, w.OEMPrice, w.Volume, w.IsActive, w.UpdatedAt, w.UpdatedBy })
                         .ExecuteCommandAsync();
                     _logger.LogDebug("批量更新WarehouseProduct完成，共 {Count} 条", warehousesToUpdate.Count);
                 }
@@ -276,6 +301,7 @@ namespace BlazorApp.Api.Services
                         {
                             product.PurchasePrice = updateData.PurchasePrice;
                             product.UpdatedAt = updateTime;
+                            product.UpdatedBy = actorName;
                         }
                     }
 
@@ -283,7 +309,7 @@ namespace BlazorApp.Api.Services
                     if (products.Any())
                     {
                         await _db.Updateable(products)
-                            .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt })
+                            .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt, p.UpdatedBy })
                             .ExecuteCommandAsync();
                         _logger.LogDebug("批量更新Product完成，共 {Count} 条", products.Count);
                     }
@@ -300,6 +326,7 @@ namespace BlazorApp.Api.Services
                         {
                             storeRetailPrice.PurchasePrice = updateData.PurchasePrice;
                             storeRetailPrice.UpdatedAt = updateTime;
+                            storeRetailPrice.UpdatedBy = actorName;
                         }
                     }
 
@@ -307,11 +334,26 @@ namespace BlazorApp.Api.Services
                     if (storeRetailPrices.Any())
                     {
                         await _db.Updateable(storeRetailPrices)
-                            .UpdateColumns(s => new { s.PurchasePrice, s.UpdatedAt })
+                            .UpdateColumns(s => new { s.PurchasePrice, s.UpdatedAt, s.UpdatedBy })
                             .ExecuteCommandAsync();
                         _logger.LogDebug("批量更新StoreRetailPrice完成，共 {Count} 条", storeRetailPrices.Count);
                     }
                 }
+
+                var changedProductCodes = warehousesToUpdate
+                    .Select(item => item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var afterSnapshots = await CaptureChangeSnapshotsAsync(changedProductCodes);
+                await RecordChangeHistoryAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    "BatchUpdate",
+                    "ProductSync",
+                    batchGuid,
+                    updateTime
+                );
 
                 // 提交事务
                 _db.Ado.CommitTran();
@@ -379,7 +421,9 @@ namespace BlazorApp.Api.Services
 
                 var errors = new List<string>();
                 var skippedItems = new List<string>();
-                var createTime = DateTime.Now;
+                var createTime = DateTime.UtcNow;
+                var batchGuid = Guid.NewGuid();
+                var actorName = ResolveActorName();
 
                 // 🔥 第一步：二次检查 - 批量查询商品是否已存在
                 var productCodes = request.Items.Select(x => x.ProductCode).ToList();
@@ -419,9 +463,22 @@ namespace BlazorApp.Api.Services
                 var storeRetailPricesToCreate = new List<StoreRetailPrice>();
                 var productSetCodesToCreate = new List<ProductSetCode>();
                 var storeMultiCodesToCreate = new List<StoreMultiCodeProduct>();
+                var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var processedItemNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in request.Items)
                 {
+                    if (string.IsNullOrWhiteSpace(item.ProductCode) || string.IsNullOrWhiteSpace(item.ItemNumber))
+                    {
+                        errors.Add("商品编码和货号不能为空");
+                        continue;
+                    }
+                    if (!processedProductCodes.Add(item.ProductCode.Trim()) || !processedItemNumbers.Add(item.ItemNumber.Trim()))
+                    {
+                        errors.Add($"{item.ItemNumber}: 批次内商品编码或货号重复");
+                        continue;
+                    }
+
                     // 二次检查：如果商品已存在，跳过
                     if (existingCodes.Contains(item.ProductCode) || existingItems.Contains(item.ItemNumber))
                     {
@@ -453,7 +510,9 @@ namespace BlazorApp.Api.Services
                         IsActive = true,
                         IsDeleted = false,
                         CreatedAt = createTime,
-                        UpdatedAt = createTime
+                        UpdatedAt = createTime,
+                        CreatedBy = actorName,
+                        UpdatedBy = actorName,
                     });
 
                     // 准备WarehouseProduct数据
@@ -468,7 +527,9 @@ namespace BlazorApp.Api.Services
                         IsActive = true,
                         IsDeleted = false,
                         CreatedAt = createTime,
-                        UpdatedAt = createTime
+                        UpdatedAt = createTime,
+                        CreatedBy = actorName,
+                        UpdatedBy = actorName,
                     });
 
                     // 为每个活跃店铺准备StoreRetailPrice数据
@@ -534,6 +595,13 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
+                var auditProductCodes = warehouseProductsToCreate
+                    .Select(item => item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var beforeSnapshots = await CaptureChangeSnapshotsAsync(auditProductCodes);
+
                 // 🔥 第四步：批量插入所有数据
                 var successCount = 0;
 
@@ -567,6 +635,16 @@ namespace BlazorApp.Api.Services
                     await _db.Insertable(storeMultiCodesToCreate).ExecuteCommandAsync();
                     _logger.LogDebug("批量插入StoreMultiCodeProduct完成，共 {Count} 条（套装商品）", storeMultiCodesToCreate.Count);
                 }
+
+                var afterSnapshots = await CaptureChangeSnapshotsAsync(auditProductCodes);
+                await RecordChangeHistoryAsync(
+                    beforeSnapshots,
+                    afterSnapshots,
+                    "Create",
+                    "ProductSync",
+                    batchGuid,
+                    createTime
+                );
 
                 // 提交事务
                 _db.Ado.CommitTran();
@@ -616,5 +694,50 @@ namespace BlazorApp.Api.Services
         }
 
         #endregion
+
+        private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
+            CaptureChangeSnapshotsAsync(IEnumerable<string> productCodes)
+        {
+            return await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+        }
+
+        private async Task RecordChangeHistoryAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+            string action,
+            string source,
+            Guid batchGuid,
+            DateTime? occurredAtUtc = null
+        )
+        {
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    BatchGuid = batchGuid,
+                    ActorName = ResolveActorName(),
+                    ActorType = ResolveActorType(),
+                    ActorUserGuid = ResolveActorGuid(),
+                    OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
+                }
+            );
+        }
+
+        private string ResolveActorName()
+        {
+            var actorName = _currentUserService.GetCurrentUsername();
+            return string.IsNullOrWhiteSpace(actorName) ? "System" : actorName;
+        }
+
+        private string ResolveActorGuid() => _currentUserService.GetCurrentUserGuid();
+
+        private string ResolveActorType() =>
+            !string.IsNullOrWhiteSpace(ResolveActorGuid())
+            || !string.Equals(ResolveActorName(), "System", StringComparison.OrdinalIgnoreCase)
+                ? "User"
+                : "System";
     }
 }

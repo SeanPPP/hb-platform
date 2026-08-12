@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
@@ -140,7 +141,9 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
                 NullLogger<ScheduledTaskLogService>.Instance
             ),
             Mock.Of<IStoreRetailPriceHqSyncService>(),
-            new MemoryCache(new MemoryCacheOptions())
+            new MemoryCache(new MemoryCacheOptions()),
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 

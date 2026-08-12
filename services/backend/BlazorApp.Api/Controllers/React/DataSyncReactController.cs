@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -15,18 +16,21 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IDataSyncIncrementalService _incrementalSyncService;
         private readonly IProductHqSyncService _productHqSyncService;
         private readonly ILogger<DataSyncReactController> _logger;
+        private readonly ICurrentUserService _currentUserService;
 
         public DataSyncReactController(
             IDataSyncFullService fullSyncService,
             IDataSyncIncrementalService incrementalSyncService,
             IProductHqSyncService productHqSyncService,
-            ILogger<DataSyncReactController> logger
+            ILogger<DataSyncReactController> logger,
+            ICurrentUserService currentUserService
         )
         {
             _fullSyncService = fullSyncService;
             _incrementalSyncService = incrementalSyncService;
             _productHqSyncService = productHqSyncService;
             _logger = logger;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -39,7 +43,10 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 _logger.LogInformation("[ReactSync] 开始全量同步商品信息");
-                var productResult = await _productHqSyncService.SyncFullAsync();
+                var productResult = await _productHqSyncService.SyncFullAsync(
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername()
+                );
                 var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
                 if (productResult.Success)
                 {
@@ -266,7 +273,12 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> SyncWarehouseProducts()
         {
-            var result = await _fullSyncService.SyncWarehouseProductsFromHqAsync();
+            var result = await _fullSyncService.SyncWarehouseProductsFromHqAsync(
+                50000,
+                10000,
+                _currentUserService.GetCurrentUserGuid(),
+                _currentUserService.GetCurrentUsername()
+            );
             return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
         }
 
@@ -605,7 +617,9 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogInformation("[ReactSync] 开始增量同步商品信息");
                 var productResult = await _productHqSyncService.SyncIncrementalAsync(
-                    request?.StartDate
+                    request?.StartDate,
+                    _currentUserService.GetCurrentUserGuid(),
+                    _currentUserService.GetCurrentUsername()
                 );
                 var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
                 if (productResult.Success)

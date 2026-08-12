@@ -82,6 +82,12 @@ namespace BlazorApp.Api.Interfaces.React
             BatchUpdateSupplierImagesRequest request
         );
 
+        Task<ApiResponse<BatchUpdateSupplierImagesResult>> BatchUpdateSupplierImagesAsync(
+            BatchUpdateSupplierImagesRequest request,
+            string? actorUserGuid,
+            string? actorName
+        );
+
         /// <summary>
         /// 批量删除商品（使用事务，支持软删除和物理删除）
         /// </summary>
@@ -103,5 +109,13 @@ namespace BlazorApp.Api.Interfaces.React
         /// </summary>
         /// <returns>同步结果</returns>
         Task<ApiResponse<HqProductSyncResult>> SyncProductsFromHqAsync();
+
+        /// <summary>
+        /// 从HQ同步商品到本地，并使用服务端传入的操作人身份记录历史。
+        /// </summary>
+        Task<ApiResponse<HqProductSyncResult>> SyncProductsFromHqAsync(
+            string? actorUserGuid,
+            string? actorName
+        );
     }
 }

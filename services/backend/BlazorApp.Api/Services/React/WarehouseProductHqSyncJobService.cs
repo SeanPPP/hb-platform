@@ -44,6 +44,17 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
+            // 未携带用户身份的调用是计划任务入口，后台明确按 System 处理。
+            return StartJobAsync(request, null, null, cancellationToken);
+        }
+
+        public Task<WarehouseProductHqSyncJobDto> StartJobAsync(
+            WarehouseProductHqSyncJobRequestDto request,
+            string? actorUserGuid,
+            string? actorName,
+            CancellationToken cancellationToken = default
+        )
+        {
             CleanupExpiredJobs();
 
             var normalizedOperationId = NormalizeOperationId(request.OperationId);
@@ -52,6 +63,8 @@ namespace BlazorApp.Api.Services.React
             {
                 JobId = Guid.NewGuid().ToString("N"),
                 OperationId = normalizedOperationId,
+                ActorUserGuid = NormalizeActorGuid(actorUserGuid),
+                ActorName = NormalizeActorName(actorName),
                 CreatedAt = now,
                 Status = WarehouseProductHqSyncJobStatusConstants.Running,
                 Message = "仓库商品同步任务已提交",
@@ -97,7 +110,12 @@ namespace BlazorApp.Api.Services.React
                     jobState.OperationId
                 );
 
-                var result = await syncService.SyncFromHqAsync();
+                var result = jobState.ActorUserGuid == null && jobState.ActorName == null
+                    ? await syncService.SyncFromHqAsync()
+                    : await syncService.SyncFromHqAsync(
+                        jobState.ActorUserGuid,
+                        jobState.ActorName
+                    );
                 CompleteJob(
                     jobState,
                     result.IsSuccess
@@ -228,11 +246,23 @@ namespace BlazorApp.Api.Services.React
                 : operationId.Trim();
         }
 
+        private static string? NormalizeActorGuid(string? actorUserGuid)
+        {
+            return string.IsNullOrWhiteSpace(actorUserGuid) ? null : actorUserGuid.Trim();
+        }
+
+        private static string? NormalizeActorName(string? actorName)
+        {
+            return string.IsNullOrWhiteSpace(actorName) ? null : actorName.Trim();
+        }
+
         private sealed class WarehouseProductHqSyncJobState
         {
             public object SyncRoot { get; } = new();
             public string JobId { get; init; } = string.Empty;
             public string OperationId { get; init; } = string.Empty;
+            public string? ActorUserGuid { get; init; }
+            public string? ActorName { get; init; }
             public string Status { get; set; } = WarehouseProductHqSyncJobStatusConstants.Running;
             public DateTime CreatedAt { get; init; }
             public DateTime? CompletedAt { get; set; }

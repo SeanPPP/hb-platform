@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -27,6 +28,10 @@ namespace BlazorApp.Api.Services
         // 翻译服务，用于自动翻译商品名称
         private readonly ITranslationService _translationService;
 
+        // 旧 API 的主档入口统一在业务事务内写入商品修改历史。
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
+
         /// <summary>
         /// 构造函数：初始化仓库商品服务
         /// </summary>
@@ -34,17 +39,23 @@ namespace BlazorApp.Api.Services
         /// <param name="mapper">对象映射器</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="translationService">翻译服务</param>
+        /// <param name="changeHistoryService">商品主档修改历史服务</param>
+        /// <param name="currentUserService">当前操作者服务；无 HTTP 用户时返回 System</param>
         public WarehouseProductService(
             SqlSugarContext context,
             IMapper mapper,
             ILogger<WarehouseProductService> logger,
-            ITranslationService translationService
+            ITranslationService translationService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
             _translationService = translationService;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         /// <summary>
@@ -348,6 +359,7 @@ namespace BlazorApp.Api.Services
                 _context.Db.Ado.BeginTran();
                 try
                 {
+                    var beforeSnapshots = await CaptureChangeSnapshotsAsync([productCode]);
                     insertedProduct = await _context
                         .Db.Insertable(product)
                         .ExecuteReturnEntityAsync();
@@ -356,6 +368,14 @@ namespace BlazorApp.Api.Services
                     {
                         await _context.Db.Insertable(storeRetailPrice).ExecuteCommandAsync();
                     }
+
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        [productCode],
+                        "Create",
+                        "LegacyWarehouseProduct",
+                        Guid.NewGuid()
+                    );
 
                     _context.Db.Ado.CommitTran();
                 }
@@ -459,6 +479,7 @@ namespace BlazorApp.Api.Services
                 _context.Db.Ado.BeginTran();
                 try
                 {
+                    var beforeSnapshots = await CaptureChangeSnapshotsAsync([normalizedProductCode]);
                     await _context.Db.Updateable(existingProduct).ExecuteCommandAsync();
 
                     if (shouldInsertProduct)
@@ -481,6 +502,14 @@ namespace BlazorApp.Api.Services
                             await _context.Db.Updateable(storeRetailPrices).ExecuteCommandAsync();
                         }
                     }
+
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        [normalizedProductCode],
+                        "Update",
+                        "LegacyWarehouseProduct",
+                        Guid.NewGuid()
+                    );
 
                     _context.Db.Ado.CommitTran();
                 }
@@ -528,13 +557,12 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                // 执行物理删除操作
+                var normalizedProductCode = productCode.Trim();
                 var result = await _context
                     .Db.Deleteable<WarehouseProduct>()
-                    .Where(wp => wp.ProductCode == productCode)
+                    .Where(wp => wp.ProductCode == normalizedProductCode)
                     .ExecuteCommandAsync();
-
-                return result > 0; // 返回是否有记录被删除
+                return result > 0;
             }
             catch (Exception ex)
             {
@@ -557,18 +585,45 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                // 批量更新商品状态，同时更新修改时间
-                var result = await _context
-                    .Db.Updateable<WarehouseProduct>()
-                    .SetColumns(wp => new WarehouseProduct
-                    {
-                        IsActive = isActive,
-                        UpdatedAt = DateTime.UtcNow,
-                    })
-                    .Where(wp => productCodes.Contains(wp.ProductCode))
-                    .ExecuteCommandAsync();
+                var normalizedProductCodes = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var occurredAtUtc = DateTime.UtcNow;
+                var actorName = ResolveActorName();
+                _context.Db.Ado.BeginTran();
+                try
+                {
+                    var beforeSnapshots = await CaptureChangeSnapshotsAsync(normalizedProductCodes);
+                    // 批量更新商品状态，同时写入与审计事件一致的操作者和时间。
+                    var result = await _context
+                        .Db.Updateable<WarehouseProduct>()
+                        .SetColumns(wp => new WarehouseProduct
+                        {
+                            IsActive = isActive,
+                            UpdatedAt = occurredAtUtc,
+                            UpdatedBy = actorName,
+                        })
+                        .Where(wp => normalizedProductCodes.Contains(wp.ProductCode))
+                        .ExecuteCommandAsync();
 
-                return result; // 返回实际更新的记录数
+                    await RecordChangeHistoryAsync(
+                        beforeSnapshots,
+                        normalizedProductCodes,
+                        "BatchUpdate",
+                        "LegacyWarehouseProduct",
+                        Guid.NewGuid(),
+                        occurredAtUtc
+                    );
+                    _context.Db.Ado.CommitTran();
+                    return result;
+                }
+                catch
+                {
+                    _context.Db.Ado.RollbackTran();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1686,6 +1741,57 @@ namespace BlazorApp.Api.Services
                 // 翻译失败时继续使用原名称，不抛出异常
             }
         }
+
+        private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
+            CaptureChangeSnapshotsAsync(IEnumerable<string> productCodes)
+        {
+            return await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+        }
+
+        private async Task RecordChangeHistoryAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IEnumerable<string> productCodes,
+            string action,
+            string source,
+            Guid batchGuid,
+            DateTime? occurredAtUtc = null
+        )
+        {
+            var normalizedCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(normalizedCodes);
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    BatchGuid = batchGuid,
+                    ActorName = ResolveActorName(),
+                    ActorType = ResolveActorType(),
+                    ActorUserGuid = ResolveActorGuid(),
+                    OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
+                }
+            );
+        }
+
+        private string ResolveActorName()
+        {
+            var actorName = _currentUserService.GetCurrentUsername();
+            return string.IsNullOrWhiteSpace(actorName) ? "System" : actorName;
+        }
+
+        private string ResolveActorGuid() => _currentUserService.GetCurrentUserGuid();
+
+        private string ResolveActorType() =>
+            !string.IsNullOrWhiteSpace(ResolveActorGuid())
+            || !string.Equals(ResolveActorName(), "System", StringComparison.OrdinalIgnoreCase)
+                ? "User"
+                : "System";
 
         #endregion
     }

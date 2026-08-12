@@ -5,6 +5,55 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task StartupSchemaMigrator_仓库商品历史表使用幂等索引和只追加触发器()
+    {
+        var repoRoot = FindRepoRoot();
+        var migratorSource = await File.ReadAllTextAsync(
+            Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs")
+        );
+        var contextSource = await File.ReadAllTextAsync(
+            Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Data/SqlSugarContext.cs")
+        );
+        var historyServiceSource = await File.ReadAllTextAsync(
+            Path.Combine(
+                repoRoot,
+                "services/backend/BlazorApp.Api/Services/React/WarehouseProductChangeHistoryService.cs"
+            )
+        );
+
+        Assert.Contains("typeof(WarehouseProductChangeHistory)", contextSource, StringComparison.Ordinal);
+        var tableListStart = contextSource.IndexOf("var tableTypes = new Type[]", StringComparison.Ordinal);
+        var tableListEnd = contextSource.IndexOf("};", tableListStart, StringComparison.Ordinal);
+        Assert.True(tableListStart >= 0 && tableListEnd > tableListStart);
+        Assert.DoesNotContain(
+            "typeof(WarehouseProductChangeHistory)",
+            contextSource[tableListStart..tableListEnd],
+            StringComparison.Ordinal
+        );
+        Assert.Contains("InitializeWarehouseProductChangeHistoryTable();", contextSource, StringComparison.Ordinal);
+        Assert.Contains("WarehouseProductChangeHistory_Schema_Initialization", contextSource, StringComparison.Ordinal);
+        Assert.Contains("_db.Ado.BeginTran();", contextSource, StringComparison.Ordinal);
+        Assert.Contains("_db.DbMaintenance.IsAnyTable(tableName)", contextSource, StringComparison.Ordinal);
+        Assert.Contains("EnsureWarehouseProductChangeHistoryIndexesAsync", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("IF OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]'", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("IX_WarehouseProductChangeHistory_BatchGuid", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("UX_WarehouseProductChangeHistory_BatchGuid_ProductCode", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("WarehouseProductChangeHistory_Schema_Initialization", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("sys.sp_getapplock", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("@LockOwner = N'Transaction'", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR ALTER TRIGGER [dbo].[TR_WarehouseProductChangeHistory_AppendOnly]", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("INSTEAD OF UPDATE, DELETE", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("EnsureWarehouseProductChangeHistorySqliteSchemaAsync", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("TR_WarehouseProductChangeHistory_AppendOnly_Update", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("TR_WarehouseProductChangeHistory_AppendOnly_Delete", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("SELECT RAISE(ABORT, 'WarehouseProductChangeHistory is append-only.')", migratorSource, StringComparison.Ordinal);
+        Assert.Contains("WarehouseProductChangeHistory_Batch_", historyServiceSource, StringComparison.Ordinal);
+        Assert.Contains("_context.Db.Ado.Transaction == null", historyServiceSource, StringComparison.Ordinal);
+        Assert.Contains("@LockOwner = N'Transaction'", historyServiceSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_幂等补齐门店时区列且不回填()
     {
         var migrator = await File.ReadAllTextAsync(Path.Combine(
@@ -1054,6 +1103,59 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("await _localContext.Db.Ado.BeginTranAsync();", incremental);
         Assert.Contains("ValidateAndReserveHqBatchAsync", incremental);
         Assert.Contains("await _localContext.Db.Ado.RollbackTranAsync();", incremental);
+    }
+
+    [Fact]
+    public async Task WarehouseProductHistory_全量同步删除陈旧商品不加入修改审计集合()
+    {
+        var source = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs"
+            )
+        );
+
+        foreach (
+            var staleMarker in new[]
+            {
+                "var staleCodes = initialProducts",
+                "var staleCodes = initialCodes",
+            }
+        )
+        {
+            var staleStart = source.IndexOf(staleMarker, StringComparison.Ordinal);
+            var auditStart = source.IndexOf(
+                "if (batchAuditCodes.Count > 0)",
+                staleStart,
+                StringComparison.Ordinal
+            );
+            Assert.True(staleStart >= 0 && auditStart > staleStart, $"未找到 {staleMarker} 删除区段");
+            var staleDeleteBlock = source[staleStart..auditStart];
+            Assert.DoesNotContain("CaptureSnapshotsAsync", staleDeleteBlock, StringComparison.Ordinal);
+            Assert.DoesNotContain("batchAuditCodes.Add", staleDeleteBlock, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task WarehouseProductHistory_旧入口以用户Guid优先判定操作人类型()
+    {
+        var root = FindRepoRoot();
+        foreach (
+            var relativePath in new[]
+            {
+                "services/backend/BlazorApp.Api/Services/WarehouseProductService.cs",
+                "services/backend/BlazorApp.Api/Services/ProductSyncService.cs",
+                "services/backend/BlazorApp.Api/Services/WarehouseProductBatchService.cs",
+            }
+        )
+        {
+            var source = await File.ReadAllTextAsync(Path.Combine(root, relativePath));
+            Assert.Contains(
+                "!string.IsNullOrWhiteSpace(ResolveActorGuid())",
+                source,
+                StringComparison.Ordinal
+            );
+        }
     }
 
     private static string FindRepoRoot()

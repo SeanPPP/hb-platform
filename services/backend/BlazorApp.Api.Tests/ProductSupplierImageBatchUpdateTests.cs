@@ -406,6 +406,9 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
 
         var productService = new Mock<IProductReactService>(MockBehavior.Strict);
         var jobService = new Mock<IProductSupplierImageBatchUpdateJobService>(MockBehavior.Strict);
+        var currentUserService = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUserService.Setup(service => service.GetCurrentUserGuid()).Returns("supplier-user-guid");
+        currentUserService.Setup(service => service.GetCurrentUsername()).Returns("供应商操作员");
         jobService
             .Setup(item => item.StartJobAsync(
                 It.Is<BatchUpdateSupplierImagesJobRequest>(request =>
@@ -415,6 +418,8 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
                     && request.UpdateHq
                     && request.OperationId == null
                 ),
+                "supplier-user-guid",
+                "供应商操作员",
                 It.IsAny<CancellationToken>()
             ))
             .ReturnsAsync(new BatchUpdateSupplierImagesJobDto
@@ -431,7 +436,8 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
             Mock.Of<IProductHqSyncService>(),
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
             Mock.Of<ILogger<ReactProductController>>(),
-            jobService.Object
+            currentUserService.Object,
+            supplierImageJobService: jobService.Object
         );
 
         var response = await controller.BatchUpdateSupplierImages(new BatchUpdateSupplierImagesRequest
@@ -491,6 +497,49 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
         Assert.Equal(2, completed.Result?.HbwebUpdatedCount);
         Assert.Equal(2, completed.Result?.HqUpdatedCount);
         Assert.Equal(0, completed.Result?.SkippedCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateSupplierImagesJobService_保存入队用户并传递给商品服务()
+    {
+        var productService = new Mock<IProductReactService>(MockBehavior.Strict);
+        productService
+            .Setup(service => service.BatchUpdateSupplierImagesAsync(
+                It.IsAny<BatchUpdateSupplierImagesRequest>(),
+                "user-guid-2",
+                "操作员乙"
+            ))
+            .ReturnsAsync(ApiResponse<BatchUpdateSupplierImagesResult>.OK(
+                new BatchUpdateSupplierImagesResult { HbwebUpdatedCount = 1 },
+                "完成"
+            ));
+
+        using var provider = CreateSupplierImageJobServiceProvider(productService.Object);
+        var jobService = new ProductSupplierImageBatchUpdateJobService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProductSupplierImageBatchUpdateJobService>.Instance
+        );
+
+        var started = await jobService.StartJobAsync(
+            new BatchUpdateSupplierImagesJobRequest
+            {
+                OperationId = "supplier-images-user",
+                LocalSupplierCode = "DATS",
+                UrlTemplate = "https://cdn.example.com/{itemNumber}.jpg",
+                UpdateHbweb = true,
+            },
+            "user-guid-2",
+            "操作员乙"
+        );
+
+        var completed = await WaitForSupplierImageJobAsync(jobService, started.JobId);
+
+        Assert.Equal(BatchUpdateSupplierImagesJobStatusConstants.Succeeded, completed.Status);
+        productService.Verify(service => service.BatchUpdateSupplierImagesAsync(
+            It.IsAny<BatchUpdateSupplierImagesRequest>(),
+            "user-guid-2",
+            "操作员乙"
+        ), Times.Once);
     }
 
     [Fact]
@@ -662,6 +711,9 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
         Assert.Equal(Permissions.PosProducts.Manage, startAuthorize?.Policy);
 
         var jobService = new Mock<IProductSupplierImageBatchUpdateJobService>(MockBehavior.Strict);
+        var currentUserService = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUserService.Setup(service => service.GetCurrentUserGuid()).Returns("supplier-user-guid");
+        currentUserService.Setup(service => service.GetCurrentUsername()).Returns("供应商操作员");
         jobService
             .Setup(item => item.StartJobAsync(
                 It.Is<BatchUpdateSupplierImagesJobRequest>(request =>
@@ -670,6 +722,8 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
                     && request.UpdateHbweb
                     && request.UpdateHq
                 ),
+                "supplier-user-guid",
+                "供应商操作员",
                 It.IsAny<CancellationToken>()
             ))
             .ReturnsAsync(new BatchUpdateSupplierImagesJobDto
@@ -710,7 +764,8 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
             Mock.Of<IProductHqSyncService>(),
             Mock.Of<ICurrentUserManageableStoreScopeService>(),
             Mock.Of<ILogger<ReactProductController>>(),
-            jobService.Object
+            currentUserService.Object,
+            supplierImageJobService: jobService.Object
         );
 
         var startResponse = await controller.StartBatchUpdateSupplierImagesJob(
@@ -750,7 +805,9 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             _mapper,
             NullLogger<ProductReactService>.Instance,
-            new HttpContextAccessor()
+            new HttpContextAccessor(),
+            new ProductAuditNoopHistoryService(),
+            new ProductAuditSystemCurrentUserService()
         );
     }
 

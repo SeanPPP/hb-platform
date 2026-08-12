@@ -92,6 +92,32 @@ public sealed class WarehouseProductHqSyncJobServiceTests
         Assert.Contains("HQ 连接失败", completed.Message);
     }
 
+    [Fact]
+    public async Task StartJobAsync_保存入队用户并传递给后台同步服务()
+    {
+        var expected = new SyncResult
+        {
+            IsSuccess = true,
+            Message = "完成",
+        };
+        var syncServiceMock = new Mock<IProductWarehouseReactService>(MockBehavior.Strict);
+        syncServiceMock
+            .Setup(service => service.SyncFromHqAsync("user-guid-1", "操作员甲"))
+            .ReturnsAsync(expected);
+
+        var service = CreateService(syncServiceMock);
+        var started = await service.StartJobAsync(
+            new WarehouseProductHqSyncJobRequestDto { OperationId = "sync-user" },
+            "user-guid-1",
+            "操作员甲"
+        );
+
+        var completed = await WaitForJobAsync(service, started.JobId);
+
+        Assert.Equal(WarehouseProductHqSyncJobStatusConstants.Succeeded, completed.Status);
+        syncServiceMock.Verify(service => service.SyncFromHqAsync("user-guid-1", "操作员甲"), Times.Once);
+    }
+
     private static WarehouseProductHqSyncJobService CreateService(
         Mock<IProductWarehouseReactService> syncServiceMock
     )

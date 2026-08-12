@@ -3,6 +3,7 @@ using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -19,6 +20,8 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<StoreProductMaintenanceReactService> _logger;
         private readonly IAutoPricingService _autoPricingService;
         private readonly IMemoryCache _cache;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
         private const string PricingStrategiesCacheKey = "StoreProductMaintenance:PricingStrategies:Active";
         private static readonly TimeSpan PricingStrategiesCacheDuration = TimeSpan.FromSeconds(60);
 
@@ -26,13 +29,17 @@ namespace BlazorApp.Api.Services.React
             SqlSugarContext context,
             ILogger<StoreProductMaintenanceReactService> logger,
             IAutoPricingService autoPricingService,
-            IMemoryCache cache
+            IMemoryCache cache,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _db = context.Db;
             _logger = logger;
             _autoPricingService = autoPricingService;
             _cache = cache;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         public async Task<ApiResponse<List<StoreProductLookupItemDto>>> LookupAsync(
@@ -1203,21 +1210,69 @@ namespace BlazorApp.Api.Services.React
                     .FirstAsync();
 
                 var now = DateTime.UtcNow;
-
-                product.ProductType = request.ProductType;
-                product.UpdatedAt = now;
-                await _db.Updateable(product)
-                    .UpdateColumns(p => new { p.ProductType, p.UpdatedAt })
-                    .ExecuteCommandAsync();
-
-                if (domesticProduct != null)
+                var actorName = _currentUserService.GetCurrentUsername();
+                if (string.IsNullOrWhiteSpace(actorName))
                 {
-                    domesticProduct.ProductType = request.ProductType;
-                    domesticProduct.UpdatedAt = now;
-                    domesticProduct.UpdatedBy = updatedBy;
-                    await _db.Updateable(domesticProduct)
-                        .UpdateColumns(dp => new { dp.ProductType, dp.UpdatedAt, dp.UpdatedBy })
+                    actorName = "System";
+                }
+                var actorUserGuid = _currentUserService.GetCurrentUserGuid();
+                var isSystemActor = string.IsNullOrWhiteSpace(actorUserGuid)
+                    && string.Equals(
+                        actorName,
+                        "System",
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    // 两张业务表和审计历史使用同一事务，避免历史缺失或类型不同步。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { normalizedProductCode }
+                    );
+
+                    product.ProductType = request.ProductType;
+                    product.UpdatedAt = now;
+                    product.UpdatedBy = actorName;
+                    await _db.Updateable(product)
+                        .UpdateColumns(p => new { p.ProductType, p.UpdatedAt, p.UpdatedBy })
                         .ExecuteCommandAsync();
+
+                    if (domesticProduct != null)
+                    {
+                        domesticProduct.ProductType = request.ProductType;
+                        domesticProduct.UpdatedAt = now;
+                        domesticProduct.UpdatedBy = actorName;
+                        await _db.Updateable(domesticProduct)
+                            .UpdateColumns(dp => new { dp.ProductType, dp.UpdatedAt, dp.UpdatedBy })
+                            .ExecuteCommandAsync();
+                    }
+
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { normalizedProductCode }
+                    );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Update",
+                            Source = "StoreProductMaintenance",
+                            SourceReference = normalizedProductCode,
+                            ActorUserGuid = string.IsNullOrWhiteSpace(actorUserGuid)
+                                ? null
+                                : actorUserGuid,
+                            ActorName = actorName,
+                            ActorType = isSystemActor ? "System" : "User",
+                            OccurredAtUtc = now,
+                        }
+                    );
+                    await _db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
                 }
 
                 return ApiResponse<StoreProductTypeUpdateResultDto>.OK(

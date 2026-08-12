@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -21,14 +23,20 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<ReactProductsController> _logger;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ReactProductsController(
             SqlSugarContext context,
-            ILogger<ReactProductsController> logger
+            ILogger<ReactProductsController> logger,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
             _logger = logger;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
         }
 
         private static string NormalizeLocalSupplierCode(string? value)
@@ -90,6 +98,10 @@ namespace BlazorApp.Api.Controllers.React
                         IsDeleted = false,
                     };
 
+                    // 创建前后快照和历史插入必须复用商品创建事务，历史失败时不可留下半成品商品。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { product.ProductCode! }
+                    );
                     await db.Insertable(product).ExecuteCommandAsync();
 
                     var stores = await db.Queryable<Store>()
@@ -128,6 +140,38 @@ namespace BlazorApp.Api.Controllers.React
                     {
                         await db.Insertable(toInsert).ExecuteCommandAsync();
                     }
+
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { product.ProductCode! }
+                    );
+                    var actorName = _currentUserService.GetCurrentUsername();
+                    if (string.IsNullOrWhiteSpace(actorName))
+                    {
+                        actorName = "System";
+                    }
+                    var actorUserGuid = _currentUserService.GetCurrentUserGuid();
+                    var isSystemActor = string.IsNullOrWhiteSpace(actorUserGuid)
+                        && string.Equals(
+                            actorName,
+                            "System",
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots,
+                        afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Create",
+                            Source = "ProductLegacyCreateWithPrices",
+                            SourceReference = product.ProductCode,
+                            ActorUserGuid = string.IsNullOrWhiteSpace(actorUserGuid)
+                                ? null
+                                : actorUserGuid,
+                            ActorName = actorName,
+                            ActorType = isSystemActor ? "System" : "User",
+                            OccurredAtUtc = now,
+                        }
+                    );
 
                     await db.Ado.CommitTranAsync();
                     var result = new CreateProductWithPricesResultDto

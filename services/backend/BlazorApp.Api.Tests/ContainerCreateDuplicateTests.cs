@@ -168,7 +168,9 @@ public sealed class ContainerCreateDuplicateTests : IDisposable
             Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
-            CreateTranslationServiceMock()
+            CreateTranslationServiceMock(),
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 
@@ -178,7 +180,9 @@ public sealed class ContainerCreateDuplicateTests : IDisposable
             CreateSqlSugarContext(_localDb),
             Mock.Of<IMapper>(),
             NullLogger<ContainerService>.Instance,
-            CreateTranslationServiceMock()
+            CreateTranslationServiceMock(),
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>()
         );
     }
 

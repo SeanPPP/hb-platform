@@ -2,15 +2,19 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings;
 using BlazorApp.Api.Mappings.Profiles.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -216,6 +220,147 @@ public sealed class ProductReactServiceHqSyncTests : IDisposable
         Assert.False(setCodes[0].IsDeleted);
     }
 
+    [Fact]
+    public async Task SyncProductsFromHqAsync_历史失败时_所有写入回滚且结果计数归零()
+    {
+        var hqProducts = Enumerable.Range(1, 201)
+            .Select(index => new DIC_商品信息字典表
+            {
+                ID = index,
+                HGUID = $"hq-bulk-{index}",
+                H商品标签GUID = $"tag-bulk-{index}",
+                H商品分类码GUID = "CATEGORY-BULK",
+                H商品编码 = $"P-BULK-{index:D3}",
+                H供货商编码 = "SUP-BULK",
+                H货号 = $"ITEM-{index:D3}",
+                H主条形码 = $"BAR-{index:D3}",
+                H商品名称 = $"批量商品{index}",
+                H商品类型 = 1,
+                H大写名称 = $"BULK PRODUCT {index}",
+                H规格 = "默认规格",
+                H单位 = "EA",
+                H进货价 = 1m,
+                H零售价 = 2m,
+                H是否自动定价 = false,
+                H商品图片 = "bulk-image.png",
+                中包数量 = 1,
+                H腾讯云图地址 = "https://example.invalid/bulk.png",
+                H使用状态 = true,
+                H是否特殊商品 = false,
+                H进货单主表GUID = $"bulk-order-{index}",
+                H进货单详情GUID = $"bulk-order-detail-{index}",
+                CBP商品中文名称 = $"批量商品{index}",
+                CBP供应商编码 = "SUP-BULK",
+                CBP商品分类码GUID = "CATEGORY-BULK",
+                FGC_Creator = "HQ",
+                FGC_LastModifier = "HQ",
+                FGC_CreateDate = DateTime.UtcNow.AddMinutes(-5),
+                FGC_LastModifyDate = DateTime.UtcNow,
+                FGC_UpdateHelp = "test",
+            })
+            .ToList();
+        await _hqDb.Insertable(hqProducts).ExecuteCommandAsync();
+
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                StringComparer.OrdinalIgnoreCase
+            ));
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((_, _, context, _) => capturedContext = context)
+            .ThrowsAsync(new InvalidOperationException("历史写入失败"));
+
+        var currentUserService = new Mock<ICurrentUserService>(MockBehavior.Strict);
+        currentUserService.Setup(service => service.GetCurrentUserGuid()).Returns("user-guid-react");
+        currentUserService.Setup(service => service.GetCurrentUsername()).Returns("React操作员");
+
+        var response = await CreateServiceWithHistory(
+            historyService.Object,
+            currentUserService.Object
+        )
+            .SyncProductsFromHqAsync();
+
+        Assert.False(response.Success);
+        var failedResult = Assert.IsType<HqProductSyncResult>(response.Details);
+        Assert.Equal(0, failedResult.ProductsAdded);
+        Assert.Equal(0, failedResult.ProductsUpdated);
+        Assert.Equal(0, failedResult.ProductsDeleted);
+        Assert.Contains("历史写入失败", failedResult.Errors);
+        Assert.NotNull(capturedContext);
+        Assert.Equal("user-guid-react", capturedContext!.ActorUserGuid);
+        Assert.Equal("React操作员", capturedContext.ActorName);
+        Assert.Equal("User", capturedContext.ActorType);
+        Assert.Equal(0, await _localDb.Queryable<Product>().CountAsync());
+        historyService.Verify(service => service.RecordChangesAsync(
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+            It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateAsync_历史写入失败时_商品和门店镜像应一起回滚()
+    {
+        await SeedActiveStoreAsync("S01");
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("history insert failed"));
+
+        var service = CreateServiceWithHistory(historyService.Object);
+        var response = await service.CreateAsync(
+            new CreateProductDto
+            {
+                ProductCode = "P-AUDIT-ROLLBACK",
+                ProductName = "审计回滚商品",
+                LocalSupplierCode = "SUP",
+                ItemNumber = "ITEM-AUDIT-ROLLBACK",
+                IsActive = true,
+            }
+        );
+
+        Assert.False(response.Success);
+        Assert.Null(
+            await _localDb.Queryable<Product>()
+                .FirstAsync(item => item.ProductCode == "P-AUDIT-ROLLBACK")
+        );
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<StoreRetailPrice>()
+                .Where(item => item.ProductCode == "P-AUDIT-ROLLBACK")
+                .CountAsync()
+        );
+        historyService.VerifyAll();
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -241,7 +386,25 @@ public sealed class ProductReactServiceHqSyncTests : IDisposable
             CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
             _mapper,
             NullLogger<ProductReactService>.Instance,
-            new HttpContextAccessor()
+            new HttpContextAccessor(),
+            new ProductAuditNoopHistoryService(),
+            new ProductAuditSystemCurrentUserService()
+        );
+    }
+
+    private ProductReactService CreateServiceWithHistory(
+        IWarehouseProductChangeHistoryService historyService,
+        ICurrentUserService? currentUserService = null
+    )
+    {
+        return new ProductReactService(
+            CreateSqlSugarContext(_localDb),
+            CreateHqSqlSugarContext(_hqDb, CreateHqConfiguration(_hqConnection.ConnectionString)),
+            _mapper,
+            NullLogger<ProductReactService>.Instance,
+            new HttpContextAccessor(),
+            historyService,
+            currentUserService ?? new ProductAuditSystemCurrentUserService()
         );
     }
 
@@ -369,4 +532,35 @@ public sealed class ProductReactServiceHqSyncTests : IDisposable
 
         return context;
     }
+}
+
+internal sealed class ProductAuditNoopHistoryService : IWarehouseProductChangeHistoryService
+{
+    public Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>> CaptureSnapshotsAsync(
+        IEnumerable<string> productCodes,
+        CancellationToken cancellationToken = default
+    ) => Task.FromResult<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(
+        new Dictionary<string, WarehouseProductChangeSnapshotDto>(StringComparer.OrdinalIgnoreCase)
+    );
+
+    public Task<int> RecordChangesAsync(
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> afterSnapshots,
+        WarehouseProductChangeHistoryContextDto context,
+        CancellationToken cancellationToken = default
+    ) => Task.FromResult(0);
+
+    public Task<WarehouseProductChangeHistoryPageDto> GetChangeHistoryAsync(
+        string productCode,
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default
+    ) => Task.FromResult(new WarehouseProductChangeHistoryPageDto());
+}
+
+internal sealed class ProductAuditSystemCurrentUserService : ICurrentUserService
+{
+    public string GetCurrentUsername() => "System";
+
+    public string GetCurrentUserGuid() => string.Empty;
 }

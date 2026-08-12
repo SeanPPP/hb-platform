@@ -25,6 +25,8 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<DomesticProductReactService> _logger;
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly HqSqlSugarContext _hqContext;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
         private const string HqProductNameSupplierCode = "200";
         private const int HqProductNameQueryChunkSize = 1000;
         private const int HqProductNameUpdateChunkSize = 200;
@@ -35,7 +37,9 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<DomesticProductReactService> logger,
             ItemBarcodeService itemBarcodeService,
-            HqSqlSugarContext hqContext
+            HqSqlSugarContext hqContext,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _context = context;
@@ -44,6 +48,73 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _itemBarcodeService = itemBarcodeService;
             _hqContext = hqContext;
+            _changeHistoryService = changeHistoryService;
+            _currentUserService = currentUserService;
+        }
+
+        /// <summary>
+        /// 在调用方已经开启的业务事务内记录国内商品统一快照历史。
+        /// </summary>
+        private async Task RecordDomesticProductChangesAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IEnumerable<string> productCodes,
+            string action,
+            string source,
+            Guid batchGuid,
+            string? sourceReference = null
+        )
+        {
+            var normalizedCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedCodes.Count == 0)
+            {
+                return;
+            }
+
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(normalizedCodes);
+            var actorName = ResolveActorName();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    SourceReference = sourceReference,
+                    BatchGuid = batchGuid,
+                    ActorUserGuid = string.IsNullOrWhiteSpace(actorGuid) ? null : actorGuid,
+                    ActorName = actorName,
+                    ActorType = string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+                        ? "System"
+                        : "User",
+                    OccurredAtUtc = DateTime.UtcNow,
+                }
+            );
+        }
+
+        /// <summary>
+        /// 从服务端请求上下文解析操作人；无 HTTP 用户时才回退到后台 System。
+        /// </summary>
+        private string ResolveActorName()
+        {
+            var actorName = _currentUserService.GetCurrentUsername();
+            var actorGuid = _currentUserService.GetCurrentUserGuid();
+            if (
+                !string.IsNullOrWhiteSpace(actorGuid)
+                && (
+                    string.IsNullOrWhiteSpace(actorName)
+                    || string.Equals(actorName, "System", StringComparison.OrdinalIgnoreCase)
+                )
+            )
+            {
+                return actorGuid;
+            }
+
+            return string.IsNullOrWhiteSpace(actorName) ? "System" : actorName;
         }
 
         // ==================== React React-Data-Grid 专用方法 ====================
@@ -842,6 +913,7 @@ namespace BlazorApp.Api.Services.React
 
                 var products = new List<DomesticProduct>();
                 var now = DateTime.Now;
+                var currentUser = ResolveActorName();
                 for (int i = 0; i < dto.Products.Count; i++)
                 {
                     var productItem = dto.Products[i];
@@ -871,14 +943,19 @@ namespace BlazorApp.Api.Services.React
                     product.IsActive = true;
                     product.CreatedAt = now;
                     product.UpdatedAt = now;
-                    product.CreatedBy = "System";
-                    product.UpdatedBy = "System";
+                    product.CreatedBy = currentUser;
+                    product.UpdatedBy = currentUser;
                     products.Add(product);
                 }
 
+                var auditBatchGuid = Guid.NewGuid();
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    var productCodes = products.Select(product => product.ProductCode).ToList();
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        productCodes
+                    );
                     await BatchOperationHelper.BatchInsertAsync(
                         db,
                         products,
@@ -910,7 +987,7 @@ namespace BlazorApp.Api.Services.React
                             PrefixName = prefix?.PrefixName,
                             CreationType = "Batch",
                             BatchNumber = batchNumber,
-                            CreatedBy = "System",
+                            CreatedBy = currentUser,
                             CreatedAt = now,
                         };
                         creationLogs.Add(log);
@@ -920,6 +997,14 @@ namespace BlazorApp.Api.Services.React
                         db,
                         creationLogs,
                         BatchOperationHelper.GetRecommendedBatchSize(creationLogs.Count, 2)
+                    );
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        productCodes,
+                        "Create",
+                        "DomesticProductBatch",
+                        auditBatchGuid,
+                        batchNumber
                     );
                     await db.Ado.CommitTranAsync();
 
@@ -1104,13 +1189,38 @@ namespace BlazorApp.Api.Services.React
                 // 批量更新图片到数据库
                 if (productsToUpdateImage.Any())
                 {
-                    foreach (var update in productsToUpdateImage)
+                    var auditBatchGuid = Guid.NewGuid();
+                    var currentUser = ResolveActorName();
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
-                        await db.Updateable<DomesticProduct>()
-                            .SetColumns(p => p.ProductImage == update.Value)
-                            .SetColumns(p => p.UpdatedAt == DateTime.Now)
-                            .Where(p => p.ProductCode == update.Key)
-                            .ExecuteCommandAsync();
+                        var productCodes = productsToUpdateImage.Keys.ToList();
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            productCodes
+                        );
+                        foreach (var update in productsToUpdateImage)
+                        {
+                            await db.Updateable<DomesticProduct>()
+                                .SetColumns(p => p.ProductImage == update.Value)
+                                .SetColumns(p => p.UpdatedAt == DateTime.Now)
+                                .SetColumns(p => p.UpdatedBy == currentUser)
+                                .Where(p => p.ProductCode == update.Key)
+                                .ExecuteCommandAsync();
+                        }
+                        await RecordDomesticProductChangesAsync(
+                            beforeSnapshots,
+                            productCodes,
+                            "Update",
+                            "DomesticProduct",
+                            auditBatchGuid,
+                            "BatchDetect"
+                        );
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
                     }
                     _logger.LogInformation(
                         "批量更新商品图片完成，数量: {Count}",
@@ -1168,11 +1278,19 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var now = DateTime.Now;
-                var currentUser = "System";
+                var currentUser = ResolveActorName();
+                var auditBatchGuid = Guid.NewGuid();
+                var auditProductCodes = (dto.UpdateProducts ?? new List<BatchProductUpdateDto>())
+                    .Select(item => item.ProductCode)
+                    .ToList();
                 // 开启事务
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    // 更新项先取 before；新建项的编码在事务内生成后加入同一批次审计。
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
+                    );
                     // 处理新建商品
                     if (dto.NewProducts?.Any() == true)
                     {
@@ -1493,14 +1611,13 @@ namespace BlazorApp.Api.Services.React
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogWarning(
+                                _logger.LogError(
                                     ex,
                                     "更新单个商品失败: {ProductCode}",
                                     updateDto.ProductCode
                                 );
-                                result.Errors.Add(
-                                    $"更新商品失败: {updateDto.ProductCode} - {ex.Message}"
-                                );
+                                // 参数校验在上方显式分支中继续；数据库或未知异常必须回滚整批。
+                                throw;
                             }
                         }
 
@@ -1516,6 +1633,19 @@ namespace BlazorApp.Api.Services.React
                             }
                         }
                     }
+
+                    auditProductCodes.AddRange(
+                        result.CreatedProducts
+                            .Select(product => product.ProductCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                    );
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        auditProductCodes,
+                        "BatchUpdate",
+                        "DomesticProductBatch",
+                        auditBatchGuid
+                    );
 
                     // 提交事务
                     await db.Ado.CommitTranAsync();
@@ -1564,16 +1694,38 @@ namespace BlazorApp.Api.Services.React
                 {
                     return ApiResponse<DomesticProductDto>.Error("商品不存在", "PRODUCT_NOT_FOUND");
                 }
-                // 映射更新字段
-                _mapper.Map(dto, product);
-                product.UpdatedAt = DateTime.Now;
-                product.UpdatedBy = "System";
-                // 更新到数据库
-                await db.Updateable(product).ExecuteCommandAsync();
-                // 查询供应商信息
-                var supplier = await db.Queryable<ChinaSupplier>()
-                    .Where(s => s.SupplierCode == product.SupplierCode)
-                    .FirstAsync();
+                var auditBatchGuid = Guid.NewGuid();
+                ChinaSupplier? supplier = null;
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { productCode }
+                    );
+                    // 映射更新字段
+                    _mapper.Map(dto, product);
+                    product.UpdatedAt = DateTime.Now;
+                    product.UpdatedBy = ResolveActorName();
+                    // 更新到数据库
+                    await db.Updateable(product).ExecuteCommandAsync();
+                    // 查询供应商信息
+                    supplier = await db.Queryable<ChinaSupplier>()
+                        .Where(s => s.SupplierCode == product.SupplierCode)
+                        .FirstAsync();
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        new[] { productCode },
+                        "Update",
+                        "DomesticProduct",
+                        auditBatchGuid
+                    );
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
                 var productDto = _mapper.Map<DomesticProductDto>(product);
                 productDto.SupplierName = supplier?.SupplierName;
                 _logger.LogInformation("更新国内商品成功，ProductCode: {ProductCode}", productCode);
@@ -1645,7 +1797,7 @@ namespace BlazorApp.Api.Services.React
                 // 收集需要批量更新的商品
                 var productsToUpdate = new List<DomesticProduct>();
                 var now = DateTime.Now;
-                var currentUser = "System";
+                var currentUser = ResolveActorName();
 
                 // 遍历每个更新请求
                 foreach (var updateDto in dto.Products)
@@ -1842,46 +1994,73 @@ namespace BlazorApp.Api.Services.React
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(
+                        _logger.LogError(
                             ex,
                             "更新单个商品失败: {ProductCode}",
                             updateDto.ProductCode
                         );
-                        result.Errors.Add($"更新商品失败: {updateDto.ProductCode} - {ex.Message}");
+                        // 参数校验在上方显式分支中继续；数据库或未知异常必须回滚整批。
+                        throw;
                     }
                 }
 
                 // 批量更新到数据库
                 if (productsToUpdate.Any())
                 {
-                    await db.Updateable(productsToUpdate).ExecuteCommandAsync();
-                    // 查询供应商信息用于填充返回结果
-                    var supplierCodes = productsToUpdate
-                        .Select(p => p.SupplierCode)
-                        .Where(code => !string.IsNullOrWhiteSpace(code))
-                        .Select(code => code!)
-                        .Distinct()
-                        .ToList();
-                    var suppliers = await db.Queryable<ChinaSupplier>()
-                        .Where(s => s.SupplierCode != null && supplierCodes.Contains(s.SupplierCode))
-                        .ToListAsync();
-                    var supplierDict = suppliers
-                        .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
-                        .GroupBy(s => s.SupplierCode!)
-                        .ToDictionary(g => g.Key, g => g.First());
-
-                    // 构建返回的更新商品列表
-                    foreach (var product in productsToUpdate)
+                    var auditBatchGuid = Guid.NewGuid();
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
-                        var productDto = _mapper.Map<DomesticProductDto>(product);
-                        if (
-                            !string.IsNullOrWhiteSpace(product.SupplierCode)
-                            && supplierDict.TryGetValue(product.SupplierCode, out var supplier)
-                        )
+                        var updatedProductCodes = productsToUpdate
+                            .Select(product => product.ProductCode)
+                            .ToList();
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            updatedProductCodes
+                        );
+                        await db.Updateable(productsToUpdate).ExecuteCommandAsync();
+
+                        // 查询供应商信息用于填充返回结果
+                        var supplierCodes = productsToUpdate
+                            .Select(p => p.SupplierCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Select(code => code!)
+                            .Distinct()
+                            .ToList();
+                        var suppliers = await db.Queryable<ChinaSupplier>()
+                            .Where(s => s.SupplierCode != null && supplierCodes.Contains(s.SupplierCode))
+                            .ToListAsync();
+                        var supplierDict = suppliers
+                            .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                            .GroupBy(s => s.SupplierCode!)
+                            .ToDictionary(g => g.Key, g => g.First());
+
+                        // 构建返回的更新商品列表
+                        foreach (var product in productsToUpdate)
                         {
-                            productDto.SupplierName = supplier.SupplierName;
+                            var productDto = _mapper.Map<DomesticProductDto>(product);
+                            if (
+                                !string.IsNullOrWhiteSpace(product.SupplierCode)
+                                && supplierDict.TryGetValue(product.SupplierCode, out var supplier)
+                            )
+                            {
+                                productDto.SupplierName = supplier.SupplierName;
+                            }
+                            result.UpdatedProducts.Add(productDto);
                         }
-                        result.UpdatedProducts.Add(productDto);
+
+                        await RecordDomesticProductChangesAsync(
+                            beforeSnapshots,
+                            updatedProductCodes,
+                            "BatchUpdate",
+                            "DomesticProductBatch",
+                            auditBatchGuid
+                        );
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
                     }
                 }
 
@@ -2076,27 +2255,43 @@ namespace BlazorApp.Api.Services.React
                     // 只写 Product.ProductName，保留英文名、价格、条码、图片和分店价格不变。
                     product.ProductName = update.ProductName;
                     product.UpdatedAt = DateTime.Now;
-                    product.UpdatedBy = "System";
+                    product.UpdatedBy = ResolveActorName();
                     productsToUpdate.Add(product);
                 }
 
                 if (productsToUpdate.Any())
                 {
-                    var hbwebTransactionResult = await db.Ado.UseTranAsync(async () =>
+                    var auditBatchGuid = Guid.NewGuid();
+                    var productCodes = productsToUpdate
+                        .Select(product => product.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToList();
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
+                        var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                            productCodes
+                        );
                         await db.Updateable(productsToUpdate)
                             // 只允许写商品名称和审计字段，避免整实体更新覆盖价格、条码、图片等主表字段。
                             .UpdateColumns(product => new { product.ProductName, product.UpdatedAt, product.UpdatedBy })
                             .ExecuteCommandAsync();
-                    });
-
-                    if (!hbwebTransactionResult.IsSuccess)
+                        await RecordDomesticProductChangesAsync(
+                            beforeSnapshots,
+                            productCodes,
+                            "BatchUpdate",
+                            "DomesticProduct",
+                            auditBatchGuid,
+                            "BatchProductNames"
+                        );
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch (Exception ex)
                     {
                         // 本地主表事务失败时必须立即停止，避免把未落库的名称继续同步到 HQ。
-                        _logger.LogError(
-                            hbwebTransactionResult.ErrorException,
-                            "批量更新 HBweb 商品主表商品名称事务失败"
-                        );
+                        await db.Ado.RollbackTranAsync();
+                        _logger.LogError(ex, "批量更新 HBweb 商品主表商品名称事务失败");
                         return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
                             "批量更新 HBweb 商品主表商品名称失败",
                             "BATCH_UPDATE_HBWEB_PRODUCT_NAMES_ERROR",
@@ -2259,9 +2454,11 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<bool>.Error("请选择要删除的商品", "NO_ITEMS_SELECTED");
                 }
                 var db = _context.Db;
+                var currentUser = ResolveActorName();
                 var result = await db.Updateable<DomesticProduct>()
                     .SetColumns(p => p.IsDeleted == true)
                     .SetColumns(p => p.UpdatedAt == DateTime.Now)
+                    .SetColumns(p => p.UpdatedBy == currentUser)
                     .Where(p => productCodes.Contains(p.ProductCode))
                     .ExecuteCommandAsync();
                 _logger.LogInformation("批量删除商品成功: {Count} 件", result);
@@ -2367,7 +2564,7 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync();
                 var existingItemsDict = existingItems.ToDictionary(x => x.SetProductCode);
 
-                var currentUser = "System";
+                var currentUser = ResolveActorName();
                 var now = DateTime.UtcNow;
 
                 var requestedSetProductCodes = new HashSet<string>();
@@ -2565,6 +2762,9 @@ namespace BlazorApp.Api.Services.React
                 try
                 {
                     db.Ado.BeginTran();
+                    var auditBatchGuid = Guid.NewGuid();
+                    var currentUser = ResolveActorName();
+                    var now = DateTime.UtcNow;
 
                     var productNoBarcodeList =
                         await _itemBarcodeService.GenerateBatchItemNumbersAndBarcodesAsync(
@@ -2599,7 +2799,10 @@ namespace BlazorApp.Api.Services.React
                                 ProductType = 1,
                                 IsActive = true,
                                 IsDeleted = false,
-                                CreatedAt = DateTime.Now,
+                                CreatedAt = now,
+                                CreatedBy = currentUser,
+                                UpdatedAt = now,
+                                UpdatedBy = currentUser,
                             };
                             allDomesticProducts.Add(domesticProduct);
 
@@ -2655,16 +2858,28 @@ namespace BlazorApp.Api.Services.React
                                 dto.SetType
                             );
                         }
-                        catch (Exception ex)
+                        catch (ArgumentException ex)
                         {
-                            _logger.LogError(
+                            _logger.LogWarning(
                                 ex,
                                 "创建商品失败: {ProductName}",
                                 product.ProductName
                             );
                             errors.Add($"创建商品 '{product.ProductName}' 失败: {ex.Message}");
                         }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "批量创建套装商品时数据库或系统异常");
+                            throw;
+                        }
                     }
+
+                    var auditProductCodes = allDomesticProducts
+                        .Select(product => product.ProductCode)
+                        .ToList();
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        auditProductCodes
+                    );
 
                     if (allDomesticProducts.Any())
                         await db.Insertable(allDomesticProducts).ExecuteCommandAsync();
@@ -2672,6 +2887,15 @@ namespace BlazorApp.Api.Services.React
                         await db.Insertable(allSetProducts).ExecuteCommandAsync();
                     if (allCreationLogs.Any())
                         await db.Insertable(allCreationLogs).ExecuteCommandAsync();
+
+                    // 套装子项只写 DomesticSetProduct，不进入 DomesticProduct 历史。
+                    await RecordDomesticProductChangesAsync(
+                        beforeSnapshots,
+                        auditProductCodes,
+                        "Create",
+                        "DomesticProductBatch",
+                        auditBatchGuid
+                    );
 
                     db.Ado.CommitTran();
 

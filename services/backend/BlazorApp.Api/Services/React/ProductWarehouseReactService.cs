@@ -103,6 +103,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ItemBarcodeService _itemBarcodeService;
         private readonly IMapper _mapper;
         private readonly IDataSyncFullService _dataSyncFullService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ITranslationService? _translationService;
 
         public ProductWarehouseReactService(
@@ -113,6 +114,7 @@ namespace BlazorApp.Api.Services.React
             ItemBarcodeService itemBarcodeService,
             IMapper mapper,
             IDataSyncFullService dataSyncFullService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
             ITranslationService? translationService = null
         )
         {
@@ -123,6 +125,7 @@ namespace BlazorApp.Api.Services.React
             _itemBarcodeService = itemBarcodeService;
             _mapper = mapper;
             _dataSyncFullService = dataSyncFullService;
+            _changeHistoryService = changeHistoryService;
             _translationService = translationService;
         }
 
@@ -752,6 +755,7 @@ namespace BlazorApp.Api.Services.React
                 return result;
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var batchGuid = Guid.NewGuid();
 
             try
             {
@@ -819,6 +823,17 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
                 }
+
+                // 先按最终可解析的商品编码一次性读取旧快照；非法、重复或最终无变化项不会产生事件。
+                var auditProductCodes = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Concat(itemToCode.Values)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    auditProductCodes
+                );
 
                 var toUpdateWp = new List<WarehouseProduct>();
                 var toCreateWp = new List<WarehouseProduct>();
@@ -1006,13 +1021,19 @@ namespace BlazorApp.Api.Services.React
                             domesticProduct.ProductCode
                         ];
                         domesticProduct.UpdatedAt = DateTime.Now;
+                        domesticProduct.UpdatedBy = effectiveUpdatedBy;
                     }
 
                     if (domesticProducts.Any())
                     {
                         await _context
                             .Db.Updateable(domesticProducts)
-                            .UpdateColumns(dp => new { dp.PackingQuantity, dp.UpdatedAt })
+                            .UpdateColumns(dp => new
+                            {
+                                dp.PackingQuantity,
+                                dp.UpdatedAt,
+                                dp.UpdatedBy,
+                            })
                             .ExecuteCommandAsync();
                     }
                 }
@@ -1044,13 +1065,19 @@ namespace BlazorApp.Api.Services.React
                         {
                             p.PurchasePrice = importPrice;
                             p.UpdatedAt = DateTime.Now;
+                            p.UpdatedBy = effectiveUpdatedBy;
                         }
                     }
                     if (products.Any())
                     {
                         await _context
                             .Db.Updateable(products)
-                            .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt })
+                            .UpdateColumns(p => new
+                            {
+                                p.PurchasePrice,
+                                p.UpdatedAt,
+                                p.UpdatedBy,
+                            })
                             .ExecuteCommandAsync();
                     }
 
@@ -1086,6 +1113,15 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    auditProductCodes,
+                    action: "BatchUpdate",
+                    source: "WarehouseProducts",
+                    actorName: effectiveUpdatedBy,
+                    batchGuid: batchGuid
+                );
+
                 _context.Db.Ado.CommitTran();
             }
             catch (Exception ex)
@@ -1093,6 +1129,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.RollbackTran();
                 _logger.LogError(ex, "批量更新失败");
                 result.Success = false;
+                result.SuccessCount = 0;
                 result.Message = "批量更新失败: " + ex.Message;
             }
 
@@ -1114,10 +1151,50 @@ namespace BlazorApp.Api.Services.React
             return BatchCreateAsync(items, useTransaction, SystemUpdatedBy);
         }
 
-        public async Task<BatchOperationResultDto> BatchCreateAsync(
+        public Task<BatchOperationResultDto> BatchCreateAsync(
             List<CreateItemDto> items,
             bool useTransaction,
             string? updatedBy
+        )
+        {
+            return BatchCreateAsync(
+                items,
+                useTransaction,
+                updatedBy,
+                auditSource: "WarehouseProducts",
+                sourceReference: null,
+                batchGuid: null
+            );
+        }
+
+        public async Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy,
+            string auditSource,
+            string? sourceReference,
+            Guid? batchGuid
+        )
+        {
+            return await BatchCreateAsync(
+                items,
+                useTransaction,
+                updatedBy,
+                auditSource,
+                sourceReference,
+                batchGuid,
+                actorUserGuid: null
+            );
+        }
+
+        public async Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction,
+            string? updatedBy,
+            string auditSource,
+            string? sourceReference,
+            Guid? batchGuid,
+            string? actorUserGuid
         )
         {
             var result = new BatchOperationResultDto { Success = true, Message = "创建完成" };
@@ -1125,6 +1202,7 @@ namespace BlazorApp.Api.Services.React
                 return result;
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var effectiveBatchGuid = batchGuid ?? Guid.NewGuid();
 
             try
             {
@@ -1409,6 +1487,8 @@ namespace BlazorApp.Api.Services.React
                             IsDeleted = false,
                             CreatedAt = now,
                             UpdatedAt = now,
+                            CreatedBy = effectiveUpdatedBy,
+                            UpdatedBy = effectiveUpdatedBy,
                         };
                         toCreateProducts.Add(product);
                     }
@@ -1473,6 +1553,14 @@ namespace BlazorApp.Api.Services.React
 
                     result.SuccessCount++;
                 }
+
+                var auditProductCodes = toCreateWps
+                    .Select(item => item.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    auditProductCodes
+                );
 
                 // 批量插入商品
                 if (toCreateProducts.Any())
@@ -1588,6 +1676,17 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
                 }
+
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    auditProductCodes,
+                    action: "Create",
+                    source: auditSource,
+                    actorName: effectiveUpdatedBy,
+                    batchGuid: effectiveBatchGuid,
+                    sourceReference: sourceReference,
+                    actorUserGuid: actorUserGuid
+                );
 
                 if (useTransaction)
                 {
@@ -3943,6 +4042,10 @@ namespace BlazorApp.Api.Services.React
 
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
+                var auditProductCode = productCode!;
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { auditProductCode }
+                );
 
                 // 5. 并发查询 DomesticProduct、WarehouseProduct 和活跃门店
                 // 使用独立连接避免连接冲突
@@ -3994,6 +4097,8 @@ namespace BlazorApp.Api.Services.React
                     IsDeleted = false,
                     CreatedAt = now,
                     UpdatedAt = now,
+                    CreatedBy = effectiveUpdatedBy,
+                    UpdatedBy = effectiveUpdatedBy,
                 };
                 await _context.Db.Insertable(product).ExecuteCommandAsync();
 
@@ -4034,6 +4139,7 @@ namespace BlazorApp.Api.Services.React
                     domesticProduct.UnitVolume = request.Volume;
                     domesticProduct.ProductType = (int)request.ProductType;
                     domesticProduct.UpdatedAt = now;
+                    domesticProduct.UpdatedBy = effectiveUpdatedBy;
                     await _context
                         .Db.Updateable(domesticProduct)
                         .UpdateColumns(dp => new
@@ -4047,6 +4153,7 @@ namespace BlazorApp.Api.Services.React
                             dp.UnitVolume,
                             dp.ProductType,
                             dp.UpdatedAt,
+                            dp.UpdatedBy,
                         })
                         .ExecuteCommandAsync();
                 }
@@ -4294,6 +4401,14 @@ namespace BlazorApp.Api.Services.React
                     if (toInsert.Any())
                         await _context.Db.Insertable(toInsert).ExecuteCommandAsync();
                 }
+
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    new[] { auditProductCode },
+                    action: "Create",
+                    source: "WarehouseProducts",
+                    actorName: effectiveUpdatedBy
+                );
 
                 _context.Db.Ado.CommitTran();
 
@@ -4639,6 +4754,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var importBatchGuid = Guid.NewGuid();
 
             try
             {
@@ -4646,6 +4762,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
                 var codes = request.ProductCodes.Distinct().ToList();
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(codes);
 
                 // ===== 批量预加载数据（避免 N+1 问题）=====
                 // 1. 批量查询国内商品
@@ -4900,6 +5017,7 @@ namespace BlazorApp.Api.Services.React
                         domesticProduct.EnglishProductName = nameResolution.EnglishName;
                     }
                     domesticProduct.UpdatedAt = now;
+                    domesticProduct.UpdatedBy = effectiveUpdatedBy;
                     toUpdateDomesticProducts.Add(domesticProduct);
 
                     // 创建商品记录（如果不存在）
@@ -4925,6 +5043,8 @@ namespace BlazorApp.Api.Services.React
                             IsDeleted = false,
                             CreatedAt = now,
                             UpdatedAt = now,
+                            CreatedBy = effectiveUpdatedBy,
+                            UpdatedBy = effectiveUpdatedBy,
                         };
                         toInsertProducts.Add(product);
                     }
@@ -4942,6 +5062,7 @@ namespace BlazorApp.Api.Services.React
                             existingProduct.ProductName = translatedEnglishName;
                             existingProduct.EnglishName = translatedEnglishName;
                             existingProduct.UpdatedAt = now;
+                            existingProduct.UpdatedBy = effectiveUpdatedBy;
                             toUpdateProducts.Add(existingProduct);
                         }
                     }
@@ -5115,6 +5236,7 @@ namespace BlazorApp.Api.Services.React
                             dp.ProductImage,
                             dp.EnglishProductName,
                             dp.UpdatedAt,
+                            dp.UpdatedBy,
                         })
                         .ExecuteCommandAsync();
                 }
@@ -5126,7 +5248,13 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _context
                         .Db.Updateable(toUpdateProducts)
-                        .UpdateColumns(p => new { p.ProductName, p.EnglishName, p.UpdatedAt })
+                        .UpdateColumns(p => new
+                        {
+                            p.ProductName,
+                            p.EnglishName,
+                            p.UpdatedAt,
+                            p.UpdatedBy,
+                        })
                         .WhereColumns(p => new { p.ProductCode })
                         .ExecuteCommandAsync();
                 }
@@ -5145,6 +5273,20 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Insertable(toInsertStoreRetailPrices).ExecuteCommandAsync();
                 }
 
+                var changedProductCodes = response.Results
+                    .Where(item => item.Success && !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .Select(item => item.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    changedProductCodes,
+                    action: "Import",
+                    source: "DomesticImport",
+                    actorName: effectiveUpdatedBy,
+                    batchGuid: importBatchGuid
+                );
+
                 _context.Db.Ado.CommitTran();
 
                 if (response.SuccessCount == 0 && response.FailedCount > 0)
@@ -5160,6 +5302,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.RollbackTran();
                 _logger.LogError(ex, "从国内商品导入失败");
                 response.Success = false;
+                response.SuccessCount = 0;
                 response.Message = "导入失败: " + ex.Message;
             }
 
@@ -5230,6 +5373,9 @@ namespace BlazorApp.Api.Services.React
                     result.Message = "商品不存在（Product 表无此 ProductCode）";
                     return result;
                 }
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { productCode }
+                );
                 var storeRetailPrices = await _context
                     .Db.Queryable<StoreRetailPrice>()
                     .Where(srp => srp.ProductCode == productCode && !srp.IsDeleted)
@@ -5281,7 +5427,7 @@ namespace BlazorApp.Api.Services.React
                     if (dto.SupplierCode != null)
                         domesticProduct.SupplierCode = dto.SupplierCode;
                     domesticProduct.UpdatedAt = now;
-                    domesticProduct.UpdatedBy = "System";
+                    domesticProduct.UpdatedBy = effectiveUpdatedBy;
                     await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
                 }
 
@@ -5311,6 +5457,7 @@ namespace BlazorApp.Api.Services.React
                 }
                 product.IsActive = dto.IsActive;
                 product.UpdatedAt = now;
+                product.UpdatedBy = effectiveUpdatedBy;
                 await _context
                     .Db.Updateable(product)
                     .UpdateColumns(p => new
@@ -5327,6 +5474,7 @@ namespace BlazorApp.Api.Services.React
                         p.ProductImage,
                         p.IsActive,
                         p.UpdatedAt,
+                        p.UpdatedBy,
                     })
                     .ExecuteCommandAsync();
 
@@ -5490,6 +5638,14 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    new[] { productCode },
+                    action: "Update",
+                    source: "WarehouseProducts",
+                    actorName: effectiveUpdatedBy
+                );
+
                 _context.Db.Ado.CommitTran();
                 result.Success = true;
                 result.Message = "更新成功";
@@ -5569,6 +5725,9 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Ado.RollbackTranAsync();
                     return null;
                 }
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { productCode }
+                );
 
                 // 窄列更新 WarehouseProduct：只写本次请求字段与审计列，避免覆盖并发库存或价格。
                 var warehouseUpdate = _context
@@ -5661,6 +5820,7 @@ namespace BlazorApp.Api.Services.React
                     var productAffected = await _context
                         .Db.Updateable<Product>()
                         .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.UpdatedBy == effectiveUpdatedBy)
                         .SetColumns(p => p.PurchasePrice == dto.ImportPrice.Value)
                         .Where(p => p.ProductCode == productCode && !p.IsDeleted)
                         .ExecuteCommandAsync();
@@ -5694,6 +5854,7 @@ namespace BlazorApp.Api.Services.React
                     var productAffected = await _context
                         .Db.Updateable<Product>()
                         .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.UpdatedBy == effectiveUpdatedBy)
                         .SetColumns(p => p.RetailPrice == dto.OEMPrice.Value)
                         .Where(p => p.ProductCode == productCode && !p.IsDeleted)
                         .ExecuteCommandAsync();
@@ -5721,6 +5882,14 @@ namespace BlazorApp.Api.Services.React
                         effectiveUpdatedBy
                     );
                 }
+
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    new[] { productCode },
+                    action: "Patch",
+                    source: "WarehouseProducts",
+                    actorName: effectiveUpdatedBy
+                );
 
                 await _context.Db.Ado.CommitTranAsync();
             }
@@ -5950,6 +6119,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var importBatchGuid = Guid.NewGuid();
 
             try
             {
@@ -5957,6 +6127,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
                 var codes = request.ProductCodes.Distinct().ToList();
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(codes);
 
                 // 批量查询商品表（避免 N+1 问题）
                 var productsDict = (
@@ -6081,6 +6252,20 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Updateable(toRestoreWarehouseProducts).ExecuteCommandAsync();
                 }
 
+                var changedProductCodes = response.Results
+                    .Where(item => item.Success && !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .Select(item => item.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    changedProductCodes,
+                    action: "Import",
+                    source: "NonDomesticImport",
+                    actorName: effectiveUpdatedBy,
+                    batchGuid: importBatchGuid
+                );
+
                 // 提交事务
                 _context.Db.Ado.CommitTran();
 
@@ -6096,6 +6281,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.RollbackTran();
                 _logger.LogError(ex, "导入非 Hotbargain 商品失败");
                 response.Success = false;
+                response.SuccessCount = 0;
                 response.Message = "导入失败: " + ex.Message;
             }
 
@@ -6127,6 +6313,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+            var batchGuid = Guid.NewGuid();
 
             var productCodes = request
                 .ProductCodes.Where(code => !string.IsNullOrWhiteSpace(code))
@@ -6155,6 +6342,9 @@ namespace BlazorApp.Api.Services.React
                 var missingCodes = productCodes
                     .Where(code => !existingCodeSet.Contains(code))
                     .ToList();
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    validWarehouseProductCodes
+                );
 
                 if (validWarehouseProductCodes.Any())
                 {
@@ -6170,6 +6360,7 @@ namespace BlazorApp.Api.Services.React
                         .Db.Updateable<Product>()
                         .SetColumns(p => p.IsActive == request.IsActive)
                         .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.UpdatedBy == effectiveUpdatedBy)
                         .Where(p =>
                             p.ProductCode != null && validWarehouseProductCodes.Contains(p.ProductCode)
                         )
@@ -6179,7 +6370,7 @@ namespace BlazorApp.Api.Services.React
                         .Db.Updateable<DomesticProduct>()
                         .SetColumns(dp => dp.IsActive == request.IsActive)
                         .SetColumns(dp => dp.UpdatedAt == now)
-                        .SetColumns(dp => dp.UpdatedBy == "System")
+                        .SetColumns(dp => dp.UpdatedBy == effectiveUpdatedBy)
                         .Where(dp => validWarehouseProductCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
                         .ExecuteCommandAsync();
 
@@ -6206,6 +6397,15 @@ namespace BlazorApp.Api.Services.React
                         .ExecuteCommandAsync();
                 }
 
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    validWarehouseProductCodes,
+                    action: "ToggleActive",
+                    source: "WarehouseProducts",
+                    actorName: effectiveUpdatedBy,
+                    batchGuid: batchGuid
+                );
+
                 _context.Db.Ado.CommitTran();
 
                 result.Success = missingCodes.Count == 0;
@@ -6224,6 +6424,7 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.RollbackTran();
                 _logger.LogError(ex, "仓库商品批量上下架失败");
                 result.Success = false;
+                result.SuccessCount = 0;
                 result.Message = "批量上下架失败: " + ex.Message;
                 result.Errors.Add(ex.Message);
             }
@@ -6237,15 +6438,62 @@ namespace BlazorApp.Api.Services.React
             return string.IsNullOrWhiteSpace(updatedBy) ? SystemUpdatedBy : updatedBy;
         }
 
+        private async Task RecordProductChangeHistoryAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            IEnumerable<string> productCodes,
+            string action,
+            string source,
+            string actorName,
+            Guid? batchGuid = null,
+            string? sourceReference = null,
+            string? actorUserGuid = null
+        )
+        {
+            var normalizedCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedCodes.Count == 0)
+            {
+                return;
+            }
+
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(normalizedCodes);
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = source,
+                    SourceReference = sourceReference,
+                    BatchGuid = batchGuid,
+                    ActorUserGuid = actorUserGuid,
+                    ActorName = ResolveUpdatedBy(actorName),
+                }
+            );
+        }
+
         /// <summary>
         /// 从 HQ 商品库存表同步到本地仓库商品表
         /// 这里统一委托给全量同步服务，避免 React 服务层保留旧的逐条增删改逻辑。
         /// </summary>
         /// <returns>同步结果</returns>
-        public async Task<SyncResult> SyncFromHqAsync()
+        public Task<SyncResult> SyncFromHqAsync() => SyncFromHqAsync(null, null);
+
+        public async Task<SyncResult> SyncFromHqAsync(
+            string? actorUserGuid,
+            string? actorName
+        )
         {
             _logger.LogInformation("[WarehouseProductSync] 开始委托全量同步仓库商品库存");
-            return await _dataSyncFullService.SyncWarehouseProductsFromHqAsync();
+            return await _dataSyncFullService.SyncWarehouseProductsFromHqAsync(
+                50000,
+                10000,
+                actorUserGuid,
+                actorName
+            );
         }
 
         public async Task<List<WarehouseMobileProductDto>> LookupMobileProductsAsync(string keyword)
@@ -6571,6 +6819,9 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Ado.RollbackTranAsync();
                     return null;
                 }
+                var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                    new[] { productCode }
+                );
 
                 if (shouldUpdateProduct)
                 {
@@ -6578,6 +6829,7 @@ namespace BlazorApp.Api.Services.React
                     var productUpdate = _context
                         .Db.Updateable<Product>()
                         .SetColumns(p => p.UpdatedAt == now)
+                        .SetColumns(p => p.UpdatedBy == effectiveUpdatedBy)
                         .Where(p => p.UUID == product.UUID && !p.IsDeleted);
                     if (syncedPurchasePrice.HasValue)
                     {
@@ -6659,6 +6911,7 @@ namespace BlazorApp.Api.Services.React
                     var domesticProductUpdate = _context
                         .Db.Updateable<DomesticProduct>()
                         .SetColumns(dp => dp.UpdatedAt == now)
+                        .SetColumns(dp => dp.UpdatedBy == effectiveUpdatedBy)
                         .Where(dp => dp.ProductCode == domesticProduct.ProductCode && !dp.IsDeleted);
                     if (syncedPurchasePrice.HasValue)
                     {
@@ -6747,6 +7000,14 @@ namespace BlazorApp.Api.Services.React
                         MobileWarehousePricePatchUpdatedBy
                     );
                 }
+
+                await RecordProductChangeHistoryAsync(
+                    beforeSnapshots,
+                    new[] { productCode },
+                    action: "Patch",
+                    source: "MobileWarehouse",
+                    actorName: effectiveUpdatedBy
+                );
 
                 await _context.Db.Ado.CommitTranAsync();
             }

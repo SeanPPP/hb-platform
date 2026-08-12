@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using SqlSugar;
@@ -14,18 +15,26 @@ namespace BlazorApp.Api.Services
         private readonly IMapper _mapper;
         private readonly ILogger<ProductService> _logger;
         private readonly ITranslationService _translationService;
+        private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly ICurrentUserService _currentUserService;
 
         public ProductService(
             SqlSugarContext db,
             IMapper mapper,
             ILogger<ProductService> logger,
-            ITranslationService translationService
+            ITranslationService translationService,
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            ICurrentUserService currentUserService
         )
         {
             _db = db;
             _mapper = mapper;
             _logger = logger;
             _translationService = translationService;
+            _changeHistoryService = changeHistoryService
+                ?? throw new ArgumentNullException(nameof(changeHistoryService));
+            _currentUserService = currentUserService
+                ?? throw new ArgumentNullException(nameof(currentUserService));
         }
 
         public async Task<ProductDto> GetByIdAsync(string productGuid)
@@ -145,12 +154,36 @@ namespace BlazorApp.Api.Services
 
                 var product = _mapper.Map<Product>(createDto);
                 product.ProductCode = Guid.NewGuid().ToString();
-                product.CreatedAt = DateTime.UtcNow;
-                product.UpdatedAt = DateTime.UtcNow;
+                var occurredAtUtc = DateTime.UtcNow;
+                var actorName = _currentUserService.GetCurrentUsername();
+                product.CreatedAt = occurredAtUtc;
+                product.UpdatedAt = occurredAtUtc;
+                product.CreatedBy = actorName;
+                product.UpdatedBy = actorName;
 
-                var result = await _db.ProductDb.InsertAsync(product);
-                if (!result)
-                    throw new InvalidOperationException("创建商品失败");
+                await _db.Db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { product.ProductCode }
+                    );
+                    var result = await _db.ProductDb.InsertAsync(product);
+                    if (!result)
+                        throw new InvalidOperationException("创建商品失败");
+                    await RecordChangeAsync(
+                        beforeSnapshots,
+                        product.ProductCode,
+                        "Create",
+                        actorName,
+                        occurredAtUtc
+                    );
+                    await _db.Db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 _logger.LogInformation("创建商品成功: {ProductName}", product.ProductName);
                 return _mapper.Map<ProductDto>(product);
@@ -181,11 +214,35 @@ namespace BlazorApp.Api.Services
                     throw new ValidationException($"商品编码 {updateDto.ProductCode} 已存在");
 
                 _mapper.Map(updateDto, existing);
-                existing.UpdatedAt = DateTime.UtcNow;
+                var occurredAtUtc = DateTime.UtcNow;
+                var actorName = _currentUserService.GetCurrentUsername();
+                existing.UpdatedAt = occurredAtUtc;
+                existing.UpdatedBy = actorName;
+                var productCode = existing.ProductCode ?? updateDto.ProductCode;
 
-                var result = await _db.ProductDb.UpdateAsync(existing);
-                if (!result)
-                    throw new InvalidOperationException("更新商品失败");
+                await _db.Db.Ado.BeginTranAsync();
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { productCode }
+                    );
+                    var result = await _db.ProductDb.UpdateAsync(existing);
+                    if (!result)
+                        throw new InvalidOperationException("更新商品失败");
+                    await RecordChangeAsync(
+                        beforeSnapshots,
+                        productCode,
+                        "Update",
+                        actorName,
+                        occurredAtUtc
+                    );
+                    await _db.Db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 _logger.LogInformation("更新商品成功: {ProductName}", existing.ProductName);
                 return _mapper.Map<ProductDto>(existing);
@@ -338,9 +395,36 @@ namespace BlazorApp.Api.Services
                     throw new KeyNotFoundException($"找不到商品: {ProductCode}");
 
                 existing.IsActive = !existing.IsActive;
-                existing.UpdatedAt = DateTime.UtcNow;
+                var occurredAtUtc = DateTime.UtcNow;
+                var actorName = _currentUserService.GetCurrentUsername();
+                existing.UpdatedAt = occurredAtUtc;
+                existing.UpdatedBy = actorName;
+                var productCode = existing.ProductCode ?? ProductCode;
 
-                var result = await _db.ProductDb.UpdateAsync(existing);
+                await _db.Db.Ado.BeginTranAsync();
+                bool result;
+                try
+                {
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                        new[] { productCode }
+                    );
+                    result = await _db.ProductDb.UpdateAsync(existing);
+                    if (!result)
+                        throw new InvalidOperationException("切换商品状态失败");
+                    await RecordChangeAsync(
+                        beforeSnapshots,
+                        productCode,
+                        "Update",
+                        actorName,
+                        occurredAtUtc
+                    );
+                    await _db.Db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await _db.Db.Ado.RollbackTranAsync();
+                    throw;
+                }
                 if (result)
                     _logger.LogInformation(
                         "切换商品状态成功: {ProductCode} -> {IsActive}",
@@ -355,6 +439,30 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "切换商品状态失败: {ProductCode}", ProductCode);
                 throw;
             }
+        }
+
+        private async Task RecordChangeAsync(
+            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
+            string productCode,
+            string action,
+            string actorName,
+            DateTime occurredAtUtc
+        )
+        {
+            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
+                new[] { productCode }
+            );
+            await _changeHistoryService.RecordChangesAsync(
+                beforeSnapshots,
+                afterSnapshots,
+                new WarehouseProductChangeHistoryContextDto
+                {
+                    Action = action,
+                    Source = "ProductLegacyApi",
+                    ActorName = actorName,
+                    OccurredAtUtc = occurredAtUtc,
+                }
+            );
         }
 
         public async Task<List<ProductDto>> GetByCodesAsync(List<string> productCodes)

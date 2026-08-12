@@ -122,6 +122,20 @@ namespace BlazorApp.Api.Services.React
             UpdateHqProductsRequest request,
             string updatedBy,
             CancellationToken cancellationToken = default
+        ) => StartUpdateHqProductsJobAsync(
+            invoiceGuid,
+            request,
+            actorUserGuid: null,
+            actorName: updatedBy,
+            cancellationToken
+        );
+
+        public Task<LocalSupplierInvoiceUpdateHqProductsJobDto> StartUpdateHqProductsJobAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest request,
+            string? actorUserGuid,
+            string actorName,
+            CancellationToken cancellationToken = default
         )
         {
             CleanupExpiredJobs();
@@ -158,7 +172,17 @@ namespace BlazorApp.Api.Services.React
                 _runningInvoiceFamilyJobIds[familyKey] = jobState.JobId;
             }
 
-            _ = Task.Run(() => ExecuteUpdateHqProductsJobAsync(jobState, invoiceGuid, CloneUpdateHqProductsRequest(request), updatedBy), CancellationToken.None);
+            // 请求结束后仍使用提交时固化的操作者，不能在后台 scope 中重新读取 HttpContext。
+            _ = Task.Run(
+                () => ExecuteUpdateHqProductsJobAsync(
+                    jobState,
+                    invoiceGuid,
+                    CloneUpdateHqProductsRequest(request),
+                    actorUserGuid,
+                    actorName
+                ),
+                CancellationToken.None
+            );
             return Task.FromResult(CreateHqProductSnapshot(jobState, false));
         }
 
@@ -398,14 +422,18 @@ namespace BlazorApp.Api.Services.React
             JobState<UpdateHqProductsResult> jobState,
             string invoiceGuid,
             UpdateHqProductsRequest request,
-            string updatedBy
+            string? actorUserGuid,
+            string actorName
         )
         {
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoiceHqProductSyncService>();
-                var response = await service.UpdateHqProductsAsync(invoiceGuid, request, updatedBy);
+                // 旧入口不传 GUID 时保留原三参数调用，避免破坏既有实现和测试替身。
+                var response = string.IsNullOrWhiteSpace(actorUserGuid)
+                    ? await service.UpdateHqProductsAsync(invoiceGuid, request, actorName)
+                    : await service.UpdateHqProductsAsync(invoiceGuid, request, actorUserGuid, actorName);
                 var result = response.Data ?? response.Details as UpdateHqProductsResult;
                 CompleteJob(
                     jobState,
