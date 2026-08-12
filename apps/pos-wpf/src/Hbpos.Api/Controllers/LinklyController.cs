@@ -10,6 +10,7 @@ using Hbpos.Contracts.Linkly;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace Hbpos.Api.Controllers;
 
@@ -19,6 +20,7 @@ namespace Hbpos.Api.Controllers;
 public sealed class LinklyController(
     ILinklyCloudCredentialService linklyCloudCredentialService,
     ILinklyCloudBackendAsyncService linklyCloudBackendAsyncService,
+    ILinklyCloudPairingService linklyCloudPairingService,
     ILogger<LinklyController>? logger = null) : ControllerBase
 {
     private const string CloudCredentialEnvironmentInvalidCode = "LINKLY_CLOUD_CREDENTIAL_ENVIRONMENT_INVALID";
@@ -31,6 +33,118 @@ public sealed class LinklyController(
     private const string CloudBackendActiveCode = "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION";
     private const string CloudBackendNotFoundCode = "LINKLY_CLOUD_BACKEND_SESSION_NOT_FOUND";
     private const string CloudBackendFailedCode = "LINKLY_CLOUD_BACKEND_FAILED";
+    private const string CloudBackendPairInvalidCode = "LINKLY_CLOUD_BACKEND_PAIR_REQUEST_INVALID";
+    private const string CloudBackendPairCredentialMissingCode = "LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING";
+    private const string CloudBackendPairInProgressCode = "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS";
+    private const string CloudBackendPairRejectedCode = "LINKLY_CLOUD_BACKEND_PAIR_REJECTED";
+    private const string CloudBackendPairUpstreamFailedCode = "LINKLY_CLOUD_BACKEND_PAIR_UPSTREAM_FAILED";
+    private const string CloudBackendPairTimeoutCode = "LINKLY_CLOUD_BACKEND_PAIR_TIMEOUT";
+    private const string CloudBackendPairPersistenceFailedCode = "LINKLY_CLOUD_BACKEND_PAIR_PERSISTENCE_FAILED";
+    private const string CloudBackendPairPreparationFailedCode = "LINKLY_CLOUD_BACKEND_PAIR_PREPARATION_FAILED";
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
+    [HttpPost("cloud-backend/pair")]
+    [LinklyCloudPairRequestModelState]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status502BadGateway)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status504GatewayTimeout)]
+    public async Task<ActionResult<ApiResult<LinklyCloudBackendTerminalCredentialResponse>>> PairCloudBackend(
+        [FromBody] LinklyCloudBackendPairRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendTerminalCredentialResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        if (request is null)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudBackendPairInvalidCode,
+                "request body is required."));
+        }
+
+        try
+        {
+            var response = await linklyCloudPairingService.PairAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                request,
+                GetUpdatedByClaim(),
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Ok(response));
+        }
+        catch (LinklyCloudPairingValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudBackendPairInvalidCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingCredentialMissingException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudBackendPairCredentialMissingCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingInProgressException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudBackendPairInProgressCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingRejectedException ex)
+        {
+            return UnprocessableEntity(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudBackendPairRejectedCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingUpstreamException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendPairUpstreamFailedCode,
+                    ex.Message));
+        }
+        catch (LinklyCloudPairingTimeoutException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status504GatewayTimeout,
+                ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendPairTimeoutCode,
+                    ex.Message));
+        }
+        catch (LinklyCloudPairingPersistenceException)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendPairPersistenceFailedCode,
+                    "Linkly Cloud pairing succeeded but the terminal credential could not be saved."));
+        }
+        catch (LinklyCloudPairingPreparationException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendPairPreparationFailedCode,
+                    ex.Message));
+        }
+        catch (Exception ex)
+        {
+            Log($"cloud backend pair failed error={ex.GetType().Name}");
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendFailedCode,
+                    "Failed to pair Linkly Cloud backend terminal."));
+        }
+    }
 
     [Authorize(Policy = CashierAuthorizationPolicies.TakeCard)]
     [HttpGet("cloud-credential")]
@@ -1014,6 +1128,31 @@ public sealed class LinklyController(
     private static string LogValue(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? "<null>" : value.Trim();
+    }
+}
+
+/// <summary>
+/// 仅统一 Linkly 配对端点的 JSON/model-binding 400；顺序早于 ApiController 的
+/// ModelStateInvalidFilter，避免空 body 或畸形 JSON 落成 ProblemDetails。
+/// </summary>
+internal sealed class LinklyCloudPairRequestModelStateAttribute : ActionFilterAttribute
+{
+    public LinklyCloudPairRequestModelStateAttribute()
+    {
+        Order = -3_000;
+    }
+
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        if (context.ModelState.IsValid)
+        {
+            return;
+        }
+
+        context.Result = new BadRequestObjectResult(
+            ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                "LINKLY_CLOUD_BACKEND_PAIR_REQUEST_INVALID",
+                "Linkly Cloud pairing request is invalid."));
     }
 }
 

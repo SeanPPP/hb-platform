@@ -167,8 +167,13 @@ public static class ServiceRegistration
                 handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
                 handler.MaxConnectionsPerServer = 1;
             });
+        services.AddHttpClient<ILinklyCloudPairingTransport, HttpLinklyCloudPairingTransport>(client =>
+        {
+            client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;
+        });
         services.AddHostedService<LinklyHttpConnectionMetricsService>();
         services.AddScoped<ILinklyCloudBackendAsyncService, LinklyCloudBackendAsyncService>();
+        services.AddScoped<ILinklyCloudPairingService, LinklyCloudPairingService>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaSqlExecutor, SqlSugarLinklyCloudBackendAsyncSchemaSqlExecutor>();
         services.AddScoped<ILinklyCloudBackendAsyncSchemaInitializer, SqlSugarLinklyCloudBackendAsyncSchemaInitializer>();
         services.AddScoped<ILinklySettlementRepository, SqlSugarLinklySettlementRepository>();

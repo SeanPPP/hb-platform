@@ -2090,6 +2090,115 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/linkly/cloud-backend/pair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudBackendPairRequest"];
+                    "text/json": components["schemas"]["LinklyCloudBackendPairRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudBackendPairRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Unprocessable Content */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Bad Gateway */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+                /** @description Gateway Timeout */
+                504: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudBackendTerminalCredentialResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/linkly/cloud-credential": {
         parameters: {
             query?: never;
@@ -5130,6 +5239,10 @@ export interface components {
             payloadJson?: string | null;
             /** Format: date-time */
             receivedAt?: string;
+        };
+        LinklyCloudBackendPairRequest: {
+            environment?: string | null;
+            pairCode?: string | null;
         };
         LinklyCloudBackendRecoverRequest: {
             environment?: string | null;

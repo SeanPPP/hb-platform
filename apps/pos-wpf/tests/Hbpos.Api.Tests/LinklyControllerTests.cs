@@ -581,6 +581,7 @@ public sealed class LinklyControllerTests
         var controller = new LinklyController(
             new StubLinklyCloudCredentialService(),
             backendService,
+            new NoOpLinklyCloudPairingService(),
             logger)
         {
             ControllerContext = new ControllerContext
@@ -862,6 +863,9 @@ public sealed class LinklyControllerTests
 
                 services.RemoveAll<ILinklyCloudBackendAsyncService>();
                 services.AddSingleton(linklyCloudBackendAsyncService ?? new CapturingLinklyCloudBackendAsyncService());
+
+                services.RemoveAll<ILinklyCloudPairingService>();
+                services.AddSingleton<ILinklyCloudPairingService>(new NoOpLinklyCloudPairingService());
 
                 services.RemoveAll<IStoreSchemaInitializer>();
                 services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());

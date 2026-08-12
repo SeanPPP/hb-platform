@@ -501,6 +501,7 @@ export type ProductionSettingsRuntimeConfiguration = Pick<
   | "appVersion"
   | "updateChannel"
   | "squareSetup"
+  | "linklySetup"
   | "readDevicePresentation"
   | "paymentConfiguration"
   | "apiConfiguration"

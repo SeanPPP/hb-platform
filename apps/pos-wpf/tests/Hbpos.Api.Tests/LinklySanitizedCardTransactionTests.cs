@@ -234,7 +234,7 @@ public sealed class LinklySanitizedCardTransactionTests
                 new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS-01")
             ], "Test"))
         };
-        return new LinklyController(null!, service)
+        return new LinklyController(null!, service, new NoOpLinklyCloudPairingService())
         {
             ControllerContext = new ControllerContext { HttpContext = httpContext }
         };

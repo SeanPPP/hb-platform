@@ -22,6 +22,10 @@ import {
   type SettingsDangerousActionResult,
   type SettingsPaymentSettingsInput,
   type SettingsPrinterDevice,
+  type SettingsLinklyHealthSnapshot,
+  type SettingsLinklyPairingPort,
+  type SettingsLinklyPairResult,
+  type SettingsLinklySetupControlPort,
   type SettingsSnapshot,
   type SettingsSquareSetupControlPort,
 } from "./index";
@@ -682,7 +686,6 @@ describe("SettingsScreen", () => {
     await fireEvent.press(
       screen.getByTestId("settings-payment-provider-square"),
     );
-    expect(screen.queryByText(/运行时未配置/)).toBeNull();
     expect(
       screen.getByTestId("settings-square-location-load").props
         .accessibilityState.disabled,
@@ -846,7 +849,7 @@ describe("SettingsScreen", () => {
     expect(screen.queryByLabelText("Square device ID")).toBeNull();
   });
 
-  it("Linkly 缺少公开环境时仍可在设置页首次选择并保存", async () => {
+  it("Linkly 缺少终端密钥时仍可先配对，刷新 ready、测试后才保存", async () => {
     const port = new ScreenSettingsPort();
     const current = snapshot();
     port.snapshotValue = {
@@ -868,14 +871,11 @@ describe("SettingsScreen", () => {
     await waitFor(() =>
       expect(screen.getByTestId("settings-pane-content-payments")).toBeTruthy(),
     );
+    expect(screen.queryByText(/运行时未配置/)).toBeNull();
     expect(
       screen.getByTestId("settings-payment-provider-linkly").props
         .accessibilityState.disabled,
-    ).toBe(false);
-
-    await fireEvent.press(
-      screen.getByTestId("settings-payment-provider-linkly"),
-    );
+    ).toBe(true);
     expect(
       screen.getByTestId("settings-linkly-sandbox").props.accessibilityState
         .disabled,
@@ -883,8 +883,26 @@ describe("SettingsScreen", () => {
     expect(
       screen.getByTestId("settings-linkly-test").props.accessibilityState
         .disabled,
-    ).toBe(false);
+    ).toBe(true);
     await fireEvent.press(screen.getByTestId("settings-linkly-sandbox"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-linkly-pair-code"),
+      "123456",
+    );
+    expect(
+      screen.getByTestId("settings-linkly-pair").props.accessibilityState
+        .disabled,
+    ).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    await screen.findByText("Linkly 终端已配对；状态已刷新");
+
+    await fireEvent.press(screen.getByTestId("settings-linkly-test"));
+    await screen.findByText("支付通道可用");
+    await fireEvent.press(
+      screen.getByTestId("settings-payment-provider-linkly"),
+    );
     await fireEvent.press(screen.getByTestId("settings-payment-save"));
     await screen.findByTestId("settings-confirmation");
     await fireEvent.press(screen.getByTestId("settings-confirm"));
@@ -942,6 +960,73 @@ describe("SettingsScreen", () => {
       expect(presenter.getState().paymentProviderDraft).toBeNull();
       screen.unmount();
     }
+  });
+
+  it("Linkly Backend Async 显示 health/配对状态，并把配对纳入确认后危险操作", async () => {
+    const port = new ScreenSettingsPort();
+    port.snapshotValue = {
+      ...snapshot(),
+      paymentProvider: null,
+      linkly: {
+        available: false,
+        blockerCode: "LINKLY_CONFIGURATION_MISSING",
+        environment: "Production",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+
+    expect(screen.queryByText(/Runtime unavailable/)).toBeNull();
+    expect(screen.getByTestId("settings-linkly-store-credentials")).toBeTruthy();
+    expect(screen.getByText(/Ready.*STORE-01/)).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-current-pairing")).toBeTruthy();
+    expect(screen.getByText("Not paired")).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-backend-ready")).toBeTruthy();
+    expect(screen.getByText("Not ready")).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-refresh")).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-pair-code")).toBeTruthy();
+    expect(screen.getByText(/FUNC.*8880/)).toBeTruthy();
+
+    await fireEvent.changeText(
+      screen.getByTestId("settings-linkly-pair-code"),
+      "123456",
+    );
+    expect(
+      screen.getByTestId("settings-linkly-pair").props.accessibilityState
+        .disabled,
+    ).toBe(false);
+
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    expect(screen.getByTestId("settings-confirmation")).toBeTruthy();
+    expect(port.linklyPairing.pairCalls).toEqual([]);
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+
+    await waitFor(() =>
+      expect(port.linklyPairing.pairCalls).toEqual([
+        { environment: "Production", pairCode: "123456" },
+      ]),
+    );
+    expect(screen.getByTestId("settings-linkly-pair-code").props.value).toBe(
+      "",
+    );
+    expect(screen.getByText(/Paired.*IPAD-01/)).toBeTruthy();
+    expect(screen.getByText("Linkly terminal paired; status refreshed")).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId("settings-linkly-test"));
+    await waitFor(() =>
+      expect(screen.getByText("Payment provider available")).toBeTruthy(),
+    );
+    await fireEvent.press(
+      screen.getByTestId("settings-payment-provider-linkly"),
+    );
+    await fireEvent.press(screen.getByTestId("settings-payment-save"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    await screen.findByText("Payment settings saved");
   });
 
   it("中文危险操作显示明确确认，确认后才调用端口", async () => {
@@ -1463,6 +1548,10 @@ class ScreenSettingsPort implements SettingsControlPort {
       return this.squareLocations;
     },
   };
+  public readonly linklySetup = new ScreenLinklySetupControlPort();
+  public readonly linklyPairing = new ScreenLinklyPairingPort(
+    this.linklySetup,
+  );
   public readonly squareDeviceCodes = [
     {
       code: "PAIR-01",
@@ -1587,6 +1676,15 @@ class ScreenSettingsPort implements SettingsControlPort {
       this.savedPayments.push(action.input);
       return { status: "completed", kind: action.kind };
     }
+    if (action.kind === "pair-linkly") {
+      const result = await this.linklyPairing.pair(
+        action.environment,
+        action.pairCode,
+      );
+      return result.status === "unknown"
+        ? { status: "unknown", kind: action.kind }
+        : { status: "completed", kind: action.kind };
+    }
     if (action.kind === "reset-catalog") {
       return {
         status: "completed",
@@ -1648,6 +1746,57 @@ class ScreenSettingsPort implements SettingsControlPort {
 
   public async checkForAppUpdate() {
     return snapshot().appUpdate;
+  }
+}
+
+class ScreenLinklySetupControlPort implements SettingsLinklySetupControlPort {
+  public ready = false;
+
+  public async readState(
+    environment: "Sandbox" | "Production",
+  ): Promise<SettingsLinklyHealthSnapshot> {
+    return {
+      environment,
+      storeCode: "STORE-01",
+      deviceCode: "IPAD-01",
+      isReady: this.ready,
+      checks: [
+        {
+          code: "STORE_CREDENTIAL",
+          isReady: true,
+          message: "ready",
+        },
+        {
+          code: "TERMINAL_SECRET",
+          isReady: this.ready,
+          message: this.ready ? "ready" : "missing",
+        },
+        {
+          code: "TERMINAL_POS_ID",
+          isReady: this.ready,
+          message: this.ready ? "ready" : "missing",
+        },
+      ],
+    };
+  }
+
+}
+
+class ScreenLinklyPairingPort implements SettingsLinklyPairingPort {
+  public readonly pairCalls: {
+    environment: "Sandbox" | "Production";
+    pairCode: string;
+  }[] = [];
+
+  public constructor(private readonly setup: ScreenLinklySetupControlPort) {}
+
+  public async pair(
+    environment: "Sandbox" | "Production",
+    pairCode: string,
+  ): Promise<SettingsLinklyPairResult> {
+    this.pairCalls.push({ environment, pairCode });
+    this.setup.ready = true;
+    return { status: "completed" };
   }
 }
 

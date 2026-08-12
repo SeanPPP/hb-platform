@@ -3365,11 +3365,27 @@ public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
             ORDER BY [UpdatedAt] DESC, [Id] DESC;
             """;
 
-        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendTerminalCredentialRecord>(
-            sql,
-            new SugarParameter("@Environment", environment),
-            new SugarParameter("@StoreCode", storeCode),
-            new SugarParameter("@DeviceCode", deviceCode));
+        var ado = dbContext.PosmDb.Ado;
+        if (cancellationToken.CanBeCanceled)
+        {
+            ado.CancellationToken = cancellationToken;
+        }
+
+        try
+        {
+            return await ado.SqlQuerySingleAsync<LinklyCloudBackendTerminalCredentialRecord>(
+                sql,
+                new SugarParameter("@Environment", environment),
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@DeviceCode", deviceCode));
+        }
+        finally
+        {
+            if (cancellationToken.CanBeCanceled)
+            {
+                ado.RemoveCancellationToken();
+            }
+        }
     }
 
     public async Task<LinklyCloudBackendTerminalCredentialRecord> UpsertAsync(
@@ -3385,13 +3401,17 @@ public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
         // secret 闂傚倸鍊风粈渚€骞夐敓鐘冲仭妞ゆ牗绋撻々鍙夌節婵犲倻澧曢柣銈庡櫍閺岀喖骞戦幇闈涙缂備讲鍋撻柛宀€鍋為悡蹇擃熆閼哥數娲存俊缁㈠枟缁绘盯宕煎┑鍫濈厽闂佸搫鐬奸崰鎾诲箯閻樿鐏抽柧蹇ｅ亞娴滎亞绱撻崒娆撴闁告梹鍨剁粋宥囨崉閾忚娈鹃梺鎸庣箓椤︻垳澹曢崗鑲╃闁瑰鍋熼幊鍕亜閺傝法效婵﹥妞介獮鎰償閿濆倹顫嶉梻浣稿悑濡炲潡宕归崼鏇犲祦闁哄稁鍘介悡銉╂倵閿濆骸浜滈柛鏂挎嚇濮婃椽宕崟顐熷亾閹间焦鍊舵繝闈涙濡插牏鎲搁弮鍫濊摕闁跨喓濮撮獮銏′繆椤栨繍鍤欓柛鐐差槸閳规垿鎮╅顫?HasSecret闂傚倸鍊烽悞锔锯偓绗涘懐鐭欓柟瀵稿仧闂勫嫰鏌￠崘銊モ偓鑽ょ不閺傛鐔嗛柤鎼佹涧婵洭鏌ｉ幇顒婅含闁哄矉缍侀獮鍥敇閻戝棙顥嬮梻浣虹帛閸旀洟鏁冮鍫濊摕闁跨喓濮寸粈瀣亜閹扳晛鐒洪柛鏂款樀濮婃椽宕崟闈涘壈闂佸摜鍠庨悺銊︾┍?
         await dbContext.PosmDb.Ado.ExecuteCommandAsync(
             UpsertSql,
-            new SugarParameter("@Environment", environment),
-            new SugarParameter("@StoreCode", storeCode),
-            new SugarParameter("@DeviceCode", deviceCode),
-            new SugarParameter("@Secret", secret),
-            new SugarParameter("@PosId", posId),
-            new SugarParameter("@UpdatedAt", updatedAt),
-            new SugarParameter("@UpdatedBy", updatedBy));
+            new
+            {
+                Environment = environment,
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
+                Secret = secret,
+                PosId = posId,
+                UpdatedAt = updatedAt,
+                UpdatedBy = updatedBy
+            },
+            cancellationToken);
 
         return await GetByDeviceAsync(environment, storeCode, deviceCode, cancellationToken)
             ?? new LinklyCloudBackendTerminalCredentialRecord

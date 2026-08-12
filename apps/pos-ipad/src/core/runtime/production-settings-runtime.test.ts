@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type {
   SettingsControlPort,
+  SettingsLinklyHealthSnapshot,
   SettingsSnapshot,
 } from "../../features/settings/settings-presenter";
 
@@ -447,6 +448,62 @@ test("支付配置切换由全局 transition 取得锁，不预取普通购物�
   await presenter.confirmDangerousAction();
 
   assert.deepEqual(events, ["lease", "transition", "lease"]);
+});
+
+test("Linkly 配对走 transition bypass，health 读取走 lease，POST 后不做 lease 改写", async () => {
+  const events: string[] = [];
+  const health: SettingsLinklyHealthSnapshot = {
+    environment: "Production",
+    storeCode: "S1",
+    deviceCode: "IPAD-1",
+    isReady: true,
+    checks: [
+      { code: "STORE_CREDENTIAL", isReady: true, message: "ready" },
+      { code: "TERMINAL_SECRET", isReady: true, message: "ready" },
+      { code: "TERMINAL_POS_ID", isReady: true, message: "ready" },
+    ],
+  };
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.PaymentTerminal",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      linklySetup: {
+        readState: async () => {
+          events.push("health");
+          return health;
+        },
+      },
+      executeDangerousAction: async (action) => {
+        assert.equal(action.kind, "pair-linkly");
+        events.push("pair");
+        return { status: "completed", kind: "pair-linkly" };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      throw new Error("pair-linkly must not pre-acquire ordinary cart lease");
+    },
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  events.length = 0;
+
+  assert.equal(presenter.requestLinklyPair("123456"), true);
+  await presenter.confirmDangerousAction();
+
+  assert.equal(presenter.getState().statusCode, "linkly-paired");
+  assert.deepEqual(events, ["lease", "pair", "lease", "health", "lease"]);
 });
 
 test("可选钱箱与清除能力在不可撤销提交点前复核可信 session", async () => {

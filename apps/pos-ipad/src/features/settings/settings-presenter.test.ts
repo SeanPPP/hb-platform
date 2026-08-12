@@ -20,6 +20,10 @@ import {
   type SettingsDangerousConfirmation,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
+  type SettingsLinklyHealthSnapshot,
+  type SettingsLinklyPairingPort,
+  type SettingsLinklyPairResult,
+  type SettingsLinklySetupControlPort,
   type SettingsSnapshot,
 } from "./settings-presenter";
 
@@ -57,6 +61,27 @@ test("无 View 权限时 fail closed 且不读取任何运行时设置", async (
   assert.equal(port.loadCalls, 0);
   assert.equal(presenter.getState().kind, "unauthorized");
   assert.equal(presenter.getState().statusCode, "permission-required");
+});
+
+test("无支付配置权限时不读取 Linkly health，也不执行设置动作", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const pairing = new FakeLinklyPairingPort();
+  port.linklySetup = setup;
+  port.linklyPairing = pairing;
+  const presenter = new SettingsPresenter({
+    permissions: [SETTINGS_VIEW_PERMISSION],
+    port,
+  });
+
+  await presenter.load();
+  await presenter.refreshLinklySetup();
+  assert.equal(presenter.requestLinklyPair("123456"), false);
+  await presenter.testPaymentProvider("linkly");
+
+  assert.equal(presenter.getState().kind, "ready");
+  assert.deepEqual(setup.readEnvironments, []);
+  assert.deepEqual(pairing.pairCalls, []);
 });
 
 test("加载公开配置但不包含 Square/Linkly 密钥字段", async () => {
@@ -1320,6 +1345,163 @@ test("显式切换到 Linkly 时只保存 Linkly，不能依赖提供方顺序",
   assert.equal(presenter.getState().paymentProviderDraft, "linkly");
 });
 
+test("Linkly 页面加载与环境切换刷新 health，并丢弃迟到环境响应", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  const sandboxHealth = deferred<SettingsLinklyHealthSnapshot>();
+  setup.readHandlers = {
+    Production: async () => linklyHealth("Production", true),
+    Sandbox: () => sandboxHealth.promise,
+  };
+  const presenter = createPresenter(port);
+
+  await presenter.load();
+  assert.equal(
+    presenter.getState().linklySetup?.health.value?.environment,
+    "Production",
+  );
+
+  presenter.setLinklyEnvironment("Sandbox");
+  await Promise.resolve();
+  presenter.setLinklyEnvironment("Production");
+  sandboxHealth.resolve(linklyHealth("Sandbox", false));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(setup.readEnvironments, [
+    "Production",
+    "Sandbox",
+    "Production",
+  ]);
+  assert.equal(presenter.getState().linklyDraft.environment, "Production");
+  assert.equal(
+    presenter.getState().linklySetup?.health.value?.environment,
+    "Production",
+  );
+  assert.equal(
+    presenter.getState().linklySetup?.health.value?.isReady,
+    true,
+  );
+});
+
+test("Linkly 首次配对只需门店凭据；刷新 ready 后 logon 才可保存，未变更保存保持 no-op", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const pairing = new FakeLinklyPairingPort();
+  port.linklySetup = setup;
+  port.linklyPairing = pairing;
+  setup.health = linklyHealth("Production", false, true);
+  port.snapshotValue = {
+    ...snapshot(),
+    paymentProvider: null,
+    linkly: {
+      available: false,
+      blockerCode: "LINKLY_CONFIGURATION_MISSING",
+      environment: "Production",
+    },
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setPaymentProvider("linkly");
+  assert.equal(presenter.getState().paymentProviderDraft, null);
+  assert.equal(presenter.getState().statusCode, "linkly-setup-required");
+
+  await presenter.savePaymentSettings();
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+
+  assert.equal(presenter.requestLinklyPair("123456"), true);
+  setup.health = linklyHealth("Production", true);
+  await presenter.confirmDangerousAction();
+  assert.equal(presenter.getState().statusCode, "linkly-paired");
+
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
+  presenter.setPaymentProvider("linkly");
+  assert.equal(presenter.getState().paymentProviderDraft, "linkly");
+  await presenter.savePaymentSettings();
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+  await presenter.confirmDangerousAction();
+  assert.equal(presenter.getState().statusCode, "payment-settings-saved");
+
+  await presenter.savePaymentSettings();
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-saved");
+  assert.equal(port.savedPayments.length, 1);
+});
+
+test("Linkly 配对是危险操作；成功清码刷新，unknown 只刷新且不重试", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const pairing = new FakeLinklyPairingPort();
+  port.linklySetup = setup;
+  port.linklyPairing = pairing;
+  setup.health = linklyHealth("Production", false, true);
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  assert.equal(presenter.requestLinklyPair("123456"), true);
+  assert.deepEqual(pairing.pairCalls, []);
+  assert.equal(presenter.getState().confirmation?.kind, "pair-linkly");
+  setup.health = linklyHealth("Production", true);
+  await presenter.confirmDangerousAction();
+  assert.deepEqual(pairing.pairCalls, [
+    { environment: "Production", pairCode: "123456" },
+  ]);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "linkly-paired");
+  assert.equal(presenter.getState().linklySetup?.pairCodeResetToken, 1);
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
+
+  pairing.pairResult = { status: "unknown" };
+  assert.equal(presenter.requestLinklyPair("654321"), true);
+  await presenter.confirmDangerousAction();
+  assert.equal(presenter.getState().statusCode, "linkly-pair-unknown");
+  assert.equal(presenter.getState().linklySetup?.pairCodeResetToken, 2);
+  assert.deepEqual(pairing.pairCalls, [
+    { environment: "Production", pairCode: "123456" },
+    { environment: "Production", pairCode: "654321" },
+  ]);
+  assert.equal(
+    setup.readEnvironments.filter((environment) => environment === "Production")
+      .length,
+    3,
+  );
+});
+
+test("Linkly 配对结果 unknown 后刷新失败时保留真实刷新失败状态", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const pairing = new FakeLinklyPairingPort();
+  port.linklySetup = setup;
+  port.linklyPairing = pairing;
+  setup.health = linklyHealth("Production", false, true);
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  pairing.pairResult = { status: "unknown" };
+  assert.equal(presenter.requestLinklyPair("123456"), true);
+  setup.readHandlers.Production = async () => {
+    throw new Error("health unavailable");
+  };
+  await presenter.confirmDangerousAction();
+
+  assert.equal(presenter.getState().linklySetup?.health.kind, "failed");
+  assert.equal(presenter.getState().statusCode, "linkly-health-load-failed");
+  assert.equal(presenter.getState().linklySetup?.pairCodeResetToken, 1);
+  assert.deepEqual(pairing.pairCalls, [
+    { environment: "Production", pairCode: "123456" },
+  ]);
+});
+
 test("快照选择不可用提供方时清空活动选择，且不可再次选中", async () => {
   const port = new FakeSettingsPort();
   const current = snapshot();
@@ -1813,6 +1995,8 @@ function safePending(
 
 class FakeSettingsPort implements SettingsControlPort {
   public squareSetup: FakeSquareSetupControlPort | undefined;
+  public linklySetup: FakeLinklySetupControlPort | undefined;
+  public linklyPairing: FakeLinklyPairingPort | undefined;
   public loadCalls = 0;
   public safetyCalls = 0;
   public dangerousActionCalls = 0;
@@ -1933,6 +2117,15 @@ class FakeSettingsPort implements SettingsControlPort {
     if (action.kind === "change-api-address") {
       this.apiAddressChanges.push(action.apiBaseUrl);
       return { status: "completed" as const, kind: action.kind };
+    }
+    if (action.kind === "pair-linkly") {
+      const result = await this.linklyPairing?.pair(
+        action.environment,
+        action.pairCode,
+      );
+      return result?.status === "unknown"
+        ? { status: "unknown" as const, kind: action.kind }
+        : { status: "completed" as const, kind: action.kind };
     }
     if (action.kind === "reset-catalog") {
       this.catalogResetCalls += 1;
@@ -2056,6 +2249,71 @@ class FakeSettingsPort implements SettingsControlPort {
       restartAvailable: true,
     };
   }
+}
+
+class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
+  public health = linklyHealth("Production", true);
+  public readHandlers: Partial<
+    Record<
+      "Sandbox" | "Production",
+      () => Promise<SettingsLinklyHealthSnapshot>
+    >
+  > = {};
+  public readonly readEnvironments: ("Sandbox" | "Production")[] = [];
+
+  public async readState(
+    environment: "Sandbox" | "Production",
+  ): Promise<SettingsLinklyHealthSnapshot> {
+    this.readEnvironments.push(environment);
+    const handler = this.readHandlers[environment];
+    return handler ? handler() : this.health;
+  }
+}
+
+class FakeLinklyPairingPort implements SettingsLinklyPairingPort {
+  public readonly pairCalls: {
+    environment: "Sandbox" | "Production";
+    pairCode: string;
+  }[] = [];
+  public pairResult: SettingsLinklyPairResult = { status: "completed" };
+
+  public async pair(
+    environment: "Sandbox" | "Production",
+    pairCode: string,
+  ): Promise<SettingsLinklyPairResult> {
+    this.pairCalls.push({ environment, pairCode });
+    return this.pairResult;
+  }
+}
+
+function linklyHealth(
+  environment: "Sandbox" | "Production",
+  isReady: boolean,
+  storeCredentialReady = isReady,
+): SettingsLinklyHealthSnapshot {
+  return {
+    environment,
+    storeCode: "STORE-01",
+    deviceCode: "IPAD-01",
+    isReady,
+    checks: [
+      {
+        code: "STORE_CREDENTIAL",
+        isReady: storeCredentialReady,
+        message: storeCredentialReady ? "ready" : "missing",
+      },
+      {
+        code: "TERMINAL_SECRET",
+        isReady,
+        message: isReady ? "ready" : "missing",
+      },
+      {
+        code: "TERMINAL_POS_ID",
+        isReady,
+        message: isReady ? "ready" : "missing",
+      },
+    ],
+  };
 }
 
 class FakeSquareSetupControlPort {

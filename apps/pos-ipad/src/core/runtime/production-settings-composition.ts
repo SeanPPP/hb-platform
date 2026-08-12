@@ -20,6 +20,8 @@ import {
   type SettingsControlPort,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
+  type SettingsLinklyPairingPort,
+  type SettingsLinklySetupControlPort,
   type SettingsScannerTestResult,
   type SettingsSquareSetupControlPort,
   type SettingsSnapshot,
@@ -75,6 +77,9 @@ export type ProductionSettingsCompositionInput = Readonly<{
   updateChannel: string;
   createId(): string;
   squareSetup?: SettingsSquareSetupPort | undefined;
+  linklySetup?:
+    | (SettingsLinklySetupControlPort & SettingsLinklyPairingPort)
+    | undefined;
   readDevicePresentation(): Promise<SettingsDevicePresentation>;
   catalog: Readonly<{
     getActiveMetadata(): Promise<SettingsCatalogSnapshot | null>;
@@ -253,6 +258,13 @@ export function createProductionSettingsComposition(
         input.paymentConfiguration.save(configuration),
     },
     paymentConfigurationTransition: input.paymentConfigurationTransition,
+    ...(input.linklySetup
+      ? {
+          linklySetup: {
+            pair: input.linklySetup.pair.bind(input.linklySetup),
+          },
+        }
+      : {}),
     runtimeReload: input.runtimeReload,
     printer: {
       saveSettings: async (settings, signal) => {
@@ -392,6 +404,13 @@ export function createProductionSettingsComposition(
             getSquareDeviceCode:
               squareSetup.getSquareDeviceCode.bind(squareSetup),
           } satisfies SettingsSquareSetupControlPort),
+        }
+      : {}),
+    ...(input.linklySetup
+      ? {
+          linklySetup: Object.freeze({
+            readState: input.linklySetup.readState.bind(input.linklySetup),
+          }),
         }
       : {}),
     testCashDrawer: async (
