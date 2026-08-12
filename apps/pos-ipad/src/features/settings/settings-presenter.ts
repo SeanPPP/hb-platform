@@ -1165,7 +1165,7 @@ export class SettingsPresenter {
       this.state.squareDraft,
       this.state.linklyDraft,
       isPaymentProviderSelectable("square", this.state),
-      isPaymentProviderAvailable("linkly", this.state),
+      isPaymentProviderSelectable("linkly", this.state),
     );
     if (
       !input ||
@@ -1200,7 +1200,7 @@ export class SettingsPresenter {
       this.state.squareDraft,
       this.state.linklyDraft,
       isPaymentProviderSelectable("square", this.state),
-      isPaymentProviderAvailable("linkly", this.state),
+      isPaymentProviderSelectable("linkly", this.state),
     );
     if (
       !input ||
@@ -1674,7 +1674,12 @@ export class SettingsPresenter {
       paymentProviderDraft: input.provider,
       ...(input.linkly
         ? {
-            linkly: { ...this.state.linkly, ...input.linkly },
+            linkly: {
+              ...this.state.linkly,
+              ...input.linkly,
+              available: true,
+              blockerCode: null,
+            },
             linklyDraft: input.linkly,
           }
         : {}),
@@ -2283,6 +2288,14 @@ function isPaymentProviderSelectable(
   state: Pick<SettingsState, "linkly" | "square" | "squareSetup">,
 ): boolean {
   if (provider === "square" && state.squareSetup.available) return true;
+  // Linkly 首次设置只需要补齐公开环境；其他配置故障必须继续 fail closed。
+  if (
+    provider === "linkly" &&
+    !state.linkly.available &&
+    state.linkly.blockerCode === "LINKLY_CONFIGURATION_MISSING"
+  ) {
+    return true;
+  }
   return isPaymentProviderAvailable(provider, state);
 }
 

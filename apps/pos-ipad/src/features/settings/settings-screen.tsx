@@ -750,10 +750,15 @@ function PaymentsPane({
     state.square.blockerCode === "SQUARE_CONFIGURATION_MISSING";
   const linklyAvailable =
     state.linkly.available && state.linkly.blockerCode === null;
+  // 缺少公开环境属于可恢复的首次设置态；无效配置与读取失败仍保持关闭。
+  const linklyNeedsInitialSetup =
+    !state.linkly.available &&
+    state.linkly.blockerCode === "LINKLY_CONFIGURATION_MISSING";
+  const linklySelectable = linklyAvailable || linklyNeedsInitialSetup;
   const squareRuntimeDisabled =
     disabled || !squareAvailable || state.paymentProviderDraft !== "square";
   const linklyDisabled =
-    disabled || !linklyAvailable || state.paymentProviderDraft !== "linkly";
+    disabled || !linklySelectable || state.paymentProviderDraft !== "linkly";
   const squareSetupDisabled =
     disabled ||
     !state.squareSetup.available ||
@@ -823,7 +828,7 @@ function PaymentsPane({
             testID="settings-payment-provider-square"
           />
           <ToggleButton
-            disabled={disabled || !linklyAvailable}
+            disabled={disabled || !linklySelectable}
             label="Linkly"
             onPress={() => presenter.setPaymentProvider("linkly")}
             selected={state.paymentProviderDraft === "linkly"}

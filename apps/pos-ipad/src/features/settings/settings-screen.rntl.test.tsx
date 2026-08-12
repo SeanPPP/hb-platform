@@ -846,6 +846,104 @@ describe("SettingsScreen", () => {
     expect(screen.queryByLabelText("Square device ID")).toBeNull();
   });
 
+  it("Linkly 缺少公开环境时仍可在设置页首次选择并保存", async () => {
+    const port = new ScreenSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      linkly: {
+        available: false,
+        blockerCode: "LINKLY_CONFIGURATION_MISSING",
+        environment: "Production",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-pane-content-payments")).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("settings-payment-provider-linkly").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+
+    await fireEvent.press(
+      screen.getByTestId("settings-payment-provider-linkly"),
+    );
+    expect(
+      screen.getByTestId("settings-linkly-sandbox").props.accessibilityState
+        .disabled,
+    ).toBe(false);
+    expect(
+      screen.getByTestId("settings-linkly-test").props.accessibilityState
+        .disabled,
+    ).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-linkly-sandbox"));
+    await fireEvent.press(screen.getByTestId("settings-payment-save"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+
+    expect(port.savedPayments).toEqual([
+      {
+        provider: "linkly",
+        square: null,
+        linkly: { environment: "Sandbox" },
+      },
+    ]);
+  });
+
+  it("Linkly 配置无效或读取失败时设置页仍保持禁用", async () => {
+    for (const blockerCode of [
+      "LINKLY_CONFIGURATION_INVALID",
+      "LINKLY_CONFIGURATION_LOAD_FAILED",
+    ]) {
+      const port = new ScreenSettingsPort();
+      const current = snapshot();
+      port.snapshotValue = {
+        ...current,
+        paymentProvider: null,
+        linkly: {
+          available: false,
+          blockerCode,
+          environment: "Production",
+        },
+      };
+      const presenter = createPresenter(port);
+      await presenter.load();
+      const screen = await render(
+        <SettingsScreen locale="zh" presenter={presenter} />,
+      );
+      await screen.findByTestId("settings-pane-content-general");
+
+      await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("settings-pane-content-payments"),
+        ).toBeTruthy(),
+      );
+      expect(
+        screen.getByTestId("settings-payment-provider-linkly").props
+          .accessibilityState.disabled,
+      ).toBe(true);
+      expect(
+        screen.getByTestId("settings-linkly-test").props.accessibilityState
+          .disabled,
+      ).toBe(true);
+
+      await fireEvent.press(
+        screen.getByTestId("settings-payment-provider-linkly"),
+      );
+      expect(presenter.getState().paymentProviderDraft).toBeNull();
+      screen.unmount();
+    }
+  });
+
   it("中文危险操作显示明确确认，确认后才调用端口", async () => {
     const port = new ScreenSettingsPort();
     const presenter = createPresenter(port);

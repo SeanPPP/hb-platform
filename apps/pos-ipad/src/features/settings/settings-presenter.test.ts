@@ -1209,6 +1209,75 @@ test("Square 不可用时仍可单独保存 Linkly 环境", async () => {
   assert.equal(presenter.getState().statusCode, "payment-settings-saved");
 });
 
+test("Linkly 缺少公开环境时仍可首次选择、测试并保存", async () => {
+  const port = new FakeSettingsPort();
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    linkly: {
+      available: false,
+      blockerCode: "LINKLY_CONFIGURATION_MISSING",
+      environment: "Production",
+    },
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setPaymentProvider("linkly");
+  presenter.setLinklyEnvironment("Sandbox");
+  await presenter.testPaymentProvider("linkly");
+  await presenter.savePaymentSettings();
+
+  const expected = {
+    provider: "linkly" as const,
+    square: null,
+    linkly: { environment: "Sandbox" as const },
+  };
+  assert.equal(presenter.getState().paymentProviderDraft, "linkly");
+  assert.deepEqual(port.paymentTests, [
+    { provider: "linkly", input: expected },
+  ]);
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.savedPayments, [expected]);
+  assert.deepEqual(presenter.getState().linkly, {
+    available: true,
+    blockerCode: null,
+    environment: "Sandbox",
+  });
+  assert.equal(presenter.getState().statusCode, "payment-settings-saved");
+});
+
+test("Linkly 配置无效或读取失败时仍禁止选择", async () => {
+  for (const blockerCode of [
+    "LINKLY_CONFIGURATION_INVALID",
+    "LINKLY_CONFIGURATION_LOAD_FAILED",
+  ]) {
+    const port = new FakeSettingsPort();
+    const current = snapshot();
+    port.snapshotValue = {
+      ...current,
+      linkly: {
+        available: false,
+        blockerCode,
+        environment: "Production",
+      },
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+
+    presenter.setPaymentProvider("linkly");
+
+    assert.equal(presenter.getState().paymentProviderDraft, "square");
+    assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+  }
+});
+
 test("Square 与 Linkly 同时可用但未显式选择时支付保持 fail closed", async () => {
   const port = new FakeSettingsPort();
   port.snapshotValue = { ...snapshot(), paymentProvider: null };
