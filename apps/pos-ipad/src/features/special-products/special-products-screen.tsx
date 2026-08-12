@@ -654,6 +654,11 @@ function SpecialProductCard({
         <Text numberOfLines={2} style={styles.productCardName}>
           {item.displayName}
         </Text>
+        <Text numberOfLines={1} style={styles.productCardItemNumber}>
+          {t("row.itemNumber", {
+            itemNumber: item.itemNumber?.trim() || "—",
+          })}
+        </Text>
         <Text numberOfLines={1} style={styles.productCardCode}>
           {item.lookupCode || item.productCode}
         </Text>
@@ -1024,11 +1029,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
     minHeight: 36,
   },
+  productCardItemNumber: {
+    color: posColors.ink,
+    fontSize: 11,
+    fontWeight: "700",
+    lineHeight: 15,
+    marginTop: 4,
+  },
   productCardCode: {
     color: posColors.mutedInk,
     fontFamily: "Courier",
     fontSize: 11,
-    marginTop: 4,
+    marginTop: 2,
   },
   productCardPrice: {
     color: posColors.ink,

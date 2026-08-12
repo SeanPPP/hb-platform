@@ -172,6 +172,24 @@ describe("SpecialProductsScreen", () => {
     await screen.unmount();
   });
 
+  it("卡片明确显示货号，缺失时保留货号占位", async () => {
+    const withoutItemNumber: SpecialProductItem = {
+      ...product("NO-ITEM-NUMBER"),
+      itemNumber: null,
+    };
+    const presenter = new ScreenPresenter({
+      items: [product("A"), withoutItemNumber],
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    expect(screen.getByText("货号：item-A")).toBeTruthy();
+    expect(screen.getByText("货号：—")).toBeTruthy();
+
+    await screen.unmount();
+  });
+
   it("在线管理通过弹窗搜索并把候选添加为特殊商品", async () => {
     const candidateWithImage: SpecialProductItem = {
       ...product("IMG2"),
