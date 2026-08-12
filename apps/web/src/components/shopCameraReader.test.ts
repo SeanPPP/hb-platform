@@ -171,6 +171,13 @@ runtimeCallback?.(undefined, { name: 'NotFoundException' }, runtimeControls)
 assert.equal(runtimeErrors.length, 0, '正常的未识别帧不得误报为摄像头故障')
 assert.equal(runtimeTrackStopCount, 0, '正常的未识别帧不得停止视频流')
 
+runtimeCallback?.(undefined, {
+  getKind: () => 'NotFoundException',
+  name: 'e',
+}, runtimeControls)
+assert.equal(runtimeErrors.length, 0, '生产压缩改名后仍应识别 ZXing 的例行未找到异常')
+assert.equal(runtimeTrackStopCount, 0, '生产压缩改名后的例行异常不得停止视频流')
+
 const runtimeFailure = { name: 'NotReadableError' }
 runtimeCallback?.(undefined, runtimeFailure, runtimeControls)
 await Promise.resolve()

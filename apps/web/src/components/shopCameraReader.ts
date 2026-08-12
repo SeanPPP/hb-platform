@@ -64,9 +64,28 @@ const ROUTINE_DECODE_ERROR_NAMES = new Set([
 ])
 
 function getCameraErrorName(error: unknown) {
-  return typeof error === 'object' && error !== null && 'name' in error
-    ? String(error.name)
-    : ''
+  if (typeof error !== 'object' || error === null) {
+    return ''
+  }
+
+  const errorLike = error as {
+    getKind?: () => unknown
+    name?: unknown
+  }
+
+  // ZXing 生产压缩后 error.name 会被改名，getKind() 仍保留稳定的解码异常类型。
+  if (typeof errorLike.getKind === 'function') {
+    try {
+      const kind = errorLike.getKind()
+      if (typeof kind === 'string' && kind) {
+        return kind
+      }
+    } catch {
+      // 非 ZXing 错误对象的方法异常不得阻断标准 DOMException.name 回退。
+    }
+  }
+
+  return 'name' in error ? String(errorLike.name) : ''
 }
 
 function createShopCameraAbortError() {
