@@ -1316,7 +1316,7 @@ test("真实 SQLite：M32 rowid 重定位遇到最大整数时失败关闭并回
   await connection.close();
 });
 
-test("真实 SQLite：新鲜数据库完整应用到 M40 且 guard 为空", async () => {
+test("真实 SQLite：新鲜数据库完整应用到 M41 且 guard 为空", async () => {
   const connection = createConnection();
 
   await applyMigrations(connection, () => NOW);
@@ -1325,7 +1325,7 @@ test("真实 SQLite：新鲜数据库完整应用到 M40 且 guard 为空", asyn
     { ...await connection.getFirst<{ version: number }>(
       "SELECT MAX(version) AS version FROM schema_migrations",
     ) },
-    { version: 40 },
+    { version: 41 },
   );
   assert.deepEqual(
     { ...await connection.getFirst<{ count: number }>(

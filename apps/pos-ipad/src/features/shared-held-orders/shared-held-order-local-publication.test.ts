@@ -106,9 +106,48 @@ test("损坏 payload 或非可发布状态按 not-shareable 拒绝", async () =>
     ),
   });
   await connection.run(
-    `UPDATE held_order_records SET share_state = 'Blocked' WHERE hold_id = 'hold-blocked'`,
+    `UPDATE held_order_records
+     SET share_requested_at_iso = ?, share_state = 'Blocked'
+     WHERE hold_id = 'hold-blocked'`,
+    [TEST_NOW_ISO],
   );
   const blocked = await reader.loadEligible("hold-blocked", SCOPE);
   assert.deepEqual(blocked, { eligible: false, reason: "not-shareable" });
+  await connection.close();
+});
+
+test("删除中挂单可只读恢复同一冻结快照，用于建立服务端取消终态", async () => {
+  const connection = await openTestDatabase();
+  await seedHold(connection, "hold-delete");
+  await connection.run(
+    `UPDATE held_order_records
+     SET share_state = 'Blocked',
+         publish_block_reason = 'LOCAL_DELETE_PENDING'
+     WHERE hold_id = 'hold-delete'`,
+  );
+  const reader = new SqliteSharedHeldOrderLocalPublication(connection, fakeEncryptor);
+
+  const cart = await reader.loadDeletePending("hold-delete", SCOPE);
+
+  assert.equal(cart?.pricingState.revision, 4);
+  assert.equal(cart?.pricingState.lines[0]?.lookupCode, "100");
+  assert.equal(await reader.loadDeletePending("hold-missing", SCOPE), null);
+  await connection.close();
+});
+
+test("非 LOCAL_DELETE_PENDING 的 Blocked 行不能进入取消收口", async () => {
+  const connection = await openTestDatabase();
+  await seedHold(connection, "hold-other-block");
+  await connection.run(
+    `UPDATE held_order_records
+     SET share_requested_at_iso = ?,
+         share_state = 'Blocked',
+         publish_block_reason = 'SHARED_CART_INVALID'
+     WHERE hold_id = 'hold-other-block'`,
+    [TEST_NOW_ISO],
+  );
+  const reader = new SqliteSharedHeldOrderLocalPublication(connection, fakeEncryptor);
+
+  assert.equal(await reader.loadDeletePending("hold-other-block", SCOPE), null);
   await connection.close();
 });

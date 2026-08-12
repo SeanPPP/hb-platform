@@ -5,6 +5,7 @@ import {
 import type { CartSnapshot } from "../contracts/cart";
 import type {
   HeldOrderActor,
+  HeldOrderDeleteStage,
   HeldOrderPayloadV1,
   HeldOrderRecordRepositoryPort,
   HeldOrderScope,
@@ -237,6 +238,7 @@ type HeldOrderRecordRow = Readonly<{
   recall_attempt_id: unknown;
   payload_version?: unknown;
   payload_ciphertext?: unknown;
+  is_synthetic_shared_claim?: unknown;
 }>;
 
 type TerminalCartFenceRow = Readonly<{
@@ -255,6 +257,8 @@ type TerminalCartFenceRow = Readonly<{
  * 内更新挂单和栅栏，进程被杀后仍能判断应清车、恢复或释放。
  */
 export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositoryPort {
+  private syntheticClaimColumnSupport: Promise<boolean> | null = null;
+
   public constructor(
     private readonly db: SqliteConnectionPort,
     private readonly encryptor: SensitivePayloadEncryptor,
@@ -330,11 +334,15 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
   ): Promise<readonly HeldOrderSummary[]> {
     const scope = validateHeldOrderScope(scopeInput);
     const safeLimit = listLimit(limit);
+    // 兼容只升级到 M9-M39 的旧开发库测试/恢复工具；正式启动完成 M40 后固定走真实列。
+    const syntheticClaimProjection = await this.supportsSyntheticClaimColumn()
+      ? "is_synthetic_shared_claim"
+      : "0 AS is_synthetic_shared_claim";
     const rows = await this.db.getAll<HeldOrderRecordRow>(
       `SELECT hold_id, local_sequence, store_code, device_code,
         held_by_cashier_id, held_by_cashier_name, status, item_count,
         subtotal_cents, discount_cents, actual_amount_cents, held_at_iso,
-        recalling_at_iso
+        recalling_at_iso, ${syntheticClaimProjection}
        FROM held_order_records
        WHERE store_code = ? AND device_code = ? AND status = 'Pending'
        ORDER BY local_sequence DESC
@@ -342,6 +350,99 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
       [scope.storeCode, scope.deviceCode, safeLimit],
     );
     return rows.map(readHeldOrderSummary);
+  }
+
+  private supportsSyntheticClaimColumn(): Promise<boolean> {
+    this.syntheticClaimColumnSupport ??= this.db
+      .getFirst<{ count: unknown }>(
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('held_order_records')
+         WHERE name = 'is_synthetic_shared_claim'`,
+      )
+      .then((row) => Number(row?.count ?? 0) === 1);
+    return this.syntheticClaimColumnSupport;
+  }
+
+  public async stageDeletePending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+    stagedAtIso: string;
+  }>): Promise<HeldOrderDeleteStage | null> {
+    const holdId = nonBlank(input.holdId, "hold id");
+    const scope = validateHeldOrderScope(input.scope);
+    const stagedAtIso = canonicalIso(input.stagedAtIso, "delete staged at");
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const row = await transaction.getFirst<{
+        share_state: string;
+        publish_block_reason: string | null;
+        remote_revision: number | null;
+      }>(
+        `SELECT share_state, publish_block_reason, remote_revision
+         FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0`,
+        [holdId, scope.storeCode, scope.deviceCode],
+      );
+      if (!row) return null;
+
+      const changed = await transaction.run(
+        `UPDATE held_order_records
+         SET share_state = 'Blocked',
+             publish_block_reason = 'LOCAL_DELETE_PENDING',
+             next_publish_at_iso = NULL,
+             publish_error_code = NULL,
+             updated_at_iso = ?
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM terminal_cart_fences fence
+             WHERE fence.hold_id = held_order_records.hold_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM shared_held_order_claim_records claim
+             WHERE claim.hold_guid = held_order_records.hold_id
+               AND claim.state IN ('Prepared', 'Active')
+           )`,
+        [stagedAtIso, holdId, scope.storeCode, scope.deviceCode],
+      );
+      if (changed.changes !== 1) return null;
+      return {
+        holdId,
+        remoteCancellationRequired:
+          row.remote_revision !== null ||
+          row.share_state === "PendingPublish" ||
+          row.share_state === "Published" ||
+          row.publish_block_reason === "LOCAL_DELETE_PENDING",
+      };
+    });
+  }
+
+  public async deleteStagedPending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+  }>): Promise<boolean> {
+    const holdId = nonBlank(input.holdId, "hold id");
+    const scope = validateHeldOrderScope(input.scope);
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const deleted = await transaction.run(
+        `DELETE FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0
+           AND share_state = 'Blocked'
+           AND publish_block_reason = 'LOCAL_DELETE_PENDING'
+           AND NOT EXISTS (
+             SELECT 1 FROM terminal_cart_fences fence
+             WHERE fence.hold_id = held_order_records.hold_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM shared_held_order_claim_records claim
+             WHERE claim.hold_guid = held_order_records.hold_id
+               AND claim.state IN ('Prepared', 'Active')
+           )`,
+        [holdId, scope.storeCode, scope.deviceCode],
+      );
+      return deleted.changes === 1;
+    });
   }
 
   public async claimRecall(input: Readonly<{
@@ -369,11 +470,13 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
           `Terminal cart already has an active fence for hold ${nonBlank(existingFence.hold_id, "terminal fence hold id")}.`,
         );
       }
-      const row = await transaction.getFirst<HeldOrderRecordRow>(
+      const row = await getFirstHeldOrderRecordCompat(
+        transaction,
         `SELECT hold_id, local_sequence, store_code, device_code,
           held_by_cashier_id, held_by_cashier_name, status, item_count,
           subtotal_cents, discount_cents, actual_amount_cents, held_at_iso,
-          recalling_at_iso, payload_version, payload_ciphertext
+          recalling_at_iso, payload_version, payload_ciphertext,
+          is_synthetic_shared_claim
          FROM held_order_records
          WHERE hold_id = ? AND store_code = ? AND device_code = ?
            AND status = 'Pending'`,
@@ -443,12 +546,14 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
     bindingInput: RecallActiveBinding,
   ): Promise<RecallClaim | null> {
     const binding = validateRecallBinding(bindingInput);
-    const row = await this.db.getFirst<HeldOrderRecordRow>(
+    const row = await getFirstHeldOrderRecordCompat(
+      this.db,
       `SELECT held.hold_id, held.local_sequence, held.store_code, held.device_code,
         held.held_by_cashier_id, held.held_by_cashier_name, held.status,
         held.item_count, held.subtotal_cents, held.discount_cents,
         held.actual_amount_cents, held.held_at_iso, held.recalling_at_iso,
-        held.recall_attempt_id, held.payload_version, held.payload_ciphertext
+        held.recall_attempt_id, held.payload_version, held.payload_ciphertext,
+        held.is_synthetic_shared_claim
        FROM terminal_cart_fences fence
        INNER JOIN held_order_records held
          ON held.hold_id = fence.hold_id
@@ -555,13 +660,14 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
     scopeInput: HeldOrderScope,
   ): Promise<readonly RecallClaim[]> {
     const scope = validateHeldOrderScope(scopeInput);
-    const rows = await this.db.getAll<HeldOrderRecordRow>(
+    const rows = await getAllHeldOrderRecordsCompat(
+      this.db,
       `SELECT held.hold_id, held.local_sequence, held.store_code,
         held.device_code, held.held_by_cashier_id, held.held_by_cashier_name,
         held.status, held.item_count, held.subtotal_cents,
         held.discount_cents, held.actual_amount_cents, held.held_at_iso,
         held.recalling_at_iso, held.recall_attempt_id, held.payload_version,
-        held.payload_ciphertext
+        held.payload_ciphertext, held.is_synthetic_shared_claim
        FROM held_order_records held
        INNER JOIN terminal_cart_fences fence
          ON fence.store_code = held.store_code
@@ -586,6 +692,55 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
       };
     }));
   }
+}
+
+async function getFirstHeldOrderRecordCompat(
+  db: SqliteConnectionPort,
+  sql: string,
+  parameters: readonly SqlValue[],
+): Promise<HeldOrderRecordRow | null> {
+  try {
+    return await db.getFirst<HeldOrderRecordRow>(sql, parameters);
+  } catch (error) {
+    if (!isMissingSyntheticSharedClaimColumn(error)) throw error;
+    return db.getFirst<HeldOrderRecordRow>(
+      withoutSyntheticSharedClaimColumn(sql),
+      parameters,
+    );
+  }
+}
+
+async function getAllHeldOrderRecordsCompat(
+  db: SqliteConnectionPort,
+  sql: string,
+  parameters: readonly SqlValue[],
+): Promise<readonly HeldOrderRecordRow[]> {
+  try {
+    return await db.getAll<HeldOrderRecordRow>(sql, parameters);
+  } catch (error) {
+    if (!isMissingSyntheticSharedClaimColumn(error)) throw error;
+    return db.getAll<HeldOrderRecordRow>(
+      withoutSyntheticSharedClaimColumn(sql),
+      parameters,
+    );
+  }
+}
+
+/** 旧迁移阶段没有 synthetic 列，也不可能存在远端 claim 行；仅投影为本地行。 */
+function withoutSyntheticSharedClaimColumn(sql: string): string {
+  const fallback = sql.replace(
+    /\b(?:held\.)?is_synthetic_shared_claim\b/,
+    "0 AS is_synthetic_shared_claim",
+  );
+  if (fallback === sql) {
+    throw new Error("Synthetic shared claim projection is missing.");
+  }
+  return fallback;
+}
+
+function isMissingSyntheticSharedClaimColumn(error: unknown): boolean {
+  return error instanceof Error &&
+    /\bno such column:\s*(?:held\.)?is_synthetic_shared_claim\b/i.test(error.message);
 }
 
 /**
@@ -1769,6 +1924,7 @@ function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummary {
   if (status !== "Pending" && recallingAtIso === null) {
     throw new Error("Invalid recalled held order state.");
   }
+  const isSyntheticSharedClaim = int(row.is_synthetic_shared_claim ?? 0) === 1;
   return {
     holdId: nonBlank(row.hold_id, "held order id"),
     localSequence: nonNegativeSafeInteger(row.local_sequence, "held order sequence"),
@@ -1789,6 +1945,7 @@ function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummary {
     recallingAtIso: recallingAtIso === null
       ? null
       : canonicalIso(recallingAtIso, "held order recalling time"),
+    ...(isSyntheticSharedClaim ? { isSyntheticSharedClaim: true } : {}),
   };
 }
 
@@ -1836,7 +1993,70 @@ async function decryptHeldOrderPayload(
   } catch {
     throw new Error("Invalid held order payload ciphertext.");
   }
+  if (int(row.is_synthetic_shared_claim ?? 0) === 1) {
+    parsed = mapLegacySyntheticSharedPayload(parsed);
+  }
   return validateHeldOrderPayload(parsed);
+}
+
+/**
+ * 兼容旧版 RemoteClaim synthetic 行曾误存的 SharedSaleCartV1 wire 结构。
+ * 仅 synthetic 标记行可进入；字段仍交给现有严格 validator fail-closed 校验。
+ */
+function mapLegacySyntheticSharedPayload(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.pricingState)) return value;
+  const pricingState = value.pricingState;
+  if (!Array.isArray(pricingState.promotions) || !Array.isArray(pricingState.lines)) {
+    return value;
+  }
+  return {
+    version: value.version,
+    pricingState: {
+      ...pricingState,
+      promotions: pricingState.promotions.map((promotion) => {
+        if (!isRecord(promotion) || !("fixedPriceCents" in promotion)) {
+          return promotion;
+        }
+        const { fixedPriceCents, ...rest } = promotion;
+        return {
+          ...rest,
+          fixedPrice: { currency: "AUD", cents: fixedPriceCents },
+        };
+      }),
+      lines: pricingState.lines.map((line) => {
+        if (!isRecord(line) || !isRecord(line.discountState)) return line;
+        const discount = line.discountState;
+        switch (discount.mode) {
+          case "none":
+            return { ...line, discountState: { kind: "none" } };
+          case "manual-amount":
+            return {
+              ...line,
+              discountState: { kind: "manual-amount", cents: discount.cents },
+            };
+          case "manual-percent":
+            return {
+              ...line,
+              discountState: {
+                kind: "manual-percent",
+                basisPoints: discount.basisPoints,
+              },
+            };
+          case "promotion":
+            return {
+              ...line,
+              discountState: {
+                kind: "promotion",
+                cents: discount.cents,
+                promotionIds: discount.promotionIds,
+              },
+            };
+          default:
+            return line;
+        }
+      }),
+    },
+  };
 }
 
 function validateHeldOrderAudit(

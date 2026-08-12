@@ -47,6 +47,7 @@ internal sealed class MainChildViewModelFactory
     private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
+    private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -85,7 +86,8 @@ internal sealed class MainChildViewModelFactory
         ILinklySettlementService? linklySettlementService = null,
         ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
-        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -124,6 +126,7 @@ internal sealed class MainChildViewModelFactory
         _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
         _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
         _sharedHeldOrderRepository = sharedHeldOrderRepository;
+        _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -170,7 +173,9 @@ internal sealed class MainChildViewModelFactory
             confirmationDialogService,
             _sharedHeldOrderCoordinator,
             _sharedHeldOrderApiClient,
-            _sharedHeldOrderRepository);
+            _sharedHeldOrderRepository,
+            timeProvider: null,
+            sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }

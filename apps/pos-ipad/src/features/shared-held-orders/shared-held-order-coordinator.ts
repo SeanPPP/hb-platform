@@ -9,9 +9,10 @@ import {
 } from "../held-orders/held-orders-domain";
 
 import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
-import type {
-  SharedHeldOrderClaim,
-  SharedHeldOrderClaimRepositoryPort,
+import {
+  SharedHeldOrderClaimInvariantError,
+  type SharedHeldOrderClaim,
+  type SharedHeldOrderClaimRepositoryPort,
 } from "./shared-held-order-claim-repository";
 import type {
   SharedHeldOrderLocalPublicationPort,
@@ -87,6 +88,7 @@ export class SharedHeldOrderCoordinatorError extends Error {
     | "RESTORE_FAILED"
     | "NOT_FOUND"
     | "INVALID"
+    | "SALE_MODE_REQUIRED"
     | "CART_NOT_EMPTY";
 
   public constructor(
@@ -114,7 +116,8 @@ export type SharedHeldOrderCoordinatorOptions = Readonly<{
  *
  * 在线取单固定顺序：server prepare -> 本地 durable claim/fence -> server activate
  * -> 恢复购物车。本地 durable 写失败/输家绝不 activate；activate 网络结果未知时
- * 保持本地 Prepared、不恢复，交给 claims/mine 对账。Active 永不自动释放。
+ * 保持本地 Prepared、不恢复，交给 claims/mine 对账。Active 不因过期或服务端
+ * 状态自动释放；只允许仓储确认旧版 release 已完成 fence/held 清理后补终态。
  * 恢复失败清空本次恢复产生的购物车状态、保留 Active，绝不自动 release。
  * 原设备离线 recall 只读取本地已发布副本，走 OfflineOrigin durable claim，
  * API 不可用/disabled 完全不影响本地挂单。
@@ -182,23 +185,52 @@ export class SharedHeldOrderCoordinator {
     // 下一次 prepare 前先检查本地 durable fence。只有 stale RemoteClaim 才在线
     // 读取 claims/mine 尝试清扫；服务端仍返回 Prepared/Active 时以服务端阻塞事实
     // 为准。任何 open fence 未清空都必须在 prepare 前停止，避免创建未跟踪 claim。
-    let localClaims = await this.options.claims.listMine(this.scope(), 200);
-    if (this.staleRemoteClaims(localClaims, nowIso).length > 0) {
+    let openClaim = await this.getOpenClaim();
+    if (
+      openClaim &&
+      this.staleRemoteClaims([openClaim], nowIso).length > 0
+    ) {
       // 这里必须传播 claims/mine 错误并停止：若继续调用 prepare，服务端可能
       // 新建 claim，而本地仍被旧 fence 拦截，形成未跟踪的 Prepared claim。
       const serverClaims = await this.options.api.claimsMine();
       await this.expireStaleRemoteClaims(
-        localClaims,
+        [openClaim],
         nowIso,
         serverClaims,
       );
-      localClaims = await this.options.claims.listMine(this.scope(), 200);
+      openClaim = await this.getOpenClaim();
     }
+
     if (
-      localClaims.some(
-        (claim) => claim.state === "Prepared" || claim.state === "Active",
-      )
+      openClaim?.source === "OfflineOrigin" &&
+      openClaim.state === "Active" &&
+      openClaim.boundOrderGuid === null
     ) {
+      const orphan = openClaim;
+      const cartAllowsLegacyRepair = await this.withCartLease((lease) => {
+        const active = lease.read();
+        return (
+          isSaleCart(active) &&
+          isEmptySaleCart(active) &&
+          active.recallBinding === null &&
+          !active.terminalRecoveryRequired
+        );
+      });
+      if (cartAllowsLegacyRepair) {
+        // 旧 presenter 可能已清 legacy fence/held 却漏掉 shared claim。仓储会在
+        // 同一事务内核对完整孤儿拓扑；正常 Active（fence 仍在）仍然拒绝修复。
+        const repaired =
+          await this.options.claims.repairLegacyClearedOfflineOriginClaim({
+            claimGuid: orphan.claimGuid,
+            releaseIdempotencyKey: `ipad-owner-release:${orphan.claimGuid}`,
+            releasedAtIso: this.options.nowIso(),
+          });
+        if (repaired) {
+          openClaim = await this.getOpenClaim();
+        }
+      }
+    }
+    if (openClaim) {
       throw new SharedHeldOrderCoordinatorError(
         "FENCE_CONFLICT",
         "本机已有未完成的共享挂单 claim，请先恢复或释放后再取单。",
@@ -207,7 +239,7 @@ export class SharedHeldOrderCoordinator {
     await this.withCartLease(async (lease) => {
       if (!isSaleCart(lease.read())) {
         throw new SharedHeldOrderCoordinatorError(
-          "INVALID",
+          "SALE_MODE_REQUIRED",
           "共享挂单取单需要普通销售购物车。",
         );
       }
@@ -304,7 +336,7 @@ export class SharedHeldOrderCoordinator {
     await this.withCartLease(async (lease) => {
       if (!isSaleCart(lease.read())) {
         throw new SharedHeldOrderCoordinatorError(
-          "INVALID",
+          "SALE_MODE_REQUIRED",
           "共享挂单取单需要普通销售购物车。",
         );
       }
@@ -379,18 +411,19 @@ export class SharedHeldOrderCoordinator {
   ): Promise<SharedHeldOrderForceReleaseResult> {
     const holdGuid = requiredText(holdGuidInput, "hold guid");
     const reason = requiredText(reasonInput, "force release reason");
-    const openClaims = (await this.options.claims.listMine(this.scope(), 200)).filter(
-      (claim) =>
-        claim.holdGuid === holdGuid &&
-        (claim.state === "Prepared" || claim.state === "Active"),
-    );
-    if (openClaims.length !== 1) {
+    const claim = await this.getOpenClaim();
+    if (!claim) {
       throw new SharedHeldOrderCoordinatorError(
-        openClaims.length === 0 ? "NOT_FOUND" : "CONFLICT",
+        "NOT_FOUND",
         "找不到唯一的本机 open claim，拒绝强制释放。",
       );
     }
-    const claim = openClaims[0]!;
+    if (claim.holdGuid !== holdGuid) {
+      throw new SharedHeldOrderCoordinatorError(
+        "CONFLICT",
+        "本机 open claim 属于另一笔挂单，拒绝强制释放。",
+      );
+    }
     if (claim.state !== "Prepared" && claim.state !== "Active") {
       throw new SharedHeldOrderCoordinatorError(
         "CONFLICT",
@@ -440,20 +473,42 @@ export class SharedHeldOrderCoordinator {
     holdGuidInput: string,
   ): Promise<SharedHeldOrderOwnerReleaseResult> {
     const holdGuid = requiredText(holdGuidInput, "hold guid");
-    const claims = (await this.options.claims.listMine(this.scope(), 200))
-      .filter((claim) => claim.holdGuid === holdGuid);
-    if (claims.length !== 1) {
-      throw new SharedHeldOrderCoordinatorError(
-        claims.length === 0 ? "NOT_FOUND" : "CONFLICT",
-        "找不到唯一的本机共享挂单 claim，拒绝普通释放。",
+    const openClaim = await this.getOpenClaim();
+    const activeBinding = await this.withCartLease(
+      (lease) => lease.read().recallBinding,
+    );
+    let claim: SharedHeldOrderClaim | null;
+    if (openClaim?.holdGuid === holdGuid) {
+      claim = openClaim;
+    } else if (activeBinding?.holdId === holdGuid) {
+      // 当前购物车 binding 才是清车路由真相。legacy recallAttemptId 不会命中
+      // shared claim，此时返回 NOT_FOUND 让组合根安全回退 legacy fence。
+      claim = await this.options.claims.getClaim(
+        activeBinding.recallAttemptId,
+      );
+      if (claim && !recallBindingMatchesClaim(activeBinding, claim)) {
+        throw new SharedHeldOrderCoordinatorError(
+          "FENCE_CONFLICT",
+          "当前购物车 binding 与本机 shared claim 不一致，拒绝清理。",
+        );
+      }
+    } else {
+      claim = await this.options.claims.getLatestClaimForHold(
+        this.scope(),
+        holdGuid,
       );
     }
-    const claim = claims[0]!;
+    if (!claim) {
+      throw new SharedHeldOrderCoordinatorError(
+        "NOT_FOUND",
+        "本机不存在该共享挂单 claim，拒绝普通释放。",
+      );
+    }
     const ownerKey = `ipad-owner-release:${claim.claimGuid}`;
     if (claim.state === "Released") {
       if (claim.releaseIdempotencyKey !== ownerKey) {
         throw new SharedHeldOrderCoordinatorError(
-          "NOT_FOUND",
+          "CONFLICT",
           "本机 claim 已由其他流程释放，拒绝重复普通释放。",
         );
       }
@@ -637,7 +692,7 @@ export class SharedHeldOrderCoordinator {
 
   private async reconcileClaimsOnce(): Promise<SharedHeldOrderReconcileResult> {
     const mismatches: SharedHeldOrderReconcileMismatch[] = [];
-    const localClaims = await this.options.claims.listMine(this.scope(), 200);
+    const localClaims = await this.listMineIncludingOpen();
     const restored: string[] = [];
     const reconciledPrepared: string[] = [];
     let serverClaims: readonly SharedHeldOrderRecoveryClaimDto[];
@@ -671,10 +726,7 @@ export class SharedHeldOrderCoordinator {
       serverClaims,
       mismatches,
     );
-    const refreshedClaims = await this.options.claims.listMine(
-      this.scope(),
-      200,
-    );
+    const refreshedClaims = await this.listMineIncludingOpen();
     const localByClaimId = new Map(
       refreshedClaims.map((claim) => [claim.claimGuid, claim]),
     );
@@ -929,7 +981,7 @@ export class SharedHeldOrderCoordinator {
         activeClaim = reloaded;
       }
       const existingCartHandled =
-        await this.reconcileRestoredOfflineOriginCart(
+        await this.reconcileExistingOfflineOriginCart(
           activeClaim,
           restored,
           mismatches,
@@ -941,42 +993,69 @@ export class SharedHeldOrderCoordinator {
     }
   }
 
-  /** 支付草稿已带同一 binding 时补回 durable held/fence，并保留当前购物车。 */
-  private async reconcileRestoredOfflineOriginCart(
+  /**
+   * 旧版 owner release 可能只清掉 held/fence，却把 OfflineOrigin claim 留在
+   * Active。若支付草稿已经恢复相同 binding，必须补回 durable 拓扑并保留
+   * 当前购物车（用户可能已改数量）；若购物车仍为空，则补 Released，避免
+   * 把用户已经清掉的旧挂单重新恢复进购物车。
+   */
+  private async reconcileExistingOfflineOriginCart(
     claim: SharedHeldOrderClaim,
     restored: string[],
     mismatches: SharedHeldOrderReconcileMismatch[],
   ): Promise<boolean> {
     try {
-      return await this.withCartLease(async (lease) => {
+      const outcome = await this.withCartLease(async (lease) => {
         const active = lease.read();
         if (
-          !isSaleCart(active) ||
-          active.terminalRecoveryRequired ||
-          active.recallBinding === null ||
-          !recallBindingMatchesClaim(active.recallBinding, claim)
+          isSaleCart(active) &&
+          !active.terminalRecoveryRequired &&
+          active.recallBinding !== null &&
+          recallBindingMatchesClaim(active.recallBinding, claim)
         ) {
-          return false;
+          const repaired =
+            await this.options.claims.ensureRestoredOfflineOriginClaimFence({
+              claimGuid: claim.claimGuid,
+              repairedAtIso: this.options.nowIso(),
+            });
+          return repaired ? "restored" : "repair-failed";
         }
-        const repaired =
-          await this.options.claims.ensureRestoredOfflineOriginClaimFence({
-            claimGuid: claim.claimGuid,
-            repairedAtIso: this.options.nowIso(),
-          });
-        if (repaired) {
-          if (!restored.includes(claim.claimGuid)) {
-            restored.push(claim.claimGuid);
-          }
-        } else {
-          mismatches.push({
-            claimGuid: claim.claimGuid,
-            holdGuid: claim.holdGuid,
-            reason:
-              "购物车已恢复，但本地挂单围栏无法补回；保留 Active 与购物车等待重试。",
-          });
+        if (
+          isSaleCart(active) &&
+          isEmptySaleCart(active) &&
+          active.recallBinding === null &&
+          !active.terminalRecoveryRequired
+        ) {
+          const released =
+            await this.options.claims.repairLegacyClearedOfflineOriginClaim({
+              claimGuid: claim.claimGuid,
+              releaseIdempotencyKey: `ipad-owner-release:${claim.claimGuid}`,
+              releasedAtIso: this.options.nowIso(),
+            });
+          return released ? "released" : "not-handled";
+        }
+        return "not-handled";
+      });
+
+      if (outcome === "restored") {
+        if (!restored.includes(claim.claimGuid)) {
+          restored.push(claim.claimGuid);
         }
         return true;
-      });
+      }
+      if (outcome === "released") {
+        return true;
+      }
+      if (outcome === "repair-failed") {
+        mismatches.push({
+          claimGuid: claim.claimGuid,
+          holdGuid: claim.holdGuid,
+          reason:
+            "购物车已恢复，但本地挂单围栏无法补回；保留 Active 与购物车等待重试。",
+        });
+        return true;
+      }
+      return false;
     } catch {
       mismatches.push({
         claimGuid: claim.claimGuid,
@@ -1110,6 +1189,31 @@ export class SharedHeldOrderCoordinator {
     operation: (lease: ActivePricingCartLeasePort) => T | Promise<T>,
   ): Promise<T> {
     return this.options.activeCart.runExclusive(operation);
+  }
+
+  private async listMineIncludingOpen(): Promise<readonly SharedHeldOrderClaim[]> {
+    const claims = await this.options.claims.listMine(this.scope(), 200);
+    const claimIds = new Set(claims.map((claim) => claim.claimGuid));
+    const omittedOpenClaims = (await this.options.claims.listOpenClaims(
+      this.scope(),
+    )).filter((claim) => !claimIds.has(claim.claimGuid));
+    return omittedOpenClaims.length === 0
+      ? claims
+      : [...claims, ...omittedOpenClaims];
+  }
+
+  private async getOpenClaim(): Promise<SharedHeldOrderClaim | null> {
+    try {
+      return await this.options.claims.getOpenClaim(this.scope());
+    } catch (error: unknown) {
+      if (error instanceof SharedHeldOrderClaimInvariantError) {
+        throw new SharedHeldOrderCoordinatorError(
+          "CONFLICT",
+          "本机存在多个未完成的共享挂单 claim，拒绝继续。",
+        );
+      }
+      throw error;
+    }
   }
 
   private scope() {

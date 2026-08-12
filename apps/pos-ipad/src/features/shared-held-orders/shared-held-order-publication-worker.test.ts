@@ -78,6 +78,10 @@ class FakeQueue implements SharedHeldOrderPublicationQueuePort {
   public applyResult: "updated" | "already-evaluated" | "not-found" = "updated";
   public markResult = true;
 
+  public async requestShare(): Promise<"ineligible"> {
+    return "ineligible";
+  }
+
   public async listShareStates() {
     return [];
   }
@@ -175,6 +179,16 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
 
   public async listPending() {
     return [];
+  }
+
+  public async cancel(holdGuid: string) {
+    return {
+      holdGuid,
+      status: "Cancelled" as const,
+      revision: 8,
+      updatedAtIso: NOW,
+      alreadyCancelled: false,
+    };
   }
 
   public async prepare(_input: Readonly<{
@@ -541,6 +555,37 @@ test("发布 worker：幂等重放远端已 Claimed 仍按匹配 holdGuid markPu
   assert.equal(result.published, 1);
   assert.equal(queue.published[0], "hold-1");
   assert.equal(queue.failures.length, 0);
+});
+
+test("发布 worker：删除竞态返回 Cancelled 时稳定阻断队列且绝不重新标记为 Published", async () => {
+  const queue = new FakeQueue();
+  const api = new FakeApi();
+  api.publishResponseOverride = {
+    holdGuid: "hold-1",
+    status: "Cancelled",
+    revision: 8,
+    createdAtIso: NOW,
+    alreadyExists: true,
+  };
+  queue.due = [
+    { ...dueRow("hold-1"), payloadCiphertext: await ciphertextForLegacy() },
+  ];
+  const worker = new SharedHeldOrderPublicationWorker({
+    queue,
+    api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  });
+
+  const result = await worker.runOnce();
+
+  assert.equal(result.blocked, 1);
+  assert.equal(result.failedPublish, 0);
+  assert.equal(result.published, 0);
+  assert.deepEqual(queue.blockedReasons, ["SHARED_HELD_ORDER_CANCELLED"]);
+  assert.deepEqual(queue.failures, []);
+  assert.deepEqual(queue.published, []);
 });
 
 test("发布 worker：只评估和发布当前门店设备 scope 的队列行", async () => {

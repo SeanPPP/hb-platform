@@ -61,8 +61,8 @@ public sealed class SharedHeldOrderJsonPayloadSerializer : ISharedHeldOrderPaylo
 public interface ISharedHeldOrderRepository
 {
     /// <summary>
-    /// 旧挂单评估：只选没有 publication row 或 publication status=NeedsEvaluation
-    /// 的普通 sale；PendingPublish/Published/Blocked 均不进入评估。
+    /// 共享评估：只选 publication=NeedsEvaluation、已记录共享意图且未消费的普通 sale；
+    /// 无 publication、未请求及 PendingPublish/Published/Blocked 均不进入评估。
     /// </summary>
     Task<IReadOnlyList<SuspendedOrder>> ListLegacyOrdersNeedingEvaluationAsync(
         string storeCode,
@@ -92,6 +92,19 @@ public interface ISharedHeldOrderRepository
     /// <summary>后台 due：只返回 PendingPublish 且已到 NextAttemptAtIso 的行；Published/Blocked 均不重试。</summary>
     Task<IReadOnlyList<SharedHeldOrderPublication>> ListDuePublicationsAsync(
         string nowIso,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 显式一次性共享请求（幂等）：挂单必须存在、Pending 且 store/device 精确匹配。
+    /// 旧缺 publication 行时原子插入 NeedsEvaluation+requested；已有未请求的
+    /// NeedsEvaluation 只写请求时间；已请求返回 AlreadyRequested。非 Pending/
+    /// store/device 不匹配/已消费返回 Ineligible；挂单不存在返回 NotFound。
+    /// </summary>
+    Task<SharedHeldOrderShareRequestResult> TryRequestShareAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string requestedAtIso,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -169,8 +182,9 @@ public interface ISharedHeldOrderRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 解密读取 PendingPublish/Published 的 canonical payload（离线 recall / 发布请求用）；
-    /// NeedsEvaluation/Blocked 或无行返回 null。payload 明文只存在于内存，绝不落库/日志。
+    /// 解密读取 PendingPublish/Published 的 canonical payload（离线 recall / 发布请求用），
+    /// 以及 LOCAL_DELETE_PENDING 的冻结 payload（404 取消补偿用）；其他 Blocked/
+    /// NeedsEvaluation 或无行返回 null。payload 明文只存在于内存，绝不落库/日志。
     /// </summary>
     Task<SharedHeldOrderCanonicalPayload?> GetPublicationPayloadAsync(
         Guid localHoldGuid,
@@ -327,12 +341,14 @@ public sealed class SharedHeldOrderRepository(
                 WHERE o.Status = $PendingStatus
                   AND UPPER(o.StoreCode) = $StoreCode
                   AND ($DeviceCode = '' OR UPPER(o.DeviceCode) = $DeviceCode)
-                  AND NOT EXISTS (
+                  AND EXISTS (
                       SELECT 1
                       FROM SharedHeldOrderPublications p
-                      WHERE p.LocalHoldGuid = o.SuspendedOrderGuid
-                        AND (p.Status IN ('PendingPublish', 'Published', 'Blocked')
-                             OR p.ConsumedAtIso IS NOT NULL)
+                        WHERE p.LocalHoldGuid = o.SuspendedOrderGuid
+                        AND p.Status = 'NeedsEvaluation'
+                        AND NULLIF(TRIM(p.ShareRequestedAtIso), '') IS NOT NULL
+                        AND LENGTH(p.ShareRequestedAtIso) <= 64
+                        AND p.ConsumedAtIso IS NULL
                   )
                 ORDER BY o.SuspendedAt ASC;
                 """;
@@ -484,16 +500,28 @@ public sealed class SharedHeldOrderRepository(
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
-                   ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
-                   LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso, ConsumedAtIso
-            FROM SharedHeldOrderPublications
-            WHERE Status = 'PendingPublish'
-              AND ConsumedAtIso IS NULL
-              AND (NextAttemptAtIso IS NULL OR NextAttemptAtIso <= $NowIso)
-            ORDER BY COALESCE(NextAttemptAtIso, UpdatedAtIso) ASC, CreatedAtIso ASC;
+            SELECT p.LocalHoldGuid, p.StoreCode, p.DeviceCode, p.Status, p.Revision, p.RetryCount,
+                   p.ErrorCode, p.ErrorMessage, p.PayloadCiphertext, p.HeldAtIso, p.CreatedAtIso, p.UpdatedAtIso,
+                   p.LastAttemptAtIso, p.NextAttemptAtIso, p.RemoteRevision, p.RemoteUpdatedAtIso,
+                   p.ShareRequestedAtIso, p.ConsumedAtIso
+            FROM SharedHeldOrderPublications p
+            INNER JOIN SuspendedOrders o ON o.SuspendedOrderGuid = p.LocalHoldGuid
+            WHERE p.Status = 'PendingPublish'
+              AND p.ConsumedAtIso IS NULL
+              AND o.Status = $PendingStatus
+              AND NULLIF(TRIM(p.ShareRequestedAtIso), '') IS NOT NULL
+              AND LENGTH(p.ShareRequestedAtIso) <= 64
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM SharedHeldOrderClaims c
+                  WHERE c.HoldGuid = p.LocalHoldGuid
+                    AND c.Source = 'OfflineOrigin'
+                    AND c.Status IN ('Prepared', 'Active'))
+              AND (p.NextAttemptAtIso IS NULL OR p.NextAttemptAtIso <= $NowIso)
+            ORDER BY COALESCE(p.NextAttemptAtIso, p.UpdatedAtIso) ASC, p.CreatedAtIso ASC;
             """;
         command.Parameters.AddWithValue("$NowIso", nowIso);
+        command.Parameters.AddWithValue("$PendingStatus", (int)SuspendedOrderStatus.Pending);
         var publications = new List<SharedHeldOrderPublication>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -502,6 +530,155 @@ public sealed class SharedHeldOrderRepository(
         }
 
         return publications;
+    }
+
+    public async Task<SharedHeldOrderShareRequestResult> TryRequestShareAsync(
+        Guid holdGuid,
+        string storeCode,
+        string deviceCode,
+        string requestedAtIso,
+        CancellationToken cancellationToken = default)
+    {
+        if (holdGuid == Guid.Empty ||
+            string.IsNullOrWhiteSpace(storeCode) ||
+            string.IsNullOrWhiteSpace(deviceCode) ||
+            string.IsNullOrWhiteSpace(requestedAtIso) ||
+            requestedAtIso.Length > 64)
+        {
+            return SharedHeldOrderShareRequestResult.Ineligible;
+        }
+
+        var normalizedStoreCode = storeCode.Trim().ToUpperInvariant();
+        var normalizedDeviceCode = deviceCode.Trim().ToUpperInvariant();
+        var holdGuidText = holdGuid.ToString("D");
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(deferred: false);
+
+        // 1) 挂单必须存在、Pending 且 store/device 精确匹配（大小写不敏感规范化）。
+        string heldAtIso;
+        await using (var orderCommand = connection.CreateCommand())
+        {
+            orderCommand.Transaction = transaction;
+            orderCommand.CommandText =
+                """
+                SELECT StoreCode, DeviceCode, Status, SuspendedAt
+                FROM SuspendedOrders
+                WHERE SuspendedOrderGuid = $HoldGuid;
+                """;
+            orderCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            await using var reader = await orderCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return SharedHeldOrderShareRequestResult.NotFound;
+            }
+
+            var orderStore = ReadString(reader, "StoreCode").Trim().ToUpperInvariant();
+            var orderDevice = ReadString(reader, "DeviceCode").Trim().ToUpperInvariant();
+            var isPending = reader.GetInt32(reader.GetOrdinal("Status")) == (int)SuspendedOrderStatus.Pending;
+            if (!string.Equals(orderStore, normalizedStoreCode, StringComparison.Ordinal) ||
+                !string.Equals(orderDevice, normalizedDeviceCode, StringComparison.Ordinal) ||
+                !isPending)
+            {
+                return SharedHeldOrderShareRequestResult.Ineligible;
+            }
+
+            heldAtIso = reader.GetString(reader.GetOrdinal("SuspendedAt"));
+        }
+
+        // 2) 已有 publication：已请求 -> AlreadyRequested；已消费/店设备不匹配 -> Ineligible。
+        var publicationExists = false;
+        await using (var publicationCommand = connection.CreateCommand())
+        {
+            publicationCommand.Transaction = transaction;
+            publicationCommand.CommandText =
+                """
+                SELECT StoreCode, DeviceCode, Status, ShareRequestedAtIso, ConsumedAtIso
+                FROM SharedHeldOrderPublications
+                WHERE LocalHoldGuid = $HoldGuid;
+                """;
+            publicationCommand.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            await using var reader = await publicationCommand.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                publicationExists = true;
+                var publicationStore = ReadString(reader, "StoreCode").Trim().ToUpperInvariant();
+                var publicationDevice = ReadString(reader, "DeviceCode").Trim().ToUpperInvariant();
+                if (!string.Equals(publicationStore, normalizedStoreCode, StringComparison.Ordinal) ||
+                    !string.Equals(publicationDevice, normalizedDeviceCode, StringComparison.Ordinal))
+                {
+                    return SharedHeldOrderShareRequestResult.Ineligible;
+                }
+
+                var existingShareRequestedAtIso = ReadNullableString(reader, "ShareRequestedAtIso");
+                if (!string.IsNullOrWhiteSpace(existingShareRequestedAtIso) &&
+                    existingShareRequestedAtIso.Length <= 64)
+                {
+                    return SharedHeldOrderShareRequestResult.AlreadyRequested;
+                }
+
+                if (existingShareRequestedAtIso is not null)
+                {
+                    // 损坏/空白的非空标记不能被当作共享事实，也不能原位覆盖。
+                    return SharedHeldOrderShareRequestResult.Ineligible;
+                }
+
+                if (ReadNullableString(reader, "ConsumedAtIso") is not null ||
+                    !ReadString(reader, "Status").Equals(
+                        PublicationNeedsEvaluation,
+                        StringComparison.Ordinal))
+                {
+                    return SharedHeldOrderShareRequestResult.Ineligible;
+                }
+            }
+        }
+
+        // 3) 原子写入：已有未请求行只写请求时间；旧缺行插入 NeedsEvaluation+requested。
+        int changes;
+        if (publicationExists)
+        {
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText =
+                """
+                UPDATE SharedHeldOrderPublications
+                SET ShareRequestedAtIso = $RequestedAtIso,
+                    UpdatedAtIso = $RequestedAtIso
+                WHERE LocalHoldGuid = $HoldGuid
+                  AND Status = 'NeedsEvaluation'
+                  AND ConsumedAtIso IS NULL
+                  AND ShareRequestedAtIso IS NULL;
+                """;
+            update.Parameters.AddWithValue("$RequestedAtIso", requestedAtIso);
+            update.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            changes = await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        else
+        {
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText =
+                """
+                INSERT INTO SharedHeldOrderPublications (
+                    LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
+                    ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
+                    ShareRequestedAtIso)
+                VALUES (
+                    $HoldGuid, $StoreCode, $DeviceCode, 'NeedsEvaluation', 1, 0,
+                    NULL, NULL, NULL, $HeldAtIso, $RequestedAtIso, $RequestedAtIso,
+                    $RequestedAtIso);
+                """;
+            insert.Parameters.AddWithValue("$HoldGuid", holdGuidText);
+            insert.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            insert.Parameters.AddWithValue("$DeviceCode", normalizedDeviceCode);
+            insert.Parameters.AddWithValue("$HeldAtIso", heldAtIso);
+            insert.Parameters.AddWithValue("$RequestedAtIso", requestedAtIso);
+            changes = await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return changes == 1
+            ? SharedHeldOrderShareRequestResult.Requested
+            : SharedHeldOrderShareRequestResult.AlreadyRequested;
     }
 
     public async Task<bool> TryAdvancePublicationAsync(
@@ -603,7 +780,8 @@ public sealed class SharedHeldOrderRepository(
             """
             SELECT LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
                    ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
-                   LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso, ConsumedAtIso
+                   LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso,
+                   ShareRequestedAtIso, ConsumedAtIso
             FROM SharedHeldOrderPublications
             WHERE LocalHoldGuid = $LocalHoldGuid;
             """;
@@ -907,7 +1085,9 @@ public sealed class SharedHeldOrderRepository(
                 UpdatedAtIso = $UpdatedAtIso
             WHERE LocalHoldGuid = $LocalHoldGuid
               AND Status = 'NeedsEvaluation'
-              AND Revision = $ExpectedRevision;
+              AND Revision = $ExpectedRevision
+              AND NULLIF(TRIM(ShareRequestedAtIso), '') IS NOT NULL
+              AND LENGTH(ShareRequestedAtIso) <= 64;
             """;
         command.Parameters.AddWithValue("$LocalHoldGuid", localHoldGuid.ToString("D"));
         command.Parameters.AddWithValue("$ExpectedRevision", expectedRevision);
@@ -938,7 +1118,9 @@ public sealed class SharedHeldOrderRepository(
                 UpdatedAtIso = $UpdatedAtIso
             WHERE LocalHoldGuid = $LocalHoldGuid
               AND Status = 'NeedsEvaluation'
-              AND Revision = $ExpectedRevision;
+              AND Revision = $ExpectedRevision
+              AND NULLIF(TRIM(ShareRequestedAtIso), '') IS NOT NULL
+              AND LENGTH(ShareRequestedAtIso) <= 64;
             """;
         command.Parameters.AddWithValue("$LocalHoldGuid", localHoldGuid.ToString("D"));
         command.Parameters.AddWithValue("$ExpectedRevision", expectedRevision);
@@ -956,7 +1138,7 @@ public sealed class SharedHeldOrderRepository(
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT Status, PayloadCiphertext, ConsumedAtIso
+            SELECT Status, ErrorCode, PayloadCiphertext, ConsumedAtIso
             FROM SharedHeldOrderPublications
             WHERE LocalHoldGuid = $LocalHoldGuid;
             """;
@@ -968,7 +1150,10 @@ public sealed class SharedHeldOrderRepository(
         }
 
         var status = ReadString(reader, "Status");
-        if (status is not (PublicationPendingPublish or PublicationPublished))
+        var errorCode = ReadNullableString(reader, "ErrorCode");
+        var isDeletePending = status == PublicationBlocked &&
+            errorCode is LocalDeletePendingRemote or LocalDeletePendingLocal;
+        if (status is not (PublicationPendingPublish or PublicationPublished) && !isDeletePending)
         {
             return null;
         }
@@ -1555,6 +1740,7 @@ public sealed class SharedHeldOrderRepository(
             ReadNullableString(reader, "NextAttemptAtIso"),
             ReadNullableInt64(reader, "RemoteRevision"),
             ReadNullableString(reader, "RemoteUpdatedAtIso"),
+            ReadNullableString(reader, "ShareRequestedAtIso"),
             ReadNullableString(reader, "ConsumedAtIso"));
     }
 

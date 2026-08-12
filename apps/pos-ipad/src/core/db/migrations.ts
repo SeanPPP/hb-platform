@@ -5789,6 +5789,73 @@ BEGIN
 END;
 `;
 
+/**
+ * M41 共享意图闸门：共享必须由本机一次性明确请求，迁移只回填已有发布事实。
+ * 不重建 M40 表，避免破坏旧设备上的密文、触发器与索引；LOCAL_DELETE_PENDING
+ * 是删除补偿路径，允许它把尚未请求的 NeedsEvaluation 置为 Blocked。
+ */
+const M41 = `
+ALTER TABLE held_order_records
+ADD COLUMN share_requested_at_iso TEXT NULL
+  CHECK (
+    share_requested_at_iso IS NULL
+    OR (TRIM(share_requested_at_iso) <> '' AND LENGTH(share_requested_at_iso) <= 64)
+  );
+
+UPDATE held_order_records
+SET share_requested_at_iso = COALESCE(updated_at_iso, created_at_iso)
+WHERE share_state IN ('PendingPublish', 'Published', 'Blocked')
+  AND share_requested_at_iso IS NULL;
+
+CREATE TRIGGER IF NOT EXISTS trg_held_order_share_request_required
+BEFORE UPDATE OF share_state, publish_block_reason, share_requested_at_iso ON held_order_records
+FOR EACH ROW
+WHEN NEW.share_state IN ('PendingPublish', 'Published', 'Blocked')
+  AND NEW.share_requested_at_iso IS NULL
+  AND NOT (
+    NEW.share_state = 'Blocked'
+    AND COALESCE(NEW.publish_block_reason, '') = 'LOCAL_DELETE_PENDING'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'HELD_ORDER_SHARE_REQUEST_REQUIRED');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_held_order_share_request_required_insert
+BEFORE INSERT ON held_order_records
+FOR EACH ROW
+WHEN NEW.share_state IN ('PendingPublish', 'Published', 'Blocked')
+  AND NEW.share_requested_at_iso IS NULL
+  AND NOT (
+    NEW.share_state = 'Blocked'
+    AND COALESCE(NEW.publish_block_reason, '') = 'LOCAL_DELETE_PENDING'
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'HELD_ORDER_SHARE_REQUEST_REQUIRED');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_held_order_share_request_immutable
+BEFORE UPDATE OF share_requested_at_iso ON held_order_records
+FOR EACH ROW
+WHEN OLD.share_requested_at_iso IS NOT NULL
+  AND (
+    NEW.share_requested_at_iso IS NULL
+    OR NEW.share_requested_at_iso <> OLD.share_requested_at_iso
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'HELD_ORDER_SHARE_REQUEST_IMMUTABLE');
+END;
+
+CREATE INDEX IF NOT EXISTS ix_held_order_records_share_request
+  ON held_order_records (
+    store_code,
+    device_code,
+    status,
+    share_state,
+    share_requested_at_iso,
+    local_sequence DESC
+  );
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5830,6 +5897,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 38, name: "M38_repair_installment_lifecycle_actions", sql: M38 },
   { version: 39, name: "M39_mixed_cash_final_rounding", sql: M39 },
   { version: 40, name: "M40_shared_held_order_share_state", sql: M40 },
+  { version: 41, name: "M41_shared_held_order_share_request", sql: M41 },
 ];
 
 export async function applyMigrations(

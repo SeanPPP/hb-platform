@@ -54,6 +54,108 @@ async function openQueue(): Promise<Readonly<{
   return { connection, queue };
 }
 
+test("共享请求显式且幂等：只允许当前门店设备的真实 Pending 行，未请求不进入评估/发布队列", async () => {
+  const { connection, queue } = await openQueue();
+  const ciphertext = await fakeEncryptor.encrypt(PAYLOAD_JSON);
+  await insertHeldOrderRow(connection, {
+    holdId: "hold-requestable",
+    payloadCiphertext: ciphertext,
+  });
+  await insertHeldOrderRow(connection, {
+    holdId: "hold-foreign-device",
+    payloadCiphertext: ciphertext,
+    deviceCode: "IPAD-02",
+  });
+  await insertHeldOrderRow(connection, {
+    holdId: "hold-not-pending",
+    payloadCiphertext: ciphertext,
+  });
+  await insertHeldOrderRow(connection, {
+    holdId: "hold-synthetic",
+    payloadCiphertext: ciphertext,
+  });
+  await connection.run(
+    `UPDATE held_order_records SET status = 'Recalled', recalling_at_iso = ?,
+       recall_attempt_id = ?, recalling_cashier_id = ?, recalling_cashier_name = ?,
+       recalled_at_iso = ? WHERE hold_id = 'hold-not-pending'`,
+    [TEST_NOW_ISO, "attempt-not-pending", "cashier-1", "Cashier One", TEST_NOW_ISO],
+  );
+  await connection.run(
+    "UPDATE held_order_records SET is_synthetic_shared_claim = 1 WHERE hold_id = 'hold-synthetic'",
+  );
+
+  assert.deepEqual(await queue.listNeedsEvaluation(SCOPE, 10), []);
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-requestable",
+      scope: SCOPE,
+      requestedAtIso: TEST_NOW_ISO,
+    }),
+    "requested",
+  );
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-requestable",
+      scope: SCOPE,
+      requestedAtIso: "2026-07-28T09:00:00.000Z",
+    }),
+    "already-requested",
+  );
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-foreign-device",
+      scope: SCOPE,
+      requestedAtIso: TEST_NOW_ISO,
+    }),
+    "not-found",
+  );
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-not-pending",
+      scope: SCOPE,
+      requestedAtIso: TEST_NOW_ISO,
+    }),
+    "ineligible",
+  );
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-synthetic",
+      scope: SCOPE,
+      requestedAtIso: TEST_NOW_ISO,
+    }),
+    "ineligible",
+  );
+
+  const needs = await queue.listNeedsEvaluation(SCOPE, 10);
+  assert.deepEqual(needs.map((row) => row.holdId), ["hold-requestable"]);
+  await queue.applyShareEvaluation({
+    holdId: "hold-requestable",
+    evaluation: { outcome: "pending-publish" },
+    evaluatedAtIso: TEST_NOW_ISO,
+  });
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-requestable",
+      scope: SCOPE,
+      requestedAtIso: "2026-07-28T09:30:00.000Z",
+    }),
+    "already-requested",
+  );
+  assert.deepEqual(
+    (await queue.listDue(SCOPE, TEST_NOW_ISO, 10)).map((row) => row.holdId),
+    ["hold-requestable"],
+  );
+  const shareStates = await queue.listShareStates(SCOPE, 10);
+  assert.deepEqual(shareStates.find((row) => row.holdId === "hold-requestable"), {
+    holdId: "hold-requestable",
+    shareState: "PendingPublish",
+    blockReason: null,
+    requestedAtIso: TEST_NOW_ISO,
+    isSyntheticSharedClaim: false,
+  });
+  await connection.close();
+});
+
 test("评估后旧行进入 PendingPublish，发布队列只暴露密文不存明文", async () => {
   const { connection, queue } = await openQueue();
   const ciphertext = await fakeEncryptor.encrypt(PAYLOAD_JSON);
@@ -61,6 +163,14 @@ test("评估后旧行进入 PendingPublish，发布队列只暴露密文不存�
     holdId: "hold-pub-1",
     payloadCiphertext: ciphertext,
   });
+  assert.equal(
+    await queue.requestShare({
+      holdId: "hold-pub-1",
+      scope: SCOPE,
+      requestedAtIso: TEST_NOW_ISO,
+    }),
+    "requested",
+  );
 
   const pending = await queue.listNeedsEvaluation(SCOPE, 10);
   assert.equal(pending.length, 1);
@@ -115,6 +225,16 @@ test("UI 共享状态只列当前 store/device 的未结束挂单，并且不暴
     payloadCiphertext: ciphertext,
     localSequence: 4,
   });
+  await queue.requestShare({
+    holdId: "hold-published",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
+  });
+  await queue.requestShare({
+    holdId: "hold-blocked",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
+  });
   await connection.run(
     "UPDATE held_order_records SET share_state = 'Published' WHERE hold_id = ?",
     ["hold-published"],
@@ -141,11 +261,19 @@ test("UI 共享状态只列当前 store/device 的未结束挂单，并且不暴
   const rows = await queue.listShareStates(SCOPE, 10);
 
   assert.deepEqual(rows, [
-    { holdId: "hold-published", shareState: "Published", blockReason: null },
+    {
+      holdId: "hold-published",
+      shareState: "Published",
+      blockReason: null,
+      requestedAtIso: TEST_NOW_ISO,
+      isSyntheticSharedClaim: false,
+    },
     {
       holdId: "hold-blocked",
       shareState: "Blocked",
       blockReason: "SHARED_CART_INVALID",
+      requestedAtIso: TEST_NOW_ISO,
+      isSyntheticSharedClaim: false,
     },
   ]);
   assert.equal("payloadCiphertext" in rows[0]!, false);
@@ -156,6 +284,11 @@ test("损坏/非 sale 评估阻断为 Blocked + 稳定原因且不进发布队�
   await insertHeldOrderRow(connection, {
     holdId: "hold-block-1",
     payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
+  });
+  await queue.requestShare({
+    holdId: "hold-block-1",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
   });
 
   assert.equal(
@@ -186,6 +319,11 @@ test("评估幂等：重复评估返回 already-evaluated，未知挂单返回 n
   await insertHeldOrderRow(connection, {
     holdId: "hold-idem-1",
     payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
+  });
+  await queue.requestShare({
+    holdId: "hold-idem-1",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
   });
   assert.equal(
     await queue.applyShareEvaluation({
@@ -218,6 +356,11 @@ test("发布 CAS：按 attempt 计数标记 Published，重复/过期计数均�
   await insertHeldOrderRow(connection, {
     holdId: "hold-cas-1",
     payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
+  });
+  await queue.requestShare({
+    holdId: "hold-cas-1",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
   });
   await queue.applyShareEvaluation({
     holdId: "hold-cas-1",
@@ -259,11 +402,60 @@ test("发布 CAS：按 attempt 计数标记 Published，重复/过期计数均�
   );
 });
 
+test("发布响应迟到时仅 Pending 挂单可标记 Published，本机取回后不得复活", async () => {
+  const { connection, queue } = await openQueue();
+  await insertHeldOrderRow(connection, {
+    holdId: "hold-late-publish",
+    payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
+  });
+  await queue.requestShare({
+    holdId: "hold-late-publish",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
+  });
+  await queue.applyShareEvaluation({
+    holdId: "hold-late-publish",
+    evaluation: { outcome: "pending-publish" },
+    evaluatedAtIso: TEST_NOW_ISO,
+  });
+  await connection.run(
+    `UPDATE held_order_records
+     SET status = 'Recalling', recalling_at_iso = ?, recall_attempt_id = ?,
+         recalling_cashier_id = 'c-1', recalling_cashier_name = 'C',
+         updated_at_iso = ?
+     WHERE hold_id = 'hold-late-publish'`,
+    [TEST_NOW_ISO, "attempt-late-publish", TEST_NOW_ISO],
+  );
+
+  assert.equal(
+    await queue.markPublished({
+      holdId: "hold-late-publish",
+      remoteRevision: 12,
+      remoteUpdatedAtIso: "2026-07-28T08:02:00.000Z",
+      expectedAttemptCount: 0,
+      publishedAtIso: "2026-07-28T08:02:00.000Z",
+    }),
+    false,
+  );
+  assert.equal(
+    (await connection.getFirst<{ share_state: string }>(
+      "SELECT share_state FROM held_order_records WHERE hold_id = ?",
+      ["hold-late-publish"],
+    ))?.share_state,
+    "PendingPublish",
+  );
+});
+
 test("发布失败退避：attempt 递增、错误码落库、到点才重新入列且封顶", async () => {
   const { connection, queue } = await openQueue();
   await insertHeldOrderRow(connection, {
     holdId: "hold-retry-1",
     payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
+  });
+  await queue.requestShare({
+    holdId: "hold-retry-1",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
   });
   await queue.applyShareEvaluation({
     holdId: "hold-retry-1",
@@ -324,6 +516,11 @@ test("发布成功后不能 block；block 写稳定原因", async () => {
     holdId: "hold-blocked-1",
     payloadCiphertext: await fakeEncryptor.encrypt(PAYLOAD_JSON),
   });
+  await queue.requestShare({
+    holdId: "hold-blocked-1",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
+  });
   await queue.applyShareEvaluation({
     holdId: "hold-blocked-1",
     evaluation: { outcome: "pending-publish" },
@@ -371,6 +568,11 @@ test("NeedsEvaluation/listDue 排除 Recalling/Recalled，付款后迟到发布�
     holdId: "hold-queue-pending",
     payloadCiphertext: ciphertext,
   });
+  await queue.requestShare({
+    holdId: "hold-queue-pending",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
+  });
 
   await connection.run(
     `UPDATE held_order_records
@@ -395,20 +597,30 @@ test("NeedsEvaluation/listDue 排除 Recalling/Recalled，付款后迟到发布�
     ["hold-queue-pending"],
   );
 
-  for (const holdId of [
-    "hold-queue-recalling",
-    "hold-queue-recalled",
-    "hold-queue-pending",
-  ]) {
-    assert.equal(
-      await queue.applyShareEvaluation({
-        holdId,
-        evaluation: { outcome: "pending-publish" },
-        evaluatedAtIso: TEST_NOW_ISO,
-      }),
-      "updated",
-    );
-  }
+  assert.equal(
+    await queue.applyShareEvaluation({
+      holdId: "hold-queue-recalling",
+      evaluation: { outcome: "pending-publish" },
+      evaluatedAtIso: TEST_NOW_ISO,
+    }),
+    "already-evaluated",
+  );
+  assert.equal(
+    await queue.applyShareEvaluation({
+      holdId: "hold-queue-recalled",
+      evaluation: { outcome: "pending-publish" },
+      evaluatedAtIso: TEST_NOW_ISO,
+    }),
+    "already-evaluated",
+  );
+  assert.equal(
+    await queue.applyShareEvaluation({
+      holdId: "hold-queue-pending",
+      evaluation: { outcome: "pending-publish" },
+      evaluatedAtIso: TEST_NOW_ISO,
+    }),
+    "updated",
+  );
   const due = await queue.listDue(SCOPE, TEST_NOW_ISO, 10);
   assert.deepEqual(
     due.map((row) => row.holdId),
@@ -426,10 +638,20 @@ test("发布队列在 SQL limit 前按门店设备过滤，外部 scope 不会�
     storeCode: "S2",
     deviceCode: "IPAD-02",
   });
+  await queue.requestShare({
+    holdId: "hold-foreign-first",
+    scope: { storeCode: "S2", deviceCode: "IPAD-02" },
+    requestedAtIso: TEST_NOW_ISO,
+  });
   await insertHeldOrderRow(connection, {
     holdId: "hold-local-second",
     payloadCiphertext: ciphertext,
     localSequence: 2,
+  });
+  await queue.requestShare({
+    holdId: "hold-local-second",
+    scope: SCOPE,
+    requestedAtIso: TEST_NOW_ISO,
   });
 
   const needsEvaluation = await queue.listNeedsEvaluation(SCOPE, 1);

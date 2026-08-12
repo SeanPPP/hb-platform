@@ -539,7 +539,8 @@ public static class ServiceRegistration
                 linklySettlementUploadExecutionService: sp.GetRequiredService<ILinklySettlementUploadExecutionService>(),
                 sharedHeldOrderCoordinator: sp.GetRequiredService<ISharedHeldOrderCoordinator>(),
                 sharedHeldOrderApiClient: sp.GetRequiredService<ISharedHeldOrderApiClient>(),
-                sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>());
+                sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>(),
+                sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),

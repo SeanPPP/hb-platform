@@ -4,7 +4,10 @@ import { render, waitFor } from "@testing-library/react-native";
 import HeldOrdersRoute from "../../../app/held-orders";
 
 import type { SharedHeldOrdersViewPort } from "@/features/held-orders";
-import type { SharedHeldOrderTakeResult } from "@/features/shared-held-orders/shared-held-order-coordinator";
+import {
+  SharedHeldOrderCoordinatorError,
+  type SharedHeldOrderTakeResult,
+} from "@/features/shared-held-orders/shared-held-order-coordinator";
 import type { SharedHeldOrderPendingListItem } from "@/features/shared-held-orders/shared-held-order-network-api";
 
 let mockRuntime: any;
@@ -31,9 +34,15 @@ const mockRecallLocalPublication = jest.fn(
     holdGuid,
   }),
 );
+const mockOwnerRelease = jest.fn(async (holdGuid: string) => ({
+  claimGuid: "claim-1",
+  holdGuid,
+}));
+const mockCancelOwnedHold = jest.fn(async (_holdGuid: string) => undefined);
 const mockListLocalShareState = jest.fn(async () => [
   { holdId: "local-1", shareState: "Published" as const, blockReason: null },
 ]);
+const mockRequestShare = jest.fn(async (_holdGuid: string) => "requested" as const);
 const mockForceRelease = jest.fn(async (holdGuid: string, reason: string) => ({
   ok: true as const,
   code: "force-released" as const,
@@ -43,7 +52,10 @@ const mockForceRelease = jest.fn(async (holdGuid: string, reason: string) => ({
 const mockCreateCoordinator = jest.fn(() => ({
   takeRemoteHold: mockTakeRemoteHold,
   recallLocalPublication: mockRecallLocalPublication,
+  ownerRelease: mockOwnerRelease,
+  cancelOwnedHold: mockCancelOwnedHold,
   forceRelease: mockForceRelease,
+  requestShare: mockRequestShare,
 }));
 const mockRouterDismissTo = jest.fn();
 
@@ -148,7 +160,10 @@ test("挂单路由零参数创建 presenter，返回销售且卸载时销毁", a
   expect(typeof port.listLocalShareState).toBe("function");
   expect(typeof port.takeRemoteHold).toBe("function");
   expect(typeof port.recallLocalPublication).toBe("function");
+  expect(typeof port.releaseOwnedClaim).toBe("function");
+  expect(typeof port.cancelOwnedHold).toBe("function");
   expect(typeof port.forceRelease).toBe("function");
+  expect(typeof port.requestShare).toBe("function");
 
   mockScreenProps.onBack();
   expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
@@ -222,9 +237,19 @@ test("挂单路由把远端列表投影为视图行并把 coordinator 取单结�
     outcome: "restored",
   });
   expect(mockRecallLocalPublication).toHaveBeenCalledWith("remote-1");
+  await expect(port.releaseOwnedClaim?.("remote-1")).resolves.toBe(true);
+  expect(mockOwnerRelease).toHaveBeenCalledWith("remote-1");
+  mockOwnerRelease.mockRejectedValueOnce(
+    new SharedHeldOrderCoordinatorError("NOT_FOUND", "not shared"),
+  );
+  await expect(port.releaseOwnedClaim?.("legacy-1")).resolves.toBe(false);
+  await expect(port.cancelOwnedHold?.("remote-1")).resolves.toBeUndefined();
+  expect(mockCancelOwnedHold).toHaveBeenCalledWith("remote-1");
   await expect(port.listLocalShareState?.()).resolves.toEqual([
     { holdId: "local-1", shareState: "Published", blockReason: null },
   ]);
+  await expect(port.requestShare?.("local-1")).resolves.toBe("requested");
+  expect(mockRequestShare).toHaveBeenCalledWith("local-1");
   await expect(
     port.forceRelease?.({ holdGuid: "remote-1", reason: "duplicate" }),
   ).resolves.toMatchObject({
@@ -254,6 +279,7 @@ function readyRuntime() {
       sharedHeldOrders: {
         api: { listPending: mockListPending },
         listLocalShareState: mockListLocalShareState,
+        requestShare: mockRequestShare,
         createCoordinator: mockCreateCoordinator,
       },
     },

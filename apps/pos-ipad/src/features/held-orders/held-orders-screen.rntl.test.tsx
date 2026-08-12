@@ -70,6 +70,41 @@ function viewRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function swipeEvent(
+  pageX: number,
+  startPageX: number,
+  pageY = 80,
+  startPageY = 80,
+  timeStamp = 200,
+) {
+  return {
+    nativeEvent: {
+      changedTouches: [{ pageX, pageY }],
+      identifier: 0,
+      touches: [{ pageX, pageY }],
+    },
+    touchHistory: {
+      indexOfSingleActiveTouch: 0,
+      mostRecentTimeStamp: timeStamp,
+      numberActiveTouches: 1,
+      touchBank: [
+        {
+          currentPageX: pageX,
+          currentPageY: pageY,
+          currentTimeStamp: timeStamp,
+          previousPageX: startPageX,
+          previousPageY: startPageY,
+          previousTimeStamp: timeStamp - 100,
+          startPageX,
+          startPageY,
+          startTimeStamp: timeStamp - 100,
+          touchActive: true,
+        },
+      ],
+    },
+  };
+}
+
 function createPresenter(overrides: Record<string, unknown> = {}) {
   const listeners = new Set<() => void>();
   const state: any = overrides.state ?? {
@@ -79,6 +114,7 @@ function createPresenter(overrides: Record<string, unknown> = {}) {
     lastAction: null,
     refreshError: null,
     sharedEnabled: false,
+    dateFilter: "today",
   };
   let timer: ReturnType<typeof setInterval> | null = null;
   const presenter: any = {
@@ -96,8 +132,12 @@ function createPresenter(overrides: Record<string, unknown> = {}) {
     recall: jest.fn(async () => ({ ok: true, code: "recalled" })),
     recover: jest.fn(async () => ({ ok: true, code: "recovered" })),
     release: jest.fn(async () => ({ ok: true, code: "released" })),
+    delete: jest.fn(async () => ({ ok: true, code: "deleted" })),
+    setDateFilter: jest.fn(),
     takeRemote: jest.fn(async () => ({ ok: true, code: "recalled" })),
     recallLocalShared: jest.fn(async () => ({ ok: true, code: "recalled" })),
+    requestShare: jest.fn(async () => ({ ok: true, outcome: "requested" })),
+    setSourceTab: jest.fn(),
     forceRelease: jest.fn(async () => ({ ok: true, code: "force-released" })),
     supportsForceRelease: () => false,
     startAutoRefresh: jest.fn((intervalMs: number) => {
@@ -116,6 +156,74 @@ function createPresenter(overrides: Record<string, unknown> = {}) {
   };
   return presenter;
 }
+
+test("挂单列表默认选中今天，并可切换查看全部挂单", async () => {
+  const presenter = createPresenter({
+    state: {
+      kind: "ready",
+      busy: false,
+      lastAction: null,
+      refreshError: null,
+      sharedEnabled: true,
+      dateFilter: "today",
+      rows: [viewRow()],
+    },
+  });
+  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+
+  expect(
+    screen.getByTestId("held-orders-filter-today").props.accessibilityState
+      .selected,
+  ).toBe(true);
+  expect(
+    screen.getByTestId("held-orders-filter-all").props.accessibilityState
+      .selected,
+  ).toBe(false);
+
+  await fireEvent.press(screen.getByTestId("held-orders-filter-all"));
+
+  expect(presenter.setDateFilter).toHaveBeenCalledWith("all");
+});
+
+test("挂单列表默认本机分栏，可切换非本机；未请求行显示共享且 Blocked 评估仍可 recall", async () => {
+  const presenter = createPresenter({
+    state: {
+      kind: "ready",
+      busy: false,
+      shareBusyHoldIds: [],
+      lastAction: null,
+      refreshError: null,
+      sharedEnabled: true,
+      dateFilter: "today",
+      sourceTab: "local",
+      rows: [
+        viewRow({
+          holdId: "share-me",
+          shareState: "NeedsEvaluation",
+          shareRequestedAtIso: null,
+        }),
+        viewRow({
+          holdId: "blocked-local",
+          local: localSummary({ holdId: "blocked-local" }),
+          status: "blocked",
+          shareState: "Blocked",
+          blockReason: "SHARED_CART_INVALID",
+        }),
+      ],
+    },
+  });
+  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+
+  expect(screen.getByTestId("held-orders-source-local").props.accessibilityState.selected).toBe(true);
+  expect(screen.getByTestId("held-order-share-share-me")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("held-order-share-share-me"));
+  expect(presenter.requestShare).toHaveBeenCalledWith("share-me");
+  await fireEvent.press(screen.getByTestId("held-order-action-blocked-local"));
+  expect(presenter.recall).toHaveBeenCalledWith("blocked-local");
+
+  await fireEvent.press(screen.getByTestId("held-orders-source-other"));
+  expect(presenter.setSourceTab).toHaveBeenCalledWith("other");
+});
 
 test("横屏挂单列表提供 44pt 操作、显式恢复入口和不含商品详情的行", async () => {
   expect(HELD_ORDERS_MIN_TOUCH_TARGET).toBe(44);
@@ -203,11 +311,11 @@ test("合并列表按 HoldGuid 去重并显示本地/共享/远端/阻断徽标�
   });
   const screen = await render(<HeldOrdersScreen presenter={presenter} />);
 
-  expect(screen.getByText("Published · shareable")).toBeTruthy();
+  expect(screen.getByText("Shared")).toBeTruthy();
   expect(screen.getByText("Remote · available")).toBeTruthy();
   expect(screen.getByText("Device IPAD-2 · Other Cashier")).toBeTruthy();
-  expect(screen.getByText("Local · awaiting share")).toBeTruthy();
-  expect(screen.getByText("Sharing blocked")).toBeTruthy();
+  expect(screen.getByText("Awaiting share")).toBeTruthy();
+  expect(screen.getByText("Cannot share")).toBeTruthy();
   expect(screen.getByTestId("held-order-blocked-reason-blocked-4")).toBeTruthy();
   expect(
     screen.getByText("Legacy hold data could not be read losslessly."),
@@ -248,6 +356,29 @@ test("远端挂单通过本机在线取单，成功返回收银", async () => {
   await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
 });
 
+test("共享购物车恢复失败明确提示 Active claim 已保留", async () => {
+  const presenter = createPresenter({
+    state: {
+      kind: "ready",
+      busy: false,
+      refreshError: null,
+      sharedEnabled: true,
+      rows: [],
+      lastAction: {
+        ok: false,
+        code: "shared-restore-failed",
+        holdId: "remote-2",
+      },
+    },
+  });
+  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+  expect(
+    screen.getByText(
+      "Cart restore failed; the active shared claim was kept. Use Recover sale before continuing.",
+    ),
+  ).toBeTruthy();
+});
+
 test("本机可共享副本通过 OfflineOrigin durable claim 取回，不走旧 recall", async () => {
   const presenter = createPresenter({
     state: {
@@ -277,6 +408,153 @@ test("本机可共享副本通过 OfflineOrigin durable claim 取回，不走旧
   await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
 });
 
+test("删除手势仅认领横向左滑，不抢占右滑、纵向滚动或 busy 行", async () => {
+  const makeReadyState = (busy: boolean) => ({
+    kind: "ready",
+    busy,
+    lastAction: null,
+    refreshError: null,
+    sharedEnabled: true,
+    rows: [
+      viewRow({ holdId: "local-1", local: localSummary({ holdId: "local-1" }) }),
+    ],
+  });
+  const screen = await render(
+    <HeldOrdersScreen
+      presenter={createPresenter({ state: makeReadyState(false) })}
+    />,
+  );
+  const swipeShell = screen.getByTestId("held-order-swipe-local-1");
+  const shouldClaim = (
+    shell: typeof swipeShell,
+    startPageX: number,
+    pageX: number,
+    startPageY = 80,
+    pageY = 80,
+  ) => {
+    const start = swipeEvent(
+      startPageX,
+      startPageX,
+      startPageY,
+      startPageY,
+      100,
+    );
+    const move = swipeEvent(pageX, startPageX, pageY, startPageY, 200);
+    shell.props.onStartShouldSetResponderCapture(start);
+    shell.props.onMoveShouldSetResponderCapture(move);
+    return shell.props.onMoveShouldSetResponder(move);
+  };
+
+  expect(shouldClaim(swipeShell, 220, 110)).toBe(true);
+  expect(shouldClaim(swipeShell, 110, 220)).toBe(false);
+  expect(shouldClaim(swipeShell, 220, 210, 80, 150)).toBe(false);
+
+  const busyScreen = await render(
+    <HeldOrdersScreen
+      presenter={createPresenter({ state: makeReadyState(true) })}
+    />,
+  );
+  expect(
+    shouldClaim(
+      busyScreen.getByTestId("held-order-swipe-local-1"),
+      220,
+      110,
+    ),
+  ).toBe(false);
+});
+
+test("左滑本机非恢复挂单露出删除，远端与恢复中挂单不可删除，并要求显式二次确认", async () => {
+  const presenter = createPresenter({
+    state: {
+      kind: "ready",
+      busy: false,
+      lastAction: null,
+      refreshError: null,
+      sharedEnabled: true,
+      rows: [
+        viewRow({ holdId: "local-1", local: localSummary({ holdId: "local-1" }) }),
+        viewRow({
+          holdId: "remote-2",
+          local: null,
+          remote: {
+            holdGuid: "remote-2",
+            deviceCode: "IPAD-2",
+            cashierName: "Other Cashier",
+            heldAtIso: "2026-07-28T02:00:00.000Z",
+            lineCount: 1,
+            actualCents: 500,
+          },
+          status: "remote-pending",
+        }),
+        viewRow({
+          holdId: "claim-3",
+          local: localSummary({ holdId: "claim-3", status: "Recalling" }),
+          status: "claiming-here",
+        }),
+      ],
+    },
+  });
+  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+
+  expect(screen.queryByTestId("held-order-delete-local-1")).toBeNull();
+  expect(screen.queryByTestId("held-order-delete-remote-2")).toBeNull();
+  expect(screen.queryByTestId("held-order-delete-claim-3")).toBeNull();
+  expect(screen.queryByTestId("held-order-swipe-remote-2")).toBeNull();
+  expect(screen.queryByTestId("held-order-swipe-claim-3")).toBeNull();
+
+  const swipeShell = screen.getByTestId("held-order-swipe-local-1");
+  await act(async () => {
+    swipeShell.props.onResponderGrant(swipeEvent(220, 220));
+    swipeShell.props.onResponderMove(swipeEvent(110, 220));
+    swipeShell.props.onResponderRelease(swipeEvent(110, 220));
+  });
+
+  await fireEvent.press(screen.getByTestId("held-order-delete-local-1"));
+  expect(screen.getByTestId("held-orders-delete-panel")).toBeTruthy();
+  expect(presenter.delete).not.toHaveBeenCalled();
+
+  await fireEvent.press(screen.getByTestId("held-orders-delete-cancel"));
+  expect(screen.queryByTestId("held-orders-delete-panel")).toBeNull();
+
+  const reopenedSwipeShell = screen.getByTestId("held-order-swipe-local-1");
+  await act(async () => {
+    reopenedSwipeShell.props.onResponderGrant(swipeEvent(220, 220));
+    reopenedSwipeShell.props.onResponderMove(swipeEvent(110, 220));
+    reopenedSwipeShell.props.onResponderRelease(swipeEvent(110, 220));
+  });
+  await fireEvent.press(screen.getByTestId("held-order-delete-local-1"));
+  await fireEvent.press(screen.getByTestId("held-orders-delete-confirm"));
+  expect(presenter.delete).toHaveBeenCalledWith("local-1");
+  expect(screen.queryByTestId("held-orders-delete-panel")).toBeNull();
+});
+
+test("删除未完成的阻断行只允许重试删除，不再允许取回到购物车", async () => {
+  const presenter = createPresenter({
+    state: {
+      kind: "ready",
+      busy: false,
+      lastAction: null,
+      refreshError: null,
+      sharedEnabled: true,
+      dateFilter: "all",
+      rows: [
+        viewRow({
+          holdId: "delete-pending-1",
+          local: localSummary({ holdId: "delete-pending-1" }),
+          status: "blocked",
+          blockReason: "LOCAL_DELETE_PENDING",
+        }),
+      ],
+    },
+  });
+  const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+
+  expect(screen.queryByTestId("held-order-action-delete-pending-1")).toBeNull();
+  expect(screen.getByTestId("held-order-swipe-delete-pending-1")).toBeTruthy();
+  expect(presenter.recall).not.toHaveBeenCalled();
+  expect(presenter.recallLocalShared).not.toHaveBeenCalled();
+});
+
 test("共享同步失败保留本地行并显示非阻塞错误", async () => {
   const presenter = createPresenter({
     state: {
@@ -284,11 +562,14 @@ test("共享同步失败保留本地行并显示非阻塞错误", async () => {
       busy: false,
       lastAction: null,
       refreshError: "SHARED_HELD_ORDERS_SYNC_FAILED",
+      remoteRefreshing: true,
       sharedEnabled: true,
+      sourceTab: "other",
       rows: [viewRow({ holdId: "local-1" })],
     },
   });
   const screen = await render(<HeldOrdersScreen presenter={presenter} />);
+  expect(screen.getByTestId("held-orders-remote-loading-indicator")).toBeTruthy();
   expect(screen.getByTestId("held-orders-refresh-error")).toBeTruthy();
   expect(screen.getByTestId("held-order-row-local-1")).toBeTruthy();
 });

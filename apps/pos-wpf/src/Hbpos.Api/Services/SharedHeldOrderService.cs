@@ -26,8 +26,8 @@ public sealed class SharedHeldOrderException(string code, string message)
 
 public sealed class SharedHeldOrderOptions
 {
-    /// <summary>capability 默认关闭，只有显式配置才启用。 </summary>
-    public bool Enabled { get; set; }
+    /// <summary>跨设备挂单默认启用；紧急情况下仍可通过显式配置 false 关闭。</summary>
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>

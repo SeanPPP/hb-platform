@@ -152,6 +152,80 @@ public sealed class LocalSchemaServiceTests
         return Convert.ToInt32(await command.ExecuteScalarAsync()) > 0;
     }
 
+    private static async Task InsertPublicationAsync(
+        SqliteConnection connection,
+        string holdGuid,
+        string status,
+        string? errorCode,
+        string? shareRequestedAtIso,
+        bool withRemote = false)
+    {
+        var payloadExpression = status is "PendingPublish" or "Published" ? "X'0102'" : "NULL";
+        var remoteExpression = withRemote ? "7, '2026-07-28T00:00:00.000Z'" : "NULL, NULL";
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            INSERT INTO SharedHeldOrderPublications (
+                LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
+                ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
+                LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso, ShareRequestedAtIso)
+            VALUES ($Guid, 'S001', 'POS-01', $Status, 1, 0, $ErrorCode, NULL,
+                    {payloadExpression}, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z',
+                    NULL, NULL, {remoteExpression}, $ShareRequestedAtIso);
+            """;
+        command.Parameters.AddWithValue("$Guid", holdGuid);
+        command.Parameters.AddWithValue("$Status", status);
+        command.Parameters.AddWithValue("$ErrorCode", (object?)errorCode ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ShareRequestedAtIso", (object?)shareRequestedAtIso ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task UpdatePublicationStatusAsync(
+        SqliteConnection connection,
+        string holdGuid,
+        string status,
+        string? shareRequestedAtIso)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE SharedHeldOrderPublications
+            SET Status = $Status,
+                ShareRequestedAtIso = $ShareRequestedAtIso,
+                PayloadCiphertext = X'0102',
+                UpdatedAtIso = '2026-07-28T00:03:00.000Z'
+            WHERE LocalHoldGuid = $Guid;
+            """;
+        command.Parameters.AddWithValue("$Guid", holdGuid);
+        command.Parameters.AddWithValue("$Status", status);
+        command.Parameters.AddWithValue("$ShareRequestedAtIso", (object?)shareRequestedAtIso ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task SetShareRequestedAsync(
+        SqliteConnection connection,
+        string holdGuid,
+        string? shareRequestedAtIso)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE SharedHeldOrderPublications
+            SET ShareRequestedAtIso = $ShareRequestedAtIso,
+                UpdatedAtIso = '2026-07-28T00:03:00.000Z'
+            WHERE LocalHoldGuid = $Guid;
+            """;
+        command.Parameters.AddWithValue("$Guid", holdGuid);
+        command.Parameters.AddWithValue("$ShareRequestedAtIso", (object?)shareRequestedAtIso ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task AssertSqliteConstraintAsync(Func<Task> action)
+    {
+        var exception = await Assert.ThrowsAsync<SqliteException>(action);
+        Assert.Equal(19, exception.SqliteErrorCode);
+    }
+
     [Fact]
     public async Task InitializeAsync_creates_shared_held_order_schema_idempotently()
     {
@@ -183,6 +257,8 @@ public sealed class LocalSchemaServiceTests
                     'IX_LocalOrderHeldOrderSources_Hold',
                     'TRG_SharedHeldOrderClaims_StatusMachine',
                     'TRG_SharedHeldOrderClaims_ActiveBindingOnly',
+                    'TRG_SharedHeldOrderPublications_ShareRequestGate_Insert',
+                    'TRG_SharedHeldOrderPublications_ShareRequestGate_Update',
                     'TRG_LocalOrderHeldOrderSources_Immutable')
                 ORDER BY name;
                 """;
@@ -202,6 +278,8 @@ public sealed class LocalSchemaServiceTests
                     "SharedHeldOrderPublications",
                     "TRG_SharedHeldOrderClaims_ActiveBindingOnly",
                     "TRG_SharedHeldOrderClaims_StatusMachine",
+                    "TRG_SharedHeldOrderPublications_ShareRequestGate_Insert",
+                    "TRG_SharedHeldOrderPublications_ShareRequestGate_Update",
                     "TRG_LocalOrderHeldOrderSources_Immutable",
                     "UX_SharedHeldOrderClaims_ActivateKey",
                     "UX_SharedHeldOrderClaims_OpenFence_PerDevice",
@@ -243,12 +321,12 @@ public sealed class LocalSchemaServiceTests
                     INSERT INTO SharedHeldOrderPublications (
                         LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
                         ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
-                        LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso)
+                        LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso, ShareRequestedAtIso)
                     VALUES
-                        ('aaaaaaaa-0000-0000-0000-000000000001', 'S001', 'POS-01', 'NeedsEvaluation', 1, 0, NULL, NULL, NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL),
-                        ('aaaaaaaa-0000-0000-0000-000000000002', 'S001', 'POS-01', 'PendingPublish', 1, 1, 'HttpTimeout', '上游超时', X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:30.000Z', '2026-07-28T00:01:00.000Z', NULL, NULL),
-                        ('aaaaaaaa-0000-0000-0000-000000000003', 'S001', 'POS-01', 'Published', 1, 0, NULL, NULL, X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL, 7, '2026-07-28T00:00:00.000Z'),
-                        ('aaaaaaaa-0000-0000-0000-000000000004', 'S001', 'POS-01', 'Blocked', 1, 0, 'PromotionRulesMissing', '缺少冻结促销规则', NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL, NULL, NULL);
+                        ('aaaaaaaa-0000-0000-0000-000000000001', 'S001', 'POS-01', 'NeedsEvaluation', 1, 0, NULL, NULL, NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL, NULL, NULL, NULL),
+                        ('aaaaaaaa-0000-0000-0000-000000000002', 'S001', 'POS-01', 'PendingPublish', 1, 1, 'HttpTimeout', '上游超时', X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:30.000Z', '2026-07-28T00:01:00.000Z', NULL, NULL, '2026-07-28T00:00:00.000Z'),
+                        ('aaaaaaaa-0000-0000-0000-000000000003', 'S001', 'POS-01', 'Published', 1, 0, NULL, NULL, X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL, 7, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z'),
+                        ('aaaaaaaa-0000-0000-0000-000000000004', 'S001', 'POS-01', 'Blocked', 1, 0, 'PromotionRulesMissing', '缺少冻结促销规则', NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL, NULL, NULL, '2026-07-28T00:00:00.000Z');
                     """;
                 await command.ExecuteNonQueryAsync();
             }
@@ -309,6 +387,172 @@ public sealed class LocalSchemaServiceTests
                     File.Delete(path);
                 }
             }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InitializeAsync_adds_or_repairs_share_requested_at_column_and_backfills_active_states(
+        bool shareRequestColumnAlreadyExists)
+    {
+        var databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"hbpos-shared-held-request-schema-{shareRequestColumnAlreadyExists}-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            // 旧库 publication 表没有 ShareRequestedAtIso 列，且同时存在各状态数据。
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    CREATE TABLE SharedHeldOrderPublications (
+                        LocalHoldGuid TEXT PRIMARY KEY,
+                        StoreCode TEXT NOT NULL,
+                        DeviceCode TEXT NOT NULL,
+                        Status TEXT NOT NULL,
+                        Revision INTEGER NOT NULL DEFAULT 1,
+                        RetryCount INTEGER NOT NULL DEFAULT 0,
+                        ErrorCode TEXT NULL,
+                        ErrorMessage TEXT NULL,
+                        PayloadCiphertext BLOB NULL,
+                        HeldAtIso TEXT NOT NULL,
+                        CreatedAtIso TEXT NOT NULL,
+                        UpdatedAtIso TEXT NOT NULL,
+                        LastAttemptAtIso TEXT NULL,
+                        NextAttemptAtIso TEXT NULL,
+                        RemoteRevision INTEGER NULL,
+                        RemoteUpdatedAtIso TEXT NULL,
+                        ConsumedAtIso TEXT NULL);
+
+                    INSERT INTO SharedHeldOrderPublications (
+                        LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
+                        ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
+                        RemoteRevision, RemoteUpdatedAtIso)
+                    VALUES
+                        ('aaaaaaaa-0000-0000-0000-000000000001', 'S001', 'POS-01', 'NeedsEvaluation', 1, 0, NULL, NULL, NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL),
+                        ('aaaaaaaa-0000-0000-0000-000000000002', 'S001', 'POS-01', 'PendingPublish', 1, 1, 'HttpTimeout', '上游超时', X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL),
+                        ('aaaaaaaa-0000-0000-0000-000000000003', 'S001', 'POS-01', 'Published', 1, 0, NULL, NULL, X'0102', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', 7, '2026-07-28T00:00:00.000Z'),
+                        ('aaaaaaaa-0000-0000-0000-000000000004', 'S001', 'POS-01', 'Blocked', 1, 0, 'PromotionRulesMissing', '缺少冻结促销规则', NULL, '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', '2026-07-28T00:00:00.000Z', NULL, NULL);
+                    """;
+                await command.ExecuteNonQueryAsync();
+
+                if (shareRequestColumnAlreadyExists)
+                {
+                    // 模拟上次启动在 ALTER 成功、回填前中断；重启必须继续修复。
+                    await using var partialMigration = connection.CreateCommand();
+                    partialMigration.CommandText =
+                        "ALTER TABLE SharedHeldOrderPublications ADD COLUMN ShareRequestedAtIso TEXT NULL;";
+                    await partialMigration.ExecuteNonQueryAsync();
+                }
+            }
+
+            // 幂等初始化：补列 + 回填 + 触发器都不得破坏旧数据。
+            var schema = new LocalSchemaService(store);
+            await schema.InitializeAsync();
+            await schema.InitializeAsync();
+
+            await using var verification = await store.OpenConnectionAsync();
+            Assert.True(await HasColumnAsync(verification, "SharedHeldOrderPublications", "ShareRequestedAtIso"));
+            await using var read = verification.CreateCommand();
+            read.CommandText =
+                """
+                SELECT Status, ShareRequestedAtIso
+                FROM SharedHeldOrderPublications
+                ORDER BY LocalHoldGuid;
+                """;
+            await using var reader = await read.ExecuteReaderAsync();
+            var rows = new List<(string Status, string? ShareRequestedAtIso)>();
+            while (await reader.ReadAsync())
+            {
+                rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
+            }
+
+            Assert.Equal(4, rows.Count);
+            // NeedsEvaluation 回填留空；PendingPublish/Published/Blocked 回填非空。
+            Assert.Equal("NeedsEvaluation", rows[0].Status);
+            Assert.Null(rows[0].ShareRequestedAtIso);
+            Assert.All(rows.Skip(1), row =>
+            {
+                Assert.NotNull(row.ShareRequestedAtIso);
+                Assert.Equal("2026-07-28T00:00:00.000Z", row.ShareRequestedAtIso);
+            });
+        }
+        finally
+        {
+            CleanupDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task InitializeAsync_share_request_gate_is_fail_closed_and_request_time_is_immutable()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-shared-held-request-gate-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            await using var connection = await store.OpenConnectionAsync();
+
+            // 未请求的 NeedsEvaluation（本地先存路径）与删除暂存 Blocked 例外允许。
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000001", "NeedsEvaluation", null, null);
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000002", "Blocked", "LOCAL_DELETE_PENDING_REMOTE", null);
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000003", "Blocked", "LOCAL_DELETE_PENDING_LOCAL", null);
+            // 已请求的 NeedsEvaluation（TryRequestShareAsync 路径）允许。
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000004", "NeedsEvaluation", null, "2026-07-28T00:00:00.000Z");
+
+            // 未请求不得进入 PendingPublish/Published/普通 Blocked（fail-closed）。
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000005", "PendingPublish", null, null));
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000006", "Published", null, null, withRemote: true));
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000007", "Blocked", "PromotionRulesMissing", null));
+            // SQLite 的 NULL NOT IN 结果是 UNKNOWN；NULL ErrorCode 也必须 fail-closed。
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-00000000000a", "Blocked", null, null));
+            // 空白字符串不构成共享意图，不能绕过数据库闸门；NeedsEvaluation 本身也不接受坏值。
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-00000000000b", "PendingPublish", null, "   "));
+            await AssertSqliteConstraintAsync(() =>
+                InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-00000000000c", "NeedsEvaluation", null, "   "));
+
+            // 已请求的 PendingPublish/普通 Blocked 允许。
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000008", "PendingPublish", null, "2026-07-28T00:00:00.000Z");
+            await InsertPublicationAsync(connection, "aaaaaaaa-0000-0000-0000-000000000009", "Blocked", "PromotionRulesMissing", "2026-07-28T00:00:00.000Z");
+
+            // UPDATE 同样 fail-closed：未请求的 NeedsEvaluation 不能进入 PendingPublish。
+            await AssertSqliteConstraintAsync(() => UpdatePublicationStatusAsync(
+                connection,
+                "aaaaaaaa-0000-0000-0000-000000000001",
+                "PendingPublish",
+                null));
+
+            // 未请求 -> 设置请求时间允许（幂等 request 入口），之后再进入 PendingPublish 也允许。
+            await SetShareRequestedAsync(connection, "aaaaaaaa-0000-0000-0000-000000000001", "2026-07-28T00:01:00.000Z");
+            await UpdatePublicationStatusAsync(
+                connection,
+                "aaaaaaaa-0000-0000-0000-000000000001",
+                "PendingPublish",
+                "2026-07-28T00:01:00.000Z");
+
+            // 请求时间一旦非空不可改写或清空。
+            await AssertSqliteConstraintAsync(() => SetShareRequestedAsync(
+                connection,
+                "aaaaaaaa-0000-0000-0000-000000000004",
+                "2026-07-28T00:02:00.000Z"));
+            await AssertSqliteConstraintAsync(() => SetShareRequestedAsync(
+                connection,
+                "aaaaaaaa-0000-0000-0000-000000000004",
+                null));
+        }
+        finally
+        {
+            CleanupDatabase(databasePath);
         }
     }
 

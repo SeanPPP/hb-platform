@@ -89,6 +89,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
+    private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
     private readonly bool _enforceCashierPermissions;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
@@ -415,7 +416,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null,
         ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
-        ISharedHeldOrderRepository? sharedHeldOrderRepository = null)
+        ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
     {
         _core = core;
         _infra = infra;
@@ -481,6 +483,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
         _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
         _sharedHeldOrderRepository = sharedHeldOrderRepository;
+        _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
         if (runtimeEndpointState is not null && Application.Current is not null)
         {
             ProductThumbnailImageSourceConverter.ConfigureApiBaseAddressProvider(
@@ -624,7 +627,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              linklySettlementService: _linklySettlementService,
              sharedHeldOrderCoordinator: _sharedHeldOrderCoordinator,
              sharedHeldOrderApiClient: _sharedHeldOrderApiClient,
-             sharedHeldOrderRepository: _sharedHeldOrderRepository);
+             sharedHeldOrderRepository: _sharedHeldOrderRepository,
+             sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(

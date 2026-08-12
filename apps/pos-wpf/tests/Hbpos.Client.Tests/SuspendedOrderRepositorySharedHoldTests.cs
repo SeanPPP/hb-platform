@@ -50,6 +50,38 @@ public sealed class SuspendedOrderRepositorySharedHoldTests
     }
 
     [Fact]
+    public async Task SaveAsync_creates_publication_with_null_share_requested_at()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new SuspendedOrderRepository(store);
+            var order = SampleOrder();
+
+            await repository.SaveAsync(order);
+
+            await using var connection = await store.OpenConnectionAsync();
+            var publication = await ReadPublicationAsync(connection, order.SuspendedOrderGuid);
+            Assert.NotNull(publication);
+            // 本地先存只写 NeedsEvaluation；显式共享请求前请求时间必须为空。
+            Assert.Equal(SharedHeldOrderPublicationStatus.NeedsEvaluation, publication!.Status);
+            Assert.Null(publication.ShareRequestedAtIso);
+            // 未请求的挂单默认不进入发布评估。
+            Assert.Empty(await new SharedHeldOrderRepository(
+                store,
+                new SharedHeldOrderClientTestSupport.TestPayloadProtector(),
+                new SharedHeldOrderClientTestSupport.TestPayloadSerializer())
+                .ListLegacyOrdersNeedingEvaluationAsync("S001"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task SaveAsync_publication_insert_failure_rolls_back_entire_save()
     {
         var databasePath = CreateTempDatabasePath();
@@ -70,9 +102,10 @@ public sealed class SuspendedOrderRepositorySharedHoldTests
                     """
                     INSERT INTO SharedHeldOrderPublications (
                         LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
-                        ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso)
+                        ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
+                        ShareRequestedAtIso)
                     VALUES ($Guid, 'S001', 'POS-01', 'Blocked', 1, 0,
-                            'ReturnLineNotSupported', 'pre-existing', NULL, $Now, $Now, $Now);
+                            'ReturnLineNotSupported', 'pre-existing', NULL, $Now, $Now, $Now, $Now);
                     """;
                 command.Parameters.AddWithValue("$Guid", order.SuspendedOrderGuid.ToString("D"));
                 command.Parameters.AddWithValue("$Now", "2026-07-28T00:00:00.000Z");
@@ -188,7 +221,7 @@ public sealed class SuspendedOrderRepositorySharedHoldTests
             """
             SELECT LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
                    ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
-                   LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso
+                   LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso, ShareRequestedAtIso
             FROM SharedHeldOrderPublications
             WHERE LocalHoldGuid = $Guid;
             """;
@@ -223,7 +256,8 @@ public sealed class SuspendedOrderRepositorySharedHoldTests
             ReadNullableString(reader, "LastAttemptAtIso"),
             ReadNullableString(reader, "NextAttemptAtIso"),
             ReadNullableInt64(reader, "RemoteRevision"),
-            ReadNullableString(reader, "RemoteUpdatedAtIso"));
+            ReadNullableString(reader, "RemoteUpdatedAtIso"),
+            ReadNullableString(reader, "ShareRequestedAtIso"));
     }
 
     private static string? ReadNullableString(SqliteDataReader reader, string column)

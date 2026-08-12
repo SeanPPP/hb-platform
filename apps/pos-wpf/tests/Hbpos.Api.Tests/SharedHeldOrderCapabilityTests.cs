@@ -7,7 +7,7 @@ namespace Hbpos.Api.Tests;
 public sealed class SharedHeldOrderCapabilityTests
 {
     [Fact]
-    public void Capability_defaults_to_disabled_with_frozen_response_fields()
+    public void Capability_can_be_explicitly_disabled_with_frozen_response_fields()
     {
         var service = CreateService(enabled: false);
 

@@ -131,6 +131,113 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
         Assert.True(cart.IsEmpty);
     }
 
+    [Fact]
+    public async Task Factory_injects_share_worker_so_share_command_persists_and_runs_worker()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var session = Session();
+        var holdGuid = Guid.NewGuid();
+        var suspendedRepository = new SuspendedOrderRepository(scope.Store);
+        await suspendedRepository.SaveAsync(new SuspendedOrder(
+            holdGuid,
+            session.StoreCode,
+            session.DeviceCode,
+            "C001",
+            "Alice",
+            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
+            10m,
+            0m,
+            10m,
+            SuspendedOrderStatus.Pending,
+            [
+                new SuspendedOrderLine(
+                    Guid.NewGuid(),
+                    holdGuid,
+                    session.StoreCode,
+                    "P-1",
+                    null,
+                    "Product 1",
+                    "CODE-1",
+                    null,
+                    null,
+                    1m,
+                    10m,
+                    0m,
+                    null,
+                    10m,
+                    PriceSourceKind.ProductBase,
+                    "Product Base")
+            ]));
+
+        var api = new StubSharedHeldOrderApiClient
+        {
+            ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>([]),
+            Capabilities = _ => Task.FromResult(new SharedHeldOrderCapabilitiesResponse(
+                Enabled: false,
+                PayloadVersion: 1,
+                PreparedTtlSeconds: 120,
+                ForceReleaseSupported: true))
+        };
+        var worker = new SharedHeldOrderPublicationWorker(
+            scope.Repository,
+            new SharedHeldOrderMapper(),
+            api,
+            new SharedHeldOrderPublicationGate());
+        var factory = new MainChildViewModelFactory(
+            deviceRegistrationWorkflowService: null!,
+            receiptQueryService: new EmptyReceiptQueryService(),
+            suspendedOrderService: new StubSuspendedOrderService
+            {
+                PendingOrders =
+                [
+                    HeldSummary(holdGuid, "POS-01", 10m, 0m, 10m, 1)
+                ]
+            },
+            remoteOrderHistoryService: new EmptyRemoteOrderHistoryService(),
+            receiptTextFormatter: null!,
+            receiptPrinterSettingsStore: null,
+            installmentOrderService: null!,
+            localization: new TestLocalization(),
+            cardTerminalClient: null,
+            priceIndex: new LocalSellableItemIndex(),
+            cart: new PosCartService(),
+            catalogRepository: null!,
+            specialProductService: null!,
+            specialProductsWorkflowService: null!,
+            receiptReturnsWorkflowService: null!,
+            cashPaymentWorkflowService: null!,
+            cardTerminalSetupService: null,
+            rawScannerService: null!,
+            dailyCloseService: null!,
+            dailyClosePrintService: null!,
+            sharedHeldOrderCoordinator: new RecordingCoordinator(),
+            sharedHeldOrderApiClient: api,
+            sharedHeldOrderRepository: scope.Repository,
+            sharedHeldOrderPublicationWorker: worker);
+
+        var viewModel = factory.CreateTransactionHistoryViewModel(
+            session,
+            onSuspendedOrderRecalledAsync: () => Task.CompletedTask,
+            showPos: () => { },
+            printSelectedHistoryReceiptAsync: _ => Task.CompletedTask);
+
+        viewModel.IsHeldSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanShare);
+
+        // 点击共享：持久化请求后立即调用注入的 worker（能力 disabled 时只退避不失败）。
+        await viewModel.ShareHeldOrderCommand.ExecuteAsync(row);
+
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.NotNull(publication!.ShareRequestedAtIso);
+        Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, publication.Status);
+        var refreshed = Assert.Single(viewModel.Orders);
+        Assert.False(refreshed.CanShare);
+        Assert.Equal("Shared", refreshed.ShareStatusLabel);
+    }
+
     private static SuspendedOrderSummary HeldSummary(
         Guid guid,
         string deviceCode,

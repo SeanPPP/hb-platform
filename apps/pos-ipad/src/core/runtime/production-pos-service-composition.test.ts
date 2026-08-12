@@ -50,6 +50,7 @@ import {
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type { SharedHeldOrderPublicationSchedulerPort } from "../../features/shared-held-orders/shared-held-order-publication-loop";
+import { normalizeSharedSaleCartV1 } from "../../features/shared-held-orders/shared-sale-cart-v1";
 import type {
   LocalSyncHistoryOrder,
   LocalSyncHistorySupportContext,
@@ -1680,6 +1681,102 @@ test("RecallActive 启动只建立隐藏门禁，登录后仍需双权限 recove
   presenter.destroy();
 });
 
+test("本地挂单取回后从销售页清空会释放 legacy fence，不误走不存在的共享 claim", async () => {
+  let releaseCalls = 0;
+  const pricingCart = new PricingCart();
+  pricingCart.addItem({
+    lineId: "legacy-recalled-line-1",
+    productCode: "P-1",
+    itemNumber: "I-1",
+    lookupCode: "930000000001",
+    displayName: "Milk",
+    unitPrice: { currency: "AUD", cents: 100 },
+    syncProvenance: { referenceCode: null, priceSource: 0 },
+  });
+  const scope = { storeCode: "S001", deviceCode: "IPAD-1" } as const;
+  const binding = {
+    kind: "recalled" as const,
+    scope,
+    holdId: "legacy-hold-1",
+    recallAttemptId: "legacy-recall-attempt-1",
+  };
+  let fence: TerminalCartFence | null = {
+    scope,
+    kind: "RecallActive",
+    holdId: binding.holdId,
+    recallAttemptId: binding.recallAttemptId,
+    boundOrderGuid: null,
+    createdAtIso: "2026-07-28T00:00:00.000Z",
+  };
+  const services = createTestComposition(
+    databaseFor([], {
+      heldOrderRecords: {
+        async getTerminalFence() {
+          return fence;
+        },
+        async loadRecallForFence(input) {
+          assert.deepEqual(input, binding);
+          return {
+            hold: {
+              holdId: binding.holdId,
+              localSequence: 8,
+              scope,
+              heldBy: { cashierId: "cashier-1", cashierName: "Cashier" },
+              status: "Recalling",
+              itemCount: 1,
+              subtotalCents: 100,
+              discountCents: 0,
+              actualAmountCents: 100,
+              heldAtIso: "2026-07-27T23:00:00.000Z",
+              recallingAtIso: "2026-07-28T00:00:00.000Z",
+            },
+            recallAttemptId: binding.recallAttemptId,
+            payload: {
+              version: 1,
+              pricingState: pricingCart.stateSnapshot(),
+            },
+          };
+        },
+        async releaseRecallAfterCartCleared(input) {
+          releaseCalls += 1;
+          assert.deepEqual(input.binding, binding);
+          fence = null;
+          return true;
+        },
+      },
+    }),
+    {
+      cashierPermissions: [
+        SALES_PERMISSIONS.clearCart,
+        RECALL_LIST_PERMISSION,
+        RECALL_RESTORE_PERMISSION,
+      ],
+      supervisorPermissions: [],
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  const presenter = services.sales.createPresenter();
+  const heldPresenter = services.heldOrders.createPresenter();
+  assert.deepEqual(await heldPresenter.recover(binding.holdId), {
+    ok: true,
+    code: "recovered",
+    holdId: binding.holdId,
+  });
+  assert.equal(presenter.getState().cart.lines.length, 1);
+
+  assert.equal(await presenter.clearCart(), true);
+  assert.equal(releaseCalls, 1);
+  assert.equal(fence, null);
+  assert.equal(presenter.getState().cart.lines.length, 0);
+  assert.equal(presenter.getState().errorCode, null);
+
+  heldPresenter.destroy();
+  presenter.destroy();
+  await services.shutdownBackgroundWork();
+});
+
 test("销售挂单使用全局主管授权且只执行一次，会话失效取消待授权动作", async () => {
   let fence: TerminalCartFence | null = null;
   let holdCalls = 0;
@@ -1816,6 +1913,350 @@ test("共享挂单运行时在可信收银员下可创建协调器，API 走生�
   assert.deepEqual(reconcile.mismatches, []);
   assert.ok(calls.includes("/api/v1/held-orders/claims/mine"));
   await services.shutdownBackgroundWork();
+});
+
+test("共享请求写入意图后立即唤醒一次发布循环", async () => {
+  let publicationRuns = 0;
+  const database = databaseFor([]);
+  const baseQueue = database.sharedHeldOrderPublicationQueue();
+  Object.assign(database, {
+    sharedHeldOrderPublicationQueue: () => ({
+      ...baseQueue,
+      async requestShare() {
+        return "requested" as const;
+      },
+      async listNeedsEvaluation() {
+        publicationRuns += 1;
+        return [];
+      },
+    }),
+  });
+  const services = createTestComposition(database);
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  // 登录自动唤醒可能仍在本测试断言前飞行；先让它完成，再验证点击产生新一轮。
+  await new Promise((resolve) => setImmediate(resolve));
+  const before = publicationRuns;
+
+  await assert.doesNotReject(async () => {
+    assert.equal(
+      await services.sharedHeldOrders.requestShare("hold-1"),
+      "requested",
+    );
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(publicationRuns > before);
+  await services.shutdownBackgroundWork();
+});
+
+test("取消共享挂单先暂停发布并等待在途轮次，确认服务端终态后才恢复周期", async () => {
+  const publicationEntered = deferred<void>();
+  const releasePublication = deferred<void>();
+  let publicationRuns = 0;
+  let scheduled = 0;
+  let cancelled = 0;
+  let cancelRequests = 0;
+  const database = databaseFor([]);
+  const baseQueue = database.sharedHeldOrderPublicationQueue();
+  Object.assign(database, {
+    sharedHeldOrderPublicationQueue: () => ({
+      ...baseQueue,
+      async listNeedsEvaluation() {
+        publicationRuns += 1;
+        if (publicationRuns === 1) {
+          publicationEntered.resolve();
+          await releasePublication.promise;
+        }
+        return [];
+      },
+    }),
+  });
+  const services = createTestComposition(database, {
+    transport: {
+      async request<T>(request: HbposTransportRequest) {
+        assert.equal(request.method, "POST");
+        assert.equal(request.url, "/api/v1/held-orders/hold-1/cancel");
+        cancelRequests += 1;
+        return {
+          status: 200,
+          data: {
+            success: true,
+            data: {
+              holdGuid: "hold-1",
+              status: 4,
+              revision: 8,
+              updatedAtUtc: "2026-07-28T00:00:00.000Z",
+              alreadyCancelled: false,
+            },
+          } as T,
+        };
+      },
+    },
+    sharedHeldOrderPublicationScheduler: {
+      every(_intervalMs, _task) {
+        scheduled += 1;
+        return () => {
+          cancelled += 1;
+        };
+      },
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  await publicationEntered.promise;
+
+  const cancel = services.sharedHeldOrders
+    .createCoordinator()
+    .cancelOwnedHold("hold-1");
+  await Promise.resolve();
+  assert.equal(cancelled, 1);
+  assert.equal(cancelRequests, 0, "必须先等待已经开始的发布退出");
+
+  releasePublication.resolve();
+  await cancel;
+  assert.equal(cancelRequests, 1);
+  assert.equal(scheduled, 2, "服务端取消成功且 cashier 仍可信时恢复发布周期");
+  await services.shutdownBackgroundWork();
+});
+
+test("本机共享挂单取回先等待在途发布退出，再建立 OfflineOrigin claim", async () => {
+  const publicationEntered = deferred<void>();
+  const releasePublication = deferred<void>();
+  let publicationRuns = 0;
+  let scheduled = 0;
+  let cancelled = 0;
+  let localRecallStarted = false;
+  const database = databaseFor([]);
+  const baseQueue = database.sharedHeldOrderPublicationQueue();
+  Object.assign(database, {
+    sharedHeldOrderPublicationQueue: () => ({
+      ...baseQueue,
+      async listNeedsEvaluation() {
+        publicationRuns += 1;
+        if (publicationRuns === 1) {
+          publicationEntered.resolve();
+          await releasePublication.promise;
+        }
+        return [];
+      },
+    }),
+    sharedHeldOrderLocalPublication: () => ({
+      async loadEligible() {
+        localRecallStarted = true;
+        return { eligible: false as const, reason: "not-found" as const };
+      },
+      async loadDeletePending() {
+        return null;
+      },
+    }),
+  });
+  const services = createTestComposition(database, {
+    sharedHeldOrderPublicationScheduler: {
+      every() {
+        scheduled += 1;
+        return () => {
+          cancelled += 1;
+        };
+      },
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  await publicationEntered.promise;
+
+  const recall = services.sharedHeldOrders
+    .createCoordinator()
+    .recallLocalPublication("hold-1");
+  await Promise.resolve();
+  assert.equal(cancelled, 1);
+  assert.equal(localRecallStarted, false, "必须先等待已经开始的发布退出");
+
+  releasePublication.resolve();
+  await assert.rejects(recall);
+  assert.equal(localRecallStarted, true);
+  assert.equal(scheduled, 2, "本机取回结束且 cashier 仍可信时恢复发布周期");
+  await services.shutdownBackgroundWork();
+});
+
+test("取消等待期间 cashier 会话失效时不调用服务端，也不复活发布周期", async () => {
+  const publicationEntered = deferred<void>();
+  const releasePublication = deferred<void>();
+  let invalidate!: () => void;
+  let scheduled = 0;
+  let cancelRequests = 0;
+  const database = databaseFor([]);
+  const baseQueue = database.sharedHeldOrderPublicationQueue();
+  Object.assign(database, {
+    sharedHeldOrderPublicationQueue: () => ({
+      ...baseQueue,
+      async listNeedsEvaluation() {
+        publicationEntered.resolve();
+        await releasePublication.promise;
+        return [];
+      },
+    }),
+  });
+  const services = createTestComposition(database, {
+    captureInvalidation(listener) {
+      invalidate = listener;
+    },
+    transport: {
+      async request() {
+        cancelRequests += 1;
+        throw new Error("cancel must not be called after cashier invalidation");
+      },
+    },
+    sharedHeldOrderPublicationScheduler: {
+      every() {
+        scheduled += 1;
+        return () => undefined;
+      },
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  await publicationEntered.promise;
+
+  const cancellation = services.sharedHeldOrders
+    .createCoordinator()
+    .cancelOwnedHold("hold-1");
+  await Promise.resolve();
+  invalidate();
+  releasePublication.resolve();
+
+  await assert.rejects(cancellation);
+  assert.equal(cancelRequests, 0);
+  assert.equal(scheduled, 1, "失效的 cashier lease 不能恢复发布循环");
+  await services.shutdownBackgroundWork();
+});
+
+test("取消返回 NOT_FOUND 时用删除中冻结快照建立服务端终态后重试取消", async () => {
+  const cart = normalizeSharedSaleCartV1({
+    version: 1,
+    pricingState: {
+      revision: 4,
+      mode: "sale",
+      asOfIso: "2026-07-28T00:00:00.000Z",
+      promotions: [],
+      lines: [
+        {
+          lineId: "line-1",
+          productCode: "P-1",
+          itemNumber: "I-1",
+          lookupCode: "930000000001",
+          displayName: "Milk",
+          quantity: 1,
+          unitPriceCents: 100,
+          basePriceSource: "catalog",
+          syncProvenance: { referenceCode: null, priceSource: 0 },
+          kind: "sale",
+          returnSourceKey: null,
+          originalOrderGuid: null,
+          originalOrderDetailGuid: null,
+          discountState: { mode: "none" },
+        },
+      ],
+    },
+  });
+  const database = databaseFor([]);
+  Object.assign(database, {
+    sharedHeldOrderLocalPublication: () => ({
+      async loadEligible() {
+        return { eligible: false as const, reason: "not-shareable" as const };
+      },
+      async loadDeletePending(holdGuid: string) {
+        return holdGuid === "hold-1" ? cart : null;
+      },
+    }),
+  });
+  let cancelRequests = 0;
+  let publishRequests = 0;
+  const services = createTestComposition(database, {
+    transport: {
+      async request<T>(request: HbposTransportRequest) {
+        if (request.url === "/api/v1/held-orders/hold-1/cancel") {
+          cancelRequests += 1;
+          if (cancelRequests === 1) {
+            throw new HbposApiError("not found", {
+              kind: "http",
+              status: 404,
+              code: "SHARED_HELD_ORDER_NOT_FOUND",
+            });
+          }
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: {
+                holdGuid: "hold-1",
+                status: 4,
+                revision: 2,
+                updatedAtUtc: "2026-07-28T00:00:00.000Z",
+                alreadyCancelled: false,
+              },
+            } as T,
+          };
+        }
+        if (request.url === "/api/v1/held-orders") {
+          publishRequests += 1;
+          assert.equal(request.method, "POST");
+          assert.equal(
+            (request.data as { idempotencyKey?: string }).idempotencyKey,
+            "hold-1",
+          );
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: {
+                holdGuid: "hold-1",
+                status: 1,
+                revision: 1,
+                createdAtUtc: "2026-07-28T00:00:00.000Z",
+                alreadyExists: false,
+              },
+            } as T,
+          };
+        }
+        throw new Error(`unexpected request: ${request.url}`);
+      },
+    },
+  });
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+
+  await services.sharedHeldOrders.createCoordinator().cancelOwnedHold("hold-1");
+
+  assert.equal(publishRequests, 1);
+  assert.equal(cancelRequests, 2);
+  await services.shutdownBackgroundWork();
+});
+
+test("取消返回 NOT_FOUND 且没有删除中冻结快照时保持 fail-closed", async () => {
+  for (const testCase of [
+    { code: undefined },
+    { code: "SHARED_HELD_ORDER_NOT_FOUND" },
+  ] as const) {
+    const services = createTestComposition(databaseFor([]), {
+      transport: {
+        async request() {
+          throw new HbposApiError("not found", {
+            kind: "http",
+            status: 404,
+            ...(testCase.code ? { code: testCase.code } : {}),
+          });
+        },
+      },
+    });
+    await services.initialize();
+    await services.cashierSession.signIn("cashier");
+    const cancellation = services.sharedHeldOrders
+      .createCoordinator()
+      .cancelOwnedHold("hold-1");
+
+    await assert.rejects(cancellation);
+    await services.shutdownBackgroundWork();
+  }
 });
 
 test("同步历史 presenter 只使用可信收银员 lease，会话失效后拒绝读取、导出和补传", async () => {
@@ -4174,6 +4615,12 @@ function unavailableHeldOrderRecords(): HeldOrderRecordRepositoryPort {
     async listPending() {
       return [];
     },
+    async stageDeletePending() {
+      return null;
+    },
+    async deleteStagedPending() {
+      return false;
+    },
     async claimRecall() {
       return null;
     },
@@ -4559,10 +5006,25 @@ function databaseFor(
       async releaseClaim() {
         return false;
       },
+      async repairLegacyClearedOfflineOriginClaim() {
+        return false;
+      },
+      async ensureRestoredOfflineOriginClaimFence() {
+        return false;
+      },
       async supersedeClaim() {
         return false;
       },
       async getClaim() {
+        return null;
+      },
+      async getOpenClaim() {
+        return null;
+      },
+      async listOpenClaims() {
+        return [];
+      },
+      async getLatestClaimForHold() {
         return null;
       },
       async listMine() {
@@ -4595,6 +5057,9 @@ function databaseFor(
     sharedHeldOrderLocalPublication: () => ({
       async loadEligible() {
         return { eligible: false, reason: "not-found" };
+      },
+      async loadDeletePending() {
+        return null;
       },
     }),
   } as unknown as PosDatabase;

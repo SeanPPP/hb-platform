@@ -24,6 +24,8 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T01:00:00.000Z"));
         var payload = SampleCanonical();
 
         Assert.False(await scope.Repository.TryStagePendingPublishAsync(
@@ -68,6 +70,8 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T01:00:00.000Z"));
 
         Assert.False(await scope.Repository.TryBlockPublicationAsync(
             holdGuid,
@@ -115,6 +119,8 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z",
             "2026-07-28T01:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T01:00:00.000Z"));
         Assert.Null(await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(

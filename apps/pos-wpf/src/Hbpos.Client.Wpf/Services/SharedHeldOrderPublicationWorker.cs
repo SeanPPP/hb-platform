@@ -17,9 +17,9 @@ public sealed record SharedHeldOrderPublicationRunResult(
 public interface ISharedHeldOrderPublicationWorker
 {
     /// <summary>
-    /// 一轮后台处理：先评估本店 NeedsEvaluation 的旧/新挂单（映射 -> PendingPublish/
-    /// Blocked），再按退避发布所有到期的 PendingPublish。网络不可用/disabled 只记
-    /// 退避，绝不删除或改变本地挂单。
+    /// 一轮后台处理：只评估本店已显式请求共享的 NeedsEvaluation 挂单（映射 ->
+    /// PendingPublish/Blocked），再按退避发布所有到期的 PendingPublish。网络不可用/
+    /// disabled 只记退避，绝不删除或改变本地挂单。
     /// </summary>
     Task<SharedHeldOrderPublicationRunResult> RunOnceAsync(
         string storeCode,
@@ -77,32 +77,9 @@ public sealed class SharedHeldOrderPublicationWorker(
             var publication = await repository.GetPublicationAsync(
                 order.SuspendedOrderGuid,
                 cancellationToken);
-            if (publication is null)
-            {
-                // 旧库挂单没有 publication 行：先原子补 NeedsEvaluation 初态。
-                // 回填必须使用挂单自身的 DeviceCode；缺失时才回退调用方传入的 deviceCode，
-                // 绝不用空字符串覆盖真实设备来源。
-                var backfillDeviceCode = string.IsNullOrWhiteSpace(order.DeviceCode)
-                    ? deviceCode ?? string.Empty
-                    : order.DeviceCode;
-                await repository.UpsertPublicationAsync(
-                    order.SuspendedOrderGuid,
-                    storeCode,
-                    backfillDeviceCode,
-                    SharedHeldOrderPublicationStatus.NeedsEvaluation,
-                    payloadCiphertext: null,
-                    FormatIso(order.SuspendedAt),
-                    nowIso,
-                    nowIso,
-                    cancellationToken: cancellationToken);
-                publication = await repository.GetPublicationAsync(
-                    order.SuspendedOrderGuid,
-                    cancellationToken);
-            }
-
             if (publication is null || publication.Status != SharedHeldOrderPublicationStatus.NeedsEvaluation)
             {
-                // 并发已推进，跳过本轮。
+                // 并发已推进或尚未显式请求共享，跳过本轮；未请求的挂单绝不自动发布。
                 continue;
             }
 

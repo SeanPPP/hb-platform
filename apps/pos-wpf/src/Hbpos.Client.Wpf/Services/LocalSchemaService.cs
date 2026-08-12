@@ -523,10 +523,13 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                 NextAttemptAtIso TEXT NULL,
                 RemoteRevision INTEGER NULL,
                 RemoteUpdatedAtIso TEXT NULL,
+                ShareRequestedAtIso TEXT NULL,
                 ConsumedAtIso TEXT NULL,
                 CHECK (TRIM(LocalHoldGuid) <> ''),
                 CHECK (TRIM(StoreCode) <> ''),
                 CHECK (TRIM(DeviceCode) <> ''),
+                CHECK (ShareRequestedAtIso IS NULL OR
+                    (TRIM(ShareRequestedAtIso) <> '' AND LENGTH(ShareRequestedAtIso) <= 64)),
                 CHECK (
                     (Status IN ('PendingPublish', 'Published')
                         AND PayloadCiphertext IS NOT NULL
@@ -546,6 +549,51 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
 
             CREATE INDEX IF NOT EXISTS IX_SharedHeldOrderPublications_Due
                 ON SharedHeldOrderPublications (Status, NextAttemptAtIso, UpdatedAtIso);
+
+            CREATE TRIGGER IF NOT EXISTS TRG_SharedHeldOrderPublications_ShareRequestGate_Insert
+            BEFORE INSERT
+            ON SharedHeldOrderPublications
+            FOR EACH ROW
+            WHEN
+                (NEW.ShareRequestedAtIso IS NOT NULL
+                    AND (TRIM(NEW.ShareRequestedAtIso) = ''
+                         OR LENGTH(NEW.ShareRequestedAtIso) > 64))
+                OR
+                -- fail-closed：未请求不得进入 PendingPublish/Published/普通 Blocked；
+                -- LOCAL_DELETE_PENDING_LOCAL/REMOTE 删除暂存是唯一例外。
+                ((NEW.Status IN ('PendingPublish', 'Published')
+                    AND NEW.ShareRequestedAtIso IS NULL)
+                 OR (NEW.Status = 'Blocked'
+                    AND NEW.ShareRequestedAtIso IS NULL
+                    AND COALESCE(NEW.ErrorCode, '') NOT IN (
+                        'LOCAL_DELETE_PENDING_LOCAL',
+                        'LOCAL_DELETE_PENDING_REMOTE')))
+            BEGIN
+                SELECT RAISE(ABORT, 'SHARED_HELD_ORDER_SHARE_REQUEST_REQUIRED');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS TRG_SharedHeldOrderPublications_ShareRequestGate_Update
+            BEFORE UPDATE OF Status, ErrorCode, ShareRequestedAtIso
+            ON SharedHeldOrderPublications
+            FOR EACH ROW
+            WHEN
+                (NEW.ShareRequestedAtIso IS NOT NULL
+                    AND (TRIM(NEW.ShareRequestedAtIso) = ''
+                         OR LENGTH(NEW.ShareRequestedAtIso) > 64))
+                OR ((NEW.Status IN ('PendingPublish', 'Published')
+                    AND NEW.ShareRequestedAtIso IS NULL)
+                 OR (NEW.Status = 'Blocked'
+                    AND NEW.ShareRequestedAtIso IS NULL
+                    AND COALESCE(NEW.ErrorCode, '') NOT IN (
+                        'LOCAL_DELETE_PENDING_LOCAL',
+                        'LOCAL_DELETE_PENDING_REMOTE')))
+                -- 请求时间一旦非空不可改写或清空。
+                OR (OLD.ShareRequestedAtIso IS NOT NULL
+                    AND (NEW.ShareRequestedAtIso IS NULL
+                         OR NEW.ShareRequestedAtIso <> OLD.ShareRequestedAtIso))
+            BEGIN
+                SELECT RAISE(ABORT, 'SHARED_HELD_ORDER_SHARE_REQUEST_REQUIRED_OR_IMMUTABLE');
+            END;
 
             {{SharedHeldOrderClaimsTableStatement}}
             {{SharedHeldOrderClaimsIndexTriggerStatements}}
@@ -824,7 +872,10 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
     }
 
     /// <summary>
-    /// 兼容早期开发库：publication 消费标记为后补列，旧表通过无损 ALTER 补齐；
+    /// 兼容早期开发库：publication 消费标记与显式共享请求时间为后补列，旧表通过无损
+    /// ALTER 补齐；补齐后立即回填：PendingPublish/Published/Blocked 视为已请求
+    /// （请求时间=UpdatedAtIso），NeedsEvaluation 留空（默认不评估发布，等待显式请求）。
+    /// 回填必须在触发器创建前完成（EnsureSharedHeldOrderSchemaAsync 内建触发器）。
     /// claim 表的 supersede 幂等键改由事务化表重建迁移（见
     /// MigrateLegacySharedHeldOrderClaimsAsync），此处不再 ALTER ADD，避免留下旧 CHECK/trigger。
     /// </summary>
@@ -847,6 +898,26 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                     "ALTER TABLE SharedHeldOrderPublications ADD COLUMN ConsumedAtIso TEXT NULL;",
                     cancellationToken);
             }
+
+            if (!publicationColumns.Contains("ShareRequestedAtIso"))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE SharedHeldOrderPublications ADD COLUMN ShareRequestedAtIso TEXT NULL;",
+                    cancellationToken);
+            }
+
+            // 幂等修复 ALTER 成功但回填前进程中断的数据库：旧已发布/待发布/阻断行
+            // 按 UpdatedAtIso 回填请求时间；NeedsEvaluation 始终留空等待显式请求。
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE SharedHeldOrderPublications
+                SET ShareRequestedAtIso = COALESCE(UpdatedAtIso, CreatedAtIso)
+                WHERE ShareRequestedAtIso IS NULL
+                  AND Status IN ('PendingPublish', 'Published', 'Blocked');
+                """,
+                cancellationToken);
         }
     }
 

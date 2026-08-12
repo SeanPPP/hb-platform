@@ -2,12 +2,19 @@ import type { SharedHeldOrderBlockReason } from "./legacy-held-order-evaluator";
 
 import type { HeldOrderScope } from "@/core/contracts";
 import type { SqliteConnectionPort } from "@/core/db/types";
+import type { SharedHeldOrderShareRequestOutcome } from "@/features/held-orders/held-orders-domain";
+
+export type { SharedHeldOrderShareRequestOutcome } from "@/features/held-orders/held-orders-domain";
 
 export type SharedHeldOrderShareState =
   | "NeedsEvaluation"
   | "PendingPublish"
   | "Published"
   | "Blocked";
+
+export type SharedHeldOrderPublicationBlockReason =
+  | SharedHeldOrderBlockReason
+  | "SHARED_HELD_ORDER_CANCELLED";
 
 /** 待评估旧挂单：只暴露密文，不解密、不落明文。 */
 export type SharedHeldOrderEvaluationRow = Readonly<{
@@ -31,6 +38,8 @@ export type SharedHeldOrderShareStateRow = Readonly<{
   holdId: string;
   shareState: SharedHeldOrderShareState;
   blockReason: string | null;
+  requestedAtIso: string | null;
+  isSyntheticSharedClaim: boolean;
 }>;
 
 export type ShareEvaluation =
@@ -42,6 +51,11 @@ export type ShareEvaluation =
  * 数据库只保留密文，队列绝不写入或返回明文 payload。
  */
 export interface SharedHeldOrderPublicationQueuePort {
+  requestShare(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+    requestedAtIso: string;
+  }>): Promise<SharedHeldOrderShareRequestOutcome>;
   listShareStates(
     scope: HeldOrderScope,
     limit: number,
@@ -74,7 +88,7 @@ export interface SharedHeldOrderPublicationQueuePort {
   }>): Promise<boolean>;
   blockPublication(input: Readonly<{
     holdId: string;
-    reason: SharedHeldOrderBlockReason;
+    reason: SharedHeldOrderPublicationBlockReason;
     atIso: string;
   }>): Promise<boolean>;
 }
@@ -95,6 +109,60 @@ export class SqliteSharedHeldOrderPublicationQueue
 {
   public constructor(private readonly db: SqliteConnectionPort) {}
 
+  public async requestShare(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+    requestedAtIso: string;
+  }>): Promise<SharedHeldOrderShareRequestOutcome> {
+    if (!input.requestedAtIso.trim()) {
+      throw new TypeError("share requested at must not be blank");
+    }
+    // 共享意图和资格判断必须在同一写事务中完成，避免重复点击或换班时
+    // 把别的门店/设备、synthetic claim 或非 Pending 行写成可发布事实。
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const row = await transaction.getFirst<{
+        status: string;
+        share_state: SharedHeldOrderShareState;
+        share_requested_at_iso: string | null;
+        is_synthetic_shared_claim: number;
+      }>(
+        `SELECT status, share_state, share_requested_at_iso, is_synthetic_shared_claim
+         FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?`,
+        [input.holdId, input.scope.storeCode, input.scope.deviceCode],
+      );
+      if (!row) return "not-found";
+      if (
+        row.status !== "Pending" ||
+        row.is_synthetic_shared_claim !== 0
+      ) {
+        return "ineligible";
+      }
+      // 请求时间是一次性共享事实；worker 已推进 PendingPublish/Published/Blocked 后
+      // 的重复调用仍返回 already-requested，且绝不再次发布或改写时间。
+      if (row.share_requested_at_iso !== null) return "already-requested";
+      if (row.share_state !== "NeedsEvaluation") return "ineligible";
+
+      const changed = await transaction.run(
+        `UPDATE held_order_records
+         SET share_requested_at_iso = ?, updated_at_iso = ?
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending'
+           AND share_state = 'NeedsEvaluation'
+           AND is_synthetic_shared_claim = 0
+           AND share_requested_at_iso IS NULL`,
+        [
+          input.requestedAtIso,
+          input.requestedAtIso,
+          input.holdId,
+          input.scope.storeCode,
+          input.scope.deviceCode,
+        ],
+      );
+      return changed.changes === 1 ? "requested" : "ineligible";
+    });
+  }
+
   public async listShareStates(
     scope: HeldOrderScope,
     limit: number,
@@ -103,8 +171,11 @@ export class SqliteSharedHeldOrderPublicationQueue
       hold_id: string;
       share_state: SharedHeldOrderShareState;
       publish_block_reason: string | null;
+      share_requested_at_iso: string | null;
+      is_synthetic_shared_claim: number;
     }>(
-      `SELECT hold_id, share_state, publish_block_reason
+      `SELECT hold_id, share_state, publish_block_reason,
+              share_requested_at_iso, is_synthetic_shared_claim
        FROM held_order_records
        WHERE store_code = ?
          AND device_code = ?
@@ -117,6 +188,8 @@ export class SqliteSharedHeldOrderPublicationQueue
       holdId: row.hold_id,
       shareState: row.share_state,
       blockReason: row.publish_block_reason,
+      requestedAtIso: row.share_requested_at_iso,
+      isSyntheticSharedClaim: row.is_synthetic_shared_claim === 1,
     }));
   }
 
@@ -134,6 +207,8 @@ export class SqliteSharedHeldOrderPublicationQueue
       `SELECT hold_id, store_code, device_code, payload_version, payload_ciphertext
        FROM held_order_records
        WHERE share_state = 'NeedsEvaluation'
+         AND share_requested_at_iso IS NOT NULL
+         AND is_synthetic_shared_claim = 0
          AND store_code = ?
          AND device_code = ?
          AND status NOT IN ('Recalling', 'Recalled')
@@ -164,7 +239,9 @@ export class SqliteSharedHeldOrderPublicationQueue
                  publish_error_code = NULL,
                  publish_block_reason = NULL,
                  updated_at_iso = ?
-             WHERE hold_id = ? AND share_state = 'NeedsEvaluation'`,
+             WHERE hold_id = ? AND share_state = 'NeedsEvaluation'
+               AND share_requested_at_iso IS NOT NULL
+               AND is_synthetic_shared_claim = 0`,
             [input.evaluatedAtIso, input.evaluatedAtIso, input.holdId],
           )
         : await this.db.run(
@@ -174,7 +251,9 @@ export class SqliteSharedHeldOrderPublicationQueue
                  publish_error_code = NULL,
                  publish_block_reason = ?,
                  updated_at_iso = ?
-             WHERE hold_id = ? AND share_state = 'NeedsEvaluation'`,
+             WHERE hold_id = ? AND share_state = 'NeedsEvaluation'
+               AND share_requested_at_iso IS NOT NULL
+               AND is_synthetic_shared_claim = 0`,
             [
               input.evaluation.reason,
               input.evaluatedAtIso,
@@ -209,6 +288,8 @@ export class SqliteSharedHeldOrderPublicationQueue
               publish_attempt_count, next_publish_at_iso, remote_revision, remote_updated_at_iso
        FROM held_order_records
        WHERE share_state = 'PendingPublish'
+         AND share_requested_at_iso IS NOT NULL
+         AND is_synthetic_shared_claim = 0
          AND store_code = ?
          AND device_code = ?
          AND status NOT IN ('Recalling', 'Recalled')
@@ -248,6 +329,9 @@ export class SqliteSharedHeldOrderPublicationQueue
            updated_at_iso = ?
        WHERE hold_id = ?
          AND share_state = 'PendingPublish'
+         AND share_requested_at_iso IS NOT NULL
+         AND is_synthetic_shared_claim = 0
+         AND status = 'Pending'
          AND publish_attempt_count = ?`,
       [
         input.remoteRevision,
@@ -269,7 +353,11 @@ export class SqliteSharedHeldOrderPublicationQueue
       const row = await transaction.getFirst<{
         publish_attempt_count: number;
       }>(
-        "SELECT publish_attempt_count FROM held_order_records WHERE hold_id = ? AND share_state = 'PendingPublish'",
+        `SELECT publish_attempt_count
+         FROM held_order_records
+         WHERE hold_id = ? AND share_state = 'PendingPublish'
+           AND share_requested_at_iso IS NOT NULL
+           AND is_synthetic_shared_claim = 0`,
         [input.holdId],
       );
       if (!row) return false;
@@ -286,6 +374,8 @@ export class SqliteSharedHeldOrderPublicationQueue
              updated_at_iso = ?
          WHERE hold_id = ?
            AND share_state = 'PendingPublish'
+           AND share_requested_at_iso IS NOT NULL
+           AND is_synthetic_shared_claim = 0
            AND publish_attempt_count = ?`,
         [
           nextAttempt,
@@ -302,7 +392,7 @@ export class SqliteSharedHeldOrderPublicationQueue
 
   public async blockPublication(input: Readonly<{
     holdId: string;
-    reason: SharedHeldOrderBlockReason;
+    reason: SharedHeldOrderPublicationBlockReason;
     atIso: string;
   }>): Promise<boolean> {
     const result = await this.db.run(
@@ -313,7 +403,9 @@ export class SqliteSharedHeldOrderPublicationQueue
            publish_error_code = NULL,
            updated_at_iso = ?
        WHERE hold_id = ?
-         AND share_state IN ('NeedsEvaluation', 'PendingPublish')`,
+         AND share_state IN ('NeedsEvaluation', 'PendingPublish')
+         AND share_requested_at_iso IS NOT NULL
+         AND is_synthetic_shared_claim = 0`,
       [input.reason, input.atIso, input.holdId],
     );
     return result.changes === 1;

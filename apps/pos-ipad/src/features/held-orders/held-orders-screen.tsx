@@ -1,9 +1,19 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Animated,
   AppState,
   FlatList,
+  PanResponder,
   StyleSheet,
   Text,
   View,
@@ -24,11 +34,15 @@ import {
   PosKeyboardAwareScrollView,
   PosKeyboardAwareTextInput,
 } from "@/ui/controls/pos-keyboard-aware-scroll-view";
+import { PosPanResponderView } from "@/ui/controls/pos-pan-responder-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { posColors } from "@/ui/theme";
 
 export const HELD_ORDERS_MIN_TOUCH_TARGET = 44;
 export const HELD_ORDERS_AUTO_REFRESH_INTERVAL_MS = 10_000;
+const HELD_ORDERS_DELETE_ACTION_WIDTH = 96;
+const HELD_ORDERS_SWIPE_ACTIVATION_DISTANCE = 8;
+const HELD_ORDERS_SWIPE_OPEN_DISTANCE = 44;
 
 type HeldOrdersScreenProps = Readonly<{
   presenter: HeldOrdersPresenter;
@@ -46,6 +60,9 @@ export function HeldOrdersScreen({
   );
   const { i18n } = useTranslation();
   const locale = resolveHeldOrdersLocale(i18n.resolvedLanguage ?? i18n.language);
+  const dateFilter = state.dateFilter ?? "today";
+  const sourceTab = state.sourceTab ?? "local";
+  const shareBusyHoldIds = state.shareBusyHoldIds ?? [];
   const t = (
     key: HeldOrdersCopyKey,
     values?: Readonly<Record<string, string | number>>,
@@ -69,6 +86,10 @@ export function HeldOrdersScreen({
 
   const [forceReleaseFor, setForceReleaseFor] = useState<string | null>(null);
   const [forceReleaseReason, setForceReleaseReason] = useState("");
+  const [deleteFor, setDeleteFor] = useState<string | null>(null);
+  const [revealedDeleteFor, setRevealedDeleteFor] = useState<string | null>(
+    null,
+  );
 
   const returnToSalesAfterRestore = async (
     action: () => ReturnType<HeldOrdersPresenter["recall"]>,
@@ -120,12 +141,50 @@ export function HeldOrdersScreen({
       <View style={styles.workspace}>
         <View style={styles.listHeader}>
           <Text style={styles.listTitle}>{t("list.title")}</Text>
-          {state.busy || state.kind === "loading" ? (
-            <ActivityIndicator color={posColors.orange} testID="held-orders-loading-indicator" />
-          ) : null}
+          <View style={styles.listHeaderTools}>
+            {state.busy || state.kind === "loading" ? (
+              <ActivityIndicator color={posColors.orange} testID="held-orders-loading-indicator" />
+            ) : null}
+            {sourceTab === "other" && state.remoteRefreshing ? (
+              <ActivityIndicator
+                color={posColors.orange}
+                testID="held-orders-remote-loading-indicator"
+              />
+            ) : null}
+            <View style={styles.filterGroup}>
+              <FilterButton
+                label={t("filter.today")}
+                onPress={() => presenter.setDateFilter("today")}
+                selected={dateFilter === "today"}
+                testID="held-orders-filter-today"
+              />
+              <FilterButton
+                label={t("filter.all")}
+                onPress={() => presenter.setDateFilter("all")}
+                selected={dateFilter === "all"}
+                testID="held-orders-filter-all"
+              />
+            </View>
+            {state.sharedEnabled ? (
+              <View style={styles.filterGroup}>
+                <FilterButton
+                  label={t("filter.local")}
+                  onPress={() => presenter.setSourceTab("local")}
+                  selected={sourceTab === "local"}
+                  testID="held-orders-source-local"
+                />
+                <FilterButton
+                  label={t("filter.other")}
+                  onPress={() => presenter.setSourceTab("other")}
+                  selected={sourceTab === "other"}
+                  testID="held-orders-source-other"
+                />
+              </View>
+            ) : null}
+          </View>
         </View>
 
-        {state.refreshError ? (
+        {sourceTab === "other" && state.refreshError ? (
           <View style={styles.syncNotice} testID="held-orders-refresh-error">
             <Text style={styles.syncNoticeText}>{t("error.shared-sync")}</Text>
           </View>
@@ -204,10 +263,45 @@ export function HeldOrdersScreen({
             </View>
           </PosKeyboardAwareScrollView>
         ) : null}
+        {deleteFor ? (
+          <View style={styles.deletePanel} testID="held-orders-delete-panel">
+            <View style={styles.deleteCopy}>
+              <Text style={styles.deleteTitle}>{t("delete.title")}</Text>
+              <Text style={styles.deleteHint}>{t("delete.hint")}</Text>
+            </View>
+            <View style={styles.deleteActions}>
+              <ActionButton
+                label={t("delete.cancel")}
+                onPress={() => setDeleteFor(null)}
+                testID="held-orders-delete-cancel"
+                tone="quiet"
+              />
+              <ActionButton
+                disabled={state.busy}
+                label={t("delete.confirm")}
+                onPress={() => {
+                  const holdId = deleteFor;
+                  setDeleteFor(null);
+                  void presenter.delete(holdId);
+                }}
+                testID="held-orders-delete-confirm"
+                tone="danger"
+              />
+            </View>
+          </View>
+        ) : null}
         {state.kind === "ready" && !state.rows.length ? (
           <CenteredState
-            hint={t(state.sharedEnabled ? "empty.hint.shared" : "empty.hint")}
-            message={t("empty.title")}
+            hint={t(
+              state.sharedEnabled && sourceTab === "other"
+                ? "empty.other.hint"
+                : "empty.hint",
+            )}
+            message={t(
+              state.sharedEnabled && sourceTab === "other"
+                ? "empty.other.title"
+                : "empty.title",
+            )}
             testID="held-orders-empty"
           />
         ) : null}
@@ -220,12 +314,29 @@ export function HeldOrdersScreen({
             renderItem={({ item }) => (
               <HeldOrderRow
                 busy={state.busy}
+                deleteRevealed={revealedDeleteFor === item.holdId}
                 forceReleaseSupported={presenter.supportsForceRelease()}
                 locale={locale}
+                localSourceSelected={sourceTab === "local"}
+                onShare={() => void presenter.requestShare(item.holdId)}
+                shareBusy={shareBusyHoldIds.includes(item.holdId)}
                 onForceRelease={(holdId) => {
+                  setRevealedDeleteFor(null);
+                  setDeleteFor(null);
                   setForceReleaseFor(holdId);
                   setForceReleaseReason("");
                 }}
+                onDelete={(holdId) => {
+                  setRevealedDeleteFor(null);
+                  setForceReleaseFor(null);
+                  setForceReleaseReason("");
+                  setDeleteFor(holdId);
+                }}
+                onHideDelete={() =>
+                  setRevealedDeleteFor((current) =>
+                    current === item.holdId ? null : current,
+                  )
+                }
                 onRecall={() =>
                   void returnToSalesAfterRestore(() =>
                     item.status === "published-shareable" ||
@@ -240,6 +351,12 @@ export function HeldOrdersScreen({
                   )
                 }
                 onRelease={() => void presenter.release(item.holdId)}
+                onRevealDelete={() => {
+                  setDeleteFor(null);
+                  setForceReleaseFor(null);
+                  setForceReleaseReason("");
+                  setRevealedDeleteFor(item.holdId);
+                }}
                 onTakeRemote={() =>
                   void returnToSalesAfterRestore(() =>
                     presenter.takeRemote(item.holdId),
@@ -258,24 +375,38 @@ export function HeldOrdersScreen({
 
 function HeldOrderRow({
   busy,
+  deleteRevealed,
   forceReleaseSupported,
   locale,
+  localSourceSelected,
+  onShare,
   onForceRelease,
+  onDelete,
+  onHideDelete,
   onRecall,
   onRecover,
   onRelease,
+  onRevealDelete,
   onTakeRemote,
   row,
+  shareBusy,
 }: Readonly<{
   busy: boolean;
+  deleteRevealed: boolean;
   forceReleaseSupported: boolean;
   locale: ReturnType<typeof resolveHeldOrdersLocale>;
+  localSourceSelected: boolean;
+  onShare(): void;
   onForceRelease(holdId: string): void;
+  onDelete(holdId: string): void;
+  onHideDelete(): void;
   onRecall(): void;
   onRecover(): void;
   onRelease(): void;
+  onRevealDelete(): void;
   onTakeRemote(): void;
   row: import("./held-orders-presenter").HeldOrderViewRow;
+  shareBusy: boolean;
 }>) {
   const t = (
     key: HeldOrdersCopyKey,
@@ -283,6 +414,15 @@ function HeldOrderRow({
   ) => heldOrdersText(locale, key, values);
   const claiming = row.status === "claiming-here";
   const remoteOnly = row.status === "remote-pending";
+  const canDelete = row.local !== null && !claiming;
+  const canRecall =
+    row.status !== "blocked" || row.blockReason !== "LOCAL_DELETE_PENDING";
+  const canShare =
+    localSourceSelected &&
+    row.local?.status === "Pending" &&
+    row.isSyntheticSharedClaim !== true &&
+    row.shareState === "NeedsEvaluation" &&
+    row.shareRequestedAtIso === null;
   const itemCount = row.local?.itemCount ?? row.remote?.lineCount ?? 0;
   const amountCents = row.local?.actualAmountCents ?? row.remote?.actualCents ?? 0;
   const heldAtIso = row.local?.heldAtIso ?? row.remote?.heldAtIso ?? "";
@@ -295,8 +435,8 @@ function HeldOrderRow({
     blocked: "status.blocked",
   };
   const statusKey = statusKeyMap[row.status];
-  return (
-    <View style={styles.row} testID={`held-order-row-${row.holdId}`}>
+  const content = (
+    <>
       <View style={styles.rowIdentity}>
         <Text style={styles.sequence}>
           {row.local
@@ -340,19 +480,30 @@ function HeldOrderRow({
         <Text style={styles.amount}>{formatAud(amountCents, locale)}</Text>
       </View>
       <View style={styles.rowActions}>
-        <ActionButton
-          disabled={busy}
-          label={t(
-            claiming
-              ? "action.recover"
-              : remoteOnly
-                ? "action.take-remote"
-                : "action.recall",
-          )}
-          onPress={claiming ? onRecover : remoteOnly ? onTakeRemote : onRecall}
-          testID={`held-order-action-${row.holdId}`}
-          tone={claiming ? "secondary" : "primary"}
-        />
+        {canShare ? (
+          <ActionButton
+            disabled={shareBusy || deleteRevealed}
+            label={t("action.share")}
+            onPress={onShare}
+            testID={`held-order-share-${row.holdId}`}
+            tone="secondary"
+          />
+        ) : null}
+        {canRecall ? (
+          <ActionButton
+            disabled={busy || deleteRevealed}
+            label={t(
+              claiming
+                ? "action.recover"
+                : remoteOnly
+                  ? "action.take-remote"
+                  : "action.recall",
+            )}
+            onPress={claiming ? onRecover : remoteOnly ? onTakeRemote : onRecall}
+            testID={`held-order-action-${row.holdId}`}
+            tone={claiming ? "secondary" : "primary"}
+          />
+        ) : null}
         {claiming ? (
           <>
             <ActionButton
@@ -374,7 +525,176 @@ function HeldOrderRow({
           </>
         ) : null}
       </View>
-    </View>
+    </>
+  );
+
+  if (!canDelete) {
+    return (
+      <View style={styles.row} testID={`held-order-row-${row.holdId}`}>
+        {content}
+      </View>
+    );
+  }
+
+  return (
+    <SwipeDeleteRow
+      busy={busy}
+      deleteLabel={t("action.delete")}
+      deleteTestID={`held-order-delete-${row.holdId}`}
+      onDelete={() => onDelete(row.holdId)}
+      onHide={onHideDelete}
+      onReveal={onRevealDelete}
+      open={deleteRevealed}
+      rowTestID={`held-order-row-${row.holdId}`}
+      swipeTestID={`held-order-swipe-${row.holdId}`}
+    >
+      {content}
+    </SwipeDeleteRow>
+  );
+}
+
+function SwipeDeleteRow({
+  busy,
+  children,
+  deleteLabel,
+  deleteTestID,
+  onDelete,
+  onHide,
+  onReveal,
+  open,
+  rowTestID,
+  swipeTestID,
+}: Readonly<{
+  busy: boolean;
+  children: ReactNode;
+  deleteLabel: string;
+  deleteTestID: string;
+  onDelete(): void;
+  onHide(): void;
+  onReveal(): void;
+  open: boolean;
+  rowTestID: string;
+  swipeTestID: string;
+}>) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const gestureStartX = useRef(0);
+  const snapTo = useCallback(
+    (toValue: number) => {
+      Animated.timing(translateX, {
+        duration: 140,
+        toValue,
+        useNativeDriver: true,
+      }).start();
+    },
+    [translateX],
+  );
+
+  useEffect(() => {
+    snapTo(open ? -HELD_ORDERS_DELETE_ACTION_WIDTH : 0);
+  }, [open, snapTo]);
+
+  useEffect(
+    () => () => {
+      translateX.stopAnimation();
+    },
+    [translateX],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        // 仅横向手势接管 responder，避免左滑删除与列表纵向滚动互相抢占。
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_event, gesture) => {
+          if (busy) return false;
+          const horizontal = Math.abs(gesture.dx) > Math.abs(gesture.dy);
+          if (!horizontal) return false;
+          return open
+            ? Math.abs(gesture.dx) >= HELD_ORDERS_SWIPE_ACTIVATION_DISTANCE
+            : gesture.dx <= -HELD_ORDERS_SWIPE_ACTIVATION_DISTANCE;
+        },
+        onPanResponderGrant: () => {
+          translateX.stopAnimation();
+          gestureStartX.current = open
+            ? -HELD_ORDERS_DELETE_ACTION_WIDTH
+            : 0;
+        },
+        onPanResponderMove: (_event, gesture) => {
+          const next = Math.max(
+            -HELD_ORDERS_DELETE_ACTION_WIDTH,
+            Math.min(0, gestureStartX.current + gesture.dx),
+          );
+          translateX.setValue(next);
+        },
+        onPanResponderRelease: (_event, gesture) => {
+          const opens = open
+            ? !(
+                gesture.dx >= HELD_ORDERS_SWIPE_OPEN_DISTANCE ||
+                gesture.vx > 0.35
+              )
+            : gesture.dx <= -HELD_ORDERS_SWIPE_OPEN_DISTANCE ||
+              gesture.vx < -0.35;
+          snapTo(opens ? -HELD_ORDERS_DELETE_ACTION_WIDTH : 0);
+          if (opens) onReveal();
+          else onHide();
+        },
+        onPanResponderTerminate: () => {
+          snapTo(open ? -HELD_ORDERS_DELETE_ACTION_WIDTH : 0);
+        },
+        onPanResponderTerminationRequest: () => true,
+        onShouldBlockNativeResponder: () => false,
+      }),
+    [busy, onHide, onReveal, open, snapTo, translateX],
+  );
+
+  return (
+    <PosPanResponderView
+      panHandlers={panResponder.panHandlers}
+      style={styles.swipeShell}
+      testID={swipeTestID}
+    >
+      <View style={styles.swipeDeleteTrack}>
+        {open ? (
+          <PosPressable
+            accessibilityLabel={deleteLabel}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => {
+              onHide();
+              snapTo(0);
+              onDelete();
+            }}
+            style={({ pressed }) => [
+              styles.swipeDeleteButton,
+              busy && styles.buttonDisabled,
+              pressed && !busy && styles.pressed,
+            ]}
+            testID={deleteTestID}
+          >
+            <Text style={styles.swipeDeleteText}>{deleteLabel}</Text>
+          </PosPressable>
+        ) : (
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            pointerEvents="none"
+            style={styles.swipeDeleteButton}
+          >
+            <Text style={styles.swipeDeleteText}>{deleteLabel}</Text>
+          </View>
+        )}
+      </View>
+      <Animated.View
+        style={[
+          styles.row,
+          { transform: [{ translateX }] },
+        ]}
+        testID={rowTestID}
+      >
+        {children}
+      </Animated.View>
+    </PosPanResponderView>
   );
 }
 
@@ -394,6 +714,10 @@ function blockReasonCopyKey(reason: string | null): HeldOrdersCopyKey {
       return "blocked.SHARED_CART_RETURN_ORIGINAL_NOT_EMPTY";
     case "SHARED_CART_INVALID":
       return "blocked.SHARED_CART_INVALID";
+    case "LOCAL_DELETE_PENDING":
+      return "blocked.LOCAL_DELETE_PENDING";
+    case "SHARED_HELD_ORDER_CANCELLED":
+      return "blocked.SHARED_HELD_ORDER_CANCELLED";
     default:
       return "blocked.unknown";
   }
@@ -459,7 +783,49 @@ function ActionButton({
       ]}
       testID={testID}
     >
-      <Text style={[styles.buttonText, tone !== "primary" && styles.buttonTextDark]}>{label}</Text>
+      <Text
+        style={[
+          styles.buttonText,
+          tone !== "primary" && tone !== "danger" && styles.buttonTextDark,
+        ]}
+      >
+        {label}
+      </Text>
+    </PosPressable>
+  );
+}
+
+function FilterButton({
+  label,
+  onPress,
+  selected,
+  testID,
+}: Readonly<{
+  label: string;
+  onPress(): void;
+  selected: boolean;
+  testID: string;
+}>) {
+  return (
+    <PosPressable
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.filterButton,
+        selected && styles.filterButtonSelected,
+        pressed && styles.pressed,
+      ]}
+      testID={testID}
+    >
+      <Text
+        style={[
+          styles.filterButtonText,
+          selected && styles.filterButtonTextSelected,
+        ]}
+      >
+        {label}
+      </Text>
     </PosPressable>
   );
 }
@@ -489,7 +855,13 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "flex-end" },
   workspace: { flex: 1, padding: 28 },
   listHeader: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 16 },
+  listHeaderTools: { alignItems: "center", flexDirection: "row", gap: 12 },
   listTitle: { color: posColors.ink, fontSize: 20, fontWeight: "800" },
+  filterGroup: { backgroundColor: posColors.surface, borderColor: posColors.border, borderRadius: 4, borderWidth: 1, flexDirection: "row", overflow: "hidden" },
+  filterButton: { alignItems: "center", justifyContent: "center", minHeight: HELD_ORDERS_MIN_TOUCH_TARGET, minWidth: 72, paddingHorizontal: 16 },
+  filterButtonSelected: { backgroundColor: posColors.blueSoft },
+  filterButtonText: { color: posColors.mutedInk, fontSize: 14, fontWeight: "800" },
+  filterButtonTextSelected: { color: posColors.blue },
   notice: { borderRadius: 4, fontSize: 15, fontWeight: "700", marginBottom: 14, padding: 12 },
   noticeSuccess: { backgroundColor: posColors.greenSoft, color: posColors.green },
   noticeDanger: { backgroundColor: posColors.redSoft, color: posColors.red },
@@ -500,7 +872,16 @@ const styles = StyleSheet.create({
   forceReleaseTitle: { color: posColors.ink, fontSize: 17, fontWeight: "800" },
   forceReleaseInput: { borderColor: posColors.border, borderRadius: 4, borderWidth: 1, color: posColors.ink, fontSize: 15, minHeight: HELD_ORDERS_MIN_TOUCH_TARGET, paddingHorizontal: 12, paddingVertical: 10 },
   forceReleaseActions: { alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "flex-end" },
+  deletePanel: { alignItems: "center", backgroundColor: posColors.redSoft, borderColor: posColors.red, borderRadius: 4, borderWidth: 1, flexDirection: "row", gap: 20, marginBottom: 16, padding: 16 },
+  deleteCopy: { flex: 1, gap: 4 },
+  deleteTitle: { color: posColors.ink, fontSize: 17, fontWeight: "800" },
+  deleteHint: { color: posColors.mutedInk, fontSize: 14, lineHeight: 20 },
+  deleteActions: { alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "flex-end" },
   list: { gap: 10, paddingBottom: 28 },
+  swipeShell: { borderRadius: 4, overflow: "hidden", position: "relative" },
+  swipeDeleteTrack: { backgroundColor: posColors.red, bottom: 0, position: "absolute", right: 0, top: 0, width: HELD_ORDERS_DELETE_ACTION_WIDTH },
+  swipeDeleteButton: { alignItems: "center", flex: 1, justifyContent: "center", minHeight: HELD_ORDERS_MIN_TOUCH_TARGET, width: "100%" },
+  swipeDeleteText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
   row: { alignItems: "center", backgroundColor: posColors.surface, borderColor: posColors.border, borderRadius: 4, borderWidth: 1, flexDirection: "row", gap: 20, minHeight: 106, padding: 18 },
   rowIdentity: { flex: 1, gap: 4 },
   rowActions: { alignItems: "stretch", gap: 8 },

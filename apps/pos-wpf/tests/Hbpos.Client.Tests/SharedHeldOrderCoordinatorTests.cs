@@ -475,6 +475,59 @@ public sealed class SharedHeldOrderCoordinatorTests
     }
 
     [Fact]
+    public async Task RecallLocalPublicationAsync_waits_for_in_flight_publication_gate()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var session = Session();
+        var cart = new PosCartService();
+        var holdGuid = Guid.NewGuid();
+        var payload = SampleCanonical();
+        Assert.True(await scope.Repository.UpsertPublicationAsync(
+            holdGuid,
+            "S001",
+            "POS-01",
+            SharedHeldOrderPublicationStatus.NeedsEvaluation,
+            payloadCiphertext: null,
+            "2026-07-28T00:59:00.000Z",
+            "2026-07-28T00:59:00.000Z",
+            "2026-07-28T00:59:00.000Z"));
+        Assert.True(await scope.Repository.TryStagePendingPublishAsync(
+            holdGuid,
+            expectedRevision: 1,
+            payload,
+            "2026-07-28T01:00:00.000Z"));
+        using var publicationGate = new SharedHeldOrderPublicationGate();
+        var publicationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePublication = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var inFlightPublication = publicationGate.RunExclusiveAsync(async () =>
+        {
+            publicationEntered.TrySetResult();
+            await releasePublication.Task;
+            return true;
+        });
+        await publicationEntered.Task;
+        var coordinator = CreateCoordinator(
+            scope,
+            new StubSharedHeldOrderApiClient(),
+            cart,
+            publicationGate: publicationGate);
+
+        var recall = coordinator.RecallLocalPublicationAsync(holdGuid, session);
+        await Task.Yield();
+        Assert.False(recall.IsCompleted);
+        Assert.True(cart.IsEmpty);
+        Assert.Empty(await scope.Repository.FindRecoverableClaimsAsync("S001", "POS-01"));
+
+        releasePublication.TrySetResult();
+        await inFlightPublication;
+        var result = await recall;
+        Assert.True(result.RestoredToCart);
+        Assert.False(cart.IsEmpty);
+    }
+
+    [Fact]
     public async Task RecallLocalPublicationAsync_requires_publication_copy()
     {
         await using var scope = await CreateRepositoryScopeAsync();
@@ -1721,13 +1774,15 @@ public sealed class SharedHeldOrderCoordinatorTests
         RepositoryScope scope,
         StubSharedHeldOrderApiClient api,
         PosCartService cart,
-        ISharedHeldOrderReverseMapper? reverseMapper = null)
+        ISharedHeldOrderReverseMapper? reverseMapper = null,
+        ISharedHeldOrderPublicationGate? publicationGate = null)
     {
         return new SharedHeldOrderCoordinator(
             api,
             scope.Repository,
             reverseMapper ?? new SharedHeldOrderReverseMapper(),
             cart,
+            publicationGate ?? new SharedHeldOrderPublicationGate(),
             new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 1, 6, 0, TimeSpan.Zero)));
     }
 

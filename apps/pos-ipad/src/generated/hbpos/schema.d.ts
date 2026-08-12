@@ -1183,6 +1183,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/held-orders/{holdGuid}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    holdGuid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SharedHeldOrderCancelResponseApiResult"];
+                        "application/json": components["schemas"]["SharedHeldOrderCancelResponseApiResult"];
+                        "text/json": components["schemas"]["SharedHeldOrderCancelResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/held-orders/claims/mine": {
         parameters: {
             query?: never;
@@ -5762,6 +5801,22 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        SharedHeldOrderCancelResponse: {
+            /** Format: uuid */
+            holdGuid?: string;
+            status?: components["schemas"]["SharedHeldOrderStatus"];
+            /** Format: int64 */
+            revision?: number;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            alreadyCancelled?: boolean;
+        };
+        SharedHeldOrderCancelResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["SharedHeldOrderCancelResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
         SharedHeldOrderCapabilitiesResponse: {
             enabled?: boolean;
             /** Format: int32 */
@@ -5933,7 +5988,7 @@ export interface components {
          * Format: int32
          * @enum {integer}
          */
-        SharedHeldOrderStatus: 1 | 2 | 3;
+        SharedHeldOrderStatus: 1 | 2 | 3 | 4;
         SharedLineDiscountStateV1: {
             mode?: string | null;
             /** Format: int64 */

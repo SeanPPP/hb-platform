@@ -19,7 +19,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
-        await SaveSampleOrderAsync(store);
+        var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var gate = new SharedHeldOrderPublicationGate();
         var cancellationEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -68,6 +69,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => throw new SharedHeldOrderApiException(
@@ -96,11 +98,39 @@ public sealed class SharedHeldOrderPublicationWorkerTests
     }
 
     [Fact]
+    public async Task RunOnceAsync_does_not_evaluate_unrequested_needs_evaluation_orders()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        var order = await SaveSampleOrderAsync(store);
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ => throw new InvalidOperationException("capability must not be read without a share request"),
+            Publish = (_, _) => throw new InvalidOperationException("publish must not be called without a share request")
+        };
+        var worker = CreateWorker(scope, api);
+
+        // 显式共享前的 NeedsEvaluation 默认不评估发布（默认不评估发布）。
+        var result = await worker.RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(0, result.EvaluatedOrders);
+        Assert.Equal(0, result.StagedPendingPublish);
+        Assert.Equal(0, result.Blocked);
+        Assert.Equal(0, result.Published);
+        var publication = await scope.Repository.GetPublicationAsync(order.SuspendedOrderGuid);
+        Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderPublicationStatus.NeedsEvaluation, publication!.Status);
+        Assert.Null(publication.ShareRequestedAtIso);
+        Assert.Equal(1, publication.Revision);
+    }
+
+    [Fact]
     public async Task RunOnceAsync_publishes_when_enabled_and_persists_remote_revision_and_time()
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var publishedRequest = new List<SharedHeldOrderPublishRequest>();
         var api = new StubSharedHeldOrderApiClient
         {
@@ -144,6 +174,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var attempts = 0;
         var api = new StubSharedHeldOrderApiClient
         {
@@ -195,6 +226,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => Task.FromResult(new SharedHeldOrderCapabilitiesResponse(
@@ -224,6 +256,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SavePromotionOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => Task.FromResult(EnabledCapabilities()),
@@ -250,6 +283,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         var store = new SuspendedOrderRepository(scope.Store);
         var returnOrder = await SaveReturnOrderAsync(store);
         var openItemOrder = await SaveOpenItemOrderAsync(store);
+        await RequestShareAsync(scope, returnOrder.SuspendedOrderGuid);
+        await RequestShareAsync(scope, openItemOrder.SuspendedOrderGuid);
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => Task.FromResult(EnabledCapabilities()),
@@ -272,6 +307,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await using var scope = await CreateRepositoryScopeAsync();
         var store = new SuspendedOrderRepository(scope.Store);
         var order = await SavePromotionOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => Task.FromResult(EnabledCapabilities()),
@@ -305,7 +341,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
     }
 
     [Fact]
-    public async Task RunOnceAsync_backfills_legacy_publication_with_order_device_code()
+    public async Task TryRequestShareAsync_backfills_legacy_publication_with_order_device_code_then_worker_publishes()
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
@@ -325,6 +361,15 @@ public sealed class SharedHeldOrderPublicationWorkerTests
             await command.ExecuteNonQueryAsync();
         }
 
+        // 旧库缺 publication 行：request 入口用挂单自身 device（POS-09）补 NeedsEvaluation+requested。
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-09", "2026-07-28T02:00:00.000Z"));
+        var backfilled = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(backfilled);
+        Assert.Equal(SharedHeldOrderPublicationStatus.NeedsEvaluation, backfilled!.Status);
+        Assert.Equal("POS-09", backfilled.DeviceCode);
+        Assert.NotNull(backfilled.ShareRequestedAtIso);
+
         var api = new StubSharedHeldOrderApiClient
         {
             Capabilities = _ => throw new SharedHeldOrderApiException(
@@ -335,14 +380,13 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         };
         var worker = CreateWorker(scope, api);
 
-        var result = await worker.RunOnceAsync("S001", "POS-01");
+        var result = await worker.RunOnceAsync("S001", "POS-09");
 
         Assert.Equal(1, result.StagedPendingPublish);
         var publication = await scope.Repository.GetPublicationAsync(holdGuid);
         Assert.NotNull(publication);
         Assert.Equal("POS-09", publication!.DeviceCode);
-        Assert.NotEqual("POS-01", publication.DeviceCode);
-        Assert.NotEqual(string.Empty, publication.DeviceCode);
+        Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, publication.Status);
     }
 
     [Fact]
@@ -359,6 +403,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         await suspendedOrders.SaveAsync(foreign);
         var publication = await scope.Repository.GetPublicationAsync(foreign.SuspendedOrderGuid);
         Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            foreign.SuspendedOrderGuid, "S002", "POS-02", "2026-07-28T03:00:00.000Z"));
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             foreign.SuspendedOrderGuid,
             publication!.Revision,
@@ -404,6 +450,7 @@ public sealed class SharedHeldOrderPublicationWorkerTests
             Lines = [invalid.Lines[0] with { Quantity = 0m }]
         };
         await suspendedOrders.SaveAsync(invalid);
+        await RequestShareAsync(scope, invalid.SuspendedOrderGuid);
 
         var api = new StubSharedHeldOrderApiClient
         {
@@ -433,6 +480,13 @@ public sealed class SharedHeldOrderPublicationWorkerTests
             publicationGate ?? new SharedHeldOrderPublicationGate(),
             frozenPromotionRuleProvider,
             timeProvider ?? new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero)));
+    }
+
+    private static async Task RequestShareAsync(RepositoryScope scope, Guid holdGuid)
+    {
+        var result = await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T02:00:00.000Z");
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, result);
     }
 
     private static SharedHeldOrderCapabilitiesResponse EnabledCapabilities()

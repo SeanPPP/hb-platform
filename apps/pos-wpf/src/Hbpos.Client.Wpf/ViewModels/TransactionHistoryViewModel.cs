@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Net;
 using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -26,6 +27,39 @@ public enum TransactionHistorySource
 public sealed record HistorySourceOption(TransactionHistorySource Source, string Label);
 
 public sealed record TerminalFilterOption(string? DeviceCode, string Label);
+
+/// <summary>挂单页签：本机（当前 device）与非本机（其他 device）。</summary>
+public enum HeldOrderViewScope
+{
+    Local,
+    Other
+}
+
+/// <summary>
+/// 单行共享操作的可变状态：HistoryOrderListItem 是不可变 record，行级 busy 由该对象承载，
+/// 通过 INotifyPropertyChanged 通知 DataGrid 立即刷新按钮状态。
+/// </summary>
+public sealed class HeldShareRowState : System.ComponentModel.INotifyPropertyChanged
+{
+    private bool _isBusy;
+
+    public bool IsBusy
+    {
+        get => _isBusy;
+        set
+        {
+            if (_isBusy == value)
+            {
+                return;
+            }
+
+            _isBusy = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsBusy)));
+        }
+    }
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+}
 
 public sealed record HistoryOrderListItem(
     Guid OrderGuid,
@@ -57,9 +91,13 @@ public sealed record HistoryOrderListItem(
     bool CanRemoteRecall = false,
     bool CanOfflineRecall = false,
     bool CanLegacyRecall = false,
-    bool CanDeleteHeldOrder = false)
+    bool CanDeleteHeldOrder = false,
+    bool CanShare = false,
+    string ShareStatusLabel = "")
 {
     public RowSelectionState Selection { get; } = new();
+
+    public HeldShareRowState Share { get; } = new();
 
     public bool CanReupload => Source == TransactionHistorySource.LocalOrders &&
         !IsSuspendedOrder &&
@@ -88,6 +126,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
+    private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
     private readonly IInstallmentOrderService _installmentOrderService;
     private readonly IReceiptTextFormatter _receiptTextFormatter;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
@@ -106,7 +145,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private bool _suppressSourceAutoLoad;
     private bool _disposed;
     private bool _isScreenVisible;
-    private Task<IReadOnlyList<HistoryOrderListItem>>? _heldLoadTask;
+    private CancellationTokenSource? _heldLoadCancellation;
+    private CancellationTokenSource? _heldRemoteLoadCancellation;
+    private Task<IReadOnlyList<SharedHeldOrderListItemDto>>? _heldRemoteRequestTask;
+    private long _heldLoadGeneration;
+    private readonly Dictionary<HeldOrderViewScope, IReadOnlyDictionary<Guid, LocalHeldRow>> _heldLocalRowsCache = [];
+    private IReadOnlyList<SharedHeldOrderListItemDto> _heldRemoteRowsCache = [];
+    private IReadOnlySet<Guid> _heldSyntheticRemoteClaimGuids = new HashSet<Guid>();
+    private bool _heldRemoteCacheReady;
     private ITimer? _heldAutoRefreshTimer;
 
     [ObservableProperty]
@@ -158,6 +204,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private string _heldOrdersRemoteStatusMessage = string.Empty;
 
     [ObservableProperty]
+    private bool _isHeldRemoteRefreshing;
+
+    [ObservableProperty]
     private bool _isForceReleaseReasonPromptOpen;
 
     [ObservableProperty]
@@ -173,17 +222,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -208,8 +257,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
-        TimeProvider? timeProvider = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, sharedHeldOrderCoordinator, sharedHeldOrderApiClient, sharedHeldOrderRepository, timeProvider, initialize: true)
+        TimeProvider? timeProvider = null,
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, sharedHeldOrderCoordinator, sharedHeldOrderApiClient, sharedHeldOrderRepository, timeProvider, sharedHeldOrderPublicationWorker, initialize: true)
     {
     }
 
@@ -235,6 +285,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient,
         ISharedHeldOrderRepository? sharedHeldOrderRepository,
         TimeProvider? timeProvider,
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -243,6 +294,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _sharedHeldOrderCoordinator = sharedHeldOrderCoordinator;
         _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
         _sharedHeldOrderRepository = sharedHeldOrderRepository;
+        _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _onSuspendedOrderRecalledAsync = onSuspendedOrderRecalledAsync;
         _continueInstallmentPaymentAsync = continueInstallmentPaymentAsync;
@@ -290,6 +342,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ReuploadSelectedCommand = new AsyncRelayCommand(ReuploadSelectedAsync, CanStartReupload);
         ReuploadDateRangeCommand = new AsyncRelayCommand(ReuploadDateRangeAsync, CanReuploadDateRange);
         DeleteHeldOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(DeleteHeldOrderAsync, CanDeleteHeldOrder);
+        ShareHeldOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(ShareHeldOrderAsync, CanShareHeldOrder);
         ForceReleaseHeldOrderCommand = new RelayCommand<HistoryOrderListItem>(RequestForceRelease, CanForceReleaseOrder);
         ConfirmForceReleaseCommand = new AsyncRelayCommand(ConfirmForceReleaseAsync, CanConfirmForceRelease);
         CancelForceReleaseCommand = new RelayCommand(CancelForceRelease, CanCancelForceRelease);
@@ -332,6 +385,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public IAsyncRelayCommand ReuploadDateRangeCommand { get; }
 
     public IAsyncRelayCommand<HistoryOrderListItem> DeleteHeldOrderCommand { get; }
+
+    public IAsyncRelayCommand<HistoryOrderListItem> ShareHeldOrderCommand { get; }
 
     public IRelayCommand<HistoryOrderListItem> ForceReleaseHeldOrderCommand { get; }
 
@@ -397,6 +452,84 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    /// <summary>挂单页签选择器与终端筛选只互斥显示：挂单模式隐藏 terminal filter。</summary>
+    public bool IsTerminalFilterVisible => SelectedSource != TransactionHistorySource.HeldOrders;
+
+    public bool IsHeldScopeSelectorVisible => SelectedSource == TransactionHistorySource.HeldOrders;
+
+    public bool IsHeldRemoteRefreshVisible =>
+        IsHeldSourceSelected && IsHeldOtherScopeSelected && IsHeldRemoteRefreshing;
+
+    public bool IsHeldRemoteErrorVisible =>
+        IsHeldSourceSelected &&
+        IsHeldOtherScopeSelected &&
+        !string.IsNullOrWhiteSpace(HeldOrdersRemoteStatusMessage);
+
+    private HeldOrderViewScope SelectedHeldScope { get; set; } = HeldOrderViewScope.Local;
+
+    public bool IsHeldLocalScopeSelected
+    {
+        get => SelectedHeldScope == HeldOrderViewScope.Local;
+        set
+        {
+            if (value)
+            {
+                SetHeldScope(HeldOrderViewScope.Local);
+            }
+        }
+    }
+
+    public bool IsHeldOtherScopeSelected
+    {
+        get => SelectedHeldScope == HeldOrderViewScope.Other;
+        set
+        {
+            if (value)
+            {
+                SetHeldScope(HeldOrderViewScope.Other);
+            }
+        }
+    }
+
+    private void SetHeldScope(HeldOrderViewScope scope)
+    {
+        if (SelectedHeldScope == scope)
+        {
+            return;
+        }
+
+        SelectedHeldScope = scope;
+        OnPropertyChanged(nameof(IsHeldLocalScopeSelected));
+        OnPropertyChanged(nameof(IsHeldOtherScopeSelected));
+        OnPropertyChanged(nameof(IsHeldRemoteRefreshVisible));
+        OnPropertyChanged(nameof(IsHeldRemoteErrorVisible));
+        if (SelectedSource == TransactionHistorySource.HeldOrders)
+        {
+            CancelHeldLoad();
+            _ = LoadAsync(CancellationToken.None);
+        }
+    }
+
+    private void ResetHeldScopeToLocal()
+    {
+        if (SelectedHeldScope == HeldOrderViewScope.Local)
+        {
+            return;
+        }
+
+        SelectedHeldScope = HeldOrderViewScope.Local;
+        OnPropertyChanged(nameof(IsHeldLocalScopeSelected));
+        OnPropertyChanged(nameof(IsHeldOtherScopeSelected));
+        OnPropertyChanged(nameof(IsHeldRemoteRefreshVisible));
+        OnPropertyChanged(nameof(IsHeldRemoteErrorVisible));
+    }
+
+    partial void OnIsHeldRemoteRefreshingChanged(bool value) =>
+        OnPropertyChanged(nameof(IsHeldRemoteRefreshVisible));
+
+    partial void OnHeldOrdersRemoteStatusMessageChanged(string value) =>
+        OnPropertyChanged(nameof(IsHeldRemoteErrorVisible));
+
     public bool IsStandardSourceSelected => !IsInstallmentSourceSelected;
 
     public bool IsForceReleaseVisible => SelectedOrder?.CanForceRelease == true;
@@ -404,6 +537,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public string HeldOrdersSourceLabel => T("history.source.held");
 
     public string DeleteHeldOrderLabel => T("history.held.delete");
+
+    public string ShareHeldOrderLabel => T("history.held.share");
+
+    public string ShareStatusHeaderLabel => T("history.held.shareStatus");
+
+    public string HeldLocalScopeLabel => T("history.held.localScope");
+
+    public string HeldOtherScopeLabel => T("history.held.otherScope");
 
     public string ForceReleaseLabel => T("history.held.forceRelease");
 
@@ -430,11 +571,29 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         StatusMessage = string.Empty;
         try
         {
+            if (SelectedSource == TransactionHistorySource.HeldOrders)
+            {
+                // 挂单列表由本地/远端分阶段更新，不能在远端完成后再用旧返回值整表覆盖。
+                await LoadHeldOrdersAsync(cancellationToken);
+                if (SelectedSource != TransactionHistorySource.HeldOrders)
+                {
+                    return;
+                }
+
+                if (SelectedOrder is null)
+                {
+                    ClearReceiptPreview();
+                    return;
+                }
+
+                await LoadSelectedReceiptAsync(cancellationToken);
+                return;
+            }
+
             var orders = SelectedSource switch
             {
                 TransactionHistorySource.RemoteOrders => await LoadRemoteOrdersAsync(cancellationToken),
                 TransactionHistorySource.InstallmentOrders => await LoadInstallmentOrdersAsync(cancellationToken),
-                TransactionHistorySource.HeldOrders => await LoadHeldOrdersAsync(cancellationToken),
                 _ => await LoadLocalAndSuspendedOrdersAsync(cancellationToken)
             };
 
@@ -469,6 +628,16 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     partial void OnSelectedSourceOptionChanged(HistorySourceOption? value)
     {
+        if (value?.Source == TransactionHistorySource.HeldOrders)
+        {
+            // 每次进入挂单页都从本机开始，避免沿用上次离开时的非本机页签。
+            ResetHeldScopeToLocal();
+        }
+        else
+        {
+            CancelHeldLoad();
+        }
+
         OnPropertyChanged(nameof(SelectedSource));
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
@@ -476,12 +645,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsOnlineSourceSelected));
         OnPropertyChanged(nameof(IsInstallmentSourceSelected));
         OnPropertyChanged(nameof(IsHeldSourceSelected));
+        OnPropertyChanged(nameof(IsTerminalFilterVisible));
+        OnPropertyChanged(nameof(IsHeldScopeSelectorVisible));
+        OnPropertyChanged(nameof(IsHeldRemoteRefreshVisible));
+        OnPropertyChanged(nameof(IsHeldRemoteErrorVisible));
         OnPropertyChanged(nameof(IsStandardSourceSelected));
         OnPropertyChanged(nameof(IsForceReleaseVisible));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
         DeleteHeldOrderCommand?.NotifyCanExecuteChanged();
+        ShareHeldOrderCommand?.NotifyCanExecuteChanged();
         ConfirmForceReleaseCommand?.NotifyCanExecuteChanged();
         CancelForceReleaseCommand?.NotifyCanExecuteChanged();
         ReprintCommand?.NotifyCanExecuteChanged();
@@ -506,6 +680,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
         ForceReleaseHeldOrderCommand?.NotifyCanExecuteChanged();
         DeleteHeldOrderCommand?.NotifyCanExecuteChanged();
+        ShareHeldOrderCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
         OnPropertyChanged(nameof(IsForceReleaseVisible));
@@ -522,6 +697,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        CancelHeldLoad();
+        _heldLocalRowsCache.Clear();
+        _heldRemoteRowsCache = [];
+        _heldSyntheticRemoteClaimGuids = new HashSet<Guid>();
+        _heldRemoteCacheReady = false;
+        HeldOrdersRemoteStatusMessage = string.Empty;
+        IsHeldRemoteRefreshing = false;
+        ResetHeldScopeToLocal();
         if (value.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(value.CashierSession);
@@ -763,53 +946,283 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         HeldClaimStatus? ClaimStatus,
         Guid? ClaimId);
 
+    private sealed record LocalHeldLoadResult(
+        IReadOnlyDictionary<Guid, LocalHeldRow> Rows,
+        IReadOnlySet<Guid> SyntheticRemoteClaimHoldGuids);
+
     /// <summary>
     /// 共享挂单源：合并本机待发布/已发布挂单与服务端 Pending 汇总，按 HoldGuid 去重。
-    /// single-flight：并发刷新复用同一个进行中的任务；任何远端/本地错误都保留现有列表，
-    /// 只通过 HeldOrdersRemoteStatusMessage 做非阻塞提示。
+    /// 每轮刷新取消上一轮并递增代次；本地 SQLite 先显示，远端结果只在代次仍有效时收敛。
     /// </summary>
     private Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersAsync(CancellationToken cancellationToken)
     {
-        if (_heldLoadTask is not null && !_heldLoadTask.IsCompleted)
-        {
-            return _heldLoadTask;
-        }
+        var generation = ++_heldLoadGeneration;
+        var scope = SelectedHeldScope;
+        var currentCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var previousCancellation = _heldLoadCancellation;
+        _heldLoadCancellation = currentCancellation;
+        previousCancellation?.Cancel();
+        return CompleteHeldLoadAsync(scope, generation, currentCancellation);
+    }
 
-        _heldLoadTask = LoadHeldOrdersGuardedAsync(cancellationToken);
-        return _heldLoadTask;
+    private async Task<IReadOnlyList<HistoryOrderListItem>> CompleteHeldLoadAsync(
+        HeldOrderViewScope scope,
+        long generation,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            return await LoadHeldOrdersGuardedAsync(scope, generation, cancellation.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_heldLoadCancellation, cancellation))
+            {
+                _heldLoadCancellation = null;
+            }
+
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelHeldLoad()
+    {
+        _heldLoadGeneration++;
+        _heldLoadCancellation?.Cancel();
+        var remoteCancellation = _heldRemoteLoadCancellation;
+        _heldRemoteLoadCancellation = null;
+        _heldRemoteRequestTask = null;
+        remoteCancellation?.Cancel();
     }
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersGuardedAsync(
+        HeldOrderViewScope scope,
+        long generation,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await LoadHeldOrdersCoreAsync(cancellationToken);
+            return await LoadHeldOrdersCoreAsync(scope, generation, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return CurrentHeldRows();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            HeldOrdersRemoteStatusMessage = ex.Message;
-            // 共享挂单首次加载失败绝不回退显示 Local/Online 旧列表；
-            // 已成功的 Held 列表保留，其余来源行一律不展示。
-            return Orders
-                .Where(order => order.Source == TransactionHistorySource.HeldOrders)
-                .ToArray();
+            StatusMessage = ex.Message;
+            // 本地读取失败只保留当前页签自己的缓存，绝不把另一页签或其他来源行带过来。
+            var retained = CachedHeldRows(scope);
+            ReplaceHeldOrdersIfCurrent(retained, generation);
+            return retained;
         }
     }
 
-    private async Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersCoreAsync(CancellationToken cancellationToken)
-    {
-        HeldOrdersRemoteStatusMessage = string.Empty;
-        var localTask = LoadLocalHeldRowsAsync(cancellationToken);
-        var remoteTask = LoadRemoteHeldRowsAsync(cancellationToken);
-        await Task.WhenAll(localTask, remoteTask);
+    private IReadOnlyList<HistoryOrderListItem> CurrentHeldRows() =>
+        Orders.Where(order => order.Source == TransactionHistorySource.HeldOrders).ToArray();
 
-        var localRows = localTask.Result;
-        var remoteRows = remoteTask.Result;
+    private async Task<IReadOnlyList<HistoryOrderListItem>> LoadHeldOrdersCoreAsync(
+        HeldOrderViewScope scope,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        // 切页先显示该页签上次缓存；首次进入无缓存时立即清掉上一来源/页签残留。
+        ReplaceHeldOrdersIfCurrent(CachedHeldRows(scope), generation);
+
+        // 1) 本地先加载并立即展示（本机页签默认；非本机页签只显示其他 device）。
+        var localLoad = await LoadLocalHeldRowsAsync(scope, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (generation != _heldLoadGeneration)
+        {
+            return CurrentHeldRows();
+        }
+
+        var localRows = localLoad.Rows;
+        _heldSyntheticRemoteClaimGuids = localLoad.SyntheticRemoteClaimHoldGuids;
+        _heldLocalRowsCache[scope] = localRows;
+        var cachedRemoteRows = FilterRemoteHeldRows(
+            _heldRemoteRowsCache,
+            scope,
+            localLoad.SyntheticRemoteClaimHoldGuids);
+        var localFirst = MergeHeldRows(localRows, cachedRemoteRows, remoteAuthoritative: false);
+        ReplaceHeldOrdersIfCurrent(localFirst, generation);
+
+        if (_sharedHeldOrderApiClient is null)
+        {
+            return localFirst;
+        }
+
+        // 2) 远端独立后台刷新：LoadAsync 在本地 ready 后立即返回；失败保留缓存，
+        // 成功才按服务端 Pending 列表权威收敛 Published 行。
+        if (scope == HeldOrderViewScope.Other)
+        {
+            HeldOrdersRemoteStatusMessage = string.Empty;
+        }
+        LastHeldRemoteRefreshTask = StartHeldRemoteRefresh(
+            localRows,
+            localLoad.SyntheticRemoteClaimHoldGuids,
+            scope,
+            generation);
+        return localFirst;
+    }
+
+    private IReadOnlyList<HistoryOrderListItem> CachedHeldRows(HeldOrderViewScope scope)
+    {
+        var localRows = _heldLocalRowsCache.TryGetValue(scope, out var cachedLocalRows)
+            ? cachedLocalRows
+            : new Dictionary<Guid, LocalHeldRow>();
+        var remoteRows = _heldRemoteCacheReady
+            ? FilterRemoteHeldRows(_heldRemoteRowsCache, scope, _heldSyntheticRemoteClaimGuids)
+            : [];
+        return MergeHeldRows(localRows, remoteRows, remoteAuthoritative: false);
+    }
+
+    internal Task? LastHeldRemoteRefreshTask { get; private set; }
+
+    private Task StartHeldRemoteRefresh(
+        IReadOnlyDictionary<Guid, LocalHeldRow> localRows,
+        IReadOnlySet<Guid> syntheticRemoteClaimHoldGuids,
+        HeldOrderViewScope scope,
+        long generation)
+    {
+        var remoteRequest = GetOrStartHeldRemoteRequest();
+        IsHeldRemoteRefreshing = true;
+        return CompleteHeldRemoteRefreshAsync(
+            localRows,
+            syntheticRemoteClaimHoldGuids,
+            scope,
+            generation,
+            remoteRequest);
+    }
+
+    private Task<IReadOnlyList<SharedHeldOrderListItemDto>> GetOrStartHeldRemoteRequest()
+    {
+        if (_heldRemoteRequestTask is { IsCompleted: false })
+        {
+            return _heldRemoteRequestTask;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _heldRemoteLoadCancellation = cancellation;
+        var request = FetchHeldRemoteRowsAsync(cancellation);
+        _heldRemoteRequestTask = request;
+        return request;
+    }
+
+    private async Task<IReadOnlyList<SharedHeldOrderListItemDto>> FetchHeldRemoteRowsAsync(
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            return await _sharedHeldOrderApiClient!.ListPendingAsync(cancellation.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_heldRemoteLoadCancellation, cancellation))
+            {
+                _heldRemoteLoadCancellation = null;
+                _heldRemoteRequestTask = null;
+            }
+
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task CompleteHeldRemoteRefreshAsync(
+        IReadOnlyDictionary<Guid, LocalHeldRow> localRows,
+        IReadOnlySet<Guid> syntheticRemoteClaimHoldGuids,
+        HeldOrderViewScope scope,
+        long generation,
+        Task<IReadOnlyList<SharedHeldOrderListItemDto>> remoteRequest)
+    {
+        try
+        {
+            var remoteRows = await remoteRequest;
+            if (generation != _heldLoadGeneration)
+            {
+                return;
+            }
+
+            _heldRemoteRowsCache = remoteRows;
+            _heldRemoteCacheReady = true;
+            if (scope == HeldOrderViewScope.Other)
+            {
+                HeldOrdersRemoteStatusMessage = string.Empty;
+            }
+
+            var filteredRemoteRows = FilterRemoteHeldRows(
+                remoteRows,
+                scope,
+                syntheticRemoteClaimHoldGuids);
+            var merged = MergeHeldRows(localRows, filteredRemoteRows, remoteAuthoritative: true);
+            ReplaceHeldOrdersIfCurrent(merged, generation);
+        }
+        catch (OperationCanceledException)
+        {
+            // 新筛选、切页或离开页面会主动取消；旧结果不得覆盖当前代次。
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (generation != _heldLoadGeneration)
+            {
+                return;
+            }
+
+            if (scope == HeldOrderViewScope.Other)
+            {
+                HeldOrdersRemoteStatusMessage = string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("history.held.remoteUnavailable"),
+                    ex.Message);
+            }
+
+            var retainedRemoteRows = _heldRemoteCacheReady
+                ? FilterRemoteHeldRows(
+                    _heldRemoteRowsCache,
+                    scope,
+                    syntheticRemoteClaimHoldGuids)
+                : [];
+            var retained = MergeHeldRows(localRows, retainedRemoteRows, remoteAuthoritative: false);
+            ReplaceHeldOrdersIfCurrent(retained, generation);
+        }
+        finally
+        {
+            if (generation == _heldLoadGeneration)
+            {
+                IsHeldRemoteRefreshing = false;
+            }
+        }
+    }
+
+    private void ReplaceHeldOrdersIfCurrent(
+        IReadOnlyList<HistoryOrderListItem> rows,
+        long generation)
+    {
+        if (generation != _heldLoadGeneration)
+        {
+            return;
+        }
+
+        var selectedGuid = SelectedOrder?.OrderGuid;
+        _suppressSelectedOrderLoad = true;
+        Orders.ReplaceWith(rows);
+        SelectedOrder = selectedGuid is { } preserved
+            ? Orders.FirstOrDefault(order => order.OrderGuid == preserved)
+            : Orders.FirstOrDefault();
+        _suppressSelectedOrderLoad = false;
+    }
+
+    private IReadOnlyList<HistoryOrderListItem> MergeHeldRows(
+        IReadOnlyDictionary<Guid, LocalHeldRow> localRows,
+        IReadOnlyList<(Guid HoldGuid, SharedHeldOrderListItemDto Item)> remoteRows,
+        bool remoteAuthoritative)
+    {
         var merged = new List<HistoryOrderListItem>(localRows.Count + remoteRows.Count);
+        var remoteHoldGuids = new HashSet<Guid>();
         foreach (var remote in remoteRows)
         {
-            if (localRows.Remove(remote.HoldGuid, out var local))
+            remoteHoldGuids.Add(remote.HoldGuid);
+            if (localRows.TryGetValue(remote.HoldGuid, out var local))
             {
                 merged.Add(BuildHeldOrderRow(
                     local.Order,
@@ -829,8 +1242,21 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             }
         }
 
-        foreach (var local in localRows.Values)
+        foreach (var (holdGuid, local) in localRows)
         {
+            if (remoteHoldGuids.Contains(holdGuid))
+            {
+                continue;
+            }
+
+            if (remoteAuthoritative &&
+                local.Publication?.Status == HeldPublicationStatus.Published &&
+                local.ClaimStatus is null)
+            {
+                // 服务端成功返回且不再含该 Published 挂单：已被 claim/完成/取消，在线列表收敛移除。
+                continue;
+            }
+
             merged.Add(BuildHeldOrderRow(
                 local.Order,
                 local.Publication,
@@ -844,17 +1270,22 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             .ToList();
     }
 
-    private async Task<Dictionary<Guid, LocalHeldRow>> LoadLocalHeldRowsAsync(CancellationToken cancellationToken)
+    private async Task<LocalHeldLoadResult> LoadLocalHeldRowsAsync(
+        HeldOrderViewScope scope,
+        CancellationToken cancellationToken)
     {
         var result = new Dictionary<Guid, LocalHeldRow>();
         if (_suspendedOrderService is null)
         {
-            return result;
+            return new LocalHeldLoadResult(result, new HashSet<Guid>());
         }
 
+        // 本机先按当前 device 限定，避免其他终端占满 take；非本机查全店后再把
+        // 当前 device 的 synthetic RemoteClaim 归入非本机。
+        var deviceFilter = scope == HeldOrderViewScope.Local ? Session.DeviceCode : null;
         var summaries = await _suspendedOrderService.GetPendingOrdersAsync(
             Session.StoreCode,
-            SelectedTerminalDeviceCode,
+            deviceFilter,
             NormalizeKeyword(SearchText),
             100,
             cancellationToken);
@@ -895,10 +1326,25 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 cancellationToken);
             claimsByHold = claims.ToDictionary(claim => claim.HoldGuid);
         }
+        var syntheticRemoteClaimHoldGuids = claimsByHold.Values
+            .Where(claim => claim.Source == SharedHeldOrderClaimSource.RemoteClaim)
+            .Select(claim => claim.HoldGuid)
+            .ToHashSet();
 
         foreach (var order in filtered)
         {
             var claim = claimsByHold.GetValueOrDefault(order.SuspendedOrderGuid);
+            var isSyntheticRemoteClaim = claim?.Source == SharedHeldOrderClaimSource.RemoteClaim;
+            var isCurrentDevice = string.Equals(
+                order.DeviceCode,
+                Session.DeviceCode,
+                StringComparison.OrdinalIgnoreCase);
+            var belongsToLocal = isCurrentDevice && !isSyntheticRemoteClaim;
+            if (scope == HeldOrderViewScope.Local ? !belongsToLocal : belongsToLocal)
+            {
+                continue;
+            }
+
             result[order.SuspendedOrderGuid] = new LocalHeldRow(
                 order,
                 publications.GetValueOrDefault(order.SuspendedOrderGuid),
@@ -906,44 +1352,38 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 claim?.ClaimId);
         }
 
-        return result;
+        return new LocalHeldLoadResult(result, syntheticRemoteClaimHoldGuids);
     }
 
-    private async Task<IReadOnlyList<(Guid HoldGuid, SharedHeldOrderListItemDto Item)>> LoadRemoteHeldRowsAsync(
-        CancellationToken cancellationToken)
+    private IReadOnlyList<(Guid HoldGuid, SharedHeldOrderListItemDto Item)> FilterRemoteHeldRows(
+        IReadOnlyList<SharedHeldOrderListItemDto> rows,
+        HeldOrderViewScope scope,
+        IReadOnlySet<Guid> syntheticRemoteClaimHoldGuids)
     {
-        if (_sharedHeldOrderApiClient is null)
-        {
-            return [];
-        }
-
-        try
-        {
-            var rows = await _sharedHeldOrderApiClient.ListPendingAsync(cancellationToken);
-            var from = ParseDateFrom(DateFrom);
-            var to = ParseDateTo(DateTo);
-            var keyword = NormalizeKeyword(SearchText);
-            return rows
-                .Where(item => string.Equals(item.StoreCode, Session.StoreCode, StringComparison.OrdinalIgnoreCase))
-                .Where(item => SelectedTerminalDeviceCode is null ||
-                    string.Equals(item.DeviceCode, SelectedTerminalDeviceCode, StringComparison.OrdinalIgnoreCase))
-                .Where(item => from is null || item.HeldAtUtc >= from.Value)
-                .Where(item => to is null || item.HeldAtUtc <= to.Value)
-                .Where(item => keyword is null ||
-                    item.HeldByCashierName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                    item.DeviceCode.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-                .Select(item => (item.HoldGuid, item))
-                .ToList();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // 远端错误：保留本地列表，仅非阻塞提示。
-            HeldOrdersRemoteStatusMessage = string.Format(
-                CultureInfo.CurrentCulture,
-                T("history.held.remoteUnavailable"),
-                ex.Message);
-            return [];
-        }
+        var from = ParseDateFrom(DateFrom);
+        var to = ParseDateTo(DateTo);
+        var keyword = NormalizeKeyword(SearchText);
+        return rows
+            .Where(item => string.Equals(item.StoreCode, Session.StoreCode, StringComparison.OrdinalIgnoreCase))
+            .Where(item =>
+            {
+                var isCurrentDevice = string.Equals(
+                    item.DeviceCode,
+                    Session.DeviceCode,
+                    StringComparison.OrdinalIgnoreCase);
+                // synthetic RemoteClaim 的来源优先级高于服务端 DeviceCode：即使服务端
+                // 在状态收敛窗口仍返回同一行，也只能归入“非本机”，避免双页签重复。
+                var belongsToLocal = isCurrentDevice &&
+                    !syntheticRemoteClaimHoldGuids.Contains(item.HoldGuid);
+                return scope == HeldOrderViewScope.Local ? belongsToLocal : !belongsToLocal;
+            })
+            .Where(item => from is null || item.HeldAtUtc >= from.Value)
+            .Where(item => to is null || item.HeldAtUtc <= to.Value)
+            .Where(item => keyword is null ||
+                item.HeldByCashierName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                item.DeviceCode.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .Select(item => (item.HoldGuid, item))
+            .ToList();
     }
 
     private HistoryOrderListItem BuildHeldOrderRow(
@@ -970,6 +1410,30 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 new[] { publication.ErrorCode, publication.ErrorMessage }
                     .Where(value => !string.IsNullOrWhiteSpace(value)));
         var hasLocalCopy = local is not null;
+        var isThisDevice = string.Equals(
+            remote?.DeviceCode ?? local!.DeviceCode,
+            Session.DeviceCode,
+            StringComparison.OrdinalIgnoreCase);
+        var shareRequested = publication?.ShareRequestedAtIso is not null;
+        // 仅本机真实 Pending 且未请求可共享：未请求、本机、无 claim/删除暂存/消费/已发布。
+        var canShare = hasLocalCopy &&
+            isThisDevice &&
+            !isDeletePending &&
+            claimStatus is null &&
+            remote is null &&
+            publication?.ConsumedAtIso is null &&
+            publication?.ShareRequestedAtIso is null &&
+            publication?.Status is HeldPublicationStatus.NeedsEvaluation or null;
+        // 只有服务端确认（Published 或远端 Pending 可见）才显示“已共享”；
+        // 请求落库到服务端确认之间均为“待共享”，评估阻断才是“无法共享”。
+        var shareStatusLabel = canShare
+            ? string.Empty
+            : remote is not null || publication?.Status == HeldPublicationStatus.Published
+                ? T("history.held.shared")
+                : shareRequested && publication?.Status is
+                    (HeldPublicationStatus.NeedsEvaluation or HeldPublicationStatus.PendingPublish)
+                    ? T("history.held.sharePending")
+                    : T("history.held.cannotShare");
         var canRemoteRecall = !isDeletePending &&
             serverStatus == HeldServerStatus.Pending &&
             claimStatus is null &&
@@ -1014,7 +1478,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             CanRemoteRecall: canRemoteRecall,
             CanOfflineRecall: canOfflineRecall,
             CanLegacyRecall: canLegacyRecall,
-            CanDeleteHeldOrder: canDeleteHeldOrder);
+            CanDeleteHeldOrder: canDeleteHeldOrder,
+            CanShare: canShare,
+            ShareStatusLabel: shareStatusLabel);
     }
 
     private static decimal? ToMoney(long? cents)
@@ -1445,7 +1911,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                     throw new InvalidOperationException(T("history.held.deleteOnlineRequired"));
                 }
 
-                var cancelled = await _sharedHeldOrderApiClient.CancelAsync(
+                var cancelled = await CancelRemoteHeldOrderWithNotFoundCompensationAsync(
                     candidate.OrderGuid,
                     CancellationToken.None);
                 if (cancelled.HoldGuid != candidate.OrderGuid ||
@@ -1496,6 +1962,185 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 await LoadAsync();
             }
             StatusMessage = failureMessage;
+        }
+    }
+
+    private async Task<SharedHeldOrderCancelResponse> CancelRemoteHeldOrderWithNotFoundCompensationAsync(
+        Guid holdGuid,
+        CancellationToken cancellationToken)
+    {
+        var apiClient = _sharedHeldOrderApiClient
+            ?? throw new InvalidOperationException(T("history.held.unavailable"));
+        var repository = _sharedHeldOrderRepository
+            ?? throw new InvalidOperationException(T("history.held.unavailable"));
+        try
+        {
+            return await apiClient.CancelAsync(holdGuid, cancellationToken);
+        }
+        catch (SharedHeldOrderApiException exception) when (
+            exception.StatusCode == HttpStatusCode.NotFound ||
+            string.Equals(
+                exception.ErrorCode,
+                "SHARED_HELD_ORDER_NOT_FOUND",
+                StringComparison.Ordinal))
+        {
+            var payload = await repository.GetPublicationPayloadAsync(
+                holdGuid,
+                cancellationToken);
+            if (payload is null)
+            {
+                throw;
+            }
+
+            // 发布可能尚未到达服务端或响应丢失。用同一 HoldGuid/幂等键补建
+            // 权威事实，再取消为稳定终态；迟到 publish 只能重放该 Cancelled 行。
+            var published = await apiClient.PublishAsync(
+                new SharedHeldOrderPublishRequest(
+                    holdGuid,
+                    Session.StoreCode,
+                    Session.DeviceCode,
+                    SharedHeldOrderContractMapper.ToContract(payload),
+                    holdGuid.ToString("D")),
+                cancellationToken);
+            if (published.HoldGuid != holdGuid)
+            {
+                throw new InvalidOperationException(T("history.held.deleteFailed"));
+            }
+            if (published.Status == HeldServerStatus.Cancelled)
+            {
+                return new SharedHeldOrderCancelResponse(
+                    holdGuid,
+                    HeldServerStatus.Cancelled,
+                    published.Revision,
+                    published.CreatedAtUtc,
+                    AlreadyCancelled: true);
+            }
+            if (published.Status != HeldServerStatus.Pending)
+            {
+                throw new InvalidOperationException(T("history.held.deleteFailed"));
+            }
+
+            return await apiClient.CancelAsync(holdGuid, cancellationToken);
+        }
+    }
+
+    private bool CanShareHeldOrder(HistoryOrderListItem? order)
+    {
+        return order?.CanShare == true && order.Share.IsBusy == false;
+    }
+
+    /// <summary>
+    /// 显式一次性共享：先幂等持久化请求时间（本机真实 Pending 且未请求），成功后立即
+    /// 调用后台 worker 发布一轮；单轮失败只记状态，hosted service 会继续重试。
+    /// </summary>
+    private async Task ShareHeldOrderAsync(HistoryOrderListItem? order)
+    {
+        var candidate = order;
+        if (!CanShareHeldOrder(candidate) || _sharedHeldOrderRepository is null)
+        {
+            return;
+        }
+
+        if (candidate is null)
+        {
+            return;
+        }
+
+        using var authorization = await AuthorizeAsync(
+            Permissions.PosTerminal.History.Recall,
+            "share-held-order");
+        if (authorization is null)
+        {
+            return;
+        }
+        using var authorizationActivation = authorization.Activate();
+
+        candidate.Share.IsBusy = true;
+        ShareHeldOrderCommand.NotifyCanExecuteChanged();
+        try
+        {
+            var requestedAtIso = _timeProvider
+                .GetUtcNow()
+                .ToUniversalTime()
+                .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+            var result = await _sharedHeldOrderRepository.TryRequestShareAsync(
+                candidate.OrderGuid,
+                Session.StoreCode,
+                Session.DeviceCode,
+                requestedAtIso,
+                CancellationToken.None);
+            if (result is SharedHeldOrderShareRequestResult.Requested
+                or SharedHeldOrderShareRequestResult.AlreadyRequested)
+            {
+                // 先把本行立即切到“待共享”；发布网络调用在后台运行，不延长按钮 busy。
+                MarkShareRequested(candidate);
+                LastSharePublicationTask = RunShareWorkerAndRefreshAsync();
+            }
+            else
+            {
+                StatusMessage = T("history.held.shareIneligible");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            candidate.Share.IsBusy = false;
+            ShareHeldOrderCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private void MarkShareRequested(HistoryOrderListItem candidate)
+    {
+        var index = Orders
+            .Select((row, rowIndex) => (row, rowIndex))
+            .FirstOrDefault(pair => pair.row.OrderGuid == candidate.OrderGuid)
+            .rowIndex;
+        if (index < 0 || index >= Orders.Count || Orders[index].OrderGuid != candidate.OrderGuid)
+        {
+            return;
+        }
+
+        var updated = Orders[index] with
+        {
+            CanShare = false,
+            ShareStatusLabel = T("history.held.sharePending")
+        };
+        _suppressSelectedOrderLoad = true;
+        Orders[index] = updated;
+        if (SelectedOrder?.OrderGuid == candidate.OrderGuid)
+        {
+            SelectedOrder = updated;
+        }
+        _suppressSelectedOrderLoad = false;
+        ShareHeldOrderCommand.NotifyCanExecuteChanged();
+    }
+
+    internal Task? LastSharePublicationTask { get; private set; }
+
+    private async Task RunShareWorkerAndRefreshAsync()
+    {
+        try
+        {
+            if (_sharedHeldOrderPublicationWorker is not null)
+            {
+                await _sharedHeldOrderPublicationWorker.RunOnceAsync(
+                    Session.StoreCode,
+                    Session.DeviceCode,
+                    CancellationToken.None);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 请求已持久化：worker 单轮失败不影响共享意图，hosted service 会重试。
+            StatusMessage = ex.Message;
+        }
+
+        if (!_disposed && SelectedSource == TransactionHistorySource.HeldOrders)
+        {
+            await LoadAsync();
         }
     }
 
@@ -1887,6 +2532,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(HeldOrdersSourceLabel));
         OnPropertyChanged(nameof(DeleteHeldOrderLabel));
+        OnPropertyChanged(nameof(ShareHeldOrderLabel));
+        OnPropertyChanged(nameof(ShareStatusHeaderLabel));
+        OnPropertyChanged(nameof(HeldLocalScopeLabel));
+        OnPropertyChanged(nameof(HeldOtherScopeLabel));
+        OnPropertyChanged(nameof(IsTerminalFilterVisible));
+        OnPropertyChanged(nameof(IsHeldScopeSelectorVisible));
         OnPropertyChanged(nameof(ForceReleaseLabel));
         OnPropertyChanged(nameof(ForceReleaseHeaderLabel));
         OnPropertyChanged(nameof(ForceReleaseReasonLabel));
@@ -1961,6 +2612,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "history.held.forceReleaseReasonTooLong" => "The force-release reason must not exceed 500 characters.",
             "history.held.forceReleased" => "Held order force-released.",
             "history.held.delete" => "Delete",
+            "history.held.localScope" => "Local",
+            "history.held.otherScope" => "Other",
+            "history.held.share" => "Share",
+            "history.held.sharePending" => "Awaiting share",
+            "history.held.shared" => "Shared",
+            "history.held.cannotShare" => "Cannot share",
+            "history.held.shareStatus" => "Share status",
+            "history.held.shareIneligible" => "This held order cannot be shared.",
             "history.held.deleteConfirmTitle" => "Delete held sale?",
             "history.held.deleteConfirmMessage" => "This permanently removes the local hold. A shared hold is cancelled online first.",
             "history.held.deleteConfirmAction" => "Delete held sale",
@@ -2075,6 +2734,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         UpdateHeldAutoRefresh();
         if (SelectedSource == TransactionHistorySource.HeldOrders)
         {
+            ResetHeldScopeToLocal();
             LastHeldAutoRefreshTask = RefreshHeldOrdersSilentlyAsync();
         }
     }
@@ -2083,6 +2743,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public void OnScreenHidden()
     {
         _isScreenVisible = false;
+        CancelHeldLoad();
+        IsHeldRemoteRefreshing = false;
         UpdateHeldAutoRefresh();
     }
 
@@ -2145,19 +2807,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
-        var rows = await LoadHeldOrdersAsync(CancellationToken.None);
-        if (_disposed)
-        {
-            return;
-        }
-
-        var selectedGuid = SelectedOrder?.OrderGuid;
-        _suppressSelectedOrderLoad = true;
-        Orders.ReplaceWith(rows);
-        SelectedOrder = selectedGuid is { } preserved
-            ? Orders.FirstOrDefault(order => order.OrderGuid == preserved)
-            : Orders.FirstOrDefault();
-        _suppressSelectedOrderLoad = false;
+        await LoadHeldOrdersAsync(CancellationToken.None);
     }
 
     public void Dispose()
@@ -2168,6 +2818,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
 
         _disposed = true;
+        CancelHeldLoad();
+        IsHeldRemoteRefreshing = false;
         StopHeldAutoRefresh();
         if (_localization is not null)
         {

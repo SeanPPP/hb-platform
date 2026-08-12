@@ -17,6 +17,7 @@ import { HeldOrdersPresenter } from "./held-orders-presenter";
 
 import {
   createAud,
+  type HeldOrderDeleteStage,
   type HeldOrderRecordRepositoryPort,
   type HeldOrderScope,
   type HeldOrderSummary,
@@ -199,6 +200,8 @@ class Repository implements HeldOrderRecordRepositoryPort {
   public readonly claims: unknown[] = [];
   public readonly confirms: unknown[] = [];
   public readonly releases: unknown[] = [];
+  public readonly deleteStages: unknown[] = [];
+  public readonly deleteFinishes: unknown[] = [];
   public pending: HeldOrderSummary[] = [];
   public recoverable: RecallClaim[] = [];
   public holdFailure = false;
@@ -209,6 +212,11 @@ class Repository implements HeldOrderRecordRepositoryPort {
   public listFailure = false;
   public holdGate: Promise<void> | null = null;
   public fence: TerminalCartFence | null = null;
+  public deleteStageResult: HeldOrderDeleteStage | null = {
+    holdId: "hold-1",
+    remoteCancellationRequired: false,
+  };
+  public deleteResult = true;
 
   public async hold(command: HoldCartCommand): Promise<HeldOrderSummary> {
     this.holds.push(command);
@@ -221,6 +229,25 @@ class Repository implements HeldOrderRecordRepositoryPort {
   public async listPending(): Promise<readonly HeldOrderSummary[]> {
     if (this.listFailure) throw new Error("encrypted database unavailable");
     return this.pending;
+  }
+
+  public async stageDeletePending(input: {
+    holdId: string;
+    scope: HeldOrderScope;
+    stagedAtIso: string;
+  }): Promise<HeldOrderDeleteStage | null> {
+    this.deleteStages.push(input);
+    return this.deleteStageResult
+      ? { ...this.deleteStageResult, holdId: input.holdId }
+      : null;
+  }
+
+  public async deleteStagedPending(input: {
+    holdId: string;
+    scope: HeldOrderScope;
+  }): Promise<boolean> {
+    this.deleteFinishes.push(input);
+    return this.deleteResult;
   }
 
   public async claimRecall(input: {
@@ -731,6 +758,116 @@ test("显式 release 先清车再执行 Recalling→Pending+删 fence，失败�
   assert.equal(failedCart.value.cart.lines.length, 0);
   assert.deepEqual(failedCart.value.recallBinding, activeBinding);
   assert.equal(failedRepository.fence?.kind, "RecallActive");
+});
+
+test("shared release 保留 RecallOrder + History.Recall 双权限门，拒绝时不调用共享端口", async () => {
+  const allowedAuthorization = authorization(
+    RECALL_LIST_PERMISSION,
+    RECALL_RESTORE_PERMISSION,
+  );
+  const allowed = service(
+    new Cart(emptySnapshot()),
+    new Repository(),
+    [RECALL_LIST_PERMISSION, RECALL_RESTORE_PERMISSION],
+    allowedAuthorization.port,
+  );
+  let sharedReleaseCalls = 0;
+  const released = await allowed.release("shared-hold", async () => {
+    sharedReleaseCalls += 1;
+    return true;
+  });
+  assert.deepEqual(released, {
+    ok: true,
+    code: "released",
+    holdId: "shared-hold",
+  });
+  assert.equal(sharedReleaseCalls, 1);
+  assert.deepEqual(allowedAuthorization.calls, [
+    RECALL_LIST_PERMISSION,
+    RECALL_RESTORE_PERMISSION,
+  ]);
+
+  const deniedAuthorization = authorization(RECALL_LIST_PERMISSION);
+  const denied = service(
+    new Cart(emptySnapshot()),
+    new Repository(),
+    [RECALL_LIST_PERMISSION],
+    deniedAuthorization.port,
+  );
+  const deniedResult = await denied.release("shared-hold", async () => {
+    sharedReleaseCalls += 1;
+    return true;
+  });
+  assert.equal(deniedResult.code, "authorization-denied");
+  assert.equal(sharedReleaseCalls, 1);
+  assert.deepEqual(deniedAuthorization.calls, [
+    RECALL_LIST_PERMISSION,
+    RECALL_RESTORE_PERMISSION,
+  ]);
+});
+
+test("删除挂单保留双权限门；已发布行先取消远端，再完成本地删除", async () => {
+  const repository = new Repository();
+  repository.deleteStageResult = {
+    holdId: "published-hold",
+    remoteCancellationRequired: true,
+  };
+  const auth = authorization(RECALL_LIST_PERMISSION, RECALL_RESTORE_PERMISSION);
+  const orchestrator = service(
+    new Cart(emptySnapshot()),
+    repository,
+    [RECALL_LIST_PERMISSION, RECALL_RESTORE_PERMISSION],
+    auth.port,
+  );
+  const remoteCalls: string[] = [];
+
+  const result = await orchestrator.delete("published-hold", async (holdId) => {
+    remoteCalls.push(holdId);
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    code: "deleted",
+    holdId: "published-hold",
+  });
+  assert.deepEqual(auth.calls, [
+    RECALL_LIST_PERMISSION,
+    RECALL_RESTORE_PERMISSION,
+  ]);
+  assert.deepEqual(remoteCalls, ["published-hold"]);
+  assert.equal(repository.deleteStages.length, 1);
+  assert.equal(repository.deleteFinishes.length, 1);
+});
+
+test("远端取消失败时保留已阻断本地行；未发布行无需共享端口即可删除", async () => {
+  const published = new Repository();
+  published.deleteStageResult = {
+    holdId: "published-hold",
+    remoteCancellationRequired: true,
+  };
+  const failed = await service(new Cart(emptySnapshot()), published).delete(
+    "published-hold",
+    async () => {
+      throw new Error("offline");
+    },
+  );
+  assert.deepEqual(failed, {
+    ok: false,
+    code: "delete-shared-failed",
+    holdId: "published-hold",
+  });
+  assert.equal(published.deleteFinishes.length, 0);
+
+  const local = new Repository();
+  local.deleteStageResult = {
+    holdId: "local-hold",
+    remoteCancellationRequired: false,
+  };
+  assert.deepEqual(
+    await service(new Cart(emptySnapshot()), local).delete("local-hold"),
+    { ok: true, code: "deleted", holdId: "local-hold" },
+  );
+  assert.equal(local.deleteFinishes.length, 1);
 });
 
 test("列表只显示本 scope 的 Pending/Recalling，并按本地序号倒序", async () => {

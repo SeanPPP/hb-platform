@@ -15,6 +15,7 @@ export type {
   HeldOrdersOrchestratorOptions,
   SharedHeldOrderLocalShareRow,
   SharedHeldOrderRemoteRow,
+  SharedHeldOrderShareRequestOutcome,
   SharedHeldOrderTakeViewResult,
   SharedHeldOrdersViewPort,
 } from "./held-orders-domain";

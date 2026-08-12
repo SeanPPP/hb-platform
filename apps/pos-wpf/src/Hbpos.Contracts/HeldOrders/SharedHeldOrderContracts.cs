@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Contracts.HeldOrders;
@@ -93,8 +94,11 @@ public sealed record SharedLineSyncProvenanceV1(
 
 public sealed record SharedLineDiscountStateV1(
     string Mode,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     long? Cents = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? BasisPoints = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyList<string>? PromotionIds = null);
 
 public sealed class SharedSaleCartValidationException(string message)

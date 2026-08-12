@@ -1652,6 +1652,30 @@
   <data name="history.held.blocked" xml:space="preserve">
     <value>已阻断</value>
   </data>
+  <data name="history.held.localScope" xml:space="preserve">
+    <value>本机</value>
+  </data>
+  <data name="history.held.otherScope" xml:space="preserve">
+    <value>非本机</value>
+  </data>
+  <data name="history.held.share" xml:space="preserve">
+    <value>共享</value>
+  </data>
+  <data name="history.held.sharePending" xml:space="preserve">
+    <value>待共享</value>
+  </data>
+  <data name="history.held.shared" xml:space="preserve">
+    <value>已共享</value>
+  </data>
+  <data name="history.held.cannotShare" xml:space="preserve">
+    <value>无法共享</value>
+  </data>
+  <data name="history.held.shareStatus" xml:space="preserve">
+    <value>共享状态</value>
+  </data>
+  <data name="history.held.shareIneligible" xml:space="preserve">
+    <value>该挂单无法共享。</value>
+  </data>
   <data name="history.held.forceRelease" xml:space="preserve">
     <value>强制释放</value>
   </data>

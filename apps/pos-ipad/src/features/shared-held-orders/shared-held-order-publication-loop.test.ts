@@ -95,3 +95,42 @@ test("后台立即执行失败不会形成未处理拒绝，后续周期仍可�
   assert.equal(calls, 2);
   await loop.shutdown();
 });
+
+test("删除屏障会暂停周期、等待在途发布，并在恢复前拒绝启动新一轮", async () => {
+  let intervalTask: (() => void) | null = null;
+  let calls = 0;
+  let releaseRun!: () => void;
+  const activeRun = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+  const loop = new SharedHeldOrderPublicationLoop({
+    worker: {
+      async runOnce() {
+        calls += 1;
+        await activeRun;
+        return emptyResult;
+      },
+    },
+    scheduler: {
+      every(_intervalMs, task) {
+        intervalTask = task;
+        return () => {
+          intervalTask = null;
+        };
+      },
+    },
+  });
+
+  loop.resume();
+  const barrier = loop.pauseAndWait();
+  assert.equal(intervalTask, null);
+  await assert.rejects(() => loop.runNow(), /PUBLICATION_LOOP_PAUSED/u);
+  assert.equal(calls, 1);
+
+  releaseRun();
+  await barrier;
+  loop.resume();
+  await loop.runNow();
+  assert.equal(calls, 2);
+  await loop.shutdown();
+});

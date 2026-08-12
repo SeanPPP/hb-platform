@@ -109,6 +109,7 @@ public sealed class SharedHeldOrderCoordinator(
     ISharedHeldOrderRepository repository,
     ISharedHeldOrderReverseMapper reverseMapper,
     PosCartService cart,
+    ISharedHeldOrderPublicationGate publicationGate,
     TimeProvider? timeProvider = null) : ISharedHeldOrderCoordinator
 {
     private const int PreparedFallbackTtlSeconds = 120;
@@ -214,10 +215,22 @@ public sealed class SharedHeldOrderCoordinator(
         return new SharedHeldOrderTakeResult(claimId, holdGuid, RestoredToCart: true);
     }
 
-    public async Task<SharedHeldOrderTakeResult> RecallLocalPublicationAsync(
+    public Task<SharedHeldOrderTakeResult> RecallLocalPublicationAsync(
         Guid localHoldGuid,
         PosSessionState session,
         CancellationToken cancellationToken = default)
+    {
+        // 本机离线取回与发布 worker 共用互斥门：必须先等已经发出的 publish
+        // 完整收口，避免 OfflineOrigin 成交先到服务端、迟到 publish 再复活挂单。
+        return publicationGate.RunExclusiveAsync(
+            () => RecallLocalPublicationCoreAsync(localHoldGuid, session, cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<SharedHeldOrderTakeResult> RecallLocalPublicationCoreAsync(
+        Guid localHoldGuid,
+        PosSessionState session,
+        CancellationToken cancellationToken)
     {
         using var mutationLease = await AcquireMutationAsync(cancellationToken);
         EnsureCartEmpty();

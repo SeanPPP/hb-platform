@@ -46,8 +46,18 @@ export class HeldOrdersOrchestrator {
     return this.runMutation(() => this.recoverOnce(holdId));
   }
 
-  public release(holdId: string): Promise<HeldOrderActionResult> {
-    return this.runMutation(() => this.releaseOnce(holdId));
+  public release(
+    holdId: string,
+    releaseOwnedClaim?: (holdId: string) => Promise<boolean>,
+  ): Promise<HeldOrderActionResult> {
+    return this.runMutation(() => this.releaseOnce(holdId, releaseOwnedClaim));
+  }
+
+  public delete(
+    holdId: string,
+    cancelShared?: (holdId: string) => Promise<void>,
+  ): Promise<HeldOrderActionResult> {
+    return this.runMutation(() => this.deleteOnce(holdId, cancelShared));
   }
 
   public list(): Promise<readonly HeldOrderSummary[]> {
@@ -288,9 +298,85 @@ export class HeldOrdersOrchestrator {
     };
   }
 
-  private async releaseOnce(holdId: string): Promise<HeldOrderActionResult> {
-    const authorized = await this.withRecallAuthorization("release", () =>
-      this.withCartLease((lease) => this.releaseAuthorized(holdId, lease)),
+  private async releaseOnce(
+    holdId: string,
+    releaseOwnedClaim?: (holdId: string) => Promise<boolean>,
+  ): Promise<HeldOrderActionResult> {
+    const authorized = await this.withRecallAuthorization<HeldOrderActionResult>(
+      "release",
+      async () => {
+        if (releaseOwnedClaim) {
+          try {
+            if (await releaseOwnedClaim(holdId)) {
+              return { ok: true, code: "released", holdId };
+            }
+          } catch {
+            // shared claim 释放失败时绝不回退 legacy，否则会再次制造孤儿。
+            return { ok: false, code: "release-failed", holdId };
+          }
+        }
+        return this.withCartLease((lease) =>
+          this.releaseAuthorized(holdId, lease),
+        );
+      },
+    );
+    return authorized ?? { ok: false, code: "authorization-denied" };
+  }
+
+  private async deleteOnce(
+    holdId: string,
+    cancelShared?: (holdId: string) => Promise<void>,
+  ): Promise<HeldOrderActionResult> {
+    const authorized = await this.withRecallAuthorization<HeldOrderActionResult>(
+      "delete",
+      async () => {
+        const normalizedHoldId = requiredId(() => holdId, "Hold id");
+        let stage;
+        try {
+          stage = await this.options.repository.stageDeletePending({
+            holdId: normalizedHoldId,
+            scope: heldOrderScope(this.options.identity),
+            stagedAtIso: assertIso(this.options.nowIso()),
+          });
+        } catch {
+          return { ok: false, code: "delete-failed", holdId: normalizedHoldId };
+        }
+        if (!stage) {
+          return { ok: false, code: "delete-failed", holdId: normalizedHoldId };
+        }
+
+        if (stage.remoteCancellationRequired) {
+          if (!cancelShared) {
+            return {
+              ok: false,
+              code: "delete-shared-failed",
+              holdId: normalizedHoldId,
+            };
+          }
+          try {
+            await cancelShared(normalizedHoldId);
+          } catch {
+            // 本地行已进入删除中并阻断发布；远端未确认前绝不物理删除。
+            return {
+              ok: false,
+              code: "delete-shared-failed",
+              holdId: normalizedHoldId,
+            };
+          }
+        }
+
+        try {
+          const deleted = await this.options.repository.deleteStagedPending({
+            holdId: normalizedHoldId,
+            scope: heldOrderScope(this.options.identity),
+          });
+          return deleted
+            ? { ok: true, code: "deleted", holdId: normalizedHoldId }
+            : { ok: false, code: "delete-failed", holdId: normalizedHoldId };
+        } catch {
+          return { ok: false, code: "delete-failed", holdId: normalizedHoldId };
+        }
+      },
     );
     return authorized ?? { ok: false, code: "authorization-denied" };
   }
@@ -405,9 +491,11 @@ export class HeldOrdersOrchestrator {
 
   private async listAuthorized(): Promise<readonly HeldOrderSummary[]> {
     const scope = heldOrderScope(this.options.identity);
+    const pendingPromise = this.options.repository.listPending(scope, 200);
+    const recoverablePromise = this.options.repository.listRecoverable(scope);
     const [pending, recoverable] = await Promise.all([
-      this.options.repository.listPending(scope, 200),
-      this.options.repository.listRecoverable(scope),
+      pendingPromise,
+      recoverablePromise,
     ]);
     const unique = new Map<string, HeldOrderSummary>();
     for (const entry of pending) {
@@ -429,7 +517,7 @@ export class HeldOrdersOrchestrator {
   }
 
   private async withRecallAuthorization<T>(
-    action: "recall" | "recover" | "release",
+    action: "recall" | "recover" | "release" | "delete",
     operation: () => Promise<T>,
   ): Promise<T | null> {
     return this.withAuthorization(RECALL_LIST_PERMISSION, action, () =>
@@ -439,7 +527,7 @@ export class HeldOrdersOrchestrator {
 
   private async withAuthorization<T>(
     permissionCode: string,
-    action: "hold" | "list" | "recall" | "recover" | "release",
+    action: "hold" | "list" | "recall" | "recover" | "release" | "delete",
     operation: () => Promise<T>,
   ): Promise<T | null> {
     const result = await this.options.authorization.authorizeAndRun(

@@ -581,6 +581,14 @@
   <data name="history.held.claimedByOther" xml:space="preserve"><value>Claimed by another terminal</value></data>
   <data name="history.held.completed" xml:space="preserve"><value>Completed</value></data>
   <data name="history.held.blocked" xml:space="preserve"><value>Blocked</value></data>
+  <data name="history.held.localScope" xml:space="preserve"><value>Local</value></data>
+  <data name="history.held.otherScope" xml:space="preserve"><value>Other</value></data>
+  <data name="history.held.share" xml:space="preserve"><value>Share</value></data>
+  <data name="history.held.sharePending" xml:space="preserve"><value>Awaiting share</value></data>
+  <data name="history.held.shared" xml:space="preserve"><value>Shared</value></data>
+  <data name="history.held.cannotShare" xml:space="preserve"><value>Cannot share</value></data>
+  <data name="history.held.shareStatus" xml:space="preserve"><value>Share status</value></data>
+  <data name="history.held.shareIneligible" xml:space="preserve"><value>This held order cannot be shared.</value></data>
   <data name="history.held.forceRelease" xml:space="preserve"><value>Force release</value></data>
   <data name="history.held.forceReleaseReason" xml:space="preserve"><value>Force release reason</value></data>
   <data name="history.held.forceReleaseConfirm" xml:space="preserve"><value>Confirm</value></data>

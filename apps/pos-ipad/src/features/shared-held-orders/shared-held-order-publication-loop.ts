@@ -23,6 +23,7 @@ export class SharedHeldOrderPublicationLoop {
   private readonly intervalMs: number;
   private cancelTimer: (() => void) | null = null;
   private inFlight: Promise<SharedHeldOrderPublicationRunResult> | null = null;
+  private publicationPaused = false;
   private shutdownStarted = false;
 
   public constructor(
@@ -35,6 +36,7 @@ export class SharedHeldOrderPublicationLoop {
     if (this.shutdownStarted) {
       throw new Error("SHARED_HELD_ORDER_PUBLICATION_LOOP_SHUTDOWN");
     }
+    this.publicationPaused = false;
     if (this.cancelTimer) return;
 
     this.cancelTimer = this.options.scheduler.every(this.intervalMs, () => {
@@ -45,14 +47,30 @@ export class SharedHeldOrderPublicationLoop {
   }
 
   public pause(): void {
+    this.publicationPaused = true;
     this.cancelTimer?.();
     this.cancelTimer = null;
+  }
+
+  /** 删除共享挂单前建立屏障：停止新发布，并等待已经开始的一轮彻底退出。 */
+  public async pauseAndWait(): Promise<void> {
+    this.pause();
+    try {
+      await this.inFlight;
+    } catch {
+      // 屏障只等待在途数据库/网络访问退出；发布失败事实仍由耐久队列保留。
+    }
   }
 
   public runNow(): Promise<SharedHeldOrderPublicationRunResult> {
     if (this.shutdownStarted) {
       return Promise.reject(
         new Error("SHARED_HELD_ORDER_PUBLICATION_LOOP_SHUTDOWN"),
+      );
+    }
+    if (this.publicationPaused) {
+      return Promise.reject(
+        new Error("SHARED_HELD_ORDER_PUBLICATION_LOOP_PAUSED"),
       );
     }
     if (this.inFlight) return this.inFlight;

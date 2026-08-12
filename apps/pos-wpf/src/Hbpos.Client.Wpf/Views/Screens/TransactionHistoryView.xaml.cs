@@ -73,6 +73,8 @@ public partial class TransactionHistoryView : UserControl
                 not nameof(TransactionHistoryViewModel.IsStandardSourceSelected) and
                 not nameof(TransactionHistoryViewModel.IsInstallmentSourceSelected) and
                 not nameof(TransactionHistoryViewModel.DeleteHeldOrderLabel) and
+                not nameof(TransactionHistoryViewModel.ShareHeldOrderLabel) and
+                not nameof(TransactionHistoryViewModel.ShareStatusHeaderLabel) and
                 not nameof(TransactionHistoryViewModel.ForceReleaseHeaderLabel))
         {
             return;
@@ -89,6 +91,8 @@ public partial class TransactionHistoryView : UserControl
         var standardVisibility = installmentVisible ? Visibility.Collapsed : Visibility.Visible;
         var installmentVisibility = installmentVisible ? Visibility.Visible : Visibility.Collapsed;
         DeleteHeldOrderActionColumn.Header = _viewModel?.DeleteHeldOrderLabel ?? string.Empty;
+        ShareStatusColumn.Header = _viewModel?.ShareStatusHeaderLabel ?? string.Empty;
+        ShareHeldActionColumn.Header = _viewModel?.ShareHeldOrderLabel ?? string.Empty;
         ForceReleaseActionColumn.Header = _viewModel?.ForceReleaseHeaderLabel ?? string.Empty;
 
         // DataGridColumn 不在视觉树中，列级 Binding 不能安全引用父级 DataContext；这里直接同步列显示状态。
@@ -104,6 +108,8 @@ public partial class TransactionHistoryView : UserControl
         ReuploadSelectionColumn.Visibility = localOrdersVisible ? Visibility.Visible : Visibility.Collapsed;
         RecallActionColumn.Visibility = localOrdersVisible || heldVisible ? Visibility.Visible : Visibility.Collapsed;
         DeleteHeldOrderActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
+        ShareStatusColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
+        ShareHeldActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
         ForceReleaseActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
         ContinuePaymentActionColumn.Visibility = installmentVisibility;
     }

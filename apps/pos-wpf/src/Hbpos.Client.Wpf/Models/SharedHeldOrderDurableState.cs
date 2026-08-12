@@ -56,7 +56,21 @@ public sealed record SharedHeldOrderPublication(
     string? NextAttemptAtIso = null,
     long? RemoteRevision = null,
     string? RemoteUpdatedAtIso = null,
+    string? ShareRequestedAtIso = null,
     string? ConsumedAtIso = null);
+
+/// <summary>
+/// 显式一次性共享请求的结果：Requested = 本次写入请求时间；
+/// AlreadyRequested = 已请求过（幂等）；Ineligible = 非 Pending/
+/// store-device 不匹配/已被消费；NotFound = 挂单不存在。
+/// </summary>
+public enum SharedHeldOrderShareRequestResult
+{
+    Requested,
+    AlreadyRequested,
+    Ineligible,
+    NotFound
+}
 
 /// <summary>
 /// 本地删除暂存结果：先阻断后台发布，再由调用方按需取消服务端挂单；

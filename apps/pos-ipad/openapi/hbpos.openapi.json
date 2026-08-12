@@ -1370,6 +1370,46 @@
         }
       }
     },
+    "/api/v1/held-orders/{holdGuid}/cancel": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/held-orders/claims/mine": {
       "get": {
         "tags": [
@@ -10057,6 +10097,50 @@
         },
         "additionalProperties": false
       },
+      "SharedHeldOrderCancelResponse": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "alreadyCancelled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderCancelResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderCancelResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "SharedHeldOrderCapabilitiesResponse": {
         "type": "object",
         "properties": {
@@ -10536,7 +10620,8 @@
         "enum": [
           1,
           2,
-          3
+          3,
+          4
         ],
         "type": "integer",
         "format": "int32"

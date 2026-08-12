@@ -21,6 +21,11 @@ export interface SharedHeldOrderLocalPublicationPort {
     holdGuid: string,
     scope: HeldOrderScope,
   ): Promise<LocalPublicationEligibility>;
+  /** 删除暂存后只读冻结快照；用于把服务端 NOT_FOUND 收口为可防重放的 Cancelled。 */
+  loadDeletePending(
+    holdGuid: string,
+    scope: HeldOrderScope,
+  ): Promise<SharedSaleCartV1 | null>;
 }
 
 export class SqliteSharedHeldOrderLocalPublication
@@ -78,6 +83,48 @@ export class SqliteSharedHeldOrderLocalPublication
       return { eligible: false, reason: "not-shareable" };
     }
     return { eligible: true, cart: evaluation.cart };
+  }
+
+  public async loadDeletePending(
+    holdGuidInput: string,
+    scope: HeldOrderScope,
+  ): Promise<SharedSaleCartV1 | null> {
+    const holdGuid = nonBlank(holdGuidInput, "hold guid");
+    const storeCode = nonBlank(scope.storeCode, "store code");
+    const deviceCode = nonBlank(scope.deviceCode, "device code");
+    const row = await this.db.getFirst<{
+      status: string;
+      share_state: string;
+      publish_block_reason: string | null;
+      payload_version: number;
+      payload_ciphertext: Uint8Array;
+    }>(
+      `SELECT status, share_state, publish_block_reason,
+              payload_version, payload_ciphertext
+       FROM held_order_records
+       WHERE hold_id = ? AND store_code = ? AND device_code = ?`,
+      [holdGuid, storeCode, deviceCode],
+    );
+    if (
+      !row ||
+      row.status !== "Pending" ||
+      row.share_state !== "Blocked" ||
+      row.publish_block_reason !== "LOCAL_DELETE_PENDING" ||
+      row.payload_version !== 1 ||
+      !(row.payload_ciphertext instanceof Uint8Array)
+    ) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await this.encryptor.decrypt(row.payload_ciphertext),
+      ) as unknown;
+    } catch {
+      return null;
+    }
+    const evaluation = evaluateLegacyHeldOrderPayload(parsed);
+    return evaluation.outcome === "publishable" ? evaluation.cart : null;
   }
 }
 

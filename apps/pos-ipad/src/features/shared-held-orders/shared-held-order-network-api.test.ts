@@ -332,3 +332,51 @@ test("publish 上传 holdGuid 幂等键并解析 revision", async () => {
   assert.equal(call?.method, "POST");
   assert.equal((call?.data as { idempotencyKey?: unknown })?.idempotencyKey, "hold-1");
 });
+
+test("cancel 以原设备身份取消挂单并严格解析 Cancelled 终态", async () => {
+  const transport = new FakeTransport();
+  transport.enqueue({
+    status: 200,
+    data: envelope({
+      holdGuid: "hold-1",
+      status: 4,
+      revision: 13,
+      updatedAtUtc: "2026-07-28T00:03:00.000Z",
+      alreadyCancelled: false,
+    }),
+  });
+  const api = makeApi(transport);
+
+  const result = await api.cancel("hold-1");
+
+  assert.deepEqual(result, {
+    holdGuid: "hold-1",
+    status: "Cancelled",
+    revision: 13,
+    updatedAtIso: "2026-07-28T00:03:00.000Z",
+    alreadyCancelled: false,
+  });
+  assert.equal(transport.calls[0]?.method, "POST");
+  assert.equal(transport.calls[0]?.url, "/api/v1/held-orders/hold-1/cancel");
+  assert.equal(transport.calls[0]?.data, undefined);
+});
+
+test("cancel 响应 holdGuid 与请求不一致时 fail-closed", async () => {
+  const transport = new FakeTransport();
+  transport.enqueue({
+    status: 200,
+    data: envelope({
+      holdGuid: "hold-other",
+      status: 4,
+      revision: 13,
+      updatedAtUtc: "2026-07-28T00:03:00.000Z",
+      alreadyCancelled: false,
+    }),
+  });
+  const api = makeApi(transport);
+
+  await assert.rejects(
+    api.cancel("hold-1"),
+    /Cancelled held order response holdGuid is invalid/,
+  );
+});

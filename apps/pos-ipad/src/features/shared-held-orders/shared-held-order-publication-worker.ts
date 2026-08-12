@@ -132,6 +132,16 @@ export class SharedHeldOrderPublicationWorker {
           failedPublish += 1;
           continue;
         }
+        if (response.status === "Cancelled") {
+          // 服务端 Cancelled 是稳定终态；本地必须退出发布队列，不能无限退避或复活为 Published。
+          const didBlock = await this.options.queue.blockPublication({
+            holdId: row.holdId,
+            reason: "SHARED_HELD_ORDER_CANCELLED",
+            atIso: nowIso,
+          });
+          if (didBlock) blocked += 1;
+          continue;
+        }
         const advanced = await this.options.queue.markPublished({
           holdId: row.holdId,
           remoteRevision: response.revision,

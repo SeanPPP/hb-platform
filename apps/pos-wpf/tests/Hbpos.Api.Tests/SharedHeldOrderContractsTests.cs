@@ -484,6 +484,34 @@ public sealed class SharedHeldOrderContractsTests
         Assert.Empty(SharedSaleCartV1Validator.ValidateAll(cart));
     }
 
+    [Fact]
+    public void Discount_state_wire_omits_fields_that_do_not_belong_to_the_active_mode()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var cases = new[]
+        {
+            (State: new SharedLineDiscountStateV1("none"), Fields: new[] { "mode" }),
+            (State: new SharedLineDiscountStateV1("manual-amount", Cents: 25), Fields: new[] { "mode", "cents" }),
+            (State: new SharedLineDiscountStateV1("manual-percent", BasisPoints: 500), Fields: new[] { "mode", "basisPoints" }),
+            (State: new SharedLineDiscountStateV1("promotion", Cents: 10, PromotionIds: ["P1"]), Fields: new[] { "mode", "cents", "promotionIds" })
+        };
+
+        foreach (var testCase in cases)
+        {
+            using var document = JsonDocument.Parse(
+                JsonSerializer.Serialize(testCase.State, options));
+            var actualFields = document.RootElement
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(
+                testCase.Fields.Order(StringComparer.Ordinal),
+                actualFields);
+        }
+    }
+
     [Theory]
     [InlineData("none", 1L, null, null, "cents")]
     [InlineData("manual-amount", null, null, null, "cents")]

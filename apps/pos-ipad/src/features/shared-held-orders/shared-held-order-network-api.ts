@@ -17,6 +17,7 @@ type GeneratedPrepareRequest = components["schemas"]["SharedHeldOrderClaimPrepar
 type GeneratedPrepareResponse = components["schemas"]["SharedHeldOrderClaimPrepareResponse"];
 type GeneratedClaim = components["schemas"]["SharedHeldOrderClaimDto"];
 type GeneratedRecoveryClaim = components["schemas"]["SharedHeldOrderRecoveryClaimDto"];
+type GeneratedCancelResponse = components["schemas"]["SharedHeldOrderCancelResponse"];
 
 export type SharedHeldOrderApiErrorKind =
   | "Disabled"
@@ -80,7 +81,18 @@ export type SharedHeldOrderPublishResult = Readonly<{
   alreadyExists: boolean;
 }>;
 
-export type SharedHeldOrderStatus = "Pending" | "Claimed" | "Completed";
+export type SharedHeldOrderStatus =
+  | "Pending"
+  | "Claimed"
+  | "Completed"
+  | "Cancelled";
+export type SharedHeldOrderCancelResult = Readonly<{
+  holdGuid: string;
+  status: "Cancelled";
+  revision: number;
+  updatedAtIso: string;
+  alreadyCancelled: boolean;
+}>;
 export type SharedHeldOrderClaimStatus =
   | "Prepared"
   | "Active"
@@ -150,6 +162,7 @@ export interface SharedHeldOrderNetworkApiPort {
     idempotencyKey: string;
   }>): Promise<SharedHeldOrderPublishResult>;
   listPending(): Promise<readonly SharedHeldOrderPendingListItem[]>;
+  cancel(holdGuid: string): Promise<SharedHeldOrderCancelResult>;
   prepare(input: Readonly<{
     holdGuid: string;
     claimGuid: string;
@@ -198,6 +211,21 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
   public async listPending(): Promise<readonly SharedHeldOrderPendingListItem[]> {
     return this.get<readonly GeneratedListItem[]>("/api/v1/held-orders")
       .then((rows) => Object.freeze(requiredArray(rows, "held orders").map(mapListItem)));
+  }
+
+  public async cancel(holdGuidInput: string): Promise<SharedHeldOrderCancelResult> {
+    const holdGuid = requiredText(holdGuidInput, "hold guid");
+    const response = await wrapTransportCall(() => this.transport.request<
+      HbposEnvelope<GeneratedCancelResponse>
+    >({
+      method: "POST",
+      url: `/api/v1/held-orders/${encodeURIComponent(holdGuid)}/cancel`,
+    }));
+    const result = mapCancelResult(unwrapSharedEnvelope(response));
+    if (result.holdGuid !== holdGuid) {
+      throw new TypeError("Cancelled held order response holdGuid is invalid.");
+    }
+    return result;
   }
 
   public async publish(input: Readonly<{
@@ -431,6 +459,22 @@ function mapPublishResult(
   });
 }
 
+function mapCancelResult(
+  value: GeneratedCancelResponse,
+): SharedHeldOrderCancelResult {
+  const status = mapHoldStatus(value.status);
+  if (status !== "Cancelled") {
+    throw new TypeError("Cancelled held order response status is invalid.");
+  }
+  return Object.freeze({
+    holdGuid: requiredText(value.holdGuid, "cancel holdGuid"),
+    status,
+    revision: requiredNonNegativeInteger(value.revision, "cancel revision"),
+    updatedAtIso: requiredIso(value.updatedAtUtc, "cancel updatedAt"),
+    alreadyCancelled: value.alreadyCancelled === true,
+  });
+}
+
 function mapPrepareResult(
   value: GeneratedPrepareResponse,
 ): SharedHeldOrderPrepareResult {
@@ -493,10 +537,13 @@ function mapRecoveryClaim(
   });
 }
 
-function mapHoldStatus(value: components["schemas"]["SharedHeldOrderStatus"] | undefined): SharedHeldOrderStatus {
+function mapHoldStatus(
+  value: components["schemas"]["SharedHeldOrderStatus"] | undefined,
+): SharedHeldOrderStatus {
   if (value === 1) return "Pending";
   if (value === 2) return "Claimed";
   if (value === 3) return "Completed";
+  if (value === 4) return "Cancelled";
   throw new TypeError("Shared held order status is invalid.");
 }
 

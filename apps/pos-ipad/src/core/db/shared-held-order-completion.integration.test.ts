@@ -218,7 +218,9 @@ function legacyPayload(): HeldOrderPayloadV1 {
   };
 }
 
-async function open(): Promise<Readonly<{
+async function open(
+  encryptor: typeof ENCRYPTOR = ENCRYPTOR,
+): Promise<Readonly<{
   connection: TrackingConnection;
   records: HeldOrderRecordRepositoryPort;
 }>> {
@@ -231,7 +233,7 @@ async function open(): Promise<Readonly<{
     records: createSqliteRepositories(connection, {
       nowIso: () => NOW,
       createLeaseId: () => "lease",
-      encryptor: ENCRYPTOR,
+      encryptor,
     }).heldOrderRecords,
   };
 }
@@ -292,6 +294,43 @@ async function prepareRemoteClaim(
     createdAtIso: "2026-07-28T08:02:00.000Z",
   }), claimGuid);
 }
+
+test("RemoteClaim synthetic 行写入本地 payload 格式，并兼容读取旧 shared payload", async () => {
+  const { connection, records } = await open(fakeEncryptor);
+  const holdId = "hold-synthetic-payload";
+  const recallAttemptId = "attempt-synthetic-payload";
+  await prepareRemoteClaim(
+    connection,
+    holdId,
+    recallAttemptId,
+    "claim-synthetic-payload",
+  );
+
+  const written = await connection.getFirst<{ payload_ciphertext: Uint8Array }>(
+    "SELECT payload_ciphertext FROM held_order_records WHERE hold_id = ?",
+    [holdId],
+  );
+  assert.ok(written?.payload_ciphertext instanceof Uint8Array);
+  const writtenPayload = JSON.parse(
+    await fakeEncryptor.decrypt(written.payload_ciphertext),
+  ) as { pricingState: { lines: { discountState: unknown }[] } };
+  assert.deepEqual(writtenPayload.pricingState.lines[0]?.discountState, {
+    kind: "none",
+  });
+
+  // 兼容修复前已落库的 synthetic 行：旧版本直接复用了 shared wire payload。
+  await connection.run(
+    "UPDATE held_order_records SET payload_ciphertext = ? WHERE hold_id = ?",
+    [await fakeEncryptor.encrypt(JSON.stringify(sharedCart())), holdId],
+  );
+  const recoverable = await records.listRecoverable(SCOPE);
+  assert.equal(recoverable.length, 1);
+  assert.equal(recoverable[0]?.hold.holdId, holdId);
+  assert.deepEqual(
+    recoverable[0]?.payload.pricingState.lines[0]?.discountState,
+    { kind: "none" },
+  );
+});
 
 function assertPrepared(
   result: { outcome: string },

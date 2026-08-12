@@ -233,6 +233,16 @@ public sealed class SharedHeldOrderPaymentSourceResolverTests
             return Task.FromResult(claims);
         }
 
+        public Task<SharedHeldOrderShareRequestResult> TryRequestShareAsync(
+            Guid holdGuid,
+            string storeCode,
+            string deviceCode,
+            string requestedAtIso,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<SharedHeldOrderShareRequestResult>(new NotSupportedException());
+        }
+
         public Task<bool> TryExpirePreparedRemoteClaimAsync(
             Guid claimId,
             string releaseIdempotencyKey,

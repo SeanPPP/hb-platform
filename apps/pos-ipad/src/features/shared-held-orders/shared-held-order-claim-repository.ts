@@ -2,6 +2,7 @@ import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
 } from "./shared-sale-cart-v1";
+import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
 
 import type { HeldOrderScope } from "@/core/contracts";
 import { multiplyCentsAwayFromZero } from "@/core/contracts/money";
@@ -66,6 +67,15 @@ export type PrepareClaimResult =
   | Readonly<{ outcome: "replayed"; claim: SharedHeldOrderClaim }>
   | Readonly<{ outcome: "fence-held"; winner: SharedHeldOrderClaim }>;
 
+export class SharedHeldOrderClaimInvariantError extends Error {
+  public readonly code = "MULTIPLE_OPEN_CLAIMS" as const;
+
+  public constructor() {
+    super("同一终端存在多个未完成的共享挂单 claim。");
+    this.name = "SharedHeldOrderClaimInvariantError";
+  }
+}
+
 /**
  * 持久化取单声明 Port：prepare 在同一 exclusive transaction 写入 claim 密文、
  * RecallActive fence 与（远端必需的）synthetic Recalling held 行；激活/绑定/完成/
@@ -99,6 +109,15 @@ export interface SharedHeldOrderClaimRepositoryPort {
     expectedState: "Prepared" | "Active";
   }>): Promise<boolean>;
   /**
+   * 兼容旧版 release 已先清除 legacy fence/held、却遗漏 shared claim 的状态。
+   * 实现只能修复精确匹配的 OfflineOrigin Active 孤儿，正常 open claim 必须拒绝。
+   */
+  repairLegacyClearedOfflineOriginClaim(input: Readonly<{
+    claimGuid: string;
+    releaseIdempotencyKey: string;
+    releasedAtIso: string;
+  }>): Promise<boolean>;
+  /**
    * 支付草稿已恢复相同 binding 时，兼容旧版 release 留下的 Active 孤儿：
    * 仅在 held 已回到 Pending 且 fence 缺失时原子补回 Recalling/fence。
    */
@@ -113,6 +132,15 @@ export interface SharedHeldOrderClaimRepositoryPort {
     expectedState: "Prepared" | "Active";
   }>): Promise<boolean>;
   getClaim(claimGuid: string): Promise<SharedHeldOrderClaim | null>;
+  /** scope 内 Prepared/Active 受唯一索引保护；该权威查询不受历史分页影响。 */
+  getOpenClaim(scope: HeldOrderScope): Promise<SharedHeldOrderClaim | null>;
+  /** 对账专用：列出全部 open claim，以便收敛旧版或损坏态的重复事实。 */
+  listOpenClaims(scope: HeldOrderScope): Promise<readonly SharedHeldOrderClaim[]>;
+  /** 精确查询某挂单最新 claim，供 owner release 区分“不存在”与终态冲突。 */
+  getLatestClaimForHold(
+    scope: HeldOrderScope,
+    holdGuid: string,
+  ): Promise<SharedHeldOrderClaim | null>;
   listMine(
     scope: HeldOrderScope,
     limit: number,
@@ -161,6 +189,18 @@ export class SqliteSharedHeldOrderClaimRepository
     if (!(ciphertext instanceof Uint8Array) || ciphertext.length === 0) {
       throw new Error("SHARED_HELD_ORDER_CLAIM_PAYLOAD_ENCRYPTION_FAILED");
     }
+    const localHeldCiphertext = facts.source === "RemoteClaim"
+      ? await this.encryptor.encrypt(JSON.stringify({
+          version: 1,
+          pricingState: fromSharedSaleCartV1(facts.payload),
+        }))
+      : null;
+    if (
+      localHeldCiphertext !== null &&
+      (!(localHeldCiphertext instanceof Uint8Array) || localHeldCiphertext.length === 0)
+    ) {
+      throw new Error("SHARED_HELD_ORDER_LOCAL_PAYLOAD_ENCRYPTION_FAILED");
+    }
     return this.db.withExclusiveTransaction(async (transaction) => {
       // 预检与写入同事务，崩溃后同 key 重放不重复建行、不同 facts 拒绝。
       const existing = await this.loadByPrepareKey(
@@ -176,7 +216,7 @@ export class SqliteSharedHeldOrderClaimRepository
       const winner = await this.loadScopeFenceWinner(transaction, facts.scope);
       if (winner) return { outcome: "fence-held", winner };
       await this.assertTerminalFenceAvailable(transaction, facts);
-      await this.prepareLocalHeldRow(transaction, facts, ciphertext);
+      await this.prepareLocalHeldRow(transaction, facts, localHeldCiphertext);
       await transaction.run(
         `INSERT INTO shared_held_order_claim_records (
           claim_guid, hold_guid, recall_attempt_id, store_code, device_code,
@@ -380,6 +420,96 @@ export class SqliteSharedHeldOrderClaimRepository
     });
   }
 
+  public async repairLegacyClearedOfflineOriginClaim(input: Readonly<{
+    claimGuid: string;
+    releaseIdempotencyKey: string;
+    releasedAtIso: string;
+  }>): Promise<boolean> {
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const claim = await this.loadByGuid(transaction, input.claimGuid);
+      if (!claim) return false;
+      if (
+        claim.state === "Released" &&
+        claim.releaseIdempotencyKey === input.releaseIdempotencyKey
+      ) {
+        return true;
+      }
+      if (
+        claim.source !== "OfflineOrigin" ||
+        claim.state !== "Active" ||
+        claim.activateIdempotencyKey === null ||
+        claim.serverRevision !== null ||
+        claim.releaseIdempotencyKey !== null ||
+        claim.boundOrderGuid !== null
+      ) {
+        return false;
+      }
+
+      const fence = await transaction.getFirst<{ present: number }>(
+        `SELECT 1 AS present FROM terminal_cart_fences
+         WHERE store_code = ? AND device_code = ?
+           AND kind = 'RecallActive' AND hold_id = ? AND recall_attempt_id = ?`,
+        [
+          claim.scope.storeCode,
+          claim.scope.deviceCode,
+          claim.holdGuid,
+          claim.recallAttemptId,
+        ],
+      );
+      if (fence) return false;
+
+      const held = await transaction.getFirst<{
+        status: string;
+        recall_attempt_id: string | null;
+        recalling_at_iso: string | null;
+        recalling_cashier_id: string | null;
+        recalling_cashier_name: string | null;
+        is_synthetic_shared_claim: number;
+      }>(
+        `SELECT status, recall_attempt_id, recalling_at_iso,
+                recalling_cashier_id, recalling_cashier_name,
+                is_synthetic_shared_claim
+         FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?`,
+        [claim.holdGuid, claim.scope.storeCode, claim.scope.deviceCode],
+      );
+      if (
+        !held ||
+        held.status !== "Pending" ||
+        held.recall_attempt_id !== null ||
+        held.recalling_at_iso !== null ||
+        held.recalling_cashier_id !== null ||
+        held.recalling_cashier_name !== null ||
+        held.is_synthetic_shared_claim !== 0
+      ) {
+        return false;
+      }
+
+      // 只有旧 release 的完整后置事实成立时才补写 shared claim 终态；不清理
+      // 任何其他 fence/held，也不放宽普通 releaseClaim 的 fail-closed 语义。
+      const updated = await transaction.run(
+        `UPDATE shared_held_order_claim_records
+         SET state = 'Released', release_idempotency_key = ?, updated_at_iso = ?
+         WHERE claim_guid = ?
+           AND source = 'OfflineOrigin'
+           AND state = 'Active'
+           AND activate_idempotency_key IS NOT NULL
+           AND server_revision IS NULL
+           AND release_idempotency_key IS NULL
+           AND bound_order_guid IS NULL`,
+        [
+          input.releaseIdempotencyKey,
+          input.releasedAtIso,
+          input.claimGuid,
+        ],
+      );
+      if (updated.changes !== 1) {
+        throw new Error("SHARED_HELD_ORDER_LEGACY_ORPHAN_REPAIR_CHANGED");
+      }
+      return true;
+    });
+  }
+
   public async ensureRestoredOfflineOriginClaimFence(input: Readonly<{
     claimGuid: string;
     repairedAtIso: string;
@@ -556,6 +686,43 @@ export class SqliteSharedHeldOrderClaimRepository
     return this.loadByGuid(this.db, claimGuid);
   }
 
+  public async getOpenClaim(
+    scope: HeldOrderScope,
+  ): Promise<SharedHeldOrderClaim | null> {
+    const claims = await this.listOpenClaims(scope);
+    if (claims.length > 1) {
+      throw new SharedHeldOrderClaimInvariantError();
+    }
+    return claims[0] ?? null;
+  }
+
+  public async listOpenClaims(
+    scope: HeldOrderScope,
+  ): Promise<readonly SharedHeldOrderClaim[]> {
+    const rows = await this.db.getAll<ClaimRow>(
+      `SELECT * FROM shared_held_order_claim_records
+       WHERE store_code = ? AND device_code = ?
+         AND state IN ('Prepared', 'Active')
+       ORDER BY created_at_iso ASC, claim_guid ASC`,
+      [scope.storeCode, scope.deviceCode],
+    );
+    return Promise.all(rows.map((row) => this.toClaim(row)));
+  }
+
+  public async getLatestClaimForHold(
+    scope: HeldOrderScope,
+    holdGuid: string,
+  ): Promise<SharedHeldOrderClaim | null> {
+    const row = await this.db.getFirst<ClaimRow>(
+      `SELECT * FROM shared_held_order_claim_records
+       WHERE store_code = ? AND device_code = ? AND hold_guid = ?
+       ORDER BY created_at_iso DESC, claim_guid DESC
+       LIMIT 1`,
+      [scope.storeCode, scope.deviceCode, holdGuid],
+    );
+    return row ? this.toClaim(row) : null;
+  }
+
   public async listMine(
     scope: HeldOrderScope,
     limit: number,
@@ -605,7 +772,7 @@ export class SqliteSharedHeldOrderClaimRepository
   private async prepareLocalHeldRow(
     transaction: SqliteConnectionPort,
     facts: PreparedClaimInput,
-    ciphertext: Uint8Array,
+    localHeldCiphertext: Uint8Array | null,
   ): Promise<void> {
     const summary = summarizeSharedSaleCartV1(facts.payload);
     const existing = await transaction.getFirst<{
@@ -618,6 +785,9 @@ export class SqliteSharedHeldOrderClaimRepository
       [facts.holdGuid],
     );
     if (facts.source === "RemoteClaim") {
+      if (localHeldCiphertext === null) {
+        throw new Error("SHARED_HELD_ORDER_LOCAL_PAYLOAD_MISSING");
+      }
       // 远端 claim 必须使用 synthetic 行满足 fence FK/trigger；本机已有同 hold 则拒绝。
       if (existing) {
         throw new Error("SHARED_HELD_ORDER_CLAIM_LOCAL_HOLD_CONFLICT");
@@ -640,7 +810,7 @@ export class SqliteSharedHeldOrderClaimRepository
           facts.scope.deviceCode,
           facts.heldBy.cashierId,
           facts.heldBy.cashierName,
-          ciphertext,
+          localHeldCiphertext,
           summary.itemCount,
           summary.subtotalCents,
           summary.discountCents,

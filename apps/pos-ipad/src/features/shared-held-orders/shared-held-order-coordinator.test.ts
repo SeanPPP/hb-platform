@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
-import type {
-  PrepareClaimResult,
-  SharedHeldOrderClaim,
-  SharedHeldOrderClaimRepositoryPort,
-  PreparedClaimInput,
+import {
+  SharedHeldOrderClaimInvariantError,
+  type PrepareClaimResult,
+  type SharedHeldOrderClaim,
+  type SharedHeldOrderClaimRepositoryPort,
+  type PreparedClaimInput,
 } from "./shared-held-order-claim-repository";
 import {
   SharedHeldOrderCoordinator,
@@ -271,7 +272,9 @@ class FakeClaims implements SharedHeldOrderClaimRepositoryPort {
     releaseIdempotencyKey: string;
     expectedState: "Prepared" | "Active";
   }>[] = [];
+  public readonly repairCalls: string[] = [];
   public readonly restoredFenceRepairCalls: string[] = [];
+  public readonly legacyClearedClaimGuids = new Set<string>();
   public fenceWinner: SharedHeldOrderClaim | null = null;
   public failActivate = false;
   public nextPrepareOutcome: "prepared" | "replayed" | "fence-held" | null = null;
@@ -385,6 +388,32 @@ class FakeClaims implements SharedHeldOrderClaimRepositoryPort {
     return true;
   }
 
+  public async repairLegacyClearedOfflineOriginClaim(input: Readonly<{
+    claimGuid: string;
+    releaseIdempotencyKey: string;
+    releasedAtIso: string;
+  }>): Promise<boolean> {
+    this.repairCalls.push(input.claimGuid);
+    const claim = this.claims.get(input.claimGuid);
+    if (
+      !claim ||
+      !this.legacyClearedClaimGuids.has(input.claimGuid) ||
+      claim.source !== "OfflineOrigin" ||
+      claim.state !== "Active" ||
+      claim.boundOrderGuid !== null ||
+      claim.releaseIdempotencyKey !== null
+    ) {
+      return false;
+    }
+    this.claims.set(input.claimGuid, {
+      ...claim,
+      state: "Released",
+      releaseIdempotencyKey: input.releaseIdempotencyKey,
+      updatedAtIso: input.releasedAtIso,
+    });
+    return true;
+  }
+
   public async ensureRestoredOfflineOriginClaimFence(input: Readonly<{
     claimGuid: string;
     repairedAtIso: string;
@@ -407,8 +436,34 @@ class FakeClaims implements SharedHeldOrderClaimRepositoryPort {
     return this.claims.get(claimGuid) ?? null;
   }
 
-  public async listMine(): Promise<readonly SharedHeldOrderClaim[]> {
-    return [...this.claims.values()];
+  public async getOpenClaim(): Promise<SharedHeldOrderClaim | null> {
+    const openClaims = await this.listOpenClaims();
+    if (openClaims.length > 1) {
+      throw new SharedHeldOrderClaimInvariantError();
+    }
+    return openClaims[0] ?? null;
+  }
+
+  public async listOpenClaims(): Promise<readonly SharedHeldOrderClaim[]> {
+    return [...this.claims.values()].filter(
+      (claim) => claim.state === "Prepared" || claim.state === "Active",
+    );
+  }
+
+  public async getLatestClaimForHold(
+    _scope: HeldOrderScope,
+    holdGuid: string,
+  ): Promise<SharedHeldOrderClaim | null> {
+    return [...this.claims.values()].reverse().find(
+      (claim) => claim.holdGuid === holdGuid,
+    ) ?? null;
+  }
+
+  public async listMine(
+    _scope: HeldOrderScope,
+    limit: number,
+  ): Promise<readonly SharedHeldOrderClaim[]> {
+    return [...this.claims.values()].slice(0, limit);
   }
 }
 
@@ -436,6 +491,16 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
 
   public async listPending() {
     return [];
+  }
+
+  public async cancel(holdGuid: string) {
+    return {
+      holdGuid,
+      status: "Cancelled" as const,
+      revision: 8,
+      updatedAtIso: NOW,
+      alreadyCancelled: false,
+    };
   }
 
   public async publish(_input: Readonly<{
@@ -553,6 +618,10 @@ class FakeLocalPublications {
   public async loadEligible() {
     return this.eligibility;
   }
+
+  public async loadDeletePending() {
+    return null;
+  }
 }
 
 function makeCoordinator(
@@ -626,6 +695,31 @@ async function seedOpenClaim(
   return claim;
 }
 
+async function seedTerminalClaimHistory(
+  claims: FakeClaims,
+  count: number,
+): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const claimGuid = `claim-history-${String(index).padStart(3, "0")}`;
+    await seedOpenClaim(claims, {
+      claimGuid,
+      holdGuid: `hold-history-${index}`,
+      source: "RemoteClaim",
+      state: "Prepared",
+    });
+    assert.equal(
+      await claims.releaseClaim({
+        claimGuid,
+        releaseIdempotencyKey: `release-history-${index}`,
+        releasedAtIso: NOW,
+        expectedState: "Prepared",
+      }),
+      true,
+    );
+  }
+  claims.releaseCalls.length = 0;
+}
+
 test("在线取单：prepare -> 本地 claim/fence -> activate -> 恢复购物车，顺序固定", async () => {
   const { cart, claims, api, coordinator } = makeCoordinator();
   const result = await coordinator.takeRemoteHold("hold-1");
@@ -641,6 +735,48 @@ test("在线取单：prepare -> 本地 claim/fence -> activate -> 恢复购物�
   assert.equal(claim?.state, "Active");
   assert.equal(claim?.serverRevision, 7);
   assert.equal(claims.prepareInputs[0]?.source, "RemoteClaim");
+});
+
+test("在线取单同次修复旧 release 留下的 OfflineOrigin Active 孤儿并继续取单", async () => {
+  const claims = new FakeClaims();
+  await seedTerminalClaimHistory(claims, 200);
+  await seedOpenClaim(claims, {
+    claimGuid: "claim-orphan",
+    holdGuid: "hold-orphan",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+  claims.legacyClearedClaimGuids.add("claim-orphan");
+  const { api, coordinator } = makeCoordinator({ claims });
+
+  const result = await coordinator.takeRemoteHold("hold-1");
+
+  assert.equal(result.outcome, "restored");
+  assert.deepEqual(claims.repairCalls, ["claim-orphan"]);
+  assert.equal((await claims.getClaim("claim-orphan"))?.state, "Released");
+  assert.deepEqual(api.calls, ["prepare", "activate"]);
+});
+
+test("正常 OfflineOrigin Active 不满足旧孤儿事实时仍阻止新在线取单", async () => {
+  const claims = new FakeClaims();
+  await seedOpenClaim(claims, {
+    claimGuid: "claim-active-offline",
+    holdGuid: "hold-active-offline",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+  const { api, coordinator } = makeCoordinator({ claims });
+
+  await assert.rejects(
+    () => coordinator.takeRemoteHold("hold-new"),
+    (error: unknown) =>
+      error instanceof SharedHeldOrderCoordinatorError &&
+      error.code === "FENCE_CONFLICT",
+  );
+
+  assert.deepEqual(claims.repairCalls, ["claim-active-offline"]);
+  assert.equal((await claims.getClaim("claim-active-offline"))?.state, "Active");
+  assert.deepEqual(api.calls, []);
 });
 
 test("prepare 本地 fence 输家：不 activate、不恢复", async () => {
@@ -790,7 +926,7 @@ test("崩溃恢复：购物车已带相同 claim binding 与冻结快照时按�
   assert.equal(cart.replaceCalls.length, 0);
 });
 
-test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保留当前购物车", async () => {
+test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保留购物车", async () => {
   const claims = new FakeClaims();
   const claim = await seedOpenClaim(claims, {
     claimGuid: "offline-restored-orphan",
@@ -798,6 +934,7 @@ test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保
     source: "OfflineOrigin",
     state: "Active",
   });
+  claims.legacyClearedClaimGuids.add(claim.claimGuid);
   const frozenPricingState = fromSharedSaleCartV1(claim.payload);
   const pricingState: PricingCartStateSnapshot = {
     ...frozenPricingState,
@@ -826,10 +963,34 @@ test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保
     claims.restoredFenceRepairCalls,
     ["offline-restored-orphan"],
   );
+  assert.deepEqual(claims.repairCalls, []);
   assert.deepEqual(result.restoredClaimIds, ["offline-restored-orphan"]);
   assert.equal((await claims.getClaim(claim.claimGuid))?.state, "Active");
   assert.equal(cart.replaceCalls.length, 0);
   assert.equal(cart.value.pricingState.lines[0]?.quantity, 2);
+});
+
+test("对账：空车遇到旧 OfflineOrigin Active 孤儿时补 Released，不再复活购物车", async () => {
+  const claims = new FakeClaims();
+  await seedOpenClaim(claims, {
+    claimGuid: "offline-cleared-orphan",
+    holdGuid: "hold-offline",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+  claims.legacyClearedClaimGuids.add("offline-cleared-orphan");
+  const { cart, coordinator } = makeCoordinator({ claims });
+
+  const result = await coordinator.reconcileClaims();
+
+  assert.deepEqual(claims.repairCalls, ["offline-cleared-orphan"]);
+  assert.deepEqual(claims.restoredFenceRepairCalls, []);
+  assert.deepEqual(result.restoredClaimIds, []);
+  assert.equal(
+    (await claims.getClaim("offline-cleared-orphan"))?.state,
+    "Released",
+  );
+  assert.equal(cart.replaceCalls.length, 0);
 });
 
 test("主管强制释放：Remote Active 先服务端释放，再精确清理匹配购物车和本地 fence", async () => {
@@ -1800,6 +1961,7 @@ function boundCartFor(claim: SharedHeldOrderClaim): FakeCart {
 
 test("普通清车 owner release：RemoteClaim 先服务端 release 成功，再本地 claim/fence/cart 清理", async () => {
   const { claims, api } = makeCoordinator();
+  await seedTerminalClaimHistory(claims, 200);
   const claim = await seedOpenClaim(claims, {
     claimGuid: "claim-1",
     holdGuid: "hold-1",
@@ -1941,6 +2103,63 @@ test("普通清车 owner release：购物车 binding 不匹配拒绝，claim 与
   assert.deepEqual(claims.releaseCalls, []);
   assert.equal(cart.value.cart.lines.length, 1);
   assert.equal((await claims.getClaim("claim-1"))?.state, "Active");
+});
+
+test("普通清车 owner release：另一挂单的 open claim 不阻止纯 legacy 回退", async () => {
+  const { claims, api, coordinator } = makeCoordinator();
+  await seedOpenClaim(claims, {
+    claimGuid: "claim-other",
+    holdGuid: "hold-other",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+
+  await assert.rejects(
+    () => coordinator.ownerRelease("legacy-hold"),
+    (error: unknown) =>
+      error instanceof SharedHeldOrderCoordinatorError &&
+      error.code === "NOT_FOUND",
+  );
+  assert.deepEqual(api.calls, []);
+  assert.equal((await claims.getClaim("claim-other"))?.state, "Active");
+});
+
+test("普通清车 owner release：当前购物车 binding 不属于 shared claim 时返回 NOT_FOUND 供 legacy 回退", async () => {
+  const { claims, api } = makeCoordinator();
+  await seedOpenClaim(claims, {
+    claimGuid: "claim-old",
+    holdGuid: "hold-1",
+    source: "OfflineOrigin",
+    state: "Active",
+  });
+  assert.equal(
+    await claims.releaseClaim({
+      claimGuid: "claim-old",
+      releaseIdempotencyKey: "ipad-force-release:claim-old",
+      releasedAtIso: NOW,
+      expectedState: "Active",
+    }),
+    true,
+  );
+  const cart = new FakeCart(
+    snapshot(1, {
+      kind: "recalled",
+      scope: SCOPE,
+      holdId: "hold-1",
+      recallAttemptId: "legacy-attempt",
+    }),
+  );
+  const owned = makeCoordinator({ cart, claims, api });
+
+  await assert.rejects(
+    () => owned.coordinator.ownerRelease("hold-1"),
+    (error: unknown) =>
+      error instanceof SharedHeldOrderCoordinatorError &&
+      error.code === "NOT_FOUND",
+  );
+  assert.deepEqual(api.calls, []);
+  assert.equal(cart.value.cart.lines.length, 1);
+  assert.equal((await claims.getClaim("claim-old"))?.state, "Released");
 });
 
 test("普通清车 owner release：无 open claim 返回 NOT_FOUND，多个 open claim 拒绝", async () => {

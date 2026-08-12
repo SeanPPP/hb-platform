@@ -212,6 +212,69 @@ test("prepare 幂等与崩溃恢复：同 key 重放不重复建行，异 key �
   assert.equal(active?.serverRevision, 5);
 });
 
+test("权威 open/hold 查询不受最老 200 条历史分页截断", async () => {
+  const { claims } = await openClaims({
+    source: "RemoteClaim",
+    localHoldId: null,
+  });
+  for (let index = 0; index < 200; index += 1) {
+    const claimGuid = `claim-history-${String(index).padStart(3, "0")}`;
+    assertPrepared(
+      await claims.prepareClaim(
+        prepareInput({
+          claimGuid,
+          holdGuid: `hold-history-${index}`,
+          recallAttemptId: `attempt-history-${index}`,
+          prepareIdempotencyKey: `prepare-history-${index}`,
+          source: "RemoteClaim",
+        }),
+      ),
+      claimGuid,
+    );
+    assert.equal(
+      await claims.releaseClaim({
+        claimGuid,
+        releaseIdempotencyKey: `release-history-${index}`,
+        releasedAtIso: TEST_NOW_ISO,
+        expectedState: "Prepared",
+      }),
+      true,
+    );
+  }
+  assertPrepared(
+    await claims.prepareClaim(
+      prepareInput({
+        claimGuid: "claim-latest-open",
+        holdGuid: "hold-latest-open",
+        recallAttemptId: "attempt-latest-open",
+        prepareIdempotencyKey: "prepare-latest-open",
+        source: "RemoteClaim",
+      }),
+    ),
+    "claim-latest-open",
+  );
+
+  assert.equal(
+    (await claims.listMine(SCOPE, 200)).some(
+      (claim) => claim.claimGuid === "claim-latest-open",
+    ),
+    false,
+  );
+  assert.equal(
+    (await claims.getOpenClaim(SCOPE))?.claimGuid,
+    "claim-latest-open",
+  );
+  assert.deepEqual(
+    (await claims.listOpenClaims(SCOPE)).map((claim) => claim.claimGuid),
+    ["claim-latest-open"],
+  );
+  assert.equal(
+    (await claims.getLatestClaimForHold(SCOPE, "hold-latest-open"))
+      ?.claimGuid,
+    "claim-latest-open",
+  );
+});
+
 test("Active 不自动释放：过期 prepared 声明在恢复后仍保持 Active", async () => {
   const { claims } = await openClaims();
   assertPrepared(
@@ -427,10 +490,13 @@ test("RemoteClaim prepare 原子写入 claim 密文、RecallActive fence 与 syn
   assert.equal(held.actual_amount_cents, 1002);
   // 只存密文，绝不落明文。
   assert.ok(!new TextDecoder().decode(held.payload_ciphertext).includes("P-1"));
-  assert.deepEqual(
-    held.payload_ciphertext,
-    await fakeEncryptor.encrypt(JSON.stringify(cart())),
-  );
+  // synthetic 行必须使用本地挂单 payload，不能继续断言旧 shared wire 字节。
+  const syntheticPayload = JSON.parse(
+    await fakeEncryptor.decrypt(held.payload_ciphertext),
+  ) as { pricingState: { lines: { discountState: unknown }[] } };
+  assert.deepEqual(syntheticPayload.pricingState.lines[0]?.discountState, {
+    kind: "none",
+  });
 
   const fence = await connection.getFirst<{
     kind: string;
@@ -678,6 +744,80 @@ test("OfflineOrigin release 把真实本地 held 恢复 Pending，不删除本�
   );
 });
 
+test("旧 release 已清 fence/held 时，只修复精确匹配的 OfflineOrigin Active 孤儿", async () => {
+  const { connection, claims } = await openClaims({ source: "OfflineOrigin" });
+  assertPrepared(await claims.prepareClaim(prepareInput({})), "claim-1");
+  assert.equal(
+    await claims.activatePreparedClaim({
+      claimGuid: "claim-1",
+      prepareIdempotencyKey: "prepare-key-1",
+      activateIdempotencyKey: "activate-key-1",
+      serverRevision: null,
+      activatedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+
+  // 精确复现旧 HeldOrdersOrchestrator.release：它只清 legacy fence/held，
+  // 不知道 shared claim，因而留下 Active claim 孤儿。
+  const legacyRepository = new SqliteHeldOrderRecordRepository(
+    connection,
+    fakeEncryptor,
+  );
+  assert.equal(
+    await legacyRepository.releaseRecallAfterCartCleared({
+      binding: {
+        kind: "recalled",
+        scope: SCOPE,
+        holdId: "hold-claim-1",
+        recallAttemptId: "recall-attempt-1",
+      },
+      releasedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+
+  assert.equal(
+    await claims.repairLegacyClearedOfflineOriginClaim({
+      claimGuid: "claim-1",
+      releaseIdempotencyKey: "ipad-owner-release:claim-1",
+      releasedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+  const repaired = await claims.getClaim("claim-1");
+  assert.equal(repaired?.state, "Released");
+  assert.equal(
+    repaired?.releaseIdempotencyKey,
+    "ipad-owner-release:claim-1",
+  );
+});
+
+test("legacy 孤儿修复拒绝仍有 fence 的正常 OfflineOrigin Active", async () => {
+  const { claims } = await openClaims({ source: "OfflineOrigin" });
+  assertPrepared(await claims.prepareClaim(prepareInput({})), "claim-1");
+  assert.equal(
+    await claims.activatePreparedClaim({
+      claimGuid: "claim-1",
+      prepareIdempotencyKey: "prepare-key-1",
+      activateIdempotencyKey: "activate-key-1",
+      serverRevision: null,
+      activatedAtIso: TEST_NOW_ISO,
+    }),
+    true,
+  );
+
+  assert.equal(
+    await claims.repairLegacyClearedOfflineOriginClaim({
+      claimGuid: "claim-1",
+      releaseIdempotencyKey: "ipad-owner-release:claim-1",
+      releasedAtIso: TEST_NOW_ISO,
+    }),
+    false,
+  );
+  assert.equal((await claims.getClaim("claim-1"))?.state, "Active");
+});
+
 test("支付草稿已恢复相同 binding 时，原子补回 OfflineOrigin Active 孤儿的 held/fence", async () => {
   const { connection, claims } = await openClaims({ source: "OfflineOrigin" });
   assertPrepared(await claims.prepareClaim(prepareInput({})), "claim-1");
@@ -750,6 +890,7 @@ test("支付草稿已恢复相同 binding 时，原子补回 OfflineOrigin Activ
     bound_order_guid: null,
   });
   assert.equal((await claims.getClaim("claim-1"))?.state, "Active");
+  // 崩溃重放必须按相同 durable facts 幂等成功。
   assert.equal(
     await claims.ensureRestoredOfflineOriginClaimFence({
       claimGuid: "claim-1",

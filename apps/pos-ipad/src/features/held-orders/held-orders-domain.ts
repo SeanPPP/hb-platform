@@ -65,7 +65,7 @@ export interface HeldOrderAuthorizationPort {
   authorizeAndRun<T>(
     input: Readonly<{
       permissionCode: string;
-      action: "hold" | "list" | "recall" | "recover" | "release";
+      action: "hold" | "list" | "recall" | "recover" | "release" | "delete";
     }>,
     operation: () => T | Promise<T>,
   ): Promise<
@@ -88,6 +88,7 @@ export type HeldOrderActionCode =
   | "recalled"
   | "recovered"
   | "released"
+  | "deleted"
   | "authorization-denied"
   | "sale-mode-required"
   | "cart-empty"
@@ -102,9 +103,12 @@ export type HeldOrderActionCode =
   | "complete-failed"
   | "rollback-failed"
   | "release-failed"
+  | "delete-failed"
+  | "delete-shared-failed"
   | "load-failed"
   | "shared-prepared-awaiting-activation"
   | "shared-fence-held"
+  | "shared-restore-failed"
   | "shared-conflict"
   | "shared-not-available"
   | "force-released"
@@ -136,7 +140,15 @@ export type SharedHeldOrderLocalShareRow = Readonly<{
   holdId: string;
   shareState: "NeedsEvaluation" | "PendingPublish" | "Published" | "Blocked";
   blockReason: string | null;
+  requestedAtIso?: string | null | undefined;
+  isSyntheticSharedClaim?: boolean | undefined;
 }>;
+
+export type SharedHeldOrderShareRequestOutcome =
+  | "requested"
+  | "already-requested"
+  | "ineligible"
+  | "not-found";
 
 export type SharedHeldOrderTakeViewOutcome =
   | "restored"
@@ -158,8 +170,16 @@ export type SharedHeldOrderTakeViewResult = Readonly<{
 export interface SharedHeldOrdersViewPort {
   listRemotePending(): Promise<readonly SharedHeldOrderRemoteRow[]>;
   listLocalShareState?(): Promise<readonly SharedHeldOrderLocalShareRow[]>;
+  requestShare?(holdGuid: string): Promise<SharedHeldOrderShareRequestOutcome>;
   takeRemoteHold(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
   recallLocalPublication(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
+  /** 仅原设备可取消其已发布挂单；组合根负责先暂停并等待本地发布循环。 */
+  cancelOwnedHold?(holdGuid: string): Promise<void>;
+  /**
+   * 优先释放本机 shared claim；返回 false 表示不存在 shared claim，调用方才可
+   * 回退 legacy release，避免后者只清 fence 而留下 shared claim 孤儿。
+   */
+  releaseOwnedClaim?(holdGuid: string): Promise<boolean>;
   /**
    * 可选强制释放。实现必须由组合根包一层 supervisor/History.Recall 授权，
    * 并在调用服务端 force-release 前拒绝空原因。

@@ -190,7 +190,7 @@ public sealed class SharedHeldOrderRepositoryTests
     }
 
     [Fact]
-    public async Task List_legacy_orders_needing_evaluation_excludes_pending_publish_published_and_blocked()
+    public async Task List_legacy_orders_needing_evaluation_requires_share_request_and_excludes_active_states()
     {
         await using var scope = await CreateScopeAsync();
         var first = Guid.NewGuid();
@@ -202,17 +202,23 @@ public sealed class SharedHeldOrderRepositoryTests
         await InsertLegacyOrderAsync(scope, third);
         await InsertLegacyOrderAsync(scope, untouched);
 
-        var initial = await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001");
-        Assert.Equal(4, initial.Count);
-
-        // NeedsEvaluation publication row 仍视为待评估（带评估产物才能进入 PendingPublish）。
+        // 默认不评估发布：无 publication 行或未请求的 NeedsEvaluation 都不进入候选。
+        Assert.Empty(await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001"));
         Assert.True(await UpsertNeedsEvaluationAsync(scope, first, [1, 2, 3]));
-        Assert.Equal(4, (await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001")).Count);
+        Assert.Empty(await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001"));
+
+        // 显式请求共享后才进入评估候选（旧缺 publication 行由 request 入口补 NeedsEvaluation+requested）。
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            first, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            second, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            third, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
+        Assert.Equal(3, (await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001")).Count);
 
         // PendingPublish 与 Published 不再进入评估候选。
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             first, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.PendingPublish, "2026-07-28T00:00:01.000Z"));
-        Assert.True(await UpsertNeedsEvaluationAsync(scope, second, [1, 2, 3]));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             second, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.PendingPublish, "2026-07-28T00:00:01.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
@@ -220,14 +226,120 @@ public sealed class SharedHeldOrderRepositoryTests
             "2026-07-28T00:00:02.000Z", remoteRevision: 5L, remoteUpdatedAtIso: "2026-07-28T00:00:02.000Z"));
         var remaining = await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001");
         var remainingOrder = Assert.Single(remaining);
-        Assert.Equal(untouched, remainingOrder.SuspendedOrderGuid);
+        Assert.Equal(third, remainingOrder.SuspendedOrderGuid);
 
         // Blocked 同样不进入 re-evaluation。
-        Assert.True(await UpsertNeedsEvaluationAsync(scope, third));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             third, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.Blocked,
             "2026-07-28T00:00:01.000Z", "PromotionRulesMissing", "缺少冻结促销规则"));
         Assert.Empty(await scope.Repository.ListLegacyOrdersNeedingEvaluationAsync("S001"));
+    }
+
+    [Fact]
+    public async Task TryRequestShareAsync_requires_pending_order_and_exact_store_device()
+    {
+        await using var scope = await CreateScopeAsync();
+        var missing = Guid.NewGuid();
+        Assert.Equal(SharedHeldOrderShareRequestResult.NotFound, await scope.Repository.TryRequestShareAsync(
+            missing, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
+
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+
+        // store/device 必须精确匹配（大小写不敏感规范化）。
+        Assert.Equal(SharedHeldOrderShareRequestResult.Ineligible, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S999", "POS-01", "2026-07-28T00:00:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Ineligible, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-99", "2026-07-28T00:00:00.000Z"));
+
+        // 非 Pending 状态不可共享。
+        await new SuspendedOrderRepository(scope.Store).MarkStatusAsync(holdGuid, SuspendedOrderStatus.Recalled);
+        Assert.Equal(SharedHeldOrderShareRequestResult.Ineligible, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:01.000Z"));
+    }
+
+    [Fact]
+    public async Task TryRequestShareAsync_creates_requested_needs_evaluation_for_legacy_order_without_publication()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+
+        var result = await scope.Repository.TryRequestShareAsync(
+            holdGuid, "s001", "pos-01", "2026-07-28T00:00:00.000Z");
+
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, result);
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderPublicationStatus.NeedsEvaluation, publication!.Status);
+        Assert.Equal("2026-07-28T00:00:00.000Z", publication.ShareRequestedAtIso);
+        Assert.Equal(1, publication.Revision);
+        Assert.Equal(0, publication.RetryCount);
+        Assert.Null(publication.PayloadCiphertext);
+    }
+
+    [Fact]
+    public async Task TryRequestShareAsync_is_idempotent_and_only_writes_request_time_for_existing_needs_evaluation()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid, [1, 2, 3]));
+
+        var first = await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:01.000Z");
+        var second = await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:02.000Z");
+
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, first);
+        Assert.Equal(SharedHeldOrderShareRequestResult.AlreadyRequested, second);
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.Equal(SharedHeldOrderPublicationStatus.NeedsEvaluation, publication!.Status);
+        Assert.Equal(1, publication.Revision);
+        Assert.Equal("2026-07-28T00:00:01.000Z", publication.ShareRequestedAtIso);
+        Assert.NotNull(publication.PayloadCiphertext);
+    }
+
+    [Fact]
+    public async Task List_due_publications_and_stage_and_block_require_share_request()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid));
+
+        // 未请求：不能暂存 PendingPublish、不能普通 Blocked，也不进 due。
+        Assert.False(await scope.Repository.TryStagePendingPublishAsync(
+            holdGuid, 1, SamplePayload(), "2026-07-28T00:00:01.000Z"));
+        Assert.False(await scope.Repository.TryBlockPublicationAsync(
+            holdGuid, 1, "ReturnLineNotSupported", "detail", "2026-07-28T00:00:01.000Z"));
+        Assert.Empty(await scope.Repository.ListDuePublicationsAsync("2026-07-28T00:00:02.000Z"));
+
+        // 请求后：可暂存、可进入 due。
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:03.000Z"));
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.True(await scope.Repository.TryStagePendingPublishAsync(
+            holdGuid, publication!.Revision, SamplePayload(), "2026-07-28T00:00:04.000Z"));
+        Assert.Equal(
+            holdGuid,
+            Assert.Single(await scope.Repository.ListDuePublicationsAsync("2026-07-28T00:00:05.000Z")).LocalHoldGuid);
+
+        // 请求后：可普通 Blocked（评估阻断）。
+        var second = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, second);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, second));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            second, "S001", "POS-01", "2026-07-28T00:00:03.000Z"));
+        var secondPublication = await scope.Repository.GetPublicationAsync(second);
+        Assert.NotNull(secondPublication);
+        Assert.True(await scope.Repository.TryBlockPublicationAsync(
+            second, secondPublication!.Revision, "ReturnLineNotSupported", "detail", "2026-07-28T00:00:04.000Z"));
+        Assert.Equal(
+            SharedHeldOrderPublicationStatus.Blocked,
+            (await scope.Repository.GetPublicationAsync(second))!.Status);
     }
 
     [Fact]
@@ -236,6 +348,8 @@ public sealed class SharedHeldOrderRepositoryTests
         await using var scope = await CreateScopeAsync();
         var holdGuid = Guid.NewGuid();
         Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid, [1, 2, 3]));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
 
         // 越级迁移或错误 revision 都不得推进。
         Assert.False(await scope.Repository.TryAdvancePublicationAsync(
@@ -292,6 +406,8 @@ public sealed class SharedHeldOrderRepositoryTests
         await using var scope = await CreateScopeAsync();
         var holdGuid = Guid.NewGuid();
         Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid, [1, 2, 3]));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             holdGuid, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.PendingPublish, "2026-07-28T00:00:01.000Z"));
 
@@ -326,12 +442,53 @@ public sealed class SharedHeldOrderRepositoryTests
     }
 
     [Fact]
+    public async Task Due_publications_exclude_holds_with_open_offline_origin_claim()
+    {
+        await using var scope = await CreateScopeAsync();
+        var holdGuid = Guid.NewGuid();
+        var payload = SamplePayload();
+        await InsertLegacyOrderAsync(scope, holdGuid);
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid));
+        Assert.Equal(
+            SharedHeldOrderShareRequestResult.Requested,
+            await scope.Repository.TryRequestShareAsync(
+                holdGuid,
+                "S001",
+                "POS-01",
+                "2026-07-28T00:00:01.000Z"));
+        var publication = await scope.Repository.GetPublicationAsync(holdGuid);
+        Assert.NotNull(publication);
+        Assert.True(await scope.Repository.TryStagePendingPublishAsync(
+            holdGuid,
+            publication!.Revision,
+            payload,
+            "2026-07-28T00:00:02.000Z"));
+        Assert.Single(await scope.Repository.ListDuePublicationsAsync("2026-07-28T00:00:03.000Z"));
+
+        Assert.True(await scope.Repository.TrySavePreparedClaimAsync(
+            new SharedHeldOrderClaimDraft(
+                Guid.NewGuid(),
+                holdGuid,
+                "S001",
+                "POS-01",
+                SharedHeldOrderClaimSource.OfflineOrigin,
+                $"wpf-offline:{holdGuid:D}",
+                payload,
+                "2026-07-28T00:00:04.000Z",
+                ExpiresAtIso: null)));
+
+        Assert.Empty(await scope.Repository.ListDuePublicationsAsync("2026-07-28T00:00:05.000Z"));
+    }
+
+    [Fact]
     public async Task Blocked_publications_keep_stable_error_and_only_explicit_re_evaluation_leaves()
     {
         await using var scope = await CreateScopeAsync();
         var holdGuid = Guid.NewGuid();
         await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
 
         // NeedsEvaluation 显式进入 Blocked，保留稳定 ErrorCode/ErrorMessage，revision +1。
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
@@ -360,6 +517,8 @@ public sealed class SharedHeldOrderRepositoryTests
         // PendingPublish 也可显式进入 Blocked，同样保留稳定错误。
         var second = Guid.NewGuid();
         Assert.True(await UpsertNeedsEvaluationAsync(scope, second, [1, 2, 3]));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            second, "S001", "POS-01", "2026-07-28T00:00:02.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             second, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.PendingPublish, "2026-07-28T00:00:03.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
@@ -373,6 +532,8 @@ public sealed class SharedHeldOrderRepositoryTests
         // PendingPublish 绝不能被 Upsert 重置回 NeedsEvaluation。
         var third = Guid.NewGuid();
         Assert.True(await UpsertNeedsEvaluationAsync(scope, third, [1, 2, 3]));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            third, "S001", "POS-01", "2026-07-28T00:00:04.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             third, SharedHeldOrderPublicationStatus.NeedsEvaluation, 1, SharedHeldOrderPublicationStatus.PendingPublish, "2026-07-28T00:00:05.000Z"));
         Assert.False(await UpsertNeedsEvaluationAsync(scope, third));
@@ -413,12 +574,13 @@ public sealed class SharedHeldOrderRepositoryTests
         await using var scope = await CreateScopeAsync();
         var holdGuid = Guid.NewGuid();
         await InsertLegacyOrderAsync(scope, holdGuid);
-        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid, [1, 2, 3]));
-        Assert.True(await scope.Repository.TryAdvancePublicationAsync(
+        Assert.True(await UpsertNeedsEvaluationAsync(scope, holdGuid));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-08-11T00:59:00.000Z"));
+        Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             holdGuid,
-            SharedHeldOrderPublicationStatus.NeedsEvaluation,
             1,
-            SharedHeldOrderPublicationStatus.PendingPublish,
+            SamplePayload(),
             "2026-08-11T01:00:00.000Z"));
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             holdGuid,
@@ -443,6 +605,7 @@ public sealed class SharedHeldOrderRepositoryTests
         Assert.Equal("LOCAL_DELETE_PENDING_REMOTE", publication.ErrorCode);
         Assert.Null(publication.RemoteRevision);
         Assert.Null(publication.RemoteUpdatedAtIso);
+        Assert.NotNull(await scope.Repository.GetPublicationPayloadAsync(holdGuid));
         Assert.Empty(await scope.Repository.ListDuePublicationsAsync("2026-08-11T01:10:00.000Z"));
 
         // 网络取消失败后重试仍必须记得服务端已发布，不能退化成本地直接删除。

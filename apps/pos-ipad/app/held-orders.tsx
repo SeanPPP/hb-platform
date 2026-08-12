@@ -14,7 +14,10 @@ import {
   type SharedHeldOrderTakeViewResult,
   type SharedHeldOrdersViewPort,
 } from "@/features/held-orders";
-import type { SharedHeldOrderTakeResult } from "@/features/shared-held-orders/shared-held-order-coordinator";
+import {
+  SharedHeldOrderCoordinatorError,
+  type SharedHeldOrderTakeResult,
+} from "@/features/shared-held-orders/shared-held-order-coordinator";
 import type { SharedHeldOrderPendingListItem } from "@/features/shared-held-orders/shared-held-order-network-api";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
 
@@ -120,10 +123,26 @@ function attachSharedHeldOrders(
         .listPending()
         .then((rows) => rows.map(toSharedHeldOrderRemoteRow)),
     listLocalShareState: () => shared.listLocalShareState(),
+    requestShare: (holdGuid) => shared.requestShare(holdGuid),
     takeRemoteHold: (holdGuid) =>
       mapSharedHeldOrderTake(coordinator.takeRemoteHold(holdGuid)),
     recallLocalPublication: (holdGuid) =>
       mapSharedHeldOrderTake(coordinator.recallLocalPublication(holdGuid)),
+    cancelOwnedHold: (holdGuid) => coordinator.cancelOwnedHold(holdGuid),
+    releaseOwnedClaim: async (holdGuid) => {
+      try {
+        await coordinator.ownerRelease(holdGuid);
+        return true;
+      } catch (error: unknown) {
+        if (
+          error instanceof SharedHeldOrderCoordinatorError &&
+          error.code === "NOT_FOUND"
+        ) {
+          return false;
+        }
+        throw error;
+      }
+    },
     ...(coordinator.forceRelease
       ? {
           forceRelease: ({ holdGuid, reason }) =>

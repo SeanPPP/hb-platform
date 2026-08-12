@@ -593,6 +593,114 @@ test("真实 SQLite：M8 升级 M17 保留 legacy held_orders，V2 密文保存�
   await connection.close();
 });
 
+test("真实 SQLite：删除挂单先阻断发布，再按 scope/Pending/无 fence 原子物理删除", async () => {
+  const { connection, records } = await open();
+  await hold(records);
+  await confirmHoldClear(records);
+  await connection.run(
+    `UPDATE held_order_records
+     SET share_requested_at_iso = ?,
+         share_state = 'Published', remote_revision = 7,
+         remote_updated_at_iso = ?
+     WHERE hold_id = 'hold-1'`,
+    [nowIso, nowIso],
+  );
+
+  const staged = await records.stageDeletePending({
+    holdId: "hold-1",
+    scope,
+    stagedAtIso: "2026-07-28T08:02:00.000Z",
+  });
+
+  assert.deepEqual(staged, {
+    holdId: "hold-1",
+    remoteCancellationRequired: true,
+  });
+  const stagedRow = await connection.getFirst<{
+      share_state: string;
+      publish_block_reason: string | null;
+      remote_revision: number | null;
+    }>(
+      `SELECT share_state, publish_block_reason, remote_revision
+       FROM held_order_records WHERE hold_id = 'hold-1'`,
+    );
+  assert.deepEqual(
+    { ...stagedRow },
+    {
+      share_state: "Blocked",
+      publish_block_reason: "LOCAL_DELETE_PENDING",
+      remote_revision: 7,
+    },
+  );
+  // 服务端取消失败时本地行仍可见并可重试，发布队列则已被耐久阻断。
+  assert.equal((await records.listPending(scope, 10)).length, 1);
+
+  assert.equal(
+    await records.deleteStagedPending({ holdId: "hold-1", scope }),
+    true,
+  );
+  assert.equal((await records.listPending(scope, 10)).length, 0);
+  assert.equal(
+    await connection.getFirst(
+      "SELECT hold_id FROM held_order_records WHERE hold_id = 'hold-1'",
+    ),
+    null,
+  );
+  await connection.close();
+});
+
+test("真实 SQLite：有清车 fence 或已进入 Recalling 的挂单拒绝删除，未发布挂单不要求远端取消", async () => {
+  const { connection, records } = await open();
+  await hold(records, "fenced");
+  assert.equal(
+    await records.stageDeletePending({
+      holdId: "fenced",
+      scope,
+      stagedAtIso: nowIso,
+    }),
+    null,
+  );
+  await confirmHoldClear(records, "fenced");
+
+  const localStage = await records.stageDeletePending({
+    holdId: "fenced",
+    scope,
+    stagedAtIso: nowIso,
+  });
+  assert.deepEqual(localStage, {
+    holdId: "fenced",
+    remoteCancellationRequired: false,
+  });
+  assert.equal(
+    await records.deleteStagedPending({
+      holdId: "fenced",
+      scope: { storeCode: "S1", deviceCode: "OTHER" },
+    }),
+    false,
+  );
+
+  await hold(records, "recalling");
+  await confirmHoldClear(records, "recalling");
+  assert.ok(
+    await records.claimRecall({
+      holdId: "recalling",
+      scope,
+      recalledBy: heldBy,
+      recallAttemptId: "attempt-delete-guard",
+      recallingAtIso: nowIso,
+    }),
+  );
+  assert.equal(
+    await records.stageDeletePending({
+      holdId: "recalling",
+      scope,
+      stagedAtIso: nowIso,
+    }),
+    null,
+  );
+  await connection.close();
+});
+
 test("小数称重挂单发布/汇总不抛：0.29 × 50 = 15，itemCount 按行计 1", async () => {
   const { records } = await open();
   const decimalPayload: HeldOrderPayloadV1 = {

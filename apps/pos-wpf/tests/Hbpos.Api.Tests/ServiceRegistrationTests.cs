@@ -81,7 +81,7 @@ public sealed class ServiceRegistrationTests
     }
 
     [Fact]
-    public void AddHbposApiServices_registers_shared_held_order_services_and_disabled_by_default()
+    public void AddHbposApiServices_registers_shared_held_order_services_and_enables_cross_device_operations_by_default()
     {
         var services = new ServiceCollection();
 
@@ -104,7 +104,7 @@ public sealed class ServiceRegistrationTests
             Assert.Single(services, x => x.ServiceType == typeof(ISharedHeldOrderSchemaInitializer)).ImplementationType);
 
         using var provider = services.BuildServiceProvider();
-        Assert.False(provider.GetRequiredService<IOptions<SharedHeldOrderOptions>>().Value.Enabled);
+        Assert.True(provider.GetRequiredService<IOptions<SharedHeldOrderOptions>>().Value.Enabled);
     }
 
     [Fact]
