@@ -9,6 +9,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.POSM;
@@ -64,6 +65,67 @@ namespace BlazorApp.Api.Tests
             );
 
             Assert.Equal("Admin", ((AuthorizeAttribute)authorizeAttribute).Roles);
+        }
+
+        [Fact]
+        public async Task Table_服务抛异常时_记录日志前先设置500且包含失败阶段()
+        {
+            var timings = new WarehouseProductTableTimingSnapshot(
+                CandidateMs: 1,
+                CountMs: 2,
+                PageMs: 3,
+                LocationMs: 4,
+                RowsMs: 5,
+                MapMs: 6,
+                TotalMs: 21
+            );
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.GetAntdTableDataAsync(It.IsAny<ReactTableRequestDto>()))
+                .ThrowsAsync(
+                    new WarehouseProductTableQueryException(
+                        "page",
+                        timings,
+                        new TimeoutException("query timeout")
+                    )
+                );
+
+            var statusCodeWhenLogged = 0;
+            string? loggedMessage = null;
+            ReactProductWarehouseController? controller = null;
+            var logger = new Mock<ILogger<ReactProductWarehouseController>>();
+            logger
+                .Setup(x =>
+                    x.Log(
+                        LogLevel.Error,
+                        It.IsAny<EventId>(),
+                        It.Is<It.IsAnyType>((_, _) => true),
+                        It.IsAny<Exception?>(),
+                        It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                    )
+                )
+                .Callback(
+                    new InvocationAction(invocation =>
+                    {
+                        statusCodeWhenLogged = controller!.HttpContext.Response.StatusCode;
+                        loggedMessage = invocation.Arguments[2]?.ToString();
+                    })
+                );
+            controller = CreateController(serviceMock.Object, logger: logger.Object);
+
+            var result = await controller.Table(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 100,
+                GlobalSearch = "DO-NOT-LOG-ME-123",
+            });
+
+            var objectResult = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status500InternalServerError, objectResult.StatusCode);
+            Assert.Equal(StatusCodes.Status500InternalServerError, statusCodeWhenLogged);
+            Assert.Contains("stage=page", loggedMessage);
+            Assert.Contains("candidateMs=1", loggedMessage);
+            Assert.DoesNotContain("DO-NOT-LOG-ME-123", loggedMessage);
         }
 
         [Fact]
@@ -743,7 +805,8 @@ namespace BlazorApp.Api.Tests
             IDeviceRegistrationService? deviceService = null,
             IMapper? mapper = null,
             string[]? roles = null,
-            string username = "测试用户"
+            string username = "测试用户",
+            ILogger<ReactProductWarehouseController>? logger = null
         )
         {
             roles ??= new[] { "Admin" };
@@ -758,7 +821,7 @@ namespace BlazorApp.Api.Tests
             var controller = new ReactProductWarehouseController(
                 service,
                 jobService ?? Mock.Of<IWarehouseProductHqSyncJobService>(),
-                Mock.Of<ILogger<ReactProductWarehouseController>>(),
+                logger ?? Mock.Of<ILogger<ReactProductWarehouseController>>(),
                 deviceService ?? Mock.Of<IDeviceRegistrationService>(),
                 mapper ?? Mock.Of<IMapper>(),
                 uploadService ?? CreateUploadService()

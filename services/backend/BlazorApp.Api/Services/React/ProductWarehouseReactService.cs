@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
@@ -19,6 +20,72 @@ using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
 {
+    internal sealed record WarehouseProductTableTimingSnapshot(
+        long CandidateMs,
+        long CountMs,
+        long PageMs,
+        long LocationMs,
+        long RowsMs,
+        long MapMs,
+        long TotalMs
+    );
+
+    internal sealed record WarehouseProductTableRequestSnapshot(
+        int PageNumber,
+        int PageSize,
+        int CategoryCount,
+        int FilterCount,
+        string KeywordType,
+        int KeywordLength,
+        string SortBy,
+        string SortOrder
+    );
+
+    internal sealed class WarehouseProductTableQueryException : Exception
+    {
+        public WarehouseProductTableQueryException(
+            string failedStage,
+            WarehouseProductTableTimingSnapshot timings,
+            Exception innerException,
+            WarehouseProductTableRequestSnapshot? request = null
+        )
+            : base($"仓库商品表格查询在 {failedStage} 阶段失败。", innerException)
+        {
+            FailedStage = failedStage;
+            Timings = timings;
+            Request = request;
+        }
+
+        public string FailedStage { get; }
+
+        public WarehouseProductTableTimingSnapshot Timings { get; }
+
+        public WarehouseProductTableRequestSnapshot? Request { get; }
+    }
+
+    internal sealed class WarehouseProductTableTimings
+    {
+        public long CandidateMs { get; set; }
+
+        public long CountMs { get; set; }
+
+        public long PageMs { get; set; }
+
+        public long LocationMs { get; set; }
+
+        public long RowsMs { get; set; }
+
+        public long MapMs { get; set; }
+
+        public WarehouseProductTableTimingSnapshot Snapshot(long totalMs) =>
+            new(CandidateMs, CountMs, PageMs, LocationMs, RowsMs, MapMs, totalMs);
+    }
+
+    internal sealed class WarehouseProductCodeSearchCandidate
+    {
+        public string ProductCode { get; set; } = string.Empty;
+    }
+
     /// <summary>
     /// 仓库商品服务 - React 前端专用
     /// 提供仓库商品的 CRUD 操作、批量导入、价格同步等功能
@@ -1557,9 +1624,47 @@ namespace BlazorApp.Api.Services.React
         > GetAntdTableDataAsync(ReactTableRequestDto request)
         {
             var resp = new ReactTableResponseDto<WarehouseProductReactListDto>();
+            var totalStopwatch = Stopwatch.StartNew();
+            var timings = new WarehouseProductTableTimings();
+            var keyword = string.IsNullOrWhiteSpace(request.GlobalSearch)
+                ? null
+                : request.GlobalSearch.Trim();
+            var isCodeLikeKeyword = keyword != null && IsWarehouseCodeLikeKeyword(keyword);
+            var requestSnapshot = CreateWarehouseProductTableRequestSnapshot(
+                request,
+                keyword,
+                isCodeLikeKeyword
+            );
+
+            var warehouseProductQuery = MeasureWarehouseProductTableStage(
+                "candidate",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.CandidateMs = elapsedMs,
+                () =>
+                {
+                    var baseQuery = _context.Db.Queryable<WarehouseProduct>();
+                    if (!isCodeLikeKeyword || keyword == null)
+                    {
+                        return baseQuery;
+                    }
+
+                    // 代码型搜索先按单字段索引生成候选集，避免宽 OR 和相关 EXISTS 放大执行计划。
+                    var candidateQuery = BuildWarehouseCodeSearchCandidateQuery(keyword);
+                    return baseQuery
+                        .InnerJoin(
+                            candidateQuery,
+                            (warehouseProduct, candidate) =>
+                                warehouseProduct.ProductCode == candidate.ProductCode
+                        )
+                        .Select((warehouseProduct, candidate) => warehouseProduct)
+                        .MergeTable();
+                }
+            );
+
             // 多表关联查询（使用 LeftJoin 避免 N+1 问题）
-            var query = _context
-                .Db.Queryable<WarehouseProduct>()
+            var query = warehouseProductQuery
                 .LeftJoin<DomesticProduct>(
                     (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
                 )
@@ -1600,11 +1705,8 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
+            if (keyword != null && !isCodeLikeKeyword)
             {
-                var keyword = request.GlobalSearch.Trim();
-                var isCodeLikeKeyword = IsWarehouseCodeLikeKeyword(keyword);
-                var locationSearchMode = isCodeLikeKeyword ? "starts" : "contains";
                 var globalSearchExpression = Expressionable.Create<
                     WarehouseProduct,
                     DomesticProduct,
@@ -1614,66 +1716,23 @@ namespace BlazorApp.Api.Services.React
                     HBLocalSupplier
                 >();
 
-                if (isCodeLikeKeyword)
-                {
-                    var hbPrefixedKeyword = keyword.StartsWith("HB", StringComparison.OrdinalIgnoreCase)
-                        ? keyword
-                        : $"HB{keyword}";
-
-                    // 代码型关键字走等值/前缀匹配，避免一次 SKU/条码搜索拖慢所有名称列。
-                    globalSearchExpression = globalSearchExpression.Or(
-                        (w, dp, s, p, c, ls) =>
-                            (
-                                w.ProductCode != null
-                                && (w.ProductCode == keyword || w.ProductCode.StartsWith(keyword))
-                            )
-                            || (
-                                p.ItemNumber != null
-                                && (
-                                    p.ItemNumber == keyword
-                                    || p.ItemNumber.StartsWith(keyword)
-                                    // 仓库常用 HB 货号，允许用户省略 HB 前缀搜索，如 246-BD -> HB246-BD。
-                                    || p.ItemNumber == hbPrefixedKeyword
-                                    || p.ItemNumber.StartsWith(hbPrefixedKeyword)
-                                )
-                            )
-                            || (
-                                p.Barcode != null
-                                && (p.Barcode == keyword || p.Barcode.StartsWith(keyword))
-                            )
-                            || (
-                                s.SupplierCode != null
-                                && (s.SupplierCode == keyword || s.SupplierCode.StartsWith(keyword))
-                            )
-                            || (
-                                p.LocalSupplierCode != null
-                                && (
-                                    p.LocalSupplierCode == keyword
-                                    || p.LocalSupplierCode.StartsWith(keyword)
-                                )
-                            )
-                        );
-                }
-                else
-                {
-                    // SQL Server 默认不区分大小写；列侧不包 ToLower，保留索引可用性。
-                    globalSearchExpression = globalSearchExpression.Or(
-                        (w, dp, s, p, c, ls) =>
-                            (p.ProductName != null && p.ProductName.Contains(keyword))
-                            || (p.EnglishName != null && p.EnglishName.Contains(keyword))
-                            || (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
-                            || (p.Barcode != null && p.Barcode.Contains(keyword))
-                            || (c.CategoryName != null && c.CategoryName.Contains(keyword))
-                            || (s.SupplierName != null && s.SupplierName.Contains(keyword))
-                            || (p.LocalSupplierCode != null && p.LocalSupplierCode.Contains(keyword))
-                            || (ls.Name != null && ls.Name.Contains(keyword))
-                        );
-                }
+                // SQL Server 默认不区分大小写；列侧不包 ToLower，保留索引可用性。
+                globalSearchExpression = globalSearchExpression.Or(
+                    (w, dp, s, p, c, ls) =>
+                        (p.ProductName != null && p.ProductName.Contains(keyword))
+                        || (p.EnglishName != null && p.EnglishName.Contains(keyword))
+                        || (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.Contains(keyword))
+                        || (c.CategoryName != null && c.CategoryName.Contains(keyword))
+                        || (s.SupplierName != null && s.SupplierName.Contains(keyword))
+                        || (p.LocalSupplierCode != null && p.LocalSupplierCode.Contains(keyword))
+                        || (ls.Name != null && ls.Name.Contains(keyword))
+                );
 
                 query = query.Where(
                     globalSearchExpression
-                        .Or(BuildPickingLocationCodePredicate(locationSearchMode, keyword))
-                        .Or(BuildPickingLocationBarcodePredicate(locationSearchMode, keyword))
+                        .Or(BuildPickingLocationCodePredicate("contains", keyword))
+                        .Or(BuildPickingLocationBarcodePredicate("contains", keyword))
                         .ToExpression()
                 );
             }
@@ -2132,187 +2191,642 @@ namespace BlazorApp.Api.Services.React
                 query = query.OrderBy(w => w.UpdatedAt, OrderByType.Desc);
             }
 
-            var total = await query.Clone().CountAsync();
+            var total = await MeasureWarehouseProductTableStageAsync(
+                "count",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.CountMs = elapsedMs,
+                () => query.Clone().CountAsync()
+            );
 
-            var pageProductCodes = await query
-                .Clone()
-                .Select((w, dp, s, p, c, ls) => w.ProductCode)
-                .Skip((request.Page - 1) * request.PageSize)
-                .Take(request.PageSize)
-                .ToListAsync();
+            var pageProductCodes = await MeasureWarehouseProductTableStageAsync(
+                "page",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.PageMs = elapsedMs,
+                () =>
+                    query
+                        .Clone()
+                        .Select((w, dp, s, p, c, ls) => w.ProductCode)
+                        .Skip((request.Page - 1) * request.PageSize)
+                        .Take(request.PageSize)
+                        .ToListAsync()
+            );
 
             if (!pageProductCodes.Any())
             {
                 resp.Items = new List<WarehouseProductReactListDto>();
                 resp.Total = total;
+                LogWarehouseProductTablePerformance(
+                    requestSnapshot,
+                    timings.Snapshot(totalStopwatch.ElapsedMilliseconds),
+                    total,
+                    0
+                );
                 return resp;
             }
 
-            var pageOrderMap = pageProductCodes
-                .Select((code, index) => new { code, index })
-                .ToDictionary(x => x.code, x => x.index);
+            var pagePickingLocations = await MeasureWarehouseProductTableStageAsync(
+                "location",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.LocationMs = elapsedMs,
+                () =>
+                    _context
+                        .Db.Queryable<ProductLocation>()
+                        .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                        .Where(
+                            (pl, l) =>
+                                pl.ProductCode != null
+                                && pageProductCodes.Contains(pl.ProductCode)
+                                && !pl.IsDeleted
+                                && !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                        )
+                        .Select(
+                            (pl, l) =>
+                                new
+                                {
+                                    ProductCode = pl.ProductCode!,
+                                    LocationCode = l.LocationCode,
+                                    LocationBarcode = l.LocationBarcode,
+                                }
+                        )
+                        .ToListAsync()
+            );
 
-            var pagePickingLocations = await _context
-                .Db.Queryable<ProductLocation>()
-                .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
-                .Where(
-                    (pl, l) =>
-                        pl.ProductCode != null
-                        && pageProductCodes.Contains(pl.ProductCode)
-                        && !pl.IsDeleted
-                        && !l.IsDeleted
-                        && l.LocationType == PickingLocationType
-                )
-                .Select(
-                    (pl, l) =>
-                        new
-                        {
-                            ProductCode = pl.ProductCode!,
-                            LocationCode = l.LocationCode,
-                            LocationBarcode = l.LocationBarcode,
-                        }
-                )
-                .ToListAsync();
+            var rows = await MeasureWarehouseProductTableStageAsync(
+                "rows",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.RowsMs = elapsedMs,
+                () =>
+                    _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .LeftJoin<DomesticProduct>(
+                            (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
+                        )
+                        .LeftJoin<ChinaSupplier>(
+                            (w, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
+                        )
+                        .InnerJoin<Product>(
+                            (w, dp, s, p) => p.ProductCode == w.ProductCode && !p.IsDeleted
+                        )
+                        .LeftJoin<WarehouseCategory>(
+                            (w, dp, s, p, c) =>
+                                p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                        )
+                        .LeftJoin<HBLocalSupplier>(
+                            (w, dp, s, p, c, ls) =>
+                                p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                        )
+                        .Where(w => !w.IsDeleted && pageProductCodes.Contains(w.ProductCode))
+                        .Select(
+                            (w, dp, s, p, c, ls) =>
+                                new
+                                {
+                                    ProductCode = w.ProductCode,
+                                    ProductName = p.ProductName,
+                                    EnglishName = p.EnglishName,
+                                    ItemNumber = p.ItemNumber,
+                                    Barcode = p.Barcode,
+                                    CategoryName = c.CategoryName,
+                                    SupplierName = s.SupplierName,
+                                    SupplierCode = s.SupplierCode,
+                                    DomesticSupplierName = s.SupplierName,
+                                    DomesticSupplierCode = s.SupplierCode,
+                                    LocalSupplierCode = p.LocalSupplierCode,
+                                    LocalSupplierName = ls.Name ?? p.LocalSupplierCode,
+                                    DomesticPrice = w.DomesticPrice,
+                                    OEMPrice = w.OEMPrice,
+                                    ImportPrice = w.ImportPrice,
+                                    WarehouseVolume = w.Volume,
+                                    DomesticUnitVolume = dp.UnitVolume,
+                                    DomesticPackingQuantity = dp.PackingQuantity,
+                                    WarehousePackingQuantity = w.PackingQuantity,
+                                    MinOrderQuantity = w.MinOrderQuantity,
+                                    IsActive = w.IsActive,
+                                    CreatedAt = w.CreatedAt,
+                                    UpdatedAt = w.UpdatedAt,
+                                    UpdatedBy = w.UpdatedBy,
+                                    ProductImage = p.ProductImage,
+                                    ProductType = p.ProductType ?? dp.ProductType,
+                                }
+                        )
+                        .ToListAsync()
+            );
 
-            // 货位是一对多关系，分页后再聚合，避免主查询 count/page 被货位行数放大。
-            var pickingLocationMap = pagePickingLocations
-                .GroupBy(x => x.ProductCode, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(
-                    group => group.Key,
-                    group => new
-                    {
-                        Codes = group
-                            .Select(x => x.LocationCode)
-                            .Where(x => !string.IsNullOrWhiteSpace(x))
-                            .Select(x => x!)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(x => x)
-                            .ToList(),
-                        Barcodes = group
-                            .Select(x => x.LocationBarcode)
-                            .Where(x => !string.IsNullOrWhiteSpace(x))
-                            .Select(x => x!)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(x => x)
-                            .ToList(),
-                    },
-                    StringComparer.OrdinalIgnoreCase
-                );
-
-            var rows = await _context
-                .Db.Queryable<WarehouseProduct>()
-                .LeftJoin<DomesticProduct>(
-                    (w, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted
-                )
-                .LeftJoin<ChinaSupplier>(
-                    (w, dp, s) => dp.SupplierCode == s.SupplierCode && !s.IsDeleted
-                )
-                .InnerJoin<Product>((w, dp, s, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
-                .LeftJoin<WarehouseCategory>(
-                    (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
-                )
-                .LeftJoin<HBLocalSupplier>(
-                    (w, dp, s, p, c, ls) =>
-                        p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
-                )
-                .Where(w => !w.IsDeleted && pageProductCodes.Contains(w.ProductCode))
-                .Select(
-                    (w, dp, s, p, c, ls) =>
-                        new
-                        {
-                            ProductCode = w.ProductCode,
-                            ProductName = p.ProductName,
-                            EnglishName = p.EnglishName,
-                            ItemNumber = p.ItemNumber,
-                            Barcode = p.Barcode,
-                            CategoryName = c.CategoryName,
-                            SupplierName = s.SupplierName,
-                            SupplierCode = s.SupplierCode,
-                            DomesticSupplierName = s.SupplierName,
-                            DomesticSupplierCode = s.SupplierCode,
-                            LocalSupplierCode = p.LocalSupplierCode,
-                            LocalSupplierName = ls.Name ?? p.LocalSupplierCode,
-                            DomesticPrice = w.DomesticPrice,
-                            OEMPrice = w.OEMPrice,
-                            ImportPrice = w.ImportPrice,
-                            WarehouseVolume = w.Volume,
-                            DomesticUnitVolume = dp.UnitVolume,
-                            DomesticPackingQuantity = dp.PackingQuantity,
-                            WarehousePackingQuantity = w.PackingQuantity,
-                            MinOrderQuantity = w.MinOrderQuantity,
-                            IsActive = w.IsActive,
-                            CreatedAt = w.CreatedAt,
-                            UpdatedAt = w.UpdatedAt,
-                            UpdatedBy = w.UpdatedBy,
-                            CreatedBy = w.CreatedBy,
-                            ProductImage = p.ProductImage,
-                            ProductType = p.ProductType ?? dp.ProductType,
-                        }
-                )
-                .ToListAsync();
-
-            var items = rows.OrderBy(row =>
-                    pageOrderMap.TryGetValue(row.ProductCode, out var order) ? order : int.MaxValue
-                )
-                .Select(row => new WarehouseProductReactListDto
+            var items = MeasureWarehouseProductTableStage(
+                "map",
+                totalStopwatch,
+                timings,
+                requestSnapshot,
+                elapsedMs => timings.MapMs = elapsedMs,
+                () =>
                 {
-                    ProductCode = row.ProductCode,
-                    ProductName = row.ProductName,
-                    EnglishName = row.EnglishName,
-                    ItemNumber = row.ItemNumber,
-                    Barcode = row.Barcode,
-                    CategoryName = row.CategoryName,
-                    SupplierName = row.SupplierName,
-                    SupplierCode = row.SupplierCode,
-                    DomesticSupplierName = row.DomesticSupplierName,
-                    DomesticSupplierCode = row.DomesticSupplierCode,
-                    LocalSupplierCode = row.LocalSupplierCode,
-                    LocalSupplierName = row.LocalSupplierName,
-                    DomesticPrice = row.DomesticPrice,
-                    OEMPrice = row.OEMPrice,
-                    ImportPrice = row.ImportPrice,
-                    Volume = row.WarehouseVolume ?? row.DomesticUnitVolume,
-                    IsVolumeFallback =
-                        !row.WarehouseVolume.HasValue && row.DomesticUnitVolume.HasValue,
-                    PackingQuantity = row.DomesticPackingQuantity ?? row.WarehousePackingQuantity,
-                    IsPackingQuantityFallback =
-                        !row.DomesticPackingQuantity.HasValue
-                        && row.WarehousePackingQuantity.HasValue,
-                    MinOrderQuantity = row.MinOrderQuantity,
-                    IsActive = row.IsActive,
-                    CreatedAt = row.CreatedAt,
-                    UpdatedAt = row.UpdatedAt,
-                    // 历史记录没有更新人时不能借用创建人，前端会按空值显示“--”。
-                    UpdatedBy = string.IsNullOrWhiteSpace(row.UpdatedBy) ? null : row.UpdatedBy,
-                    ProductImage = row.ProductImage,
-                    ProductType = row.ProductType,
-                    LocationCodes = pickingLocationMap.TryGetValue(
-                        row.ProductCode,
-                        out var pickingLocation
-                    )
-                        ? pickingLocation.Codes
-                        : new List<string>(),
-                    LocationBarcodes = pickingLocationMap.TryGetValue(
-                        row.ProductCode,
-                        out var pickingLocationForBarcode
-                    )
-                        ? pickingLocationForBarcode.Barcodes
-                        : new List<string>(),
-                })
-                .ToList();
+                    var pageOrderMap = pageProductCodes
+                        .Select((code, index) => new { code, index })
+                        .ToDictionary(x => x.code, x => x.index);
 
-            // 查询结束后再在内存中补全图片 URL（避免 SqlSugar 翻译自定义方法）
-            foreach (var dto in items)
-            {
-                dto.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
-                    dto.ProductImage,
-                    dto.ItemNumber ?? dto.ProductCode
-                );
-            }
+                    // 货位是一对多关系，分页后再聚合，避免主查询 count/page 被货位行数放大。
+                    var pickingLocationMap = pagePickingLocations
+                        .GroupBy(x => x.ProductCode, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => new
+                            {
+                                Codes = group
+                                    .Select(x => x.LocationCode)
+                                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                                    .Select(x => x!)
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .OrderBy(x => x)
+                                    .ToList(),
+                                Barcodes = group
+                                    .Select(x => x.LocationBarcode)
+                                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                                    .Select(x => x!)
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .OrderBy(x => x)
+                                    .ToList(),
+                            },
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                    var mappedItems = rows.OrderBy(row =>
+                            pageOrderMap.TryGetValue(row.ProductCode, out var order)
+                                ? order
+                                : int.MaxValue
+                        )
+                        .Select(row => new WarehouseProductReactListDto
+                        {
+                            ProductCode = row.ProductCode,
+                            ProductName = row.ProductName,
+                            EnglishName = row.EnglishName,
+                            ItemNumber = row.ItemNumber,
+                            Barcode = row.Barcode,
+                            CategoryName = row.CategoryName,
+                            SupplierName = row.SupplierName,
+                            SupplierCode = row.SupplierCode,
+                            DomesticSupplierName = row.DomesticSupplierName,
+                            DomesticSupplierCode = row.DomesticSupplierCode,
+                            LocalSupplierCode = row.LocalSupplierCode,
+                            LocalSupplierName = row.LocalSupplierName,
+                            DomesticPrice = row.DomesticPrice,
+                            OEMPrice = row.OEMPrice,
+                            ImportPrice = row.ImportPrice,
+                            Volume = row.WarehouseVolume ?? row.DomesticUnitVolume,
+                            IsVolumeFallback =
+                                !row.WarehouseVolume.HasValue && row.DomesticUnitVolume.HasValue,
+                            PackingQuantity =
+                                row.DomesticPackingQuantity ?? row.WarehousePackingQuantity,
+                            IsPackingQuantityFallback =
+                                !row.DomesticPackingQuantity.HasValue
+                                && row.WarehousePackingQuantity.HasValue,
+                            MinOrderQuantity = row.MinOrderQuantity,
+                            IsActive = row.IsActive,
+                            CreatedAt = row.CreatedAt,
+                            UpdatedAt = row.UpdatedAt,
+                            // 历史记录没有更新人时不能借用创建人，前端会按空值显示“--”。
+                            UpdatedBy = string.IsNullOrWhiteSpace(row.UpdatedBy)
+                                ? null
+                                : row.UpdatedBy,
+                            ProductImage = row.ProductImage,
+                            ProductType = row.ProductType,
+                            LocationCodes = pickingLocationMap.TryGetValue(
+                                row.ProductCode,
+                                out var pickingLocation
+                            )
+                                ? pickingLocation.Codes
+                                : new List<string>(),
+                            LocationBarcodes = pickingLocationMap.TryGetValue(
+                                row.ProductCode,
+                                out var pickingLocationForBarcode
+                            )
+                                ? pickingLocationForBarcode.Barcodes
+                                : new List<string>(),
+                        })
+                        .ToList();
+
+                    // 查询结束后再在内存中补全图片 URL（避免 SqlSugar 翻译自定义方法）。
+                    foreach (var dto in mappedItems)
+                    {
+                        dto.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
+                            dto.ProductImage,
+                            dto.ItemNumber ?? dto.ProductCode
+                        );
+                    }
+
+                    return mappedItems;
+                }
+            );
 
             resp.Items = items;
             resp.Total = total;
+            LogWarehouseProductTablePerformance(
+                requestSnapshot,
+                timings.Snapshot(totalStopwatch.ElapsedMilliseconds),
+                total,
+                items.Count
+            );
             return resp;
+        }
+
+        private ISugarQueryable<WarehouseProductCodeSearchCandidate> BuildWarehouseCodeSearchCandidateQuery(
+            string keyword
+        )
+        {
+            var hbPrefixedKeyword = keyword.StartsWith("HB", StringComparison.OrdinalIgnoreCase)
+                ? keyword
+                : $"HB{keyword}";
+            var isSqlServer = _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer;
+
+            // SQL Server 的 WarehouseProduct/Location/ProductLocation 为 varchar；参数显式转成 varchar，
+            // 避免优化器把这些索引列隐式转成 nvarchar 后退化为扫描。
+            var warehouseProductCodeQuery = _context
+                .Db.Queryable<WarehouseProduct>()
+                .WhereIF(
+                    isSqlServer,
+                    w =>
+                        !w.IsDeleted
+                        && w.ProductCode != null
+                        && (
+                            w.ProductCode == SqlFunc.ToVarchar(keyword)
+                            || w.ProductCode.StartsWith(SqlFunc.ToVarchar(keyword))
+                        )
+                )
+                .WhereIF(
+                    !isSqlServer,
+                    w =>
+                        !w.IsDeleted
+                        && w.ProductCode != null
+                        && (w.ProductCode == keyword || w.ProductCode.StartsWith(keyword))
+                )
+                .Select(w => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = w.ProductCode,
+                });
+
+            var itemNumberQuery = _context
+                .Db.Queryable<Product>()
+                .Where(p =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && p.ItemNumber != null
+                    && (p.ItemNumber == keyword || p.ItemNumber.StartsWith(keyword))
+                )
+                .Select(p => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = p.ProductCode!,
+                });
+
+            var hbItemNumberQuery = _context
+                .Db.Queryable<Product>()
+                .Where(p =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && p.ItemNumber != null
+                    && (
+                        p.ItemNumber == hbPrefixedKeyword
+                        || p.ItemNumber.StartsWith(hbPrefixedKeyword)
+                    )
+                )
+                .Select(p => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = p.ProductCode!,
+                });
+
+            var barcodeQuery = _context
+                .Db.Queryable<Product>()
+                .Where(p =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && p.Barcode != null
+                    && (p.Barcode == keyword || p.Barcode.StartsWith(keyword))
+                )
+                .Select(p => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = p.ProductCode!,
+                });
+
+            var localSupplierCodeQuery = _context
+                .Db.Queryable<Product>()
+                .Where(p =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && p.LocalSupplierCode != null
+                    && (
+                        p.LocalSupplierCode == keyword
+                        || p.LocalSupplierCode.StartsWith(keyword)
+                    )
+                )
+                .Select(p => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = p.ProductCode!,
+                });
+
+            var domesticSupplierCodeQuery = _context
+                .Db.Queryable<ChinaSupplier>()
+                .InnerJoin<DomesticProduct>(
+                    (supplier, domesticProduct) =>
+                        supplier.SupplierCode == domesticProduct.SupplierCode
+                        && !domesticProduct.IsDeleted
+                )
+                .WhereIF(
+                    isSqlServer,
+                    (supplier, domesticProduct) =>
+                        !supplier.IsDeleted
+                        && supplier.SupplierCode != null
+                        && domesticProduct.ProductCode != null
+                        && (
+                            supplier.SupplierCode == SqlFunc.ToVarchar(keyword)
+                            || supplier.SupplierCode.StartsWith(SqlFunc.ToVarchar(keyword))
+                        )
+                )
+                .WhereIF(
+                    !isSqlServer,
+                    (supplier, domesticProduct) =>
+                        !supplier.IsDeleted
+                        && supplier.SupplierCode != null
+                        && domesticProduct.ProductCode != null
+                        && (
+                            supplier.SupplierCode == keyword
+                            || supplier.SupplierCode.StartsWith(keyword)
+                        )
+                )
+                .Select(
+                    (supplier, domesticProduct) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = domesticProduct.ProductCode!,
+                        }
+                );
+
+            var pickingLocationCodeSource = _context
+                .Db.Queryable<Location>()
+                .InnerJoin<ProductLocation>(
+                    (location, productLocation) =>
+                        location.LocationGuid == productLocation.LocationGuid
+                        && !productLocation.IsDeleted
+                )
+                .WhereIF(
+                    isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && location.LocationCode != null
+                        && productLocation.ProductCode != null
+                        && (
+                            location.LocationCode == SqlFunc.ToVarchar(keyword)
+                            || location.LocationCode.StartsWith(SqlFunc.ToVarchar(keyword))
+                        )
+                )
+                .WhereIF(
+                    !isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && location.LocationCode != null
+                        && productLocation.ProductCode != null
+                        && (
+                            location.LocationCode == keyword
+                            || location.LocationCode.StartsWith(keyword)
+                        )
+                );
+            var pickingLocationCodeQuery = pickingLocationCodeSource
+                .Select(
+                    (location, productLocation) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = productLocation.ProductCode!,
+                        }
+                );
+
+            var pickingLocationBarcodeSource = _context
+                .Db.Queryable<Location>()
+                .InnerJoin<ProductLocation>(
+                    (location, productLocation) =>
+                        location.LocationGuid == productLocation.LocationGuid
+                        && !productLocation.IsDeleted
+                )
+                .WhereIF(
+                    isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && location.LocationBarcode != null
+                        && productLocation.ProductCode != null
+                        && (
+                            location.LocationBarcode == SqlFunc.ToVarchar(keyword)
+                            || location.LocationBarcode.StartsWith(SqlFunc.ToVarchar(keyword))
+                        )
+                )
+                .WhereIF(
+                    !isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && location.LocationBarcode != null
+                        && productLocation.ProductCode != null
+                        && (
+                            location.LocationBarcode == keyword
+                            || location.LocationBarcode.StartsWith(keyword)
+                        )
+                );
+            var pickingLocationBarcodeQuery = pickingLocationBarcodeSource
+                .Select(
+                    (location, productLocation) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = productLocation.ProductCode!,
+                        }
+                );
+
+            var unionQuery = _context
+                .Db.Union(
+                    warehouseProductCodeQuery,
+                    itemNumberQuery,
+                    hbItemNumberQuery,
+                    barcodeQuery,
+                    localSupplierCodeQuery,
+                    domesticSupplierCodeQuery,
+                    pickingLocationCodeQuery,
+                    pickingLocationBarcodeQuery
+                )
+                .MergeTable();
+
+            // UNION 受 nvarchar 商品列影响会提升结果类型；SQL Server 最外层统一转回 varchar，
+            // 让候选集与 WarehouseProduct.ProductCode 连接时不再转换仓库索引列。
+            return isSqlServer
+                ? unionQuery
+                    .Select(candidate => new WarehouseProductCodeSearchCandidate
+                    {
+                        ProductCode = SqlFunc.ToVarchar(candidate.ProductCode),
+                    })
+                    .MergeTable()
+                : unionQuery;
+        }
+
+        private static T MeasureWarehouseProductTableStage<T>(
+            string stage,
+            Stopwatch totalStopwatch,
+            WarehouseProductTableTimings timings,
+            WarehouseProductTableRequestSnapshot request,
+            Action<long> setElapsed,
+            Func<T> action
+        )
+        {
+            var stageStopwatch = Stopwatch.StartNew();
+            try
+            {
+                return action();
+            }
+            catch (Exception ex)
+            {
+                setElapsed(stageStopwatch.ElapsedMilliseconds);
+                throw new WarehouseProductTableQueryException(
+                    stage,
+                    timings.Snapshot(totalStopwatch.ElapsedMilliseconds),
+                    ex,
+                    request
+                );
+            }
+            finally
+            {
+                setElapsed(stageStopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private static async Task<T> MeasureWarehouseProductTableStageAsync<T>(
+            string stage,
+            Stopwatch totalStopwatch,
+            WarehouseProductTableTimings timings,
+            WarehouseProductTableRequestSnapshot request,
+            Action<long> setElapsed,
+            Func<Task<T>> action
+        )
+        {
+            var stageStopwatch = Stopwatch.StartNew();
+            try
+            {
+                return await action();
+            }
+            catch (Exception ex)
+            {
+                setElapsed(stageStopwatch.ElapsedMilliseconds);
+                throw new WarehouseProductTableQueryException(
+                    stage,
+                    timings.Snapshot(totalStopwatch.ElapsedMilliseconds),
+                    ex,
+                    request
+                );
+            }
+            finally
+            {
+                setElapsed(stageStopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private static WarehouseProductTableRequestSnapshot CreateWarehouseProductTableRequestSnapshot(
+            ReactTableRequestDto request,
+            string? keyword,
+            bool isCodeLikeKeyword
+        )
+        {
+            var normalizedSort = request.SortBy?.Trim().ToLowerInvariant();
+            var safeSort = normalizedSort switch
+            {
+                "productcode" or "itemnumber" or "barcode" or "productname" or "name"
+                    or "nameen" or "categoryname" or "suppliername" or "domesticsuppliername"
+                    or "localsuppliercode" or "localsuppliername" or "domesticprice"
+                    or "oemprice" or "importprice" or "packingquantity" or "volume"
+                    or "minorderquantity" or "isactive" or "producttype" or "createdat"
+                    or "updatedat" => normalizedSort,
+                _ => "default",
+            };
+            var safeSortOrder = request.SortBy == null
+                ? "descend"
+                : string.Equals(request.SortOrder, "descend", StringComparison.OrdinalIgnoreCase)
+                    ? "descend"
+                    : "ascend";
+
+            return new WarehouseProductTableRequestSnapshot(
+                request.Page,
+                request.PageSize,
+                request.CategoryGuids
+                    ?.Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count() ?? 0,
+                request.Filters?.Count(pair =>
+                    pair.Value?.Any(value => !string.IsNullOrWhiteSpace(value)) == true
+                ) ?? 0,
+                keyword == null ? "none" : isCodeLikeKeyword ? "code" : "text",
+                keyword?.Length ?? 0,
+                safeSort,
+                safeSortOrder
+            );
+        }
+
+        private void LogWarehouseProductTablePerformance(
+            WarehouseProductTableRequestSnapshot request,
+            WarehouseProductTableTimingSnapshot timings,
+            int total,
+            int itemCount
+        )
+        {
+            const string message =
+                "[warehouse-product-table-perf] stage=done pageNumber={PageNumber} pageSize={PageSize} categoryCount={CategoryCount} filterCount={FilterCount} keywordType={KeywordType} keywordLength={KeywordLength} sortBy={SortBy} sortOrder={SortOrder} total={Total} itemCount={ItemCount} candidateMs={CandidateMs} countMs={CountMs} pageMs={PageMs} locationMs={LocationMs} rowsMs={RowsMs} mapMs={MapMs} totalMs={TotalMs}";
+
+            if (timings.TotalMs >= 2000)
+            {
+                _logger.LogWarning(
+                    message,
+                    request.PageNumber,
+                    request.PageSize,
+                    request.CategoryCount,
+                    request.FilterCount,
+                    request.KeywordType,
+                    request.KeywordLength,
+                    request.SortBy,
+                    request.SortOrder,
+                    total,
+                    itemCount,
+                    timings.CandidateMs,
+                    timings.CountMs,
+                    timings.PageMs,
+                    timings.LocationMs,
+                    timings.RowsMs,
+                    timings.MapMs,
+                    timings.TotalMs
+                );
+                return;
+            }
+
+            _logger.LogInformation(
+                message,
+                request.PageNumber,
+                request.PageSize,
+                request.CategoryCount,
+                request.FilterCount,
+                request.KeywordType,
+                request.KeywordLength,
+                request.SortBy,
+                request.SortOrder,
+                total,
+                itemCount,
+                timings.CandidateMs,
+                timings.CountMs,
+                timings.PageMs,
+                timings.LocationMs,
+                timings.RowsMs,
+                timings.MapMs,
+                timings.TotalMs
+            );
         }
 
         private static bool IsWarehouseCodeLikeKeyword(string keyword)

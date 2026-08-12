@@ -7,6 +7,7 @@ using AutoMapper;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -364,16 +365,6 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Roles = "Admin,WarehouseManager,User")]
         public async Task<IActionResult> Table([FromBody] ReactTableRequestDto request)
         {
-            var user = HttpContext.User;
-            var authHeader = Request.Headers["Authorization"];
-            Console.WriteLine($"=== 请求头 Authorization: {authHeader} ===");
-            Console.WriteLine($"=== 用户已认证: {user?.Identity?.IsAuthenticated} ===");
-            var roles =
-                user?.Claims?.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role)
-                    ?.Select(c => c.Value)
-                    ?.ToList() ?? new List<string>();
-            Console.WriteLine($"=== Table接口访问 - 用户角色: {string.Join(", ", roles)} ===");
-
             try
             {
                 var data = await _service.GetAntdTableDataAsync(request);
@@ -388,8 +379,38 @@ namespace BlazorApp.Api.Controllers.React
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "表格数据获取失败");
-                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+                // 中心日志在 LogError 调用时读取 Response.StatusCode，必须先设置最终状态。
+                Response.StatusCode = StatusCodes.Status500InternalServerError;
+                var diagnostic = ex as WarehouseProductTableQueryException;
+                var requestSnapshot = diagnostic?.Request;
+                var timings =
+                    diagnostic?.Timings
+                    ?? new WarehouseProductTableTimingSnapshot(0, 0, 0, 0, 0, 0, 0);
+                _logger.LogError(
+                    ex,
+                    "表格数据获取失败: stage={Stage} pageNumber={PageNumber} pageSize={PageSize} categoryCount={CategoryCount} filterCount={FilterCount} keywordType={KeywordType} keywordLength={KeywordLength} sortBy={SortBy} sortOrder={SortOrder} candidateMs={CandidateMs} countMs={CountMs} pageMs={PageMs} locationMs={LocationMs} rowsMs={RowsMs} mapMs={MapMs} totalMs={TotalMs}",
+                    diagnostic?.FailedStage ?? "unknown",
+                    requestSnapshot?.PageNumber ?? request.Page,
+                    requestSnapshot?.PageSize ?? request.PageSize,
+                    requestSnapshot?.CategoryCount ?? request.CategoryGuids?.Count ?? 0,
+                    requestSnapshot?.FilterCount ?? request.Filters?.Count ?? 0,
+                    requestSnapshot?.KeywordType
+                        ?? (string.IsNullOrWhiteSpace(request.GlobalSearch) ? "none" : "unknown"),
+                    requestSnapshot?.KeywordLength ?? request.GlobalSearch?.Trim().Length ?? 0,
+                    requestSnapshot?.SortBy ?? "unknown",
+                    requestSnapshot?.SortOrder ?? "unknown",
+                    timings.CandidateMs,
+                    timings.CountMs,
+                    timings.PageMs,
+                    timings.LocationMs,
+                    timings.RowsMs,
+                    timings.MapMs,
+                    timings.TotalMs
+                );
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new { success = false, message = "服务器内部错误" }
+                );
             }
         }
 

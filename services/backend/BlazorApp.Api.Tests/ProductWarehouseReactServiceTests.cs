@@ -14,6 +14,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -533,6 +534,123 @@ namespace BlazorApp.Api.Tests
 
             // 派生 HB 前缀只用于 HB 货号，不扩散到条码、供应商或商品名称。
             Assert.Equal("P-GLOBAL-CODE-001", Assert.Single(omittedHbPrefixResult.Items).ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_CodeLikeGlobalSearchUsesUnionCandidatesAndSafePerfLog()
+        {
+            const string keyword = "MATCH-123";
+            await SeedWarehouseTableProductAsync(
+                "P-UNION-001",
+                $"{keyword}-ITEM",
+                "跨分支去重商品",
+                null,
+                barcode: $"{keyword}-BAR",
+                supplierCode: $"{keyword}-SUP",
+                localSupplierCode: $"{keyword}-LOCAL"
+            );
+            await SeedLocationAsync("loc-union-001", $"{keyword}-LOC", 1);
+            await SeedProductLocationAsync("P-UNION-001", "loc-union-001");
+
+            var executedSql = new List<string>();
+            _db.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+            var logMessages = new List<string>();
+            var logger = new Mock<ILogger<ProductWarehouseReactService>>();
+            logger
+                .Setup(x =>
+                    x.Log(
+                        It.IsAny<LogLevel>(),
+                        It.IsAny<EventId>(),
+                        It.Is<It.IsAnyType>((_, _) => true),
+                        It.IsAny<Exception?>(),
+                        It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                    )
+                )
+                .Callback(
+                    new InvocationAction(invocation =>
+                        logMessages.Add(invocation.Arguments[2]?.ToString() ?? string.Empty)
+                    )
+                );
+
+            try
+            {
+                var result = await CreateService(logger: logger.Object)
+                    .GetAntdTableDataAsync(new ReactTableRequestDto
+                    {
+                        Page = 1,
+                        PageSize = 20,
+                        GlobalSearch = keyword,
+                    });
+
+                Assert.Equal(1, result.Total);
+                Assert.Equal("P-UNION-001", Assert.Single(result.Items).ProductCode);
+            }
+            finally
+            {
+                _db.Aop.OnLogExecuting = null;
+            }
+
+            var countSql = Assert.Single(
+                executedSql,
+                sql => sql.Contains("COUNT", StringComparison.OrdinalIgnoreCase)
+            );
+            Assert.Contains("UNION", countSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("EXISTS", countSql, StringComparison.OrdinalIgnoreCase);
+
+            var perfLog = Assert.Single(
+                logMessages,
+                message => message.Contains("[warehouse-product-table-perf]")
+            );
+            Assert.Contains("candidateMs=", perfLog);
+            Assert.Contains("countMs=", perfLog);
+            Assert.Contains("pageMs=", perfLog);
+            Assert.Contains("locationMs=", perfLog);
+            Assert.Contains("rowsMs=", perfLog);
+            Assert.Contains("mapMs=", perfLog);
+            Assert.Contains("totalMs=", perfLog);
+            Assert.DoesNotContain(keyword, perfLog, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void CodeLikeCandidateQuery_SqlServerUsesUnionAndVarcharParameters()
+        {
+            const string keyword = "MQ057-";
+            var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString =
+                    "Server=127.0.0.1;Database=warehouse_sql_generation;User Id=sa;Password=SqlOnly_123;TrustServerCertificate=True",
+                DbType = DbType.SqlServer,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+                MoreSettings = new ConnMoreSettings(),
+            });
+            var service = CreateService(database: sqlServerDb);
+            var method = typeof(ProductWarehouseReactService).GetMethod(
+                "BuildWarehouseCodeSearchCandidateQuery",
+                BindingFlags.Instance | BindingFlags.NonPublic
+            );
+            var candidateQuery = Assert.IsAssignableFrom<
+                ISugarQueryable<WarehouseProductCodeSearchCandidate>
+            >(method!.Invoke(service, new object[] { keyword }));
+
+            var sql = sqlServerDb
+                .Queryable<WarehouseProduct>()
+                .InnerJoin(
+                    candidateQuery,
+                    (warehouseProduct, candidate) =>
+                        warehouseProduct.ProductCode == candidate.ProductCode
+                )
+                .Select((warehouseProduct, candidate) => warehouseProduct)
+                .MergeTable()
+                .Where(warehouseProduct => !warehouseProduct.IsDeleted)
+                .Select(warehouseProduct => warehouseProduct.ProductCode)
+                .ToSql()
+                .Key;
+
+            Assert.Contains("UNION", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("VARCHAR", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("EXISTS", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(keyword, sql, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -4233,11 +4351,13 @@ namespace BlazorApp.Api.Tests
 
         private ProductWarehouseReactService CreateService(
             ITranslationService? translationService = null,
-            IConfiguration? configuration = null
+            IConfiguration? configuration = null,
+            ILogger<ProductWarehouseReactService>? logger = null,
+            ISqlSugarClient? database = null
         )
         {
             configuration ??= new ConfigurationBuilder().Build();
-            var context = CreateSqlSugarContext(_db);
+            var context = CreateSqlSugarContext(database ?? _db);
             var itemBarcodeService = new ItemBarcodeService(
                 context,
                 NullLogger<ItemBarcodeService>.Instance,
@@ -4247,7 +4367,7 @@ namespace BlazorApp.Api.Tests
             return new ProductWarehouseReactService(
                 context,
                 CreateHqSqlSugarContext(),
-                NullLogger<ProductWarehouseReactService>.Instance,
+                logger ?? NullLogger<ProductWarehouseReactService>.Instance,
                 configuration,
                 itemBarcodeService,
                 Mock.Of<IMapper>(),

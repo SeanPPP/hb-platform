@@ -13,6 +13,28 @@ namespace BlazorApp.Api.Tests;
 public sealed class SqlSugarContextNoLockTransactionTests
 {
     [Fact]
+    public void SqlServer索引引导_幂等创建仓库商品默认分页索引()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                FindRepositoryRoot(),
+                "services/backend/BlazorApp.Api/Data/SqlSugarContext.cs"
+            )
+        );
+
+        Assert.Contains(
+            "IX_WarehouseProduct_Table_CreatedAt ON [WarehouseProduct]([CreatedAt] DESC, [ProductCode]) WHERE [IsDeleted] = 0",
+            source,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "WHERE name = 'IX_WarehouseProduct_Table_CreatedAt' AND object_id = OBJECT_ID('WarehouseProduct')",
+            source,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
     public void ProductionSqlServerConfig_授权查询仅在事务外使用NoLock()
     {
         var context = CreateProductionSqlServerContext();
@@ -83,4 +105,22 @@ public sealed class SqlSugarContextNoLockTransactionTests
     private static bool ContainsNoLock(string sql) =>
         sql.Replace(" ", string.Empty, StringComparison.Ordinal)
             .Contains("WITH(NOLOCK)", StringComparison.OrdinalIgnoreCase);
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (
+            directory != null
+            && (
+                !Directory.Exists(Path.Combine(directory.FullName, "apps"))
+                || !Directory.Exists(Path.Combine(directory.FullName, "services"))
+            )
+        )
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName
+            ?? throw new DirectoryNotFoundException("无法定位 hb-platform 仓库根目录。");
+    }
 }

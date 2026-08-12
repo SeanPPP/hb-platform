@@ -1869,6 +1869,7 @@ namespace BlazorApp.Api.Data
                 // WarehouseProduct表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE UNIQUE INDEX IX_WarehouseProduct_ProductCode ON [WarehouseProduct]([ProductCode])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode_NotDeleted' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_ProductCode_NotDeleted ON [WarehouseProduct]([ProductCode]) WHERE [IsDeleted] = 0",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_Table_CreatedAt' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_Table_CreatedAt ON [WarehouseProduct]([CreatedAt] DESC, [ProductCode]) WHERE [IsDeleted] = 0",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_IsActive' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_IsActive ON [WarehouseProduct]([IsActive])",
                 // ProductSetCode表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_SetBarcode' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_SetBarcode ON [ProductSetCode]([SetBarcode]) WHERE [SetBarcode] IS NOT NULL",
