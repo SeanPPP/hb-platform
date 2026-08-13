@@ -245,6 +245,27 @@ test("支付成功切换为独立结算页，显示现金找零与小票动作�
   expect(screen.getByTestId("payment-success-layout")).toBeTruthy();
   expect(screen.getByText("支付完成")).toBeTruthy();
   expect(screen.getAllByText("order-ui-1")).toHaveLength(2);
+  const transactionQr = screen.getByTestId("payment-success-transaction-qr");
+  expect(transactionQr.props).toMatchObject({
+    accessibilityRole: "image",
+  });
+  expect(transactionQr.props.accessibilityLabel).toContain("order-ui-1");
+  expect(
+    screen.getByTestId("payment-success-transaction-qr-matrix", {
+      includeHiddenElements: true,
+    }).props,
+  ).toMatchObject({
+    accessibilityElementsHidden: true,
+    importantForAccessibility: "no-hide-descendants",
+  });
+  const transactionQrRows = screen.getAllByTestId(
+    /payment-success-transaction-qr-row-/u,
+    { includeHiddenElements: true },
+  );
+  expect(transactionQrRows.length).toBeGreaterThan(20);
+  expect(transactionQrRows[0]?.children).toHaveLength(
+    transactionQrRows.length,
+  );
   expect(screen.getByText(formatAud(1_500, "zh"))).toBeTruthy();
   expect(screen.getByText(formatAud(500, "zh"))).toBeTruthy();
   expect(screen.getByText("订单已安全保存，并进入同步队列。")).toBeTruthy();
@@ -268,6 +289,49 @@ test("支付成功切换为独立结算页，显示现金找零与小票动作�
   await fireEvent.press(screen.getByTestId("payment-complete"));
   expect(onComplete).toHaveBeenCalledWith("order-ui-1");
   await screen.unmount();
+});
+
+test("窄屏支付成功页切为单列时仍显示完整交易号二维码", async () => {
+  setPaymentWindowSize(750, 1334);
+  const orderGuid = "10000000-0000-4000-8000-000000000042";
+  const { presenter } = createUiPresenter({
+    phase: "success",
+    orderGuid,
+    total: aud(1_000),
+    remaining: aud(0),
+    tenders: [
+      {
+        tenderGuid: "cash-success-compact",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: true,
+      },
+    ],
+    allowedActions: actions(),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("payment-success-layout").props.style,
+      ).flexDirection,
+    ).toBe("column");
+    expect(screen.getAllByText(orderGuid)).toHaveLength(2);
+    expect(
+      screen.getByTestId("payment-success-transaction-qr").props
+        .accessibilityLabel,
+    ).toContain(orderGuid);
+  } finally {
+    await screen.unmount();
+    setPaymentWindowSize(750, 1334);
+  }
 });
 
 test("手动打印在结果返回前防重复，并依次显示完成、未知和失败结果", async () => {

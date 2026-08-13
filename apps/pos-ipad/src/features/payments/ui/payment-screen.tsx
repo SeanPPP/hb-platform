@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -36,6 +42,7 @@ import {
   type PaymentUiPhase,
 } from "./payment-presenter";
 
+import { receiptQrMatrix } from "@/features/local-history/receipt-qr-matrix";
 import type {
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";
@@ -784,15 +791,21 @@ function PaymentSuccessLayout({
           </View>
           <View style={styles.successSummaryRule} />
           <View style={styles.successTransaction}>
-            <Text style={styles.successLabel}>
-              {t("success.orderReference")}
-            </Text>
-            <Text
-              selectable
-              style={styles.successOrderReference}
-            >
-              {orderGuid}
-            </Text>
+            <View style={styles.successTransactionCopy}>
+              <Text style={styles.successLabel}>
+                {t("success.orderReference")}
+              </Text>
+              <Text
+                selectable
+                style={styles.successOrderReference}
+              >
+                {orderGuid}
+              </Text>
+            </View>
+            <PaymentTransactionQrCode
+              label={t("success.orderReference")}
+              value={orderGuid}
+            />
           </View>
         </View>
 
@@ -950,6 +963,59 @@ function PaymentSuccessLayout({
             testID="payment-complete"
           />
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+function PaymentTransactionQrCode({
+  label,
+  value,
+}: Readonly<{
+  label: string;
+  value: string;
+}>) {
+  const matrix = useMemo(() => receiptQrMatrix(value), [value]);
+  // 2.5pt 模块在 Retina 屏幕对应整数像素，兼顾扫码清晰度与摘要卡空间。
+  const moduleSize = Math.max(
+    2,
+    Math.floor((96 / (matrix.length + 8)) * 2) / 2,
+  );
+
+  return (
+    <View
+      accessibilityLabel={`${label} QR ${value}`}
+      accessibilityRole="image"
+      style={styles.successTransactionQr}
+      testID="payment-success-transaction-qr"
+    >
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={[
+          styles.successTransactionQrQuietZone,
+          { padding: moduleSize * 4 },
+        ]}
+        testID="payment-success-transaction-qr-matrix"
+      >
+        {matrix.map((row, rowIndex) => (
+          <View
+            key={`row-${rowIndex}`}
+            style={styles.successTransactionQrRow}
+            testID={`payment-success-transaction-qr-row-${rowIndex}`}
+          >
+            {row.map((dark, columnIndex) => (
+              <View
+                key={`${rowIndex}-${columnIndex}`}
+                style={[
+                  styles.successTransactionQrCell,
+                  { height: moduleSize, width: moduleSize },
+                  dark && styles.successTransactionQrCellDark,
+                ]}
+              />
+            ))}
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -2112,7 +2178,7 @@ const styles = StyleSheet.create({
     gap: 24,
   },
   successTotal: {
-    flex: 1,
+    flex: 0.8,
     justifyContent: "center",
   },
   successLabel: {
@@ -2132,8 +2198,16 @@ const styles = StyleSheet.create({
     backgroundColor: posColors.border,
   },
   successTransaction: {
-    flex: 1,
+    flex: 1.2,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
     justifyContent: "center",
+    gap: 16,
+  },
+  successTransactionCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   successOrderReference: {
     marginTop: 9,
@@ -2142,6 +2216,23 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontVariant: ["tabular-nums"],
     lineHeight: 23,
+  },
+  successTransactionQr: {
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  successTransactionQrQuietZone: {
+    backgroundColor: "#FFFFFF",
+  },
+  successTransactionQrRow: {
+    flexDirection: "row",
+  },
+  successTransactionQrCell: {
+    backgroundColor: "#FFFFFF",
+  },
+  successTransactionQrCellDark: {
+    backgroundColor: "#111111",
   },
   successSettlement: {
     minHeight: 116,
