@@ -3083,6 +3083,243 @@ test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删�
   });
 });
 
+test("真实 SQLite：仅有已拒付历史的 DraftPrepared 可安全 abandon 且完整保留账本", async () => {
+  await withDatabase("draft-abandon-declined-history", async (connection) => {
+    await migrateFresh(connection);
+    const input = draftInput({
+      draftId: "draft-abandon-declined-history",
+      identity: {
+        storeCode: "S-ABANDON-DECLINED",
+        deviceCode: "D-ABANDON-DECLINED",
+        cashierId: "C-ABANDON-DECLINED",
+        cashierName: "Abandon declined history",
+      },
+    });
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds(
+        "order-abandon-declined-history",
+        "audit-abandon-declined-history",
+      ),
+      () => T1,
+    );
+    const created = await store.createOrReuseDraft(input);
+
+    for (const suffix of ["one", "two"] as const) {
+      await insertActionBinding(
+        connection,
+        created.orderGuid,
+        `binding-abandon-declined-${suffix}`,
+        `attempt-abandon-declined-${suffix}`,
+        `idempotency-abandon-declined-${suffix}`,
+        ["linkly-cloud", "purchase", "AUD", 900],
+      );
+      await insertAttempt(connection, {
+        attemptId: `attempt-abandon-declined-${suffix}`,
+        idempotencyKey: `idempotency-abandon-declined-${suffix}`,
+        orderGuid: created.orderGuid,
+        provider: "linkly-cloud",
+        operation: "purchase",
+        amountCents: 900,
+        state: "Declined",
+      });
+    }
+
+    const recovery = await store.findBlockingRecovery(input.identity);
+    assert.equal(recovery?.kind, "DraftPrepared");
+    assert.equal(recovery?.attemptId, null);
+    assert.equal(recovery?.boundAction, null);
+
+    const abandoned = await store.abandonPreparedDraft({
+      actionId: "abandon-declined-history",
+      draftId: input.draftId,
+      orderGuid: created.orderGuid,
+      actor: paymentAuditActor(),
+      ...input.identity,
+    });
+    assert.equal(abandoned.replayed, false);
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_order_draft_bindings
+         WHERE order_guid = ? AND state = 'Abandoned'`,
+        [created.orderGuid],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_action_bindings WHERE order_guid = ?",
+        [created.orderGuid],
+      ),
+      2,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_attempts WHERE order_guid = ? AND state = 'Declined'",
+        [created.orderGuid],
+      ),
+      2,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM order_tenders WHERE order_guid = ?",
+        [created.orderGuid],
+      ),
+      0,
+    );
+  });
+});
+
+test("真实 SQLite：孤立 attempt 或 binding 均阻止 DraftPrepared abandon", async () => {
+  for (const history of ["attempt-only", "binding-only"] as const) {
+    await withDatabase(`draft-abandon-${history}`, async (connection) => {
+      await migrateFresh(connection);
+      const input = draftInput({
+        draftId: `draft-abandon-${history}`,
+        identity: {
+          storeCode: `S-ABANDON-${history}`,
+          deviceCode: `D-ABANDON-${history}`,
+          cashierId: "C-ABANDON-ORPHAN",
+          cashierName: "Abandon orphan history",
+        },
+      });
+      const store = new SqlitePaymentDraftRecoveryStore(
+        connection,
+        sequenceIds(`order-abandon-${history}`, `audit-abandon-${history}`),
+        () => T1,
+      );
+      const created = await store.createOrReuseDraft(input);
+
+      if (history === "attempt-only") {
+        await insertAttempt(connection, {
+          attemptId: "attempt-abandon-orphan",
+          idempotencyKey: "idempotency-abandon-orphan",
+          orderGuid: created.orderGuid,
+          provider: "linkly-cloud",
+          operation: "purchase",
+          amountCents: 900,
+          state: "Declined",
+        });
+      } else {
+        await insertActionBinding(
+          connection,
+          created.orderGuid,
+          "binding-abandon-orphan",
+          "attempt-abandon-orphan",
+          "idempotency-abandon-orphan",
+          ["linkly-cloud", "purchase", "AUD", 900],
+        );
+      }
+
+      await assert.rejects(
+        () => store.abandonPreparedDraft({
+          actionId: `abandon-${history}`,
+          draftId: input.draftId,
+          orderGuid: created.orderGuid,
+          actor: paymentAuditActor(),
+          ...input.identity,
+        }),
+        /tender or unresolved payment history/,
+      );
+      assert.equal(
+        await scalar(
+          connection,
+          `SELECT COUNT(*) AS count
+           FROM payment_order_draft_bindings
+           WHERE order_guid = ? AND state = 'Active'`,
+          [created.orderGuid],
+        ),
+        1,
+      );
+    });
+  }
+});
+
+test("真实 SQLite：Approved、Cancelled 或任意 tender 均阻止 DraftPrepared abandon", async () => {
+  for (const history of ["approved", "cancelled", "cash-tender"] as const) {
+    await withDatabase(`draft-abandon-${history}`, async (connection) => {
+      await migrateFresh(connection);
+      const input = draftInput({
+        draftId: `draft-abandon-${history}`,
+        identity: {
+          storeCode: `S-ABANDON-${history}`,
+          deviceCode: `D-ABANDON-${history}`,
+          cashierId: "C-ABANDON-BLOCKED",
+          cashierName: "Abandon blocked history",
+        },
+      });
+      const store = new SqlitePaymentDraftRecoveryStore(
+        connection,
+        sequenceIds(`order-abandon-${history}`, `audit-abandon-${history}`),
+        () => T1,
+      );
+      const created = await store.createOrReuseDraft(input);
+
+      if (history === "cash-tender") {
+        await insertTender(
+          connection,
+          "tender-abandon-cash",
+          created.orderGuid,
+          "cash",
+          100,
+        );
+      } else {
+        await insertActionBinding(
+          connection,
+          created.orderGuid,
+          `binding-abandon-${history}`,
+          `attempt-abandon-${history}`,
+          `idempotency-abandon-${history}`,
+          ["linkly-cloud", "purchase", "AUD", 900],
+        );
+        await insertAttempt(connection, {
+          attemptId: `attempt-abandon-${history}`,
+          idempotencyKey: `idempotency-abandon-${history}`,
+          orderGuid: created.orderGuid,
+          provider: "linkly-cloud",
+          operation: "purchase",
+          amountCents: 900,
+          state: history === "approved" ? "Approved" : "Cancelled",
+        });
+        if (history === "approved") {
+          await insertTender(
+            connection,
+            "tender-abandon-approved",
+            created.orderGuid,
+            "card",
+            900,
+            "attempt-abandon-approved",
+          );
+        }
+      }
+
+      const recovery = await store.findBlockingRecovery(input.identity);
+      assert.equal(recovery?.kind, "DraftPrepared", history);
+      assert.equal(
+        recovery?.boundAction === null,
+        history !== "cancelled",
+        history,
+      );
+      await assert.rejects(
+        () => store.abandonPreparedDraft({
+          actionId: `abandon-${history}`,
+          draftId: input.draftId,
+          orderGuid: created.orderGuid,
+          actor: paymentAuditActor(),
+          ...input.identity,
+        }),
+        /tender or unresolved payment history/,
+      );
+    });
+  }
+});
+
 test("真实 SQLite：全部现金 tender 已反冲时可幂等关闭，且保留原款、反向款和关联", async () => {
   await withDatabase("draft-fully-reversed-close", async (connection) => {
     await migrateFresh(connection);
@@ -3495,7 +3732,7 @@ test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重�
         actor: paymentAuditActor(),
         ...input.identity,
       }),
-      /tender, attempt, or action binding/,
+      /tender or unresolved payment history/,
     );
     await reopened.run(
       "UPDATE payment_attempts SET state = 'Approved', updated_at_iso = ? WHERE attempt_id = ?",
@@ -3530,7 +3767,268 @@ test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重�
   }
 });
 
-test("真实 SQLite：payment action-only recovery 严格解析签名，多 binding 或非法签名失败关闭", async () => {
+test("真实 SQLite：多次已拒付 binding 可重试且不遮蔽 Cancelled 关闭恢复", async () => {
+  await withDatabase("draft-declined-binding-history", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-declined-history", "audit-declined-history"),
+      () => T1,
+    );
+    const input = draftInput({
+      draftId: "draft-declined-history",
+      identity: {
+        storeCode: "S-DECLINED-HISTORY",
+        deviceCode: "D-DECLINED-HISTORY",
+        cashierId: "C-DECLINED-HISTORY",
+        cashierName: "Declined history",
+      },
+    });
+    const draft = await store.createOrReuseDraft(input);
+
+    for (const suffix of ["one", "two"] as const) {
+      await insertActionBinding(
+        connection,
+        draft.orderGuid,
+        `binding-${suffix}`,
+        `attempt-${suffix}`,
+        `idempotency-${suffix}`,
+        ["linkly-cloud", "purchase", "AUD", 900],
+      );
+      await insertAttempt(connection, {
+        attemptId: `attempt-${suffix}`,
+        idempotencyKey: `idempotency-${suffix}`,
+        orderGuid: draft.orderGuid,
+        provider: "linkly-cloud",
+        operation: "purchase",
+        amountCents: 900,
+        state: "Declined",
+      });
+    }
+
+    const recovery = await store.findBlockingRecovery(input.identity);
+    assert.equal(recovery?.kind, "DraftPrepared");
+    assert.equal(recovery?.orderGuid, draft.orderGuid);
+    assert.equal(recovery?.attemptId, null);
+    assert.equal(recovery?.boundAction, null);
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_action_bindings WHERE order_guid = ?",
+        [draft.orderGuid],
+      ),
+      2,
+    );
+
+    await insertActionBinding(
+      connection,
+      draft.orderGuid,
+      "binding-cancelled",
+      "attempt-cancelled",
+      "idempotency-cancelled",
+      ["linkly-cloud", "purchase", "AUD", 900],
+    );
+    await insertAttempt(connection, {
+      attemptId: "attempt-cancelled",
+      idempotencyKey: "idempotency-cancelled",
+      orderGuid: draft.orderGuid,
+      provider: "linkly-cloud",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Cancelled",
+    });
+
+    const cancelledRecovery = await store.findBlockingRecovery(input.identity);
+    assert.equal(cancelledRecovery?.kind, "DraftPrepared");
+    assert.deepEqual(cancelledRecovery?.boundAction, {
+      actionId: "binding-cancelled",
+      attemptId: "attempt-cancelled",
+      provider: "linkly-cloud",
+      operation: "purchase",
+      amount: { currency: "AUD", cents: 900 },
+    });
+
+    const closed = await store.closeCancelledDraft({
+      actionId: "binding-cancelled",
+      orderGuid: draft.orderGuid,
+      actor: paymentAuditActor(),
+      ...input.identity,
+    });
+    assert.equal(closed.replayed, false);
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    assert.equal(
+      await scalar(
+        connection,
+        `SELECT COUNT(*) AS count
+         FROM payment_order_draft_bindings
+         WHERE order_guid = ? AND state = 'CancelledClosed'`,
+        [draft.orderGuid],
+      ),
+      1,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_action_bindings WHERE order_guid = ?",
+        [draft.orderGuid],
+      ),
+      3,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_attempts WHERE order_guid = ?",
+        [draft.orderGuid],
+      ),
+      3,
+    );
+  });
+});
+
+test("真实 SQLite：Declined 历史的 binding/attempt 身份不一致时失败关闭", async () => {
+  const cases = [
+    {
+      name: "idempotency",
+      bindingIdempotencyKey: "binding-idempotency",
+      attemptIdempotencyKey: "attempt-idempotency",
+      signature: ["linkly-cloud", "purchase", "AUD", 900] as const,
+      provider: "linkly-cloud",
+      operation: "purchase",
+      amountCents: 900,
+    },
+    {
+      name: "provider",
+      bindingIdempotencyKey: "shared-idempotency",
+      attemptIdempotencyKey: "shared-idempotency",
+      signature: ["linkly-cloud", "purchase", "AUD", 900] as const,
+      provider: "square",
+      operation: "purchase",
+      amountCents: 900,
+    },
+  ];
+
+  for (const mismatch of cases) {
+    await withDatabase(
+      `draft-declined-binding-${mismatch.name}`,
+      async (connection) => {
+        await migrateFresh(connection);
+        const store = new SqlitePaymentDraftRecoveryStore(
+          connection,
+          sequenceIds(
+            `order-declined-binding-${mismatch.name}`,
+            `audit-declined-binding-${mismatch.name}`,
+          ),
+          () => T1,
+        );
+        const input = draftInput({
+          draftId: `draft-declined-binding-${mismatch.name}`,
+          identity: {
+            storeCode: `S-DECLINED-BINDING-${mismatch.name}`,
+            deviceCode: `D-DECLINED-BINDING-${mismatch.name}`,
+            cashierId: "C-DECLINED-BINDING",
+            cashierName: "Declined binding",
+          },
+        });
+        const draft = await store.createOrReuseDraft(input);
+        await insertActionBinding(
+          connection,
+          draft.orderGuid,
+          `binding-${mismatch.name}`,
+          `attempt-${mismatch.name}`,
+          mismatch.bindingIdempotencyKey,
+          mismatch.signature,
+        );
+        await insertAttempt(connection, {
+          attemptId: `attempt-${mismatch.name}`,
+          idempotencyKey: mismatch.attemptIdempotencyKey,
+          orderGuid: draft.orderGuid,
+          provider: mismatch.provider,
+          operation: mismatch.operation,
+          amountCents: mismatch.amountCents,
+          state: "Declined",
+        });
+
+        await assert.rejects(
+          () => store.findBlockingRecovery(input.identity),
+          /binding and attempt identity diverged/,
+        );
+        await assert.rejects(
+          () => store.abandonPreparedDraft({
+            actionId: `abandon-${mismatch.name}`,
+            draftId: input.draftId,
+            orderGuid: draft.orderGuid,
+            actor: paymentAuditActor(),
+            ...input.identity,
+          }),
+          /binding and attempt identity diverged/,
+        );
+      },
+    );
+  }
+});
+
+test("真实 SQLite：Declined attempt 关联 tender 时失败关闭", async () => {
+  await withDatabase("draft-declined-with-tender", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-declined-with-tender", "audit-declined-with-tender"),
+      () => T1,
+    );
+    const input = draftInput({
+      draftId: "draft-declined-with-tender",
+      identity: {
+        storeCode: "S-DECLINED-TENDER",
+        deviceCode: "D-DECLINED-TENDER",
+        cashierId: "C-DECLINED-TENDER",
+        cashierName: "Declined tender",
+      },
+    });
+    const draft = await store.createOrReuseDraft(input);
+    await insertActionBinding(
+      connection,
+      draft.orderGuid,
+      "binding-declined-with-tender",
+      "attempt-declined-with-tender",
+      "idempotency-declined-with-tender",
+      ["linkly-cloud", "purchase", "AUD", 900],
+    );
+    await insertAttempt(connection, {
+      attemptId: "attempt-declined-with-tender",
+      idempotencyKey: "idempotency-declined-with-tender",
+      orderGuid: draft.orderGuid,
+      provider: "linkly-cloud",
+      operation: "purchase",
+      amountCents: 900,
+      state: "Declined",
+    });
+    await insertTender(
+      connection,
+      "tender-declined-with-tender",
+      draft.orderGuid,
+      "card",
+      900,
+      "attempt-declined-with-tender",
+    );
+
+    await assert.rejects(
+      () => store.findBlockingRecovery(input.identity),
+      /Declined payment action unexpectedly has a tender/,
+    );
+    await assert.rejects(
+      () => store.abandonPreparedDraft({
+        actionId: "abandon-declined-with-tender",
+        draftId: input.draftId,
+        orderGuid: draft.orderGuid,
+        actor: paymentAuditActor(),
+        ...input.identity,
+      }),
+      /Declined payment action unexpectedly has a tender/,
+    );
+  });
+});
+
+test("真实 SQLite：payment action-only recovery 严格解析签名，多未决 binding 或非法签名失败关闭", async () => {
   await withDatabase("draft-bound-action-fail-closed", async (connection) => {
     await migrateFresh(connection);
     const store = new SqlitePaymentDraftRecoveryStore(

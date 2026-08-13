@@ -1459,6 +1459,33 @@ test("无耐久支付事实的初始化失败仍允许返回收银", async () =>
   await screen.unmount();
 });
 
+test("Square 终端取消已耐久关闭后允许返回收银", async () => {
+  const { presenter } = createUiPresenter({
+    phase: "cancelled",
+    orderGuid: "order-square-terminal-cancelled",
+    attemptId: null,
+    attemptCreatedAtIso: null,
+    provider: null,
+    runtimeStatus: "cancelled",
+    allowedActions: actions(),
+  });
+  const onBack = jest.fn();
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  const back = screen.getByTestId("payment-back");
+  expect(back.props.accessibilityState).toEqual({ disabled: false });
+  await fireEvent.press(back);
+  expect(onBack).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
 test("分期现金 fence 建立后禁用返回且 press 不离开支付页", async () => {
   for (const cashRepaymentStatus of ["ready", "confirming"] as const) {
     const { presenter } = createUiPresenter({
