@@ -12,6 +12,7 @@ namespace Hbpos.Client.Wpf;
 
 public partial class MainWindow : Window
 {
+    private const int DisplayChangeMessageId = 0x007E;
     private const int RawInputMessageId = 0x00FF;
     private const string MainWindowModeSettingKey = "Shell:MainWindowMode";
     internal const string FullscreenWindowModeValue = "Fullscreen";
@@ -41,6 +42,7 @@ public partial class MainWindow : Window
     private bool _postShowStartupStarted;
     private bool _windowModeRestored;
     private bool _isApplyingWindowMode;
+    private bool _isDisplayTopologyCheckPending;
     private bool _isWaitingForWindowModeSaveBeforeClose;
     private bool _isClosingAfterWindowModeSave;
     private WindowState _lastNonMinimizedWindowState = WindowState.Maximized;
@@ -451,6 +453,7 @@ public partial class MainWindow : Window
 
     private IntPtr MainWindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        QueueDisplayTopologyCheck(msg);
         return ProcessRawScannerWindowMessage(
             _viewModel.AppUpdate.IsForceUpdateBlocking,
             _viewModel.ConfirmationDialog.IsOpen,
@@ -460,6 +463,63 @@ public partial class MainWindow : Window
             lParam,
             _rawScannerService.ProcessWindowMessage,
             ref handled);
+    }
+
+    private void QueueDisplayTopologyCheck(int messageId)
+    {
+        if (!ShouldQueueDisplayTopologyCheck(messageId, _isDisplayTopologyCheckPending))
+        {
+            return;
+        }
+
+        _isDisplayTopologyCheckPending = true;
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() =>
+            {
+                _isDisplayTopologyCheckPending = false;
+                if (!IsVisible)
+                {
+                    return;
+                }
+
+                try
+                {
+                    // 关键逻辑：退出 Win32 消息回调后再读取拓扑，避免断屏过程中同步关闭 WPF 窗口造成重入。
+                    var displayCount = _displayTopologyService.GetDisplays().Count;
+                    if (!ShouldCloseCustomerDisplayAfterTopologyChange(
+                            _viewModel.IsCustomerDisplayOpen,
+                            displayCount))
+                    {
+                        return;
+                    }
+
+                    ConsoleLog.Write(
+                        "CustomerDisplay",
+                        $"display topology changed displayCount={displayCount} action=close reason=no-secondary-display");
+                    _viewModel.SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, this);
+                    ActivateForScannerInput();
+                }
+                catch (Exception ex)
+                {
+                    ConsoleLog.WriteError(
+                        "CustomerDisplay",
+                        $"display topology reconciliation failed error={ex.GetType().Name} message={ex.Message}",
+                        exception: ex);
+                }
+            }));
+    }
+
+    internal static bool ShouldQueueDisplayTopologyCheck(int messageId, bool isCheckPending)
+    {
+        return messageId == DisplayChangeMessageId && !isCheckPending;
+    }
+
+    internal static bool ShouldCloseCustomerDisplayAfterTopologyChange(
+        bool isCustomerDisplayOpen,
+        int displayCount)
+    {
+        return isCustomerDisplayOpen && displayCount < 2;
     }
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)
