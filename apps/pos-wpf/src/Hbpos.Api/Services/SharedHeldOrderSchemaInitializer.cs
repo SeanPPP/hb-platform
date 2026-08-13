@@ -80,9 +80,10 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
             WHERE [parent_object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
               AND [name] = N'CK_POSM_SharedHeldOrder_PayloadVersion')
         BEGIN
-            ALTER TABLE [dbo].[POSM_SharedHeldOrder]
+            -- 旧表在同一批次刚补列时，延迟编译所有新列引用，避免 SQL Server 先报 207。
+            EXEC sys.sp_executesql N'ALTER TABLE [dbo].[POSM_SharedHeldOrder]
                 ADD CONSTRAINT [CK_POSM_SharedHeldOrder_PayloadVersion]
-                CHECK ([PayloadVersion] IN (1, 2));
+                CHECK ([PayloadVersion] IN (1, 2));';
         END;
 
         -- 旧库可能仍带有不允许 Cancelled 的状态约束；在同一启动事务内安全替换，失败则由 XACT_ABORT 回滚。
@@ -162,11 +163,11 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
             WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
               AND [name] = N'IX_POSM_SharedHeldOrder_Store_Status_CreatedAt')
         BEGIN
-            CREATE INDEX [IX_POSM_SharedHeldOrder_Store_Status_CreatedAt]
+            EXEC sys.sp_executesql N'CREATE INDEX [IX_POSM_SharedHeldOrder_Store_Status_CreatedAt]
                 ON [dbo].[POSM_SharedHeldOrder]
                    ([StoreCode], [Status], [CreatedAtUtc], [HoldGuid])
                 INCLUDE ([DeviceCode], [CashierId], [CashierName], [HeldAtUtc], [UpdatedAtUtc],
-                         [LineCount], [TotalCents], [DiscountCents], [ActualCents], [Revision], [PayloadVersion]);
+                         [LineCount], [TotalCents], [DiscountCents], [ActualCents], [Revision], [PayloadVersion]);';
         END;
 
         IF NOT EXISTS (

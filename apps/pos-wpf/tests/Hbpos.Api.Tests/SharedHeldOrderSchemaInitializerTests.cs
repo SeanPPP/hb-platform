@@ -51,6 +51,23 @@ public sealed class SharedHeldOrderSchemaInitializerTests
     }
 
     [Fact]
+    public async Task Legacy_payload_version_upgrade_defers_new_column_references()
+    {
+        var executor = new CapturingExecutor();
+        var initializer = new SqlSugarSharedHeldOrderSchemaInitializer(executor);
+
+        await initializer.InitializeAsync(CancellationToken.None);
+
+        var sql = Assert.Single(executor.Commands);
+        Assert.Matches(
+            @"EXEC\s+sys\.sp_executesql\s+N'ALTER TABLE\s+\[dbo\]\.\[POSM_SharedHeldOrder\]\s+ADD CONSTRAINT\s+\[CK_POSM_SharedHeldOrder_PayloadVersion\]\s+CHECK\s+\(\[PayloadVersion\]\s+IN\s+\(1,\s*2\)\);'",
+            sql);
+        Assert.Matches(
+            @"EXEC\s+sys\.sp_executesql\s+N'CREATE INDEX\s+\[IX_POSM_SharedHeldOrder_Store_Status_CreatedAt\][\s\S]*?INCLUDE\s+\([\s\S]*?\[PayloadVersion\]\);'",
+            sql);
+    }
+
+    [Fact]
     public void Association_store_uses_transaction_scoped_applock_updlock_and_unique_primary_contract()
     {
         Assert.Contains("POSM_SharedHeldOrderAssociation", SharedHeldOrderAssociationStore.AssociationTable);
