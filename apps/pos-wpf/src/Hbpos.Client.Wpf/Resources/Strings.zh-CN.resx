@@ -834,6 +834,24 @@
   <data name="history.transactions" xml:space="preserve">
     <value>笔交易</value>
   </data>
+  <data name="history.orderTime" xml:space="preserve">
+    <value>订单</value>
+  </data>
+  <data name="history.cashierTerminal" xml:space="preserve">
+    <value>收银员 / 终端</value>
+  </data>
+  <data name="history.customerPhone" xml:space="preserve">
+    <value>客户 / 电话</value>
+  </data>
+  <data name="history.amountItems" xml:space="preserve">
+    <value>金额 / 商品</value>
+  </data>
+  <data name="history.totalOutstanding" xml:space="preserve">
+    <value>总额 / 未付</value>
+  </data>
+  <data name="history.moreActions" xml:space="preserve">
+    <value>更多操作</value>
+  </data>
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
   </data>

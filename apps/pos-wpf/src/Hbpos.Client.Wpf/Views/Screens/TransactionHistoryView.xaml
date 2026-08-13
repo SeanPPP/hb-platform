@@ -26,7 +26,7 @@
             <Setter Property="Foreground" Value="#FF475569" />
             <Setter Property="FontSize" Value="{StaticResource PosFontSizeSmall}" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Padding" Value="6,8" />
+            <Setter Property="Padding" Value="12,8" />
             <Setter Property="MinHeight" Value="48" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
             <Setter Property="BorderBrush" Value="#FFE2E8F0" />
@@ -34,7 +34,8 @@
                 <Setter.Value>
                     <DataTemplate>
                         <TextBlock Text="{Binding}"
-                                   TextWrapping="Wrap"
+                                   TextWrapping="NoWrap"
+                                   TextTrimming="CharacterEllipsis"
                                    LineHeight="15"
                                    VerticalAlignment="Center" />
                     </DataTemplate>
@@ -43,7 +44,7 @@
         </Style>
 
         <Style x:Key="HistoryGridCellStyle" TargetType="DataGridCell">
-            <Setter Property="Padding" Value="6,0" />
+            <Setter Property="Padding" Value="12,0" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
@@ -67,14 +68,25 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="HistoryGridTextStyle" TargetType="TextBlock">
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="TextTrimming" Value="None" />
+        <Style x:Key="HistoryPrimaryTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="HistorySecondaryTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FF64748B" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
         <Style x:Key="HistoryRowStyle" TargetType="DataGridRow">
-            <Setter Property="Height" Value="64" />
+            <Setter Property="Height" Value="72" />
             <Setter Property="BorderBrush" Value="#FFE2E8F0" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
             <Style.Triggers>
@@ -190,7 +202,8 @@
             <Setter Property="Foreground" Value="#FF15803D" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="FontSize" Value="12" />
-            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsSuspendedOrder}" Value="True">
                     <Setter Property="Foreground" Value="#FFC2410C" />
@@ -237,9 +250,29 @@
             <Setter Property="BorderBrush" Value="#FFE2E8F0" />
         </Style>
 
-        <Style x:Key="HistoryDangerIconTextButtonStyle" TargetType="Button" BasedOn="{StaticResource HistoryIconTextButtonStyle}">
-            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+        <Style x:Key="HistoryIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+            <Setter Property="Width" Value="44" />
+            <Setter Property="Height" Value="44" />
+            <Setter Property="MinWidth" Value="44" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="#FFCBD5E1" />
+        </Style>
+
+        <Style x:Key="HistoryPrimaryIconButtonStyle" TargetType="Button" BasedOn="{StaticResource HistoryIconButtonStyle}">
+            <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+        </Style>
+
+        <Style x:Key="HistoryActionCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource HistoryGridCellStyle}">
+            <Setter Property="Padding" Value="4,0" />
+        </Style>
+
+        <Style x:Key="HistoryMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="Height" Value="44" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#FF334155" />
         </Style>
 
         <Style x:Key="HistoryPreviewLabelStyle" TargetType="TextBlock">
@@ -442,7 +475,10 @@
                           HeadersVisibility="Column"
                           Style="{StaticResource PosCartDataGridStyle}">
                     <DataGrid.Columns>
-                        <DataGridTemplateColumn x:Name="ReuploadSelectionColumn" Header="" Width="42">
+                        <DataGridTemplateColumn x:Name="ReuploadSelectionColumn"
+                                                Header=""
+                                                Width="42"
+                                                CellStyle="{StaticResource HistoryActionCellStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <CheckBox IsChecked="{Binding Selection.IsSelected}"
@@ -452,143 +488,303 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="{loc:Loc OrderNumber}" Binding="{Binding DisplayOrderId}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn Header="{loc:Loc Time}" Binding="{Binding SoldAtDisplay}" Width="13*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="StandardCashierColumn" Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="InstallmentCustomerColumn" Header="{loc:Loc Customer}" Binding="{Binding CashierName}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="InstallmentPhoneColumn" Header="{loc:Loc Phone}" Binding="{Binding CustomerPhone}" Width="11*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
-                        <DataGridTextColumn Header="{loc:Loc Terminal}" Binding="{Binding DeviceCode}" Width="9*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="StandardItemsColumn" Header="{loc:Loc Items}" Binding="{Binding LineCount}" Width="6*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="InstallmentTotalColumn" Header="{loc:Loc Total}" Binding="{Binding TotalAmount, StringFormat={}{0:C2}}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="StandardAmountColumn" Header="{loc:Loc Amount}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="InstallmentOutstandingColumn" Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="12*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
-                        <DataGridTextColumn x:Name="StandardPaymentColumn" Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" />
-                        <DataGridTextColumn x:Name="InstallmentPaidColumn" Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="10*" ElementStyle="{StaticResource HistoryGridTextStyle}" Visibility="Collapsed" />
-                        <DataGridTemplateColumn Header="{loc:Loc common.status}" Width="10*">
+                        <DataGridTemplateColumn x:Name="OrderSummaryColumn"
+                                                Header="{loc:Loc history.orderTime}"
+                                                Width="22*">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Border Style="{StaticResource HistoryStatusBadgeBorderStyle}">
-                                        <TextBlock Text="{Binding StatusLabel}" Style="{StaticResource HistoryStatusBadgeTextStyle}" />
-                                    </Border>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0"
+                                                   Style="{StaticResource HistoryPrimaryTextStyle}"
+                                                   ToolTip="{Binding DisplayOrderId}">
+                                            <Run Text="#" />
+                                            <Run Text="{Binding DisplayOrderId}" />
+                                        </TextBlock>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="{Binding SoldAtDisplay}"
+                                                   ToolTip="{Binding SoldAtDisplay}"
+                                                   Margin="0,4,0,0"
+                                                   Style="{StaticResource HistorySecondaryTextStyle}" />
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="RecallActionColumn" Header="{loc:Loc suspended.recall}" Width="96">
+
+                        <DataGridTemplateColumn x:Name="StandardCashierSummaryColumn"
+                                                Header="{loc:Loc history.cashierTerminal}"
+                                                Width="22*">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Command="{Binding DataContext.RecallOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            IsEnabled="{Binding CanRecall}"
-                                            Visibility="{Binding CanRecall, Converter={StaticResource BoolToVis}}"
-                                            Style="{StaticResource HistoryIconTextButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="ClipboardTextClock" Width="14" Height="14" Margin="0,0,4,0" />
-                                            <TextBlock Text="{loc:Loc suspended.recall}" />
-                                        </StackPanel>
-                                    </Button>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding CashierName}"
+                                                   ToolTip="{Binding CashierName}"
+                                                   Style="{StaticResource HistoryPrimaryTextStyle}" />
+                                        <DockPanel Grid.Row="1" Margin="0,4,0,0" LastChildFill="True">
+                                            <materialDesign:PackIcon Kind="Monitor"
+                                                                     DockPanel.Dock="Left"
+                                                                     Width="14"
+                                                                     Height="14"
+                                                                     Margin="0,0,6,0"
+                                                                     Foreground="#FF64748B" />
+                                            <TextBlock Text="{Binding DeviceCode}"
+                                                       ToolTip="{Binding DeviceCode}"
+                                                       Style="{StaticResource HistorySecondaryTextStyle}" />
+                                        </DockPanel>
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="DeleteHeldOrderActionColumn"
-                                                Width="86"
+
+                        <DataGridTemplateColumn x:Name="InstallmentCustomerSummaryColumn"
+                                                Header="{loc:Loc history.customerPhone}"
+                                                Width="24*"
                                                 Visibility="Collapsed">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Command="{Binding DataContext.DeleteHeldOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            IsEnabled="{Binding CanDeleteHeldOrder}"
-                                            Visibility="{Binding CanDeleteHeldOrder, Converter={StaticResource BoolToVis}}"
-                                            Style="{StaticResource HistoryDangerIconTextButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="DeleteOutline" Width="14" Height="14" Margin="0,0,4,0" />
-                                            <TextBlock Text="{Binding DataContext.DeleteHeldOrderLabel, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
-                                        </StackPanel>
-                                    </Button>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding CashierName}"
+                                                   ToolTip="{Binding CashierName}"
+                                                   Style="{StaticResource HistoryPrimaryTextStyle}" />
+                                        <TextBlock Grid.Row="1"
+                                                   Margin="0,4,0,0"
+                                                   Style="{StaticResource HistorySecondaryTextStyle}">
+                                            <Run Text="{Binding CustomerPhone}" />
+                                            <Run Text=" · " />
+                                            <Run Text="{Binding DeviceCode}" />
+                                        </TextBlock>
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="ShareStatusColumn"
-                                                Width="104"
+
+                        <DataGridTemplateColumn x:Name="StandardAmountSummaryColumn"
+                                                Header="{loc:Loc history.amountItems}"
+                                                Width="18*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding ActualAmount, StringFormat={}{0:C2}}"
+                                                   Style="{StaticResource HistoryPrimaryTextStyle}" />
+                                        <DockPanel Grid.Row="1" Margin="0,4,0,0" LastChildFill="True">
+                                            <materialDesign:PackIcon Kind="FormatListNumbered"
+                                                                     DockPanel.Dock="Left"
+                                                                     Width="14"
+                                                                     Height="14"
+                                                                     Margin="0,0,6,0"
+                                                                     Foreground="#FF64748B" />
+                                            <TextBlock Style="{StaticResource HistorySecondaryTextStyle}">
+                                                <Run Text="{Binding LineCount}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{Binding PaymentSummary}" />
+                                            </TextBlock>
+                                        </DockPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn x:Name="InstallmentAmountSummaryColumn"
+                                                Header="{loc:Loc history.totalOutstanding}"
+                                                Width="26*"
                                                 Visibility="Collapsed">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="{Binding ShareStatusLabel}"
-                                                   Style="{StaticResource HistoryGridTextStyle}"
-                                                   VerticalAlignment="Center" />
-                                        <TextBlock Text="..."
-                                                   Visibility="{Binding Share.IsBusy, Converter={StaticResource BoolToVis}}"
-                                                   Foreground="{StaticResource PosPrimaryBrush}"
-                                                   FontWeight="SemiBold"
-                                                   Margin="4,0,0,0"
-                                                   VerticalAlignment="Center" />
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding TotalAmount, StringFormat={}{0:C2}}"
+                                                   Style="{StaticResource HistoryPrimaryTextStyle}" />
+                                        <TextBlock Grid.Row="1"
+                                                   Margin="0,4,0,0"
+                                                   Style="{StaticResource HistorySecondaryTextStyle}">
+                                            <Run Text="{loc:Loc payment.installment.outstanding}" />
+                                            <Run Text=" " />
+                                            <Run Text="{Binding ActualAmount, StringFormat={}{0:C2}}" />
+                                            <Run Text=" · " />
+                                            <Run Text="{loc:Loc history.installment.paid}" />
+                                            <Run Text=" " />
+                                            <Run Text="{Binding PaymentSummary}" />
+                                        </TextBlock>
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn x:Name="StatusSummaryColumn"
+                                                Header="{loc:Loc common.status}"
+                                                Width="18*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <Border Style="{StaticResource HistoryStatusBadgeBorderStyle}"
+                                                MaxWidth="180"
+                                                ToolTip="{Binding StatusLabel}">
+                                            <TextBlock Text="{Binding StatusLabel}"
+                                                       Style="{StaticResource HistoryStatusBadgeTextStyle}" />
+                                        </Border>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <TextBlock Text="{Binding ShareStatusLabel}"
+                                                       Style="{StaticResource HistorySecondaryTextStyle}" />
+                                            <TextBlock Text="..."
+                                                       Visibility="{Binding Share.IsBusy, Converter={StaticResource BoolToVis}}"
+                                                       Foreground="{StaticResource PosPrimaryBrush}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="4,0,0,0"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
                                     </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="ShareHeldActionColumn"
-                                                Width="88"
-                                                Visibility="Collapsed">
+
+                        <DataGridTemplateColumn x:Name="HistoryActionsColumn"
+                                                Header=""
+                                                Width="112"
+                                                CellStyle="{StaticResource HistoryActionCellStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Command="{Binding DataContext.ShareHeldOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            Visibility="{Binding CanShare, Converter={StaticResource BoolToVis}}">
-                                        <Button.Style>
-                                            <Style TargetType="Button"
-                                                   BasedOn="{StaticResource HistoryIconTextButtonStyle}">
-                                                <Setter Property="IsEnabled" Value="{Binding CanShare}" />
-                                                <Setter Property="Height" Value="44" />
-                                                <Setter Property="Padding" Value="8,0" />
-                                                <Style.Triggers>
-                                                    <!-- 行级 busy：共享请求进行中禁用按钮，防重复点击。 -->
-                                                    <DataTrigger Binding="{Binding Share.IsBusy}" Value="True">
-                                                        <Setter Property="IsEnabled" Value="False" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Button.Style>
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="ShareVariant" Width="14" Height="14" Margin="0,0,4,0" />
-                                            <TextBlock Text="{Binding DataContext.ShareHeldOrderLabel, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
-                                        </StackPanel>
-                                    </Button>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="ForceReleaseActionColumn"
-                                                Width="110"
-                                                Visibility="Collapsed">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Button Command="{Binding DataContext.ForceReleaseHeldOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            IsEnabled="{Binding CanForceRelease}"
-                                            Visibility="{Binding CanForceRelease, Converter={StaticResource BoolToVis}}"
-                                            Style="{StaticResource HistoryIconTextButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="LockOpen" Width="14" Height="14" Margin="0,0,4,0" />
-                                            <TextBlock Text="{Binding DataContext.ForceReleaseLabel, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
-                                        </StackPanel>
-                                    </Button>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn x:Name="ContinuePaymentActionColumn" Header="{loc:Loc history.installment.continuePayment}" Width="132">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Button Command="{Binding DataContext.ContinueInstallmentPaymentCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            IsEnabled="{Binding CanContinueInstallmentPayment}"
-                                            Visibility="{Binding CanContinueInstallmentPayment, Converter={StaticResource BoolToVis}}"
-                                            Height="34"
-                                            Padding="8,0"
-                                            Style="{StaticResource PosPrimaryButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="CalendarClock" Width="14" Height="14" Foreground="White" Margin="0,0,4,0" />
-                                            <TextBlock Text="{loc:Loc history.installment.continuePayment}" Foreground="White" FontSize="12" />
-                                        </StackPanel>
-                                    </Button>
+                                    <StackPanel Orientation="Horizontal"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center">
+                                        <Button Command="{Binding DataContext.RecallOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanRecall}"
+                                                Visibility="{Binding CanRecall, Converter={StaticResource BoolToVis}}"
+                                                Width="44"
+                                                Height="44"
+                                                Margin="0,0,6,0"
+                                                ToolTip="{loc:Loc suspended.recall}"
+                                                AutomationProperties.Name="{loc:Loc suspended.recall}"
+                                                Style="{StaticResource HistoryPrimaryIconButtonStyle}">
+                                            <materialDesign:PackIcon Kind="ClipboardTextClock" Width="18" Height="18" />
+                                        </Button>
+
+                                        <Button Command="{Binding DataContext.ContinueInstallmentPaymentCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanContinueInstallmentPayment}"
+                                                Visibility="{Binding CanContinueInstallmentPayment, Converter={StaticResource BoolToVis}}"
+                                                Width="44"
+                                                Height="44"
+                                                Margin="0,0,6,0"
+                                                ToolTip="{loc:Loc history.installment.continuePayment}"
+                                                AutomationProperties.Name="{loc:Loc history.installment.continuePayment}"
+                                                Style="{StaticResource HistoryPrimaryIconButtonStyle}">
+                                            <materialDesign:PackIcon Kind="CalendarClock" Width="18" Height="18" />
+                                        </Button>
+
+                                        <Button Click="OpenHistoryRowActionsMenu"
+                                                Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                Width="44"
+                                                Height="44"
+                                                ToolTip="{loc:Loc history.moreActions}"
+                                                AutomationProperties.Name="{loc:Loc history.moreActions}">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource HistoryIconButtonStyle}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CanShare}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding CanDeleteHeldOrder}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding CanForceRelease}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <Button.ContextMenu>
+                                                <ContextMenu DataContext="{Binding PlacementTarget, RelativeSource={RelativeSource Self}}"
+                                                             Placement="Bottom"
+                                                             StaysOpen="False"
+                                                             MinWidth="168"
+                                                             Padding="4">
+                                                    <MenuItem Header="{Binding Tag.ShareHeldOrderLabel}"
+                                                              Command="{Binding Tag.ShareHeldOrderCommand}"
+                                                              CommandParameter="{Binding DataContext}">
+                                                        <MenuItem.Style>
+                                                            <Style TargetType="MenuItem" BasedOn="{StaticResource HistoryMenuItemStyle}">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding DataContext.CanShare}"
+                                                                                 Value="True">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </MenuItem.Style>
+                                                        <MenuItem.Icon>
+                                                            <materialDesign:PackIcon Kind="ShareVariant" Width="17" Height="17" />
+                                                        </MenuItem.Icon>
+                                                    </MenuItem>
+                                                    <MenuItem Header="{Binding Tag.DeleteHeldOrderLabel}"
+                                                              Command="{Binding Tag.DeleteHeldOrderCommand}"
+                                                              CommandParameter="{Binding DataContext}">
+                                                        <MenuItem.Style>
+                                                            <Style TargetType="MenuItem" BasedOn="{StaticResource HistoryMenuItemStyle}">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding DataContext.CanDeleteHeldOrder}"
+                                                                                 Value="True">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </MenuItem.Style>
+                                                        <MenuItem.Icon>
+                                                            <materialDesign:PackIcon Kind="DeleteOutline"
+                                                                                     Width="17"
+                                                                                     Height="17"
+                                                                                     Foreground="{StaticResource PosDangerBrush}" />
+                                                        </MenuItem.Icon>
+                                                    </MenuItem>
+                                                    <MenuItem Header="{Binding Tag.ForceReleaseLabel}"
+                                                              Command="{Binding Tag.ForceReleaseHeldOrderCommand}"
+                                                              CommandParameter="{Binding DataContext}">
+                                                        <MenuItem.Style>
+                                                            <Style TargetType="MenuItem" BasedOn="{StaticResource HistoryMenuItemStyle}">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding DataContext.CanForceRelease}"
+                                                                                 Value="True">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </MenuItem.Style>
+                                                        <MenuItem.Icon>
+                                                            <materialDesign:PackIcon Kind="LockOpen" Width="17" Height="17" />
+                                                        </MenuItem.Icon>
+                                                    </MenuItem>
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+                                            <materialDesign:PackIcon Kind="DotsVertical" Width="20" Height="20" />
+                                        </Button>
+                                    </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>

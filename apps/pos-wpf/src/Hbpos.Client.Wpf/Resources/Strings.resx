@@ -301,6 +301,12 @@
   <data name="history.showing" xml:space="preserve"><value>Showing {0} transactions</value></data>
   <data name="history.showingPrefix" xml:space="preserve"><value>Showing </value></data>
   <data name="history.transactions" xml:space="preserve"><value>transactions</value></data>
+  <data name="history.orderTime" xml:space="preserve"><value>Order</value></data>
+  <data name="history.cashierTerminal" xml:space="preserve"><value>Cashier / Terminal</value></data>
+  <data name="history.customerPhone" xml:space="preserve"><value>Customer / Phone</value></data>
+  <data name="history.amountItems" xml:space="preserve"><value>Amount / Items</value></data>
+  <data name="history.totalOutstanding" xml:space="preserve"><value>Total / Outstanding</value></data>
+  <data name="history.moreActions" xml:space="preserve"><value>More actions</value></data>
   <data name="history.reprint" xml:space="preserve"><value>Reprint</value></data>
   <data name="history.refund" xml:space="preserve"><value>Refund</value></data>
   <data name="receipt.print.printing" xml:space="preserve"><value>Printing receipt...</value></data>

@@ -71,11 +71,7 @@ public partial class TransactionHistoryView : UserControl
         if (!string.IsNullOrEmpty(e.PropertyName) &&
             e.PropertyName is not nameof(TransactionHistoryViewModel.SelectedSource) and
                 not nameof(TransactionHistoryViewModel.IsStandardSourceSelected) and
-                not nameof(TransactionHistoryViewModel.IsInstallmentSourceSelected) and
-                not nameof(TransactionHistoryViewModel.DeleteHeldOrderLabel) and
-                not nameof(TransactionHistoryViewModel.ShareHeldOrderLabel) and
-                not nameof(TransactionHistoryViewModel.ShareStatusHeaderLabel) and
-                not nameof(TransactionHistoryViewModel.ForceReleaseHeaderLabel))
+                not nameof(TransactionHistoryViewModel.IsInstallmentSourceSelected))
         {
             return;
         }
@@ -87,30 +83,27 @@ public partial class TransactionHistoryView : UserControl
     {
         var installmentVisible = _viewModel?.IsInstallmentSourceSelected == true;
         var localOrdersVisible = _viewModel?.IsLocalSourceSelected == true;
-        var heldVisible = _viewModel?.IsHeldSourceSelected == true;
         var standardVisibility = installmentVisible ? Visibility.Collapsed : Visibility.Visible;
         var installmentVisibility = installmentVisible ? Visibility.Visible : Visibility.Collapsed;
-        DeleteHeldOrderActionColumn.Header = _viewModel?.DeleteHeldOrderLabel ?? string.Empty;
-        ShareStatusColumn.Header = _viewModel?.ShareStatusHeaderLabel ?? string.Empty;
-        ShareHeldActionColumn.Header = _viewModel?.ShareHeldOrderLabel ?? string.Empty;
-        ForceReleaseActionColumn.Header = _viewModel?.ForceReleaseHeaderLabel ?? string.Empty;
 
         // DataGridColumn 不在视觉树中，列级 Binding 不能安全引用父级 DataContext；这里直接同步列显示状态。
-        StandardCashierColumn.Visibility = standardVisibility;
-        StandardItemsColumn.Visibility = standardVisibility;
-        StandardAmountColumn.Visibility = standardVisibility;
-        StandardPaymentColumn.Visibility = standardVisibility;
-        InstallmentCustomerColumn.Visibility = installmentVisibility;
-        InstallmentPhoneColumn.Visibility = installmentVisibility;
-        InstallmentTotalColumn.Visibility = installmentVisibility;
-        InstallmentOutstandingColumn.Visibility = installmentVisibility;
-        InstallmentPaidColumn.Visibility = installmentVisibility;
+        StandardCashierSummaryColumn.Visibility = standardVisibility;
+        StandardAmountSummaryColumn.Visibility = standardVisibility;
+        InstallmentCustomerSummaryColumn.Visibility = installmentVisibility;
+        InstallmentAmountSummaryColumn.Visibility = installmentVisibility;
         ReuploadSelectionColumn.Visibility = localOrdersVisible ? Visibility.Visible : Visibility.Collapsed;
-        RecallActionColumn.Visibility = localOrdersVisible || heldVisible ? Visibility.Visible : Visibility.Collapsed;
-        DeleteHeldOrderActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
-        ShareStatusColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
-        ShareHeldActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
-        ForceReleaseActionColumn.Visibility = heldVisible ? Visibility.Visible : Visibility.Collapsed;
-        ContinuePaymentActionColumn.Visibility = installmentVisibility;
+    }
+
+    private void OpenHistoryRowActionsMenu(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button)
+        {
+            return;
+        }
+
+        // 菜单通过按钮的 DataContext 与 Tag 取得当前订单和页面命令，避免为每个动作占用独立列。
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
+        e.Handled = true;
     }
 }
