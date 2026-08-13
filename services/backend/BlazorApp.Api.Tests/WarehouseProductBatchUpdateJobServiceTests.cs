@@ -212,6 +212,103 @@ public sealed class WarehouseProductBatchUpdateJobServiceTests
     }
 
     [Fact]
+    public async Task 后台任务_国内供应商字段规范化后传递到本地服务()
+    {
+        var localService = new Mock<IProductWarehouseReactService>(MockBehavior.Strict);
+        localService
+            .Setup(service => service.BatchUpdateAsync(
+                It.Is<List<UpdateItemDto>>(items =>
+                    items.Count == 1
+                    && items[0].ProductCode == "P001"
+                    && items[0].SupplierCode == "SUPPLIER-NEW"
+                ),
+                "操作员甲"
+            ))
+            .ReturnsAsync(new BatchOperationResultDto
+            {
+                Success = true,
+                Message = "更新完成",
+                SuccessCount = 1,
+            });
+        var service = CreateService(localService.Object, Mock.Of<IProductHqSyncService>());
+
+        var started = await service.StartJobAsync(
+            new WarehouseProductBatchUpdateJobRequestDto
+            {
+                Items =
+                [
+                    new UpdateItemDto
+                    {
+                        ProductCode = " P001 ",
+                        SupplierCode = " SUPPLIER-NEW ",
+                    },
+                ],
+            },
+            "操作员甲"
+        );
+        var completed = await WaitForJobAsync(service, started.JobId);
+
+        Assert.Equal(WarehouseProductBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        localService.VerifyAll();
+    }
+
+    [Fact]
+    public async Task 启动任务_国内供应商不同时不得错误复用正在执行的Job()
+    {
+        var release = new TaskCompletionSource<BatchOperationResultDto>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var localService = new Mock<IProductWarehouseReactService>();
+        localService
+            .Setup(service => service.BatchUpdateAsync(
+                It.IsAny<List<UpdateItemDto>>(),
+                It.IsAny<string?>()
+            ))
+            .Returns(release.Task);
+        var service = CreateService(localService.Object, Mock.Of<IProductHqSyncService>());
+
+        var first = await service.StartJobAsync(
+            new WarehouseProductBatchUpdateJobRequestDto
+            {
+                Items =
+                [
+                    new UpdateItemDto
+                    {
+                        ProductCode = "P001",
+                        SupplierCode = "SUPPLIER-A",
+                    },
+                ],
+            },
+            "操作员甲"
+        );
+        var second = await service.StartJobAsync(
+            new WarehouseProductBatchUpdateJobRequestDto
+            {
+                Items =
+                [
+                    new UpdateItemDto
+                    {
+                        ProductCode = "P001",
+                        SupplierCode = "SUPPLIER-B",
+                    },
+                ],
+            },
+            "操作员乙"
+        );
+
+        Assert.NotEqual(first.JobId, second.JobId);
+        Assert.False(second.IsDuplicateRequest);
+
+        release.SetResult(new BatchOperationResultDto
+        {
+            Success = true,
+            SuccessCount = 1,
+        });
+        await WaitForJobAsync(service, first.JobId);
+        await WaitForJobAsync(service, second.JobId);
+    }
+
+    [Fact]
     public async Task 后台任务_不同请求串行执行避免重叠写入()
     {
         var firstStarted = new TaskCompletionSource(

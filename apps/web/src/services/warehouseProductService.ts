@@ -375,6 +375,7 @@ export interface WarehouseProductBatchCreateItem {
 export interface WarehouseProductBatchUpdateItem {
   ProductCode?: string
   ItemNumber?: string
+  SupplierCode?: string
   DomesticPrice?: number
   OEMPrice?: number
   ImportPrice?: number

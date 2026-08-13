@@ -3149,6 +3149,120 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateAsync_SupplierCode_UpdatesDomesticSupplier()
+        {
+            const string productCode = "P-BATCH-SUPPLIER";
+            await SeedPatchProductAsync(productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            domesticProduct.SupplierCode = "SUPPLIER-OLD";
+            await _db.Updateable(domesticProduct).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        SupplierCode = " SUPPLIER-NEW ",
+                    },
+                }
+            );
+
+            var updatedDomesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal("SUPPLIER-NEW", updatedDomesticProduct.SupplierCode);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_SupplierCode_CreatesDomesticProductWhenMissing()
+        {
+            const string productCode = "P-BATCH-SUPPLIER-CREATE";
+            await SeedPatchProductAsync(
+                productCode,
+                seedDomestic: false,
+                domesticPrice: 2.2m,
+                oemPrice: 5.5m,
+                importPrice: 1.1m,
+                minOrderQuantity: 12
+            );
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        SupplierCode = "SUPPLIER-NEW",
+                    },
+                }
+            );
+
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal("SUPPLIER-NEW", domesticProduct.SupplierCode);
+            Assert.Equal(productCode, domesticProduct.ProductName);
+            Assert.Equal($"ITEM-{productCode}", domesticProduct.HBProductNo);
+            Assert.Equal($"BAR-{productCode}", domesticProduct.Barcode);
+            Assert.Equal(2.2m, domesticProduct.DomesticPrice);
+            Assert.Equal(5.5m, domesticProduct.OEMPrice);
+            Assert.Equal(1.1m, domesticProduct.ImportPrice);
+            Assert.Equal(12, domesticProduct.MiddlePackQuantity);
+            Assert.False(domesticProduct.IsDeleted);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_SupplierCode_RestoresSoftDeletedDomesticProduct()
+        {
+            const string productCode = "P-BATCH-SUPPLIER-RESTORE";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 2.3m,
+                oemPrice: 5.6m,
+                importPrice: 1.2m,
+                minOrderQuantity: 18
+            );
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            domesticProduct.SupplierCode = "SUPPLIER-OLD";
+            domesticProduct.ProductName = "软删除前旧名称";
+            domesticProduct.IsDeleted = true;
+            await _db.Updateable(domesticProduct).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = productCode,
+                        SupplierCode = "SUPPLIER-RESTORED",
+                    },
+                }
+            );
+
+            var domesticProducts = await _db.Queryable<DomesticProduct>()
+                .Where(x => x.ProductCode == productCode)
+                .ToListAsync();
+            var restoredDomesticProduct = Assert.Single(domesticProducts);
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.False(restoredDomesticProduct.IsDeleted);
+            Assert.Equal("SUPPLIER-RESTORED", restoredDomesticProduct.SupplierCode);
+            Assert.Equal(productCode, restoredDomesticProduct.ProductName);
+            Assert.Equal(2.3m, restoredDomesticProduct.DomesticPrice);
+            Assert.Equal(5.6m, restoredDomesticProduct.OEMPrice);
+            Assert.Equal(1.2m, restoredDomesticProduct.ImportPrice);
+            Assert.Equal(18, restoredDomesticProduct.MiddlePackQuantity);
+        }
+
+        [Fact]
         public async Task BatchUpdateAsync_UpdatesPackingAndMinOrderQuantityAndKeepsZeroOnNullPatch()
         {
             await SeedPriceSyncProductAsync(
@@ -4737,6 +4851,145 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(4, warehouseProduct.MinOrderQuantity);
             Assert.Equal(4, domesticProduct.MiddlePackQuantity);
             Assert.Equal(9, product.MiddlePackageQuantity);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_SupplierCode_UpdatesDomesticSupplier()
+        {
+            const string productCode = "P-FULL-SUPPLIER";
+            await SeedPatchProductAsync(productCode);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            domesticProduct.SupplierCode = "SUPPLIER-OLD";
+            await _db.Updateable(domesticProduct).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    SupplierCode = "SUPPLIER-NEW",
+                    IsActive = true,
+                },
+                "仓库员P13"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var updatedDomesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal("SUPPLIER-NEW", updatedDomesticProduct.SupplierCode);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_SupplierCode_CreatesDomesticProductWhenMissing()
+        {
+            const string productCode = "P-FULL-SUPPLIER-CREATE";
+            await SeedPatchProductAsync(
+                productCode,
+                seedDomestic: false,
+                domesticPrice: 2.2m,
+                oemPrice: 5.5m,
+                importPrice: 1.1m,
+                minOrderQuantity: 12
+            );
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    SupplierCode = "SUPPLIER-NEW",
+                    ProductName = "新国内商品",
+                    IsActive = true,
+                },
+                "仓库员P14"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal("SUPPLIER-NEW", domesticProduct.SupplierCode);
+            Assert.Equal("新国内商品", domesticProduct.ProductName);
+            Assert.Equal($"ITEM-{productCode}", domesticProduct.HBProductNo);
+            Assert.Equal($"BAR-{productCode}", domesticProduct.Barcode);
+            Assert.Equal(2.2m, domesticProduct.DomesticPrice);
+            Assert.Equal(5.5m, domesticProduct.OEMPrice);
+            Assert.Equal(1.1m, domesticProduct.ImportPrice);
+            Assert.Equal(12, domesticProduct.MiddlePackQuantity);
+            Assert.False(domesticProduct.IsDeleted);
+            Assert.Equal("仓库员P14", domesticProduct.CreatedBy);
+            Assert.Equal("仓库员P14", domesticProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_SupplierCode_RestoresSoftDeletedDomesticProduct()
+        {
+            const string productCode = "P-FULL-SUPPLIER-RESTORE";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 2.3m,
+                oemPrice: 5.6m,
+                importPrice: 1.2m,
+                minOrderQuantity: 18
+            );
+            var domesticProduct = await _db.Queryable<DomesticProduct>()
+                .SingleAsync(x => x.ProductCode == productCode);
+            domesticProduct.SupplierCode = "SUPPLIER-OLD";
+            domesticProduct.ProductName = "软删除前旧名称";
+            domesticProduct.DomesticPrice = 99m;
+            domesticProduct.OEMPrice = 99m;
+            domesticProduct.ImportPrice = 99m;
+            domesticProduct.MiddlePackQuantity = 99;
+            domesticProduct.IsDeleted = true;
+            await _db.Updateable(domesticProduct).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    SupplierCode = "SUPPLIER-RESTORED",
+                    IsActive = true,
+                },
+                "仓库员P15"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var domesticProducts = await _db.Queryable<DomesticProduct>()
+                .Where(x => x.ProductCode == productCode)
+                .ToListAsync();
+            var restoredDomesticProduct = Assert.Single(domesticProducts);
+            Assert.False(restoredDomesticProduct.IsDeleted);
+            Assert.Equal("SUPPLIER-RESTORED", restoredDomesticProduct.SupplierCode);
+            Assert.Equal(productCode, restoredDomesticProduct.ProductName);
+            Assert.Equal(2.3m, restoredDomesticProduct.DomesticPrice);
+            Assert.Equal(5.6m, restoredDomesticProduct.OEMPrice);
+            Assert.Equal(1.2m, restoredDomesticProduct.ImportPrice);
+            Assert.Equal(18, restoredDomesticProduct.MiddlePackQuantity);
+            Assert.Equal("仓库员P15", restoredDomesticProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_WithoutSupplier_DoesNotCreateDomesticProduct()
+        {
+            const string productCode = "P-FULL-NO-SUPPLIER";
+            await SeedPatchProductAsync(productCode, seedDomestic: false);
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    ProductName = "仅修改名称",
+                    IsActive = true,
+                },
+                "仓库员P16"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var domesticProductCount = await _db.Queryable<DomesticProduct>()
+                .CountAsync(x => x.ProductCode == productCode);
+            Assert.Equal(0, domesticProductCount);
         }
 
         public void Dispose()

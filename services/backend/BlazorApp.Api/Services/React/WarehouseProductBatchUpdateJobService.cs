@@ -411,6 +411,7 @@ public sealed class WarehouseProductBatchUpdateJobService
             // 去重哈希与实际执行使用同一份 trim 后请求，避免任务复用语义与落库语义分叉。
             item.ProductCode = NormalizeRequestKey(item.ProductCode);
             item.ItemNumber = NormalizeRequestKey(item.ItemNumber);
+            item.SupplierCode = NormalizeRequestKey(item.SupplierCode);
         }
         if (normalized.SyncStorePurchasePrice.HasValue)
         {
@@ -461,6 +462,7 @@ public sealed class WarehouseProductBatchUpdateJobService
             '\u001F',
             NormalizeKey(item.ProductCode),
             NormalizeKey(item.ItemNumber),
+            NormalizeKey(item.SupplierCode),
             FormatNullable(item.DomesticPrice),
             FormatNullable(item.OEMPrice),
             FormatNullable(item.ImportPrice),
@@ -520,6 +522,7 @@ public sealed class WarehouseProductBatchUpdateJobService
         {
             ProductCode = item.ProductCode,
             ItemNumber = item.ItemNumber,
+            SupplierCode = item.SupplierCode,
             DomesticPrice = item.DomesticPrice,
             OEMPrice = item.OEMPrice,
             ImportPrice = item.ImportPrice,

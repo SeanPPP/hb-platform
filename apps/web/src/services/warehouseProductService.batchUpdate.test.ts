@@ -51,6 +51,7 @@ try {
   await batchUpdateWarehouseProducts([
     {
       ProductCode: 'P001',
+      SupplierCode: 'SUPPLIER-NEW',
       MinOrderQuantity: 0,
       PackingQuantity: 0,
       IsActive: false,
@@ -67,6 +68,7 @@ try {
       Items: [
         {
           ProductCode: 'P001',
+          SupplierCode: 'SUPPLIER-NEW',
           MinOrderQuantity: 0,
           PackingQuantity: 0,
           IsActive: false,
@@ -166,7 +168,7 @@ try {
   }) as typeof fetch
 
   const createdJob = await createWarehouseProductBatchUpdateJob(
-    [{ ProductCode: 'P001' }],
+    [{ ProductCode: 'P001', SupplierCode: 'SUPPLIER-NEW' }],
     {
       generateImageUrls: true,
       imageBaseUrl: 'https://images.example.com/catalog/',
@@ -179,7 +181,7 @@ try {
   assertDeepEqual(
     capturedBody,
     {
-      Items: [{ ProductCode: 'P001' }],
+      Items: [{ ProductCode: 'P001', SupplierCode: 'SUPPLIER-NEW' }],
       GenerateImageUrls: true,
       ImageBaseUrl: 'https://images.example.com/catalog/',
       SyncImageToHq: true,

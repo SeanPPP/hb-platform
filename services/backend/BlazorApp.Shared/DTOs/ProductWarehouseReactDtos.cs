@@ -54,6 +54,12 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? ProductCode { get; set; }
         public string? ItemNumber { get; set; }
+
+        /// <summary>
+        /// 国内供应商编码；为空时不修改国内商品供应商。
+        /// </summary>
+        public string? SupplierCode { get; set; }
+
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }

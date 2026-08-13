@@ -107,6 +107,7 @@ interface ProductFormValues {
     isActive: boolean;
 }
 interface BatchEditFormValues {
+    supplierCode?: string;
     domesticPrice?: number;
     oemPrice?: number;
     importPrice?: number;
@@ -606,7 +607,7 @@ function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel
       <Form form={form} layout="vertical" preserve={false}>
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item name="supplierCode" label={t('domesticProducts.supplier')} style={{ flex: 1 }} rules={editingItem ? [] : [{ required: true, message: t('domesticProducts.selectSupplier') }]}>
-            <Select disabled={Boolean(editingItem)} placeholder={t('domesticProducts.selectSupplier')} showSearch filterOption={filterSupplierOption} options={buildSupplierOptions(suppliers)}/>
+            <Select placeholder={t('domesticProducts.selectSupplier')} showSearch filterOption={filterSupplierOption} options={buildSupplierOptions(suppliers)}/>
           </Form.Item>
           <Form.Item name="productType" label={t('warehouse.productType')} style={{ width: 180 }} rules={[{ required: true, message: t('warehouse.selectProductType') }]}>
             <Select placeholder={t('warehouse.selectProductType')} options={productTypeOptions}/>
@@ -1908,6 +1909,7 @@ export default function WarehouseProductsPage() {
             const items = submittedProductCodes.map((code) => {
                 const rawItem: WarehouseProductBatchUpdateItem = {
                     ProductCode: code,
+                    SupplierCode: values.supplierCode,
                     DomesticPrice: values.domesticPrice,
                     OEMPrice: values.oemPrice,
                     ImportPrice: values.importPrice,
@@ -2766,6 +2768,9 @@ export default function WarehouseProductsPage() {
           <Typography.Paragraph type="secondary">
             {t('warehouse.batchEditEmptyHint', '留空不修改')}
           </Typography.Paragraph>
+          <Form.Item name="supplierCode" label={t('warehouse.domesticSupplier', '国内供应商')}>
+            <Select placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')} options={buildSupplierOptions(suppliers)} showSearch filterOption={filterSupplierOption} allowClear/>
+          </Form.Item>
           <Space size={16} style={{ display: 'flex' }} align="start">
             <Form.Item name="domesticPrice" label={t('domesticProducts.domesticPrice')} style={{ flex: 1 }}>
               <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>

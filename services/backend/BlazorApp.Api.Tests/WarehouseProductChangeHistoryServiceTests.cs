@@ -874,6 +874,7 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
         var controller = new ReactProductWarehouseController(
             Mock.Of<IProductWarehouseReactService>(),
             Mock.Of<IWarehouseProductHqSyncJobService>(),
+            Mock.Of<IWarehouseProductBatchUpdateJobService>(),
             NullLogger<ReactProductWarehouseController>.Instance,
             Mock.Of<IDeviceRegistrationService>(),
             Mock.Of<IMapper>(),
@@ -883,7 +884,8 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
                 new HttpClient()
             ),
             historyService.Object,
-            Mock.Of<ICurrentUserService>()
+            Mock.Of<ICurrentUserService>(),
+            Mock.Of<IProductHqSyncService>()
         );
 
         var result = await controller.GetChangeHistory("P01", 2, 10);

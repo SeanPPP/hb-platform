@@ -929,11 +929,61 @@ namespace BlazorApp.Api.Services.React
                     auditProductCodes
                 );
 
+                var supplierDomesticProductsByCode = new Dictionary<string, DomesticProduct>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var supplierProductsByCode = new Dictionary<string, Product>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                if (
+                    items.Any(item => !string.IsNullOrWhiteSpace(item.SupplierCode))
+                    && auditProductCodes.Any()
+                )
+                {
+                    var supplierDomesticProducts = await _context
+                        .Db.Queryable<DomesticProduct>()
+                        .Where(product => auditProductCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                    supplierDomesticProductsByCode = supplierDomesticProducts
+                        .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => group.FirstOrDefault(product => !product.IsDeleted) ?? group.First(),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                    var supplierProducts = await _context
+                        .Db.Queryable<Product>()
+                        .Where(product =>
+                            product.ProductCode != null
+                            && auditProductCodes.Contains(product.ProductCode)
+                            && !product.IsDeleted
+                        )
+                        .ToListAsync();
+                    supplierProductsByCode = supplierProducts
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .GroupBy(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => group
+                                .OrderByDescending(product => product.UpdatedAt ?? product.CreatedAt)
+                                .ThenByDescending(product => product.CreatedAt)
+                                .First(),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                }
+
                 var toUpdateWp = new List<WarehouseProduct>();
                 var toCreateWp = new List<WarehouseProduct>();
                 var codesWithImportPrice = new List<string>();
                 var codesWithStorePurchasePrice = new List<string>();
                 var packingQuantityByCode = new Dictionary<string, int>();
+                var supplierCodeByProductCode = new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var supplierWarehouseProductsByCode = new Dictionary<string, WarehouseProduct>(
+                    StringComparer.OrdinalIgnoreCase
+                );
                 var imageUrlByCode = new Dictionary<string, string>(
                     StringComparer.OrdinalIgnoreCase
                 );
@@ -1034,6 +1084,26 @@ namespace BlazorApp.Api.Services.React
                         imageUrlByCode[targetCode] = imageUrl;
                     }
 
+                    var normalizedSupplierCode = string.IsNullOrWhiteSpace(item.SupplierCode)
+                        ? null
+                        : item.SupplierCode.Trim();
+                    if (
+                        normalizedSupplierCode != null
+                        && (
+                            !supplierDomesticProductsByCode.TryGetValue(
+                                targetCode,
+                                out var supplierDomesticProduct
+                            )
+                            || supplierDomesticProduct.IsDeleted
+                        )
+                        && !supplierProductsByCode.ContainsKey(targetCode)
+                    )
+                    {
+                        result.Errors.Add($"未找到商品主档，无法设置国内供应商: ProductCode={targetCode}");
+                        result.FailedCount++;
+                        continue;
+                    }
+
                     if (wp == null)
                     {
                         var newWp = new WarehouseProduct
@@ -1054,6 +1124,11 @@ namespace BlazorApp.Api.Services.React
                             UpdatedBy = effectiveUpdatedBy,
                         };
                         toCreateWp.Add(newWp);
+                        if (normalizedSupplierCode != null)
+                        {
+                            supplierCodeByProductCode[targetCode] = normalizedSupplierCode;
+                            supplierWarehouseProductsByCode[targetCode] = newWp;
+                        }
                         if (item.PackingQuantity.HasValue)
                         {
                             // 装箱数以国内商品表为展示主来源，同时保留仓库表值供缺失时回退。
@@ -1097,6 +1172,12 @@ namespace BlazorApp.Api.Services.React
                     wp.UpdatedBy = effectiveUpdatedBy;
                     toUpdateWp.Add(wp);
 
+                    if (normalizedSupplierCode != null)
+                    {
+                        supplierCodeByProductCode[targetCode] = normalizedSupplierCode;
+                        supplierWarehouseProductsByCode[targetCode] = wp;
+                    }
+
                     if (item.ImportPrice.HasValue)
                     {
                         codesWithImportPrice.Add(wp.ProductCode);
@@ -1131,6 +1212,76 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _context.Db.Insertable(toCreateWp).ExecuteCommandAsync();
                     result.SuccessCount += toCreateWp.Count;
+                }
+
+                if (supplierCodeByProductCode.Any())
+                {
+                    var supplierUpdatedAt = DateTime.Now;
+                    var domesticProductsToCreate = new List<DomesticProduct>();
+                    var domesticProductsToUpdate = new List<DomesticProduct>();
+                    foreach (var (productCode, supplierCode) in supplierCodeByProductCode)
+                    {
+                        supplierDomesticProductsByCode.TryGetValue(
+                            productCode,
+                            out var domesticProduct
+                        );
+                        var shouldCreate = domesticProduct == null;
+                        var shouldRefreshFromProduct = shouldCreate || domesticProduct!.IsDeleted;
+                        if (shouldCreate)
+                        {
+                            domesticProduct = new DomesticProduct
+                            {
+                                ProductCode = productCode,
+                                CreatedAt = supplierUpdatedAt,
+                                CreatedBy = effectiveUpdatedBy,
+                            };
+                        }
+
+                        if (shouldRefreshFromProduct)
+                        {
+                            // 选择供应商代表明确建立国内商品关系；缺失时补建，软删除时恢复并刷新主数据。
+                            var product = supplierProductsByCode[productCode];
+                            var warehouseProduct = supplierWarehouseProductsByCode[productCode];
+                            domesticProduct!.ProductName = product.ProductName;
+                            domesticProduct.EnglishProductName = product.EnglishName;
+                            domesticProduct.HBProductNo = product.ItemNumber;
+                            domesticProduct.Barcode = product.Barcode;
+                            domesticProduct.ProductType = product.ProductType ?? 0;
+                            domesticProduct.DomesticPrice = warehouseProduct.DomesticPrice;
+                            domesticProduct.OEMPrice =
+                                warehouseProduct.OEMPrice ?? product.RetailPrice;
+                            domesticProduct.ImportPrice =
+                                warehouseProduct.ImportPrice ?? product.PurchasePrice;
+                            domesticProduct.PackingQuantity = warehouseProduct.PackingQuantity;
+                            domesticProduct.UnitVolume = warehouseProduct.Volume;
+                            domesticProduct.MiddlePackQuantity =
+                                warehouseProduct.MinOrderQuantity;
+                            domesticProduct.ProductImage = product.ProductImage;
+                            domesticProduct.IsActive = warehouseProduct.IsActive;
+                            domesticProduct.IsDeleted = false;
+                        }
+
+                        domesticProduct!.SupplierCode = supplierCode;
+                        domesticProduct.UpdatedAt = supplierUpdatedAt;
+                        domesticProduct.UpdatedBy = effectiveUpdatedBy;
+                        if (shouldCreate)
+                            domesticProductsToCreate.Add(domesticProduct);
+                        else
+                            domesticProductsToUpdate.Add(domesticProduct);
+                    }
+
+                    if (domesticProductsToCreate.Any())
+                    {
+                        await _context
+                            .Db.Insertable(domesticProductsToCreate)
+                            .ExecuteCommandAsync();
+                    }
+                    if (domesticProductsToUpdate.Any())
+                    {
+                        await _context
+                            .Db.Updateable(domesticProductsToUpdate)
+                            .ExecuteCommandAsync();
+                    }
                 }
 
                 if (packingQuantityByCode.Any())
@@ -5588,7 +5739,66 @@ namespace BlazorApp.Api.Services.React
 
                 var now = DateTime.Now;
 
-                // 2. 更新 DomesticProduct（若存在）
+                var shouldInsertDomesticProduct = false;
+                if (
+                    domesticProduct == null
+                    && !string.IsNullOrWhiteSpace(dto.SupplierCode)
+                )
+                {
+                    // 用户在仓库商品中明确选择国内供应商时，补建或恢复国内商品映射，
+                    // 避免非国内导入商品出现“保存成功但供应商未落库”。
+                    domesticProduct = await WithWarehouseProductUpdateLock(
+                            _context
+                                .Db.Queryable<DomesticProduct>()
+                                .Where(p => p.ProductCode == productCode && p.IsDeleted)
+                        )
+                        .FirstAsync();
+                    if (domesticProduct == null)
+                    {
+                        shouldInsertDomesticProduct = true;
+                        domesticProduct = new DomesticProduct
+                        {
+                            ProductCode = productCode,
+                            ProductName = product.ProductName,
+                            EnglishProductName = product.EnglishName,
+                            HBProductNo = product.ItemNumber,
+                            Barcode = product.Barcode,
+                            ProductType = product.ProductType ?? dto.ProductType,
+                            DomesticPrice = warehouseProduct.DomesticPrice,
+                            OEMPrice = warehouseProduct.OEMPrice ?? product.RetailPrice,
+                            ImportPrice = warehouseProduct.ImportPrice ?? product.PurchasePrice,
+                            PackingQuantity = warehouseProduct.PackingQuantity,
+                            UnitVolume = warehouseProduct.Volume,
+                            MiddlePackQuantity = warehouseProduct.MinOrderQuantity,
+                            ProductImage = product.ProductImage,
+                            IsActive = warehouseProduct.IsActive,
+                            IsDeleted = false,
+                            CreatedAt = now,
+                            CreatedBy = effectiveUpdatedBy,
+                        };
+                    }
+                    else
+                    {
+                        domesticProduct.ProductName = product.ProductName;
+                        domesticProduct.EnglishProductName = product.EnglishName;
+                        domesticProduct.HBProductNo = product.ItemNumber;
+                        domesticProduct.Barcode = product.Barcode;
+                        domesticProduct.ProductType = product.ProductType ?? dto.ProductType;
+                        domesticProduct.DomesticPrice = warehouseProduct.DomesticPrice;
+                        domesticProduct.OEMPrice =
+                            warehouseProduct.OEMPrice ?? product.RetailPrice;
+                        domesticProduct.ImportPrice =
+                            warehouseProduct.ImportPrice ?? product.PurchasePrice;
+                        domesticProduct.PackingQuantity = warehouseProduct.PackingQuantity;
+                        domesticProduct.UnitVolume = warehouseProduct.Volume;
+                        domesticProduct.MiddlePackQuantity = warehouseProduct.MinOrderQuantity;
+                        domesticProduct.ProductImage = product.ProductImage;
+                        domesticProduct.IsActive = warehouseProduct.IsActive;
+                        domesticProduct.IsDeleted = false;
+                    }
+                }
+
+                // 2. 更新 DomesticProduct；明确选择供应商时允许补建国内商品映射。
                 if (domesticProduct != null)
                 {
                     if (dto.ProductName != null)
@@ -5625,7 +5835,10 @@ namespace BlazorApp.Api.Services.React
                         domesticProduct.SupplierCode = dto.SupplierCode;
                     domesticProduct.UpdatedAt = now;
                     domesticProduct.UpdatedBy = effectiveUpdatedBy;
-                    await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
+                    if (shouldInsertDomesticProduct)
+                        await _context.Db.Insertable(domesticProduct).ExecuteCommandAsync();
+                    else
+                        await _context.Db.Updateable(domesticProduct).ExecuteCommandAsync();
                 }
 
                 // 3. 更新 Product
