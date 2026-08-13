@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
+import {
+  fromSharedSaleCart,
+  fromSharedSaleCartV1,
+  fromSharedSaleCartV2,
+} from "./shared-held-order-cart-reverse-mapper";
 import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
   toSharedSaleCartV1,
 } from "./shared-sale-cart-v1";
+import { normalizeSharedSaleCartV2 } from "./shared-sale-cart-v2";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
 import { PricingCart } from "@/features/sales/domain/pricing-cart";
@@ -198,5 +203,30 @@ test("反向映射冻结输出并拒绝损坏输入（非 sale/缺字段由 norm
         }),
       ),
     /SHARED_CART_INVALID|1 to 1000/,
+  );
+});
+
+test("V1 恢复 catalog baseline 为 0，V2 双向恢复 catalogDiscountBasisPoints", () => {
+  const v1 = wireCart();
+  const v2 = normalizeSharedSaleCartV2({
+    version: 2,
+    pricingState: {
+      ...v1.pricingState,
+      lines: v1.pricingState.lines.map((line, index) => ({
+        ...line,
+        catalogDiscountBasisPoints: index === 0 ? 2_000 : 0,
+      })),
+    },
+  });
+
+  assert.equal(fromSharedSaleCartV1(v1).lines[0]?.catalogDiscountBasisPoints, 0);
+  assert.equal(fromSharedSaleCart(v1).lines[0]?.catalogDiscountBasisPoints, 0);
+  assert.equal(
+    fromSharedSaleCartV2(v2).lines[0]?.catalogDiscountBasisPoints,
+    2_000,
+  );
+  assert.equal(
+    fromSharedSaleCart(v2).lines[0]?.catalogDiscountBasisPoints,
+    2_000,
   );
 });

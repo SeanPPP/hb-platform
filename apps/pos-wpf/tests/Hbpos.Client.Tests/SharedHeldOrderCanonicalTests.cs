@@ -159,6 +159,28 @@ public sealed class SharedHeldOrderCanonicalTests
     }
 
     [Fact]
+    public void Serialize_v2_requires_and_round_trips_catalog_discount_baseline()
+    {
+        var payload = new SharedHeldOrderCanonicalPayload(
+            2,
+            new SharedHeldOrderPricingState(
+                1,
+                "sale",
+                "2026-07-28T00:00:00.000Z",
+                [],
+                [ValidLine() with { CatalogDiscountBasisPoints = 2000 }]));
+
+        var json = Serializer.Serialize(payload);
+        var restored = Serializer.Deserialize(json);
+
+        Assert.Contains("\"catalogDiscountBasisPoints\":2000", json);
+        Assert.Equal(2, restored.Version);
+        Assert.Equal(2000, Assert.Single(restored.PricingState.Lines).CatalogDiscountBasisPoints);
+        Assert.Throws<SharedHeldOrderCanonicalValidationException>(() => Serializer.Deserialize(
+            """{"version":2,"pricingState":{"revision":1,"mode":"sale","asOfIso":"2026-07-28T00:00:00.000Z","promotions":[],"lines":[{"lineId":"l","productCode":"p","itemNumber":null,"lookupCode":"c","displayName":"n","quantity":1,"unitPriceCents":100,"basePriceSource":"catalog","syncProvenance":null,"kind":"sale","returnSourceKey":null,"originalOrderGuid":null,"originalOrderDetailGuid":null,"discountState":{"mode":"none"}}]}}"""));
+    }
+
+    [Fact]
     public void Deserialize_accepts_decimal_quantity_and_unit_weight()
     {
         var json =
@@ -172,8 +194,8 @@ public sealed class SharedHeldOrderCanonicalTests
 
     [Theory]
     [InlineData(
-        """{"version":2,"pricingState":{"revision":1,"mode":"sale","asOfIso":"2026-07-28T00:00:00.000Z","promotions":[],"lines":[]}}""",
-        "payload.version 必须是 1")]
+        """{"version":3,"pricingState":{"revision":1,"mode":"sale","asOfIso":"2026-07-28T00:00:00.000Z","promotions":[],"lines":[]}}""",
+        "payload.version 必须是 1 或 2")]
     [InlineData(
         """{"version":1,"pricingState":{"revision":0,"mode":"sale","asOfIso":"2026-07-28T00:00:00.000Z","promotions":[],"lines":[{"lineId":"l","productCode":"p","itemNumber":null,"lookupCode":"c","displayName":"n","quantity":1,"unitPriceCents":100,"basePriceSource":"catalog","syncProvenance":null,"kind":"sale","returnSourceKey":null,"originalOrderGuid":null,"originalOrderDetailGuid":null,"discountState":{"mode":"none"}}]}}""",
         "revision 必须是 1")]

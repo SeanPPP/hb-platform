@@ -1,11 +1,21 @@
-import { normalizeSharedSaleCartV1, type SharedSaleCartV1 } from "./shared-sale-cart-v1";
+import {
+  normalizeSharedSaleCartV1,
+  type SharedSaleCartV1,
+} from "./shared-sale-cart-v1";
+import {
+  normalizeSharedSaleCart,
+  normalizeSharedSaleCartV2,
+  type SharedSaleCartPayload,
+  type SharedSaleCartV2,
+} from "./shared-sale-cart-v2";
 
 import type {
-  PricingCartStateSnapshot,
-  PromotionDefinition,
   PricingCartLineState,
+  PricingCartStateSnapshot,
   PricingDiscountState,
- LineSyncProvenance } from "@/core/contracts";
+  PromotionDefinition,
+  LineSyncProvenance,
+} from "@/core/contracts";
 
 /**
  * 冻结 wire SharedSaleCartV1 -> 可恢复 PricingCartStateSnapshot 的显式反向映射。
@@ -17,13 +27,46 @@ export function fromSharedSaleCartV1(
   input: SharedSaleCartV1,
 ): PricingCartStateSnapshot {
   const cart = normalizeSharedSaleCartV1(input);
+  return fromNormalizedSharedSaleCart(cart, 0);
+}
+
+export function fromSharedSaleCartV2(
+  input: SharedSaleCartV2,
+): PricingCartStateSnapshot {
+  const cart = normalizeSharedSaleCartV2(input);
+  return fromNormalizedSharedSaleCart(
+    cart,
+    cart.pricingState.lines.map((line) => line.catalogDiscountBasisPoints),
+  );
+}
+
+export function fromSharedSaleCart(
+  input: SharedSaleCartPayload,
+): PricingCartStateSnapshot {
+  const normalized = normalizeSharedSaleCart(input);
+  return normalized.version === 1
+    ? fromSharedSaleCartV1(normalized)
+    : fromSharedSaleCartV2(normalized);
+}
+
+function fromNormalizedSharedSaleCart(
+  cart: SharedSaleCartPayload,
+  catalogDiscountBasisPoints: number | readonly number[],
+): PricingCartStateSnapshot {
   const pricing = cart.pricingState;
   return Object.freeze({
     revision: pricing.revision,
     mode: pricing.mode,
     asOfIso: pricing.asOfIso,
     promotions: pricing.promotions.map(toPromotion),
-    lines: pricing.lines.map(toLine),
+    lines: pricing.lines.map((line, index) =>
+      toLine(
+        line,
+        typeof catalogDiscountBasisPoints === "number"
+          ? catalogDiscountBasisPoints
+          : catalogDiscountBasisPoints[index] ?? 0,
+      ),
+    ),
   });
 }
 
@@ -53,7 +96,8 @@ function toPromotion(
 }
 
 function toLine(
-  line: SharedSaleCartV1["pricingState"]["lines"][number],
+  line: SharedSaleCartPayload["pricingState"]["lines"][number],
+  catalogDiscountBasisPoints: number,
 ): PricingCartLineState {
   return Object.freeze({
     lineId: line.lineId,
@@ -64,6 +108,7 @@ function toLine(
     quantity: line.quantity,
     unitPriceCents: line.unitPriceCents,
     basePriceSource: line.basePriceSource,
+    catalogDiscountBasisPoints,
     ...(line.syncProvenance
       ? { syncProvenance: toSyncProvenance(line.syncProvenance) }
       : {}),

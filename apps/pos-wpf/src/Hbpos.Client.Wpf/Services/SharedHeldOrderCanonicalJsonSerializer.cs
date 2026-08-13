@@ -34,9 +34,10 @@ public static class SharedHeldOrderCanonicalValidator
 
     public static void Validate(SharedHeldOrderCanonicalPayload payload)
     {
-        if (payload.Version != SharedHeldOrderCanonicalPayload.CurrentVersion)
+        if (payload.Version is not SharedHeldOrderCanonicalPayload.VersionV1
+            and not SharedHeldOrderCanonicalPayload.VersionV2)
         {
-            throw new SharedHeldOrderCanonicalValidationException("payload.version 必须是 1");
+            throw new SharedHeldOrderCanonicalValidationException("payload.version 必须是 1 或 2");
         }
 
         var pricingState = payload.PricingState;
@@ -77,7 +78,7 @@ public static class SharedHeldOrderCanonicalValidator
         long totalGrossCents = 0;
         foreach (var line in lines)
         {
-            var gross = ValidateLine(line, lineIds, promotionIds);
+            var gross = ValidateLine(line, lineIds, promotionIds, payload.Version);
             if (gross is { } lineGross)
             {
                 if (totalGrossCents > SharedHeldOrderCanonicalConstants.MaxTotalCents - lineGross)
@@ -176,7 +177,8 @@ public static class SharedHeldOrderCanonicalValidator
     private static long? ValidateLine(
         SharedHeldOrderPricingLine line,
         HashSet<string> lineIds,
-        HashSet<string> promotionIds)
+        HashSet<string> promotionIds,
+        int payloadVersion)
     {
         RequireText(line.LineId, "line.lineId");
         if (line.LineId.Length > SharedHeldOrderCanonicalConstants.MaxCodeLength)
@@ -276,6 +278,29 @@ public static class SharedHeldOrderCanonicalValidator
             {
                 throw new SharedHeldOrderCanonicalValidationException("syncProvenance.priceSource 必须是 0..4");
             }
+        }
+
+        if (line.CatalogDiscountBasisPoints is < 0 or > SharedHeldOrderCanonicalConstants.MaxBasisPoints)
+        {
+            throw new SharedHeldOrderCanonicalValidationException(
+                "line.catalogDiscountBasisPoints 必须是 0..10000");
+        }
+
+        if (payloadVersion == SharedHeldOrderCanonicalPayload.VersionV1
+            && line.CatalogDiscountBasisPoints != 0)
+        {
+            throw new SharedHeldOrderCanonicalValidationException(
+                "V1 line 不能携带 catalogDiscountBasisPoints");
+        }
+
+        if (line.CatalogDiscountBasisPoints > 0
+            && string.Equals(
+                line.DiscountState.Mode,
+                SharedHeldOrderCanonicalConstants.DiscountPromotion,
+                StringComparison.Ordinal))
+        {
+            throw new SharedHeldOrderCanonicalValidationException(
+                "catalogDiscountBasisPoints 不能与 promotion 折扣共存");
         }
 
         ValidateDiscountState(line.DiscountState, (long)gross, promotionIds);
@@ -426,7 +451,7 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
             writer.WriteStartObject();
             writer.WriteNumber("version", payload.Version);
             writer.WritePropertyName("pricingState");
-            WritePricingState(writer, payload.PricingState);
+            WritePricingState(writer, payload.PricingState, payload.Version);
             writer.WriteEndObject();
         }
 
@@ -452,7 +477,10 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         }
     }
 
-    private static void WritePricingState(Utf8JsonWriter writer, SharedHeldOrderPricingState pricingState)
+    private static void WritePricingState(
+        Utf8JsonWriter writer,
+        SharedHeldOrderPricingState pricingState,
+        int payloadVersion)
     {
         writer.WriteStartObject();
         writer.WriteNumber("revision", pricingState.Revision);
@@ -470,7 +498,7 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         writer.WriteStartArray();
         foreach (var line in pricingState.Lines)
         {
-            WriteLine(writer, line);
+            WriteLine(writer, line, payloadVersion);
         }
 
         writer.WriteEndArray();
@@ -511,7 +539,10 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         writer.WriteEndObject();
     }
 
-    private static void WriteLine(Utf8JsonWriter writer, SharedHeldOrderPricingLine line)
+    private static void WriteLine(
+        Utf8JsonWriter writer,
+        SharedHeldOrderPricingLine line,
+        int payloadVersion)
     {
         writer.WriteStartObject();
         writer.WriteString("lineId", line.LineId);
@@ -541,6 +572,10 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         writer.WriteNull("originalOrderDetailGuid");
         writer.WritePropertyName("discountState");
         WriteDiscountState(writer, line.DiscountState);
+        if (payloadVersion == SharedHeldOrderCanonicalPayload.VersionV2)
+        {
+            writer.WriteNumber("catalogDiscountBasisPoints", line.CatalogDiscountBasisPoints);
+        }
         writer.WriteEndObject();
     }
 
@@ -588,6 +623,11 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
     {
         RejectUnknown(root, ["version", "pricingState"]);
         var version = ReadInt32(root, "version", "payload.version");
+        if (version is not SharedHeldOrderCanonicalPayload.VersionV1
+            and not SharedHeldOrderCanonicalPayload.VersionV2)
+        {
+            throw new SharedHeldOrderCanonicalValidationException("payload.version 必须是 1 或 2");
+        }
         var pricingElement = ReadObject(root, "pricingState", "payload.pricingState");
         RejectUnknown(pricingElement, ["revision", "mode", "asOfIso", "promotions", "lines"]);
         var revision = ReadInt32(pricingElement, "revision", "pricingState.revision");
@@ -597,7 +637,7 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
             .Select(ParsePromotion)
             .ToArray();
         var lines = ReadArray(pricingElement, "lines", "pricingState.lines")
-            .Select(ParseLine)
+            .Select(line => ParseLine(line, version))
             .ToArray();
 
         return new SharedHeldOrderCanonicalPayload(
@@ -649,15 +689,19 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         return new SharedHeldOrderPromotionProduct(productCode, unitWeight);
     }
 
-    private static SharedHeldOrderPricingLine ParseLine(JsonElement element)
+    private static SharedHeldOrderPricingLine ParseLine(JsonElement element, int payloadVersion)
     {
-        RejectUnknown(
-            element,
-            [
+        var allowedKeys = new List<string>
+        {
                 "lineId", "productCode", "itemNumber", "lookupCode", "displayName", "quantity",
                 "unitPriceCents", "basePriceSource", "syncProvenance", "kind", "returnSourceKey",
                 "originalOrderGuid", "originalOrderDetailGuid", "discountState"
-            ]);
+        };
+        if (payloadVersion == SharedHeldOrderCanonicalPayload.VersionV2)
+        {
+            allowedKeys.Add("catalogDiscountBasisPoints");
+        }
+        RejectUnknown(element, allowedKeys);
         var lineId = ReadString(element, "lineId", "line.lineId");
         var productCode = ReadString(element, "productCode", "line.productCode");
         var itemNumber = ReadNullableString(element, "itemNumber", "line.itemNumber");
@@ -672,6 +716,9 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
         var originalOrderGuid = ReadNullableGuid(element, "originalOrderGuid", "line.originalOrderGuid");
         var originalOrderDetailGuid = ReadNullableGuid(element, "originalOrderDetailGuid", "line.originalOrderDetailGuid");
         var discountState = ParseDiscountState(ReadObject(element, "discountState", "line.discountState"));
+        var catalogDiscountBasisPoints = payloadVersion == SharedHeldOrderCanonicalPayload.VersionV2
+            ? ReadInt32(element, "catalogDiscountBasisPoints", "line.catalogDiscountBasisPoints")
+            : 0;
         return new SharedHeldOrderPricingLine(
             lineId,
             productCode,
@@ -686,7 +733,8 @@ public sealed class SharedHeldOrderCanonicalJsonSerializer : ISharedHeldOrderCan
             returnSourceKey,
             originalOrderGuid,
             originalOrderDetailGuid,
-            discountState);
+            discountState,
+            catalogDiscountBasisPoints);
     }
 
     private static SharedHeldOrderLineSyncProvenance? ParseSyncProvenance(JsonElement line)

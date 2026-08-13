@@ -95,6 +95,18 @@ public interface ISharedHeldOrderRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 首次发送前 CAS 锁定 wire payload 版本。返回的 publication 含最新 Revision；
+    /// 重试只复用该版本，绝不因 capability preferred 切换而重算。
+    /// </summary>
+    Task<SharedHeldOrderPublication?> TryPinPublicationPayloadVersionAsync(
+        Guid localHoldGuid,
+        int expectedRevision,
+        int payloadVersion,
+        string updatedAtIso,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<SharedHeldOrderPublication?>(null);
+
+    /// <summary>
     /// 显式一次性共享请求（幂等）：挂单必须存在、Pending 且 store/device 精确匹配。
     /// 旧缺 publication 行时原子插入 NeedsEvaluation+requested；已有未请求的
     /// NeedsEvaluation 只写请求时间；已请求返回 AlreadyRequested。非 Pending/
@@ -503,7 +515,7 @@ public sealed class SharedHeldOrderRepository(
             SELECT p.LocalHoldGuid, p.StoreCode, p.DeviceCode, p.Status, p.Revision, p.RetryCount,
                    p.ErrorCode, p.ErrorMessage, p.PayloadCiphertext, p.HeldAtIso, p.CreatedAtIso, p.UpdatedAtIso,
                    p.LastAttemptAtIso, p.NextAttemptAtIso, p.RemoteRevision, p.RemoteUpdatedAtIso,
-                   p.ShareRequestedAtIso, p.ConsumedAtIso
+                   p.ShareRequestedAtIso, p.ConsumedAtIso, p.PublicationPayloadVersion
             FROM SharedHeldOrderPublications p
             INNER JOIN SuspendedOrders o ON o.SuspendedOrderGuid = p.LocalHoldGuid
             WHERE p.Status = 'PendingPublish'
@@ -530,6 +542,52 @@ public sealed class SharedHeldOrderRepository(
         }
 
         return publications;
+    }
+
+    public async Task<SharedHeldOrderPublication?> TryPinPublicationPayloadVersionAsync(
+        Guid localHoldGuid,
+        int expectedRevision,
+        int payloadVersion,
+        string updatedAtIso,
+        CancellationToken cancellationToken = default)
+    {
+        if (payloadVersion is not (1 or 2))
+        {
+            return null;
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        // 发送前先持久化版本并推进 Revision；此写入成功即使响应丢失也会让后续重试重放同一 wire 版本。
+        command.CommandText =
+            """
+            UPDATE SharedHeldOrderPublications
+            SET PublicationPayloadVersion = $PayloadVersion,
+                Revision = Revision + 1,
+                UpdatedAtIso = $UpdatedAtIso
+            WHERE LocalHoldGuid = $LocalHoldGuid
+              AND Status = 'PendingPublish'
+              AND Revision = $ExpectedRevision
+              AND PublicationPayloadVersion IS NULL
+              AND NULLIF(TRIM(ShareRequestedAtIso), '') IS NOT NULL
+              AND ConsumedAtIso IS NULL;
+            """;
+        command.Parameters.AddWithValue("$LocalHoldGuid", localHoldGuid.ToString("D"));
+        command.Parameters.AddWithValue("$PayloadVersion", payloadVersion);
+        command.Parameters.AddWithValue("$ExpectedRevision", expectedRevision);
+        command.Parameters.AddWithValue("$UpdatedAtIso", updatedAtIso);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            var existing = await GetPublicationAsync(localHoldGuid, cancellationToken);
+            return existing is { Status: SharedHeldOrderPublicationStatus.PendingPublish,
+                Revision: var revision,
+                PublicationPayloadVersion: 1 or 2 }
+                && revision == expectedRevision
+                ? existing
+                : null;
+        }
+
+        return await GetPublicationAsync(localHoldGuid, cancellationToken);
     }
 
     public async Task<SharedHeldOrderShareRequestResult> TryRequestShareAsync(
@@ -781,7 +839,7 @@ public sealed class SharedHeldOrderRepository(
             SELECT LocalHoldGuid, StoreCode, DeviceCode, Status, Revision, RetryCount,
                    ErrorCode, ErrorMessage, PayloadCiphertext, HeldAtIso, CreatedAtIso, UpdatedAtIso,
                    LastAttemptAtIso, NextAttemptAtIso, RemoteRevision, RemoteUpdatedAtIso,
-                   ShareRequestedAtIso, ConsumedAtIso
+                   ShareRequestedAtIso, ConsumedAtIso, PublicationPayloadVersion
             FROM SharedHeldOrderPublications
             WHERE LocalHoldGuid = $LocalHoldGuid;
             """;
@@ -1741,7 +1799,8 @@ public sealed class SharedHeldOrderRepository(
             ReadNullableInt64(reader, "RemoteRevision"),
             ReadNullableString(reader, "RemoteUpdatedAtIso"),
             ReadNullableString(reader, "ShareRequestedAtIso"),
-            ReadNullableString(reader, "ConsumedAtIso"));
+            ReadNullableString(reader, "ConsumedAtIso"),
+            ReadNullableInt32(reader, "PublicationPayloadVersion"));
     }
 
     private static string PublicationStatusText(SharedHeldOrderPublicationStatus status)

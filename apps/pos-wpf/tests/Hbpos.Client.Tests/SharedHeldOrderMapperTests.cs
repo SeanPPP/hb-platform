@@ -24,7 +24,8 @@ public sealed class SharedHeldOrderMapperTests
         CartLineKind kind = CartLineKind.Sale,
         PriceSourceKind priceSource = PriceSourceKind.ProductBase,
         string? referenceCode = null,
-        bool isManualPrice = false)
+        bool isManualPrice = false,
+        int catalogDiscountBasisPoints = 0)
     {
         return new SuspendedOrderLine(
             Guid.NewGuid(),
@@ -46,7 +47,8 @@ public sealed class SharedHeldOrderMapperTests
             discountSource)
         {
             Kind = kind,
-            IsManualPrice = isManualPrice
+            IsManualPrice = isManualPrice,
+            CatalogDiscountBasisPoints = catalogDiscountBasisPoints
         };
     }
 
@@ -116,6 +118,73 @@ public sealed class SharedHeldOrderMapperTests
         var line = Assert.Single(result.Payload!.PricingState.Lines);
         Assert.Equal(1.5m, line.Quantity);
         Assert.Equal(1200L, line.UnitPriceCents);
+    }
+
+    [Fact]
+    public void Map_catalog_discount_uses_v2_and_keeps_price_plus_baseline_separate()
+    {
+        var order = Order(SaleLine(
+            "JM-006",
+            1m,
+            6.99m,
+            1.40m,
+            20m,
+            PosCartLineDiscountSource.Catalog,
+            catalogDiscountBasisPoints: 2000));
+
+        var result = Mapper.Map(order, null, revision: 3);
+
+        Assert.False(result.IsBlocked);
+        Assert.Equal(SharedHeldOrderCanonicalPayload.VersionV2, result.Payload!.Version);
+        var line = Assert.Single(result.Payload.PricingState.Lines);
+        Assert.Equal(699L, line.UnitPriceCents);
+        Assert.Equal(2000, line.CatalogDiscountBasisPoints);
+        Assert.Equal(SharedHeldOrderCanonicalConstants.DiscountNone, line.DiscountState.Mode);
+        var wire = Assert.IsType<Hbpos.Contracts.HeldOrders.SharedSaleCartV2>(
+            SharedHeldOrderContractMapper.ToContract(
+                result.Payload,
+                Hbpos.Contracts.HeldOrders.SharedSaleCartV2Constants.PayloadVersion));
+        Assert.Equal(2000, Assert.Single(wire.PricingState.Lines).CatalogDiscountBasisPoints);
+        Assert.Throws<Hbpos.Contracts.HeldOrders.SharedSaleCartValidationException>(
+            () => SharedHeldOrderContractMapper.ToContract(
+                result.Payload,
+                Hbpos.Contracts.HeldOrders.SharedSaleCartV1Constants.PayloadVersion));
+    }
+
+    [Fact]
+    public void Map_catalog_discount_line_is_excluded_from_frozen_fixed_price_promotion_replay()
+    {
+        var order = Order(SaleLine(
+            "JM-006",
+            1m,
+            6.99m,
+            1.40m,
+            20m,
+            PosCartLineDiscountSource.Catalog,
+            catalogDiscountBasisPoints: 2000));
+        var frozenRules = new[]
+        {
+            new CatalogPromotionRuleDto(
+                "PROMO-CATALOG",
+                "Catalog item fixed price",
+                false,
+                1,
+                1,
+                5.00m,
+                null,
+                new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 7, 31, 23, 59, 59, TimeSpan.Zero),
+                null,
+                [new CatalogPromotionProductDto("JM-006", 1)])
+        };
+
+        var result = Mapper.Map(order, frozenRules, revision: 3);
+
+        Assert.False(result.IsBlocked);
+        Assert.Equal(SharedHeldOrderCanonicalPayload.VersionV2, result.Payload!.Version);
+        Assert.Equal(
+            SharedHeldOrderCanonicalConstants.DiscountNone,
+            Assert.Single(result.Payload.PricingState.Lines).DiscountState.Mode);
     }
 
     [Fact]
@@ -232,6 +301,75 @@ public sealed class SharedHeldOrderMapperTests
         Assert.Equal("manual-percent", line.DiscountState.Mode);
         Assert.Equal(1055, line.DiscountState.BasisPoints);
         Assert.Null(line.DiscountState.Cents);
+    }
+
+    [Fact]
+    public void Map_manual_zero_amount_overrides_catalog_through_v2_wire_round_trip()
+    {
+        var order = Order(SaleLine(
+            "JM-006",
+            1m,
+            6.99m,
+            0m,
+            null,
+            PosCartLineDiscountSource.Manual,
+            catalogDiscountBasisPoints: 2000));
+
+        var mapped = Mapper.Map(order, null, revision: 2);
+
+        Assert.False(mapped.IsBlocked);
+        Assert.Equal(SharedHeldOrderCanonicalPayload.VersionV2, mapped.Payload!.Version);
+        var mappedLine = Assert.Single(mapped.Payload.PricingState.Lines);
+        Assert.Equal(SharedHeldOrderCanonicalConstants.DiscountManualAmount, mappedLine.DiscountState.Mode);
+        Assert.Equal(0L, mappedLine.DiscountState.Cents);
+        Assert.Equal(2000, mappedLine.CatalogDiscountBasisPoints);
+
+        var wire = Assert.IsType<Hbpos.Contracts.HeldOrders.SharedSaleCartV2>(
+            SharedHeldOrderContractMapper.ToContract(
+                mapped.Payload,
+                Hbpos.Contracts.HeldOrders.SharedSaleCartV2Constants.PayloadVersion));
+        var restoredCanonical = SharedHeldOrderContractMapper.ToCanonical(wire);
+        var restoredSnapshot = new SharedHeldOrderReverseMapper().Map(restoredCanonical, "S001");
+        var restoredCart = new PosCartService();
+        restoredCart.RestoreSharedSaleSnapshot(restoredSnapshot);
+        var restoredLine = Assert.Single(restoredCart.Lines);
+        Assert.Equal(CartLineDiscountSource.Manual, restoredLine.DiscountSource);
+        Assert.Equal(0m, restoredLine.DiscountAmount);
+        Assert.Equal(2000, restoredLine.CatalogDiscountBasisPoints);
+        Assert.Equal(6.99m, restoredLine.ActualAmount);
+    }
+
+    [Fact]
+    public void Map_manual_percent_rounding_to_zero_survives_v1_wire_round_trip()
+    {
+        var order = Order(SaleLine(
+            "P-CENT",
+            1m,
+            0.01m,
+            0m,
+            1m,
+            PosCartLineDiscountSource.Manual));
+
+        var mapped = Mapper.Map(order, null, revision: 2);
+
+        Assert.False(mapped.IsBlocked);
+        Assert.Equal(SharedHeldOrderCanonicalPayload.VersionV1, mapped.Payload!.Version);
+        var mappedLine = Assert.Single(mapped.Payload.PricingState.Lines);
+        Assert.Equal(SharedHeldOrderCanonicalConstants.DiscountManualPercent, mappedLine.DiscountState.Mode);
+        Assert.Equal(100, mappedLine.DiscountState.BasisPoints);
+
+        var wire = Assert.IsType<Hbpos.Contracts.HeldOrders.SharedSaleCartV1>(
+            SharedHeldOrderContractMapper.ToContract(
+                mapped.Payload,
+                Hbpos.Contracts.HeldOrders.SharedSaleCartV1Constants.PayloadVersion));
+        var restoredCanonical = SharedHeldOrderContractMapper.ToCanonical(wire);
+        var restoredSnapshot = new SharedHeldOrderReverseMapper().Map(restoredCanonical, "S001");
+        var restoredCart = new PosCartService();
+        restoredCart.RestoreSharedSaleSnapshot(restoredSnapshot);
+        var restoredLine = Assert.Single(restoredCart.Lines);
+        Assert.Equal(CartLineDiscountSource.Manual, restoredLine.DiscountSource);
+        Assert.Equal(1m, restoredLine.DiscountPercent);
+        Assert.Equal(0m, restoredLine.DiscountAmount);
     }
 
     [Fact]

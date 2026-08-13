@@ -546,6 +546,9 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       displayName: item.displayName,
       quantity: item.quantityFactor,
       unitPrice: createAud(item.retailPriceCents),
+      catalogDiscountBasisPoints: discountRateToBasisPoints(
+        item.discountRate,
+      ),
       syncProvenance: {
         referenceCode: item.referenceCode,
         priceSource: item.priceSource,
@@ -610,6 +613,9 @@ export class PricingCartSalesAdapter implements SalesCartPort {
           lookupCode: item.lookupCode,
           displayName: item.displayName,
           retailPriceCents: item.retailPriceCents,
+          catalogDiscountBasisPoints: discountRateToBasisPoints(
+            item.discountRate,
+          ),
           priceSource: item.priceSource,
         },
       },
@@ -1429,4 +1435,14 @@ function requiredText(value: string, label: string): string {
 
 function normalizeLookupCode(value: string): string {
   return value.trim().toUpperCase();
+}
+
+/** 目录接口使用 0..1 小数；购物车合同统一保存整数基点，避免把 sale 价伪装成 unitPrice。 */
+function discountRateToBasisPoints(
+  discountRate: number | null,
+): number {
+  if (discountRate === null || !Number.isFinite(discountRate)) {
+    return 0;
+  }
+  return Math.min(10_000, Math.max(0, Math.round(discountRate * 10_000)));
 }

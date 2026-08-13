@@ -476,6 +476,15 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                 "ALTER TABLE SuspendedOrderLines ADD COLUMN IsManualPrice INTEGER NOT NULL DEFAULT 0;",
                 cancellationToken);
         }
+
+        if (!columns.Contains("CatalogDiscountBasisPoints"))
+        {
+            // 旧挂单没有目录折扣基线时按 0 恢复，不把历史折扣误判成 Catalog。
+            await ExecuteAsync(
+                connection,
+                "ALTER TABLE SuspendedOrderLines ADD COLUMN CatalogDiscountBasisPoints INTEGER NOT NULL DEFAULT 0;",
+                cancellationToken);
+        }
     }
 
     /// <summary>
@@ -525,6 +534,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                 RemoteUpdatedAtIso TEXT NULL,
                 ShareRequestedAtIso TEXT NULL,
                 ConsumedAtIso TEXT NULL,
+                PublicationPayloadVersion INTEGER NULL CHECK (
+                    PublicationPayloadVersion IS NULL OR PublicationPayloadVersion IN (1, 2)),
                 CHECK (TRIM(LocalHoldGuid) <> ''),
                 CHECK (TRIM(StoreCode) <> ''),
                 CHECK (TRIM(DeviceCode) <> ''),
@@ -904,6 +915,14 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
                 await ExecuteAsync(
                     connection,
                     "ALTER TABLE SharedHeldOrderPublications ADD COLUMN ShareRequestedAtIso TEXT NULL;",
+                    cancellationToken);
+            }
+
+            if (!publicationColumns.Contains("PublicationPayloadVersion"))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE SharedHeldOrderPublications ADD COLUMN PublicationPayloadVersion INTEGER NULL CHECK (PublicationPayloadVersion IS NULL OR PublicationPayloadVersion IN (1, 2));",
                     cancellationToken);
             }
 
@@ -1541,7 +1560,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             OriginalOrderGuid TEXT NULL,
             OriginalOrderDetailGuid TEXT NULL,
             ReturnReason TEXT NULL,
-            IsManualPrice INTEGER NOT NULL DEFAULT 0
+            IsManualPrice INTEGER NOT NULL DEFAULT 0,
+            CatalogDiscountBasisPoints INTEGER NOT NULL DEFAULT 0
         );
         """,
         """

@@ -14,7 +14,7 @@ import type {
   ShareEvaluation,
 } from "./shared-held-order-publication-queue";
 import { SharedHeldOrderPublicationWorker } from "./shared-held-order-publication-worker";
-import type { SharedSaleCartV1 } from "./shared-sale-cart-v1";
+import type { SharedSaleCartPayload } from "./shared-sale-cart-v2";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
 
@@ -67,6 +67,23 @@ async function ciphertextForLegacy(): Promise<Uint8Array> {
   );
 }
 
+async function ciphertextForCatalogDiscount(): Promise<Uint8Array> {
+  const pricingState = legacyPricingState();
+  return fakeEncryptor.encrypt(
+    JSON.stringify({
+      version: 1,
+      pricingState: {
+        ...pricingState,
+        lines: pricingState.lines.map((line) => ({
+          ...line,
+          unitPriceCents: 699,
+          catalogDiscountBasisPoints: 2_000,
+        })),
+      },
+    }),
+  );
+}
+
 class FakeQueue implements SharedHeldOrderPublicationQueuePort {
   public evaluations: readonly ShareEvaluation[] = [];
   public evaluatedHoldIds: string[] = [];
@@ -77,6 +94,7 @@ class FakeQueue implements SharedHeldOrderPublicationQueuePort {
   public needsEvaluation: readonly SharedHeldOrderEvaluationRow[] = [];
   public applyResult: "updated" | "already-evaluated" | "not-found" = "updated";
   public markResult = true;
+  public readonly publicationPayloadVersions = new Map<string, 1 | 2>();
 
   public async requestShare(): Promise<"ineligible"> {
     return "ineligible";
@@ -101,7 +119,23 @@ class FakeQueue implements SharedHeldOrderPublicationQueuePort {
   }
 
   public async listDue(): Promise<readonly SharedHeldOrderPublishDueRow[]> {
-    return this.due;
+    return this.due.map((row) => ({
+      ...row,
+      publicationPayloadVersion:
+        this.publicationPayloadVersions.get(row.holdId) ?? row.publicationPayloadVersion,
+    }));
+  }
+
+  public async pinPublicationPayloadVersion(input: Readonly<{
+    holdId: string;
+    expectedAttemptCount: number;
+    payloadVersion: 1 | 2;
+  }>): Promise<1 | 2 | null> {
+    void input.expectedAttemptCount;
+    const existing = this.publicationPayloadVersions.get(input.holdId);
+    if (existing !== undefined) return existing;
+    this.publicationPayloadVersions.set(input.holdId, input.payloadVersion);
+    return input.payloadVersion;
   }
 
   public async markPublished(input: Readonly<{
@@ -138,16 +172,19 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
   public capabilities: SharedHeldOrderCapabilities = {
     enabled: true,
     payloadVersion: 1,
+    supportedPayloadVersions: [1, 2],
+    preferredPayloadVersion: 1,
     preparedTtlSeconds: 900,
     forceReleaseSupported: true,
   };
   public capabilitiesError: unknown = null;
   public publishError: unknown = null;
+  public loseResponseOnce = false;
   public publishResponseOverride: SharedHeldOrderPublishResult | null = null;
   public publishedRequests: {
     holdGuid: string;
     idempotencyKey: string;
-    cart: SharedSaleCartV1;
+    cart: SharedSaleCartPayload;
   }[] = [];
 
   public async getCapabilities(): Promise<SharedHeldOrderCapabilities> {
@@ -159,7 +196,7 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
     holdGuid: string;
     storeCode: string;
     deviceCode: string;
-    cart: SharedSaleCartV1;
+    cart: SharedSaleCartPayload;
     idempotencyKey: string;
   }>): Promise<SharedHeldOrderPublishResult> {
     if (this.publishError !== null) throw this.publishError;
@@ -168,6 +205,10 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
       idempotencyKey: input.idempotencyKey,
       cart: input.cart,
     });
+    if (this.loseResponseOnce) {
+      this.loseResponseOnce = false;
+      throw new Error("response lost after server accepted publish");
+    }
     return this.publishResponseOverride ?? {
       holdGuid: input.holdGuid,
       status: "Pending",
@@ -235,6 +276,7 @@ function dueRow(holdId: string): SharedHeldOrderPublishDueRow {
     nextPublishAtIso: null,
     remoteRevision: null,
     remoteUpdatedAtIso: null,
+    publicationPayloadVersion: null,
   };
 }
 
@@ -272,6 +314,132 @@ test("发布 worker：评估 NeedsEvaluation -> PendingPublish，随后发布并
   assert.equal(queue.published[0], "hold-1");
   assert.equal(api.publishedRequests[0]?.idempotencyKey, "hold-1");
   assert.equal(api.publishedRequests[0]?.cart.pricingState.revision, 2);
+});
+
+test("发布 worker：preferred V2 发布 catalog baseline；preferred V1 时保持 PendingPublish", async () => {
+  const ciphertext = await ciphertextForCatalogDiscount();
+
+  const v2Queue = new FakeQueue();
+  const v2Api = new FakeApi();
+  v2Api.capabilities = {
+    ...v2Api.capabilities,
+    preferredPayloadVersion: 2,
+  };
+  v2Queue.due = [{ ...dueRow("hold-v2"), payloadCiphertext: ciphertext }];
+  const v2Result = await new SharedHeldOrderPublicationWorker({
+    queue: v2Queue,
+    api: v2Api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  }).runOnce();
+  assert.equal(v2Result.published, 1);
+  const published = v2Api.publishedRequests[0]?.cart;
+  assert.equal(published?.version, 2);
+  if (published?.version === 2) {
+    assert.equal(
+      published.pricingState.lines[0]?.catalogDiscountBasisPoints,
+      2_000,
+    );
+  }
+
+  const v1Queue = new FakeQueue();
+  const v1Api = new FakeApi();
+  v1Queue.due = [{ ...dueRow("hold-v1"), payloadCiphertext: ciphertext }];
+  const v1Result = await new SharedHeldOrderPublicationWorker({
+    queue: v1Queue,
+    api: v1Api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  }).runOnce();
+  assert.equal(v1Result.published, 0);
+  assert.equal(v1Result.failedPublish, 1);
+  assert.deepEqual(v1Api.publishedRequests, []);
+  assert.deepEqual(v1Queue.blockedReasons, []);
+  assert.deepEqual(v1Queue.failures, [
+    "SHARED_HELD_ORDER_PREFERRED_VERSION_LOSSY",
+  ]);
+});
+
+test("发布 worker：preferred V2 会把无 baseline 的旧 V1 安全升级为 V2", async () => {
+  const queue = new FakeQueue();
+  const api = new FakeApi();
+  api.capabilities = { ...api.capabilities, preferredPayloadVersion: 2 };
+  queue.due = [
+    { ...dueRow("hold-upgrade"), payloadCiphertext: await ciphertextForLegacy() },
+  ];
+  const result = await new SharedHeldOrderPublicationWorker({
+    queue,
+    api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  }).runOnce();
+  assert.equal(result.published, 1);
+  assert.equal(api.publishedRequests[0]?.cart.version, 2);
+});
+
+test("发布 worker：首次 V1 响应丢失后 preferred 切 V2，重试仍发送已持久化的 V1", async () => {
+  const queue = new FakeQueue();
+  const api = new FakeApi();
+  api.loseResponseOnce = true;
+  queue.due = [
+    { ...dueRow("hold-version-pin"), payloadCiphertext: await ciphertextForLegacy() },
+  ];
+  const worker = new SharedHeldOrderPublicationWorker({
+    queue,
+    api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  });
+
+  const first = await worker.runOnce();
+  api.capabilities = { ...api.capabilities, preferredPayloadVersion: 2 };
+  const replay = await worker.runOnce();
+
+  assert.equal(first.failedPublish, 1);
+  assert.equal(replay.published, 1);
+  assert.equal(queue.publicationPayloadVersions.get("hold-version-pin"), 1);
+  assert.deepEqual(
+    api.publishedRequests.map((request) => request.cart.version),
+    [1, 1],
+  );
+  assert.equal(api.publishedRequests[0]?.idempotencyKey, "hold-version-pin");
+  assert.equal(api.publishedRequests[1]?.idempotencyKey, "hold-version-pin");
+});
+
+test("发布 worker：首次 V2 已 pin 后 preferred 回滚 V1，catalog baseline 重试仍发送 V2", async () => {
+  const queue = new FakeQueue();
+  const api = new FakeApi();
+  api.capabilities = { ...api.capabilities, preferredPayloadVersion: 2 };
+  api.loseResponseOnce = true;
+  queue.due = [
+    {
+      ...dueRow("hold-version-pin-v2"),
+      payloadCiphertext: await ciphertextForCatalogDiscount(),
+    },
+  ];
+  const worker = new SharedHeldOrderPublicationWorker({
+    queue,
+    api,
+    encryptor: fakeEncryptor,
+    nowIso: () => NOW,
+    scope: SCOPE,
+  });
+
+  const first = await worker.runOnce();
+  api.capabilities = { ...api.capabilities, preferredPayloadVersion: 1 };
+  const replay = await worker.runOnce();
+
+  assert.equal(first.failedPublish, 1);
+  assert.equal(replay.published, 1);
+  assert.equal(queue.publicationPayloadVersions.get("hold-version-pin-v2"), 2);
+  assert.deepEqual(
+    api.publishedRequests.map((request) => request.cart.version),
+    [2, 2],
+  );
 });
 
 test("发布 worker：损坏 payload 阻断 Blocked，不发布", async () => {
@@ -402,6 +570,8 @@ test("发布 worker：capability disabled 只记录退避，本地挂单不动",
   api.capabilities = {
     enabled: false,
     payloadVersion: 1,
+    supportedPayloadVersions: [1, 2],
+    preferredPayloadVersion: 1,
     preparedTtlSeconds: 900,
     forceReleaseSupported: true,
   };

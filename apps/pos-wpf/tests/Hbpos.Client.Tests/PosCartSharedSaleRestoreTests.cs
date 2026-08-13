@@ -49,6 +49,26 @@ public sealed class PosCartSharedSaleRestoreTests
     }
 
     [Fact]
+    public void RestoreSharedSaleSnapshot_rounds_catalog_discount_for_decimal_quantity_away_from_zero()
+    {
+        var cart = new PosCartService();
+        cart.RestoreSharedSaleSnapshot(new PosCartSnapshot(
+        [
+            new PosCartLineSnapshot(
+                "S001", "P-CATALOG", null, "Weighted catalog item", "CODE-CATALOG", null, null,
+                1.5m, 6.99m, 2.10m, 20m, PriceSourceKind.StoreRetailPrice, "Store Retail Price",
+                DiscountSource: PosCartLineDiscountSource.Catalog,
+                CatalogDiscountBasisPoints: 2000)
+        ]));
+
+        var line = Assert.Single(cart.Lines);
+        Assert.Equal(1.5m, line.Quantity);
+        Assert.Equal(2.10m, line.DiscountAmount);
+        Assert.Equal(8.39m, line.ActualAmount);
+        Assert.Equal(8.39m, cart.ActualAmount);
+    }
+
+    [Fact]
     public void RestoreSharedSaleSnapshot_bound_decimal_quantity_is_supported_for_checkout()
     {
         var claimId = Guid.NewGuid();

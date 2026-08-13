@@ -10,7 +10,11 @@ import type {
   SharedHeldOrderEvaluationRow,
   SharedHeldOrderPublicationQueuePort,
 } from "./shared-held-order-publication-queue";
-import { type SharedSaleCartV1 } from "./shared-sale-cart-v1";
+import {
+  v1ToV2,
+  v2ToV1,
+  type SharedSaleCartPayload,
+} from "./shared-sale-cart-v2";
 
 import type { HeldOrderScope } from "@/core/contracts";
 
@@ -75,7 +79,7 @@ export class SharedHeldOrderPublicationWorker {
     }
 
     const capabilities = await this.readCapabilities();
-    if (capabilities === "not-ready") {
+    if (capabilities.outcome === "not-ready") {
       // 网络/服务不可用：每个 due 行记录稳定错误码形成退避，本地挂单保持 PendingPublish。
       for (const row of due) {
         await this.recordBackoff(
@@ -87,14 +91,14 @@ export class SharedHeldOrderPublicationWorker {
       failedCapability += due.length;
       return freezeResult();
     }
-    if (capabilities === "disabled") {
+    if (capabilities.outcome === "disabled") {
       for (const row of due) {
         await this.recordBackoff(row.holdId, nowIso, "SHARED_HELD_ORDER_DISABLED");
       }
       failedCapability += due.length;
       return freezeResult();
     }
-    if (capabilities === "version-mismatch") {
+    if (capabilities.outcome === "version-mismatch") {
       for (const row of due) {
         await this.recordBackoff(
           row.holdId,
@@ -104,6 +108,9 @@ export class SharedHeldOrderPublicationWorker {
       }
       failedCapability += due.length;
       return freezeResult();
+    }
+    if (capabilities.outcome !== "enabled") {
+      throw new Error("SHARED_HELD_ORDER_CAPABILITY_STATE_INVALID");
     }
 
     for (const row of due) {
@@ -119,11 +126,41 @@ export class SharedHeldOrderPublicationWorker {
           blocked += 1;
           continue;
         }
+        let payloadVersion = row.publicationPayloadVersion;
+        if (payloadVersion === null) {
+          let candidateCart: SharedSaleCartPayload;
+          try {
+            // 只有尚未发送的行才按当前 preferred 做无损转换判断；已 pin 的重试绝不能走这里。
+            candidateCart = selectPreferredPayloadVersion(
+              evaluation.cart,
+              capabilities.preferredPayloadVersion,
+            );
+          } catch (error) {
+            if (error instanceof PayloadVersionSelectionFailure) {
+              await this.recordBackoff(row.holdId, nowIso, error.code);
+              failedPublish += 1;
+              continue;
+            }
+            throw error;
+          }
+          const pinnedPayloadVersion = await this.options.queue.pinPublicationPayloadVersion({
+            holdId: row.holdId,
+            expectedAttemptCount: row.publishAttemptCount,
+            payloadVersion: candidateCart.version,
+          });
+          if (pinnedPayloadVersion === null) {
+            // 状态已被并发推进时绝不发送；下一轮由最新 due 行决定是否需要重试。
+            continue;
+          }
+          payloadVersion = pinnedPayloadVersion;
+        }
+        // 已锁定版本优先于当前 preferred：两种方向的版本切换都必须重放相同 wire payload。
+        const cart = selectPreferredPayloadVersion(evaluation.cart, payloadVersion);
         const response = await this.options.api.publish({
           holdGuid: row.holdId,
           storeCode: row.storeCode,
           deviceCode: row.deviceCode,
-          cart: evaluation.cart,
+          cart,
           idempotencyKey: idempotencyKeyFor(row.holdId),
         });
         if (response.holdGuid !== row.holdId) {
@@ -185,7 +222,7 @@ export class SharedHeldOrderPublicationWorker {
   private async evaluate(
     row: SharedHeldOrderEvaluationRow,
   ): Promise<
-    | Readonly<{ outcome: "pending-publish"; cart: SharedSaleCartV1 }>
+    | Readonly<{ outcome: "pending-publish"; cart: SharedSaleCartPayload }>
     | Readonly<{ outcome: "blocked"; reason: SharedHeldOrderBlockReason }>
   > {
     try {
@@ -236,15 +273,31 @@ export class SharedHeldOrderPublicationWorker {
   }
 
   private async readCapabilities(): Promise<
-    "enabled" | "disabled" | "version-mismatch" | "not-ready"
+    | Readonly<{
+        outcome: "enabled";
+        preferredPayloadVersion: 1 | 2;
+      }>
+    | Readonly<{
+        outcome: "disabled" | "version-mismatch" | "not-ready";
+      }>
   > {
     try {
       const capabilities = await this.options.api.getCapabilities();
-      if (!capabilities.enabled) return "disabled";
-      if (capabilities.payloadVersion !== 1) return "version-mismatch";
-      return "enabled";
+      if (!capabilities.enabled) return { outcome: "disabled" };
+      if (
+        capabilities.payloadVersion !== 1 ||
+        !capabilities.supportedPayloadVersions.includes(
+          capabilities.preferredPayloadVersion,
+        )
+      ) {
+        return { outcome: "version-mismatch" };
+      }
+      return {
+        outcome: "enabled",
+        preferredPayloadVersion: capabilities.preferredPayloadVersion,
+      };
     } catch {
-      return "not-ready";
+      return { outcome: "not-ready" };
     }
   }
 
@@ -281,6 +334,32 @@ class PayloadParseFailure extends Error {
     super(code);
     this.name = "PayloadParseFailure";
     this.code = code;
+  }
+}
+
+class PayloadVersionSelectionFailure extends Error {
+  public readonly code = "SHARED_HELD_ORDER_PREFERRED_VERSION_LOSSY";
+
+  public constructor() {
+    super("preferred shared held order payload version would lose catalog discount data");
+    this.name = "PayloadVersionSelectionFailure";
+  }
+}
+
+function selectPreferredPayloadVersion(
+  cart: SharedSaleCartPayload,
+  preferredPayloadVersion: 1 | 2,
+): SharedSaleCartPayload {
+  if (preferredPayloadVersion === 2) {
+    return cart.version === 2 ? cart : v1ToV2(cart);
+  }
+  if (cart.version === 1) return cart;
+  try {
+    return v2ToV1(cart);
+  } catch {
+    // 后端尚首选 V1 时，带 catalog baseline 的新挂单保持 PendingPublish；
+    // 切换 preferred=2 后会用同一幂等键安全重试，不丢折扣。
+    throw new PayloadVersionSelectionFailure();
   }
 }
 

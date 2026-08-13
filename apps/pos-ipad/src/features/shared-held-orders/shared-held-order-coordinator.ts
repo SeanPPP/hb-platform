@@ -8,7 +8,7 @@ import {
   type HeldOrderIdentity,
 } from "../held-orders/held-orders-domain";
 
-import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
+import { fromSharedSaleCart } from "./shared-held-order-cart-reverse-mapper";
 import {
   SharedHeldOrderClaimInvariantError,
   type SharedHeldOrderClaim,
@@ -24,11 +24,12 @@ import {
   type SharedHeldOrderPrepareResult,
   type SharedHeldOrderRecoveryClaimDto,
 } from "./shared-held-order-network-api";
+import { toSharedSaleCartV1 } from "./shared-sale-cart-v1";
 import {
-  normalizeSharedSaleCartV1,
-  type SharedSaleCartV1,
-  toSharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+  sameSharedSaleCart,
+  toSharedSaleCartV2,
+  type SharedSaleCartPayload,
+} from "./shared-sale-cart-v2";
 
 import type {
   HeldOrderScope,
@@ -310,7 +311,7 @@ export class SharedHeldOrderCoordinator {
       }
       return this.restoreClaim(
         claim,
-        fromSharedSaleCartV1(claim.payload),
+        fromSharedSaleCart(claim.payload),
         claimGuid,
         holdGuid,
       );
@@ -399,7 +400,7 @@ export class SharedHeldOrderCoordinator {
     }
     return this.restoreClaim(
       claim,
-      fromSharedSaleCartV1(claim.payload),
+      fromSharedSaleCart(claim.payload),
       claimGuid,
       holdGuid,
     );
@@ -1075,7 +1076,7 @@ export class SharedHeldOrderCoordinator {
     try {
       const result = await this.restoreClaim(
         claim,
-        fromSharedSaleCartV1(claim.payload),
+        fromSharedSaleCart(claim.payload),
         claim.claimGuid,
         claim.holdGuid,
       );
@@ -1133,10 +1134,7 @@ export class SharedHeldOrderCoordinator {
         if (active.recallBinding) {
           if (
             recallBindingMatchesClaim(active.recallBinding, claim) &&
-            sameSharedSaleCart(
-              toSharedSaleCartV1(active.pricingState),
-              claim.payload,
-            )
+            activePricingStateMatchesClaim(active.pricingState, claim.payload)
           ) {
             // 崩溃发生在购物车交换之后：相同 binding + 冻结快照即幂等成功。
             return;
@@ -1335,12 +1333,20 @@ function assertOwnerReleaseMatchesRequest(
   }
 }
 
-/** canonical normalize 后稳定比较：两端都重建为冻结 key 顺序的 SharedSaleCartV1。 */
-function sameSharedSaleCart(a: SharedSaleCartV1, b: SharedSaleCartV1): boolean {
-  return (
-    JSON.stringify(normalizeSharedSaleCartV1(a)) ===
-    JSON.stringify(normalizeSharedSaleCartV1(b))
-  );
+function activePricingStateMatchesClaim(
+  pricingState: PricingCartStateSnapshot,
+  claimPayload: SharedSaleCartPayload,
+): boolean {
+  try {
+    const activePayload = claimPayload.version === 1
+      ? toSharedSaleCartV1(pricingState)
+      : toSharedSaleCartV2(pricingState);
+    return sameSharedSaleCart(activePayload, claimPayload);
+  } catch {
+    // 例如 V1 claim 恢复后目录复核新增了 catalog baseline：不可有损降级
+    // 来伪装幂等，应按快照不一致保留现有 fence/cart。
+    return false;
+  }
 }
 
 function serverClaimMatchesScope(

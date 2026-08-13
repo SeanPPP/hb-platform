@@ -66,6 +66,8 @@ public sealed class PosCartService
                 throw new InvalidOperationException("Cart line quantity must be a positive integer.");
             }
 
+            // 合并加购只能同步允许的目录折扣字段；手工价和共享快照冻结必须保持不变。
+            UpdateCatalogMetadataAndDiscountIfAllowed(existing, item);
             existing.Increase(item.QuantityFactor);
             RefreshDiscountsAndNotify();
             return existing;
@@ -98,6 +100,8 @@ public sealed class PosCartService
                 throw new InvalidOperationException("Cart line quantity must be a positive integer.");
             }
 
+            // 连续扫码合并只能同步允许的目录折扣字段，不能用新目录行重置手工价。
+            UpdateCatalogMetadataAndDiscountIfAllowed(lastLine, item);
             lastLine.Increase(item.QuantityFactor);
             RefreshDiscountsAndNotify();
             return lastLine;
@@ -108,6 +112,18 @@ public sealed class PosCartService
         _lines.Add(line);
         RefreshDiscountsAndNotify();
         return line;
+    }
+
+    private void UpdateCatalogMetadataAndDiscountIfAllowed(CartLine line, SellableItemDto item)
+    {
+        if (_preserveSharedSnapshotCatalogValues ||
+            line.IsReturnLine ||
+            line.IsOpenItem)
+        {
+            return;
+        }
+
+        line.UpdateCatalogMetadataAndDiscountFrom(item);
     }
 
     public CartLine AddOpenItem(SellableItemDto item, decimal unitPrice)
@@ -215,7 +231,15 @@ public sealed class PosCartService
             return false;
         }
 
-        line.UpdateFrom(item);
+        // 手工改价行只接受安全目录元数据与折扣基线刷新，禁止覆盖人工单价/provenance。
+        if (line.IsManualPrice)
+        {
+            UpdateCatalogMetadataAndDiscountIfAllowed(line, item);
+        }
+        else
+        {
+            line.UpdateFrom(item);
+        }
         RefreshDiscountsAndNotify(preserveFrozenSharedPromotion: true);
         return true;
     }
@@ -227,7 +251,15 @@ public sealed class PosCartService
             return false;
         }
 
-        line.UpdateFrom(item);
+        // 与按条码查找的远端刷新保持同一门禁：手工价只更新安全目录元数据与 catalog baseline。
+        if (line.IsManualPrice)
+        {
+            UpdateCatalogMetadataAndDiscountIfAllowed(line, item);
+        }
+        else
+        {
+            line.UpdateFrom(item);
+        }
         RefreshDiscountsAndNotify(preserveFrozenSharedPromotion: true);
         return true;
     }
@@ -406,6 +438,13 @@ public sealed class PosCartService
                 continue;
             }
 
+            // Catalog 折扣已经是有效折扣，促销不得与其叠加；目录折扣移除后，
+            // 下一次刷新才允许当前促销规则重新参与。
+            if (line.DiscountSource == CartLineDiscountSource.Catalog)
+            {
+                continue;
+            }
+
             var clampedDiscount = Math.Clamp(
                 decimal.Round(entry.Value, 2, MidpointRounding.AwayFromZero),
                 0m,
@@ -432,7 +471,7 @@ public sealed class PosCartService
             return false;
         }
 
-        ApplyOrderDiscountAmount(discountAmount);
+        ApplyOrderDiscountAmount(discountAmount, preserveManualOverrideWhenZero: false);
         RefreshDiscountsAndNotify();
         return true;
     }
@@ -445,7 +484,9 @@ public sealed class PosCartService
         }
 
         var discountAmount = decimal.Round(TotalAmount * discountPercent / 100m, 2, MidpointRounding.AwayFromZero);
-        ApplyOrderDiscountAmount(discountAmount);
+        ApplyOrderDiscountAmount(
+            discountAmount,
+            preserveManualOverrideWhenZero: discountPercent > 0m);
         RefreshDiscountsAndNotify();
         return true;
     }
@@ -497,7 +538,8 @@ public sealed class PosCartService
                 line.OriginalOrderLineGuid,
                 line.ReturnReason,
                 MapSnapshotDiscountSource(line.DiscountSource),
-                line.IsManualPrice))
+                line.IsManualPrice,
+                line.CatalogDiscountBasisPoints))
             .ToArray(),
             _sharedHeldOrderClaimId);
     }
@@ -619,7 +661,10 @@ public sealed class PosCartService
             snapshotLine.PriceSourceLabel,
             1m,
             null,
-            snapshotLine.ProductImage);
+            snapshotLine.ProductImage,
+            snapshotLine.Kind == CartLineKind.Sale
+                ? snapshotLine.CatalogDiscountBasisPoints / 10_000m
+                : null);
     }
 
     private void OnCartChanged()
@@ -686,7 +731,38 @@ public sealed class PosCartService
 
     private static void RestoreSnapshotDiscount(CartLine line, PosCartLineSnapshot snapshotLine)
     {
-        // 恢复快照时必须保留折扣来源，后续促销重算才不会把旧促销当成手工折扣。
+        if (
+            snapshotLine.CatalogDiscountBasisPoints > 0 &&
+            snapshotLine.DiscountSource == PosCartLineDiscountSource.Promotion)
+        {
+            throw new InvalidOperationException(
+                "Catalog discount cannot coexist with promotion discount state.");
+        }
+
+        // 先恢复 catalog 基线，再按有效来源恢复当前折扣；Catalog 不能落成 Manual。
+        line.SetCatalogDiscountBasisPoints(snapshotLine.CatalogDiscountBasisPoints);
+        switch (snapshotLine.DiscountSource)
+        {
+            case PosCartLineDiscountSource.Catalog:
+                return;
+            case PosCartLineDiscountSource.Promotion:
+                line.SetPromotionDiscountAmount(snapshotLine.DiscountAmount);
+                return;
+            case PosCartLineDiscountSource.Manual:
+                if (snapshotLine.DiscountPercent is decimal manualDiscountPercent && manualDiscountPercent > 0m)
+                {
+                    line.SetDiscountPercent(manualDiscountPercent);
+                }
+                else
+                {
+                    // Manual + 0 代表整单折扣明确覆盖但该行零分摊，取单时不能复活 catalog。
+                    line.SetOrderDiscountAmount(snapshotLine.DiscountAmount);
+                }
+
+                return;
+        }
+
+        // 旧快照没有来源字段时，沿用原来的安全回退：有百分比/金额的折扣视为手工。
         if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
         {
             line.SetDiscountPercent(discountPercent);
@@ -698,12 +774,6 @@ public sealed class PosCartService
             return;
         }
 
-        if (snapshotLine.DiscountSource == PosCartLineDiscountSource.Promotion)
-        {
-            line.SetPromotionDiscountAmount(snapshotLine.DiscountAmount);
-            return;
-        }
-
         line.SetDiscountAmount(snapshotLine.DiscountAmount);
     }
 
@@ -712,6 +782,7 @@ public sealed class PosCartService
         return source switch
         {
             CartLineDiscountSource.Manual => PosCartLineDiscountSource.Manual,
+            CartLineDiscountSource.Catalog => PosCartLineDiscountSource.Catalog,
             CartLineDiscountSource.Promotion => PosCartLineDiscountSource.Promotion,
             _ => PosCartLineDiscountSource.None
         };
@@ -886,7 +957,9 @@ public sealed class PosCartService
         return
             !line.IsReturnLine &&
             !line.IsOpenItem &&
-            !line.HasManualDiscount &&
+            line.DiscountSource != CartLineDiscountSource.Manual &&
+            // catalog 基线可能舍入为 0，仍必须在固定总价分组前排除。
+            line.CatalogDiscountBasisPoints <= 0 &&
             line.GrossAmount > 0m &&
             IsPositiveIntegerQuantity(line.Quantity);
     }
@@ -896,7 +969,9 @@ public sealed class PosCartService
         return (value ?? string.Empty).Trim();
     }
 
-    private void ApplyOrderDiscountAmount(decimal discountAmount)
+    private void ApplyOrderDiscountAmount(
+        decimal discountAmount,
+        bool preserveManualOverrideWhenZero)
     {
         var totalGrossAmount = TotalAmount;
         var remainingDiscount = Math.Clamp(
@@ -910,6 +985,25 @@ public sealed class PosCartService
             return;
         }
 
+        if (remainingDiscount <= 0m)
+        {
+            foreach (var line in discountableLines)
+            {
+                if (preserveManualOverrideWhenZero)
+                {
+                    // 非零整单百分比可能舍入为 0；仍须冻结 Manual + 0，
+                    // 防止 catalog 折扣重新生效。只有用户输入 0 才清除。
+                    line.SetOrderDiscountAmount(0m);
+                }
+                else
+                {
+                    line.ClearManualDiscount();
+                }
+            }
+
+            return;
+        }
+
         for (var i = 0; i < discountableLines.Count; i++)
         {
             var line = discountableLines[i];
@@ -918,7 +1012,7 @@ public sealed class PosCartService
                 : decimal.Round(discountAmount * line.GrossAmount / totalGrossAmount, 2, MidpointRounding.AwayFromZero);
 
             lineDiscount = Math.Clamp(lineDiscount, 0m, Math.Min(line.GrossAmount, remainingDiscount));
-            line.SetDiscountAmount(lineDiscount);
+            line.SetOrderDiscountAmount(lineDiscount);
             remainingDiscount -= lineDiscount;
         }
     }
@@ -950,4 +1044,5 @@ public sealed record PosCartLineSnapshot(
     Guid? OriginalOrderLineGuid = null,
     string? ReturnReason = null,
     PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None,
-    bool IsManualPrice = false);
+    bool IsManualPrice = false,
+    int CatalogDiscountBasisPoints = 0);

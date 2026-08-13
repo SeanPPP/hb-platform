@@ -38,6 +38,8 @@ public sealed class SharedHeldOrderApiClientTests
         Assert.Equal(1, capabilities.PayloadVersion);
         Assert.Equal(120, capabilities.PreparedTtlSeconds);
         Assert.True(capabilities.ForceReleaseSupported);
+        Assert.Equal([1], capabilities.SupportedPayloadVersions);
+        Assert.Equal(1, capabilities.PreferredPayloadVersion);
     }
 
     [Fact]
@@ -162,7 +164,8 @@ public sealed class SharedHeldOrderApiClientTests
     {
         var client = CreateApiClient(new StubHttpMessageHandler((request, _) =>
         {
-            Assert.Equal("/api/v1/held-orders/11111111-1111-1111-1111-111111111111/claims/prepare",
+            Assert.Equal(
+                "/api/v1/held-orders/11111111-1111-1111-1111-111111111111/claims/prepare?supportedPayloadVersions=1&supportedPayloadVersions=2",
                 request.RequestUri?.PathAndQuery);
             return Task.FromResult(JsonResponse(new
             {
@@ -194,7 +197,8 @@ public sealed class SharedHeldOrderApiClientTests
         Assert.Equal(SharedHeldOrderClaimStatus.Prepared, response.Status);
         Assert.Equal(3L, response.Revision);
         Assert.NotNull(response.Payload);
-        Assert.Equal(1100L, response.Payload.PricingState.Lines[0].UnitPriceCents);
+        var payload = Assert.IsType<SharedSaleCartV1>(response.Payload);
+        Assert.Equal(1100L, payload.PricingState.Lines[0].UnitPriceCents);
         Assert.Equal(
             DateTimeOffset.Parse("2026-07-28T01:04:03.456Z"),
             response.ExpiresAtUtc);
@@ -258,7 +262,9 @@ public sealed class SharedHeldOrderApiClientTests
         var client = CreateApiClient(new StubHttpMessageHandler((request, _) =>
         {
             Assert.Equal(HttpMethod.Get, request.Method);
-            Assert.Equal("/api/v1/held-orders", request.RequestUri?.PathAndQuery);
+            Assert.Equal(
+                "/api/v1/held-orders?supportedPayloadVersions=1&supportedPayloadVersions=2",
+                request.RequestUri?.PathAndQuery);
             return Task.FromResult(JsonResponse(new
             {
                 success = true,
@@ -298,7 +304,9 @@ public sealed class SharedHeldOrderApiClientTests
     {
         var client = CreateApiClient(new StubHttpMessageHandler((request, _) =>
         {
-            Assert.Equal("/api/v1/held-orders/claims/mine", request.RequestUri?.PathAndQuery);
+            Assert.Equal(
+                "/api/v1/held-orders/claims/mine?supportedPayloadVersions=1&supportedPayloadVersions=2",
+                request.RequestUri?.PathAndQuery);
             return Task.FromResult(JsonResponse(new
             {
                 success = true,

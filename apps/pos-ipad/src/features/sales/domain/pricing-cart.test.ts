@@ -78,6 +78,7 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
     unitPrice: createAud(1_000),
     discount: createAud(0),
     actualAmount: createAud(2_000),
+    discountSource: "none",
     priceSource: "catalog",
     syncProvenance: { referenceCode: null, priceSource: 0 },
     kind: "sale",
@@ -95,6 +96,95 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
       ["open-1", "open-item", 789],
       ["open-2", "open-item", 789],
     ],
+  );
+});
+
+test("catalog 折扣基线按优先级、分币和小数数量重算，清零人工折扣后恢复", () => {
+  const cart = new PricingCart({
+    asOfIso,
+    promotions: [
+      {
+        id: "PROMO-2-FOR-15",
+        name: "PROMO-2-FOR-15",
+        effectiveStartIso: "2026-06-12T00:00:00.000Z",
+        effectiveEndIso: "2026-06-14T00:00:00.000Z",
+        isExclusive: false,
+        priority: 10,
+        applyQuantity: 2,
+        fixedPrice: createAud(1_000),
+        maxApplicationsPerOrder: null,
+        products: [{ productCode: "SKU-001", unitWeight: 1 }],
+      },
+    ],
+  });
+  const catalogInput = item("catalog", {
+    productCode: "SKU-001",
+    lookupCode: "CATALOG",
+    unitPrice: createAud(699),
+    quantity: 2,
+    catalogDiscountBasisPoints: 2_000,
+  });
+
+  cart.addItem(catalogInput);
+  let line = cart.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 280);
+  assert.equal(line.actualAmount.cents, 1_118);
+  assert.equal(line.discountSource, "catalog");
+  assert.equal(line.priceSource, "catalog");
+  assert.equal(
+    cart.stateSnapshot().lines[0]?.catalogDiscountBasisPoints,
+    2_000,
+  );
+
+  const decimalState = cart.stateSnapshot();
+  const decimal = PricingCart.restore({
+    ...decimalState,
+    lines: [
+      {
+        ...decimalState.lines[0]!,
+        unitPriceCents: 50,
+        quantity: 0.29,
+      },
+    ],
+  });
+  line = decimal.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 3);
+  assert.equal(line.actualAmount.cents, 12);
+
+  assert.equal(decimal.setLineDiscountPercentBps("catalog", 1_000), true);
+  line = decimal.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 2);
+  assert.equal(line.actualAmount.cents, 13);
+  assert.equal(line.discountSource, "manual");
+
+  assert.equal(decimal.setLineDiscountPercentBps("catalog", 0), true);
+  line = decimal.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 3);
+  assert.equal(line.actualAmount.cents, 12);
+  assert.equal(line.discountSource, "catalog");
+});
+
+test("restore 拒绝目录折扣基线与促销状态共存", () => {
+  const cart = new PricingCart({ asOfIso });
+  cart.addItem(item("catalog-conflict", {
+    unitPrice: createAud(699),
+    catalogDiscountBasisPoints: 2_000,
+  }));
+  const state = cart.stateSnapshot();
+
+  assert.throws(
+    () => PricingCart.restore({
+      ...state,
+      lines: state.lines.map((line) => ({
+        ...line,
+        discountState: {
+          kind: "promotion" as const,
+          cents: 100,
+          promotionIds: ["promo-conflict"],
+        },
+      })),
+    }),
+    /catalog discount.*promotion/i,
   );
 });
 
@@ -426,6 +516,66 @@ test("order discounts allocate rounded remainders deterministically", () => {
   assert.equal(cents.snapshot().actualAmount.cents, 1);
 });
 
+test("整单分摊为零仍覆盖目录折扣，清除行折扣才恢复目录折扣", () => {
+  const cart = new PricingCart({ asOfIso });
+  cart.addItem(item("cent-a", { unitPrice: createAud(1) }));
+  cart.addItem(item("cent-b", { unitPrice: createAud(1) }));
+  cart.addItem(item("cent-c", {
+    unitPrice: createAud(1),
+    catalogDiscountBasisPoints: 10_000,
+  }));
+
+  assert.equal(cart.setOrderDiscountPercentBps(5_000), true);
+  assert.deepEqual(
+    cart.snapshot().lines.map((line) => [line.discount.cents, line.discountSource]),
+    [[1, "manual"], [1, "manual"], [0, "manual"]],
+  );
+  assert.equal(cart.snapshot().discount.cents, 2);
+  assert.equal(cart.snapshot().actualAmount.cents, 1);
+
+  const state = cart.stateSnapshot();
+  assert.deepEqual(
+    state.lines.map((line) => line.discountState),
+    [
+      { kind: "manual-amount", cents: 1 },
+      { kind: "manual-amount", cents: 1 },
+      { kind: "manual-amount", cents: 0 },
+    ],
+  );
+  const restored = PricingCart.restore(state);
+  assert.deepEqual(restored.snapshot(), cart.snapshot());
+  assert.deepEqual(restored.stateSnapshot(), state);
+
+  assert.equal(restored.setLineDiscountAmount("cent-c", createAud(0)), true);
+  assert.equal(restored.snapshot().lines[2]?.discount.cents, 1);
+  assert.equal(restored.snapshot().lines[2]?.discountSource, "catalog");
+});
+
+test("非零整单百分比舍入为零仍覆盖目录折扣，百分比清零才恢复", () => {
+  const cart = new PricingCart({ asOfIso });
+  cart.addItem(item("cent-catalog", {
+    unitPrice: createAud(1),
+    catalogDiscountBasisPoints: 10_000,
+  }));
+
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 1);
+  assert.equal(cart.snapshot().lines[0]?.discountSource, "catalog");
+
+  assert.equal(cart.setOrderDiscountPercentBps(1), true);
+  assert.deepEqual(cart.stateSnapshot().lines[0]?.discountState, {
+    kind: "manual-amount",
+    cents: 0,
+  });
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 0);
+  assert.equal(cart.snapshot().lines[0]?.discountSource, "manual");
+  assert.equal(cart.snapshot().actualAmount.cents, 1);
+
+  assert.equal(cart.setOrderDiscountPercentBps(0), true);
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 1);
+  assert.equal(cart.snapshot().lines[0]?.discountSource, "catalog");
+  assert.equal(cart.snapshot().actualAmount.cents, 0);
+});
+
 test("feature-private state restores percent behavior while frozen snapshots stay stable", () => {
   const first = new PricingCart({ asOfIso });
   first.addItem(item("line-a", { unitPrice: createAud(1_000) }));
@@ -518,6 +668,33 @@ test("zero-price lines remain representable without floating point coercion", ()
   assert.equal(cart.snapshot().subtotal.cents, 0);
   assert.equal(cart.snapshot().actualAmount.cents, 0);
   assert.equal(cart.snapshot().lines[0]!.priceSource, "open-item");
+});
+
+test("restore 拒绝给内部 kind=sale 的 open-item 注入目录折扣基线", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addOpenItem({
+    lineId: "open-catalog-corrupt",
+    productCode: "OPENITEM",
+    itemNumber: null,
+    displayName: "Open item",
+    unitPrice: createAud(699),
+    syncProvenance: { referenceCode: "OPENITEM", priceSource: 0 },
+  });
+  const state = source.stateSnapshot();
+
+  assert.throws(
+    () =>
+      PricingCart.restore({
+        ...state,
+        lines: [
+          {
+            ...state.lines[0]!,
+            catalogDiscountBasisPoints: 2_000,
+          },
+        ],
+      }),
+    /open-item.*catalog discount/i,
+  );
 });
 
 test("在线目录校准更新全部同身份销售行，保留手工价并跳过退货与 open item", () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
+import { fromSharedSaleCart } from "./shared-held-order-cart-reverse-mapper";
 import {
   SharedHeldOrderClaimInvariantError,
   type PrepareClaimResult,
@@ -26,6 +26,7 @@ import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
 } from "./shared-sale-cart-v1";
+import type { SharedSaleCartPayload } from "./shared-sale-cart-v2";
 
 import type {
   HeldOrderScope,
@@ -483,7 +484,9 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
   public async getCapabilities() {
     return {
       enabled: true,
-      payloadVersion: 1,
+      payloadVersion: 1 as const,
+      supportedPayloadVersions: [1, 2] as const,
+      preferredPayloadVersion: 1 as const,
       preparedTtlSeconds: 900,
       forceReleaseSupported: true,
     };
@@ -507,7 +510,7 @@ class FakeApi implements SharedHeldOrderNetworkApiPort {
     holdGuid: string;
     storeCode: string;
     deviceCode: string;
-    cart: SharedSaleCartV1;
+    cart: SharedSaleCartPayload;
     idempotencyKey: string;
   }>) {
     return {
@@ -906,7 +909,7 @@ test("崩溃恢复：购物车已带相同 claim binding 与冻结快照时按�
     source: "OfflineOrigin",
     state: "Active",
   });
-  const pricingState = fromSharedSaleCartV1(claim.payload);
+  const pricingState = fromSharedSaleCart(claim.payload);
   const cart = new FakeCart({
     ...snapshot(0),
     pricingState,
@@ -935,7 +938,7 @@ test("对账：已恢复的 OfflineOrigin 旧孤儿先补回 fence/held，再保
     state: "Active",
   });
   claims.legacyClearedClaimGuids.add(claim.claimGuid);
-  const frozenPricingState = fromSharedSaleCartV1(claim.payload);
+  const frozenPricingState = fromSharedSaleCart(claim.payload);
   const pricingState: PricingCartStateSnapshot = {
     ...frozenPricingState,
     revision: frozenPricingState.revision + 1,

@@ -72,6 +72,42 @@ public sealed class SharedHeldOrderReverseMapperTests
     }
 
     [Fact]
+    public void Map_catalog_discount_restores_jm006_amount_source_and_baseline()
+    {
+        var snapshot = Mapper.Map(
+            SampleCanonical(
+                quantity: 1m,
+                unitPriceCents: 699,
+                catalogDiscountBasisPoints: 2000),
+            "S001");
+
+        var line = Assert.Single(snapshot.Lines);
+        Assert.Equal(6.99m, line.UnitPrice);
+        Assert.Equal(1.40m, line.DiscountAmount);
+        Assert.Equal(20m, line.DiscountPercent);
+        Assert.Equal(PosCartLineDiscountSource.Catalog, line.DiscountSource);
+        Assert.Equal(2000, line.CatalogDiscountBasisPoints);
+    }
+
+    [Fact]
+    public void Map_manual_discount_temporarily_overrides_catalog_baseline()
+    {
+        var snapshot = Mapper.Map(
+            SampleCanonical(
+                quantity: 1m,
+                unitPriceCents: 699,
+                discountMode: SharedHeldOrderCanonicalConstants.DiscountManualAmount,
+                discountCents: 200,
+                catalogDiscountBasisPoints: 2000),
+            "S001");
+
+        var line = Assert.Single(snapshot.Lines);
+        Assert.Equal(2m, line.DiscountAmount);
+        Assert.Equal(PosCartLineDiscountSource.Manual, line.DiscountSource);
+        Assert.Equal(2000, line.CatalogDiscountBasisPoints);
+    }
+
+    [Fact]
     public void Map_promotion_discount_restores_promotion_source_and_amount()
     {
         var snapshot = Mapper.Map(

@@ -205,6 +205,33 @@ public sealed class PromotionEvaluationServiceTests
         Assert.Equal(CartLineDiscountSource.Manual, manualLine.DiscountSource);
     }
 
+    [Fact]
+    public async Task EvaluateAsync_excludes_catalog_baseline_even_when_its_cent_discount_rounds_to_zero()
+    {
+        var repository = new FakeLocalPromotionRepository();
+        var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+        repository.SeedStore("S001",
+        [
+            CreateRule("PROMO-CATALOG-BASELINE", asOf, ["SKU-CATALOG", "SKU-NORMAL"], applyQuantity: 2, fixedPrice: 0.01m)
+        ]);
+
+        var cart = new PosCartService();
+        var catalogLine = cart.AddItem(CreateItem(
+            productCode: "SKU-CATALOG",
+            lookupCode: "CATALOG-001",
+            price: 0.01m,
+            discountRate: 0.0001m));
+        cart.AddItem(CreateItem(productCode: "SKU-NORMAL", lookupCode: "NORMAL-001", price: 0.01m));
+
+        // 1 个基点的 0.01 元目录折扣会舍入为 0，不能因此重新成为固定总价候选。
+        Assert.Equal(1, catalogLine.CatalogDiscountBasisPoints);
+        Assert.Equal(0m, catalogLine.DiscountAmount);
+
+        var discounts = await new PromotionEvaluationService(repository).EvaluateAsync(cart.Lines, "S001", asOf);
+
+        Assert.Empty(discounts);
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",
@@ -214,7 +241,8 @@ public sealed class PromotionEvaluationServiceTests
         decimal price = 10m,
         PriceSourceKind priceSource = PriceSourceKind.StoreRetailPrice,
         string? productImage = null,
-        decimal quantityFactor = 1m)
+        decimal quantityFactor = 1m,
+        decimal? discountRate = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -229,7 +257,8 @@ public sealed class PromotionEvaluationServiceTests
             PriceSourceLabel: priceSource.ToString(),
             QuantityFactor: quantityFactor,
             UpdatedAt: DateTimeOffset.UtcNow,
-            ProductImage: productImage);
+            ProductImage: productImage,
+            DiscountRate: discountRate);
     }
 
     private static PromotionRuleDto CreateRule(

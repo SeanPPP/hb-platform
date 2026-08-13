@@ -492,6 +492,16 @@ function validateDiscountState(
 export function toSharedSaleCartV1(
   snapshot: Readonly<PricingCartStateSnapshot>,
 ): SharedSaleCartV1 {
+  if (
+    snapshot.lines.some(
+      (line) => (line.catalogDiscountBasisPoints ?? 0) !== 0,
+    )
+  ) {
+    throw invalid(
+      "SHARED_CART_INVALID",
+      "cannot encode a catalog discount baseline in SharedSaleCartV1",
+    );
+  }
   return {
     version: 1,
     pricingState: {

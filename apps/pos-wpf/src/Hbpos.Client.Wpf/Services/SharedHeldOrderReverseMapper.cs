@@ -95,7 +95,8 @@ public sealed class SharedHeldOrderReverseMapper : ISharedHeldOrderReverseMapper
             IsManualPrice: string.Equals(
                 line.BasePriceSource,
                 SharedHeldOrderCanonicalConstants.BasePriceSourceManual,
-                StringComparison.Ordinal));
+                StringComparison.Ordinal),
+            CatalogDiscountBasisPoints: line.CatalogDiscountBasisPoints);
     }
 
     /// <summary>
@@ -130,6 +131,19 @@ public sealed class SharedHeldOrderReverseMapper : ISharedHeldOrderReverseMapper
             line.Quantity * CentsToMoney(line.UnitPriceCents),
             2,
             MidpointRounding.AwayFromZero);
+        if (line.DiscountState.Mode == SharedHeldOrderCanonicalConstants.DiscountNone
+            && line.CatalogDiscountBasisPoints > 0)
+        {
+            var catalogDiscount = decimal.Round(
+                gross * line.CatalogDiscountBasisPoints / 10_000m,
+                2,
+                MidpointRounding.AwayFromZero);
+            return (
+                Math.Clamp(catalogDiscount, 0m, gross),
+                line.CatalogDiscountBasisPoints / 100m,
+                PosCartLineDiscountSource.Catalog);
+        }
+
         return line.DiscountState.Mode switch
         {
             SharedHeldOrderCanonicalConstants.DiscountNone =>

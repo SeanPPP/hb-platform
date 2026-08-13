@@ -249,3 +249,152 @@ test("M41 回填共享意图并 fail-closed：未请求不能评估/发布，删
     await connection.close();
   }
 });
+
+test("M42 保留旧 claim 密文并默认 V1，同时允许冻结 V2 wire 版本", async () => {
+  const connection = new NodeSqliteConnection(
+    new DatabaseSync(":memory:", { enableForeignKeyConstraints: true }),
+  );
+  try {
+    const throughM41 = POS_DATABASE_MIGRATIONS.filter(
+      (migration) => migration.version <= 41,
+    );
+    await applyMigrations(connection, () => TEST_NOW_ISO, throughM41);
+    const legacyCiphertext = new TextEncoder().encode("legacy-v1-ciphertext");
+    await connection.run(
+      `INSERT INTO shared_held_order_claim_records (
+        claim_guid, hold_guid, recall_attempt_id, store_code, device_code,
+        source, state, prepare_idempotency_key, payload_version,
+        payload_ciphertext, prepared_expires_at_iso, held_at_iso,
+        held_by_cashier_id, held_by_cashier_name, created_at_iso, updated_at_iso
+      ) VALUES (?, ?, ?, ?, ?, 'RemoteClaim', 'Prepared', ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "claim-v1",
+        "hold-v1",
+        "attempt-v1",
+        "S1",
+        "IPAD-1",
+        "prepare-v1",
+        legacyCiphertext,
+        TEST_NOW_ISO,
+        TEST_NOW_ISO,
+        "cashier-1",
+        "Cashier One",
+        TEST_NOW_ISO,
+        TEST_NOW_ISO,
+      ],
+    );
+
+    await applyMigrations(connection, () => TEST_NOW_ISO);
+
+    const legacy = await connection.getFirst<{
+      wire_payload_version: number;
+      payload_ciphertext: Uint8Array;
+    }>(
+      `SELECT wire_payload_version, payload_ciphertext
+       FROM shared_held_order_claim_records WHERE claim_guid = 'claim-v1'`,
+    );
+    assert.equal(legacy?.wire_payload_version, 1);
+    assert.deepEqual(legacy?.payload_ciphertext, legacyCiphertext);
+
+    await connection.run(
+      `INSERT INTO shared_held_order_claim_records (
+        claim_guid, hold_guid, recall_attempt_id, store_code, device_code,
+        source, state, prepare_idempotency_key, payload_version,
+        wire_payload_version, payload_ciphertext, prepared_expires_at_iso,
+        held_at_iso, held_by_cashier_id, held_by_cashier_name,
+        created_at_iso, updated_at_iso
+      ) VALUES (?, ?, ?, ?, ?, 'RemoteClaim', 'Prepared', ?, 1, 2, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "claim-v2",
+        "hold-v2",
+        "attempt-v2",
+        "S1",
+        "IPAD-2",
+        "prepare-v2",
+        new TextEncoder().encode("v2-ciphertext"),
+        TEST_NOW_ISO,
+        TEST_NOW_ISO,
+        "cashier-1",
+        "Cashier One",
+        TEST_NOW_ISO,
+        TEST_NOW_ISO,
+      ],
+    );
+    await assert.rejects(
+      connection.run(
+        `UPDATE shared_held_order_claim_records
+         SET wire_payload_version = 1 WHERE claim_guid = 'claim-v2'`,
+      ),
+      /SHARED_HELD_ORDER_CLAIM_WIRE_VERSION_IMMUTABLE/,
+    );
+    await assert.rejects(
+      connection.run(
+        `INSERT INTO shared_held_order_claim_records (
+          claim_guid, hold_guid, recall_attempt_id, store_code, device_code,
+          source, state, prepare_idempotency_key, payload_version,
+          wire_payload_version, payload_ciphertext, prepared_expires_at_iso,
+          held_at_iso, held_by_cashier_id, held_by_cashier_name,
+          created_at_iso, updated_at_iso
+        ) VALUES ('claim-v3', 'hold-v3', 'attempt-v3', 'S1', 'IPAD-3',
+          'RemoteClaim', 'Prepared', 'prepare-v3', 1, 3, X'01', ?, ?,
+          'cashier-1', 'Cashier One', ?, ?)`,
+        [TEST_NOW_ISO, TEST_NOW_ISO, TEST_NOW_ISO, TEST_NOW_ISO],
+      ),
+      /CHECK constraint failed/,
+    );
+  } finally {
+    await connection.close();
+  }
+});
+
+test("M43 publication wire 版本首次可冻结，之后不可重写或清空", async () => {
+  const connection = new NodeSqliteConnection(
+    new DatabaseSync(":memory:", { enableForeignKeyConstraints: true }),
+  );
+  try {
+    const throughM42 = POS_DATABASE_MIGRATIONS.filter(
+      (migration) => migration.version <= 42,
+    );
+    await applyMigrations(connection, () => TEST_NOW_ISO, throughM42);
+    await insertHeldOrderRow(connection, {
+      holdId: "hold-publication-wire-version",
+      payloadCiphertext: new TextEncoder().encode("legacy-ciphertext"),
+    });
+    await connection.run(
+      `UPDATE held_order_records
+       SET share_state = 'PendingPublish', share_requested_at_iso = ?
+       WHERE hold_id = ?`,
+      [TEST_NOW_ISO, "hold-publication-wire-version"],
+    );
+
+    await applyMigrations(connection, () => TEST_NOW_ISO);
+    const beforePin = await connection.getFirst<{
+      wire_payload_version: number | null;
+    }>(
+      `SELECT wire_payload_version FROM held_order_records WHERE hold_id = ?`,
+      ["hold-publication-wire-version"],
+    );
+    assert.equal(beforePin?.wire_payload_version, null);
+
+    await connection.run(
+      `UPDATE held_order_records SET wire_payload_version = 1 WHERE hold_id = ?`,
+      ["hold-publication-wire-version"],
+    );
+    await assert.rejects(
+      connection.run(
+        `UPDATE held_order_records SET wire_payload_version = 2 WHERE hold_id = ?`,
+        ["hold-publication-wire-version"],
+      ),
+      /HELD_ORDER_PUBLICATION_WIRE_VERSION_IMMUTABLE/,
+    );
+    await assert.rejects(
+      connection.run(
+        `UPDATE held_order_records SET wire_payload_version = NULL WHERE hold_id = ?`,
+        ["hold-publication-wire-version"],
+      ),
+      /HELD_ORDER_PUBLICATION_WIRE_VERSION_IMMUTABLE/,
+    );
+  } finally {
+    await connection.close();
+  }
+});

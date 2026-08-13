@@ -131,6 +131,74 @@ public sealed class SuspendedOrderRepositorySharedHoldTests
     }
 
     [Fact]
+    public async Task SaveAsync_fails_before_transaction_when_catalog_baseline_column_is_missing()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new SuspendedOrderRepository(store);
+            var order = SampleOrder();
+            order = order with
+            {
+                Lines =
+                [
+                    order.Lines[0] with { CatalogDiscountBasisPoints = 2_000 }
+                ]
+            };
+
+            await using (var setupConnection = await store.OpenConnectionAsync())
+            {
+                await using var command = setupConnection.CreateCommand();
+                command.CommandText = "ALTER TABLE SuspendedOrderLines DROP COLUMN CatalogDiscountBasisPoints;";
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveAsync(order));
+
+            await using var connection = await store.OpenConnectionAsync();
+            Assert.Equal(0, await ReadIntAsync(connection, "SELECT COUNT(*) FROM SuspendedOrders;"));
+            Assert.Equal(0, await ReadIntAsync(connection, "SELECT COUNT(*) FROM SuspendedOrderLines;"));
+            Assert.Equal(0, await ReadIntAsync(connection, "SELECT COUNT(*) FROM SharedHeldOrderPublications;"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task SaveAsync_keeps_legacy_schema_compatibility_when_no_catalog_baseline_is_present()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new SuspendedOrderRepository(store);
+            var order = SampleOrder();
+
+            await using (var setupConnection = await store.OpenConnectionAsync())
+            {
+                await using var command = setupConnection.CreateCommand();
+                command.CommandText = "ALTER TABLE SuspendedOrderLines DROP COLUMN CatalogDiscountBasisPoints;";
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await repository.SaveAsync(order);
+
+            await using var connection = await store.OpenConnectionAsync();
+            Assert.Equal(1, await ReadIntAsync(connection, "SELECT COUNT(*) FROM SuspendedOrders;"));
+            Assert.Equal(2, await ReadIntAsync(connection, "SELECT COUNT(*) FROM SuspendedOrderLines;"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Recall_and_cancel_status_changes_do_not_touch_publication()
     {
         var databasePath = CreateTempDatabasePath();

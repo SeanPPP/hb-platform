@@ -65,7 +65,8 @@ public sealed class SuspendedOrderService(
                 OriginalOrderGuid = line.OriginalOrderGuid,
                 OriginalOrderDetailGuid = line.OriginalOrderLineGuid,
                 ReturnReason = line.ReturnReason,
-                IsManualPrice = line.IsManualPrice
+                IsManualPrice = line.IsManualPrice,
+                CatalogDiscountBasisPoints = line.CatalogDiscountBasisPoints
             })
             .ToArray();
 
@@ -153,7 +154,8 @@ public sealed class SuspendedOrderService(
                 line.OriginalOrderDetailGuid,
                 line.ReturnReason,
                 line.DiscountSource,
-                line.IsManualPrice))
+                line.IsManualPrice,
+                line.CatalogDiscountBasisPoints))
             .ToArray()));
         cart.AddReturnPaymentCapacities(order.ReturnPaymentCapacities);
         try

@@ -114,7 +114,9 @@ public static class SharedHeldOrderClientTestSupport
         long unitPriceCents = 1100,
         string? discountMode = null,
         long? discountCents = null,
-        int? basisPoints = null)
+        int? basisPoints = null,
+        int catalogDiscountBasisPoints = 0,
+        int? payloadVersion = null)
     {
         IReadOnlyList<SharedHeldOrderPromotionDefinition> promotions = [];
         IReadOnlyList<string>? promotionIds = null;
@@ -148,7 +150,7 @@ public static class SharedHeldOrderClientTestSupport
             _ => new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone)
         };
         return new SharedHeldOrderCanonicalPayload(
-            1,
+            payloadVersion ?? (catalogDiscountBasisPoints > 0 ? 2 : 1),
             new SharedHeldOrderPricingState(
                 revision,
                 SharedHeldOrderCanonicalConstants.SaleMode,
@@ -169,7 +171,8 @@ public static class SharedHeldOrderClientTestSupport
                         null,
                         null,
                         null,
-                        discountState)
+                        discountState,
+                        catalogDiscountBasisPoints)
                 ]));
     }
 

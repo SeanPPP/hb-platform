@@ -11,6 +11,10 @@ public sealed record SharedHeldOrderCanonicalPayload(
     int Version,
     SharedHeldOrderPricingState PricingState)
 {
+    public const int VersionV1 = 1;
+    public const int VersionV2 = 2;
+
+    // 兼容既有调用方/fixture：未显式选择版本时仍构造冻结 V1。
     public const int CurrentVersion = 1;
 }
 
@@ -49,7 +53,8 @@ public sealed record SharedHeldOrderPricingLine(
     string? ReturnSourceKey,
     Guid? OriginalOrderGuid,
     Guid? OriginalOrderDetailGuid,
-    SharedHeldOrderDiscountState DiscountState);
+    SharedHeldOrderDiscountState DiscountState,
+    int CatalogDiscountBasisPoints = 0);
 
 public sealed record SharedHeldOrderLineSyncProvenance(string? ReferenceCode, int PriceSource);
 
@@ -110,5 +115,6 @@ public static class SharedHeldOrderMappingReasons
     public const string OpenItemLine = "OpenItemLineNotSupported";
     public const string PromotionRulesMissing = "PromotionRulesMissing";
     public const string PromotionRulesMismatch = "PromotionRulesMismatch";
+    public const string CatalogDiscountPromotionConflict = "CatalogDiscountPromotionConflict";
     public const string InvalidSnapshot = "InvalidSnapshot";
 }

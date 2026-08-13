@@ -1,4 +1,11 @@
-import { normalizeSharedSaleCartV1, type SharedSaleCartV1 } from "./shared-sale-cart-v1";
+import type {
+  SharedLineDiscountStateV1,
+  SharedSaleLineV1,
+} from "./shared-sale-cart-v1";
+import {
+  normalizeSharedSaleCart,
+  type SharedSaleCartPayload,
+} from "./shared-sale-cart-v2";
 
 import {
   HbposApiError,
@@ -8,16 +15,23 @@ import {
 } from "@/core/api/hbpos-api";
 import type { components } from "@/generated/hbpos/schema";
 
-
-type GeneratedCapabilities = components["schemas"]["SharedHeldOrderCapabilitiesResponse"];
+type GeneratedCapabilities =
+  components["schemas"]["SharedHeldOrderCapabilitiesResponse"];
 type GeneratedListItem = components["schemas"]["SharedHeldOrderListItemDto"];
-type GeneratedPublishRequest = components["schemas"]["SharedHeldOrderPublishRequest"];
+type GeneratedPublishRequest =
+  components["schemas"]["SharedHeldOrderPublishRequest"];
 type GeneratedPublishResponse = components["schemas"]["SharedHeldOrderPublishResponse"];
 type GeneratedPrepareRequest = components["schemas"]["SharedHeldOrderClaimPrepareRequest"];
-type GeneratedPrepareResponse = components["schemas"]["SharedHeldOrderClaimPrepareResponse"];
+type GeneratedPrepareResponse =
+  components["schemas"]["SharedHeldOrderClaimPrepareResponse"];
 type GeneratedClaim = components["schemas"]["SharedHeldOrderClaimDto"];
-type GeneratedRecoveryClaim = components["schemas"]["SharedHeldOrderRecoveryClaimDto"];
+type GeneratedRecoveryClaim =
+  components["schemas"]["SharedHeldOrderRecoveryClaimDto"];
 type GeneratedCancelResponse = components["schemas"]["SharedHeldOrderCancelResponse"];
+type GeneratedCart = NonNullable<GeneratedPublishRequest["cart"]>;
+type GeneratedLineV1 = components["schemas"]["SharedSaleLineV1"];
+type GeneratedLineV2 = components["schemas"]["SharedSaleLineV2"];
+type GeneratedDiscount = components["schemas"]["SharedLineDiscountStateV1"];
 
 export type SharedHeldOrderApiErrorKind =
   | "Disabled"
@@ -53,7 +67,10 @@ export class SharedHeldOrderApiError extends Error {
 
 export type SharedHeldOrderCapabilities = Readonly<{
   enabled: boolean;
-  payloadVersion: number;
+  /** 兼容旧服务端保留字段；当前服务端主字段仍固定为 V1。 */
+  payloadVersion: 1;
+  supportedPayloadVersions: readonly (1 | 2)[];
+  preferredPayloadVersion: 1 | 2;
   preparedTtlSeconds: number;
   forceReleaseSupported: boolean;
 }>;
@@ -104,7 +121,7 @@ export type SharedHeldOrderPrepareResult = Readonly<{
   holdGuid: string;
   claimGuid: string;
   status: SharedHeldOrderClaimStatus;
-  payload: SharedSaleCartV1;
+  payload: SharedSaleCartPayload;
   claimantDeviceCode: string;
   claimantCashierId: string;
   claimantCashierName: string;
@@ -144,7 +161,7 @@ export type SharedHeldOrderRecoveryClaimDto = Readonly<{
   claimantDeviceCode: string;
   claimantCashierId: string;
   claimantCashierName: string;
-  payload: SharedSaleCartV1;
+  payload: SharedSaleCartPayload;
   createdAtIso: string;
   updatedAtIso: string;
   expiresAtIso: string | null;
@@ -158,7 +175,7 @@ export interface SharedHeldOrderNetworkApiPort {
     holdGuid: string;
     storeCode: string;
     deviceCode: string;
-    cart: SharedSaleCartV1;
+    cart: SharedSaleCartPayload;
     idempotencyKey: string;
   }>): Promise<SharedHeldOrderPublishResult>;
   listPending(): Promise<readonly SharedHeldOrderPendingListItem[]>;
@@ -186,7 +203,8 @@ export interface SharedHeldOrderNetworkApiPort {
 
 /**
  * Hbpos transport 的共享挂单 API adapter。所有 wire DTO 严格解析为本地域类型，
- * payload 只经 normalizeSharedSaleCartV1 进入内存；任何路径不把 payload 拼进异常消息。
+ * payload 只经按 version 分派的 normalizeSharedSaleCart 进入内存；任何路径不把
+ * payload 拼进异常消息。版本 query 使用重复键 URL，避免 Axios 默认 [] 后缀。
  */
 export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort {
   public constructor(private readonly transport: HbposTransport) {}
@@ -195,9 +213,13 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
     return this.get<GeneratedCapabilities>("/api/v1/held-orders/capabilities")
       .then((body) => ({
         enabled: requiredBoolean(body.enabled, "capabilities enabled"),
-        payloadVersion: requiredNonNegativeInteger(
-          body.payloadVersion,
-          "capabilities payloadVersion",
+        payloadVersion: requiredPayloadVersion(body.payloadVersion),
+        supportedPayloadVersions: normalizeSupportedPayloadVersions(
+          body.supportedPayloadVersions,
+        ),
+        preferredPayloadVersion: normalizePreferredPayloadVersion(
+          body.preferredPayloadVersion,
+          body.supportedPayloadVersions,
         ),
         preparedTtlSeconds: requiredNonNegativeInteger(
           body.preparedTtlSeconds,
@@ -209,7 +231,9 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
   }
 
   public async listPending(): Promise<readonly SharedHeldOrderPendingListItem[]> {
-    return this.get<readonly GeneratedListItem[]>("/api/v1/held-orders")
+    return this.get<readonly GeneratedListItem[]>(
+      withSupportedPayloadVersions("/api/v1/held-orders"),
+    )
       .then((rows) => Object.freeze(requiredArray(rows, "held orders").map(mapListItem)));
   }
 
@@ -232,14 +256,14 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
     holdGuid: string;
     storeCode: string;
     deviceCode: string;
-    cart: SharedSaleCartV1;
+    cart: SharedSaleCartPayload;
     idempotencyKey: string;
   }>): Promise<SharedHeldOrderPublishResult> {
     const request: GeneratedPublishRequest = {
       holdGuid: requiredText(input.holdGuid, "hold guid"),
       storeCode: requiredText(input.storeCode, "store code"),
       deviceCode: requiredText(input.deviceCode, "device code"),
-      cart: normalizeSharedSaleCartV1(input.cart) as NonNullable<GeneratedPublishRequest["cart"]>,
+      cart: toGeneratedCart(input.cart),
       idempotencyKey: requiredText(input.idempotencyKey, "idempotency key"),
     };
     return this.post<GeneratedPublishRequest, GeneratedPublishResponse>(
@@ -260,7 +284,9 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
       idempotencyKey: requiredText(input.idempotencyKey, "idempotency key"),
     };
     return this.post<GeneratedPrepareRequest, GeneratedPrepareResponse>(
-      `/api/v1/held-orders/${encodeURIComponent(holdGuid)}/claims/prepare`,
+      withSupportedPayloadVersions(
+        `/api/v1/held-orders/${encodeURIComponent(holdGuid)}/claims/prepare`,
+      ),
       request,
     ).then(mapPrepareResult);
   }
@@ -297,7 +323,9 @@ export class SharedHeldOrderNetworkApi implements SharedHeldOrderNetworkApiPort 
   }
 
   public async claimsMine(): Promise<readonly SharedHeldOrderRecoveryClaimDto[]> {
-    return this.get<readonly GeneratedRecoveryClaim[]>("/api/v1/held-orders/claims/mine")
+    return this.get<readonly GeneratedRecoveryClaim[]>(
+      withSupportedPayloadVersions("/api/v1/held-orders/claims/mine"),
+    )
       .then((rows) => Object.freeze(requiredArray(rows, "claims mine").map(mapRecoveryClaim)));
   }
 
@@ -482,7 +510,7 @@ function mapPrepareResult(
     holdGuid: requiredText(value.holdGuid, "prepare holdGuid"),
     claimGuid: requiredText(value.claimGuid, "prepare claimGuid"),
     status: mapClaimStatus(value.status),
-    payload: normalizeSharedSaleCartV1(value.payload),
+    payload: normalizeResponsePayload(value.payload),
     claimantDeviceCode: requiredText(value.claimantDeviceCode, "prepare device"),
     claimantCashierId: requiredText(value.claimantCashierId, "prepare cashier id"),
     claimantCashierName: requiredText(value.claimantCashierName, "prepare cashier name"),
@@ -528,7 +556,7 @@ function mapRecoveryClaim(
     claimantDeviceCode: requiredText(value.claimantDeviceCode, "recovery device"),
     claimantCashierId: requiredText(value.claimantCashierId, "recovery cashier id"),
     claimantCashierName: requiredText(value.claimantCashierName, "recovery cashier name"),
-    payload: normalizeSharedSaleCartV1(value.payload),
+    payload: normalizeResponsePayload(value.payload),
     createdAtIso: requiredIso(value.createdAtUtc, "recovery createdAt"),
     updatedAtIso: requiredIso(value.updatedAtUtc, "recovery updatedAt"),
     expiresAtIso: nullableIso(value.expiresAtUtc, "recovery expiresAt"),
@@ -545,6 +573,97 @@ function mapHoldStatus(
   if (value === 3) return "Completed";
   if (value === 4) return "Cancelled";
   throw new TypeError("Shared held order status is invalid.");
+}
+
+function normalizeResponsePayload(value: unknown): SharedSaleCartPayload {
+  try {
+    return normalizeSharedSaleCart(value);
+  } catch {
+    // 服务端成功 envelope 中的 payload 损坏属于稳定 Invalid；错误文案不得
+    // 携带字段名、商品信息或原始 JSON。
+    throw new SharedHeldOrderApiError("共享挂单载荷无效。", {
+      kind: "Invalid",
+    });
+  }
+}
+
+/**
+ * 领域 canonical 使用 readonly 集合；OpenAPI DTO 使用可变数组。这里显式复制到
+ * generated union，既保持 V1/V2 的真实 schema 约束，也避免把领域对象交给 transport
+ * 后被意外修改。OpenAPI 将 nullable provenance 表达为可选字段，因此 null 在请求 DTO
+ * 中省略；服务端反序列化后仍恢复为 null，canonical/指纹语义不变。
+ */
+function toGeneratedCart(value: SharedSaleCartPayload): GeneratedCart {
+  const cart = normalizeSharedSaleCart(value);
+  const promotions = cart.pricingState.promotions.map((promotion) => ({
+    ...promotion,
+    products: promotion.products.map((product) => ({ ...product })),
+  }));
+  const pricing = {
+    revision: cart.pricingState.revision,
+    mode: cart.pricingState.mode,
+    asOfIso: cart.pricingState.asOfIso,
+    promotions,
+  };
+
+  if (cart.version === 1) {
+    return {
+      version: 1,
+      pricingState: {
+        ...pricing,
+        lines: cart.pricingState.lines.map(toGeneratedLineV1),
+      },
+    } as GeneratedCart;
+  }
+
+  return {
+    version: 2,
+    pricingState: {
+      ...pricing,
+      lines: cart.pricingState.lines.map((line): GeneratedLineV2 => ({
+        ...toGeneratedLineV1(line),
+        catalogDiscountBasisPoints: line.catalogDiscountBasisPoints,
+      })),
+    },
+  } as GeneratedCart;
+}
+
+function toGeneratedLineV1(line: SharedSaleLineV1): GeneratedLineV1 {
+  return {
+    lineId: line.lineId,
+    productCode: line.productCode,
+    itemNumber: line.itemNumber,
+    lookupCode: line.lookupCode,
+    displayName: line.displayName,
+    quantity: line.quantity,
+    unitPriceCents: line.unitPriceCents,
+    basePriceSource: line.basePriceSource,
+    ...(line.syncProvenance === null
+      ? {}
+      : { syncProvenance: { ...line.syncProvenance } }),
+    kind: line.kind,
+    returnSourceKey: line.returnSourceKey,
+    originalOrderGuid: line.originalOrderGuid,
+    originalOrderDetailGuid: line.originalOrderDetailGuid,
+    discountState: toGeneratedDiscount(line.discountState),
+  };
+}
+
+function toGeneratedDiscount(discount: SharedLineDiscountStateV1): GeneratedDiscount {
+  switch (discount.mode) {
+    case "manual-amount":
+      return { mode: discount.mode, cents: discount.cents };
+    case "manual-percent":
+      return { mode: discount.mode, basisPoints: discount.basisPoints };
+    case "promotion":
+      return {
+        mode: discount.mode,
+        cents: discount.cents,
+        promotionIds: [...discount.promotionIds],
+      };
+    default:
+      return { mode: "none" };
+  }
 }
 
 function mapClaimStatus(value: components["schemas"]["SharedHeldOrderClaimStatus"] | undefined): SharedHeldOrderClaimStatus {
@@ -568,6 +687,53 @@ function requiredBoolean(value: boolean | undefined, label: string): boolean {
     throw new TypeError(`${label} must be a boolean.`);
   }
   return value;
+}
+
+function requiredPayloadVersion(value: number | undefined): 1 {
+  if (value !== 1) {
+    throw new TypeError("capabilities payloadVersion must remain 1.");
+  }
+  return 1;
+}
+
+function normalizeSupportedPayloadVersions(value: unknown): readonly (1 | 2)[] {
+  // 老服务端没有新字段：只按冻结的 V1 能力处理，绝不猜测 V2。
+  if (value === undefined) return Object.freeze([1] as const);
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError("capabilities supportedPayloadVersions must be a non-empty array.");
+  }
+  const versions = value.map((version) => {
+    if (version !== 1 && version !== 2) {
+      throw new TypeError("capabilities supportedPayloadVersions contains an unsupported version.");
+    }
+    return version;
+  });
+  if (new Set(versions).size !== versions.length) {
+    throw new TypeError("capabilities supportedPayloadVersions must not contain duplicates.");
+  }
+  return Object.freeze(versions);
+}
+
+function normalizePreferredPayloadVersion(
+  value: unknown,
+  supported: unknown,
+): 1 | 2 {
+  const preferred = value === undefined ? 1 : value;
+  if (preferred !== 1 && preferred !== 2) {
+    throw new TypeError("capabilities preferredPayloadVersion is invalid.");
+  }
+  const supportedVersions = normalizeSupportedPayloadVersions(supported);
+  if (!supportedVersions.includes(preferred)) {
+    throw new TypeError("capabilities preferredPayloadVersion is not supported.");
+  }
+  return preferred;
+}
+
+const SUPPORTED_PAYLOAD_VERSIONS_QUERY =
+  "supportedPayloadVersions=1&supportedPayloadVersions=2";
+
+function withSupportedPayloadVersions(path: string): string {
+  return `${path}${path.includes("?") ? "&" : "?"}${SUPPORTED_PAYLOAD_VERSIONS_QUERY}`;
 }
 
 function requiredText(value: string | null | undefined, label: string): string {

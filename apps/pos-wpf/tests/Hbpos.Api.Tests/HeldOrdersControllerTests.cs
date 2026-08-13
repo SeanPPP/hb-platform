@@ -123,7 +123,11 @@ public sealed class HeldOrdersControllerTests
         var controller = CreateController(new FakeService(), new FakeIdentityResolver(null));
 
         AssertError(
-            await controller.Prepare(HoldGuid, new SharedHeldOrderClaimPrepareRequest(ClaimGuid, "claim-1"), CancellationToken.None),
+            await controller.Prepare(
+                HoldGuid,
+                new SharedHeldOrderClaimPrepareRequest(ClaimGuid, "claim-1"),
+                supportedPayloadVersions: null,
+                CancellationToken.None),
             StatusCodes.Status401Unauthorized,
             "CASHIER_AUTH_REQUIRED");
         AssertError(
@@ -143,7 +147,7 @@ public sealed class HeldOrdersControllerTests
             StatusCodes.Status401Unauthorized,
             "CASHIER_AUTH_REQUIRED");
         AssertError(
-            await controller.ClaimsMine(CancellationToken.None),
+            await controller.ClaimsMine(supportedPayloadVersions: null, CancellationToken.None),
             StatusCodes.Status401Unauthorized,
             "CASHIER_AUTH_REQUIRED");
     }
@@ -168,6 +172,7 @@ public sealed class HeldOrdersControllerTests
         var action = await controller.Prepare(
             HoldGuid,
             new SharedHeldOrderClaimPrepareRequest(ClaimGuid, "claim-1"),
+            supportedPayloadVersions: null,
             CancellationToken.None);
 
         AssertError(action, expectedStatus, errorCode);

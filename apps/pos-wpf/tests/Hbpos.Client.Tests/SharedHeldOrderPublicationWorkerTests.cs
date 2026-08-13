@@ -169,6 +169,175 @@ public sealed class SharedHeldOrderPublicationWorkerTests
     }
 
     [Fact]
+    public async Task RunOnceAsync_preferred_v2_publishes_v2_even_without_catalog_baseline()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
+        SharedHeldOrderPublishRequest? publishedRequest = null;
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ => Task.FromResult(EnabledCapabilities(preferredPayloadVersion: 2)),
+            Publish = (request, _) =>
+            {
+                publishedRequest = request;
+                return Task.FromResult(new SharedHeldOrderPublishResponse(
+                    request.HoldGuid,
+                    SharedHeldOrderStatus.Pending,
+                    Revision: 1,
+                    new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero)));
+            }
+        };
+
+        var result = await CreateWorker(scope, api).RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(1, result.Published);
+        Assert.IsType<SharedSaleCartV2>(publishedRequest!.Cart);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_replays_the_persisted_v1_wire_version_after_response_loss_and_preferred_v2_flip()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        var order = await SaveSampleOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
+        var preferredVersion = 1;
+        var requests = new List<SharedHeldOrderPublishRequest>();
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ => Task.FromResult(EnabledCapabilities(preferredVersion)),
+            Publish = (request, _) =>
+            {
+                requests.Add(request);
+                // 第一次代表服务端已接受并创建挂单，但客户端在读取响应前断线。
+                if (requests.Count == 1)
+                {
+                    throw new SharedHeldOrderApiException(
+                        SharedHeldOrderApiErrorKind.Retryable,
+                        "response lost",
+                        "SHARED_HELD_ORDER_RESPONSE_LOST",
+                        HttpStatusCode.ServiceUnavailable);
+                }
+
+                return Task.FromResult(new SharedHeldOrderPublishResponse(
+                    request.HoldGuid,
+                    SharedHeldOrderStatus.Pending,
+                    Revision: 3L,
+                    new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero),
+                    AlreadyExists: true));
+            }
+        };
+        var time = new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero));
+        var worker = CreateWorker(scope, api, timeProvider: time);
+
+        var first = await worker.RunOnceAsync("S001", "POS-01");
+        preferredVersion = 2;
+        time.Now = new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero);
+        var replay = await worker.RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(1, first.FailedPublish);
+        Assert.Equal(1, replay.Published);
+        Assert.Equal(2, requests.Count);
+        Assert.All(requests, request => Assert.IsType<SharedSaleCartV1>(request.Cart));
+        Assert.Equal(order.SuspendedOrderGuid.ToString("D"), requests[0].IdempotencyKey);
+        Assert.Equal(requests[0].IdempotencyKey, requests[1].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_replays_the_persisted_v2_wire_version_after_response_loss_and_preferred_v1_rollback()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        var order = await SaveCatalogDiscountOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
+        var preferredVersion = 2;
+        var requests = new List<SharedHeldOrderPublishRequest>();
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ => Task.FromResult(EnabledCapabilities(preferredVersion)),
+            Publish = (request, _) =>
+            {
+                requests.Add(request);
+                if (requests.Count == 1)
+                {
+                    throw new SharedHeldOrderApiException(
+                        SharedHeldOrderApiErrorKind.Retryable,
+                        "response lost",
+                        "SHARED_HELD_ORDER_RESPONSE_LOST",
+                        HttpStatusCode.ServiceUnavailable);
+                }
+
+                return Task.FromResult(new SharedHeldOrderPublishResponse(
+                    request.HoldGuid,
+                    SharedHeldOrderStatus.Pending,
+                    Revision: 3L,
+                    new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero),
+                    AlreadyExists: true));
+            }
+        };
+        var time = new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero));
+        var worker = CreateWorker(scope, api, timeProvider: time);
+
+        var first = await worker.RunOnceAsync("S001", "POS-01");
+        preferredVersion = 1;
+        time.Now = new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero);
+        var replay = await worker.RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(1, first.FailedPublish);
+        Assert.Equal(1, replay.Published);
+        Assert.Equal(2, requests.Count);
+        Assert.All(requests, request => Assert.IsType<SharedSaleCartV2>(request.Cart));
+        Assert.Equal(requests[0].IdempotencyKey, requests[1].IdempotencyKey);
+        var retried = Assert.IsType<SharedSaleCartV2>(requests[1].Cart);
+        Assert.Equal(2000, Assert.Single(retried.PricingState.Lines).CatalogDiscountBasisPoints);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_catalog_baseline_waits_for_v2_then_publishes_losslessly()
+    {
+        await using var scope = await CreateRepositoryScopeAsync();
+        var store = new SuspendedOrderRepository(scope.Store);
+        var order = await SaveCatalogDiscountOrderAsync(store);
+        await RequestShareAsync(scope, order.SuspendedOrderGuid);
+        var preferredVersion = 1;
+        var publishedRequests = new List<SharedHeldOrderPublishRequest>();
+        var api = new StubSharedHeldOrderApiClient
+        {
+            Capabilities = _ => Task.FromResult(EnabledCapabilities(preferredVersion)),
+            Publish = (request, _) =>
+            {
+                publishedRequests.Add(request);
+                return Task.FromResult(new SharedHeldOrderPublishResponse(
+                    request.HoldGuid,
+                    SharedHeldOrderStatus.Pending,
+                    Revision: 1,
+                    new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero)));
+            }
+        };
+        var time = new FixedTimeProvider(new DateTimeOffset(2026, 7, 28, 3, 0, 0, TimeSpan.Zero));
+        var worker = CreateWorker(scope, api, timeProvider: time);
+
+        var waiting = await worker.RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(0, waiting.Published);
+        Assert.Equal(1, waiting.FailedCapability);
+        Assert.Empty(publishedRequests);
+        var pending = await scope.Repository.GetPublicationAsync(order.SuspendedOrderGuid);
+        Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, pending!.Status);
+        Assert.Equal("SHARED_HELD_ORDER_PREFERRED_VERSION_LOSSY", pending.ErrorCode);
+
+        preferredVersion = 2;
+        time.Now = new DateTimeOffset(2026, 7, 28, 3, 2, 0, TimeSpan.Zero);
+        var published = await worker.RunOnceAsync("S001", "POS-01");
+
+        Assert.Equal(1, published.Published);
+        var cart = Assert.IsType<SharedSaleCartV2>(Assert.Single(publishedRequests).Cart);
+        Assert.Equal(2000, Assert.Single(cart.PricingState.Lines).CatalogDiscountBasisPoints);
+    }
+
+    [Fact]
     public async Task RunOnceAsync_records_backoff_when_publish_fails_and_retries_with_same_key()
     {
         await using var scope = await CreateRepositoryScopeAsync();
@@ -489,13 +658,17 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         Assert.Equal(SharedHeldOrderShareRequestResult.Requested, result);
     }
 
-    private static SharedHeldOrderCapabilitiesResponse EnabledCapabilities()
+    private static SharedHeldOrderCapabilitiesResponse EnabledCapabilities(int preferredPayloadVersion = 1)
     {
         return new SharedHeldOrderCapabilitiesResponse(
             Enabled: true,
             PayloadVersion: 1,
             PreparedTtlSeconds: 120,
-            ForceReleaseSupported: true);
+            ForceReleaseSupported: true)
+        {
+            SupportedPayloadVersions = [1, 2],
+            PreferredPayloadVersion = preferredPayloadVersion
+        };
     }
 
     private static async Task<SuspendedOrder> SaveSampleOrderAsync(SuspendedOrderRepository repository)
@@ -511,6 +684,18 @@ public sealed class SharedHeldOrderPublicationWorkerTests
             CartLineKind.Sale,
             PosCartLineDiscountSource.Promotion,
             discountAmount: 4m);
+        await repository.SaveAsync(order);
+        return order;
+    }
+
+    private static async Task<SuspendedOrder> SaveCatalogDiscountOrderAsync(
+        SuspendedOrderRepository repository)
+    {
+        var order = SampleOrder(
+            CartLineKind.Sale,
+            PosCartLineDiscountSource.Catalog,
+            discountAmount: 4.40m,
+            catalogDiscountBasisPoints: 2000);
         await repository.SaveAsync(order);
         return order;
     }
@@ -534,7 +719,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
         PosCartLineDiscountSource discountSource,
         decimal discountAmount,
         string storeCode = "S001",
-        string deviceCode = "POS-01")
+        string deviceCode = "POS-01",
+        int catalogDiscountBasisPoints = 0)
     {
         var orderGuid = Guid.NewGuid();
         return new SuspendedOrder(
@@ -545,8 +731,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
             "Cashier One",
             new DateTimeOffset(2026, 7, 28, 1, 0, 0, TimeSpan.Zero),
             22m,
-            4m,
-            18m,
+            discountAmount,
+            22m - discountAmount,
             SuspendedOrderStatus.Pending,
             [
                 new SuspendedOrderLine(
@@ -569,7 +755,8 @@ public sealed class SharedHeldOrderPublicationWorkerTests
                     discountSource)
                 {
                     Kind = kind,
-                    ReturnSourceKey = kind == CartLineKind.Return ? "RETURN-1" : string.Empty
+                    ReturnSourceKey = kind == CartLineKind.Return ? "RETURN-1" : string.Empty,
+                    CatalogDiscountBasisPoints = catalogDiscountBasisPoints
                 }
             ]);
     }

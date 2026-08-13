@@ -94,6 +94,8 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         return !line.IsReturnLine &&
             !line.IsOpenItem &&
             line.DiscountSource != CartLineDiscountSource.Manual &&
+            // 不依赖金额舍入后的来源：只要有 catalog baseline 就不能参与固定总价分组。
+            line.CatalogDiscountBasisPoints <= 0 &&
             line.UnitPrice > 0m &&
             line.GrossAmount > 0m &&
             PosCartService.IsPositiveIntegerQuantity(line.Quantity);

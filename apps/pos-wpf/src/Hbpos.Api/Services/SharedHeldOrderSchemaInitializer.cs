@@ -41,6 +41,7 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
                 [DeviceCode] NVARCHAR(50) NOT NULL,
                 [CashierId] NVARCHAR(50) NOT NULL,
                 [CashierName] NVARCHAR(100) NOT NULL,
+                [PayloadVersion] INT NOT NULL CONSTRAINT [DF_POSM_SharedHeldOrder_PayloadVersion] DEFAULT 1,
                 [PayloadCiphertext] NVARCHAR(MAX) NOT NULL,
                 [Fingerprint] CHAR(64) NOT NULL,
                 [IdempotencyKey] NVARCHAR(100) NOT NULL,
@@ -55,12 +56,33 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
                 [ActualCents] BIGINT NOT NULL,
                 CONSTRAINT [CK_POSM_SharedHeldOrder_Status]
                     CHECK ([Status] IN (N'Pending', N'Claimed', N'Completed', N'Cancelled')),
+                CONSTRAINT [CK_POSM_SharedHeldOrder_PayloadVersion]
+                    CHECK ([PayloadVersion] IN (1, 2)),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_Revision] CHECK ([Revision] > 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_LineCount] CHECK ([LineCount] > 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_TotalCents] CHECK ([TotalCents] >= 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_DiscountCents] CHECK ([DiscountCents] >= 0),
                 CONSTRAINT [CK_POSM_SharedHeldOrder_ActualCents] CHECK ([ActualCents] >= 0)
             );
+        END;
+
+        -- PayloadVersion：旧表幂等加列默认 1，旧密文保持原样可读，绝不重写。
+        IF COL_LENGTH(N'[dbo].[POSM_SharedHeldOrder]', N'PayloadVersion') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_SharedHeldOrder]
+                ADD [PayloadVersion] INT NOT NULL
+                    CONSTRAINT [DF_POSM_SharedHeldOrder_PayloadVersion] DEFAULT 1
+                    WITH VALUES;
+        END;
+
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.check_constraints
+            WHERE [parent_object_id] = OBJECT_ID(N'[dbo].[POSM_SharedHeldOrder]', N'U')
+              AND [name] = N'CK_POSM_SharedHeldOrder_PayloadVersion')
+        BEGIN
+            ALTER TABLE [dbo].[POSM_SharedHeldOrder]
+                ADD CONSTRAINT [CK_POSM_SharedHeldOrder_PayloadVersion]
+                CHECK ([PayloadVersion] IN (1, 2));
         END;
 
         -- 旧库可能仍带有不允许 Cancelled 的状态约束；在同一启动事务内安全替换，失败则由 XACT_ABORT 回滚。
@@ -144,7 +166,7 @@ public sealed class SqlSugarSharedHeldOrderSchemaInitializer(
                 ON [dbo].[POSM_SharedHeldOrder]
                    ([StoreCode], [Status], [CreatedAtUtc], [HoldGuid])
                 INCLUDE ([DeviceCode], [CashierId], [CashierName], [HeldAtUtc], [UpdatedAtUtc],
-                         [LineCount], [TotalCents], [DiscountCents], [ActualCents], [Revision]);
+                         [LineCount], [TotalCents], [DiscountCents], [ActualCents], [Revision], [PayloadVersion]);
         END;
 
         IF NOT EXISTS (

@@ -28,6 +28,10 @@ public sealed class SharedHeldOrderOptions
 {
     /// <summary>跨设备挂单默认启用；紧急情况下仍可通过显式配置 false 关闭。</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>新客户端发布无 baseline cart 时优先选择的 payload 版本；默认 1，可安全切换为 2。</summary>
+    public int PreferredPayloadVersion { get; set; } =
+        SharedSaleCartV1Constants.PayloadVersion;
 }
 
 /// <summary>
@@ -60,11 +64,25 @@ public interface ISharedHeldOrderService
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken) =>
+        ListPendingAsync(identity, cancellationToken);
+
     Task<SharedHeldOrderClaimPrepareResponse> PrepareAsync(
         Guid holdGuid,
         SharedHeldOrderClaimPrepareRequest request,
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken);
+
+    Task<SharedHeldOrderClaimPrepareResponse> PrepareAsync(
+        Guid holdGuid,
+        SharedHeldOrderClaimPrepareRequest request,
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken) =>
+        PrepareAsync(holdGuid, request, identity, cancellationToken);
 
     Task<SharedHeldOrderClaimDto> ActivateAsync(
         Guid holdGuid,
@@ -89,6 +107,12 @@ public interface ISharedHeldOrderService
     Task<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>> ListMyClaimsAsync(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>> ListMyClaimsAsync(
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken) =>
+        ListMyClaimsAsync(identity, cancellationToken);
 }
 
 public sealed class SharedHeldOrderService(
@@ -103,11 +127,23 @@ public sealed class SharedHeldOrderService(
 
     public SharedHeldOrderCapabilitiesResponse GetCapabilities()
     {
+        var preferredPayloadVersion = _options.PreferredPayloadVersion;
+        if (preferredPayloadVersion is not SharedSaleCartVersioning.PayloadVersionV1
+            and not SharedSaleCartVersioning.PayloadVersionV2)
+        {
+            throw new InvalidOperationException(
+                "PreferredPayloadVersion must be a supported shared held order payload version (1 or 2).");
+        }
+
         return new SharedHeldOrderCapabilitiesResponse(
             Enabled: _options.Enabled,
             PayloadVersion: SharedSaleCartV1Constants.PayloadVersion,
             PreparedTtlSeconds: PreparedTtlSeconds,
-            ForceReleaseSupported: true);
+            ForceReleaseSupported: true)
+        {
+            SupportedPayloadVersions = [SharedSaleCartVersioning.PayloadVersionV1, SharedSaleCartVersioning.PayloadVersionV2],
+            PreferredPayloadVersion = preferredPayloadVersion
+        };
     }
 
     public async Task<SharedHeldOrderPublishResponse> PublishAsync(
@@ -118,8 +154,8 @@ public sealed class SharedHeldOrderService(
         EnsureEnabled();
         var normalizedIdentity = NormalizeIdentity(identity);
         var normalized = NormalizePublishRequest(request, normalizedIdentity);
-        _ = SharedSaleCartV1Validator.Validate(normalized.Cart);
-        var fingerprint = Fingerprint(normalized.Cart);
+        var cart = SharedSaleCartVersioning.Validate(normalized.Cart);
+        var fingerprint = Fingerprint(cart);
         var existing = await repository.GetHoldAsync(normalized.HoldGuid, cancellationToken);
         if (existing is not null)
         {
@@ -130,18 +166,19 @@ public sealed class SharedHeldOrderService(
         }
 
         var now = _timeProvider.GetUtcNow();
-        var summary = Summarize(normalized.Cart);
+        var summary = Summarize(cart);
         var hold = new SharedHeldOrderRecord(
             normalized.HoldGuid,
             normalizedIdentity.StoreCode,
             normalizedIdentity.DeviceCode,
             normalizedIdentity.CashierId,
             normalizedIdentity.CashierName,
-            payloadProtector.Protect(normalized.Cart),
+            SharedSaleCartVersioning.GetPayloadVersion(cart),
+            payloadProtector.Protect(cart),
             fingerprint,
             normalized.IdempotencyKey,
             SharedHeldOrderStatus.Pending,
-            Revision: 1,
+            1,
             now,
             now,
             now,
@@ -240,13 +277,25 @@ public sealed class SharedHeldOrderService(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken)
     {
+        return await ListPendingAsync(identity, supportedPayloadVersions: null, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SharedHeldOrderListItemDto>> ListPendingAsync(
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken)
+    {
         EnsureEnabled();
         var normalizedIdentity = NormalizeIdentity(identity);
+        var supportedVersions = NormalizeSupportedPayloadVersions(supportedPayloadVersions);
         var holds = await repository.ListPendingAsync(
             normalizedIdentity.StoreCode,
             cancellationToken);
         // 关键逻辑：列表只返回 Pending 汇总，Claimed/Completed 一律隐藏，且永不接触 ciphertext。
-        return holds.Select(MapListItem).ToArray();
+        return holds
+            .Where(hold => supportedVersions.Contains(hold.PayloadVersion))
+            .Select(MapListItem)
+            .ToArray();
     }
 
     public async Task<SharedHeldOrderClaimPrepareResponse> PrepareAsync(
@@ -255,10 +304,32 @@ public sealed class SharedHeldOrderService(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken)
     {
+        return await PrepareAsync(
+            holdGuid,
+            request,
+            identity,
+            supportedPayloadVersions: null,
+            cancellationToken);
+    }
+
+    public async Task<SharedHeldOrderClaimPrepareResponse> PrepareAsync(
+        Guid holdGuid,
+        SharedHeldOrderClaimPrepareRequest request,
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken)
+    {
         EnsureEnabled();
         var normalizedIdentity = NormalizeIdentity(identity);
         var normalized = NormalizePrepareRequest(request);
+        var supportedVersions = NormalizeSupportedPayloadVersions(supportedPayloadVersions);
         var hold = await GetRequiredHoldAsync(holdGuid, normalizedIdentity, cancellationToken);
+        // 不支持 V2 的旧客户端不得在 claim 写入前进入 claim 创建路径。
+        if (!supportedVersions.Contains(hold.PayloadVersion))
+        {
+            throw Invalid("This client does not support the held order payload version.");
+        }
+
         var claimFingerprint = ClaimFingerprint(holdGuid, normalized.ClaimGuid, normalized.IdempotencyKey);
         var existing = await repository.GetClaimAsync(normalized.ClaimGuid, cancellationToken);
         if (existing is not null)
@@ -514,8 +585,17 @@ public sealed class SharedHeldOrderService(
         SharedHeldOrderIdentity identity,
         CancellationToken cancellationToken)
     {
+        return await ListMyClaimsAsync(identity, supportedPayloadVersions: null, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>> ListMyClaimsAsync(
+        SharedHeldOrderIdentity identity,
+        IReadOnlyCollection<int>? supportedPayloadVersions,
+        CancellationToken cancellationToken)
+    {
         EnsureEnabled();
         var normalizedIdentity = NormalizeIdentity(identity);
+        var supportedVersions = NormalizeSupportedPayloadVersions(supportedPayloadVersions);
         var claims = await repository.ListMyClaimsAsync(
             normalizedIdentity.StoreCode,
             normalizedIdentity.DeviceCode,
@@ -533,6 +613,11 @@ public sealed class SharedHeldOrderService(
 
             var hold = await repository.GetHoldAsync(claim.HoldGuid, cancellationToken)
                 ?? throw NotFound("Hold disappeared while recovering the claim.");
+            if (!supportedVersions.Contains(hold.PayloadVersion))
+            {
+                continue;
+            }
+
             result.Add(MapRecovery(claim, hold));
         }
 
@@ -608,9 +693,10 @@ public sealed class SharedHeldOrderService(
         if (existing.HoldGuid != request.HoldGuid ||
             !string.Equals(existing.DeviceCode, request.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(existing.IdempotencyKey, request.IdempotencyKey, StringComparison.Ordinal) ||
+            existing.PayloadVersion != SharedSaleCartVersioning.GetPayloadVersion(request.Cart) ||
             !string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal))
         {
-            throw Mismatch("holdGuid, deviceCode, idempotencyKey or cart payload does not match the existing hold.");
+            throw Mismatch("holdGuid, deviceCode, idempotencyKey, payload version or cart payload does not match the existing hold.");
         }
     }
 
@@ -756,7 +842,43 @@ public sealed class SharedHeldOrderService(
         return request with { IdempotencyKey = request.IdempotencyKey.Trim() };
     }
 
-    private static SharedHeldOrderSummary Summarize(SharedSaleCartV1 cart)
+    private static SharedHeldOrderSummary Summarize(object cart)
+    {
+        return cart switch
+        {
+            SharedSaleCartV2 v2 => SummarizeV2(v2),
+            SharedSaleCartV1 v1 => SummarizeV1(v1),
+            _ => throw new SharedSaleCartValidationException(
+                "Shared sale cart payload must be SharedSaleCartV1 or SharedSaleCartV2.")
+        };
+    }
+
+    private static SharedHeldOrderSummary SummarizeV1(SharedSaleCartV1 cart)
+    {
+        var totalCents = 0L;
+        var discountCents = 0L;
+        foreach (var line in cart.PricingState.Lines)
+        {
+            var lineTotal = checked((long)Math.Round(
+                line.UnitPriceCents * line.Quantity,
+                MidpointRounding.AwayFromZero));
+            totalCents = checked(totalCents + lineTotal);
+            discountCents = checked(discountCents + LineDiscountCents(line, lineTotal));
+        }
+
+        if (discountCents > totalCents)
+        {
+            throw Invalid("Line discounts must not exceed the cart total.");
+        }
+
+        return new SharedHeldOrderSummary(
+            cart.PricingState.Lines.Count,
+            totalCents,
+            discountCents,
+            totalCents - discountCents);
+    }
+
+    private static SharedHeldOrderSummary SummarizeV2(SharedSaleCartV2 cart)
     {
         var totalCents = 0L;
         var discountCents = 0L;
@@ -798,9 +920,31 @@ public sealed class SharedHeldOrderService(
         };
     }
 
-    private static string Fingerprint(SharedSaleCartV1 cart) =>
+    private static long LineDiscountCents(SharedSaleLineV2 line, long lineTotalCents)
+    {
+        return line.DiscountState.Mode switch
+        {
+            SharedSaleCartV1Constants.DiscountModeNone =>
+                checked((long)decimal.Round(
+                    (decimal)lineTotalCents * line.CatalogDiscountBasisPoints / 10_000m,
+                    0,
+                    MidpointRounding.AwayFromZero)),
+            SharedSaleCartV1Constants.DiscountModeManualAmount =>
+                line.DiscountState.Cents!.Value,
+            SharedSaleCartV1Constants.DiscountModeManualPercent =>
+                checked((long)decimal.Round(
+                    (decimal)lineTotalCents * line.DiscountState.BasisPoints!.Value / 10_000m,
+                    0,
+                    MidpointRounding.AwayFromZero)),
+            SharedSaleCartV1Constants.DiscountModePromotion =>
+                line.DiscountState.Cents!.Value,
+            _ => 0L
+        };
+    }
+
+    private static string Fingerprint(object cart) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(cart))));
+            JsonSerializer.Serialize(cart, cart.GetType()))));
 
     private static string ClaimFingerprint(Guid holdGuid, Guid claimGuid, string idempotencyKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -815,7 +959,7 @@ public sealed class SharedHeldOrderService(
             claim.HoldGuid,
             claim.ClaimGuid,
             claim.Status,
-            ValidateUnprotected(payloadProtector.Unprotect(hold.PayloadCiphertext)),
+            ValidateUnprotected(payloadProtector.Unprotect(hold.PayloadCiphertext, hold.PayloadVersion)),
             claim.ClaimantDeviceCode,
             claim.CashierId,
             claim.CashierName,
@@ -890,7 +1034,7 @@ public sealed class SharedHeldOrderService(
             claim.ClaimantDeviceCode,
             claim.CashierId,
             claim.CashierName,
-            ValidateUnprotected(payloadProtector.Unprotect(hold.PayloadCiphertext)),
+            ValidateUnprotected(payloadProtector.Unprotect(hold.PayloadCiphertext, hold.PayloadVersion)),
             claim.CreatedAtUtc,
             claim.UpdatedAtUtc,
             claim.ExpiresAtUtc,
@@ -912,10 +1056,28 @@ public sealed class SharedHeldOrderService(
     private static SharedHeldOrderException PermissionDenied(string message) =>
         new(SharedHeldOrderErrorCodes.PermissionDenied, message);
 
-    private static SharedSaleCartV1 ValidateUnprotected(SharedSaleCartV1 payload)
+    private static object ValidateUnprotected(object payload)
     {
         // 解密后的 payload 必须再次通过 canonical 校验，防止库内密文被篡改或跨版本漂移。
-        return SharedSaleCartV1Validator.Validate(payload);
+        return SharedSaleCartVersioning.Validate(payload);
+    }
+
+    private static IReadOnlyCollection<int> NormalizeSupportedPayloadVersions(
+        IReadOnlyCollection<int>? supportedPayloadVersions)
+    {
+        // 未提供过滤时默认仅 V1（旧客户端）；显式过滤只保留受支持版本，
+        // 显式 [99]/[] 不回退，list 为空且 prepare 在写 claim 前拒绝。
+        if (supportedPayloadVersions is null)
+        {
+            return [SharedSaleCartV1Constants.PayloadVersion];
+        }
+
+        return supportedPayloadVersions
+            .Where(version => version is SharedSaleCartVersioning.PayloadVersionV1
+                or SharedSaleCartVersioning.PayloadVersionV2)
+            .Distinct()
+            .OrderBy(version => version)
+            .ToArray();
     }
 
     private sealed record SharedHeldOrderSummary(

@@ -6,9 +6,11 @@ namespace Hbpos.Api.Services;
 
 public interface ISharedHeldOrderPayloadProtector
 {
-    string Protect(SharedSaleCartV1 payload);
+    string Protect(object payload);
 
-    SharedSaleCartV1 Unprotect(string ciphertext);
+    object Unprotect(string ciphertext);
+
+    object Unprotect(string ciphertext, int payloadVersion);
 }
 
 /// <summary>
@@ -22,10 +24,53 @@ public sealed class SharedHeldOrderPayloadProtector(
     private readonly IDataProtector _protector =
         dataProtectionProvider.CreateProtector(Purpose);
 
-    public string Protect(SharedSaleCartV1 payload) =>
-        _protector.Protect(JsonSerializer.Serialize(payload));
+    public string Protect(object payload) =>
+        _protector.Protect(JsonSerializer.Serialize(payload, payload.GetType()));
 
-    public SharedSaleCartV1 Unprotect(string ciphertext) =>
-        JsonSerializer.Deserialize<SharedSaleCartV1>(_protector.Unprotect(ciphertext))
-        ?? throw new InvalidOperationException("Shared held order payload failed to decrypt.");
+    public object Unprotect(string ciphertext)
+    {
+        var json = _protector.Unprotect(ciphertext);
+        using var document = JsonDocument.Parse(json);
+        var version = ReadVersion(document.RootElement);
+        return DeserializeVersioned(json, version);
+    }
+
+    public object Unprotect(string ciphertext, int payloadVersion) =>
+        DeserializeVersioned(_protector.Unprotect(ciphertext), payloadVersion);
+
+    private static object DeserializeVersioned(string json, int payloadVersion) =>
+        payloadVersion switch
+        {
+            SharedSaleCartV1Constants.PayloadVersion =>
+                JsonSerializer.Deserialize<SharedSaleCartV1>(json)
+                ?? throw new InvalidOperationException("Shared held order V1 payload failed to decrypt."),
+            SharedSaleCartV2Constants.PayloadVersion => DeserializeV2(json),
+            _ => throw new InvalidOperationException(
+                $"Unsupported shared held order payload version: {payloadVersion}.")
+        };
+
+    private static SharedSaleCartV2 DeserializeV2(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        SharedSaleCartV2JsonContract.EnsureCatalogBasisPointsPresent(document.RootElement);
+        return JsonSerializer.Deserialize<SharedSaleCartV2>(json)
+            ?? throw new InvalidOperationException("Shared held order V2 payload failed to decrypt.");
+    }
+
+    private static int ReadVersion(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in root.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "version", StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.TryGetInt32(out var version))
+                {
+                    return version;
+                }
+            }
+        }
+
+        throw new InvalidOperationException("Shared held order payload version is missing.");
+    }
 }

@@ -1624,6 +1624,22 @@ function nonNegativeSafeInteger(value: unknown, label: string): number {
   return numberValue;
 }
 
+function validateCatalogDiscountBasisPoints(value: unknown): number {
+  // 旧挂单快照没有该字段时按零恢复；显式 null 或越界值仍视为损坏快照。
+  if (value === undefined) return 0;
+  if (value === null) {
+    throw new Error("Invalid held catalog discount basis points.");
+  }
+  const basisPoints = nonNegativeSafeInteger(
+    value,
+    "held catalog discount basis points",
+  );
+  if (basisPoints > 10_000) {
+    throw new Error("Invalid held catalog discount basis points.");
+  }
+  return basisPoints;
+}
+
 function validateHeldOrderScope(input: HeldOrderScope): HeldOrderScope {
   return {
     storeCode: nonBlank(input.storeCode, "held order store code"),
@@ -1703,6 +1719,12 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
     ) {
       throw new Error("Invalid held cart price source.");
     }
+    const catalogDiscountBasisPoints = validateCatalogDiscountBasisPoints(
+      line.catalogDiscountBasisPoints,
+    );
+    if (basePriceSource === "open-item" && catalogDiscountBasisPoints > 0) {
+      throw new Error("Held open-item line cannot contain a catalog discount.");
+    }
     let syncProvenance: LineSyncProvenance;
     try {
       syncProvenance = normalizeLineSyncProvenance(
@@ -1718,6 +1740,14 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
     const originalOrderGuid = nullableText(line.originalOrderGuid, "held cart original order");
     const originalOrderDetailGuid = nullableText(line.originalOrderDetailGuid, "held cart original detail");
     const discountState = validatePricingDiscount(line.discountState, kind, unitPriceCents, quantity, basePriceSource);
+    if (
+      catalogDiscountBasisPoints > 0 &&
+      discountState.kind === "promotion"
+    ) {
+      throw new Error(
+        "Held catalog discount cannot coexist with promotion discount state.",
+      );
+    }
     return {
       lineId,
       productCode,
@@ -1727,6 +1757,7 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
       quantity,
       unitPriceCents,
       basePriceSource,
+      catalogDiscountBasisPoints,
       syncProvenance,
       kind,
       returnSourceKey,
@@ -1838,7 +1869,11 @@ function summarizePricingState(state: PricingCartStateSnapshot): Readonly<{
     const gross = BigInt(multiplyCents(line.quantity, line.unitPriceCents, "held cart line gross"));
     const lineDiscount = line.kind === "return"
       ? 0
-      : discountCents(line.discountState, Number(gross));
+      : discountCents(
+          line.discountState,
+          Number(gross),
+          line.catalogDiscountBasisPoints ?? 0,
+        );
     itemCount += heldLineItemCount(line.quantity);
     subtotal += line.kind === "return" ? -gross : gross;
     discount += BigInt(lineDiscount);
@@ -1855,15 +1890,28 @@ function summarizePricingState(state: PricingCartStateSnapshot): Readonly<{
 function discountCents(
   state: PricingCartStateSnapshot["lines"][number]["discountState"],
   gross: number,
+  catalogDiscountBasisPoints: number,
 ): number {
+  // manual-amount:0 是整单折扣的显式人工覆盖，必须先于 catalog 基线处理；
+  // 否则挂单列表摘要会与密文中的购物车及召回后金额不一致。
+  if (state.kind === "manual-amount") {
+    return Math.min(gross, state.cents);
+  }
+  if (state.kind === "manual-percent") {
+    return Math.min(gross, roundRatio(gross, state.basisPoints, 10_000));
+  }
+  if (catalogDiscountBasisPoints > 0) {
+    return Math.min(
+      gross,
+      roundRatio(gross, catalogDiscountBasisPoints, 10_000),
+    );
+  }
+
   switch (state.kind) {
     case "none":
       return 0;
-    case "manual-amount":
     case "promotion":
       return Math.min(gross, state.cents);
-    case "manual-percent":
-      return Math.min(gross, roundRatio(gross, state.basisPoints, 10_000));
   }
 }
 

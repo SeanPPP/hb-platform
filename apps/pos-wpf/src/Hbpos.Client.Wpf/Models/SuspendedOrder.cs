@@ -58,6 +58,9 @@ public sealed record SuspendedOrderLine(
     /// <summary>base price provenance：手工改价/目录价格，挂单往返必须保留。</summary>
     public bool IsManualPrice { get; init; }
 
+    /// <summary>目录折扣基线，以万分比保存；手工折扣覆盖时也必须随挂单保留。</summary>
+    public int CatalogDiscountBasisPoints { get; init; }
+
     // 自动满减折扣标记必须随挂单保存，取单后才会继续按规则重算。
     public bool IsAutomaticPromotionDiscount => DiscountSource == PosCartLineDiscountSource.Promotion;
 

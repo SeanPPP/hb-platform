@@ -518,6 +518,49 @@ public sealed class SuspendedOrderServiceTests
         }
     }
 
+    [Fact]
+    public async Task Suspend_and_recall_preserve_catalog_discount_baseline_and_source()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var line = cart.AddItem(CreateItem(
+                productCode: "SKU-CATALOG-HOLD",
+                lookupCode: "catalog-hold",
+                price: 6.99m,
+                discountRate: 0.2m));
+
+            await schema.InitializeAsync();
+            var suspended = await service.SuspendCurrentOrderAsync(CreateSession());
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+
+            Assert.Equal(3, (int)Assert.Single(saved!.Lines).DiscountSource);
+            Assert.Equal(2000, (int?)typeof(SuspendedOrderLine)
+                .GetProperty("CatalogDiscountBasisPoints")
+                ?.GetValue(Assert.Single(saved.Lines)));
+
+            await service.RecallOrderAsync(suspended.SuspendedOrderGuid);
+
+            line = Assert.Single(cart.Lines);
+            Assert.Equal(2000, (int?)typeof(CartLine)
+                .GetProperty("CatalogDiscountBasisPoints")
+                ?.GetValue(line));
+            Assert.Equal(3, (int)line.DiscountSource);
+            Assert.Equal(1.40m, line.DiscountAmount);
+            Assert.Equal(5.59m, line.ActualAmount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -565,7 +608,8 @@ public sealed class SuspendedOrderServiceTests
         decimal price = 10m,
         PriceSourceKind priceSource = PriceSourceKind.StoreRetailPrice,
         string? productImage = null,
-        decimal quantityFactor = 1m)
+        decimal quantityFactor = 1m,
+        decimal? discountRate = null)
     {
         return new SellableItemDto(
             StoreCode: storeCode,
@@ -580,7 +624,8 @@ public sealed class SuspendedOrderServiceTests
             PriceSourceLabel: priceSource.ToString(),
             QuantityFactor: quantityFactor,
             UpdatedAt: DateTimeOffset.UtcNow,
-            ProductImage: productImage);
+            ProductImage: productImage,
+            DiscountRate: discountRate);
     }
 
     private static CatalogPromotionRuleDto CreatePromotionRule(

@@ -2,13 +2,13 @@ import {
   evaluateLegacyHeldOrderPayload,
 } from "./legacy-held-order-evaluator";
 import type { SharedPayloadEncryptorPort } from "./shared-held-order-claim-repository";
-import type { SharedSaleCartV1 } from "./shared-sale-cart-v1";
+import type { SharedSaleCartPayload } from "./shared-sale-cart-v2";
 
 import type { HeldOrderScope } from "@/core/contracts";
 import type { SqliteConnectionPort } from "@/core/db/types";
 
 export type LocalPublicationEligibility =
-  | Readonly<{ eligible: true; cart: SharedSaleCartV1 }>
+  | Readonly<{ eligible: true; cart: SharedSaleCartPayload }>
   | Readonly<{ eligible: false; reason: "not-found" | "not-shareable" | "in-progress" }>;
 
 /**
@@ -25,7 +25,7 @@ export interface SharedHeldOrderLocalPublicationPort {
   loadDeletePending(
     holdGuid: string,
     scope: HeldOrderScope,
-  ): Promise<SharedSaleCartV1 | null>;
+  ): Promise<SharedSaleCartPayload | null>;
 }
 
 export class SqliteSharedHeldOrderLocalPublication
@@ -88,7 +88,7 @@ export class SqliteSharedHeldOrderLocalPublication
   public async loadDeletePending(
     holdGuidInput: string,
     scope: HeldOrderScope,
-  ): Promise<SharedSaleCartV1 | null> {
+  ): Promise<SharedSaleCartPayload | null> {
     const holdGuid = nonBlank(holdGuidInput, "hold guid");
     const storeCode = nonBlank(scope.storeCode, "store code");
     const deviceCode = nonBlank(scope.deviceCode, "device code");

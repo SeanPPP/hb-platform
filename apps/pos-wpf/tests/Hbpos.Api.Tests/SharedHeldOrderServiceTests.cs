@@ -29,11 +29,12 @@ public sealed class SharedHeldOrderServiceTests
         Assert.True(replay.AlreadyExists);
         Assert.Equal(SharedHeldOrderStatus.Pending, replay.Status);
 
+        var cart = Assert.IsType<SharedSaleCartV1>(request.Cart);
         var changed = request with
         {
-            Cart = request.Cart with
+            Cart = cart with
             {
-                PricingState = request.Cart.PricingState with { Revision = 2 }
+                PricingState = cart.PricingState with { Revision = 2 }
             }
         };
         var mismatch = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
@@ -1006,5 +1007,140 @@ public sealed class SharedHeldOrderServiceTests
             (await harness.Repository.GetClaimAsync(prepared.ClaimGuid, CancellationToken.None))?.Status);
         Assert.Equal(SharedHeldOrderStatus.Pending,
             (await harness.Repository.GetHoldAsync(request.HoldGuid, CancellationToken.None))?.Status);
+    }
+
+    [Fact]
+    public async Task Explicit_unsupported_versions_filter_to_empty_and_prepare_rejects_before_claim()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var request = SharedHeldOrderServiceTestSupport.PublishRequest();
+        await harness.Service.PublishAsync(request, harness.Identity, CancellationToken.None);
+
+        var list = await harness.Service.ListPendingAsync(
+            harness.Identity,
+            supportedPayloadVersions: [99],
+            CancellationToken.None);
+        Assert.Empty(list);
+
+        var prepare = SharedHeldOrderServiceTestSupport.PrepareRequest();
+        var exception = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.PrepareAsync(
+                request.HoldGuid,
+                prepare,
+                harness.Identity,
+                supportedPayloadVersions: [99],
+                CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Invalid, exception.Code);
+        Assert.Null(await harness.Repository.GetClaimAsync(prepare.ClaimGuid, CancellationToken.None));
+    }
+
+    [Fact]
+    public void Capabilities_prefer_supported_version_and_keep_legacy_payload_version_one()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness(
+            preferredPayloadVersion: SharedSaleCartV2Constants.PayloadVersion);
+
+        var capabilities = harness.Service.GetCapabilities();
+
+        Assert.Equal(SharedSaleCartV1Constants.PayloadVersion, capabilities.PayloadVersion);
+        Assert.Equal([1, 2], capabilities.SupportedPayloadVersions);
+        Assert.Equal(SharedSaleCartV2Constants.PayloadVersion, capabilities.PreferredPayloadVersion);
+    }
+
+    [Fact]
+    public void Capabilities_rejects_preferred_version_outside_supported_set()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness(
+            preferredPayloadVersion: 3);
+
+        Assert.Throws<InvalidOperationException>(() => harness.Service.GetCapabilities());
+    }
+
+    [Fact]
+    public async Task Publish_replay_does_not_confuse_v1_and_v2_for_the_same_hold()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var holdGuid = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        var v1 = new SharedHeldOrderPublishRequest(
+            holdGuid,
+            "S01",
+            "POS-01",
+            SharedHeldOrderServiceTestSupport.ValidCart(),
+            "mixed-version-hold");
+
+        await harness.Service.PublishAsync(v1, harness.Identity, CancellationToken.None);
+
+        var v2 = new SharedHeldOrderPublishRequest(
+            holdGuid,
+            "S01",
+            "POS-01",
+            SharedHeldOrderServiceTestSupport.ValidV2Cart(),
+            "mixed-version-hold");
+        var mismatch = await Assert.ThrowsAsync<SharedHeldOrderException>(() =>
+            harness.Service.PublishAsync(v2, harness.Identity, CancellationToken.None));
+        Assert.Equal(SharedHeldOrderErrorCodes.Mismatch, mismatch.Code);
+    }
+
+    [Fact]
+    public async Task Publish_roundtrips_v2_catalog_baseline()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var request = new SharedHeldOrderPublishRequest(
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            "S01",
+            "POS-01",
+            SharedHeldOrderServiceTestSupport.ValidV2Cart(),
+            "publish-v2");
+
+        var response = await harness.Service.PublishAsync(
+            request,
+            harness.Identity,
+            CancellationToken.None);
+
+        Assert.False(response.AlreadyExists);
+        var stored = await harness.Repository.GetHoldAsync(request.HoldGuid, CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.Equal(SharedSaleCartV2Constants.PayloadVersion, stored!.PayloadVersion);
+        var decrypted = Assert.IsType<SharedSaleCartV2>(
+            harness.Protector.Unprotect(stored.PayloadCiphertext, stored.PayloadVersion));
+        Assert.Equal(500, decrypted.PricingState.Lines[0].CatalogDiscountBasisPoints);
+    }
+
+    [Fact]
+    public async Task V2_manual_amount_zero_keeps_explicit_zero_summary_despite_catalog_baseline()
+    {
+        var harness = SharedHeldOrderServiceTestSupport.CreateHarness();
+        var cart = SharedHeldOrderServiceTestSupport.ValidV2Cart();
+        var line = Assert.Single(cart.PricingState.Lines);
+        var request = new SharedHeldOrderPublishRequest(
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            "S01",
+            "POS-01",
+            cart with
+            {
+                PricingState = cart.PricingState with
+                {
+                    Lines = [line with
+                    {
+                        DiscountState = new SharedLineDiscountStateV1(
+                            SharedSaleCartV1Constants.DiscountModeManualAmount,
+                            Cents: 0)
+                    }]
+                }
+            },
+            "v2-manual-zero");
+
+        await harness.Service.PublishAsync(request, harness.Identity, CancellationToken.None);
+        var item = Assert.Single(await harness.Service.ListPendingAsync(
+            harness.Identity,
+            supportedPayloadVersions: [1, 2],
+            CancellationToken.None));
+        var stored = await harness.Repository.GetHoldAsync(request.HoldGuid, CancellationToken.None);
+
+        Assert.Equal(0L, stored!.DiscountCents);
+        Assert.Equal(3000L, stored.ActualCents);
+        Assert.Equal(3000L, item.TotalCents);
+        Assert.Equal(0L, item.DiscountCents);
+        Assert.Equal(3000L, item.ActualCents);
     }
 }

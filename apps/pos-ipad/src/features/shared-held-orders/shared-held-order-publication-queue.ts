@@ -31,6 +31,8 @@ export type SharedHeldOrderPublishDueRow = SharedHeldOrderEvaluationRow &
     nextPublishAtIso: string | null;
     remoteRevision: number | null;
     remoteUpdatedAtIso: string | null;
+    /** 已锁定的首次 wire 版本；null 表示尚未发送，可按当前 preferred 选择。 */
+    publicationPayloadVersion: 1 | 2 | null;
   }>;
 
 /** UI 只读共享状态：不暴露密文或 canonical payload。 */
@@ -74,6 +76,15 @@ export interface SharedHeldOrderPublicationQueuePort {
     nowIso: string,
     limit: number,
   ): Promise<readonly SharedHeldOrderPublishDueRow[]>;
+  /**
+   * 在首次发送前锁定 wire payload 版本。后续重试返回既有版本，不能因服务端
+   * preferred 翻转而重新编码同一 holdGuid，避免服务端幂等重放 mismatch。
+   */
+  pinPublicationPayloadVersion(input: Readonly<{
+    holdId: string;
+    expectedAttemptCount: number;
+    payloadVersion: 1 | 2;
+  }>): Promise<1 | 2 | null>;
   markPublished(input: Readonly<{
     holdId: string;
     remoteRevision: number;
@@ -283,9 +294,11 @@ export class SqliteSharedHeldOrderPublicationQueue
       next_publish_at_iso: string | null;
       remote_revision: number | null;
       remote_updated_at_iso: string | null;
+      wire_payload_version: number | null;
     }>(
       `SELECT hold_id, store_code, device_code, payload_version, payload_ciphertext,
-              publish_attempt_count, next_publish_at_iso, remote_revision, remote_updated_at_iso
+              publish_attempt_count, next_publish_at_iso, remote_revision, remote_updated_at_iso,
+              wire_payload_version
        FROM held_order_records
        WHERE share_state = 'PendingPublish'
          AND share_requested_at_iso IS NOT NULL
@@ -308,7 +321,52 @@ export class SqliteSharedHeldOrderPublicationQueue
       nextPublishAtIso: row.next_publish_at_iso,
       remoteRevision: row.remote_revision,
       remoteUpdatedAtIso: row.remote_updated_at_iso,
+      publicationPayloadVersion:
+        row.wire_payload_version === 1 || row.wire_payload_version === 2
+          ? row.wire_payload_version
+          : null,
     }));
+  }
+
+  public async pinPublicationPayloadVersion(input: Readonly<{
+    holdId: string;
+    expectedAttemptCount: number;
+    payloadVersion: 1 | 2;
+  }>): Promise<1 | 2 | null> {
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const row = await transaction.getFirst<{
+        wire_payload_version: number | null;
+      }>(
+        `SELECT wire_payload_version
+         FROM held_order_records
+         WHERE hold_id = ?
+           AND share_state = 'PendingPublish'
+           AND share_requested_at_iso IS NOT NULL
+           AND is_synthetic_shared_claim = 0
+           AND status = 'Pending'
+           AND publish_attempt_count = ?`,
+        [input.holdId, input.expectedAttemptCount],
+      );
+      if (!row) return null;
+      if (row.wire_payload_version === 1 || row.wire_payload_version === 2) {
+        return row.wire_payload_version;
+      }
+
+      // 版本 pin 必须先于网络发送提交；响应丢失后只能复用这次已落库的 wire 事实。
+      const updated = await transaction.run(
+        `UPDATE held_order_records
+         SET wire_payload_version = ?
+         WHERE hold_id = ?
+           AND share_state = 'PendingPublish'
+           AND share_requested_at_iso IS NOT NULL
+           AND is_synthetic_shared_claim = 0
+           AND status = 'Pending'
+           AND publish_attempt_count = ?
+           AND wire_payload_version IS NULL`,
+        [input.payloadVersion, input.holdId, input.expectedAttemptCount],
+      );
+      return updated.changes === 1 ? input.payloadVersion : null;
+    });
   }
 
   public async markPublished(input: Readonly<{

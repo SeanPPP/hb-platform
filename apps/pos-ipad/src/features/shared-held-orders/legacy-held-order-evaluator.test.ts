@@ -50,6 +50,33 @@ test("有效 iPad payload 评估为可发布且 canonical 精确", () => {
   assert.deepEqual(result.cart, normalizeSharedSaleCartV1(result.cart));
 });
 
+test("本地挂单含 catalog baseline 时评估为 V2 且不折叠进单价", () => {
+  const legacy = validLegacyPayload();
+  const result = evaluateLegacyHeldOrderPayload({
+    ...legacy,
+    pricingState: {
+      ...legacy.pricingState,
+      lines: legacy.pricingState.lines.map((line) => ({
+        ...line,
+        unitPriceCents: 699,
+        catalogDiscountBasisPoints: 2_000,
+      })),
+    },
+  });
+  assert.equal(result.outcome, "publishable");
+  if (result.outcome !== "publishable") return;
+  assert.equal(result.cart.version, 2);
+  if (result.cart.version !== 2) return;
+  assert.equal(result.cart.pricingState.lines[0]?.unitPriceCents, 699);
+  assert.equal(
+    result.cart.pricingState.lines[0]?.catalogDiscountBasisPoints,
+    2_000,
+  );
+  assert.deepEqual(result.cart.pricingState.lines[0]?.discountState, {
+    mode: "none",
+  });
+});
+
 function expectBlockedReason(input: unknown, reason: string): void {
   const result = evaluateLegacyHeldOrderPayload(input);
   assert.equal(result.outcome, "blocked");

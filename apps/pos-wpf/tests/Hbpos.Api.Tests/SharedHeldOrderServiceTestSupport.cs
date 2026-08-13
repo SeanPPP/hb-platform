@@ -113,7 +113,38 @@ internal static class SharedHeldOrderServiceTestSupport
                     DiscountState: new SharedLineDiscountStateV1(Mode: "none"))
             ]));
 
-    internal static Harness CreateHarness(bool enabled = true)
+    internal static SharedSaleCartV2 ValidV2Cart() => new(
+        Version: 2,
+        new SharedPricingStateV2(
+            Revision: 1,
+            Mode: SharedSaleCartV1Constants.PricingModeSale,
+            AsOfIso: "2026-08-10T02:00:00Z",
+            Promotions: [],
+            Lines:
+            [
+                new SharedSaleLineV2(
+                    LineId: "L1",
+                    ProductCode: "SKU-1",
+                    ItemNumber: "ITEM-1",
+                    LookupCode: "BAR-1",
+                    DisplayName: "测试商品",
+                    Quantity: 2m,
+                    UnitPriceCents: 1500,
+                    BasePriceSource: SharedSaleCartV1Constants.PriceSourceCatalog,
+                    SyncProvenance: new SharedLineSyncProvenanceV1(
+                        "REF-1",
+                        PriceSourceKind.StoreRetailPrice),
+                    Kind: SharedSaleCartV1Constants.LineKindSale,
+                    ReturnSourceKey: null,
+                    OriginalOrderGuid: null,
+                    OriginalOrderDetailGuid: null,
+                    DiscountState: new SharedLineDiscountStateV1(Mode: "none"),
+                    CatalogDiscountBasisPoints: 500)
+            ]));
+
+    internal static Harness CreateHarness(
+        bool enabled = true,
+        int preferredPayloadVersion = SharedSaleCartV1Constants.PayloadVersion)
     {
         var time = new ManualTimeProvider(InitialNow);
         var repository = new FakeSharedHeldOrderRepository();
@@ -121,7 +152,11 @@ internal static class SharedHeldOrderServiceTestSupport
         var service = new SharedHeldOrderService(
             repository,
             protector,
-            Options.Create(new SharedHeldOrderOptions { Enabled = enabled }),
+            Options.Create(new SharedHeldOrderOptions
+            {
+                Enabled = enabled,
+                PreferredPayloadVersion = preferredPayloadVersion
+            }),
             time);
         return new Harness(service, repository, protector, time);
     }
@@ -148,12 +183,57 @@ internal static class SharedHeldOrderServiceTestSupport
             new EphemeralDataProtectionProvider().CreateProtector(
                 SharedHeldOrderPayloadProtector.Purpose);
 
-        public string Protect(SharedSaleCartV1 payload) =>
-            _protector.Protect(System.Text.Json.JsonSerializer.Serialize(payload));
+        public string Protect(object payload) =>
+            _protector.Protect(System.Text.Json.JsonSerializer.Serialize(
+                payload,
+                payload.GetType()));
 
-        public SharedSaleCartV1 Unprotect(string ciphertext) =>
-            System.Text.Json.JsonSerializer.Deserialize<SharedSaleCartV1>(
-                _protector.Unprotect(ciphertext))!;
+        public object Unprotect(string ciphertext)
+        {
+            var json = _protector.Unprotect(ciphertext);
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var version = ReadVersion(document.RootElement);
+            return DeserializeVersioned(json, version);
+        }
+
+        public object Unprotect(string ciphertext, int payloadVersion) =>
+            DeserializeVersioned(_protector.Unprotect(ciphertext), payloadVersion);
+
+        private static object DeserializeVersioned(string json, int payloadVersion) =>
+            payloadVersion switch
+            {
+                SharedSaleCartV1Constants.PayloadVersion =>
+                    System.Text.Json.JsonSerializer.Deserialize<SharedSaleCartV1>(json)
+                    ?? throw new InvalidOperationException("V1 payload failed to decrypt."),
+                SharedSaleCartV2Constants.PayloadVersion => DeserializeV2(json),
+                _ => throw new InvalidOperationException(
+                    $"Unsupported shared held order payload version: {payloadVersion}.")
+            };
+
+        private static SharedSaleCartV2 DeserializeV2(string json)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            SharedSaleCartV2JsonContract.EnsureCatalogBasisPointsPresent(document.RootElement);
+            return System.Text.Json.JsonSerializer.Deserialize<SharedSaleCartV2>(json)
+                ?? throw new InvalidOperationException("V2 payload failed to decrypt.");
+        }
+
+        private static int ReadVersion(System.Text.Json.JsonElement root)
+        {
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var property in root.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, "version", StringComparison.OrdinalIgnoreCase) &&
+                        property.Value.TryGetInt32(out var version))
+                    {
+                        return version;
+                    }
+                }
+            }
+
+            throw new InvalidOperationException("Shared held order payload version is missing.");
+        }
     }
 
     internal sealed class FakeSharedHeldOrderRepository : ISharedHeldOrderRepository

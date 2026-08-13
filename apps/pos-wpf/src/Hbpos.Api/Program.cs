@@ -13,7 +13,10 @@ builder.Logging.AddHbposFileLogging(builder.Configuration, builder.Environment);
 builder.Services.AddHbposCentralLogging(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SchemaFilter<SharedSaleCartPayloadSchemaFilter>();
+});
 builder.Services
     .AddAuthentication(DeviceAuthConstants.Scheme)
     .AddScheme<AuthenticationSchemeOptions, DeviceAuthenticationHandler>(

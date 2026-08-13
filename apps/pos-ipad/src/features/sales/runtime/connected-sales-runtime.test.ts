@@ -77,6 +77,207 @@ test("目录搜索和 HID 精确扫码只使用本地目录，并以稳定 produ
   );
 });
 
+test("本地、搜索和远程目录结果都把 discountRate 转为目录基线并保留 revision 变化", async () => {
+  const localItem = item({
+    retailPriceCents: 699,
+    discountRate: 0.2,
+  });
+  const local = connected({ catalog: new Catalog([localItem]) });
+
+  await local.workflow.addByLookupCode(localItem.lookupCode);
+  let line = local.cart.getSnapshot().lines[0]!;
+  assert.equal(line.discount.cents, 140);
+  assert.equal(line.actualAmount.cents, 559);
+  assert.equal(
+    (line as { discountSource?: string }).discountSource,
+    "catalog",
+  );
+
+  await local.workflow.addProduct({
+    productCode: localItem.productCode,
+    itemNumber: localItem.itemNumber,
+    lookupCode: localItem.lookupCode,
+    displayName: localItem.displayName,
+    unitPriceCents: localItem.retailPriceCents,
+  });
+  line = local.cart.getSnapshot().lines[0]!;
+  assert.equal(line.quantity, "2");
+  assert.equal(line.discount.cents, 280);
+  assert.equal(line.actualAmount.cents, 1_118);
+
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const remoteDependencies = connected({
+    catalog: new Catalog([]),
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  assert.equal(
+    await remoteDependencies.workflow.addByLookupCode(
+      localItem.lookupCode,
+    ),
+    null,
+  );
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: localItem,
+  });
+  await waitFor(
+    () => remoteDependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+  line = remoteDependencies.cart.getSnapshot().lines[0]!;
+  assert.equal(line.discount.cents, 140);
+  assert.equal(line.actualAmount.cents, 559);
+
+  const refreshRemote = deferred<CatalogLookupRevalidationResult>();
+  const refreshed = connected({
+    catalog: new Catalog([item({ retailPriceCents: 699, discountRate: 0.1 })]),
+    catalogRevalidation: new SharedRevalidation(refreshRemote.promise),
+    catalogWorkScheduler: immediateScheduler(),
+  });
+  await refreshed.workflow.addByLookupCode(localItem.lookupCode);
+  const revisionBefore = refreshed.cart.getSnapshot().revision;
+  refreshRemote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: localItem,
+  });
+  await waitFor(
+    () => refreshed.workflow.getPendingCatalogWorkCount() === 0,
+  );
+  assert.equal(refreshed.cart.getSnapshot().revision, revisionBefore + 1);
+  assert.equal(refreshed.cart.getSnapshot().lines[0]?.discount.cents, 140);
+});
+
+test("搜索重扫使用最新本地目录折扣，支持同价变更与移除", async () => {
+  let current = item({ retailPriceCents: 699, discountRate: 0.2 });
+  const catalog: LocalCatalogPort = {
+    findExact: async () => current,
+    searchByName: async () => [current],
+  };
+  const dependencies = connected({ catalog });
+
+  let [searchResult] = await dependencies.workflow.searchProducts("tea");
+  await dependencies.workflow.addProduct(searchResult!);
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.discount.cents, 140);
+
+  current = item({ retailPriceCents: 699, discountRate: 0.1 });
+  [searchResult] = await dependencies.workflow.searchProducts("tea");
+  await dependencies.workflow.addProduct(searchResult!);
+  let snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.lines.length, 1);
+  assert.equal(snapshot.lines[0]?.quantity, "2");
+  assert.equal(snapshot.lines[0]?.discount.cents, 140);
+  assert.equal(snapshot.lines[0]?.actualAmount.cents, 1_258);
+
+  current = item({ retailPriceCents: 699, discountRate: 0 });
+  [searchResult] = await dependencies.workflow.searchProducts("tea");
+  await dependencies.workflow.addProduct(searchResult!);
+  snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.lines.length, 1);
+  assert.equal(snapshot.lines[0]?.quantity, "3");
+  assert.equal(snapshot.lines[0]?.discount.cents, 0);
+  assert.equal(snapshot.lines[0]?.actualAmount.cents, 2_097);
+});
+
+test("扫码重扫使用最新本地目录折扣并保持连续合并", async () => {
+  let current = item({ retailPriceCents: 699, discountRate: 0.2 });
+  const catalog: LocalCatalogPort = {
+    findExact: async () => current,
+    searchByName: async () => [current],
+  };
+  const dependencies = connected({ catalog });
+
+  await dependencies.workflow.addByLookupCode(current.lookupCode, { source: "hid" });
+  current = item({ retailPriceCents: 699, discountRate: 0.1 });
+  await dependencies.workflow.addByLookupCode(current.lookupCode, { source: "hid" });
+  let snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.lines.length, 1);
+  assert.equal(snapshot.lines[0]?.quantity, "2");
+  assert.equal(snapshot.lines[0]?.discount.cents, 140);
+
+  current = item({ retailPriceCents: 699, discountRate: 0 });
+  await dependencies.workflow.addByLookupCode(current.lookupCode, { source: "hid" });
+  snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.lines.length, 1);
+  assert.equal(snapshot.lines[0]?.quantity, "3");
+  assert.equal(snapshot.lines[0]?.discount.cents, 0);
+});
+
+test("同价在线复核把目录折扣从非零清零并递增 revision", async () => {
+  const discounted = item({ retailPriceCents: 699, discountRate: 0.2 });
+  const firstRemote = deferred<CatalogLookupRevalidationResult>();
+  const secondRemote = deferred<CatalogLookupRevalidationResult>();
+  let revalidationCalls = 0;
+  const dependencies = connected({
+    catalog: new Catalog([discounted]),
+    catalogRevalidation: {
+      revalidate: () =>
+        revalidationCalls++ === 0
+          ? firstRemote.promise
+          : secondRemote.promise,
+      isCurrentBaseSnapshot: async () => true,
+    },
+    catalogWorkScheduler: immediateScheduler(),
+  });
+
+  await dependencies.workflow.addByLookupCode(discounted.lookupCode);
+  firstRemote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: discounted,
+  });
+  await waitFor(
+    () => dependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+  assert.equal(dependencies.cart.getSnapshot().lines[0]?.discount.cents, 140);
+
+  await dependencies.workflow.addByLookupCode(discounted.lookupCode);
+  const revisionBeforeRemoval = dependencies.cart.getSnapshot().revision;
+  secondRemote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({ retailPriceCents: 699, discountRate: 0 }),
+  });
+  await waitFor(
+    () => dependencies.workflow.getPendingCatalogWorkCount() === 0,
+  );
+
+  const snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.revision, revisionBeforeRemoval + 1);
+  assert.equal(snapshot.lines[0]?.quantity, "2");
+  assert.equal(snapshot.lines[0]?.discount.cents, 0);
+  assert.equal(snapshot.lines[0]?.actualAmount.cents, 1_398);
+  assert.equal(
+    (snapshot.lines[0] as { discountSource?: string } | undefined)
+      ?.discountSource,
+    "none",
+  );
+});
+
+test("离线重扫同一目录基线连续合并并按合并数量重算", async () => {
+  const discounted = item({ retailPriceCents: 699, discountRate: 0.2 });
+  const dependencies = connected({ catalog: new Catalog([discounted]) });
+
+  await dependencies.workflow.addByLookupCode(discounted.lookupCode, {
+    source: "hid",
+  });
+  await dependencies.workflow.addByLookupCode(discounted.lookupCode, {
+    source: "hid",
+  });
+
+  const snapshot = dependencies.cart.getSnapshot();
+  assert.equal(snapshot.lines.length, 1);
+  assert.equal(snapshot.lines[0]?.quantity, "2");
+  assert.equal(snapshot.lines[0]?.discount.cents, 280);
+  assert.equal(snapshot.lines[0]?.actualAmount.cents, 1_118);
+  assert.equal(
+    (snapshot.lines[0] as { discountSource?: string } | undefined)
+      ?.discountSource,
+    "catalog",
+  );
+});
+
 test("每次扫码仅发布一个权威 outcome，并以 disposition 区分新增和连续合并", async () => {
   const dependencies = connected({
     catalog: new Catalog([
@@ -1363,6 +1564,41 @@ test("结账等待超时会 fence 迟到购物车写入，但远程目录任务�
     () => dependencies.workflow.addByLookupCode("930000000001"),
     hasCode(SALES_CHECKOUT_PREPARED),
   );
+});
+
+test("checkout fence 阻止迟到的目录折扣清零复核改写购物车", async () => {
+  const remote = deferred<CatalogLookupRevalidationResult>();
+  const timeout = deferred<void>();
+  const discounted = item({ retailPriceCents: 699, discountRate: 0.2 });
+  const dependencies = connected({
+    catalog: new Catalog([discounted]),
+    catalogRevalidation: new SharedRevalidation(remote.promise),
+    catalogWorkScheduler: {
+      yieldToUi: async () => undefined,
+      waitForTimeout: () => timeout.promise,
+    },
+  });
+
+  await dependencies.workflow.addByLookupCode(discounted.lookupCode);
+  const before = dependencies.cart.getSnapshot();
+  assert.equal(before.lines[0]?.discount.cents, 140);
+  assert.equal(before.lines[0]?.actualAmount.cents, 559);
+
+  const settlement = dependencies.workflow.settlePendingCatalogWork({
+    timeoutMs: 2_000,
+  });
+  timeout.resolve();
+  assert.deepEqual(await settlement, { timedOut: true });
+
+  remote.resolve({
+    kind: "found",
+    baseSnapshotId: "snapshot-1",
+    item: item({ retailPriceCents: 699, discountRate: 0 }),
+  });
+  await waitFor(() => dependencies.workflow.getPendingCatalogWorkCount() === 0);
+
+  const after = dependencies.cart.getSnapshot();
+  assert.deepEqual(after, before);
 });
 
 test("页面销毁同步清空 pending 观察者并 fence 迟到目录结果", async () => {

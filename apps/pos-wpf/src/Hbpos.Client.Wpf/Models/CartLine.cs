@@ -14,14 +14,16 @@ public enum PosCartLineDiscountSource
 {
     None = 0,
     Manual = 1,
-    Promotion = 2
+    Promotion = 2,
+    Catalog = 3
 }
 
 internal enum CartLineDiscountSource
 {
     None = 0,
     Manual = 1,
-    Promotion = 2
+    Promotion = 2,
+    Catalog = 3
 }
 
 public sealed record ReturnCartLineRequest(
@@ -55,6 +57,7 @@ public sealed class CartLine : ObservableObject
     private decimal _unitPrice;
     private decimal _discountAmount;
     private decimal? _discountPercent;
+    private int _catalogDiscountBasisPoints;
     private CartLineDiscountSource _discountSource = CartLineDiscountSource.None;
     private PriceSourceKind _priceSource;
     private string _priceSourceLabel = string.Empty;
@@ -210,6 +213,8 @@ public sealed class CartLine : ObservableObject
 
     public bool HasManualDiscount => HasDiscount && _discountSource == CartLineDiscountSource.Manual;
 
+    public bool IsCatalogDiscount => _discountSource == CartLineDiscountSource.Catalog;
+
     public bool HasZeroUnitPrice => UnitPrice == 0m;
 
     public string DiscountRateText
@@ -221,12 +226,21 @@ public sealed class CartLine : ObservableObject
                 return string.Empty;
             }
 
-            var rate = DiscountAmount / PositiveGrossAmount;
-            return $"-{rate * 100m:0.##}%";
+            var rate = _discountPercent ?? DiscountAmount / PositiveGrossAmount * 100m;
+            return $"-{rate:0.##}%";
         }
     }
 
     public decimal? DiscountPercent => _discountPercent;
+
+    /// <summary>
+    /// 目录折扣基线，以万分比保存（0..10000）；手工折扣覆盖时仍保留该基线。
+    /// </summary>
+    public int CatalogDiscountBasisPoints
+    {
+        get => _catalogDiscountBasisPoints;
+        private set => SetProperty(ref _catalogDiscountBasisPoints, Math.Clamp(value, 0, 10_000));
+    }
 
     internal CartLineDiscountSource DiscountSource => _discountSource;
 
@@ -369,6 +383,12 @@ public sealed class CartLine : ObservableObject
     public void SetDiscountAmount(decimal discountAmount)
     {
         ThrowIfLocked();
+        if (discountAmount <= 0m)
+        {
+            ClearManualDiscount();
+            return;
+        }
+
         ApplyDiscount(discountAmount, null, CartLineDiscountSource.Manual);
     }
 
@@ -376,12 +396,49 @@ public sealed class CartLine : ObservableObject
     {
         ThrowIfLocked();
         var normalizedDiscountPercent = Math.Clamp(discountPercent, 0m, 100m);
-        ApplyDiscount(CalculateDiscountAmount(normalizedDiscountPercent), normalizedDiscountPercent, CartLineDiscountSource.Manual);
+        if (normalizedDiscountPercent <= 0m)
+        {
+            ClearManualDiscount();
+            return;
+        }
+
+        // 非零手工百分比即使当前金额舍入为 0，也必须保留来源和百分比，
+        // 后续数量/单价变化才能按同一人工折扣重新计算。
+        ApplyDiscount(
+            CalculateDiscountAmount(normalizedDiscountPercent),
+            normalizedDiscountPercent,
+            CartLineDiscountSource.Manual,
+            preserveManualSourceWhenZero: true);
+    }
+
+    /// <summary>
+    /// 整单折扣分摊专用：Manual + 0 是合法状态，表示整单覆盖已明确排除该行，
+    /// 不能因为该行分到 0 分而恢复 catalog 折扣。
+    /// </summary>
+    internal void SetOrderDiscountAmount(decimal discountAmount)
+    {
+        ThrowIfLocked();
+        ApplyDiscount(
+            discountAmount,
+            null,
+            CartLineDiscountSource.Manual,
+            preserveManualSourceWhenZero: true);
     }
 
     internal void SetPromotionDiscountAmount(decimal discountAmount)
     {
         ThrowIfLocked();
+        if (_discountSource == CartLineDiscountSource.Manual)
+        {
+            return;
+        }
+
+        if (HasCatalogDiscountBaseline)
+        {
+            ApplyCatalogDiscount();
+            return;
+        }
+
         ApplyDiscount(discountAmount, null, CartLineDiscountSource.Promotion);
     }
 
@@ -392,7 +449,7 @@ public sealed class CartLine : ObservableObject
             return;
         }
 
-        ApplyDiscount(0m, null, CartLineDiscountSource.Promotion);
+        RestoreCatalogDiscountOrClear();
     }
 
     public void SetAutomaticPromotionDiscountAmount(decimal discountAmount)
@@ -405,6 +462,62 @@ public sealed class CartLine : ObservableObject
         ClearPromotionDiscount();
     }
 
+    internal void ClearManualDiscount()
+    {
+        if (_discountSource == CartLineDiscountSource.Manual)
+        {
+            RestoreCatalogDiscountOrClear();
+        }
+    }
+
+    internal void SetCatalogDiscountBasisPoints(int basisPoints)
+    {
+        if (basisPoints is < 0 or > 10_000)
+        {
+            // 本地挂单/崩溃恢复若读到损坏基线必须失败关闭，不能静默夹取成另一笔金额。
+            throw new InvalidOperationException(
+                "Catalog discount basis points must be between 0 and 10000.");
+        }
+
+        CatalogDiscountBasisPoints = basisPoints;
+        if (Kind != CartLineKind.Sale || _discountSource == CartLineDiscountSource.Manual)
+        {
+            return;
+        }
+
+        if (HasCatalogDiscountBaseline)
+        {
+            // 目录折扣优先于旧的自动促销，但不能覆盖手工折扣。
+            ApplyCatalogDiscount();
+        }
+        else if (_discountSource == CartLineDiscountSource.Catalog)
+        {
+            ApplyDiscount(0m, null, CartLineDiscountSource.Catalog);
+        }
+    }
+
+    /// <summary>
+    /// 目录复核/合并专用：同步安全商品元数据与目录折扣基线，
+    /// 不触碰 UnitPrice、PriceSource、PriceSourceLabel 或手工改价 provenance。
+    /// </summary>
+    internal void UpdateCatalogMetadataAndDiscountFrom(SellableItemDto item)
+    {
+        if (Kind != CartLineKind.Sale)
+        {
+            return;
+        }
+
+        StoreCode = item.StoreCode;
+        ProductCode = item.ProductCode;
+        ItemNumber = item.ItemNumber;
+        ReferenceCode = item.ReferenceCode;
+        ProductImage = item.ProductImage;
+        DisplayName = item.DisplayName;
+        LookupCode = item.LookupCode;
+        LookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+        SetCatalogDiscountBasisPoints(CalculateCatalogDiscountBasisPoints(item.DiscountRate));
+    }
+
     public void UpdateFrom(SellableItemDto item)
     {
         StoreCode = item.StoreCode;
@@ -415,6 +528,9 @@ public sealed class CartLine : ObservableObject
         DisplayName = item.DisplayName;
         LookupCode = item.LookupCode;
         LookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+        SetCatalogDiscountBasisPoints(Kind == CartLineKind.Sale
+            ? CalculateCatalogDiscountBasisPoints(item.DiscountRate)
+            : 0);
         UnitPrice = item.RetailPrice;
         PriceSource = item.PriceSource;
         PriceSourceLabel = item.PriceSourceLabel;
@@ -451,12 +567,38 @@ public sealed class CartLine : ObservableObject
 
     private void RefreshDiscountForGrossChange()
     {
-        ApplyDiscount(
-            _discountPercent is decimal discountPercent
-                ? CalculateDiscountAmount(discountPercent)
-                : DiscountAmount,
-            _discountPercent,
-            _discountSource);
+        switch (_discountSource)
+        {
+            case CartLineDiscountSource.Manual:
+                ApplyDiscount(
+                    _discountPercent is decimal discountPercent
+                        ? CalculateDiscountAmount(discountPercent)
+                        : DiscountAmount,
+                    _discountPercent,
+                    CartLineDiscountSource.Manual,
+                    preserveManualSourceWhenZero: true);
+                break;
+            case CartLineDiscountSource.Catalog:
+                ApplyCatalogDiscount();
+                break;
+            case CartLineDiscountSource.Promotion when HasCatalogDiscountBaseline:
+                ApplyCatalogDiscount();
+                break;
+            case CartLineDiscountSource.Promotion:
+                ApplyDiscount(DiscountAmount, null, CartLineDiscountSource.Promotion);
+                break;
+            default:
+                if (HasCatalogDiscountBaseline && Kind == CartLineKind.Sale)
+                {
+                    ApplyCatalogDiscount();
+                }
+                else
+                {
+                    ApplyDiscount(0m, null, CartLineDiscountSource.None);
+                }
+
+                break;
+        }
     }
 
     private decimal CalculateDiscountAmount(decimal discountPercent)
@@ -464,24 +606,77 @@ public sealed class CartLine : ObservableObject
         return ClampDiscountAmount(decimal.Round(PositiveGrossAmount * discountPercent / 100m, 2, MidpointRounding.AwayFromZero));
     }
 
+    private decimal CalculateCatalogDiscountAmount()
+    {
+        // 先按已舍入到分的总价计算，再 AwayFromZero 舍入到分，和整数分语义一致。
+        return ClampDiscountAmount(decimal.Round(
+            PositiveGrossAmount * CatalogDiscountBasisPoints / 10_000m,
+            2,
+            MidpointRounding.AwayFromZero));
+    }
+
     private decimal ClampDiscountAmount(decimal discountAmount)
     {
         return Math.Clamp(decimal.Round(discountAmount, 2, MidpointRounding.AwayFromZero), 0m, PositiveGrossAmount);
     }
 
-    private void ApplyDiscount(decimal discountAmount, decimal? discountPercent, CartLineDiscountSource discountSource)
+    private void ApplyDiscount(
+        decimal discountAmount,
+        decimal? discountPercent,
+        CartLineDiscountSource discountSource,
+        bool preserveManualSourceWhenZero = false)
     {
         var previousDiscountSource = _discountSource;
-        _discountPercent = discountPercent;
         DiscountAmount = ClampDiscountAmount(discountAmount);
-        _discountSource = DiscountAmount > 0m
+        var preservesZeroManualState = preserveManualSourceWhenZero &&
+            discountSource == CartLineDiscountSource.Manual;
+        _discountPercent = DiscountAmount > 0m || preservesZeroManualState
+            ? discountPercent
+            : null;
+        _discountSource = DiscountAmount > 0m || preservesZeroManualState
             ? discountSource
             : CartLineDiscountSource.None;
         if (previousDiscountSource != _discountSource)
         {
             OnPropertyChanged(nameof(IsAutomaticPromotionDiscount));
             OnPropertyChanged(nameof(HasManualDiscount));
+            OnPropertyChanged(nameof(IsCatalogDiscount));
         }
+
+        OnPropertyChanged(nameof(DiscountPercent));
+    }
+
+    private void ApplyCatalogDiscount()
+    {
+        if (!HasCatalogDiscountBaseline || Kind != CartLineKind.Sale || PositiveGrossAmount <= 0m)
+        {
+            ApplyDiscount(0m, null, CartLineDiscountSource.Catalog);
+            return;
+        }
+
+        ApplyDiscount(
+            CalculateCatalogDiscountAmount(),
+            CatalogDiscountBasisPoints / 100m,
+            CartLineDiscountSource.Catalog);
+    }
+
+    private void RestoreCatalogDiscountOrClear()
+    {
+        if (HasCatalogDiscountBaseline && Kind == CartLineKind.Sale)
+        {
+            ApplyCatalogDiscount();
+            return;
+        }
+
+        ApplyDiscount(0m, null, CartLineDiscountSource.None);
+    }
+
+    private bool HasCatalogDiscountBaseline => CatalogDiscountBasisPoints > 0;
+
+    private static int CalculateCatalogDiscountBasisPoints(decimal? discountRate)
+    {
+        var normalizedRate = Math.Clamp(discountRate ?? 0m, 0m, 1m);
+        return decimal.ToInt32(decimal.Round(normalizedRate * 10_000m, 0, MidpointRounding.AwayFromZero));
     }
 
     private decimal PositiveGrossAmount => decimal.Round(Quantity * UnitPrice, 2, MidpointRounding.AwayFromZero);

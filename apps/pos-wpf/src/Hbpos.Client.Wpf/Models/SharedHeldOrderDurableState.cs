@@ -57,7 +57,8 @@ public sealed record SharedHeldOrderPublication(
     long? RemoteRevision = null,
     string? RemoteUpdatedAtIso = null,
     string? ShareRequestedAtIso = null,
-    string? ConsumedAtIso = null);
+    string? ConsumedAtIso = null,
+    int? PublicationPayloadVersion = null);
 
 /// <summary>
 /// 显式一次性共享请求的结果：Requested = 本次写入请求时间；

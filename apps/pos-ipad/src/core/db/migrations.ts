@@ -5856,6 +5856,52 @@ CREATE INDEX IF NOT EXISTS ix_held_order_records_share_request
   );
 `;
 
+/**
+ * M42 共享 claim wire 版本：保留既有 payload_version=1（本地加密封装版本）
+ * 与全部旧密文，新增独立 V1/V2 wire 判别列。旧记录默认 V1；新记录按实际
+ * SharedSaleCart 版本写入，且版本事实不可在写后改动。
+ */
+const M42 = `
+ALTER TABLE shared_held_order_claim_records
+ADD COLUMN wire_payload_version INTEGER NOT NULL DEFAULT 1
+  CHECK (
+    typeof(wire_payload_version) = 'integer'
+    AND wire_payload_version IN (1, 2)
+  );
+
+CREATE TRIGGER IF NOT EXISTS trg_shared_held_order_claim_wire_version_immutable
+BEFORE UPDATE OF wire_payload_version ON shared_held_order_claim_records
+FOR EACH ROW
+WHEN NEW.wire_payload_version <> OLD.wire_payload_version
+BEGIN
+  SELECT RAISE(ABORT, 'SHARED_HELD_ORDER_CLAIM_WIRE_VERSION_IMMUTABLE');
+END;
+`;
+
+/**
+ * M43 publication wire 版本：首次网络发送前写入，响应丢失后的重试必须复用同一版本；
+ * 旧 PendingPublish 行留空，下一次实际发送时才按当时 capability 安全锁定。
+ */
+const M43 = `
+ALTER TABLE held_order_records
+ADD COLUMN wire_payload_version INTEGER NULL
+  CHECK (
+    wire_payload_version IS NULL OR (
+      typeof(wire_payload_version) = 'integer'
+      AND wire_payload_version IN (1, 2)
+    )
+  );
+
+CREATE TRIGGER IF NOT EXISTS trg_held_order_publication_wire_version_immutable
+BEFORE UPDATE OF wire_payload_version ON held_order_records
+FOR EACH ROW
+WHEN OLD.wire_payload_version IS NOT NULL
+  AND NEW.wire_payload_version IS NOT OLD.wire_payload_version
+BEGIN
+  SELECT RAISE(ABORT, 'HELD_ORDER_PUBLICATION_WIRE_VERSION_IMMUTABLE');
+END;
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5898,6 +5944,8 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 39, name: "M39_mixed_cash_final_rounding", sql: M39 },
   { version: 40, name: "M40_shared_held_order_share_state", sql: M40 },
   { version: 41, name: "M41_shared_held_order_share_request", sql: M41 },
+  { version: 42, name: "M42_shared_held_order_claim_wire_version", sql: M42 },
+  { version: 43, name: "M43_shared_held_order_publication_wire_version", sql: M43 },
 ];
 
 export async function applyMigrations(

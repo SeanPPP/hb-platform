@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Hbpos.Contracts.HeldOrders;
 
 public enum SharedHeldOrderStatus
@@ -17,17 +19,40 @@ public enum SharedHeldOrderClaimStatus
     Superseded = 5
 }
 
-public sealed record SharedHeldOrderCapabilitiesResponse(
-    bool Enabled,
-    int PayloadVersion = 1,
-    int PreparedTtlSeconds = 120,
-    bool ForceReleaseSupported = true);
+public sealed record SharedHeldOrderCapabilitiesResponse
+{
+    public bool Enabled { get; init; }
+
+    public int PayloadVersion { get; init; } = 1;
+
+    public int PreparedTtlSeconds { get; init; } = 120;
+
+    public bool ForceReleaseSupported { get; init; } = true;
+
+    // 旧服务端不返回此字段；新客户端反序列化时必须安全回退为只支持 V1。
+    public IReadOnlyList<int> SupportedPayloadVersions { get; init; } = [1];
+
+    public int PreferredPayloadVersion { get; init; } = 1;
+
+    public SharedHeldOrderCapabilitiesResponse(
+        bool Enabled,
+        int PayloadVersion = 1,
+        int PreparedTtlSeconds = 120,
+        bool ForceReleaseSupported = true)
+    {
+        this.Enabled = Enabled;
+        this.PayloadVersion = PayloadVersion;
+        this.PreparedTtlSeconds = PreparedTtlSeconds;
+        this.ForceReleaseSupported = ForceReleaseSupported;
+    }
+}
 
 public sealed record SharedHeldOrderPublishRequest(
     Guid HoldGuid,
     string StoreCode,
     string DeviceCode,
-    SharedSaleCartV1 Cart,
+    [property: JsonConverter(typeof(SharedSaleCartPayloadJsonConverter))]
+    object Cart,
     string IdempotencyKey);
 
 public sealed record SharedHeldOrderPublishResponse(
@@ -68,7 +93,8 @@ public sealed record SharedHeldOrderClaimPrepareResponse(
     Guid HoldGuid,
     Guid ClaimGuid,
     SharedHeldOrderClaimStatus Status,
-    SharedSaleCartV1 Payload,
+    [property: JsonConverter(typeof(SharedSaleCartPayloadJsonConverter))]
+    object Payload,
     string ClaimantDeviceCode,
     string ClaimantCashierId,
     string ClaimantCashierName,
@@ -110,7 +136,8 @@ public sealed record SharedHeldOrderRecoveryClaimDto(
     string ClaimantDeviceCode,
     string ClaimantCashierId,
     string ClaimantCashierName,
-    SharedSaleCartV1 Payload,
+    [property: JsonConverter(typeof(SharedSaleCartPayloadJsonConverter))]
+    object Payload,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
     DateTimeOffset? ExpiresAtUtc,

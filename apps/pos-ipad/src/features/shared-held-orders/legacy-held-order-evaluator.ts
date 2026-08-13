@@ -5,8 +5,11 @@ import {
 } from "./shared-sale-cart-v1";
 import type {
   SharedSaleCartValidationCode,
-  SharedSaleCartV1,
 } from "./shared-sale-cart-v1";
+import {
+  toSharedSaleCartV2,
+  type SharedSaleCartPayload,
+} from "./shared-sale-cart-v2";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
 
@@ -20,7 +23,7 @@ export type SharedHeldOrderBlockReason =
   | SharedSaleCartValidationCode;
 
 export type LegacyHeldOrderEvaluation =
-  | Readonly<{ outcome: "publishable"; cart: SharedSaleCartV1 }>
+  | Readonly<{ outcome: "publishable"; cart: SharedSaleCartPayload }>
   | Readonly<{ outcome: "blocked"; reason: SharedHeldOrderBlockReason }>;
 
 /**
@@ -43,9 +46,13 @@ export function evaluateLegacyHeldOrderPayload(
     // 旧库密文是扁平 PricingCartStateSnapshot（kind/fixedPrice Money），
     // 先经显式映射器转成冻结 wire（pricingState 嵌套、mode 折扣、fixedPriceCents），
     // 再由 normalize 统一校验并给出稳定错误码。
-    const cart = normalizeSharedSaleCartV1(
-      toSharedSaleCartV1(input.pricingState as unknown as PricingCartStateSnapshot),
+    const snapshot = input.pricingState as unknown as PricingCartStateSnapshot;
+    const hasCatalogBaseline = snapshot.lines.some(
+      (line) => (line.catalogDiscountBasisPoints ?? 0) > 0,
     );
+    const cart = hasCatalogBaseline
+      ? toSharedSaleCartV2(snapshot)
+      : normalizeSharedSaleCartV1(toSharedSaleCartV1(snapshot));
     return { outcome: "publishable", cart };
   } catch (error) {
     if (error instanceof SharedSaleCartValidationError) {

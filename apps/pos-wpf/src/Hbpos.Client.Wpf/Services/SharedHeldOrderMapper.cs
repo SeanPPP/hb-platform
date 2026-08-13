@@ -47,6 +47,19 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
             {
                 throw new ArgumentException("挂单行数量必须是有界正数。", nameof(order));
             }
+
+            if (line.CatalogDiscountBasisPoints is < 0 or > SharedHeldOrderCanonicalConstants.MaxBasisPoints)
+            {
+                throw new ArgumentException("挂单行目录折扣基线必须是 0..10000。", nameof(order));
+            }
+
+            if (line.CatalogDiscountBasisPoints > 0
+                && line.DiscountSource == PosCartLineDiscountSource.Promotion)
+            {
+                return Block(
+                    SharedHeldOrderMappingReasons.CatalogDiscountPromotionConflict,
+                    $"挂单行 {line.SuspendedOrderLineGuid:D} 同时存在目录折扣基线与促销折扣，保留本地。");
+            }
         }
 
         var lines = order.Lines.Select(ToCanonicalLine).ToArray();
@@ -105,8 +118,11 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
             FormatIso(order.SuspendedAt),
             promotions,
             lines);
+        var payloadVersion = lines.Any(line => line.CatalogDiscountBasisPoints > 0)
+            ? SharedHeldOrderCanonicalPayload.VersionV2
+            : SharedHeldOrderCanonicalPayload.VersionV1;
         return new SharedHeldOrderMappingResult(
-            new SharedHeldOrderCanonicalPayload(SharedHeldOrderCanonicalPayload.CurrentVersion, pricingState),
+            new SharedHeldOrderCanonicalPayload(payloadVersion, pricingState),
             null);
     }
 
@@ -119,15 +135,12 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
     {
         var discountAmountCents = MoneyToCents(line.DiscountAmount);
         SharedHeldOrderDiscountState discountState;
-        if (discountAmountCents == 0)
+        if (line.DiscountSource == PosCartLineDiscountSource.Manual)
         {
-            discountState = new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone);
-        }
-        else if (line.DiscountSource == PosCartLineDiscountSource.Manual)
-        {
+            // Manual + 0 是合法覆盖状态：整单分摊为零或极小手工百分比都不能
+            // 降级成 none，否则另一终端会重新启用 catalog 折扣。
             // 百分比只有能无损表示为整数 basisPoints（percent*100 为整数且在合法区间）
-            // 才冻结为百分比；否则（例如 10.555%）发布冻结的手工金额 cents，
-            // 避免舍入后恢复金额被静默改变。金额折扣按整数 cents。
+            // 才冻结为百分比；否则（例如 10.555%）发布冻结的手工金额 cents。
             discountState = line.DiscountPercent is decimal percent
                 && TryGetExactBasisPoints(percent, out var basisPoints)
                 ? new SharedHeldOrderDiscountState(
@@ -136,6 +149,16 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
                 : new SharedHeldOrderDiscountState(
                     SharedHeldOrderCanonicalConstants.DiscountManualAmount,
                     Cents: discountAmountCents);
+        }
+        else if (line.CatalogDiscountBasisPoints > 0
+            && line.DiscountSource is PosCartLineDiscountSource.Catalog or PosCartLineDiscountSource.None)
+        {
+            // 目录折扣金额由 baseline 表达；不能降级成 manual，否则取单后会失去 Catalog 来源。
+            discountState = new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone);
+        }
+        else if (discountAmountCents == 0)
+        {
+            discountState = new SharedHeldOrderDiscountState(SharedHeldOrderCanonicalConstants.DiscountNone);
         }
         else if (line.DiscountSource == PosCartLineDiscountSource.Promotion)
         {
@@ -167,7 +190,8 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
             null,
             null,
             null,
-            discountState);
+            discountState,
+            line.CatalogDiscountBasisPoints);
     }
 
     /// <summary>
@@ -202,6 +226,7 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
             .Where(line =>
                 line.DiscountState.Mode != SharedHeldOrderCanonicalConstants.DiscountManualAmount
                 && line.DiscountState.Mode != SharedHeldOrderCanonicalConstants.DiscountManualPercent
+                && line.CatalogDiscountBasisPoints == 0
                 && line.UnitPriceCents > 0
                 && line.Quantity > 0)
             .ToArray();
@@ -506,11 +531,51 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
 /// </summary>
 public static class SharedHeldOrderContractMapper
 {
+    /// <summary>按 wire version 分派；API DTO 的 object payload 只能接受 V1/V2。</summary>
+    public static SharedHeldOrderCanonicalPayload ToCanonical(object cart)
+    {
+        return cart switch
+        {
+            SharedSaleCartV1 v1 => ToCanonical(v1),
+            SharedSaleCartV2 v2 => ToCanonical(v2),
+            _ => throw new SharedSaleCartValidationException(
+                "Shared sale cart payload must be SharedSaleCartV1 or SharedSaleCartV2.")
+        };
+    }
+
     public static SharedHeldOrderCanonicalPayload ToCanonical(SharedSaleCartV1 cart)
     {
         SharedSaleCartV1Validator.Validate(cart);
-        var pricing = cart.PricingState;
-        var promotions = pricing.Promotions
+        return BuildCanonical(
+            SharedHeldOrderCanonicalPayload.VersionV1,
+            cart.PricingState.Revision,
+            cart.PricingState.Mode,
+            cart.PricingState.AsOfIso,
+            cart.PricingState.Promotions,
+            cart.PricingState.Lines.Select(line => ToCanonicalLine(line, 0)));
+    }
+
+    public static SharedHeldOrderCanonicalPayload ToCanonical(SharedSaleCartV2 cart)
+    {
+        SharedSaleCartV2Validator.Validate(cart);
+        return BuildCanonical(
+            SharedHeldOrderCanonicalPayload.VersionV2,
+            cart.PricingState.Revision,
+            cart.PricingState.Mode,
+            cart.PricingState.AsOfIso,
+            cart.PricingState.Promotions,
+            cart.PricingState.Lines.Select(line => ToCanonicalLine(line, line.CatalogDiscountBasisPoints)));
+    }
+
+    private static SharedHeldOrderCanonicalPayload BuildCanonical(
+        int payloadVersion,
+        int revision,
+        string mode,
+        string asOfIso,
+        IReadOnlyList<SharedPromotionV1> contractPromotions,
+        IEnumerable<SharedHeldOrderPricingLine> contractLines)
+    {
+        var promotions = contractPromotions
             .Select(promotion => new SharedHeldOrderPromotionDefinition(
                 promotion.Id,
                 promotion.Name,
@@ -527,60 +592,122 @@ public static class SharedHeldOrderContractMapper
                         product.UnitWeight))
                     .ToArray()))
             .ToArray();
-        var lines = pricing.Lines
-            .Select(line => new SharedHeldOrderPricingLine(
-                line.LineId,
-                line.ProductCode,
-                line.ItemNumber,
-                line.LookupCode,
-                line.DisplayName,
-                line.Quantity,
-                line.UnitPriceCents,
-                line.BasePriceSource,
-                line.SyncProvenance is { } provenance
-                    ? new SharedHeldOrderLineSyncProvenance(
-                        provenance.ReferenceCode,
-                        (int)provenance.PriceSource)
-                    : null,
-                line.Kind,
-                line.ReturnSourceKey,
-                line.OriginalOrderGuid,
-                line.OriginalOrderDetailGuid,
-                ToCanonicalDiscount(line.DiscountState)))
-            .ToArray();
         var payload = new SharedHeldOrderCanonicalPayload(
-            cart.Version,
+            payloadVersion,
             new SharedHeldOrderPricingState(
-                pricing.Revision,
-                pricing.Mode,
-                pricing.AsOfIso,
+                revision,
+                mode,
+                asOfIso,
                 promotions,
-                lines));
+                contractLines.ToArray()));
         SharedHeldOrderCanonicalValidator.Validate(payload);
         return payload;
     }
 
+    private static SharedHeldOrderPricingLine ToCanonicalLine(SharedSaleLineV1 line, int catalogDiscountBasisPoints)
+    {
+        return new SharedHeldOrderPricingLine(
+            line.LineId,
+            line.ProductCode,
+            line.ItemNumber,
+            line.LookupCode,
+            line.DisplayName,
+            line.Quantity,
+            line.UnitPriceCents,
+            line.BasePriceSource,
+            line.SyncProvenance is { } provenance
+                ? new SharedHeldOrderLineSyncProvenance(provenance.ReferenceCode, (int)provenance.PriceSource)
+                : null,
+            line.Kind,
+            line.ReturnSourceKey,
+            line.OriginalOrderGuid,
+            line.OriginalOrderDetailGuid,
+            ToCanonicalDiscount(line.DiscountState),
+            catalogDiscountBasisPoints);
+    }
+
+    private static SharedHeldOrderPricingLine ToCanonicalLine(SharedSaleLineV2 line, int catalogDiscountBasisPoints)
+    {
+        return new SharedHeldOrderPricingLine(
+            line.LineId,
+            line.ProductCode,
+            line.ItemNumber,
+            line.LookupCode,
+            line.DisplayName,
+            line.Quantity,
+            line.UnitPriceCents,
+            line.BasePriceSource,
+            line.SyncProvenance is { } provenance
+                ? new SharedHeldOrderLineSyncProvenance(provenance.ReferenceCode, (int)provenance.PriceSource)
+                : null,
+            line.Kind,
+            line.ReturnSourceKey,
+            line.OriginalOrderGuid,
+            line.OriginalOrderDetailGuid,
+            ToCanonicalDiscount(line.DiscountState),
+            catalogDiscountBasisPoints);
+    }
+
     public static SharedSaleCartV1 ToContract(SharedHeldOrderCanonicalPayload payload)
+    {
+        return ToContractV1(payload);
+    }
+
+    public static object ToContract(SharedHeldOrderCanonicalPayload payload, int payloadVersion)
+    {
+        return payloadVersion switch
+        {
+            SharedSaleCartV1Constants.PayloadVersion => ToContractV1(payload),
+            SharedSaleCartV2Constants.PayloadVersion => ToContractV2(payload),
+            _ => throw new SharedSaleCartValidationException(
+                $"Unsupported shared sale cart payload version: {payloadVersion}.")
+        };
+    }
+
+    public static SharedSaleCartV2 ToContractV2(SharedHeldOrderCanonicalPayload payload)
     {
         SharedHeldOrderCanonicalValidator.Validate(payload);
         var pricing = payload.PricingState;
-        var promotions = pricing.Promotions
-            .Select(promotion => new SharedPromotionV1(
-                promotion.Id,
-                promotion.Name,
-                promotion.EffectiveStartIso,
-                promotion.EffectiveEndIso,
-                promotion.IsExclusive,
-                promotion.Priority,
-                promotion.ApplyQuantity,
-                promotion.FixedPriceCents,
-                promotion.MaxApplicationsPerOrder,
-                promotion.Products
-                    .Select(product => new SharedPromotionProductV1(
-                        product.ProductCode,
-                        product.UnitWeight))
-                    .ToArray()))
-            .ToArray();
+        var cart = new SharedSaleCartV2(
+            SharedSaleCartV2Constants.PayloadVersion,
+            new SharedPricingStateV2(
+                pricing.Revision,
+                pricing.Mode,
+                pricing.AsOfIso,
+                ToContractPromotions(pricing.Promotions),
+                pricing.Lines.Select(line => new SharedSaleLineV2(
+                    line.LineId,
+                    line.ProductCode,
+                    line.ItemNumber,
+                    line.LookupCode,
+                    line.DisplayName,
+                    line.Quantity,
+                    line.UnitPriceCents,
+                    line.BasePriceSource,
+                    line.SyncProvenance is { } provenance
+                        ? new SharedLineSyncProvenanceV1(
+                            provenance.ReferenceCode,
+                            (PriceSourceKind)provenance.PriceSource)
+                        : null,
+                    line.Kind,
+                    line.ReturnSourceKey,
+                    line.OriginalOrderGuid,
+                    line.OriginalOrderDetailGuid,
+                    ToContractDiscount(line.DiscountState),
+                    line.CatalogDiscountBasisPoints)).ToArray()));
+        return SharedSaleCartV2Validator.Validate(cart);
+    }
+
+    private static SharedSaleCartV1 ToContractV1(SharedHeldOrderCanonicalPayload payload)
+    {
+        SharedHeldOrderCanonicalValidator.Validate(payload);
+        var pricing = payload.PricingState;
+        if (pricing.Lines.Any(line => line.CatalogDiscountBasisPoints > 0))
+        {
+            throw new SharedSaleCartValidationException(
+                "Cannot downgrade a shared sale cart with catalog discount baseline to V1.");
+        }
+
         var lines = pricing.Lines
             .Select(line => new SharedSaleLineV1(
                 line.LineId,
@@ -602,14 +729,35 @@ public static class SharedHeldOrderContractMapper
                 line.OriginalOrderDetailGuid,
                 ToContractDiscount(line.DiscountState)))
             .ToArray();
-        return new SharedSaleCartV1(
-            payload.Version,
+        var cart = new SharedSaleCartV1(
+            SharedSaleCartV1Constants.PayloadVersion,
             new SharedPricingStateV1(
                 pricing.Revision,
                 pricing.Mode,
                 pricing.AsOfIso,
-                promotions,
+                ToContractPromotions(pricing.Promotions),
                 lines));
+        return SharedSaleCartV1Validator.Validate(cart);
+    }
+
+    private static SharedPromotionV1[] ToContractPromotions(
+        IReadOnlyList<SharedHeldOrderPromotionDefinition> promotions)
+    {
+        return promotions
+            .Select(promotion => new SharedPromotionV1(
+                promotion.Id,
+                promotion.Name,
+                promotion.EffectiveStartIso,
+                promotion.EffectiveEndIso,
+                promotion.IsExclusive,
+                promotion.Priority,
+                promotion.ApplyQuantity,
+                promotion.FixedPriceCents,
+                promotion.MaxApplicationsPerOrder,
+                promotion.Products
+                    .Select(product => new SharedPromotionProductV1(product.ProductCode, product.UnitWeight))
+                    .ToArray()))
+            .ToArray();
     }
 
     private static SharedHeldOrderDiscountState ToCanonicalDiscount(SharedLineDiscountStateV1 discount)

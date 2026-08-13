@@ -1121,6 +1121,19 @@
         "tags": [
           "HeldOrders"
         ],
+        "parameters": [
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK",
@@ -1158,6 +1171,17 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
             }
           }
         ],
@@ -1414,6 +1438,19 @@
       "get": {
         "tags": [
           "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
         ],
         "responses": {
           "200": {
@@ -10339,6 +10376,18 @@
           },
           "forceReleaseSupported": {
             "type": "boolean"
+          },
+          "supportedPayloadVersions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "nullable": true
+          },
+          "preferredPayloadVersion": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false
@@ -10495,7 +10544,14 @@
             "$ref": "#/components/schemas/SharedHeldOrderClaimStatus"
           },
           "payload": {
-            "$ref": "#/components/schemas/SharedSaleCartV1"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
           },
           "claimantDeviceCode": {
             "type": "string",
@@ -10663,7 +10719,14 @@
             "nullable": true
           },
           "cart": {
-            "$ref": "#/components/schemas/SharedSaleCartV1"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
           },
           "idempotencyKey": {
             "type": "string",
@@ -10747,7 +10810,14 @@
             "nullable": true
           },
           "payload": {
-            "$ref": "#/components/schemas/SharedSaleCartV1"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
           },
           "createdAtUtc": {
             "type": "string",
@@ -10880,6 +10950,38 @@
         },
         "additionalProperties": false
       },
+      "SharedPricingStateV2": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mode": {
+            "type": "string",
+            "nullable": true
+          },
+          "asOfIso": {
+            "type": "string",
+            "nullable": true
+          },
+          "promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedPromotionV1"
+            },
+            "nullable": true
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedSaleLineV2"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "SharedPromotionProductV1": {
         "type": "object",
         "properties": {
@@ -10956,6 +11058,19 @@
         },
         "additionalProperties": false
       },
+      "SharedSaleCartV2": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pricingState": {
+            "$ref": "#/components/schemas/SharedPricingStateV2"
+          }
+        },
+        "additionalProperties": false
+      },
       "SharedSaleLineV1": {
         "type": "object",
         "properties": {
@@ -11014,6 +11129,75 @@
           },
           "discountState": {
             "$ref": "#/components/schemas/SharedLineDiscountStateV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedSaleLineV2": {
+        "required": [
+          "catalogDiscountBasisPoints"
+        ],
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "type": "string",
+            "nullable": true
+          },
+          "productCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "itemNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "lookupCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "number",
+            "format": "double"
+          },
+          "unitPriceCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "basePriceSource": {
+            "type": "string",
+            "nullable": true
+          },
+          "syncProvenance": {
+            "$ref": "#/components/schemas/SharedLineSyncProvenanceV1"
+          },
+          "kind": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnSourceKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalOrderGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "originalOrderDetailGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "discountState": {
+            "$ref": "#/components/schemas/SharedLineDiscountStateV1"
+          },
+          "catalogDiscountBasisPoints": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false

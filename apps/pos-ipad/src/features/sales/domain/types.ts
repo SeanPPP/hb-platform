@@ -36,6 +36,7 @@ export type AddCartItemInput = Readonly<{
   displayName: string;
   quantity?: number;
   unitPrice: Money;
+  catalogDiscountBasisPoints?: number;
   syncProvenance: LineSyncProvenance;
   priceSource?: Exclude<PriceSource, "promotion" | "open-item">;
   kind?: CartLineKind;
@@ -76,9 +77,26 @@ export type RefreshCatalogItemInput = Readonly<{
     lookupCode: string;
     displayName: string;
     retailPriceCents: number;
+    catalogDiscountBasisPoints?: number;
     priceSource: LineSyncProvenance["priceSource"];
   }>;
 }>;
+
+export type PricingCartDiscountSource =
+  | "none"
+  | "catalog"
+  | "manual"
+  | "promotion";
+
+export type PricingCartSnapshotLine = CartSnapshot["lines"][number] &
+  Readonly<{
+    discountSource: PricingCartDiscountSource;
+  }>;
+
+export type PricingCartSnapshot = Omit<CartSnapshot, "lines"> &
+  Readonly<{
+    lines: readonly PricingCartSnapshotLine[];
+  }>;
 
 export type PricingCartOptions = Readonly<{
   mode?: CartMode;
@@ -88,7 +106,7 @@ export type PricingCartOptions = Readonly<{
 
 export type PricingCartResult = Readonly<{
   state: PricingCartStateSnapshot;
-  cart: CartSnapshot;
+  cart: PricingCartSnapshot;
 }>;
 
 export type MergeCompatibleCartLinesResult = Readonly<{

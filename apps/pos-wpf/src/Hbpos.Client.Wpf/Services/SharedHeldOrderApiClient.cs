@@ -90,6 +90,9 @@ public sealed class SharedHeldOrderApiClient(
     HttpClient httpClient,
     ISharedHeldOrderPublicationGate publicationGate) : ISharedHeldOrderApiClient
 {
+    private const string SupportedPayloadVersionsQuery =
+        "supportedPayloadVersions=1&supportedPayloadVersions=2";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public Task<SharedHeldOrderCapabilitiesResponse> GetCapabilitiesAsync(
@@ -127,7 +130,7 @@ public sealed class SharedHeldOrderApiClient(
         CancellationToken cancellationToken = default)
     {
         return GetAsync<IReadOnlyList<SharedHeldOrderListItemDto>>(
-            "api/v1/held-orders",
+            $"api/v1/held-orders?{SupportedPayloadVersionsQuery}",
             cancellationToken);
     }
 
@@ -137,7 +140,7 @@ public sealed class SharedHeldOrderApiClient(
         CancellationToken cancellationToken = default)
     {
         return PostAsync<SharedHeldOrderClaimPrepareRequest, SharedHeldOrderClaimPrepareResponse>(
-            $"api/v1/held-orders/{holdGuid:D}/claims/prepare",
+            $"api/v1/held-orders/{holdGuid:D}/claims/prepare?{SupportedPayloadVersionsQuery}",
             request,
             cancellationToken);
     }
@@ -180,7 +183,7 @@ public sealed class SharedHeldOrderApiClient(
         CancellationToken cancellationToken = default)
     {
         return GetAsync<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>>(
-            "api/v1/held-orders/claims/mine",
+            $"api/v1/held-orders/claims/mine?{SupportedPayloadVersionsQuery}",
             cancellationToken);
     }
 

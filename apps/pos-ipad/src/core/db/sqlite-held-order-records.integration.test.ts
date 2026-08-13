@@ -167,6 +167,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 105,
           basePriceSource: "manual",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: "REF-PERCENT",
             priceSource: 1,
@@ -186,6 +187,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 500,
           basePriceSource: "catalog",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: null,
             priceSource: 2,
@@ -205,6 +207,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 200,
           basePriceSource: "open-item",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: "REF-OPENITEM",
             priceSource: 0,
@@ -593,6 +596,119 @@ test("真实 SQLite：M8 升级 M17 保留 legacy held_orders，V2 密文保存�
   await connection.close();
 });
 
+test("SQLite 挂单保留目录基线，旧快照缺字段按 0 恢复", async () => {
+  const { connection, records } = await open();
+  const conflictingPayload: HeldOrderPayloadV1 = {
+    ...payload(),
+    pricingState: {
+      ...payload().pricingState,
+      lines: payload().pricingState.lines.map((line) =>
+        line.lineId === "line-promo"
+          ? { ...line, catalogDiscountBasisPoints: 2_000 }
+          : line,
+      ),
+    },
+  };
+  await assert.rejects(
+    records.hold({
+      holdId: "conflicting-baseline-hold",
+      scope,
+      heldBy,
+      payload: conflictingPayload,
+      heldAtIso: nowIso,
+      audit: audit("audit-conflicting-baseline-hold", "ORDER_HOLD"),
+    }),
+    /catalog discount.*promotion/i,
+  );
+
+  const baselinePayload: HeldOrderPayloadV1 = {
+    ...payload(),
+    pricingState: {
+      ...payload().pricingState,
+      lines: payload().pricingState.lines.map((line) =>
+        line.lineId === "line-percent"
+          ? { ...line, catalogDiscountBasisPoints: 2_000 }
+          : line,
+      ),
+    },
+  };
+  await records.hold({
+    holdId: "baseline-hold",
+    scope,
+    heldBy,
+    payload: baselinePayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-baseline-hold", "ORDER_HOLD"),
+  });
+  const pending = await records.listPending(scope, 10);
+  assert.deepEqual(
+    pending.find((entry) => entry.holdId === "baseline-hold"),
+    {
+      holdId: "baseline-hold",
+      localSequence: 1,
+      scope,
+      heldBy,
+      status: "Pending",
+      itemCount: 3,
+      subtotalCents: 805,
+      discountCents: 131,
+      actualAmountCents: 674,
+      heldAtIso: nowIso,
+      recallingAtIso: null,
+    },
+  );
+  await confirmHoldClear(records, "baseline-hold", scope);
+  const claimed = await records.claimRecall({
+    holdId: "baseline-hold",
+    scope,
+    recalledBy: heldBy,
+    recallAttemptId: "attempt-baseline",
+    recallingAtIso: "2026-07-28T08:01:00.000Z",
+  });
+  assert.equal(
+    claimed?.payload.pricingState.lines.find(
+      (line) => line.lineId === "line-percent",
+    )?.catalogDiscountBasisPoints,
+    2_000,
+  );
+
+  const legacyPayload: HeldOrderPayloadV1 = {
+    ...payload(),
+    pricingState: {
+      ...payload().pricingState,
+      lines: payload().pricingState.lines.map((line) => {
+        const { catalogDiscountBasisPoints: _legacy, ...withoutBaseline } =
+          line;
+        return withoutBaseline;
+      }),
+    },
+  };
+  const legacyScope = { storeCode: scope.storeCode, deviceCode: "IPAD-02" } as const;
+  await records.hold({
+    holdId: "legacy-baseline-hold",
+    scope: legacyScope,
+    heldBy,
+    payload: legacyPayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-legacy-baseline-hold", "ORDER_HOLD"),
+  });
+  await confirmHoldClear(records, "legacy-baseline-hold", legacyScope);
+  const legacyClaimed = await records.claimRecall({
+    holdId: "legacy-baseline-hold",
+    scope: legacyScope,
+    recalledBy: heldBy,
+    recallAttemptId: "attempt-legacy-baseline",
+    recallingAtIso: "2026-07-28T08:02:00.000Z",
+  });
+  assert.deepEqual(
+    legacyClaimed?.payload.pricingState.lines.map(
+      (line) => line.catalogDiscountBasisPoints,
+    ),
+    [0, 0, 0],
+  );
+  await connection.close();
+});
+
 test("真实 SQLite：删除挂单先阻断发布，再按 scope/Pending/无 fence 原子物理删除", async () => {
   const { connection, records } = await open();
   await hold(records);
@@ -698,6 +814,65 @@ test("真实 SQLite：有清车 fence 或已进入 Recalling 的挂单拒绝删�
     }),
     null,
   );
+  await connection.close();
+});
+
+test("真实 SQLite：manual-amount 0 覆盖目录折扣时摘要与召回金额一致", async () => {
+  const { connection, records } = await open();
+  const sourceLine = payload().pricingState.lines[0]!;
+  const manualZeroPayload: HeldOrderPayloadV1 = {
+    version: 1,
+    pricingState: {
+      revision: 8,
+      mode: "sale",
+      asOfIso: nowIso,
+      promotions: [],
+      lines: [{
+        ...sourceLine,
+        unitPriceCents: 1,
+        basePriceSource: "catalog",
+        catalogDiscountBasisPoints: 10_000,
+        discountState: { kind: "manual-amount", cents: 0 },
+      }],
+    },
+  };
+
+  await records.hold({
+    holdId: "manual-zero-hold",
+    scope,
+    heldBy,
+    payload: manualZeroPayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-manual-zero-hold", "ORDER_HOLD"),
+  });
+
+  const pending = await records.listPending(scope, 10);
+  assert.deepEqual(
+    pending.find((entry) => entry.holdId === "manual-zero-hold"),
+    {
+      holdId: "manual-zero-hold",
+      localSequence: 1,
+      scope,
+      heldBy,
+      status: "Pending",
+      itemCount: 1,
+      subtotalCents: 1,
+      discountCents: 0,
+      actualAmountCents: 1,
+      heldAtIso: nowIso,
+      recallingAtIso: null,
+    },
+  );
+
+  await confirmHoldClear(records, "manual-zero-hold");
+  const claimed = await records.claimRecall({
+    holdId: "manual-zero-hold",
+    scope,
+    recalledBy: heldBy,
+    recallAttemptId: "attempt-manual-zero",
+    recallingAtIso: "2026-07-28T08:01:00.000Z",
+  });
+  assert.deepEqual(claimed?.payload, manualZeroPayload);
   await connection.close();
 });
 

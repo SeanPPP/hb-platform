@@ -161,13 +161,13 @@ public sealed class SharedHeldOrderPublicationWorker(
 
         // 先读 capability：disabled/网络不可用都不发布，只记退避（不阻止本地挂单）。
         var capability = await ReadCapabilityAsync(nowIso, due, cancellationToken);
-        if (capability == CapabilityGate.NotReady)
+        if (capability.Gate == CapabilityGate.NotReady)
         {
             return new SharedHeldOrderPublicationRunResult(
                 evaluated, staged, blocked, published, failedCapability + due.Length, failedPublish);
         }
 
-        if (capability == CapabilityGate.Disabled)
+        if (capability.Gate == CapabilityGate.Disabled)
         {
             foreach (var publication in due)
             {
@@ -186,6 +186,7 @@ public sealed class SharedHeldOrderPublicationWorker(
         foreach (var publication in due)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var attemptPublication = publication;
             try
             {
                 var payload = await repository.GetPublicationPayloadAsync(
@@ -196,19 +197,54 @@ public sealed class SharedHeldOrderPublicationWorker(
                     throw new InvalidDataException("PendingPublish 缺少可解密 payload。");
                 }
 
-                var cart = ToPublishCart(payload);
+                var payloadVersion = attemptPublication.PublicationPayloadVersion;
+                if (payloadVersion is null && capability.PreferredPayloadVersion == SharedSaleCartV1Constants.PayloadVersion
+                    && payload.PricingState.Lines.Any(line => line.CatalogDiscountBasisPoints > 0))
+                {
+                    // 商品折扣基线不能无损降级到冻结 V1；保持 PendingPublish，等待后端
+                    // preferred 切到 V2，绝不把目录折扣伪装成手工折扣或静默丢弃。
+                    await RecordBackoffAsync(
+                        publication,
+                        nowIso,
+                        "SHARED_HELD_ORDER_PREFERRED_VERSION_LOSSY",
+                        "服务端首选 V1，当前挂单包含只能由 V2 表达的商品折扣。",
+                        cancellationToken);
+                    failedCapability++;
+                    continue;
+                }
+
+                if (payloadVersion is null)
+                {
+                    var pinnedPublication = await repository.TryPinPublicationPayloadVersionAsync(
+                        publication.LocalHoldGuid,
+                        publication.Revision,
+                        capability.PreferredPayloadVersion,
+                        nowIso,
+                        cancellationToken);
+                    if (pinnedPublication is null)
+                    {
+                        // 并发已推进状态时不发送陈旧请求，下一轮读取最新 durable publication。
+                        continue;
+                    }
+
+                    attemptPublication = pinnedPublication;
+                    payloadVersion = attemptPublication.PublicationPayloadVersion;
+                }
+
+                // 首次发送前已落库的 wire 版本优先于当前 preferred，响应丢失后可安全幂等重放。
+                var cart = ToPublishCart(payload, payloadVersion!.Value);
                 var request = new SharedHeldOrderPublishRequest(
-                    publication.LocalHoldGuid,
-                    publication.StoreCode,
-                    publication.DeviceCode,
+                    attemptPublication.LocalHoldGuid,
+                    attemptPublication.StoreCode,
+                    attemptPublication.DeviceCode,
                     cart,
-                    IdempotencyKeyFor(publication.LocalHoldGuid));
+                    IdempotencyKeyFor(attemptPublication.LocalHoldGuid));
                 var response = await apiClient.PublishAsync(request, cancellationToken);
                 // 发布成功：远端 revision/time 与 Published 状态原子落库（幂等重试同 key）。
                 var advanced = await repository.TryAdvancePublicationAsync(
-                    publication.LocalHoldGuid,
+                    attemptPublication.LocalHoldGuid,
                     SharedHeldOrderPublicationStatus.PendingPublish,
-                    publication.Revision,
+                    attemptPublication.Revision,
                     SharedHeldOrderPublicationStatus.Published,
                     nowIso,
                     lastAttemptAtIso: nowIso,
@@ -224,7 +260,7 @@ public sealed class SharedHeldOrderPublicationWorker(
             {
                 // 发布失败：保持 PendingPublish，RetryCount +1 并退避；本地挂单不动。
                 await RecordBackoffAsync(
-                    publication,
+                    attemptPublication,
                     nowIso,
                     exception.ErrorCode,
                     exception.Message,
@@ -237,9 +273,9 @@ public sealed class SharedHeldOrderPublicationWorker(
             {
                 // 本地 payload 无法构造发布请求：fail-closed Blocked，保留原因。
                 await repository.TryAdvancePublicationAsync(
-                    publication.LocalHoldGuid,
+                    attemptPublication.LocalHoldGuid,
                     SharedHeldOrderPublicationStatus.PendingPublish,
-                    publication.Revision,
+                    attemptPublication.Revision,
                     SharedHeldOrderPublicationStatus.Blocked,
                     nowIso,
                     errorCode: "SHARED_HELD_ORDER_INVALID",
@@ -253,7 +289,7 @@ public sealed class SharedHeldOrderPublicationWorker(
             evaluated, staged, blocked, published, failedCapability, failedPublish);
     }
 
-    private async Task<CapabilityGate> ReadCapabilityAsync(
+    private async Task<CapabilityReadResult> ReadCapabilityAsync(
         string nowIso,
         IReadOnlyList<SharedHeldOrderPublication> due,
         CancellationToken cancellationToken)
@@ -263,7 +299,7 @@ public sealed class SharedHeldOrderPublicationWorker(
             var capabilities = await apiClient.GetCapabilitiesAsync(cancellationToken);
             if (!capabilities.Enabled)
             {
-                return CapabilityGate.Disabled;
+                return new CapabilityReadResult(CapabilityGate.Disabled, SharedSaleCartV1Constants.PayloadVersion);
             }
 
             if (capabilities.PayloadVersion != SharedSaleCartV1Constants.PayloadVersion)
@@ -278,10 +314,30 @@ public sealed class SharedHeldOrderPublicationWorker(
                         cancellationToken);
                 }
 
-                return CapabilityGate.NotReady;
+                return new CapabilityReadResult(CapabilityGate.NotReady, SharedSaleCartV1Constants.PayloadVersion);
             }
 
-            return CapabilityGate.Enabled;
+            var supportedVersions = capabilities.SupportedPayloadVersions
+                ?? [capabilities.PayloadVersion];
+            var preferredVersion = capabilities.PreferredPayloadVersion;
+            if (preferredVersion is not SharedSaleCartV1Constants.PayloadVersion
+                    and not SharedSaleCartV2Constants.PayloadVersion
+                || !supportedVersions.Contains(preferredVersion))
+            {
+                foreach (var publication in due)
+                {
+                    await RecordBackoffAsync(
+                        publication,
+                        nowIso,
+                        "SHARED_HELD_ORDER_VERSION_MISMATCH",
+                        "服务端共享挂单首选版本不在受支持版本列表中。",
+                        cancellationToken);
+                }
+
+                return new CapabilityReadResult(CapabilityGate.NotReady, SharedSaleCartV1Constants.PayloadVersion);
+            }
+
+            return new CapabilityReadResult(CapabilityGate.Enabled, preferredVersion);
         }
         catch (SharedHeldOrderApiException exception)
         {
@@ -295,7 +351,7 @@ public sealed class SharedHeldOrderPublicationWorker(
                     cancellationToken);
             }
 
-            return CapabilityGate.NotReady;
+            return new CapabilityReadResult(CapabilityGate.NotReady, SharedSaleCartV1Constants.PayloadVersion);
         }
     }
 
@@ -319,10 +375,12 @@ public sealed class SharedHeldOrderPublicationWorker(
             cancellationToken: cancellationToken);
     }
 
-    /// <summary>本地 canonical -> 服务端 SharedSaleCartV1 契约（显式字段映射）。</summary>
-    private static SharedSaleCartV1 ToPublishCart(SharedHeldOrderCanonicalPayload payload)
+    /// <summary>本地 canonical -> 服务端首选 wire 版本（显式字段映射）。</summary>
+    private static object ToPublishCart(
+        SharedHeldOrderCanonicalPayload payload,
+        int preferredPayloadVersion)
     {
-        return SharedHeldOrderContractMapper.ToContract(payload);
+        return SharedHeldOrderContractMapper.ToContract(payload, preferredPayloadVersion);
     }
 
     /// <summary>发布幂等键：同一本地挂单恒用同一 key，服务端重复发布按幂等返回。</summary>
@@ -342,4 +400,8 @@ public sealed class SharedHeldOrderPublicationWorker(
         Disabled,
         NotReady
     }
+
+    private sealed record CapabilityReadResult(
+        CapabilityGate Gate,
+        int PreferredPayloadVersion);
 }

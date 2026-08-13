@@ -150,6 +150,8 @@ test("capabilities/list/prepare/claims-mine 严格解析为本地域类型", asy
   assert.deepEqual(capabilities, {
     enabled: true,
     payloadVersion: 1,
+    supportedPayloadVersions: [1],
+    preferredPayloadVersion: 1,
     preparedTtlSeconds: 900,
     forceReleaseSupported: true,
   });
@@ -176,10 +178,69 @@ test("capabilities/list/prepare/claims-mine 严格解析为本地域类型", asy
   const urls = transport.calls.map((call) => call.url);
   assert.deepEqual(urls, [
     "/api/v1/held-orders/capabilities",
-    "/api/v1/held-orders",
-    "/api/v1/held-orders/hold-1/claims/prepare",
-    "/api/v1/held-orders/claims/mine",
+    "/api/v1/held-orders?supportedPayloadVersions=1&supportedPayloadVersions=2",
+    "/api/v1/held-orders/hold-1/claims/prepare?supportedPayloadVersions=1&supportedPayloadVersions=2",
+    "/api/v1/held-orders/claims/mine?supportedPayloadVersions=1&supportedPayloadVersions=2",
   ]);
+});
+
+test("旧 capabilities 默认只支持 V1，但所有读取/prepare 请求声明客户端 V1/V2 能力", async () => {
+  const transport = new FakeTransport();
+  transport.enqueue({
+    status: 200,
+    data: envelope({
+      enabled: true,
+      payloadVersion: 1,
+      preparedTtlSeconds: 900,
+      forceReleaseSupported: true,
+    }),
+  });
+  transport.enqueue({ status: 200, data: envelope([]) });
+  transport.enqueue({
+    status: 200,
+    data: envelope({
+      holdGuid: "hold-1",
+      claimGuid: "claim-1",
+      status: 1,
+      payload: wireCart(),
+      claimantDeviceCode: "IPAD-2",
+      claimantCashierId: "cashier-2",
+      claimantCashierName: "Other",
+      createdAtUtc: "2026-07-28T00:06:00.000Z",
+      expiresAtUtc: null,
+      revision: 5,
+      alreadyExists: false,
+    }),
+  });
+  transport.enqueue({ status: 200, data: envelope([]) });
+
+  const api = makeApi(transport);
+  assert.deepEqual(await api.getCapabilities(), {
+    enabled: true,
+    payloadVersion: 1,
+    supportedPayloadVersions: [1],
+    preferredPayloadVersion: 1,
+    preparedTtlSeconds: 900,
+    forceReleaseSupported: true,
+  });
+  await api.listPending();
+  await api.prepare({
+    holdGuid: "hold-1",
+    claimGuid: "claim-1",
+    idempotencyKey: "prepare-key",
+  });
+  await api.claimsMine();
+
+  assert.deepEqual(
+    transport.calls.slice(1).map((call) =>
+      [...new URL(call.url, "https://hbpos.example").searchParams.values()],
+    ),
+    [
+      ["1", "2"],
+      ["1", "2"],
+      ["1", "2"],
+    ],
+  );
 });
 
 test("错误分类：网络/5xx/BUSY 可重试，409/MISMATCH 冲突，403 禁止，disabled/invalid 稳定", async () => {

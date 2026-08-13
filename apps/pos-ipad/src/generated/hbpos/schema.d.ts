@@ -957,7 +957,9 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    supportedPayloadVersions?: number[];
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -1023,7 +1025,9 @@ export interface paths {
         put?: never;
         post: {
             parameters: {
-                query?: never;
+                query?: {
+                    supportedPayloadVersions?: number[];
+                };
                 header?: never;
                 path: {
                     holdGuid: string;
@@ -1231,7 +1235,9 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    supportedPayloadVersions?: number[];
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -5937,6 +5943,9 @@ export interface components {
             /** Format: int32 */
             preparedTtlSeconds?: number;
             forceReleaseSupported?: boolean;
+            supportedPayloadVersions?: number[] | null;
+            /** Format: int32 */
+            preferredPayloadVersion?: number;
         };
         SharedHeldOrderCapabilitiesResponseApiResult: {
             success?: boolean;
@@ -5991,7 +6000,7 @@ export interface components {
             /** Format: uuid */
             claimGuid?: string;
             status?: components["schemas"]["SharedHeldOrderClaimStatus"];
-            payload?: components["schemas"]["SharedSaleCartV1"];
+            payload?: components["schemas"]["SharedSaleCartV1"] | components["schemas"]["SharedSaleCartV2"];
             claimantDeviceCode?: string | null;
             claimantCashierId?: string | null;
             claimantCashierName?: string | null;
@@ -6050,7 +6059,7 @@ export interface components {
             holdGuid?: string;
             storeCode?: string | null;
             deviceCode?: string | null;
-            cart?: components["schemas"]["SharedSaleCartV1"];
+            cart?: components["schemas"]["SharedSaleCartV1"] | components["schemas"]["SharedSaleCartV2"];
             idempotencyKey?: string | null;
         };
         SharedHeldOrderPublishResponse: {
@@ -6079,7 +6088,7 @@ export interface components {
             claimantDeviceCode?: string | null;
             claimantCashierId?: string | null;
             claimantCashierName?: string | null;
-            payload?: components["schemas"]["SharedSaleCartV1"];
+            payload?: components["schemas"]["SharedSaleCartV1"] | components["schemas"]["SharedSaleCartV2"];
             /** Format: date-time */
             createdAtUtc?: string;
             /** Format: date-time */
@@ -6122,6 +6131,14 @@ export interface components {
             promotions?: components["schemas"]["SharedPromotionV1"][] | null;
             lines?: components["schemas"]["SharedSaleLineV1"][] | null;
         };
+        SharedPricingStateV2: {
+            /** Format: int32 */
+            revision?: number;
+            mode?: string | null;
+            asOfIso?: string | null;
+            promotions?: components["schemas"]["SharedPromotionV1"][] | null;
+            lines?: components["schemas"]["SharedSaleLineV2"][] | null;
+        };
         SharedPromotionProductV1: {
             productCode?: string | null;
             /** Format: double */
@@ -6148,6 +6165,11 @@ export interface components {
             version?: number;
             pricingState?: components["schemas"]["SharedPricingStateV1"];
         };
+        SharedSaleCartV2: {
+            /** Format: int32 */
+            version?: number;
+            pricingState?: components["schemas"]["SharedPricingStateV2"];
+        };
         SharedSaleLineV1: {
             lineId?: string | null;
             productCode?: string | null;
@@ -6167,6 +6189,28 @@ export interface components {
             /** Format: uuid */
             originalOrderDetailGuid?: string | null;
             discountState?: components["schemas"]["SharedLineDiscountStateV1"];
+        };
+        SharedSaleLineV2: {
+            lineId?: string | null;
+            productCode?: string | null;
+            itemNumber?: string | null;
+            lookupCode?: string | null;
+            displayName?: string | null;
+            /** Format: double */
+            quantity?: number;
+            /** Format: int64 */
+            unitPriceCents?: number;
+            basePriceSource?: string | null;
+            syncProvenance?: components["schemas"]["SharedLineSyncProvenanceV1"];
+            kind?: string | null;
+            returnSourceKey?: string | null;
+            /** Format: uuid */
+            originalOrderGuid?: string | null;
+            /** Format: uuid */
+            originalOrderDetailGuid?: string | null;
+            discountState?: components["schemas"]["SharedLineDiscountStateV1"];
+            /** Format: int32 */
+            catalogDiscountBasisPoints: number;
         };
         SquareCheckoutActionRequest: {
             environment?: string | null;

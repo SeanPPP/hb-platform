@@ -1066,7 +1066,7 @@ public sealed class SharedHeldOrderCoordinator(
     /// 服务端 SharedSaleCartV1 -> canonical（显式字段映射 + 双端校验，
     /// 未知/越界字段 fail-closed；不依赖 JSON 往返，避免 strict 解析器拒绝 null union 字段）。
     /// </summary>
-    private static SharedHeldOrderCanonicalPayload ToCanonical(SharedSaleCartV1 cart)
+    private static SharedHeldOrderCanonicalPayload ToCanonical(object cart)
     {
         if (cart is null)
         {

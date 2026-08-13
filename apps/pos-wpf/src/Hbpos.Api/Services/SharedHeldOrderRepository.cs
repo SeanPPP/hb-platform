@@ -11,6 +11,7 @@ public sealed record SharedHeldOrderRecord(
     string DeviceCode,
     string CashierId,
     string CashierName,
+    int PayloadVersion,
     string PayloadCiphertext,
     string Fingerprint,
     string IdempotencyKey,
@@ -344,7 +345,7 @@ public sealed class SqlSugarSharedHeldOrderRepository(
     HbposSqlSugarContext dbContext) : ISharedHeldOrderRepository
 {
     private const string HoldSelectColumns = """
-        [HoldGuid], [StoreCode], [DeviceCode], [CashierId], [CashierName], [PayloadCiphertext],
+        [HoldGuid], [StoreCode], [DeviceCode], [CashierId], [CashierName], [PayloadVersion], [PayloadCiphertext],
         [Fingerprint], [IdempotencyKey], [Status], [Revision], [CreatedAtUtc], [UpdatedAtUtc],
         [HeldAtUtc], [LineCount], [TotalCents], [DiscountCents], [ActualCents]
         """;
@@ -359,11 +360,11 @@ public sealed class SqlSugarSharedHeldOrderRepository(
 
     internal const string InsertHoldSql = """
         INSERT INTO [dbo].[POSM_SharedHeldOrder]
-        ([HoldGuid], [StoreCode], [DeviceCode], [CashierId], [CashierName], [PayloadCiphertext],
+        ([HoldGuid], [StoreCode], [DeviceCode], [CashierId], [CashierName], [PayloadVersion], [PayloadCiphertext],
          [Fingerprint], [IdempotencyKey], [Status], [Revision], [CreatedAtUtc], [UpdatedAtUtc],
          [HeldAtUtc], [LineCount], [TotalCents], [DiscountCents], [ActualCents])
         VALUES
-        (@HoldGuid, @StoreCode, @DeviceCode, @CashierId, @CashierName, @PayloadCiphertext,
+        (@HoldGuid, @StoreCode, @DeviceCode, @CashierId, @CashierName, @PayloadVersion, @PayloadCiphertext,
          @Fingerprint, @IdempotencyKey, @Status, @Revision, @CreatedAtUtc, @UpdatedAtUtc,
          @HeldAtUtc, @LineCount, @TotalCents, @DiscountCents, @ActualCents);
         """;
@@ -859,6 +860,7 @@ public sealed class SqlSugarSharedHeldOrderRepository(
         new("@DeviceCode", hold.DeviceCode),
         new("@CashierId", hold.CashierId),
         new("@CashierName", hold.CashierName),
+        new("@PayloadVersion", hold.PayloadVersion),
         new("@PayloadCiphertext", hold.PayloadCiphertext),
         new("@Fingerprint", hold.Fingerprint),
         new("@IdempotencyKey", hold.IdempotencyKey),
@@ -905,6 +907,7 @@ public sealed class SqlSugarSharedHeldOrderRepository(
         row.DeviceCode,
         row.CashierId,
         row.CashierName,
+        row.PayloadVersion,
         row.PayloadCiphertext,
         row.Fingerprint,
         row.IdempotencyKey,
@@ -975,6 +978,8 @@ public sealed class SqlSugarSharedHeldOrderRepository(
         public string CashierId { get; set; } = string.Empty;
 
         public string CashierName { get; set; } = string.Empty;
+
+        public int PayloadVersion { get; set; }
 
         public string PayloadCiphertext { get; set; } = string.Empty;
 

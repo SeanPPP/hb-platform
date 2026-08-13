@@ -17,6 +17,11 @@ import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
 } from "./shared-sale-cart-v1";
+import {
+  normalizeSharedSaleCartV2,
+  type SharedSaleCartPayload,
+  type SharedSaleCartV2,
+} from "./shared-sale-cart-v2";
 
 import { SqliteHeldOrderRecordRepository } from "@/core/db/sqlite-repositories";
 import type { SqliteConnectionPort } from "@/core/db/types";
@@ -77,6 +82,20 @@ function decimalCart(): SharedSaleCartV1 {
   });
 }
 
+function catalogDiscountCart(): SharedSaleCartV2 {
+  const v1 = cart();
+  return normalizeSharedSaleCartV2({
+    version: 2,
+    pricingState: {
+      ...v1.pricingState,
+      lines: v1.pricingState.lines.map((line) => ({
+        ...line,
+        catalogDiscountBasisPoints: 2_000,
+      })),
+    },
+  });
+}
+
 async function openClaims(
   options: Readonly<{
     source: "RemoteClaim" | "OfflineOrigin";
@@ -111,7 +130,7 @@ function prepareInput(overrides: Partial<{
   prepareIdempotencyKey: string;
   preparedExpiresAtIso: string;
   source: "RemoteClaim" | "OfflineOrigin";
-  payload: SharedSaleCartV1;
+  payload: SharedSaleCartPayload;
 }>) {
   return {
     claimGuid: "claim-1",
@@ -155,6 +174,50 @@ test("prepare 原子保存本地 fence，数据库只留密文且可精确解密
   const loaded = await claims.getClaim("claim-1");
   assert.deepEqual(loaded?.payload, cart());
   assert.equal(loaded?.state, "Prepared");
+});
+
+test("V2 claim 保存 wire 版本与 catalog baseline，synthetic 挂单汇总保持折后金额", async () => {
+  const { connection, claims } = await openClaims({
+    source: "RemoteClaim",
+    localHoldId: null,
+  });
+  const payload = catalogDiscountCart();
+  const result = await claims.prepareClaim(
+    prepareInput({ source: "RemoteClaim", payload }),
+  );
+  assertPrepared(result, "claim-1");
+
+  const rawClaim = await connection.getFirst<{
+    payload_version: number;
+    wire_payload_version: number;
+  }>(
+    `SELECT payload_version, wire_payload_version
+     FROM shared_held_order_claim_records WHERE claim_guid = 'claim-1'`,
+  );
+  assert.equal(rawClaim?.payload_version, 1);
+  assert.equal(rawClaim?.wire_payload_version, 2);
+  assert.deepEqual((await claims.getClaim("claim-1"))?.payload, payload);
+
+  const held = await connection.getFirst<{
+    payload_ciphertext: Uint8Array;
+    subtotal_cents: number;
+    discount_cents: number;
+    actual_amount_cents: number;
+  }>(
+    `SELECT payload_ciphertext, subtotal_cents, discount_cents, actual_amount_cents
+     FROM held_order_records WHERE hold_id = 'hold-claim-1'`,
+  );
+  assert.ok(held);
+  const localPayload = JSON.parse(
+    await fakeEncryptor.decrypt(held.payload_ciphertext),
+  ) as { pricingState: { lines: { catalogDiscountBasisPoints?: number }[] } };
+  assert.equal(
+    localPayload.pricingState.lines[0]?.catalogDiscountBasisPoints,
+    2_000,
+  );
+  assert.equal(held.subtotal_cents, 1_002);
+  assert.equal(held.discount_cents, 200);
+  assert.equal(held.actual_amount_cents, 802);
 });
 
 test("并发本地 fence 单赢家：同 scope 只有一个 Prepared/Active", async () => {

@@ -1,13 +1,13 @@
+import { fromSharedSaleCart } from "./shared-held-order-cart-reverse-mapper";
+import type { SharedLineDiscountStateV1 } from "./shared-sale-cart-v1";
 import {
-  normalizeSharedSaleCartV1,
-  type SharedSaleCartV1,
-} from "./shared-sale-cart-v1";
-import { fromSharedSaleCartV1 } from "./shared-held-order-cart-reverse-mapper";
+  normalizeSharedSaleCart,
+  type SharedSaleCartPayload,
+} from "./shared-sale-cart-v2";
 
 import type { HeldOrderScope } from "@/core/contracts";
 import { multiplyCentsAwayFromZero } from "@/core/contracts/money";
 import type { SqliteConnectionPort } from "@/core/db/types";
-
 
 /**
  * 与现有 SensitivePayloadEncryptor（sqlite-repositories）结构一致的适配口；
@@ -37,7 +37,7 @@ export type SharedHeldOrderClaim = Readonly<{
   activateIdempotencyKey: string | null;
   releaseIdempotencyKey: string | null;
   supersedeIdempotencyKey: string | null;
-  payload: SharedSaleCartV1;
+  payload: SharedSaleCartPayload;
   serverRevision: number | null;
   preparedExpiresAtIso: string;
   heldAtIso: string;
@@ -47,7 +47,7 @@ export type SharedHeldOrderClaim = Readonly<{
   updatedAtIso: string;
 }>;
 
-/** prepare 的严格本机输入：payload 必须通过 SharedSaleCartV1 校验，绝不落明文。 */
+/** prepare 的严格本机输入：payload 必须通过 V1/V2 校验，绝不落明文。 */
 export type PreparedClaimInput = Readonly<{
   claimGuid: string;
   holdGuid: string;
@@ -55,7 +55,7 @@ export type PreparedClaimInput = Readonly<{
   scope: HeldOrderScope;
   source: SharedHeldOrderClaimSource;
   prepareIdempotencyKey: string;
-  payload: SharedSaleCartV1;
+  payload: SharedSaleCartPayload;
   preparedExpiresAtIso: string;
   heldAtIso: string;
   heldBy: Readonly<{ cashierId: string; cashierName: string }>;
@@ -160,6 +160,7 @@ type ClaimRow = {
   release_idempotency_key: string | null;
   supersede_idempotency_key: string | null;
   payload_version: number;
+  wire_payload_version: number;
   payload_ciphertext: Uint8Array;
   server_revision: number | null;
   prepared_expires_at_iso: string;
@@ -192,7 +193,7 @@ export class SqliteSharedHeldOrderClaimRepository
     const localHeldCiphertext = facts.source === "RemoteClaim"
       ? await this.encryptor.encrypt(JSON.stringify({
           version: 1,
-          pricingState: fromSharedSaleCartV1(facts.payload),
+          pricingState: fromSharedSaleCart(facts.payload),
         }))
       : null;
     if (
@@ -221,9 +222,9 @@ export class SqliteSharedHeldOrderClaimRepository
         `INSERT INTO shared_held_order_claim_records (
           claim_guid, hold_guid, recall_attempt_id, store_code, device_code,
           source, state, prepare_idempotency_key, payload_version,
-          payload_ciphertext, prepared_expires_at_iso, held_at_iso,
+          wire_payload_version, payload_ciphertext, prepared_expires_at_iso, held_at_iso,
           held_by_cashier_id, held_by_cashier_name, created_at_iso, updated_at_iso
-        ) VALUES (?, ?, ?, ?, ?, ?, 'Prepared', ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, 'Prepared', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           facts.claimGuid,
           facts.holdGuid,
@@ -232,6 +233,7 @@ export class SqliteSharedHeldOrderClaimRepository
           facts.scope.deviceCode,
           facts.source,
           facts.prepareIdempotencyKey,
+          facts.payload.version,
           ciphertext,
           facts.preparedExpiresAtIso,
           facts.heldAtIso,
@@ -774,7 +776,7 @@ export class SqliteSharedHeldOrderClaimRepository
     facts: PreparedClaimInput,
     localHeldCiphertext: Uint8Array | null,
   ): Promise<void> {
-    const summary = summarizeSharedSaleCartV1(facts.payload);
+    const summary = summarizeSharedSaleCart(facts.payload);
     const existing = await transaction.getFirst<{
       status: string;
       recall_attempt_id: string | null;
@@ -983,10 +985,19 @@ export class SqliteSharedHeldOrderClaimRepository
   }
 
   private async toClaim(row: ClaimRow): Promise<SharedHeldOrderClaim> {
+    if (
+      row.payload_version !== 1 ||
+      (row.wire_payload_version !== 1 && row.wire_payload_version !== 2)
+    ) {
+      throw new Error("SHARED_HELD_ORDER_CLAIM_PAYLOAD_VERSION_UNSUPPORTED");
+    }
     const plaintext = await this.encryptor.decrypt(row.payload_ciphertext);
-    const payload = normalizeSharedSaleCartV1(
+    const payload = normalizeSharedSaleCart(
       JSON.parse(plaintext) as unknown,
     );
+    if (payload.version !== row.wire_payload_version) {
+      throw new Error("SHARED_HELD_ORDER_CLAIM_PAYLOAD_VERSION_MISMATCH");
+    }
     return {
       claimGuid: row.claim_guid,
       holdGuid: row.hold_guid,
@@ -1028,7 +1039,7 @@ function validatePreparedClaimInput(
   if (input.source !== "RemoteClaim" && input.source !== "OfflineOrigin") {
     throw new TypeError("Invalid shared hold claim source.");
   }
-  const payload = normalizeSharedSaleCartV1(input.payload);
+  const payload = normalizeSharedSaleCart(input.payload);
   const preparedExpiresAtIso = canonicalIso(
     input.preparedExpiresAtIso,
     "prepared expiry",
@@ -1077,7 +1088,7 @@ function samePrepareFacts(
 }
 
 /** synthetic held 行所需的汇总：与既有 summarizePricingState 口径一致。 */
-function summarizeSharedSaleCartV1(cart: SharedSaleCartV1): Readonly<{
+function summarizeSharedSaleCart(cart: SharedSaleCartPayload): Readonly<{
   itemCount: number;
   subtotalCents: number;
   discountCents: number;
@@ -1098,7 +1109,15 @@ function summarizeSharedSaleCartV1(cart: SharedSaleCartV1): Readonly<{
       throw new TypeError("Shared hold cart gross is invalid.");
     }
     const gross = BigInt(roundedGross);
-    const lineDiscount = sharedLineDiscountCents(line.discountState, gross);
+    const catalogDiscountBasisPoints =
+      "catalogDiscountBasisPoints" in line
+        ? line.catalogDiscountBasisPoints
+        : 0;
+    const lineDiscount = sharedLineDiscountCents(
+      line.discountState,
+      gross,
+      catalogDiscountBasisPoints,
+    );
     subtotal += gross;
     discount += lineDiscount;
     actual += gross - lineDiscount;
@@ -1113,12 +1132,18 @@ function summarizeSharedSaleCartV1(cart: SharedSaleCartV1): Readonly<{
 }
 
 function sharedLineDiscountCents(
-  state: SharedSaleCartV1["pricingState"]["lines"][number]["discountState"],
+  state: SharedLineDiscountStateV1,
   gross: bigint,
+  catalogDiscountBasisPoints: number,
 ): bigint {
   switch (state.mode) {
-    case "none":
-      return 0n;
+    case "none": {
+      const numerator = gross * BigInt(catalogDiscountBasisPoints);
+      const divisor = 10_000n;
+      let quotient = numerator / divisor;
+      if ((numerator % divisor) * 2n >= divisor) quotient += 1n;
+      return quotient > gross ? gross : quotient;
+    }
     case "manual-amount":
     case "promotion":
       return state.cents >= Number(gross)

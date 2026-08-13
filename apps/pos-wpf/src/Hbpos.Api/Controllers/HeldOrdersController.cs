@@ -56,7 +56,8 @@ public sealed class HeldOrdersController(
     [Authorize(Policy = CashierAuthorizationPolicies.RecallOrder)]
     [HttpGet]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SharedHeldOrderListItemDto>>>> ListPending(
-        CancellationToken cancellationToken)
+        [FromQuery] IReadOnlyCollection<int>? supportedPayloadVersions = null,
+        CancellationToken cancellationToken = default)
     {
         var identity = await ResolveIdentityAsync(cancellationToken);
         if (identity is null)
@@ -66,7 +67,10 @@ public sealed class HeldOrdersController(
 
         try
         {
-            var response = await RequireService().ListPendingAsync(identity, cancellationToken);
+            var response = await RequireService().ListPendingAsync(
+                identity,
+                supportedPayloadVersions,
+                cancellationToken);
             return Ok(ApiResult<IReadOnlyList<SharedHeldOrderListItemDto>>.Ok(response));
         }
         catch (SharedHeldOrderException ex)
@@ -80,7 +84,8 @@ public sealed class HeldOrdersController(
     public async Task<ActionResult<ApiResult<SharedHeldOrderClaimPrepareResponse>>> Prepare(
         Guid holdGuid,
         [FromBody] SharedHeldOrderClaimPrepareRequest request,
-        CancellationToken cancellationToken)
+        [FromQuery] IReadOnlyCollection<int>? supportedPayloadVersions = null,
+        CancellationToken cancellationToken = default)
     {
         var identity = await ResolveIdentityAsync(cancellationToken);
         if (identity is null)
@@ -94,6 +99,7 @@ public sealed class HeldOrdersController(
                 holdGuid,
                 request,
                 identity,
+                supportedPayloadVersions,
                 cancellationToken);
             return Ok(ApiResult<SharedHeldOrderClaimPrepareResponse>.Ok(response));
         }
@@ -218,7 +224,8 @@ public sealed class HeldOrdersController(
     [Authorize(Policy = CashierAuthorizationPolicies.RecallOrder)]
     [HttpGet("claims/mine")]
     public async Task<ActionResult<ApiResult<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>>>> ClaimsMine(
-        CancellationToken cancellationToken)
+        [FromQuery] IReadOnlyCollection<int>? supportedPayloadVersions = null,
+        CancellationToken cancellationToken = default)
     {
         var identity = await ResolveIdentityAsync(cancellationToken);
         if (identity is null)
@@ -228,7 +235,10 @@ public sealed class HeldOrdersController(
 
         try
         {
-            var response = await RequireService().ListMyClaimsAsync(identity, cancellationToken);
+            var response = await RequireService().ListMyClaimsAsync(
+                identity,
+                supportedPayloadVersions,
+                cancellationToken);
             return Ok(ApiResult<IReadOnlyList<SharedHeldOrderRecoveryClaimDto>>.Ok(response));
         }
         catch (SharedHeldOrderException ex)

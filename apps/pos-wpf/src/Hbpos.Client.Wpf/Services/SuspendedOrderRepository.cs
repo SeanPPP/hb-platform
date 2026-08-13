@@ -32,8 +32,7 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
 
-        // 新列由 LocalSchemaService 迁移补齐；列缺失时按旧库语义跳过写入（fail-closed），
-        // 不因 schema 时序破坏既有保存路径。
+        // 有 catalog baseline 时必须先确认列已存在；否则不能写出无法完整恢复的半真挂单。
         var frozenRulesColumnExists = await HasColumnAsync(
             connection,
             "SuspendedOrders",
@@ -46,6 +45,20 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             "IsManualPrice",
             cancellationToken);
         var writeManualPrice = manualPriceColumnExists && order.Lines.Any(line => line.IsManualPrice);
+        var catalogDiscountColumnExists = await HasColumnAsync(
+            connection,
+            "SuspendedOrderLines",
+            "CatalogDiscountBasisPoints",
+            cancellationToken);
+        var hasCatalogDiscountBaseline = order.Lines.Any(line => line.CatalogDiscountBasisPoints > 0);
+        if (hasCatalogDiscountBaseline && !catalogDiscountColumnExists)
+        {
+            throw new InvalidOperationException(
+                "SuspendedOrderLines.CatalogDiscountBasisPoints is required to save catalog discount baselines.");
+        }
+
+        // 无 baseline 的旧库继续使用旧 INSERT 形状，保持历史挂单兼容。
+        var writeCatalogDiscount = catalogDiscountColumnExists && hasCatalogDiscountBaseline;
         using var transaction = connection.BeginTransaction();
 
         await using (var command = connection.CreateCommand())
@@ -84,7 +97,13 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = writeManualPrice
+            command.CommandText = writeCatalogDiscount
+                ? """
+                INSERT INTO SuspendedOrderLines
+                (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice, CatalogDiscountBasisPoints)
+                VALUES ($SuspendedOrderLineGuid, $SuspendedOrderGuid, $StoreCode, $ProductCode, $ReferenceCode, $DisplayName, $LookupCode, $ItemNumber, $ProductImage, $Quantity, $UnitPrice, $DiscountAmount, $DiscountPercent, $IsAutomaticPromotionDiscount, $DiscountSource, $ActualAmount, $PriceSource, $PriceSourceLabel, $Kind, $ReturnSourceKey, $OriginalOrderGuid, $OriginalOrderDetailGuid, $ReturnReason, $IsManualPrice, $CatalogDiscountBasisPoints);
+                """
+                : writeManualPrice
                 ? """
                 INSERT INTO SuspendedOrderLines
                 (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice)
@@ -118,9 +137,14 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Parameters.AddWithValue("$OriginalOrderGuid", line.OriginalOrderGuid?.ToString() ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$OriginalOrderDetailGuid", line.OriginalOrderDetailGuid?.ToString() ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$ReturnReason", (object?)line.ReturnReason ?? DBNull.Value);
-            if (writeManualPrice)
+            if (writeManualPrice || writeCatalogDiscount)
             {
                 command.Parameters.AddWithValue("$IsManualPrice", line.IsManualPrice ? 1 : 0);
+            }
+
+            if (writeCatalogDiscount)
+            {
+                command.Parameters.AddWithValue("$CatalogDiscountBasisPoints", line.CatalogDiscountBasisPoints);
             }
 
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -339,7 +363,19 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             "SuspendedOrderLines",
             "IsManualPrice",
             cancellationToken);
-        command.CommandText = hasManualPriceColumn
+        var hasCatalogDiscountColumn = await HasColumnAsync(
+            connection,
+            "SuspendedOrderLines",
+            "CatalogDiscountBasisPoints",
+            cancellationToken);
+        command.CommandText = hasCatalogDiscountColumn
+            ? """
+            SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice, CatalogDiscountBasisPoints
+            FROM SuspendedOrderLines
+            WHERE SuspendedOrderGuid = $SuspendedOrderGuid
+            ORDER BY rowid;
+            """
+            : hasManualPriceColumn
             ? """
             SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason, IsManualPrice
             FROM SuspendedOrderLines
@@ -383,7 +419,10 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
                 OriginalOrderDetailGuid = ReadNullableGuid(reader, "OriginalOrderDetailGuid"),
                 ReturnReason = ReadNullableString(reader, "ReturnReason"),
                 IsManualPrice = hasManualPriceColumn
-                    && reader.GetInt32(reader.GetOrdinal("IsManualPrice")) != 0
+                    && reader.GetInt32(reader.GetOrdinal("IsManualPrice")) != 0,
+                CatalogDiscountBasisPoints = hasCatalogDiscountColumn
+                    ? reader.GetInt32(reader.GetOrdinal("CatalogDiscountBasisPoints"))
+                    : 0
             });
         }
 
