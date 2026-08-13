@@ -157,11 +157,26 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Image Width="32"
-                           Height="32"
-                           Margin="0,0,10,0"
-                           Source="pack://application:,,,/Resources/AppIcon.ico"
-                           Stretch="Uniform" />
+                    <Border Width="32"
+                            Height="32"
+                            Margin="0,0,10,0"
+                            Background="#FFEE5835"
+                            BorderBrush="#FFD94827"
+                            BorderThickness="1"
+                            CornerRadius="7"
+                            SnapsToDevicePixels="True"
+                            UseLayoutRounding="True"
+                            AutomationProperties.AutomationId="HeaderBrandMark">
+                        <TextBlock Text="HB"
+                                   FontFamily="{StaticResource PosFontFamily}"
+                                   FontSize="16"
+                                   FontWeight="Black"
+                                   Foreground="White"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   TextOptions.TextFormattingMode="Display"
+                                   TextOptions.TextRenderingMode="ClearType" />
+                    </Border>
                     <TextBlock Text="{loc:Loc AppName}"
                                FontWeight="Black"
                                FontSize="16"

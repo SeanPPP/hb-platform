@@ -15,7 +15,7 @@
   <data name="Add" xml:space="preserve"><value>Add</value></data>
   <data name="Amount" xml:space="preserve"><value>Amount</value></data>
   <data name="AmountDue" xml:space="preserve"><value>Amount Due</value></data>
-  <data name="AppName" xml:space="preserve"><value>Apex Retail Pro</value></data>
+  <data name="AppName" xml:space="preserve"><value>HB POS</value></data>
   <data name="startup.title" xml:space="preserve"><value>HB POS</value></data>
   <data name="startup.loading" xml:space="preserve"><value>Preparing point of sale...</value></data>
   <data name="startup.stage.starting" xml:space="preserve"><value>Starting...</value></data>

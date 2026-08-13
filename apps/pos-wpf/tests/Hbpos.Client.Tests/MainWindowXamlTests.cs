@@ -138,6 +138,49 @@ public sealed class MainWindowXamlTests
         }
     }
 
+    [Fact]
+    public void Header_brand_uses_crisp_vector_mark_and_hb_pos_name()
+    {
+        var repoRoot = FindRepoRoot();
+        var document = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var brandMark = Assert.Single(document.Descendants().Where(element =>
+            element.Attributes().Any(attribute =>
+                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, "HeaderBrandMark", StringComparison.Ordinal))));
+
+        Assert.Equal(presentation + "Border", brandMark.Name);
+        Assert.Equal("32", (string?)brandMark.Attribute("Width"));
+        Assert.Equal("32", (string?)brandMark.Attribute("Height"));
+        Assert.Equal(
+            "HB",
+            (string?)Assert.Single(brandMark.Descendants(presentation + "TextBlock")).Attribute("Text"));
+        Assert.Empty(brandMark.Descendants(presentation + "Image"));
+
+        foreach (var resourceName in new[] { "Strings.resx", "Strings.zh-CN.resx" })
+        {
+            var resource = XDocument.Load(Path.Combine(
+                repoRoot,
+                "apps",
+                "pos-wpf",
+                "src",
+                "Hbpos.Client.Wpf",
+                "Resources",
+                resourceName));
+            var appName = Assert.Single(resource.Descendants("data").Where(element =>
+                string.Equals((string?)element.Attribute("name"), "AppName", StringComparison.Ordinal)));
+
+            Assert.Equal("HB POS", (string?)appName.Element("value"));
+        }
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
