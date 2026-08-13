@@ -3123,9 +3123,19 @@ body {
 }
 
 .shop-scan-bar {
+  display: none;
   margin-bottom: 20px;
   border-radius: 18px;
   box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+}
+
+.shop-scan-bar.shop-scan-bar-visible {
+  display: block;
+}
+
+.shop-scan-toggle-btn {
+  display: inline-flex;
+  margin-bottom: 12px;
 }
 
 .shop-scan-bar .ant-card-body {
@@ -3325,27 +3335,6 @@ body {
   color: #4b5563;
 }
 
-@media (min-width: 1024px) {
-  .shop-scan-bar {
-    display: none;
-  }
-
-  .shop-scan-bar.shop-scan-bar-desktop-visible {
-    display: block;
-  }
-
-  .shop-scan-toggle-btn {
-    display: inline-flex;
-    margin-bottom: 12px;
-  }
-}
-
-@media (max-width: 1023px) {
-  .shop-scan-toggle-btn {
-    display: none;
-  }
-}
-
 @media (max-width: 900px) {
   .shop-scan-bar-header,
   .shop-scan-bar-manual,
@@ -3366,6 +3355,10 @@ body {
 }
 
 @media (max-width: 520px) {
+  .shop-scan-toggle-btn {
+    width: 100%;
+  }
+
   .shop-camera-scanner {
     padding: 10px;
   }

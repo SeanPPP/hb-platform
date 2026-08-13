@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **hb-platform-main** (84637 symbols, 276630 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **hb-platform-main** (88635 symbols, 297190 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -48,7 +48,7 @@ This project is indexed by GitNexus as **hb-platform-main** (84637 symbols, 2766
 
 ## 个性化代理策略
 
-- 对适合委派的纯文本任务，尽量优先使用已配置的 `DeepSeek` 原生子代理，不再以 Codex 周额度作为启用条件。
-- 代码审查任务在派发 `code-reviewer` 的同时，并发派发一个不继承当前任务上下文的独立 `DeepSeek` 原生子代理，并向其提供自包含的审查目标、范围及 diff、commit 或 PR 证据来执行第二路审查；主代理须汇总、去重并依据代码证据逐条复核两路发现，`DeepSeek` 结论不构成最终批准。若该路未返回有效结果，必须明确标注“未完成 DeepSeek 独立复核”，不得冒充已完成。
-- 仅在 `DeepSeek` 角色已配置且当前可用时启用；角色不可用或当前工具无法识别时，继续使用现有原生代理策略，不绕过配置流程。
-- 图片、视频、截图及其他视觉输入仍由主代理先识别并整理为文字事实，再按需交给 `DeepSeek`。
+- 对适合委派的纯文本任务，复杂实现、研究和审查优先使用 `DeepSeek-Pro`；快速、边界清晰的任务优先使用 `DeepSeek-Flash`，不再以 Codex 周额度作为启用条件。
+- 代码审查任务在派发 `code-reviewer` 的同时，并发派发一个不继承当前任务上下文的独立 `DeepSeek-Pro` 原生子代理，并向其提供自包含的审查目标、范围及 diff、commit 或 PR 证据来执行第二路审查；主代理须汇总、去重并依据代码证据逐条复核两路发现，DeepSeek 结论不构成最终批准。若该路未返回有效结果，必须明确标注“未完成 DeepSeek 独立复核”，不得冒充已完成。
+- 仅在目标 DeepSeek 角色已配置且当前可用时启用；角色不可用或当前工具无法识别时，继续使用现有原生代理策略，不绕过配置流程。
+- 图片、视频、截图及其他视觉输入仍由主代理先识别并整理为文字事实，再按需交给 `DeepSeek-Pro` 或 `DeepSeek-Flash`。

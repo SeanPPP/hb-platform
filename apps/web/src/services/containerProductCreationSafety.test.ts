@@ -83,14 +83,16 @@ async function main() {
   })
   if (warehouseUpdateFailure) failures.push(warehouseUpdateFailure)
 
-  const warehouseUpdateFailedCountFailure = await runTest('仓库批量更新 FailedCount 大于 0 应抛出业务错误', async () => {
-    await assertRejects(
-      () => withFetch(
-        { success: true, data: { FailedCount: 1, Errors: ['更新失败'] } },
-        () => batchUpdateWarehouseProducts([{ ProductCode: 'P001', ImportPrice: 1.23 }]),
-      ),
-      '更新失败',
+  const warehouseUpdateFailedCountFailure = await runTest('仓库批量更新 FailedCount 大于 0 应返回逐项失败结果', async () => {
+    let result: Awaited<ReturnType<typeof batchUpdateWarehouseProducts>> | undefined
+    await withFetch(
+      { success: true, data: { FailedCount: 1, Errors: ['更新失败'] } },
+      async () => {
+        result = await batchUpdateWarehouseProducts([{ ProductCode: 'P001', ImportPrice: 1.23 }])
+      },
     )
+    assert(result?.FailedCount === 1, '批量更新应保留 FailedCount')
+    assert(result?.Errors?.[0] === '更新失败', '批量更新应保留逐项失败明细')
   })
   if (warehouseUpdateFailedCountFailure) failures.push(warehouseUpdateFailedCountFailure)
 

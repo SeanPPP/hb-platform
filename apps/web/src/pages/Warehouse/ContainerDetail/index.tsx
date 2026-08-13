@@ -3216,10 +3216,26 @@ export default function ContainerDetailPage() {
       }).filter((item) => Object.keys(item).length > 1)
 
       if (warehouseUpdates.length) {
-        await batchUpdateWarehouseProducts(warehouseUpdates, {
+        const warehouseResult = await batchUpdateWarehouseProducts(warehouseUpdates, {
           // 货柜页已把分店进货价拆成独立勾选项，避免主表进口价默认联动分店表。
           syncStorePurchasePrice: shouldUpdate('storePurchasePrice'),
         })
+        const warehouseFailedCount = Number(
+          warehouseResult.failedCount
+          ?? warehouseResult.FailedCount
+          ?? warehouseResult.failed
+          ?? warehouseResult.Failed
+          ?? 0,
+        )
+        if (warehouseFailedCount > 0) {
+          // 批量更新服务会返回逐项失败；货柜链路必须在此中止，禁止继续写分店价格。
+          const warehouseErrors = warehouseResult.errors ?? warehouseResult.Errors ?? []
+          throw new Error(
+            warehouseErrors.join('；')
+            || warehouseResult.message
+            || t('containers.messages.updateExistingPurchaseFailed', '更新仓库商品失败'),
+          )
+        }
       }
 
       if (shouldUpdate('storePurchasePrice') || shouldUpdate('storeRetailPrice')) {

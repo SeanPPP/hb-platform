@@ -81,7 +81,7 @@ export default function ShopScanBar({
 }: ShopScanBarProps) {
   const { t } = useTranslation()
   const [manualValue, setManualValue] = useState('')
-  const [desktopVisible, setDesktopVisible] = useState(false)
+  const [scannerVisible, setScannerVisible] = useState(false)
 
   const helperText = cameraEnabled
     ? t('shop.scan.cameraActiveHint', 'Camera scanning is active; scanner and manual input are paused.')
@@ -110,17 +110,21 @@ export default function ShopScanBar({
       <Button
         className="shop-scan-toggle-btn"
         icon={<ScanOutlined />}
+        aria-expanded={scannerVisible}
+        aria-controls="shop-scan-panel"
         onClick={() => {
-          if (desktopVisible && cameraEnabled) {
+          // 收起扫码区域时同步释放相机，避免隐藏面板继续占用设备。
+          if (scannerVisible && cameraEnabled) {
             onToggleCamera()
           }
-          setDesktopVisible((current) => !current)
+          setScannerVisible((current) => !current)
         }}
       >
-        {desktopVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : t('shop.scan.scanner', 'Scanner')}
+        {scannerVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : t('shop.scan.barcodeScan', 'Barcode Scan')}
       </Button>
       <Card
-        className={`shop-scan-bar${desktopVisible ? ' shop-scan-bar-desktop-visible' : ''}`}
+        id="shop-scan-panel"
+        className={`shop-scan-bar${scannerVisible ? ' shop-scan-bar-visible' : ''}`}
         bordered={false}
       >
         <div className="shop-scan-bar-header">

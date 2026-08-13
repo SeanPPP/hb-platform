@@ -3210,9 +3210,14 @@ assertEqual(
   '仓库商品批量更新 service 应校验根响应失败，失败时阻断后续写表',
 )
 assertEqual(
-  warehouseProductServiceSource.includes("throw new Error(result.message || errors.join('；') || '仓库批量更新部分失败')"),
+  updateExistingPurchaseHandlerSource.includes('const warehouseFailedCount = Number(') &&
+    updateExistingPurchaseHandlerSource.includes('warehouseErrors.join(\'；\')') &&
+    updateExistingPurchaseHandlerSource.indexOf("warehouseErrors.join('；')") <
+      updateExistingPurchaseHandlerSource.indexOf('warehouseResult.message') &&
+    updateExistingPurchaseHandlerSource.indexOf('if (warehouseFailedCount > 0)') <
+      updateExistingPurchaseHandlerSource.indexOf('await upsertRetailForActiveStores(retailUpdates)'),
   true,
-  '仓库商品批量更新 service 应在 failedCount/errors 表示部分失败时抛错',
+  '仓库商品批量更新逐项失败应由货柜调用方显式中止，禁止继续写分店价格',
 )
 assertEqual(
   pageSource.includes('!access.canEditContainer || !access.canManagePosProducts'),
@@ -4547,8 +4552,8 @@ assertEqual(
   '货号复制区域应使用无额外包装层的专属 nowrap 弹性容器',
 )
 assertEqual(
-  pageSource.includes('<CopyableText value={getContainerDetailItemNumber(row)} />') &&
-    !pageSource.includes('<CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />') &&
+  pageSource.includes('<CopyableText value={itemNumber} />') &&
+    !pageSource.includes('<CopyableText value={itemNumber} maxWidth={90} />') &&
     pageStyleSource.includes([
       '.container-detail-copyable .ant-typography {',
       '  min-width: 0;',
