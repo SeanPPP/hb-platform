@@ -1,8 +1,8 @@
+using System.Xml.Linq;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Views.Screens;
 using Hbpos.Contracts.Advertisements;
-using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
 
@@ -60,7 +60,7 @@ public sealed class CustomerDisplayViewModelTests
     [Fact]
     public void CustomerDisplayView_enlarges_summary_statistics_for_distance_reading()
     {
-        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var (xaml, codeBehind) = ReadCustomerDisplayViewFiles();
         var document = XDocument.Parse(xaml);
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
@@ -74,12 +74,25 @@ public sealed class CustomerDisplayViewModelTests
 
         Assert.Equal("152", summaryRow.Attribute("Height")?.Value);
         Assert.Equal("24,16", summaryPanel.Attribute("Padding")?.Value);
+        Assert.Contains("VisibleSummaryRowHeight = new(152)", codeBehind);
         Assert.Equal("15", FindBoundTextBlock(document, presentation, "TotalItemQuantity").Attribute("FontSize")?.Value);
         Assert.Equal("15", FindBoundTextBlock(document, presentation, "SkuCount").Attribute("FontSize")?.Value);
         Assert.Equal("28", FindBoundTextBlock(document, presentation, "Subtotal").Attribute("FontSize")?.Value);
         Assert.Equal("28", FindBoundTextBlock(document, presentation, "TaxAmount").Attribute("FontSize")?.Value);
         Assert.Equal("28", FindBoundTextBlock(document, presentation, "SavingsAmount").Attribute("FontSize")?.Value);
         Assert.Equal("62", FindBoundTextBlock(document, presentation, "TotalToPay").Attribute("FontSize")?.Value);
+        Assert.Equal("15", FindTextBlock(document, presentation, "{loc:Loc customer.itemQuantity}").Attribute("FontSize")?.Value);
+        Assert.Equal("15", FindTextBlock(document, presentation, "{loc:Loc customer.skuCount}").Attribute("FontSize")?.Value);
+        Assert.Equal("14", FindTextBlock(document, presentation, "{loc:Loc Subtotal}").Attribute("FontSize")?.Value);
+        Assert.Equal("14", FindTextBlock(document, presentation, "{loc:Loc Tax}").Attribute("FontSize")?.Value);
+        Assert.Equal("14", FindTextBlock(document, presentation, "{loc:Loc Savings}").Attribute("FontSize")?.Value);
+        Assert.Equal("16", FindTextBlock(document, presentation, "{loc:Loc customer.totalToPay}").Attribute("FontSize")?.Value);
+        Assert.Equal("18", FindTextBlock(document, presentation, "{loc:Loc customer.readyForPayment}").Attribute("FontSize")?.Value);
+        Assert.Equal("15", FindTextBlock(document, presentation, "{loc:Loc customer.insertOrTap}").Attribute("FontSize")?.Value);
+        Assert.Equal("38", FindBoundViewbox(document, presentation, "Subtotal").Attribute("MaxHeight")?.Value);
+        Assert.Equal("38", FindBoundViewbox(document, presentation, "TaxAmount").Attribute("MaxHeight")?.Value);
+        Assert.Equal("38", FindBoundViewbox(document, presentation, "SavingsAmount").Attribute("MaxHeight")?.Value);
+        Assert.Equal("68", FindBoundViewbox(document, presentation, "TotalToPay").Attribute("MaxHeight")?.Value);
     }
 
     [Fact]
@@ -327,11 +340,29 @@ public sealed class CustomerDisplayViewModelTests
 
     private static XElement FindBoundTextBlock(XDocument document, XNamespace presentation, string propertyName)
     {
-        return document
+        return Assert.Single(document
             .Descendants(presentation + "TextBlock")
-            .Single(element => element.Attribute("Text")?.Value.Contains(
+            .Where(element => element.Attribute("Text")?.Value.Contains(
                 $"Binding {propertyName}",
-                StringComparison.Ordinal) == true);
+                StringComparison.Ordinal) == true));
+    }
+
+    private static XElement FindTextBlock(XDocument document, XNamespace presentation, string text)
+    {
+        return Assert.Single(document
+            .Descendants(presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value == text));
+    }
+
+    private static XElement FindBoundViewbox(XDocument document, XNamespace presentation, string propertyName)
+    {
+        return Assert.Single(document
+            .Descendants(presentation + "Viewbox")
+            .Where(viewbox => viewbox
+                .Descendants(presentation + "TextBlock")
+                .Any(element => element.Attribute("Text")?.Value.Contains(
+                    $"Binding {propertyName}",
+                    StringComparison.Ordinal) == true)));
     }
 
     private static (string Xaml, string CodeBehind) ReadCustomerDisplayViewFiles()
