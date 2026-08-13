@@ -46,6 +46,17 @@ public sealed class CustomerDisplayViewModelTests
     }
 
     [Fact]
+    public void CustomerDisplayView_shows_discount_rate_and_original_total_for_discounted_lines()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+
+        Assert.Contains("Text=\"{Binding DiscountRateText}\"", xaml);
+        Assert.Contains("Text=\"{Binding GrossAmount, StringFormat={}{0:C2}}\"", xaml);
+        Assert.Contains("TextDecorations=\"Strikethrough\"", xaml);
+        Assert.Contains("<DataTrigger Binding=\"{Binding HasDiscount}\" Value=\"True\">", xaml);
+    }
+
+    [Fact]
     public void CustomerDisplayView_hides_advertisement_title_when_media_is_available()
     {
         var (_, codeBehind) = ReadCustomerDisplayViewFiles();

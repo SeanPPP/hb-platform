@@ -84,7 +84,7 @@
                           Foreground="{StaticResource PosCustomerDisplayTextBrush}"
                           RowBackground="{StaticResource PosCustomerDisplayBackgroundBrush}"
                           AlternatingRowBackground="{StaticResource PosCustomerDisplaySurfaceBrush}"
-                          RowHeight="64"
+                          RowHeight="72"
                           GridLinesVisibility="None"
                           BorderThickness="0"
                           CellStyle="{StaticResource CustomerDisplayCellStyle}"
@@ -127,7 +127,21 @@
                         <DataGridTemplateColumn Header="{loc:Loc Price}" Width="116" HeaderStyle="{StaticResource CustomerDisplayHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,12,0" FontSize="17" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" />
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,12,0" FontSize="17" HorizontalAlignment="Stretch" TextAlignment="Right" />
+                                        <TextBlock Text="{Binding DiscountRateText}" Foreground="{StaticResource PosCustomerDisplayAccentBrush}" Margin="0,2,12,0" FontSize="12" FontWeight="Bold" HorizontalAlignment="Stretch" TextAlignment="Right">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasDiscount}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -135,7 +149,32 @@
                         <DataGridTemplateColumn Header="{loc:Loc Total}" Width="126" HeaderStyle="{StaticResource CustomerDisplayHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,12,0" FontSize="19" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" FontWeight="Bold" />
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding GrossAmount, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" Margin="0,0,12,1" FontSize="13" HorizontalAlignment="Stretch" TextAlignment="Right" TextDecorations="Strikethrough">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasDiscount}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}" Margin="0,0,12,0" FontSize="19" HorizontalAlignment="Stretch" TextAlignment="Right" FontWeight="Bold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource PosCustomerDisplayTextBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasDiscount}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource PosCustomerDisplayAccentBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
