@@ -2,6 +2,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Views.Screens;
 using Hbpos.Contracts.Advertisements;
+using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
 
@@ -54,6 +55,31 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Contains("Text=\"{Binding GrossAmount, StringFormat={}{0:C2}}\"", xaml);
         Assert.Contains("TextDecorations=\"Strikethrough\"", xaml);
         Assert.Contains("<DataTrigger Binding=\"{Binding HasDiscount}\" Value=\"True\">", xaml);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_enlarges_summary_statistics_for_distance_reading()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var summaryRow = document
+            .Descendants(presentation + "RowDefinition")
+            .Single(element => element.Attribute(x + "Name")?.Value == "SummaryRow");
+        var summaryPanel = document
+            .Descendants(presentation + "Border")
+            .Single(element => element.Attribute(x + "Name")?.Value == "SummaryPanel");
+
+        Assert.Equal("152", summaryRow.Attribute("Height")?.Value);
+        Assert.Equal("24,16", summaryPanel.Attribute("Padding")?.Value);
+        Assert.Equal("15", FindBoundTextBlock(document, presentation, "TotalItemQuantity").Attribute("FontSize")?.Value);
+        Assert.Equal("15", FindBoundTextBlock(document, presentation, "SkuCount").Attribute("FontSize")?.Value);
+        Assert.Equal("28", FindBoundTextBlock(document, presentation, "Subtotal").Attribute("FontSize")?.Value);
+        Assert.Equal("28", FindBoundTextBlock(document, presentation, "TaxAmount").Attribute("FontSize")?.Value);
+        Assert.Equal("28", FindBoundTextBlock(document, presentation, "SavingsAmount").Attribute("FontSize")?.Value);
+        Assert.Equal("62", FindBoundTextBlock(document, presentation, "TotalToPay").Attribute("FontSize")?.Value);
     }
 
     [Fact]
@@ -297,6 +323,15 @@ public sealed class CustomerDisplayViewModelTests
         }
 
         throw new DirectoryNotFoundException("Unable to find repository root.");
+    }
+
+    private static XElement FindBoundTextBlock(XDocument document, XNamespace presentation, string propertyName)
+    {
+        return document
+            .Descendants(presentation + "TextBlock")
+            .Single(element => element.Attribute("Text")?.Value.Contains(
+                $"Binding {propertyName}",
+                StringComparison.Ordinal) == true);
     }
 
     private static (string Xaml, string CodeBehind) ReadCustomerDisplayViewFiles()
