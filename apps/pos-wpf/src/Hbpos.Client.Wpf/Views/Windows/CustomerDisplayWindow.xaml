@@ -15,7 +15,15 @@
         ResizeMode="CanResize"
         ShowActivated="False"
         FontFamily="{StaticResource PosFontFamily}"
-        Background="{StaticResource PosScreenBackgroundBrush}">
+        Background="{StaticResource PosCustomerDisplayBackgroundBrush}">
+    <Window.Resources>
+        <Style x:Key="CustomerDisplayTitleBarCloseButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource TitleBarCloseButtonStyle}">
+            <Setter Property="Foreground" Value="{StaticResource PosCustomerDisplayTextBrush}" />
+        </Style>
+    </Window.Resources>
+
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0"
                             ResizeBorderThickness="6"
@@ -23,7 +31,7 @@
                             GlassFrameThickness="0" />
     </shell:WindowChrome.WindowChrome>
 
-    <Grid Background="{StaticResource PosScreenBackgroundBrush}">
+    <Grid Background="{StaticResource PosCustomerDisplayBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition x:Name="TitleBarRow" Height="44" />
             <RowDefinition Height="*" />
@@ -31,8 +39,8 @@
 
         <Border x:Name="TitleBar"
                 Grid.Row="0"
-                Background="White"
-                BorderBrush="#FFE7E8EB"
+                Background="{StaticResource PosCustomerDisplayBackgroundBrush}"
+                BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
                 BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid Margin="16,0">
@@ -44,12 +52,12 @@
                 <TextBlock Text="{loc:Loc CustomerDisplay}"
                            FontSize="15"
                            FontWeight="Black"
-                           Foreground="{StaticResource PosTextBrush}"
+                           Foreground="{StaticResource PosCustomerDisplayTextBrush}"
                            VerticalAlignment="Center" />
 
                 <Button Grid.Column="1"
                         Click="CloseButton_Click"
-                        Style="{StaticResource TitleBarCloseButtonStyle}"
+                        Style="{StaticResource CustomerDisplayTitleBarCloseButtonStyle}"
                         ToolTip="{loc:Loc shell.window.close}"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True">
                     <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />

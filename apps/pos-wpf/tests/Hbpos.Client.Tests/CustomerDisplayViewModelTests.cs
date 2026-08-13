@@ -85,6 +85,43 @@ public sealed class CustomerDisplayViewModelTests
     }
 
     [Fact]
+    public void CustomerDisplayView_uses_ipad_dark_palette_across_content_and_window()
+    {
+        var repoRoot = FindRepoRoot();
+        var (viewXaml, _) = ReadCustomerDisplayViewFiles();
+        var themeXaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Themes",
+            "PosTheme.xaml"));
+        var windowXaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Windows",
+            "CustomerDisplayWindow.xaml"));
+
+        Assert.Contains("<Color x:Key=\"PosCustomerDisplayColorBackground\">#FF09111F</Color>", themeXaml);
+        Assert.Contains("<Color x:Key=\"PosCustomerDisplayColorAccent\">#FF69E3C2</Color>", themeXaml);
+        Assert.Contains("<Color x:Key=\"PosCustomerDisplayColorAmount\">#FFFFC73D</Color>", themeXaml);
+        Assert.Contains("Background=\"{StaticResource PosCustomerDisplayBackgroundBrush}\"", viewXaml);
+        Assert.Contains("Foreground=\"{StaticResource PosCustomerDisplayTextBrush}\"", viewXaml);
+        Assert.Contains("Foreground=\"{StaticResource PosCustomerDisplayAccentBrush}\"", viewXaml);
+        Assert.Contains("Foreground=\"{StaticResource PosCustomerDisplayAmountBrush}\"", viewXaml);
+        Assert.DoesNotContain("Background=\"White\"", viewXaml);
+        Assert.DoesNotContain("<LinearGradientBrush", viewXaml);
+        Assert.Equal(4, viewXaml.Split("StretchDirection=\"DownOnly\"", StringSplitOptions.None).Length - 1);
+        Assert.Contains("Background=\"{StaticResource PosCustomerDisplayBackgroundBrush}\"", windowXaml);
+        Assert.Contains("Foreground=\"{StaticResource PosCustomerDisplayTextBrush}\"", windowXaml);
+    }
+
+    [Fact]
     public void CustomerDisplayView_coalesces_pending_line_scrolls_without_forcing_layout()
     {
         var (_, codeBehind) = ReadCustomerDisplayViewFiles();

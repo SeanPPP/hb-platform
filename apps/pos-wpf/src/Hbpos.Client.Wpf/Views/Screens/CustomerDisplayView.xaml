@@ -8,16 +8,16 @@
              mc:Ignorable="d"
               d:DesignHeight="688"
               d:DesignWidth="1366"
-              Background="{StaticResource PosScreenBackgroundBrush}">
+              Background="{StaticResource PosCustomerDisplayBackgroundBrush}">
     <UserControl.Resources>
         <Style x:Key="CustomerDisplayHeaderBaseStyle" TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#FFF8FAFD" />
-            <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Background" Value="{StaticResource PosCustomerDisplaySurfaceBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource PosCustomerDisplayMutedTextBrush}" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="Padding" Value="12,10" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
-            <Setter Property="BorderBrush" Value="#FFE4E7EC" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosCustomerDisplayDividerBrush}" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
 
@@ -34,7 +34,10 @@
         </Style>
 
         <Style x:Key="CustomerDisplayCellStyle" TargetType="DataGridCell">
-            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource PosCustomerDisplayTextBrush}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosCustomerDisplayDividerBrush}" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="VerticalContentAlignment" Value="Stretch" />
@@ -57,7 +60,14 @@
                 <ColumnDefinition Width="40*" MinWidth="0" />
             </Grid.ColumnDefinitions>
 
-            <Border x:Name="CartPanel" Grid.Row="1" Grid.Column="0" Background="White" CornerRadius="12" Padding="20">
+            <Border x:Name="CartPanel"
+                    Grid.Row="1"
+                    Grid.Column="0"
+                    Background="{StaticResource PosCustomerDisplayBackgroundBrush}"
+                    BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Padding="20">
                 <DataGrid x:Name="LineDataGrid"
                           ItemsSource="{Binding Lines}"
                           AutoGenerateColumns="False"
@@ -70,8 +80,10 @@
                           HeadersVisibility="Column"
                           SelectionMode="Single"
                           SelectionUnit="FullRow"
-                          RowBackground="White"
-                          AlternatingRowBackground="{StaticResource PosSurfaceAltBrush}"
+                          Background="{StaticResource PosCustomerDisplayBackgroundBrush}"
+                          Foreground="{StaticResource PosCustomerDisplayTextBrush}"
+                          RowBackground="{StaticResource PosCustomerDisplayBackgroundBrush}"
+                          AlternatingRowBackground="{StaticResource PosCustomerDisplaySurfaceBrush}"
                           RowHeight="64"
                           GridLinesVisibility="None"
                           BorderThickness="0"
@@ -89,8 +101,8 @@
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel Margin="12,6,8,6" VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{Binding LookupCode}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="19" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding LookupCode}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
@@ -99,8 +111,14 @@
                         <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="96" HeaderStyle="{StaticResource CustomerDisplayHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Border HorizontalAlignment="Center" VerticalAlignment="Center" Padding="10,4" Background="#1A0056D2" CornerRadius="12">
-                                        <TextBlock Text="{Binding QuantityDisplay, Mode=OneWay}" Foreground="{StaticResource PosPrimaryBrush}" FontWeight="Black" />
+                                    <Border HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Padding="10,4"
+                                            Background="{StaticResource PosCustomerDisplayAccentSurfaceBrush}"
+                                            BorderBrush="{StaticResource PosCustomerDisplayAccentBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="12">
+                                        <TextBlock Text="{Binding QuantityDisplay, Mode=OneWay}" Foreground="{StaticResource PosCustomerDisplayAccentBrush}" FontSize="16" FontWeight="Bold" />
                                     </Border>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
@@ -109,7 +127,7 @@
                         <DataGridTemplateColumn Header="{loc:Loc Price}" Width="116" HeaderStyle="{StaticResource CustomerDisplayHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" Margin="0,0,12,0" FontSize="15" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding UnitPrice, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,12,0" FontSize="17" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -117,7 +135,7 @@
                         <DataGridTemplateColumn Header="{loc:Loc Total}" Width="126" HeaderStyle="{StaticResource CustomerDisplayHeaderRightStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}" Margin="0,0,12,0" FontSize="16" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" FontWeight="Black" />
+                                    <TextBlock Text="{Binding ActualAmount, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,12,0" FontSize="19" HorizontalAlignment="Stretch" VerticalAlignment="Center" TextAlignment="Right" FontWeight="Bold" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -125,17 +143,18 @@
                 </DataGrid>
             </Border>
 
-            <Border x:Name="PromotionPanel" Grid.Row="1" Grid.Column="1" Margin="18,0,0,0" CornerRadius="18" Background="#243B2E" ClipToBounds="True">
+            <Border x:Name="PromotionPanel"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    Margin="18,0,0,0"
+                    Background="{StaticResource PosCustomerDisplaySurfaceBrush}"
+                    BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="18"
+                    ClipToBounds="True">
                 <Grid>
-                    <Rectangle Fill="#243B2E" />
-                    <Rectangle x:Name="PromotionFallbackBackground">
-                        <Rectangle.Fill>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                <GradientStop Color="#315C3D" Offset="0" />
-                                <GradientStop Color="#D6452E" Offset="1" />
-                            </LinearGradientBrush>
-                        </Rectangle.Fill>
-                    </Rectangle>
+                    <Rectangle Fill="{StaticResource PosCustomerDisplaySurfaceBrush}" />
+                    <Rectangle x:Name="PromotionFallbackBackground" Fill="{StaticResource PosCustomerDisplayBackgroundBrush}" />
                     <Image x:Name="AdvertisementImage"
                            Stretch="Uniform"
                            Visibility="Collapsed"
@@ -151,92 +170,149 @@
                                   MediaFailed="AdvertisementVideo_MediaFailed" />
                     <Rectangle Opacity="0.18" Fill="#FF000000" />
                     <StackPanel x:Name="PromotionTextPanel" Margin="48,44">
-                        <Border Background="{StaticResource PosWarningBrush}" CornerRadius="6" Padding="10,5" HorizontalAlignment="Left">
-                            <TextBlock Text="{loc:Loc customer.promotionTitle}" Foreground="#3A2400" FontSize="12" FontWeight="Black" />
+                        <Border Background="#CC09111F"
+                                BorderBrush="{StaticResource PosCustomerDisplayAccentBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10,5"
+                                HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Loc customer.promotionTitle}" Foreground="{StaticResource PosCustomerDisplayAccentBrush}" FontSize="12" FontWeight="Black" />
                         </Border>
                         <TextBlock x:Name="PromotionSubtitleText"
                                    Text="{Binding CurrentAdvertisementTitle}"
                                    Margin="0,18,0,8"
-                                   Foreground="White"
+                                   Foreground="{StaticResource PosCustomerDisplayTextBrush}"
                                    FontSize="34"
                                    FontWeight="Black"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
                         <TextBlock x:Name="PromotionBodyText"
                                    Text="{Binding CurrentAdvertisementDescription}"
-                                   Foreground="#FFF2F4F7"
+                                   Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}"
                                    FontSize="16"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
                         <TextBlock x:Name="PromotionFallbackSubtitleText"
                                    Text="{loc:Loc customer.promotionSubtitle}"
                                    Margin="0,18,0,8"
-                                   Foreground="White"
+                                   Foreground="{StaticResource PosCustomerDisplayTextBrush}"
                                    FontSize="34"
                                    FontWeight="Black"
                                    TextWrapping="Wrap" />
                         <TextBlock x:Name="PromotionFallbackBodyText"
                                    Text="{loc:Loc customer.promotionBody}"
-                                   Foreground="#FFF2F4F7"
+                                   Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}"
                                    FontSize="16"
                                    TextWrapping="Wrap" />
                     </StackPanel>
-                    <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,28,28" Background="#33000000" CornerRadius="16" Padding="16,12">
+                    <Border HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,28,28"
+                            Background="#B309111F"
+                            BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="16"
+                            Padding="16,12">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Monitor" Width="22" Height="22" Foreground="White" Margin="0,0,8,0" />
-                            <TextBlock Text="{Binding TerminalName}" Foreground="White" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="Monitor" Width="22" Height="22" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding TerminalName}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" />
                         </StackPanel>
                     </Border>
                 </Grid>
             </Border>
         </Grid>
 
-        <Grid x:Name="SummaryPanel" Grid.Row="1" Margin="0,20,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="240" />
-            </Grid.ColumnDefinitions>
+        <Border x:Name="SummaryPanel"
+                Grid.Row="1"
+                Margin="0,20,0,0"
+                Padding="20,12"
+                Background="{StaticResource PosCustomerDisplaySurfaceBrush}"
+                BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
+                BorderThickness="1"
+                CornerRadius="12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="220" />
+                </Grid.ColumnDefinitions>
 
-            <StackPanel VerticalAlignment="Center">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                    <StackPanel Orientation="Horizontal" Margin="0,0,24,0">
-                        <TextBlock Text="{loc:Loc customer.itemQuantity}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" />
-                        <TextBlock Text="{Binding TotalItemQuantity, StringFormat={}{0:0.##}}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" Margin="8,0,0,0" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{loc:Loc customer.skuCount}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" />
-                        <TextBlock Text="{Binding SkuCount}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" Margin="8,0,0,0" />
-                    </StackPanel>
+                <Grid Margin="0,0,12,0" VerticalAlignment="Center">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid Margin="0,0,12,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{loc:Loc customer.itemQuantity}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="1" Text="{Binding TotalItemQuantity, StringFormat={}{0:0.##}}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" Margin="8,0,0,0" />
+                        </Grid>
+                        <Grid Grid.Column="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{loc:Loc customer.skuCount}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="1" Text="{Binding SkuCount}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" Margin="8,0,0,0" />
+                        </Grid>
+                    </Grid>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Margin="0,0,12,0">
+                            <TextBlock Text="{loc:Loc Subtotal}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                            <Viewbox MaxHeight="30" StretchDirection="DownOnly">
+                                <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="22" FontWeight="Black" />
+                            </Viewbox>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                            <TextBlock Text="{loc:Loc Tax}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                            <Viewbox MaxHeight="30" StretchDirection="DownOnly">
+                                <TextBlock Text="{Binding TaxAmount, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="22" FontWeight="Black" />
+                            </Viewbox>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="{loc:Loc Savings}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+                            <Viewbox MaxHeight="30" StretchDirection="DownOnly">
+                                <TextBlock Text="{Binding SavingsAmount, StringFormat=-{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="22" FontWeight="Black" />
+                            </Viewbox>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+
+                <StackPanel Grid.Column="1" Margin="0,0,20,0" VerticalAlignment="Center">
+                    <TextBlock Text="{loc:Loc customer.totalToPay}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="14" FontWeight="Black" HorizontalAlignment="Right" />
+                    <Viewbox MaxWidth="200" MaxHeight="62" HorizontalAlignment="Right" StretchDirection="DownOnly">
+                        <TextBlock Text="{Binding TotalToPay, StringFormat={}{0:C2}}" Foreground="{StaticResource PosCustomerDisplayAmountBrush}" FontSize="58" FontWeight="Black" />
+                    </Viewbox>
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal">
-                    <StackPanel Margin="0,0,32,0">
-                        <TextBlock Text="{loc:Loc Subtotal}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" FontWeight="Bold" />
-                        <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}" FontSize="24" FontWeight="Black" />
-                    </StackPanel>
-                    <StackPanel Margin="0,0,32,0">
-                        <TextBlock Text="{loc:Loc Tax}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" FontWeight="Bold" />
-                        <TextBlock Text="{Binding TaxAmount, StringFormat={}{0:C2}}" FontSize="24" FontWeight="Black" />
-                    </StackPanel>
+                <Border Grid.Column="2"
+                        Background="{StaticResource PosCustomerDisplayAccentSurfaceBrush}"
+                        BorderBrush="{StaticResource PosCustomerDisplayAccentBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="16"
+                        VerticalAlignment="Center">
                     <StackPanel>
-                        <TextBlock Text="{loc:Loc Savings}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="12" FontWeight="Bold" />
-                        <TextBlock Text="{Binding SavingsAmount, StringFormat=-{0:C2}}" FontSize="24" FontWeight="Black" Foreground="{StaticResource PosDangerBrush}" />
+                        <TextBlock Text="{loc:Loc customer.readyForPayment}" Foreground="{StaticResource PosCustomerDisplayAccentBrush}" FontSize="16" FontWeight="Black" />
+                        <TextBlock Text="{loc:Loc customer.insertOrTap}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" Margin="0,4,0,0" />
                     </StackPanel>
-                </StackPanel>
-            </StackPanel>
-
-            <StackPanel Grid.Column="1" Margin="0,0,32,0" VerticalAlignment="Center">
-                <TextBlock Text="{loc:Loc customer.totalToPay}" Foreground="{StaticResource PosPrimaryBrush}" FontSize="12" FontWeight="Black" HorizontalAlignment="Right" />
-                <TextBlock Text="{Binding TotalToPay, StringFormat={}{0:C2}}" Foreground="{StaticResource PosPrimaryBrush}" FontSize="58" FontWeight="Black" HorizontalAlignment="Right" />
-            </StackPanel>
-
-            <Border Grid.Column="2" Background="{StaticResource PosPrimaryBrush}" CornerRadius="12" Padding="18" VerticalAlignment="Center">
-                <StackPanel>
-                    <TextBlock Text="{loc:Loc customer.readyForPayment}" Foreground="White" FontSize="16" FontWeight="Black" />
-                    <TextBlock Text="{loc:Loc customer.insertOrTap}" Foreground="#FFD9E7FF" Margin="0,4,0,0" />
-                </StackPanel>
-            </Border>
-        </Grid>
+                </Border>
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>
