@@ -2077,6 +2077,14 @@ namespace BlazorApp.Api.Services.React
                 ? null
                 : request.GlobalSearch.Trim();
             var isCodeLikeKeyword = keyword != null && IsWarehouseCodeLikeKeyword(keyword);
+            var useTextSearchCandidates =
+                keyword != null
+                && !isCodeLikeKeyword
+                && string.Equals(
+                    request.SortBy?.Trim(),
+                    "itemNumber",
+                    StringComparison.OrdinalIgnoreCase
+                );
             var requestSnapshot = CreateWarehouseProductTableRequestSnapshot(
                 request,
                 keyword,
@@ -2092,13 +2100,19 @@ namespace BlazorApp.Api.Services.React
                 () =>
                 {
                     var baseQuery = _context.Db.Queryable<WarehouseProduct>();
-                    if (!isCodeLikeKeyword || keyword == null)
+                    if (
+                        keyword == null
+                        || (!isCodeLikeKeyword && !useTextSearchCandidates)
+                    )
                     {
                         return baseQuery;
                     }
 
-                    // 代码型搜索先按单字段索引生成候选集，避免宽 OR 和相关 EXISTS 放大执行计划。
-                    var candidateQuery = BuildWarehouseCodeSearchCandidateQuery(keyword);
+                    // 货号排序存在行目标时，宽 OR 会让 SQL Server 沿货号索引逐行执行相关子查询；
+                    // 先收敛文本候选集，确保排序和分页只处理实际命中的商品。
+                    var candidateQuery = isCodeLikeKeyword
+                        ? BuildWarehouseCodeSearchCandidateQuery(keyword)
+                        : BuildWarehouseTextSearchCandidateQuery(keyword);
                     return baseQuery
                         .InnerJoin(
                             candidateQuery,
@@ -2152,7 +2166,7 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (keyword != null && !isCodeLikeKeyword)
+            if (keyword != null && !isCodeLikeKeyword && !useTextSearchCandidates)
             {
                 var globalSearchExpression = Expressionable.Create<
                     WarehouseProduct,
@@ -2926,6 +2940,170 @@ namespace BlazorApp.Api.Services.React
                 items.Count
             );
             return resp;
+        }
+
+        private ISugarQueryable<WarehouseProductCodeSearchCandidate> BuildWarehouseTextSearchCandidateQuery(
+            string keyword
+        )
+        {
+            var isSqlServer = _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer;
+
+            var productTextQuery = _context
+                .Db.Queryable<Product>()
+                .Where(p =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && (
+                        (p.ProductName != null && p.ProductName.Contains(keyword))
+                        || (p.EnglishName != null && p.EnglishName.Contains(keyword))
+                        || (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.Contains(keyword))
+                        || (
+                            p.LocalSupplierCode != null
+                            && p.LocalSupplierCode.Contains(keyword)
+                        )
+                    )
+                )
+                .Select(p => new WarehouseProductCodeSearchCandidate
+                {
+                    ProductCode = p.ProductCode!,
+                });
+
+            var categoryNameQuery = _context
+                .Db.Queryable<Product>()
+                .InnerJoin<WarehouseCategory>(
+                    (product, category) =>
+                        product.WarehouseCategoryGUID == category.CategoryGUID
+                        && !category.IsDeleted
+                )
+                .Where(
+                    (product, category) =>
+                        !product.IsDeleted
+                        && product.ProductCode != null
+                        && category.CategoryName != null
+                        && category.CategoryName.Contains(keyword)
+                )
+                .Select(
+                    (product, category) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = product.ProductCode!,
+                        }
+                );
+
+            var domesticSupplierNameQuery = _context
+                .Db.Queryable<DomesticProduct>()
+                .InnerJoin<ChinaSupplier>(
+                    (domesticProduct, supplier) =>
+                        domesticProduct.SupplierCode == supplier.SupplierCode
+                        && !supplier.IsDeleted
+                )
+                .Where(
+                    (domesticProduct, supplier) =>
+                        !domesticProduct.IsDeleted
+                        && domesticProduct.ProductCode != null
+                        && supplier.SupplierName != null
+                        && supplier.SupplierName.Contains(keyword)
+                )
+                .Select(
+                    (domesticProduct, supplier) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = domesticProduct.ProductCode!,
+                        }
+                );
+
+            var localSupplierNameQuery = _context
+                .Db.Queryable<Product>()
+                .InnerJoin<HBLocalSupplier>(
+                    (product, supplier) =>
+                        product.LocalSupplierCode == supplier.LocalSupplierCode
+                        && !supplier.IsDeleted
+                )
+                .Where(
+                    (product, supplier) =>
+                        !product.IsDeleted
+                        && product.ProductCode != null
+                        && supplier.Name != null
+                        && supplier.Name.Contains(keyword)
+                )
+                .Select(
+                    (product, supplier) =>
+                        new WarehouseProductCodeSearchCandidate
+                        {
+                            ProductCode = product.ProductCode!,
+                    }
+                );
+
+            var pickingLocationSource = _context
+                .Db.Queryable<Location>()
+                .InnerJoin<ProductLocation>(
+                    (location, productLocation) =>
+                        location.LocationGuid == productLocation.LocationGuid
+                        && !productLocation.IsDeleted
+                )
+                .WhereIF(
+                    isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && productLocation.ProductCode != null
+                        && (
+                            (
+                                location.LocationCode != null
+                                && location.LocationCode.Contains(SqlFunc.ToVarchar(keyword))
+                            )
+                            || (
+                                location.LocationBarcode != null
+                                && location.LocationBarcode.Contains(SqlFunc.ToVarchar(keyword))
+                            )
+                        )
+                )
+                .WhereIF(
+                    !isSqlServer,
+                    (location, productLocation) =>
+                        !location.IsDeleted
+                        && location.LocationType == PickingLocationType
+                        && productLocation.ProductCode != null
+                        && (
+                            (
+                                location.LocationCode != null
+                                && location.LocationCode.Contains(keyword)
+                            )
+                            || (
+                                location.LocationBarcode != null
+                                && location.LocationBarcode.Contains(keyword)
+                            )
+                        )
+                );
+            var pickingLocationQuery = pickingLocationSource.Select(
+                (location, productLocation) =>
+                    new WarehouseProductCodeSearchCandidate
+                    {
+                        ProductCode = productLocation.ProductCode!,
+                    }
+            );
+
+            var unionQuery = _context
+                .Db.Union(
+                    productTextQuery,
+                    categoryNameQuery,
+                    domesticSupplierNameQuery,
+                    localSupplierNameQuery,
+                    pickingLocationQuery
+                )
+                .MergeTable();
+
+            // Product 等主数据表使用 nvarchar 商品编码，仓库与货位表使用 varchar；
+            // 最外层统一成 varchar，避免连接时转换 WarehouseProduct 的索引列。
+            return isSqlServer
+                ? unionQuery
+                    .Select(candidate => new WarehouseProductCodeSearchCandidate
+                    {
+                        ProductCode = SqlFunc.ToVarchar(candidate.ProductCode),
+                    })
+                    .MergeTable()
+                : unionQuery;
         }
 
         private ISugarQueryable<WarehouseProductCodeSearchCandidate> BuildWarehouseCodeSearchCandidateQuery(

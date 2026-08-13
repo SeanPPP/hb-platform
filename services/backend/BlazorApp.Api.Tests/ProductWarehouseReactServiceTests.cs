@@ -672,6 +672,61 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void TextCandidateQuery_SqlServerBuildsUnionBeforeItemNumberPaging()
+        {
+            const string keyword = "Shredded";
+            var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString =
+                    "Server=127.0.0.1;Database=warehouse_sql_generation;User Id=sa;Password=SqlOnly_123;TrustServerCertificate=True",
+                DbType = DbType.SqlServer,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+                MoreSettings = new ConnMoreSettings(),
+            });
+            var service = CreateService(database: sqlServerDb);
+            var method = typeof(ProductWarehouseReactService).GetMethod(
+                "BuildWarehouseTextSearchCandidateQuery",
+                BindingFlags.Instance | BindingFlags.NonPublic
+            );
+            var candidateQuery = Assert.IsAssignableFrom<
+                ISugarQueryable<WarehouseProductCodeSearchCandidate>
+            >(method!.Invoke(service, new object[] { keyword }));
+
+            var warehouseQuery = sqlServerDb
+                .Queryable<WarehouseProduct>()
+                .InnerJoin(
+                    candidateQuery,
+                    (warehouseProduct, candidate) =>
+                        warehouseProduct.ProductCode == candidate.ProductCode
+                )
+                .Select((warehouseProduct, candidate) => warehouseProduct)
+                .MergeTable();
+            var sql = warehouseQuery
+                .InnerJoin<Product>(
+                    (warehouseProduct, product) =>
+                        product.ProductCode == warehouseProduct.ProductCode && !product.IsDeleted
+                )
+                .Where(warehouseProduct => !warehouseProduct.IsDeleted)
+                .OrderBy(
+                    (warehouseProduct, product) => product.ItemNumber,
+                    OrderByType.Asc
+                )
+                .Select((warehouseProduct, product) => warehouseProduct.ProductCode)
+                .Skip(0)
+                .Take(100)
+                .ToSql()
+                .Key;
+
+            Assert.Contains("UNION", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("UNION ALL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("VARCHAR", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("ROW_NUMBER", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("EXISTS", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(keyword, sql, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public async Task GetAntdTableDataAsync_OmittedHbPrefixOnlyMatchesItemNumber()
         {
             await SeedWarehouseTableProductAsync(
@@ -757,6 +812,162 @@ namespace BlazorApp.Api.Tests
             });
 
             Assert.Equal("P-GLOBAL-NAME-001", Assert.Single(result.Items).ProductCode);
+        }
+
+        [Theory]
+        [InlineData(
+            "ascend",
+            "HB038-010",
+            "HB038-012",
+            "HB038-014",
+            "HB038-033"
+        )]
+        [InlineData(
+            "descend",
+            "HB038-033",
+            "HB038-014",
+            "HB038-012",
+            "HB038-010"
+        )]
+        public async Task GetAntdTableDataAsync_TextGlobalSearchSortsItemNumbersBeforePagingWithCandidates(
+            string sortOrder,
+            string firstItemNumber,
+            string secondItemNumber,
+            string thirdItemNumber,
+            string fourthItemNumber
+        )
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-SORT-014",
+                "HB038-014",
+                "Shredded Paper Mixed Pastel 50g",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-SORT-012",
+                "HB038-012",
+                "Shredded Paper Mint 50g",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-SORT-033",
+                "HB038-033",
+                "Shredded Paper Yellow 50g",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-SORT-010",
+                "HB038-010",
+                "Shredded Paper Baby Blue 50g",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-SORT-OTHER",
+                "HB038-001",
+                "Tissue Paper White 50g",
+                null
+            );
+
+            var executedSql = new List<string>();
+            _db.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+            ReactTableResponseDto<WarehouseProductReactListDto> firstPage;
+            ReactTableResponseDto<WarehouseProductReactListDto> secondPage;
+            try
+            {
+                var service = CreateService();
+                firstPage = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 2,
+                    GlobalSearch = "Shredded",
+                    SortBy = "itemNumber",
+                    SortOrder = sortOrder,
+                });
+                secondPage = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+                {
+                    Page = 2,
+                    PageSize = 2,
+                    GlobalSearch = "Shredded",
+                    SortBy = "itemNumber",
+                    SortOrder = sortOrder,
+                });
+            }
+            finally
+            {
+                _db.Aop.OnLogExecuting = null;
+            }
+
+            Assert.Equal(4, firstPage.Total);
+            Assert.Equal(
+                new[] { firstItemNumber, secondItemNumber },
+                firstPage.Items.Select(item => item.ItemNumber)
+            );
+            Assert.Equal(4, secondPage.Total);
+            Assert.Equal(
+                new[] { thirdItemNumber, fourthItemNumber },
+                secondPage.Items.Select(item => item.ItemNumber)
+            );
+
+            var pageQueries = executedSql
+                .Where(sql =>
+                    sql.Contains("ORDER BY", StringComparison.OrdinalIgnoreCase)
+                    && sql.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                )
+                .ToList();
+            Assert.Equal(2, pageQueries.Count);
+            Assert.All(pageQueries, sql =>
+            {
+                Assert.Contains("UNION", sql, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("EXISTS", sql, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_TextGlobalSearchItemNumberSortKeepsLocationMatchesUnique()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-LOCATION-002",
+                "HB-TEXT-002",
+                "Aisle Basket",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-LOCATION-001",
+                "HB-TEXT-001",
+                "Storage Basket",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-TEXT-LOCATION-STORAGE",
+                "HB-TEXT-000",
+                "Storage Shelf",
+                null
+            );
+            await SeedLocationAsync("loc-text-picking-002", "AISLE-MATCH-02", 1);
+            await SeedLocationAsync("loc-text-picking-001", "AISLE-MATCH-01", 1);
+            await SeedLocationAsync("loc-text-storage", "AISLE-STORAGE", 2);
+            await SeedProductLocationAsync("P-TEXT-LOCATION-002", "loc-text-picking-002");
+            await SeedProductLocationAsync("P-TEXT-LOCATION-001", "loc-text-picking-001");
+            await SeedProductLocationAsync(
+                "P-TEXT-LOCATION-STORAGE",
+                "loc-text-storage"
+            );
+
+            var result = await CreateService().GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "Aisle",
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            });
+
+            Assert.Equal(2, result.Total);
+            Assert.Equal(
+                new[] { "P-TEXT-LOCATION-001", "P-TEXT-LOCATION-002" },
+                result.Items.Select(item => item.ProductCode)
+            );
+            Assert.Equal(2, result.Items.Select(item => item.ProductCode).Distinct().Count());
         }
 
         [Fact]
