@@ -2,9 +2,12 @@ using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.AppUpdates;
 using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
 using System.Text.Json;
 
 namespace Hbpos.Api.Tests;
@@ -143,8 +146,58 @@ public sealed class PosIpadAppUpdateContractsTests
         Assert.True(response.ForceUpdate);
     }
 
+    [Theory]
+    [InlineData(DeviceSystems.Ios)]
+    [InlineData(DeviceSystems.Android)]
+    [InlineData(DeviceSystems.Windows)]
+    [InlineData("ipados")]
+    [InlineData(null)]
+    public async Task Non_iPadOS_device_scope_is_forbidden_from_both_update_endpoints(
+        string? deviceSystem)
+    {
+        var controller = CreateAuthenticatedController(deviceSystem);
+
+        var nativeResult = await controller.Check(
+            "1.0.0",
+            "1",
+            "1.0.0",
+            CancellationToken.None);
+        var otaResult = await controller.CheckOta(
+            "1.0.0",
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(nativeResult.Result);
+        Assert.IsType<ForbidResult>(otaResult.Result);
+    }
+
     private static PosIpadAppUpdateController CreateController(PosIpadOptions configuration)
         => new(Options.Create(configuration));
+
+    private static PosIpadAppUpdateController CreateAuthenticatedController(string? deviceSystem)
+    {
+        var claims = new List<Claim>
+        {
+            new(DeviceAuthConstants.StoreCodeClaim, "STORE-1")
+        };
+        if (deviceSystem is not null)
+        {
+            claims.Add(new Claim(DeviceAuthConstants.DeviceSystemClaim, deviceSystem));
+        }
+
+        var controller = CreateController(new PosIpadOptions());
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                    claims,
+                    DeviceAuthConstants.Scheme))
+            }
+        };
+        return controller;
+    }
 
     private static PosIpadAppUpdateResponse GetResponse(
         ActionResult<ApiResult<PosIpadAppUpdateResponse>> actionResult)

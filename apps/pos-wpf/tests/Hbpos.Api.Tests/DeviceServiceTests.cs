@@ -182,7 +182,7 @@ public sealed class DeviceServiceTests
                 StoreCode = "1003",
                 HardwareId = "HW-001",
                 DeviceStatus = 1,
-                DeviceSystem = "Android",
+                DeviceSystem = "watchOS",
                 AuthorizationCode = "AUTH-001"
             }
         };
@@ -896,7 +896,7 @@ public sealed class DeviceServiceTests
 
         var response = await service.ReregisterAsync(
             new DeviceReregisterRequest("1003", "HW-001", "Counter"),
-            new DeviceReregisterContext("POS_1002_0800", "1002", "HW-001", "Android"),
+            new DeviceReregisterContext("POS_1002_0800", "1002", "HW-001", "watchOS"),
             CancellationToken.None);
 
         Assert.False(response.IsAllowed);

@@ -440,10 +440,10 @@ public sealed class DeviceService : IDeviceService
             return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device system does not match existing registration.");
         }
 
-        if (DeviceSystems.IsIpadOs(registeredDeviceSystem)
+        if (DeviceSystems.RequiresExactHardwareId(registeredDeviceSystem)
             && string.IsNullOrWhiteSpace(hardwareId))
         {
-            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device hardware id is required for iPadOS.");
+            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, $"Device hardware id is required for {registeredDeviceSystem}.");
         }
 
         if (!DeviceAuthorizationPlatformPolicy.IsHardwareIdAccepted(

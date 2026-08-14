@@ -70,6 +70,11 @@ public sealed class PosIpadAppUpdateController : ControllerBase
                     "Authenticated POS device store scope is required."));
         }
 
+        if (!HasIpadDeviceSystem())
+        {
+            return Forbid();
+        }
+
         // 迁移开关关闭时完全沿用本地策略，不能因中央尚未播种 none 而提前解除旧强制升级。
         if (!_appUpdateOptions.Value.CentralPolicyEnabled)
         {
@@ -105,6 +110,11 @@ public sealed class PosIpadAppUpdateController : ControllerBase
                     "Authenticated POS device store scope is required."));
         }
 
+        if (!HasIpadDeviceSystem())
+        {
+            return Forbid();
+        }
+
         var decision = _gateway is null
             ? null
             : await _gateway.GetOtaDecisionAsync(
@@ -124,6 +134,15 @@ public sealed class PosIpadAppUpdateController : ControllerBase
         }
 
         return Ok(ApiResult<PosIpadOtaUpdateResponse>.Ok(decision));
+    }
+
+    private bool HasIpadDeviceSystem()
+    {
+        // 只信任认证 handler 签发且精确匹配的 iPadOS claim，缺失或其他平台均拒绝访问 iPad 更新路由。
+        return string.Equals(
+            User.FindFirstValue(DeviceAuthConstants.DeviceSystemClaim),
+            DeviceSystems.IpadOs,
+            StringComparison.Ordinal);
     }
 
     private PosIpadAppUpdateResponse BuildLegacyResponse(

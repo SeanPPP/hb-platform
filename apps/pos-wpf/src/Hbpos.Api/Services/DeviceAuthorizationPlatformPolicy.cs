@@ -19,7 +19,8 @@ public static class DeviceAuthorizationPlatformPolicy
         }
 
         var normalizedSubmittedHardwareId = (submittedHardwareId ?? string.Empty).Trim();
-        if (DeviceSystems.IsIpadOs(normalizedDeviceSystem) && normalizedSubmittedHardwareId.Length == 0)
+        if (DeviceSystems.RequiresExactHardwareId(normalizedDeviceSystem)
+            && normalizedSubmittedHardwareId.Length == 0)
         {
             return false;
         }

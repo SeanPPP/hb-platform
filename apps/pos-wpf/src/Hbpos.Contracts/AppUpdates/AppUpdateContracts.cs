@@ -104,3 +104,40 @@ public sealed record PosIpadOtaUpdateResponse(
     string? IosUpdateId,
     string? UpdateGroupId,
     string? ReleaseMessage);
+
+/// <summary>
+/// 独立手持 POS 原生更新合同；Android APK 与 iOS 商店身份使用互斥字段。
+/// </summary>
+public sealed record PosHandheldNativeUpdateResponse(
+    string State,
+    string PolicyVersion,
+    string Platform,
+    bool Required,
+    string? LatestVersion,
+    string? LatestBuild,
+    string? MinimumSupportedVersion,
+    string? Distribution,
+    string? DownloadUrl,
+    long? FileSize,
+    string? Sha256,
+    string? PackageName,
+    string? SigningCertificateSha256,
+    string? BundleIdentifier,
+    string? AppStoreId,
+    string? ReleaseMessage);
+
+/// <summary>
+/// 独立手持 POS OTA 决策合同，按 AppKey/project/platform/channel/runtime 隔离。
+/// </summary>
+public sealed record PosHandheldOtaUpdateResponse(
+    string State,
+    string PolicyVersion,
+    string AppKey,
+    string? ProjectName,
+    string Platform,
+    bool Required,
+    string? Channel,
+    string? RuntimeVersion,
+    string? UpdateId,
+    string? UpdateGroupId,
+    string? ReleaseMessage);
