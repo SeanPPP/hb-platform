@@ -197,18 +197,37 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
 
     private void ApplyMode(CustomerDisplayWindow window, Window owner, DisplayBounds targetDisplay, CustomerDisplayWindowMode mode)
     {
+        ApplyModeCore(
+            window,
+            owner,
+            targetDisplay,
+            mode,
+            showWindow: window.Show,
+            setTitleBarVisible: window.SetTitleBarVisible,
+            refreshContentLayout: window.RefreshContentLayout);
+    }
+
+    internal void ApplyModeCore(
+        Window window,
+        Window owner,
+        DisplayBounds targetDisplay,
+        CustomerDisplayWindowMode mode,
+        Action showWindow,
+        Action<bool> setTitleBarVisible,
+        Action refreshContentLayout)
+    {
         var stopwatch = Stopwatch.StartNew();
         var plan = GetLayoutPlan(mode);
         ConsoleLog.Write(
             "CustomerDisplay",
             $"window apply-mode start mode={mode} wasVisible={window.IsVisible} targetLeft={targetDisplay.MonitorLeft} targetTop={targetDisplay.MonitorTop} targetWidth={targetDisplay.MonitorWidth} targetHeight={targetDisplay.MonitorHeight}");
         window.WindowState = WindowState.Normal;
-        window.SetTitleBarVisible(plan.TitleBarVisibleDuringPlacement);
+        setTitleBarVisible(plan.TitleBarVisibleDuringPlacement);
 
         if (!window.IsVisible)
         {
             var showStopwatch = Stopwatch.StartNew();
-            window.Show();
+            showWindow();
             showStopwatch.Stop();
             ConsoleLog.Write("CustomerDisplay", $"window show completed mode={mode} elapsedMs={showStopwatch.ElapsedMilliseconds}");
         }
@@ -228,9 +247,9 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
         }
 
         window.WindowState = plan.FinalWindowState;
-        window.SetTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
+        setTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
         window.Topmost = plan.Topmost;
-        window.RefreshContentLayout();
+        refreshContentLayout();
         RestoreOwnerActivation(owner);
         stopwatch.Stop();
         ConsoleLog.Write(
