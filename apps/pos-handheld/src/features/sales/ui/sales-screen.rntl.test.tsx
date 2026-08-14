@@ -608,7 +608,7 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("320×568 折扣弹窗底部按钮使用自然高度纵向排列，避免与取消按钮重叠", async () => {
+  it("320×568 折扣与商品行编辑弹窗的底部按钮保持自然高度且不溢出", async () => {
     const compactMetrics = {
       width: 320,
       height: 568,
@@ -651,6 +651,21 @@ describe("SalesScreen", () => {
       expect(
         flattenedStyle(screen.getByTestId("sales-discount-cancel")).minHeight,
       ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+
+      await fireEvent.press(screen.getByTestId("sales-discount-cancel"));
+      await fireEvent.press(screen.getByTestId("sales-line-line-1-edit"));
+
+      for (const action of [
+        screen.getByLabelText("取消"),
+        screen.getByTestId("sales-line-edit-confirm"),
+      ]) {
+        const actionStyle = flattenedStyle(action);
+        expect(actionStyle).toMatchObject({
+          alignSelf: "stretch",
+          minHeight: MIN_TOUCH_TARGET,
+        });
+        expect(actionStyle.flex).toBeUndefined();
+      }
 
       await screen.unmount();
     } finally {
