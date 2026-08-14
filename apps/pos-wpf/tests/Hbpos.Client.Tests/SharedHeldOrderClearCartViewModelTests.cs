@@ -54,6 +54,60 @@ public sealed class SharedHeldOrderClearCartViewModelTests
         Assert.Equal("pos.status.sharedHeldOrderReleaseFailed", viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task Remove_last_restored_shared_line_releases_claim_before_removing()
+    {
+        var claimId = Guid.NewGuid();
+        var cart = BoundCart(claimId);
+        var line = Assert.Single(cart.Lines);
+        var calls = new List<Guid>();
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            cart,
+            Session(),
+            onOpenPayment: null,
+            releaseSharedHeldOrderAsync: (actualClaimId, _, _) =>
+            {
+                calls.Add(actualClaimId);
+                Assert.True(cart.ClearSharedHeldOrderClaim(actualClaimId));
+                return Task.CompletedTask;
+            });
+
+        await Assert.IsAssignableFrom<IAsyncRelayCommand>(viewModel.RemoveLineCommand)
+            .ExecuteAsync(line);
+
+        Assert.Equal([claimId], calls);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal("pos.status.ready", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Decrease_last_restored_shared_line_releases_claim_before_removing()
+    {
+        var claimId = Guid.NewGuid();
+        var cart = BoundCart(claimId);
+        var line = Assert.Single(cart.Lines);
+        var calls = new List<Guid>();
+        using var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            cart,
+            Session(),
+            onOpenPayment: null,
+            releaseSharedHeldOrderAsync: (actualClaimId, _, _) =>
+            {
+                calls.Add(actualClaimId);
+                Assert.True(cart.ClearSharedHeldOrderClaim(actualClaimId));
+                return Task.CompletedTask;
+            });
+
+        await Assert.IsAssignableFrom<IAsyncRelayCommand>(viewModel.DecreaseLineCommand)
+            .ExecuteAsync(line);
+
+        Assert.Equal([claimId], calls);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal("pos.status.ready", viewModel.StatusMessage);
+    }
+
     private static PosCartService BoundCart(Guid claimId)
     {
         var cart = new PosCartService();
