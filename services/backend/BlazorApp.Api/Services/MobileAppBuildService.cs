@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Extensions.Options;
@@ -70,16 +71,19 @@ namespace BlazorApp.Api.Services
                 );
             }
 
+            var appKey = ResolveAppKeyForProject(payload.ProjectName)
+                ?? throw new InvalidOperationException("已通过校验的 EAS project 缺少 AppKey 映射。");
+
             var now = DateTime.UtcNow;
             var existing = await _db
                 .Queryable<MobileAppBuild>()
-                .FirstAsync(x => x.EasBuildId == payload.EasBuildId);
+                .FirstAsync(x => x.AppKey == appKey && x.EasBuildId == payload.EasBuildId);
             var action = existing == null ? "saved" : "updated";
             var entity = existing ?? new MobileAppBuild { Id = Guid.NewGuid() };
             var previousArtifactUrl = existing?.ArtifactUrl;
 
             // EAS 会重试同一个 buildId；这里用幂等更新保留单条最新产物记录。
-            ApplyPayload(entity, payload, now);
+            ApplyPayload(entity, payload, appKey, now);
             var artifactChanged = existing != null && HasArtifactUrlChanged(previousArtifactUrl, entity.ArtifactUrl);
             QueueCosMirrorIfNeeded(entity, existing == null, artifactChanged);
 
@@ -98,7 +102,7 @@ namespace BlazorApp.Api.Services
                     );
                     var concurrentExisting = await _db
                         .Queryable<MobileAppBuild>()
-                        .FirstAsync(x => x.EasBuildId == payload.EasBuildId);
+                        .FirstAsync(x => x.AppKey == appKey && x.EasBuildId == payload.EasBuildId);
                     if (concurrentExisting == null)
                     {
                         throw;
@@ -106,7 +110,7 @@ namespace BlazorApp.Api.Services
 
                     // 并发插入冲突后必须以数据库现有行为基准，避免新建实体的空 COS 字段覆盖已镜像结果。
                     var concurrentPreviousArtifactUrl = concurrentExisting.ArtifactUrl;
-                    ApplyPayload(concurrentExisting, payload, now);
+                    ApplyPayload(concurrentExisting, payload, appKey, now);
                     var concurrentArtifactChanged = HasArtifactUrlChanged(
                         concurrentPreviousArtifactUrl,
                         concurrentExisting.ArtifactUrl
@@ -135,14 +139,28 @@ namespace BlazorApp.Api.Services
             );
         }
 
-        public async Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(string profile)
+        public Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(string profile)
         {
+            return GetLatestAsync(MobileAppKeys.Mobile, profile);
+        }
+
+        public async Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(
+            string appKey,
+            string profile
+        )
+        {
+            if (!MobileAppKeys.TryNormalize(appKey, out var normalizedAppKey))
+            {
+                return ApiResponse<MobileAppBuildDto?>.OK(null);
+            }
+
             var normalizedProfile = NormalizeProfile(profile);
             var now = DateTime.UtcNow;
             var entity = await _db
                 .Queryable<MobileAppBuild>()
                 .Where(x =>
-                    x.Platform == "android"
+                    x.AppKey == normalizedAppKey
+                    && x.Platform == "android"
                     && x.Status == "finished"
                     && x.BuildProfile == normalizedProfile
                     && (x.CosMirrorStatus == null || x.CosMirrorStatus != CosMirrorStatusUnsafe)
@@ -161,11 +179,25 @@ namespace BlazorApp.Api.Services
             return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
         }
 
-        public async Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
+        public Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
             string easBuildId,
             string profile
         )
         {
+            return GetByBuildIdAsync(MobileAppKeys.Mobile, easBuildId, profile);
+        }
+
+        public async Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
+            string appKey,
+            string easBuildId,
+            string profile
+        )
+        {
+            if (!MobileAppKeys.TryNormalize(appKey, out var normalizedAppKey))
+            {
+                return ApiResponse<MobileAppBuildDto?>.OK(null);
+            }
+
             var normalizedBuildId = NormalizeRequiredText(easBuildId);
             if (string.IsNullOrWhiteSpace(normalizedBuildId))
             {
@@ -177,7 +209,8 @@ namespace BlazorApp.Api.Services
             var entity = await _db
                 .Queryable<MobileAppBuild>()
                 .Where(x =>
-                    x.EasBuildId == normalizedBuildId
+                    x.AppKey == normalizedAppKey
+                    && x.EasBuildId == normalizedBuildId
                     && x.Platform == "android"
                     && x.Status == "finished"
                     && x.BuildProfile == normalizedProfile
@@ -202,10 +235,23 @@ namespace BlazorApp.Api.Services
             var page = Math.Max(query.Page, 1);
             var pageSize = Math.Clamp(query.PageSize, 1, 100);
             var profile = NormalizeProfile(query.Profile);
+            if (!MobileAppKeys.TryNormalizeOrLegacyMobile(query.AppKey, out var appKey))
+            {
+                return ApiResponse<PagedResult<MobileAppBuildDto>>.OK(
+                    new PagedResult<MobileAppBuildDto>
+                    {
+                        Items = [],
+                        Total = 0,
+                        Page = page,
+                        PageSize = pageSize,
+                    }
+                );
+            }
+
             // 历史记录默认也按 production 过滤，避免漏传 profile 时把 preview 和 production 混在一起。
             var queryable = _db
                 .Queryable<MobileAppBuild>()
-                .Where(x => x.BuildProfile == profile);
+                .Where(x => x.AppKey == appKey && x.BuildProfile == profile);
 
             var total = await queryable.CountAsync();
             var items = await queryable
@@ -230,6 +276,18 @@ namespace BlazorApp.Api.Services
             MobileAppOtaUpdateUpsertDto dto
         )
         {
+            var projectName = NormalizeOptionalText(dto.ProjectName)
+                ?? NormalizeOptionalText(_options.AllowedProjectName)
+                ?? string.Empty;
+            var appKey = ResolveAppKeyForProject(projectName);
+            if (appKey == null)
+            {
+                return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                    "ProjectName 未映射到受控 AppKey",
+                    "PROJECT_NOT_ALLOWED"
+                );
+            }
+
             var updateGroupId = NormalizeRequiredText(dto.UpdateGroupId);
             if (!IsValidUpdateGroupId(updateGroupId))
             {
@@ -239,15 +297,27 @@ namespace BlazorApp.Api.Services
                 );
             }
 
-            // 当前 OTA 发布记录只登记 Android 更新，和 APK 构建表保持分离。
+            // 关键逻辑：OTA 平台只接受 iOS/Android，未知输入不得静默伪装成 Android。
             var platform = NormalizePlatform(dto.Platform);
+            if (platform == null)
+            {
+                return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                    "Platform 必须是 ios 或 android",
+                    "INVALID_OTA_PLATFORM"
+                );
+            }
+
             var existing = await _db
                 .Queryable<MobileAppOtaUpdate>()
-                .FirstAsync(x => x.UpdateGroupId == updateGroupId && x.Platform == platform);
+                .FirstAsync(x =>
+                    x.AppKey == appKey
+                    && x.UpdateGroupId == updateGroupId
+                    && x.Platform == platform
+                );
             var entity = existing ?? new MobileAppOtaUpdate { Id = Guid.NewGuid() };
 
-            // EAS update webhook 或人工登记可能重复提交同一 group；按 group+platform 幂等更新。
-            ApplyOtaUpdate(entity, dto, updateGroupId, platform);
+            // EAS update webhook 或人工登记可能重复提交同一 group；按 appKey+group+platform 幂等更新。
+            ApplyOtaUpdate(entity, dto, appKey, projectName, updateGroupId, platform);
 
             if (existing == null)
             {
@@ -265,7 +335,11 @@ namespace BlazorApp.Api.Services
                     );
                     var concurrentExisting = await _db
                         .Queryable<MobileAppOtaUpdate>()
-                        .FirstAsync(x => x.UpdateGroupId == updateGroupId && x.Platform == platform);
+                        .FirstAsync(x =>
+                            x.AppKey == appKey
+                            && x.UpdateGroupId == updateGroupId
+                            && x.Platform == platform
+                        );
                     if (concurrentExisting == null)
                     {
                         throw;
@@ -291,10 +365,41 @@ namespace BlazorApp.Api.Services
             var pageSize = Math.Clamp(query.PageSize, 1, 100);
             var channel = NormalizeChannel(query.Channel);
             var runtimeVersion = NormalizeOptionalText(query.RuntimeVersion);
+            var projectName = NormalizeOptionalText(query.ProjectName);
+            var platform = NormalizeOptionalText(query.Platform)?.ToLowerInvariant();
+            if (!MobileAppKeys.TryNormalizeOrLegacyMobile(query.AppKey, out var appKey)
+                || projectName != null
+                    && !string.Equals(
+                        ResolveAppKeyForProject(projectName),
+                        appKey,
+                        StringComparison.Ordinal
+                    ))
+            {
+                return ApiResponse<PagedResult<MobileAppOtaUpdateDto>>.OK(
+                    new PagedResult<MobileAppOtaUpdateDto>
+                    {
+                        Items = [],
+                        Total = 0,
+                        Page = page,
+                        PageSize = pageSize,
+                    }
+                );
+            }
+
             // OTA 列表默认只看 production，避免未带 channel 时混入 preview 更新。
             var queryable = _db
                 .Queryable<MobileAppOtaUpdate>()
-                .Where(x => x.Channel == channel);
+                .Where(x => x.AppKey == appKey && x.Channel == channel);
+
+            if (projectName != null)
+            {
+                queryable = queryable.Where(x => x.ProjectName == projectName);
+            }
+
+            if (platform is "android" or "ios")
+            {
+                queryable = queryable.Where(x => x.Platform == platform);
+            }
 
             if (!string.IsNullOrWhiteSpace(runtimeVersion))
             {
@@ -337,6 +442,16 @@ namespace BlazorApp.Api.Services
             }
 
             var platform = NormalizePlatform(dto.Platform);
+            if (platform == null)
+            {
+                return Task.FromResult(
+                    ApiResponse<MobileAppOtaRollbackCommandDto>.Error(
+                        "Platform 必须是 ios 或 android",
+                        "INVALID_OTA_PLATFORM"
+                    )
+                );
+            }
+
             var message = NormalizeOptionalText(dto.Message) ?? normalizedGroupId;
             var rollbackMessage = $"回退 OTA：{message}";
             // 这里只生成可审计命令，不在服务端执行 eas-cli，避免 API 请求触发外部发布动作。
@@ -362,7 +477,7 @@ namespace BlazorApp.Api.Services
                 return "missing_build_id";
             if (!MatchesConfiguredValue(_options.AllowedAccountName, payload.AccountName))
                 return "account_not_allowed";
-            if (!MatchesConfiguredValue(_options.AllowedProjectName, payload.ProjectName))
+            if (ResolveAppKeyForProject(payload.ProjectName) == null)
                 return "project_not_allowed";
             if (!AcceptedProfiles().Contains(payload.BuildProfile, StringComparer.OrdinalIgnoreCase))
                 return "profile_not_accepted";
@@ -386,10 +501,37 @@ namespace BlazorApp.Api.Services
                 && string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase);
         }
 
+        private string? ResolveAppKeyForProject(string? projectName)
+        {
+            var normalizedProjectName = NormalizeRequiredText(projectName);
+            if (normalizedProjectName.Length == 0)
+            {
+                return null;
+            }
+
+            foreach (var mapping in _options.ProjectAppKeys ?? [])
+            {
+                if (string.Equals(
+                        NormalizeRequiredText(mapping.Key),
+                        normalizedProjectName,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    && MobileAppKeys.TryNormalize(mapping.Value, out var mappedAppKey))
+                {
+                    return mappedAppKey;
+                }
+            }
+
+            // 旧单 project 配置继续属于 mobile，避免升级后已有移动端构建查询突然为空。
+            return MatchesConfiguredValue(_options.AllowedProjectName, normalizedProjectName)
+                ? MobileAppKeys.Mobile
+                : null;
+        }
+
         private string[] AcceptedProfiles()
         {
             return _options.AcceptedProfiles is not { Length: > 0 }
-                ? ["preview", "production"]
+                ? ["preview", "production", "android-internal"]
                 : _options.AcceptedProfiles;
         }
 
@@ -407,10 +549,17 @@ namespace BlazorApp.Api.Services
                 : channel.Trim().ToLowerInvariant();
         }
 
-        private static string NormalizePlatform(string? platform)
+        private static string? NormalizePlatform(string? platform)
         {
-            // 目前 EAS OTA 记录只服务 Android 客户端，统一落为 android，避免同 group 被脏输入拆成多条。
-            return "android";
+            var normalized = platform?.Trim();
+            if (string.Equals(normalized, "android", StringComparison.OrdinalIgnoreCase))
+            {
+                return "android";
+            }
+
+            return string.Equals(normalized, "ios", StringComparison.OrdinalIgnoreCase)
+                ? "ios"
+                : null;
         }
 
         private static string NormalizeRequiredText(string? value)
@@ -453,7 +602,8 @@ namespace BlazorApp.Api.Services
             {
                 var message = current.Message;
                 if (
-                    message.Contains("IX_MobileAppBuild_EasBuildId", StringComparison.OrdinalIgnoreCase)
+                    message.Contains("IX_MobileAppBuild_AppKey_EasBuildId", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("IX_MobileAppBuild_EasBuildId", StringComparison.OrdinalIgnoreCase)
                     || message.Contains("EasBuildId", StringComparison.OrdinalIgnoreCase)
                         && (
                             message.Contains("unique", StringComparison.OrdinalIgnoreCase)
@@ -476,6 +626,10 @@ namespace BlazorApp.Api.Services
                 var message = current.Message;
                 if (
                     message.Contains(
+                        "IX_MobileAppOtaUpdate_AppKey_Group_Platform",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || message.Contains(
                         "IX_MobileAppOtaUpdate_Group_Platform",
                         StringComparison.OrdinalIgnoreCase
                     )
@@ -576,6 +730,8 @@ namespace BlazorApp.Api.Services
         {
             entity.CosArtifactUrl = NormalizeOptionalText(mirror.ArtifactUrl);
             entity.CosObjectKey = NormalizeOptionalText(mirror.ObjectKey);
+            entity.ArtifactSha256 = NormalizeOptionalText(mirror.Sha256)?.ToLowerInvariant();
+            entity.ArtifactSize = mirror.FileSize > 0 ? mirror.FileSize : null;
             entity.CosMirroredAt = mirror.MirroredAt;
             entity.CosMirrorStatus = CosMirrorStatusSucceeded;
             entity.CosMirrorError = null;
@@ -586,6 +742,8 @@ namespace BlazorApp.Api.Services
                 {
                     CosArtifactUrl = entity.CosArtifactUrl,
                     CosObjectKey = entity.CosObjectKey,
+                    ArtifactSha256 = entity.ArtifactSha256,
+                    ArtifactSize = entity.ArtifactSize,
                     CosMirroredAt = entity.CosMirroredAt,
                     CosMirrorStatus = CosMirrorStatusSucceeded,
                     CosMirrorError = null,
@@ -657,6 +815,8 @@ namespace BlazorApp.Api.Services
             // 原始 EAS artifact 变化时，旧 COS 地址不能继续代表当前构建产物，并重新进入后台镜像队列。
             entity.CosArtifactUrl = null;
             entity.CosObjectKey = null;
+            entity.ArtifactSha256 = null;
+            entity.ArtifactSize = null;
             entity.CosMirroredAt = null;
             entity.CosMirrorError = null;
             entity.CosMirrorStatus = CosMirrorStatusPending;
@@ -664,8 +824,14 @@ namespace BlazorApp.Api.Services
             entity.CosMirrorLastAttemptAtUtc = null;
         }
 
-        private static void ApplyPayload(MobileAppBuild entity, EasBuildPayload payload, DateTime now)
+        private static void ApplyPayload(
+            MobileAppBuild entity,
+            EasBuildPayload payload,
+            string appKey,
+            DateTime now
+        )
         {
+            entity.AppKey = appKey;
             entity.EasBuildId = payload.EasBuildId;
             entity.AccountName = payload.AccountName;
             entity.ProjectName = payload.ProjectName;
@@ -693,6 +859,7 @@ namespace BlazorApp.Api.Services
             return new MobileAppBuildDto
             {
                 Id = entity.Id,
+                AppKey = entity.AppKey,
                 EasBuildId = entity.EasBuildId,
                 AccountName = entity.AccountName,
                 ProjectName = entity.ProjectName,
@@ -709,6 +876,8 @@ namespace BlazorApp.Api.Services
                 OriginalArtifactUrl = entity.ArtifactUrl,
                 CosArtifactUrl = entity.CosArtifactUrl,
                 CosObjectKey = entity.CosObjectKey,
+                ArtifactSha256 = entity.ArtifactSha256,
+                ArtifactSize = entity.ArtifactSize,
                 CosMirroredAt = entity.CosMirroredAt,
                 CosMirrorError = entity.CosMirrorError,
                 CosMirrorStatus = string.IsNullOrWhiteSpace(entity.CosMirrorStatus)
@@ -754,12 +923,20 @@ namespace BlazorApp.Api.Services
         private static void ApplyOtaUpdate(
             MobileAppOtaUpdate entity,
             MobileAppOtaUpdateUpsertDto dto,
+            string appKey,
+            string projectName,
             string updateGroupId,
             string platform
         )
         {
+            entity.AppKey = appKey;
+            entity.ProjectName = projectName;
             entity.UpdateGroupId = updateGroupId;
-            entity.AndroidUpdateId = NormalizeOptionalText(dto.AndroidUpdateId);
+            entity.UpdateId = NormalizeOptionalText(dto.UpdateId)
+                ?? NormalizeOptionalText(dto.AndroidUpdateId);
+            entity.AndroidUpdateId = platform == "android"
+                ? NormalizeOptionalText(dto.AndroidUpdateId) ?? entity.UpdateId
+                : null;
             entity.Channel = NormalizeChannel(dto.Channel);
             entity.Branch = NormalizeOptionalText(dto.Branch);
             entity.Platform = platform;
@@ -777,7 +954,10 @@ namespace BlazorApp.Api.Services
             return new MobileAppOtaUpdateDto
             {
                 Id = entity.Id,
+                AppKey = entity.AppKey,
+                ProjectName = entity.ProjectName,
                 UpdateGroupId = entity.UpdateGroupId,
+                UpdateId = entity.UpdateId ?? entity.AndroidUpdateId,
                 AndroidUpdateId = entity.AndroidUpdateId,
                 Channel = entity.Channel,
                 Branch = entity.Branch,

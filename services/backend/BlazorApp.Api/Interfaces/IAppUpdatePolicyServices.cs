@@ -79,3 +79,16 @@ public interface IPosIpadOtaPolicyService
 
     Task<PosIpadOtaDecisionDto> GetDecisionAsync(PosIpadOtaDecisionRequest request);
 }
+
+public interface IPosHandheldUpdateDecisionService
+{
+    Task<PosHandheldNativeDecisionDto?> GetNativeDecisionAsync(
+        PosHandheldNativeDecisionRequest request,
+        CancellationToken cancellationToken = default
+    );
+
+    Task<PosHandheldOtaDecisionDto?> GetOtaDecisionAsync(
+        PosHandheldOtaDecisionRequest request,
+        CancellationToken cancellationToken = default
+    );
+}

@@ -8,12 +8,17 @@ namespace BlazorApp.Shared.DTOs
 
         public string? AllowedProjectName { get; set; }
 
-        public string[] AcceptedProfiles { get; set; } = ["preview", "production"];
+        public Dictionary<string, string> ProjectAppKeys { get; set; } = [];
+
+        public string[] AcceptedProfiles { get; set; } =
+            ["preview", "production", "android-internal"];
     }
 
     public class MobileAppBuildDto
     {
         public Guid Id { get; set; }
+
+        public string AppKey { get; set; } = "mobile";
 
         public string EasBuildId { get; set; } = string.Empty;
 
@@ -46,6 +51,10 @@ namespace BlazorApp.Shared.DTOs
         public string? CosArtifactUrl { get; set; }
 
         public string? CosObjectKey { get; set; }
+
+        public string? ArtifactSha256 { get; set; }
+
+        public long? ArtifactSize { get; set; }
 
         public DateTime? CosMirroredAt { get; set; }
 
@@ -89,6 +98,8 @@ namespace BlazorApp.Shared.DTOs
 
     public class MobileAppBuildQueryDto
     {
+        public string? AppKey { get; set; }
+
         public int Page { get; set; } = 1;
 
         public int PageSize { get; set; } = 20;
@@ -109,7 +120,13 @@ namespace BlazorApp.Shared.DTOs
     {
         public Guid Id { get; set; }
 
+        public string AppKey { get; set; } = "mobile";
+
+        public string ProjectName { get; set; } = string.Empty;
+
         public string UpdateGroupId { get; set; } = string.Empty;
+
+        public string? UpdateId { get; set; }
 
         public string? AndroidUpdateId { get; set; }
 
@@ -140,6 +157,12 @@ namespace BlazorApp.Shared.DTOs
 
     public class MobileAppOtaUpdateQueryDto
     {
+        public string? AppKey { get; set; }
+
+        public string? ProjectName { get; set; }
+
+        public string? Platform { get; set; }
+
         public int Page { get; set; } = 1;
 
         public int PageSize { get; set; } = 20;
@@ -151,7 +174,11 @@ namespace BlazorApp.Shared.DTOs
 
     public class MobileAppOtaUpdateUpsertDto
     {
+        public string? ProjectName { get; set; }
+
         public string UpdateGroupId { get; set; } = string.Empty;
+
+        public string? UpdateId { get; set; }
 
         public string? AndroidUpdateId { get; set; }
 

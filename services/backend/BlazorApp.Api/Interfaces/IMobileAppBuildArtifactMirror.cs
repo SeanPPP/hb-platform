@@ -8,6 +8,10 @@ namespace BlazorApp.Api.Interfaces
 
         public string ObjectKey { get; set; } = string.Empty;
 
+        public string Sha256 { get; set; } = string.Empty;
+
+        public long FileSize { get; set; }
+
         public DateTime MirroredAt { get; set; } = DateTime.UtcNow;
     }
 

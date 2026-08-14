@@ -132,6 +132,29 @@ public sealed class TencentCosMobileAppBuildArtifactMirrorTests
         Assert.Equal("mobile-app-builds/production/build-123.apk", result.ObjectKey);
     }
 
+    [Fact]
+    public async Task MirrorAsync_PosHandheld使用独立AppKey对象路径()
+    {
+        var content = new ByteArrayContent([1, 2, 3, 4]);
+        content.Headers.ContentLength = 4;
+        var artifactHandler = new StubHttpMessageHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = content }
+        );
+        var uploadHandler = new CaptureHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var mirror = CreateMirror(artifactHandler, uploadHandler);
+        var build = CreateBuild("https://expo.dev/artifacts/eas/build-123.apk");
+        build.AppKey = "pos-handheld";
+
+        var result = await mirror.MirrorAsync(build);
+
+        Assert.Equal("mobile-app-builds/pos-handheld/production/build-123.apk", result.ObjectKey);
+        Assert.Equal(4, result.FileSize);
+        Assert.Equal(
+            "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+            result.Sha256
+        );
+    }
+
     private static TencentCosMobileAppBuildArtifactMirror CreateMirror(
         HttpMessageHandler artifactHandler,
         HttpMessageHandler uploadHandler

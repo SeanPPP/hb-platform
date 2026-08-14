@@ -12,8 +12,17 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(IsPrimaryKey = true, IsIdentity = false)]
         public Guid Id { get; set; } = Guid.NewGuid();
 
+        [SugarColumn(Length = 80, IsNullable = false)]
+        public string AppKey { get; set; } = "mobile";
+
+        [SugarColumn(Length = 120, IsNullable = false)]
+        public string ProjectName { get; set; } = string.Empty;
+
         [SugarColumn(Length = 120, IsNullable = false)]
         public string UpdateGroupId { get; set; } = string.Empty;
+
+        [SugarColumn(Length = 120, IsNullable = true)]
+        public string? UpdateId { get; set; }
 
         [SugarColumn(Length = 120, IsNullable = true)]
         public string? AndroidUpdateId { get; set; }

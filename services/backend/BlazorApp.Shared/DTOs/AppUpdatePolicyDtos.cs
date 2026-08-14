@@ -216,3 +216,92 @@ public sealed class PosIpadOtaDecisionDto
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public string? ReleaseMessage { get; set; }
 }
+
+public sealed class PosHandheldNativeDecisionRequest
+{
+    public string? StoreCode { get; set; }
+    public string? Platform { get; set; }
+    public string? Version { get; set; }
+    public string? Build { get; set; }
+}
+
+public sealed class PosHandheldNativeDecisionDto
+{
+    public string State { get; set; } = AppUpdateStates.None;
+    public string PolicyVersion { get; set; } = AppUpdateStates.None;
+    public string Platform { get; set; } = string.Empty;
+    public bool Required { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? LatestVersion { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? LatestBuild { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? MinimumSupportedVersion { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? Distribution { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? DownloadUrl { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public long? FileSize { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? Sha256 { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? PackageName { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? SigningCertificateSha256 { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? BundleIdentifier { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? AppStoreId { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? ReleaseMessage { get; set; }
+}
+
+public sealed class PosHandheldOtaDecisionRequest
+{
+    public string? StoreCode { get; set; }
+    public string? Platform { get; set; }
+    public string? RuntimeVersion { get; set; }
+    public string? CurrentUpdateId { get; set; }
+    public string? CurrentUpdateGroupId { get; set; }
+}
+
+public sealed class PosHandheldOtaDecisionDto
+{
+    public string State { get; set; } = AppUpdateStates.None;
+    public string PolicyVersion { get; set; } = AppUpdateStates.None;
+    public string AppKey { get; set; } = "pos-handheld";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? ProjectName { get; set; }
+
+    public string Platform { get; set; } = string.Empty;
+    public bool Required { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? Channel { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? RuntimeVersion { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? UpdateId { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? UpdateGroupId { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? ReleaseMessage { get; set; }
+}

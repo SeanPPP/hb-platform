@@ -536,6 +536,14 @@ builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<AppUpdatePolicyOptions>(
     builder.Configuration.GetSection("AppUpdatePolicy")
 );
+builder.Services
+    .AddOptions<PosHandheldUpdatePolicyOptions>()
+    .Bind(builder.Configuration.GetSection("PosHandheldUpdatePolicy"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<
+    Microsoft.Extensions.Options.IValidateOptions<PosHandheldUpdatePolicyOptions>,
+    PosHandheldUpdatePolicyOptionsValidator
+>();
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<PaymentTerminalSettingsService>();
@@ -612,6 +620,7 @@ builder.Services.AddScoped<MobileAppBuildService>(sp =>
 builder.Services.AddScoped<IMobileAppBuildService>(sp =>
     sp.GetRequiredService<MobileAppBuildService>()
 );
+builder.Services.AddScoped<IPosHandheldUpdateDecisionService, PosHandheldUpdateDecisionService>();
 builder.Services.AddScoped<IMobileAppBuildMirrorQueue>(sp =>
     sp.GetRequiredService<MobileAppBuildService>()
 );

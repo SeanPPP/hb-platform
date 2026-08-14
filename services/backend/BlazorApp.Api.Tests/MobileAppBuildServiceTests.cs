@@ -604,7 +604,33 @@ public sealed class MobileAppBuildServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task EasWebhook_AcceptedProfiles未配置_使用PreviewProduction默认值()
+    public async Task EasWebhook_EasWebhookOptions默认值_接受AndroidInternal()
+    {
+        var service = new MobileAppBuildService(
+            _db,
+            Options.Create(
+                new EasWebhookOptions
+                {
+                    Secret = Secret,
+                    AllowedAccountName = "hotbargain",
+                    AllowedProjectName = "hb-mobile",
+                }
+            ),
+            NullLogger<MobileAppBuildService>.Instance
+        );
+
+        var result = await service.HandleEasWebhookAsync(
+            CreatePayload(easBuildId: "build-options-default", profile: "android-internal")
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal("saved", result.Data!.Action);
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal("android-internal", saved.BuildProfile);
+    }
+
+    [Fact]
+    public async Task EasWebhook_AcceptedProfiles空数组_默认接受AndroidInternal()
     {
         var service = new MobileAppBuildService(
             _db,
@@ -621,13 +647,13 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         );
 
         var result = await service.HandleEasWebhookAsync(
-            CreatePayload(easBuildId: "build-default-profile", profile: "preview")
+            CreatePayload(easBuildId: "build-default-profile", profile: "android-internal")
         );
 
         Assert.True(result.Success);
         Assert.Equal("saved", result.Data!.Action);
         var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
-        Assert.Equal("preview", saved.BuildProfile);
+        Assert.Equal("android-internal", saved.BuildProfile);
     }
 
     [Fact]
