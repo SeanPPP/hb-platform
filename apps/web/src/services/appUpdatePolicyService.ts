@@ -86,7 +86,11 @@ export function normalizeIosAppStoreRelease(value: unknown): IosAppStoreRelease 
   const raw = asRecord(value)
   return {
     id: text(raw, 'id'),
-    app: raw.app === 'pos-ipad' ? 'pos-ipad' : 'mobile-ios',
+    app: raw.app === 'pos-ipad'
+      ? 'pos-ipad'
+      : raw.app === 'pos-handheld'
+        ? 'pos-handheld'
+        : 'mobile-ios',
     appStoreId: text(raw, 'appStoreId'),
     bundleIdentifier: text(raw, 'bundleIdentifier'),
     version: text(raw, 'version'),

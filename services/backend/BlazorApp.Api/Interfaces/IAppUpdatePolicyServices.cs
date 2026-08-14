@@ -1,4 +1,5 @@
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models.HBweb;
 
 namespace BlazorApp.Api.Interfaces;
 
@@ -91,4 +92,30 @@ public interface IPosHandheldUpdateDecisionService
         PosHandheldOtaDecisionRequest request,
         CancellationToken cancellationToken = default
     );
+}
+
+public sealed class PosHandheldManagedLane
+{
+    public required PosHandheldUpdatePolicy Policy { get; init; }
+    public PosHandheldUpdateCandidateDto? Candidate { get; init; }
+    public bool CandidateValid { get; init; }
+}
+
+public interface IPosHandheldUpdatePolicyService
+{
+    Task<ApiResponse<List<PosHandheldUpdatePolicyDto>>> GetPoliciesAsync();
+
+    Task<ApiResponse<List<PosHandheldUpdateCandidateDto>>> GetCandidatesAsync(string lane);
+
+    Task<ApiResponse<PosHandheldUpdatePolicyDto>> SetLaneAsync(
+        string lane,
+        PosHandheldUpdatePolicyRequest request,
+        string currentUser
+    );
+
+    Task<ApiResponse<List<PosHandheldUpdatePolicyRevisionDto>>> GetRevisionsAsync(
+        string lane
+    );
+
+    Task<PosHandheldManagedLane?> ResolveManagedLaneAsync(string lane);
 }

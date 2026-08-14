@@ -37,7 +37,13 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        db.CodeFirst.InitTables<MobileAppBuild, MobileAppOtaUpdate>();
+        db.CodeFirst.InitTables<
+            MobileAppBuild,
+            MobileAppOtaUpdate,
+            IosAppStoreRelease,
+            PosHandheldUpdatePolicy,
+            PosHandheldUpdatePolicyRevision
+        >();
         easOptions = new EasWebhookOptions
         {
             AllowedAccountName = "hotbargain",
@@ -557,6 +563,291 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Managed_disabled_native_lane_does_not_fallback_to_legacy_policy()
+    {
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.IosNative,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = false,
+            },
+            "admin"
+        );
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "iOS",
+                Version = "1.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.NotNull(decision);
+        Assert.Equal(AppUpdateStates.None, decision.State);
+        Assert.Equal(AppUpdateStates.None, decision.PolicyVersion);
+    }
+
+    [Fact]
+    public async Task Managed_android_policy_pins_selected_build_when_newer_build_arrives()
+    {
+        var selected = await InsertBuildAsync(
+            MobileAppKeys.PosHandheld,
+            "hb-pos-handheld",
+            "handheld-selected",
+            "2.0.0",
+            "200",
+            "https://downloads.example/handheld-selected.apk",
+            new DateTime(2026, 8, 10, 3, 0, 0, DateTimeKind.Utc)
+        );
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.AndroidNative,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                CandidateId = selected.Id,
+                MinimumSupportedVersion = "1.5.0",
+                MinimumSupportedBuildNumber = 150,
+            },
+            "admin"
+        );
+        await InsertBuildAsync(
+            MobileAppKeys.PosHandheld,
+            "hb-pos-handheld",
+            "handheld-newer",
+            "3.0.0",
+            "300",
+            "https://downloads.example/handheld-newer.apk",
+            new DateTime(2026, 8, 10, 4, 0, 0, DateTimeKind.Utc)
+        );
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "Android",
+                Version = "1.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.NotNull(decision);
+        Assert.Equal("2.0.0", decision.LatestVersion);
+        Assert.Equal("200", decision.LatestBuild);
+        Assert.Equal("1", decision.PolicyVersion);
+        Assert.Equal(AppUpdateStates.Required, decision.State);
+    }
+
+    [Fact]
+    public async Task Managed_android_required_policy_fails_closed_when_signer_trust_root_drifts()
+    {
+        var selected = await InsertBuildAsync(
+            MobileAppKeys.PosHandheld,
+            "hb-pos-handheld",
+            "handheld-signer-bound",
+            "2.0.0",
+            "200",
+            "https://downloads.example/handheld-signer-bound.apk",
+            new DateTime(2026, 8, 10, 3, 0, 0, DateTimeKind.Utc)
+        );
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.AndroidNative,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                Required = true,
+                CandidateId = selected.Id,
+            },
+            "admin"
+        );
+        policyOptions.AndroidSigningCertificateSha256 = new string('c', 64);
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "Android",
+                Version = "1.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.Null(decision);
+    }
+
+    [Fact]
+    public async Task Managed_ota_required_policy_fails_closed_after_new_head_arrives()
+    {
+        var buildService = CreateBuildService();
+        var first = await buildService.UpsertOtaUpdateAsync(
+            CreateOta("hb-pos-handheld", "handheld-first", "android")
+        );
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.AndroidOta,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                Required = true,
+                CandidateId = first.Data!.Id,
+            },
+            "admin"
+        );
+        var next = CreateOta("hb-pos-handheld", "handheld-next", "android");
+        next.PublishedAt = new DateTime(2026, 8, 10, 5, 0, 0, DateTimeKind.Utc);
+        await buildService.UpsertOtaUpdateAsync(next);
+        var service = CreateDecisionService(buildService, policyService);
+
+        var decision = await service.GetOtaDecisionAsync(
+            new PosHandheldOtaDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "Android",
+                RuntimeVersion = "1.0.0",
+                CurrentUpdateId = "old",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.Null(decision);
+    }
+
+    [Fact]
+    public async Task Managed_ios_app_store_policy_uses_verified_candidate_and_minimums()
+    {
+        var release = new IosAppStoreRelease
+        {
+            Id = Guid.NewGuid(),
+            App = AppUpdateApps.PosHandheld,
+            AppStoreId = "123456789",
+            BundleIdentifier = "com.hbweb.poshandheld",
+            Version = "3.0.0",
+            BuildNumber = "300",
+            Storefront = "au",
+            AppStoreUrl = "https://apps.apple.com/au/app/id123456789",
+            AppleVerifiedAtUtc = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            IsDeleted = false,
+        };
+        await db.Insertable(release).ExecuteCommandAsync();
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.IosNative,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                CandidateId = release.Id,
+                MinimumSupportedVersion = "2.0.0",
+                MinimumSupportedBuildNumber = 200,
+                ReleaseMessage = "App Store 新版",
+            },
+            "admin"
+        );
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "iOS",
+                Version = "1.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.NotNull(decision);
+        Assert.Equal(AppUpdateStates.Required, decision.State);
+        Assert.Equal("app-store", decision.Distribution);
+        Assert.Equal("3.0.0", decision.LatestVersion);
+        Assert.Equal("300", decision.LatestBuild);
+        Assert.Equal("2.0.0", decision.MinimumSupportedVersion);
+        Assert.Equal("App Store 新版", decision.ReleaseMessage);
+    }
+
+    [Fact]
+    public async Task Managed_native_build门槛无法由较旧营销版本候选兑现时fail_closed()
+    {
+        var release = new IosAppStoreRelease
+        {
+            Id = Guid.NewGuid(),
+            App = AppUpdateApps.PosHandheld,
+            AppStoreId = "123456789",
+            BundleIdentifier = "com.hbweb.poshandheld",
+            Version = "2.0.0",
+            BuildNumber = "200",
+            Storefront = "au",
+            AppStoreUrl = "https://apps.apple.com/au/app/id123456789",
+            AppleVerifiedAtUtc = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            IsDeleted = false,
+        };
+        await db.Insertable(release).ExecuteCommandAsync();
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.IosNative,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                CandidateId = release.Id,
+                MinimumSupportedBuildNumber = 150,
+            },
+            "admin"
+        );
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "iOS",
+                Version = "3.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.True(saved.Success);
+        Assert.Null(decision);
+    }
+
+    [Fact]
+    public async Task Missing_managed_lane_keeps_legacy_configuration_fallback()
+    {
+        var service = CreateDecisionService(managedPolicyService: CreatePolicyService());
+
+        var decision = await service.GetNativeDecisionAsync(
+            new PosHandheldNativeDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "iOS",
+                Version = "1.0.0",
+                Build = "100",
+            }
+        );
+
+        Assert.NotNull(decision);
+        Assert.Equal(AppUpdateStates.Optional, decision.State);
+        Assert.Equal("12", decision.PolicyVersion);
+        Assert.Equal("testflight", decision.Distribution);
+    }
+
+    [Fact]
     public void Options_validator_does_not_accept_disabled_example_as_enabled_production_policy()
     {
         var example = new PosHandheldUpdatePolicyOptions
@@ -965,19 +1256,29 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
         );
 
     private PosHandheldUpdateDecisionService CreateDecisionService(
-        MobileAppBuildService? buildService = null) =>
+        MobileAppBuildService? buildService = null,
+        IPosHandheldUpdatePolicyService? managedPolicyService = null) =>
         new(
             buildService ?? CreateBuildService(),
             Options.Create(policyOptions),
             Options.Create(easOptions),
-            NullLogger<PosHandheldUpdateDecisionService>.Instance
+            NullLogger<PosHandheldUpdateDecisionService>.Instance,
+            managedPolicyService
+        );
+
+    private PosHandheldUpdatePolicyService CreatePolicyService() =>
+        new(
+            db,
+            Options.Create(policyOptions),
+            Options.Create(easOptions),
+            NullLogger<PosHandheldUpdatePolicyService>.Instance
         );
 
     private static ValidateOptionsResult ValidatePolicyOptions(
         PosHandheldUpdatePolicyOptions options) =>
         new PosHandheldUpdatePolicyOptionsValidator().Validate(null, options);
 
-    private async Task InsertBuildAsync(
+    private async Task<MobileAppBuild> InsertBuildAsync(
         string appKey,
         string projectName,
         string buildId,
@@ -986,8 +1287,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
         string downloadUrl,
         DateTime completedAt)
     {
-        await db.Insertable(
-            new MobileAppBuild
+        var entity = new MobileAppBuild
             {
                 Id = Guid.NewGuid(),
                 AppKey = appKey,
@@ -1008,8 +1308,9 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
                 ExpirationDate = new DateTime(2099, 8, 10, 0, 0, 0, DateTimeKind.Utc),
                 ReceivedAt = completedAt,
                 CreatedAt = completedAt,
-            }
-        ).ExecuteCommandAsync();
+            };
+        await db.Insertable(entity).ExecuteCommandAsync();
+        return entity;
     }
 
     private static MobileAppOtaUpdateUpsertDto CreateOta(

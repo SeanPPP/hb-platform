@@ -215,6 +215,7 @@ public sealed partial class PosHandheldUpdatePolicyOptionsValidator
 
 internal static class PosHandheldIosUpdateIdentity
 {
+    private const long JavaScriptSafeIntegerMax = 9007199254740991;
     internal const string BundleIdentifier = "com.hbweb.poshandheld";
 
     internal static string Normalize(string? value) => (value ?? string.Empty).Trim();
@@ -225,6 +226,16 @@ internal static class PosHandheldIosUpdateIdentity
     internal static bool IsValidAppStoreId(string value) =>
         value.Length is >= 5 and <= 20
         && value.All(character => character is >= '0' and <= '9');
+
+    internal static bool IsValidBuildNumber(string? value)
+    {
+        var normalized = Normalize(value);
+        return normalized.Length is > 0 and <= 16
+            && normalized[0] != '0'
+            && normalized.All(character => character is >= '0' and <= '9')
+            && long.TryParse(normalized, out var build)
+            && build is > 0 and <= JavaScriptSafeIntegerMax;
+    }
 
     internal static bool CanProduceRequiredDecision(
         PosHandheldUpdatePolicyOptions options) =>

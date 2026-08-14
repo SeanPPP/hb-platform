@@ -198,3 +198,68 @@ public sealed class PosIpadOtaRolloutTarget : BaseEntity
     [SugarColumn(Length = 100, IsNullable = false)]
     public string StoreGuid { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// 手持 POS 单条发布 lane 的当前策略。四条 lane 各自只有一行，缺行代表继续使用旧配置。
+/// </summary>
+[SugarTable("PosHandheldUpdatePolicy")]
+public sealed class PosHandheldUpdatePolicy : BaseEntity
+{
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = false)]
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    [SugarColumn(Length = 32, IsNullable = false)]
+    public string Lane { get; set; } = string.Empty;
+
+    [SugarColumn(IsNullable = false)]
+    public bool Enabled { get; set; }
+
+    [SugarColumn(IsNullable = false)]
+    public bool Required { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public Guid? CandidateId { get; set; }
+
+    /// <summary>
+    /// 激活时对候选不可变身份生成的 SHA-256；决策时重新计算，防止 webhook 更新原行后静默漂移。
+    /// </summary>
+    [SugarColumn(Length = 64, IsNullable = true)]
+    public string? CandidateFingerprint { get; set; }
+
+    [SugarColumn(Length = 64, IsNullable = true)]
+    public string? MinimumSupportedVersion { get; set; }
+
+    [SugarColumn(IsNullable = true)]
+    public int? MinimumSupportedBuildNumber { get; set; }
+
+    [SugarColumn(Length = 1000, IsNullable = true)]
+    public string? ReleaseMessage { get; set; }
+
+    [SugarColumn(IsNullable = false)]
+    public long PolicyVersion { get; set; }
+}
+
+/// <summary>
+/// 手持 POS 策略追加式审计。每次真实变化写入完整快照，禁止业务代码更新或删除。
+/// </summary>
+[SugarTable("PosHandheldUpdatePolicyRevision")]
+public sealed class PosHandheldUpdatePolicyRevision : BaseEntity
+{
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = false)]
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    [SugarColumn(IsNullable = false)]
+    public Guid PolicyId { get; set; }
+
+    [SugarColumn(Length = 32, IsNullable = false)]
+    public string Lane { get; set; } = string.Empty;
+
+    [SugarColumn(IsNullable = false)]
+    public long PolicyVersion { get; set; }
+
+    [SugarColumn(Length = 16, IsNullable = false)]
+    public string Action { get; set; } = "save";
+
+    [SugarColumn(Length = 8000, IsNullable = false)]
+    public string SnapshotJson { get; set; } = string.Empty;
+}

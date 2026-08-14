@@ -258,6 +258,102 @@ BEGIN TRY
             ON [dbo].[PosIpadOtaRolloutTarget]([RolloutId], [StoreGuid])
             WHERE [IsDeleted] = 0;
 
+    IF OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicy]', N'U') IS NULL
+    BEGIN
+        CREATE TABLE [dbo].[PosHandheldUpdatePolicy] (
+            [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_PosHandheldUpdatePolicy] PRIMARY KEY,
+            [Lane] nvarchar(32) NOT NULL,
+            [Enabled] bit NOT NULL,
+            [Required] bit NOT NULL,
+            [CandidateId] uniqueidentifier NULL,
+            [CandidateFingerprint] nvarchar(64) NULL,
+            [MinimumSupportedVersion] nvarchar(64) NULL,
+            [MinimumSupportedBuildNumber] int NULL,
+            [ReleaseMessage] nvarchar(1000) NULL,
+            [PolicyVersion] bigint NOT NULL,
+            [CreatedAt] datetime2 NOT NULL,
+            [CreatedBy] nvarchar(max) NULL,
+            [UpdatedAt] datetime2 NULL,
+            [UpdatedBy] nvarchar(max) NULL,
+            [IsDeleted] bit NOT NULL CONSTRAINT [DF_PosHandheldUpdatePolicy_IsDeleted] DEFAULT(0),
+            CONSTRAINT [CK_PosHandheldUpdatePolicy_Lane]
+                CHECK ([Lane] IN (
+                    N'android-native',
+                    N'ios-native',
+                    N'android-ota',
+                    N'ios-ota'
+                )),
+            CONSTRAINT [CK_PosHandheldUpdatePolicy_Version]
+                CHECK ([PolicyVersion] > 0),
+            CONSTRAINT [CK_PosHandheldUpdatePolicy_Candidate]
+                CHECK (
+                    ([Enabled] = 0 AND [CandidateId] IS NULL AND [CandidateFingerprint] IS NULL)
+                    OR
+                    ([Enabled] = 1 AND [CandidateId] IS NOT NULL AND [CandidateFingerprint] IS NOT NULL)
+                )
+        );
+    END;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_PosHandheldUpdatePolicy_Lane'
+          AND [object_id] = OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicy]')
+    )
+        CREATE UNIQUE INDEX [UX_PosHandheldUpdatePolicy_Lane]
+            ON [dbo].[PosHandheldUpdatePolicy]([Lane])
+            WHERE [IsDeleted] = 0;
+
+    IF OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicyRevision]', N'U') IS NULL
+    BEGIN
+        CREATE TABLE [dbo].[PosHandheldUpdatePolicyRevision] (
+            [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_PosHandheldUpdatePolicyRevision] PRIMARY KEY,
+            [PolicyId] uniqueidentifier NOT NULL,
+            [Lane] nvarchar(32) NOT NULL,
+            [PolicyVersion] bigint NOT NULL,
+            [Action] nvarchar(16) NOT NULL,
+            [SnapshotJson] nvarchar(max) NOT NULL,
+            [CreatedAt] datetime2 NOT NULL,
+            [CreatedBy] nvarchar(max) NULL,
+            [UpdatedAt] datetime2 NULL,
+            [UpdatedBy] nvarchar(max) NULL,
+            [IsDeleted] bit NOT NULL CONSTRAINT [DF_PosHandheldUpdatePolicyRevision_IsDeleted] DEFAULT(0),
+            CONSTRAINT [FK_PosHandheldUpdatePolicyRevision_Policy]
+                FOREIGN KEY ([PolicyId]) REFERENCES [dbo].[PosHandheldUpdatePolicy]([Id]),
+            CONSTRAINT [CK_PosHandheldUpdatePolicyRevision_Lane]
+                CHECK ([Lane] IN (
+                    N'android-native',
+                    N'ios-native',
+                    N'android-ota',
+                    N'ios-ota'
+                )),
+            CONSTRAINT [CK_PosHandheldUpdatePolicyRevision_Version]
+                CHECK ([PolicyVersion] > 0)
+        );
+    END;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes
+        WHERE [name] = N'UX_PosHandheldUpdatePolicyRevision_Lane_Version'
+          AND [object_id] = OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicyRevision]')
+    )
+        CREATE UNIQUE INDEX [UX_PosHandheldUpdatePolicyRevision_Lane_Version]
+            ON [dbo].[PosHandheldUpdatePolicyRevision]([Lane], [PolicyVersion]);
+
+    IF OBJECT_ID(
+        N'[dbo].[TR_PosHandheldUpdatePolicyRevision_AppendOnly]',
+        N'TR'
+    ) IS NULL
+        EXEC(N'
+            CREATE TRIGGER [dbo].[TR_PosHandheldUpdatePolicyRevision_AppendOnly]
+            ON [dbo].[PosHandheldUpdatePolicyRevision]
+            INSTEAD OF UPDATE, DELETE
+            AS
+            BEGIN
+                SET NOCOUNT ON;
+                THROW 51064, ''PosHandheldUpdatePolicyRevision is append-only.'', 1;
+            END;
+        ');
+
     COMMIT TRANSACTION;
 END TRY
 BEGIN CATCH

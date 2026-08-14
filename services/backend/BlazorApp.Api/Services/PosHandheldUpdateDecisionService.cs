@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
@@ -10,7 +11,8 @@ public sealed partial class PosHandheldUpdateDecisionService(
     IMobileAppBuildService mobileAppBuildService,
     IOptions<PosHandheldUpdatePolicyOptions> policyOptions,
     IOptions<EasWebhookOptions> easOptions,
-    ILogger<PosHandheldUpdateDecisionService> logger
+    ILogger<PosHandheldUpdateDecisionService> logger,
+    IPosHandheldUpdatePolicyService? managedPolicyService = null
 ) : IPosHandheldUpdateDecisionService
 {
     private const long JavaScriptSafeIntegerMax = 9007199254740991;
@@ -35,6 +37,37 @@ public sealed partial class PosHandheldUpdateDecisionService(
                 platform
             );
             return null;
+        }
+
+        var managedLane = managedPolicyService is null
+            ? null
+            : await managedPolicyService.ResolveManagedLaneAsync(
+                platform == "Android"
+                    ? PosHandheldUpdateLanes.AndroidNative
+                    : PosHandheldUpdateLanes.IosNative
+            );
+        if (managedLane is not null)
+        {
+            if (!managedLane.Policy.Enabled)
+            {
+                return NoNativeDecision(platform);
+            }
+
+            if (!CanEvaluate(request.StoreCode, platform, out var managedProjectName))
+            {
+                logger.LogWarning(
+                    "pos-handheld managed native update scope or EAS mapping is incomplete platform={Platform}",
+                    platform
+                );
+                return null;
+            }
+
+            return GetManagedNativeDecision(
+                request,
+                platform,
+                managedProjectName,
+                managedLane
+            );
         }
 
         if (!policyOptions.Value.Enabled)
@@ -77,6 +110,43 @@ public sealed partial class PosHandheldUpdateDecisionService(
 
         var runtimeVersion = Normalize(request.RuntimeVersion);
         var channel = Normalize(policyOptions.Value.OtaChannel).ToLowerInvariant();
+        var managedLane = managedPolicyService is null
+            ? null
+            : await managedPolicyService.ResolveManagedLaneAsync(
+                platform == "Android"
+                    ? PosHandheldUpdateLanes.AndroidOta
+                    : PosHandheldUpdateLanes.IosOta
+            );
+        if (managedLane is not null)
+        {
+            if (!managedLane.Policy.Enabled)
+            {
+                return NoOtaDecision(platform, null, channel, runtimeVersion);
+            }
+
+            if (
+                !CanEvaluate(request.StoreCode, platform, out var managedProjectName)
+                || runtimeVersion.Length == 0
+                || channel.Length == 0
+            )
+            {
+                logger.LogWarning(
+                    "pos-handheld managed OTA scope, runtime, channel, or EAS mapping is incomplete platform={Platform}",
+                    platform
+                );
+                return null;
+            }
+
+            return GetManagedOtaDecision(
+                request,
+                platform,
+                managedProjectName,
+                channel,
+                runtimeVersion,
+                managedLane
+            );
+        }
+
         if (!policyOptions.Value.Enabled)
         {
             return NoOtaDecision(platform, null, channel, runtimeVersion);
@@ -172,6 +242,257 @@ public sealed partial class PosHandheldUpdateDecisionService(
             UpdateId = update.UpdateId,
             UpdateGroupId = update.UpdateGroupId,
             ReleaseMessage = NormalizeOptional(policyOptions.Value.ReleaseMessage),
+        };
+    }
+
+    private PosHandheldNativeDecisionDto? GetManagedNativeDecision(
+        PosHandheldNativeDecisionRequest request,
+        string platform,
+        string projectName,
+        PosHandheldManagedLane managedLane
+    )
+    {
+        var policy = managedLane.Policy;
+        var belowMinimum = IsBelowMinimum(
+            request.Version,
+            request.Build,
+            policy.MinimumSupportedVersion,
+            policy.MinimumSupportedBuildNumber
+        );
+        var required = policy.Required || belowMinimum;
+        if (!managedLane.CandidateValid || managedLane.Candidate is null)
+        {
+            logger.LogWarning(
+                "pos-handheld managed native candidate is missing, stale, or unsafe lane={Lane} policyVersion={PolicyVersion}",
+                policy.Lane,
+                policy.PolicyVersion
+            );
+            return required
+                ? null
+                : NoNativeDecision(platform);
+        }
+
+        var candidate = managedLane.Candidate;
+        if (
+            !string.Equals(candidate.Platform, platform, StringComparison.Ordinal)
+            || !IsVersion(candidate.Version)
+            || !IsBuild(candidate.BuildNumber)
+        )
+        {
+            return required ? null : NoNativeDecision(platform);
+        }
+
+        if (
+            !IsUpdateAvailable(
+                request.Version,
+                request.Build,
+                candidate.Version,
+                candidate.BuildNumber
+            )
+        )
+        {
+            if (belowMinimum)
+            {
+                logger.LogWarning(
+                    "pos-handheld managed native minimum cannot be satisfied by the pinned candidate lane={Lane} policyVersion={PolicyVersion}",
+                    policy.Lane,
+                    policy.PolicyVersion
+                );
+                return null;
+            }
+
+            return NoNativeDecision(platform);
+        }
+
+        if (platform == "Android")
+        {
+            var packageName = Normalize(policyOptions.Value.AndroidPackageName);
+            var signingFingerprint = NormalizeFingerprint(
+                policyOptions.Value.AndroidSigningCertificateSha256
+            );
+            var sha256 = NormalizeFingerprint(candidate.Sha256);
+            if (
+                !string.Equals(
+                    candidate.ProjectName,
+                    projectName,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || !string.Equals(
+                    candidate.Profile,
+                    policyOptions.Value.AndroidProfile,
+                    StringComparison.Ordinal
+                )
+                || !IsTrustedHttpsUrl(candidate.ArtifactUrl)
+                || candidate.FileSize is not > 0
+                || sha256 is null
+                || signingFingerprint is null
+                || !string.Equals(
+                    candidate.PackageName,
+                    packageName,
+                    StringComparison.Ordinal
+                )
+                || !string.Equals(
+                    NormalizeFingerprint(candidate.SigningCertificateSha256),
+                    signingFingerprint,
+                    StringComparison.Ordinal
+                )
+                || !AndroidPackagePattern().IsMatch(packageName)
+            )
+            {
+                logger.LogWarning(
+                    "pos-handheld managed Android candidate identity is incomplete policyVersion={PolicyVersion}",
+                    policy.PolicyVersion
+                );
+                return required
+                    ? null
+                    : NoNativeDecision(platform);
+            }
+
+            return new PosHandheldNativeDecisionDto
+            {
+                State = required ? AppUpdateStates.Required : AppUpdateStates.Optional,
+                PolicyVersion = policy.PolicyVersion.ToString(
+                    CultureInfo.InvariantCulture
+                ),
+                Platform = "Android",
+                Required = required,
+                LatestVersion = candidate.Version,
+                LatestBuild = candidate.BuildNumber,
+                MinimumSupportedVersion = policy.MinimumSupportedVersion,
+                Distribution = "apk",
+                DownloadUrl = candidate.ArtifactUrl,
+                FileSize = candidate.FileSize,
+                Sha256 = sha256,
+                PackageName = packageName,
+                SigningCertificateSha256 = signingFingerprint,
+                ReleaseMessage = policy.ReleaseMessage,
+            };
+        }
+
+        var appStoreId = Normalize(candidate.AppStoreId);
+        var bundleIdentifier = Normalize(candidate.BundleIdentifier);
+        var downloadUrl = Normalize(candidate.ArtifactUrl);
+        if (
+            candidate.Distribution != "app-store"
+            || !string.Equals(
+                bundleIdentifier,
+                PosHandheldIosUpdateIdentity.BundleIdentifier,
+                StringComparison.Ordinal
+            )
+            || !PosHandheldIosUpdateIdentity.IsValidAppStoreId(appStoreId)
+            || !PosHandheldIosUpdateIdentity.IsValidDistributionUrl(
+                downloadUrl,
+                "app-store",
+                appStoreId
+            )
+        )
+        {
+            logger.LogWarning(
+                "pos-handheld managed iOS candidate identity is incomplete policyVersion={PolicyVersion}",
+                policy.PolicyVersion
+            );
+            return required
+                ? null
+                : NoNativeDecision(platform);
+        }
+
+        return new PosHandheldNativeDecisionDto
+        {
+            State = required ? AppUpdateStates.Required : AppUpdateStates.Optional,
+            PolicyVersion = policy.PolicyVersion.ToString(CultureInfo.InvariantCulture),
+            Platform = "iOS",
+            Required = required,
+            LatestVersion = candidate.Version,
+            LatestBuild = candidate.BuildNumber,
+            MinimumSupportedVersion = policy.MinimumSupportedVersion,
+            Distribution = "app-store",
+            DownloadUrl = downloadUrl,
+            BundleIdentifier = bundleIdentifier,
+            AppStoreId = appStoreId,
+            ReleaseMessage = policy.ReleaseMessage,
+        };
+    }
+
+    private PosHandheldOtaDecisionDto? GetManagedOtaDecision(
+        PosHandheldOtaDecisionRequest request,
+        string platform,
+        string projectName,
+        string channel,
+        string runtimeVersion,
+        PosHandheldManagedLane managedLane
+    )
+    {
+        var policy = managedLane.Policy;
+        if (!managedLane.CandidateValid || managedLane.Candidate is null)
+        {
+            logger.LogWarning(
+                "pos-handheld managed OTA candidate is missing, stale, or no longer channel head lane={Lane} policyVersion={PolicyVersion}",
+                policy.Lane,
+                policy.PolicyVersion
+            );
+            return policy.Required
+                ? null
+                : NoOtaDecision(platform, projectName, channel, runtimeVersion);
+        }
+
+        var candidate = managedLane.Candidate;
+        if (
+            !string.Equals(candidate.Platform, platform, StringComparison.Ordinal)
+            || !string.Equals(
+                candidate.ProjectName,
+                projectName,
+                StringComparison.Ordinal
+            )
+            || !string.Equals(candidate.Channel, channel, StringComparison.Ordinal)
+            || !string.Equals(
+                candidate.RuntimeVersion,
+                runtimeVersion,
+                StringComparison.Ordinal
+            )
+            || string.IsNullOrWhiteSpace(candidate.UpdateId)
+            || !Guid.TryParse(candidate.UpdateGroupId, out _)
+        )
+        {
+            logger.LogWarning(
+                "pos-handheld managed OTA request does not match pinned candidate lane={Lane} policyVersion={PolicyVersion}",
+                policy.Lane,
+                policy.PolicyVersion
+            );
+            return policy.Required
+                ? null
+                : NoOtaDecision(platform, projectName, channel, runtimeVersion);
+        }
+
+        var alreadyCurrent = string.Equals(
+                Normalize(request.CurrentUpdateId),
+                candidate.UpdateId,
+                StringComparison.Ordinal
+            )
+            || string.Equals(
+                Normalize(request.CurrentUpdateGroupId),
+                candidate.UpdateGroupId,
+                StringComparison.OrdinalIgnoreCase
+            );
+        if (alreadyCurrent)
+        {
+            return NoOtaDecision(platform, projectName, channel, runtimeVersion);
+        }
+
+        return new PosHandheldOtaDecisionDto
+        {
+            State = policy.Required
+                ? AppUpdateStates.Required
+                : AppUpdateStates.Optional,
+            PolicyVersion = policy.PolicyVersion.ToString(CultureInfo.InvariantCulture),
+            AppKey = MobileAppKeys.PosHandheld,
+            ProjectName = projectName,
+            Platform = platform,
+            Required = policy.Required,
+            Channel = candidate.Channel,
+            RuntimeVersion = candidate.RuntimeVersion,
+            UpdateId = candidate.UpdateId,
+            UpdateGroupId = candidate.UpdateGroupId,
+            ReleaseMessage = policy.ReleaseMessage,
         };
     }
 

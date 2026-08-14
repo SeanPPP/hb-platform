@@ -35,11 +35,12 @@ const transport: AppUpdatePolicyTransport = {
       signal: options?.signal,
     })
     if (url === '/api/app-update-releases/ios') {
+      const app = options?.params?.app === 'pos-handheld' ? 'pos-handheld' : 'mobile-ios'
       return {
         success: true,
         data: [{
           id: 'release-mobile',
-          app: 'mobile-ios',
+          app,
           appStoreId: '6786073002',
           bundleIdentifier: 'com.hotbargain.mobile',
           version: '1.2.0',
@@ -186,6 +187,18 @@ async function run() {
       signal: controller.signal,
     },
     '发布事实查询必须按 app 和 AU storefront 隔离，并透传 AbortSignal',
+  )
+
+  const handheldReleases = await service.getIosAppStoreReleases('pos-handheld')
+  assertEqual(
+    handheldReleases[0]?.app,
+    'pos-handheld',
+    '手持 iOS App Store 发布事实必须保留独立 app 身份',
+  )
+  assertDeepEqual(
+    calls[calls.length - 1]?.params,
+    { app: 'pos-handheld', storefront: 'au' },
+    '手持 iOS 发布事实查询必须按 pos-handheld 隔离',
   )
 
   await service.createIosAppStoreRelease({

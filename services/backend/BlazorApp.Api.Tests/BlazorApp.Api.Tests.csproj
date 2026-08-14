@@ -152,6 +152,7 @@
     <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
     <Compile Include="AppUpdatePolicyServiceTests.cs" />
     <Compile Include="PosHandheldUpdateDecisionServiceTests.cs" />
+    <Compile Include="PosHandheldUpdatePolicyServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
     <Compile Include="WpfAppReleaseTargetingServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />
