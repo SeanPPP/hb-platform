@@ -50,10 +50,11 @@ VersionInfoProductVersion={#AppVersion}
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\src\Hbpos.Client.Wpf\Resources\AppIcon.ico"; DestDir: "{app}"; DestName: "AppIcon-{#AppVersion}.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"
-Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\AppIcon-{#AppVersion}.ico"
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\AppIcon-{#AppVersion}.ico"
 
 [Run]
 ; 更新安装完成后始终以原登录用户启动，静默安装也不能跳过。
