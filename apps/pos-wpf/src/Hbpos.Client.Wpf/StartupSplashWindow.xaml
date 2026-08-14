@@ -33,13 +33,14 @@
                         HorizontalAlignment="Stretch"
                         VerticalAlignment="Center"
                         MaxWidth="364">
+                <!-- 内容区保留 60 DIP，56 DIP 品牌标识居中后四边各有 2 DIP 像素取整余量。 -->
                 <Border Width="82"
                         Height="82"
                         Background="#FFE8F0FE"
                         BorderBrush="#FFD3E2FF"
                         BorderThickness="1"
                         CornerRadius="22"
-                        Padding="13"
+                        Padding="10"
                         HorizontalAlignment="Center">
                     <Border Width="56"
                             Height="56"
@@ -47,14 +48,18 @@
                             BorderBrush="#FFD94827"
                             BorderThickness="1"
                             CornerRadius="12"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
                             SnapsToDevicePixels="True"
                             UseLayoutRounding="True"
                             AutomationProperties.AutomationId="StartupBrandMark">
+                        <!-- Display 排版会让粗体字形贴近文本边界，保留对称留白避免高 DPI 下边缘像素被裁剪。 -->
                         <TextBlock Text="HB"
                                    FontFamily="{StaticResource PosFontFamily}"
                                    FontSize="28"
                                    FontWeight="Black"
                                    Foreground="White"
+                                   Padding="2,0"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center"
                                    TextOptions.TextFormattingMode="Display"

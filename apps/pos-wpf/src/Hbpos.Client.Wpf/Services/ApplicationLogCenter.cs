@@ -63,7 +63,7 @@ internal sealed record ApplicationLogOptions(
     public static ApplicationLogOptions FromConfiguration(IConfiguration configuration, Uri apiBaseAddress)
     {
         _ = apiBaseAddress;
-        var enabled = ReadBool(configuration, "CentralLogging:Enabled", "HBPOS_LOG_CENTER_ENABLED") ?? false;
+        var enabled = ReadBool(configuration, "CentralLogging:Enabled", "HBPOS_LOG_CENTER_ENABLED") ?? true;
         var ingestUrl = ReadText(configuration, "CentralLogging:IngestUrl", "HBPOS_LOG_CENTER_INGEST_URL");
         var projectCode = ReadText(configuration, "CentralLogging:ProjectCode", "HBPOS_LOG_CENTER_PROJECT_CODE") ?? "hbpos_win";
         var environment = ReadText(configuration, "CentralLogging:Environment", "HBPOS_LOG_CENTER_ENVIRONMENT") ??

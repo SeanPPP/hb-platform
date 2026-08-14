@@ -85,7 +85,7 @@ public sealed class CentralLoggingTests
     }
 
     [Fact]
-    public void ApplicationLogOptions_requires_explicit_enabled_true_even_when_key_and_url_exist()
+    public void ApplicationLogOptions_defaults_enabled_when_key_and_url_exist()
     {
         using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
@@ -96,6 +96,30 @@ public sealed class CentralLoggingTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
+                ["CentralLogging:ApiKey"] = "configured-key",
+                ["CentralLogging:IngestUrl"] = "https://logs.example.com/api/system/logs/ingest"
+            })
+            .Build();
+
+        var options = ApplicationLogOptions.FromConfiguration(configuration, new Uri("https://pos-api.example.com/"));
+
+        Assert.True(options.Enabled);
+        Assert.True(options.IsConfigured);
+    }
+
+    [Fact]
+    public void ApplicationLogOptions_allows_explicit_false_to_disable_upload()
+    {
+        using var variables = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["HBPOS_LOG_CENTER_ENABLED"] = null,
+            ["HBPOS_LOG_CENTER_API_KEY"] = null,
+            ["HBPOS_LOG_CENTER_INGEST_URL"] = null
+        });
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CentralLogging:Enabled"] = "false",
                 ["CentralLogging:ApiKey"] = "configured-key",
                 ["CentralLogging:IngestUrl"] = "https://logs.example.com/api/system/logs/ingest"
             })
