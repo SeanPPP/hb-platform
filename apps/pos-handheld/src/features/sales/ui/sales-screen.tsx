@@ -3520,7 +3520,7 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   modalAction: {
-    flex: 1,
+    alignSelf: "stretch",
   },
   modalCancelAction: {
     marginTop: 12,

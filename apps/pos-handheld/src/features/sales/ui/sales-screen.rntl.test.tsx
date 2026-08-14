@@ -608,6 +608,59 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("320×568 折扣弹窗底部按钮使用自然高度纵向排列，避免与取消按钮重叠", async () => {
+    const compactMetrics = {
+      width: 320,
+      height: 568,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+    await act(async () => {
+      Dimensions.set({ window: compactMetrics, screen: compactMetrics });
+    });
+
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          presenter={salesPresenter}
+          showStatusStrip={false}
+        />,
+      );
+
+      await fireEvent.press(screen.getByTestId("sales-line-line-1-discount"));
+
+      for (const testID of [
+        "sales-line-discount-amount",
+        "sales-line-discount-percent",
+      ]) {
+        const actionStyle = flattenedStyle(screen.getByTestId(testID));
+        expect(actionStyle).toMatchObject({
+          alignSelf: "stretch",
+          minHeight: MIN_TOUCH_TARGET,
+        });
+        expect(actionStyle.flex).toBeUndefined();
+      }
+      expect(
+        flattenedStyle(screen.getByTestId("sales-discount-cancel")).minHeight,
+      ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
+  });
+
   it("默认不显示扫码待机文案，真实扫描和打印结果仍明确反馈", async () => {
     let publishLookupOutcome: ((event: SalesFeedbackEvent) => void) | undefined;
     const scanWorkflow: SalesWorkflowPort = {
