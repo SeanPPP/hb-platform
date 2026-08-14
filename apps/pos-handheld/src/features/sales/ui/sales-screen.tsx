@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   memo,
   useCallback,
@@ -7,6 +8,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   Modal,
@@ -131,7 +133,7 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
-  tone?: "primary" | "secondary" | "danger" | "quiet";
+  tone?: "primary" | "secondary" | "danger" | "info" | "quiet" | "warning";
   sound?: "tap" | "key" | "navigate" | "danger";
   testID?: string;
   style?: StyleProp<ViewStyle>;
@@ -218,6 +220,7 @@ export function SalesScreen({
   const [searchResultsQuery, setSearchResultsQuery] = useState<string | null>(
     null,
   );
+  const [combinedSearchPending, setCombinedSearchPending] = useState(false);
   const [utilityActionPending, setUtilityActionPending] =
     useState<SalesUtilityAction | null>(null);
   const [utilityActionResult, setUtilityActionResult] = useState<Readonly<{
@@ -248,6 +251,7 @@ export function SalesScreen({
     null,
   );
   const searchRequestGenerationRef = useRef(0);
+  const combinedSearchPendingRef = useRef(false);
   const beginNumericInputRef = useRef<() => void>(() => undefined);
   manualInputFocusChangeRef.current = onManualInputFocusChange;
   const successDrawerWarning = state.success
@@ -477,6 +481,14 @@ export function SalesScreen({
     setSearchSoftInputOnFocus(false);
   };
 
+  const openCameraScanner = (): void => {
+    resetSearchInputToHidMode();
+    searchInputRef.current?.blur();
+    // 相机路由接管扫码期间不保证触发 onBlur，主动释放手动输入焦点以恢复 HID 状态机。
+    notifyManualInputBlurred();
+    onOpenCameraScanner?.();
+  };
+
   const beginNumericInput = (): void => {
     numericInputModalActiveRef.current = true;
     resetSearchInputToHidMode();
@@ -652,17 +664,44 @@ export function SalesScreen({
     beginNumericInputRef.current();
   }, [state.phase]);
 
-  const openProductSearchDrawer = (): void => {
+  const runCombinedProductSearch = (): void => {
+    if (combinedSearchPendingRef.current) return;
     const query = state.query.trim();
     const generation = ++searchRequestGenerationRef.current;
+    combinedSearchPendingRef.current = true;
+    setCombinedSearchPending(true);
     setSearchDrawerQuery(query);
     setSearchResultsQuery(null);
-    setSearchDrawerVisible(true);
-    void presenter.searchProducts().then((searched) => {
-      if (generation === searchRequestGenerationRef.current && searched) {
+    setSearchDrawerVisible(false);
+    void presenter
+      .searchProducts()
+      .then(async (searched) => {
+        if (generation !== searchRequestGenerationRef.current) return;
+        const latest = presenter.getState();
+        if (latest.query.trim() !== query) return;
+        if (!searched) {
+          if (latest.errorCode) setSearchDrawerVisible(true);
+          return;
+        }
+
         setSearchResultsQuery(query);
-      }
-    });
+        if (latest.searchResults.length !== 1) {
+          setSearchDrawerVisible(true);
+          return;
+        }
+
+        const added = await presenter.addProduct(latest.searchResults[0]!);
+        if (generation !== searchRequestGenerationRef.current || added) return;
+        if (presenter.getState().query.trim() === query) {
+          setSearchResultsQuery(query);
+          setSearchDrawerVisible(true);
+        }
+      })
+      .finally(() => {
+        if (generation !== searchRequestGenerationRef.current) return;
+        combinedSearchPendingRef.current = false;
+        setCombinedSearchPending(false);
+      });
   };
 
   const runUtilityAction = (
@@ -1175,10 +1214,22 @@ export function SalesScreen({
         >
           {/* 键盘感知合同要求输入保持在滚动容器的词法子树；HID/软键盘状态机沿用原回调。 */}
           <HandheldSection
+            action={
+              onOpenCameraScanner ? (
+                <CatalogIconButton
+                  accessibilityLabel={t("catalog.camera")}
+                  disabled={catalogActionsDisabled}
+                  icon="camera-outline"
+                  iconTestID="sales-camera-icon"
+                  onPress={openCameraScanner}
+                  testID="sales-open-camera-scanner"
+                />
+              ) : undefined
+            }
             testID="sales-product-entry"
             title={t("functions.productEntry")}
           >
-            <View style={styles.searchInputRow}>
+            <View style={styles.searchInputRow} testID="sales-search-input-row">
               <PosKeyboardAwareTextInput
                 ref={searchInputRef}
                 accessibilityLabel={t("catalog.searchPlaceholder")}
@@ -1202,35 +1253,28 @@ export function SalesScreen({
                 testID="sales-search-input"
                 value={state.query}
               />
-              <ActionButton
+              <CatalogIconButton
+                accessibilityLabel={t("catalog.searchAndAdd")}
+                disabled={catalogActionsDisabled || combinedSearchPending}
+                icon="magnify"
+                iconTestID="sales-search-icon"
+                loading={combinedSearchPending}
+                onPress={runCombinedProductSearch}
+                testID="sales-search-button"
+              />
+              <CatalogIconButton
+                accessibilityLabel={t("catalog.keyboard")}
                 disabled={catalogActionsDisabled}
-                label={t("catalog.keyboard")}
+                icon="keyboard-outline"
+                iconTestID="sales-keyboard-icon"
                 onPress={requestSearchKeyboard}
-                sound="navigate"
-                style={styles.searchKeyboardAction}
                 testID="sales-show-keyboard"
-                tone="secondary"
               />
             </View>
-            <View style={styles.searchActions}>
-              <ActionButton
-                disabled={catalogActionsDisabled}
-                label={t("catalog.search")}
-                onPress={openProductSearchDrawer}
-                sound="navigate"
-                style={styles.searchAction}
-                testID="sales-search-button"
-                tone="secondary"
-              />
-              <ActionButton
-                disabled={catalogActionsDisabled}
-                label={t("catalog.addCode")}
-                onPress={() => {
-                  void presenter.addLookupCode();
-                }}
-                style={styles.searchAction}
-                testID="sales-add-code-button"
-              />
+            <View
+              style={styles.searchActions}
+              testID="sales-product-entry-actions"
+            >
               <ActionButton
                 disabled={catalogActionsDisabled}
                 label={t("catalog.openItem")}
@@ -1242,19 +1286,8 @@ export function SalesScreen({
                 sound="navigate"
                 style={styles.searchAction}
                 testID="sales-open-item-button"
-                tone="secondary"
+                tone="warning"
               />
-              {onOpenCameraScanner ? (
-                <ActionButton
-                  disabled={catalogActionsDisabled}
-                  label={t("catalog.camera")}
-                  onPress={onOpenCameraScanner}
-                  sound="navigate"
-                  style={styles.searchAction}
-                  testID="sales-open-camera-scanner"
-                  tone="secondary"
-                />
-              ) : null}
               {onOpenSpecialProducts ? (
                 <ActionButton
                   disabled={catalogActionsDisabled}
@@ -1263,11 +1296,10 @@ export function SalesScreen({
                   sound="navigate"
                   style={styles.searchAction}
                   testID="sales-open-special-products"
-                  tone="secondary"
+                  tone="info"
                 />
               ) : null}
             </View>
-            <Text style={styles.scanHint}>{t("catalog.scanHint")}</Text>
             {state.pendingLookupCount > 0 || checkoutVerifying ? (
               <Text
                 accessibilityLiveRegion="polite"
@@ -2664,11 +2696,65 @@ function ActionButton({
           styles.actionButtonText,
           (tone === "quiet" || tone === "secondary") && styles.quietButtonText,
           tone === "danger" && styles.dangerButtonText,
+          tone === "info" && styles.infoButtonText,
+          tone === "warning" && styles.warningButtonText,
           disabled && styles.actionButtonTextDisabled,
         ]}
       >
         {label}
       </Text>
+    </PosPressable>
+  );
+}
+
+function CatalogIconButton({
+  accessibilityLabel,
+  disabled,
+  icon,
+  iconTestID,
+  loading = false,
+  onPress,
+  testID,
+}: Readonly<{
+  accessibilityLabel: string;
+  disabled: boolean;
+  icon: "camera-outline" | "keyboard-outline" | "magnify";
+  iconTestID: string;
+  loading?: boolean;
+  onPress(): void;
+  testID: string;
+}>) {
+  return (
+    <PosPressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      accessibilityState={{ busy: loading, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      sound="navigate"
+      style={({ pressed }) => [
+        styles.actionButton,
+        actionToneStyles.secondary,
+        styles.searchIconAction,
+        disabled && styles.actionButtonDisabled,
+        pressed && !disabled && styles.actionButtonPressed,
+      ]}
+      testID={testID}
+    >
+      {loading ? (
+        <ActivityIndicator
+          color={posColors.ink}
+          size="small"
+          testID="sales-search-progress"
+        />
+      ) : (
+        <MaterialCommunityIcons
+          color={posColors.ink}
+          name={icon}
+          size={24}
+          testID={iconTestID}
+        />
+      )}
     </PosPressable>
   );
 }
@@ -2777,6 +2863,10 @@ const actionToneStyles = StyleSheet.create({
     backgroundColor: posColors.redSoft,
     borderColor: posColors.red,
   },
+  info: {
+    backgroundColor: posColors.blueSoft,
+    borderColor: posColors.blue,
+  },
   primary: {
     backgroundColor: posColors.orange,
     borderColor: posColors.orange,
@@ -2788,6 +2878,10 @@ const actionToneStyles = StyleSheet.create({
   secondary: {
     backgroundColor: posColors.surface,
     borderColor: posColors.ink,
+  },
+  warning: {
+    backgroundColor: posColors.yellowSoft,
+    borderColor: posColors.yellow,
   },
 });
 
@@ -3135,6 +3229,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 8,
   },
+  infoButtonText: {
+    color: posColors.blue,
+  },
   errorBanner: {
     alignItems: "center",
     backgroundColor: posColors.redSoft,
@@ -3454,6 +3551,9 @@ const styles = StyleSheet.create({
   quietButtonText: {
     color: posColors.ink,
   },
+  warningButtonText: {
+    color: posColors.ink,
+  },
   runtimeBanner: {
     backgroundColor: posColors.blueSoft,
     borderBottomColor: posColors.blue,
@@ -3501,11 +3601,6 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "column",
     minHeight: 0,
-  },
-  scanHint: {
-    color: posColors.mutedInk,
-    fontSize: 11,
-    lineHeight: 16,
   },
   searchAction: {
     flexBasis: "47%",
@@ -3587,6 +3682,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     height: 48,
+    minWidth: 0,
     paddingHorizontal: 12,
   },
   searchInputRow: {
@@ -3594,8 +3690,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
-  searchKeyboardAction: {
-    paddingHorizontal: 10,
+  searchIconAction: {
+    height: 48,
+    paddingHorizontal: 0,
+    width: 48,
   },
   searchMessage: {
     color: posColors.mutedInk,
