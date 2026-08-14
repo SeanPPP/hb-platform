@@ -99,10 +99,6 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    // 先为本次可能的新商品批量取快照；最终只会为实际插入的商品写历史。
-                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
-                        candidateProductCodes
-                    );
                     for (var index = 0; index < details.Count; index++)
                     {
                         var detail = details[index];
@@ -120,7 +116,6 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     await RecordCreatedLocalProductHistoryAsync(
-                        beforeSnapshots,
                         syncItems,
                         invoiceGuid,
                         auditBatchGuid,
@@ -281,10 +276,6 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    // 先为本次可能的新商品批量取快照；最终只会为实际插入的商品写历史。
-                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
-                        candidateProductCodes
-                    );
                     for (var index = 0; index < details.Count; index++)
                     {
                         var detail = details[index];
@@ -301,7 +292,6 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     await RecordCreatedLocalProductHistoryAsync(
-                        beforeSnapshots,
                         updateItems,
                         invoiceGuid,
                         auditBatchGuid,
@@ -536,7 +526,6 @@ namespace BlazorApp.Api.Services.React
         }
 
         private async Task RecordCreatedLocalProductHistoryAsync(
-            IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
             IEnumerable<PreparedSyncItem> preparedItems,
             string invoiceGuid,
             Guid batchGuid,
@@ -544,25 +533,30 @@ namespace BlazorApp.Api.Services.React
             string actorName
         )
         {
-            var createdProductCodes = preparedItems
+            var createdProducts = preparedItems
                 .Where(item => item.IsNewProduct && !string.IsNullOrWhiteSpace(item.Product.ProductCode))
-                .Select(item => item.Product.ProductCode!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .GroupBy(item => item.Product.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First().Product)
                 .ToList();
-            if (createdProductCodes.Count == 0)
+            if (createdProducts.Count == 0)
             {
                 return;
             }
 
-            var createdCodeSet = createdProductCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var createdBeforeSnapshots = beforeSnapshots
-                .Where(pair => createdCodeSet.Contains(pair.Key))
-                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-            var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(createdProductCodes);
+            // 候选编码只会分配给本流程刚插入的 Product，因此创建前必定为空；直接从内存实体
+            // 构造创建后快照，避免本地事务内再读取三张商品表并扩大锁范围。
+            var beforeSnapshots = new Dictionary<string, WarehouseProductChangeSnapshotDto>(
+                StringComparer.OrdinalIgnoreCase
+            );
+            var afterSnapshots = createdProducts.ToDictionary(
+                product => product.ProductCode!,
+                CreateCreatedProductSnapshot,
+                StringComparer.OrdinalIgnoreCase
+            );
 
             // 历史服务在同一本地事务内落库；一旦失败，商品主档、明细和分店价格全部回滚。
             await _changeHistoryService.RecordChangesAsync(
-                createdBeforeSnapshots,
+                beforeSnapshots,
                 afterSnapshots,
                 new WarehouseProductChangeHistoryContextDto
                 {
@@ -576,6 +570,53 @@ namespace BlazorApp.Api.Services.React
                     OccurredAtUtc = DateTime.UtcNow,
                 }
             );
+        }
+
+        private static WarehouseProductChangeSnapshotDto CreateCreatedProductSnapshot(Product product)
+        {
+            var productCode = product.ProductCode;
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                throw new InvalidOperationException("新建商品历史快照的商品编码不能为空");
+            }
+
+            var productSource = new WarehouseProductChangeSourceValuesDto
+            {
+                ImportPrice = product.PurchasePrice,
+                RetailPrice = product.RetailPrice,
+                LocalSupplierCode = product.LocalSupplierCode,
+                ProductName = product.ProductName,
+                EnglishName = product.EnglishName,
+                ItemNumber = product.ItemNumber,
+                Barcode = product.Barcode,
+                ProductType = product.ProductType,
+                ProductCategoryGuid = product.ProductCategoryGUID,
+                WarehouseCategoryGuid = product.WarehouseCategoryGUID,
+                MiddlePackageQuantity = product.MiddlePackageQuantity,
+                ProductImage = product.ProductImage,
+                IsAutoPricing = product.IsAutoPricing,
+                IsActive = product.IsActive,
+            };
+
+            return new WarehouseProductChangeSnapshotDto
+            {
+                ProductCode = productCode,
+                ProductSource = productSource,
+                ImportPrice = productSource.ImportPrice,
+                RetailPrice = productSource.RetailPrice,
+                LocalSupplierCode = productSource.LocalSupplierCode,
+                ProductName = productSource.ProductName,
+                EnglishName = productSource.EnglishName,
+                ItemNumber = productSource.ItemNumber,
+                Barcode = productSource.Barcode,
+                ProductType = productSource.ProductType,
+                ProductCategoryGuid = productSource.ProductCategoryGuid,
+                WarehouseCategoryGuid = productSource.WarehouseCategoryGuid,
+                MiddlePackageQuantity = productSource.MiddlePackageQuantity,
+                ProductImage = productSource.ProductImage,
+                IsAutoPricing = productSource.IsAutoPricing,
+                IsActive = productSource.IsActive,
+            };
         }
 
         private async Task UpsertLocalStorePricesAsync(

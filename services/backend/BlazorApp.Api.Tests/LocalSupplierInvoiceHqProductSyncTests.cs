@@ -923,7 +923,38 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             IsDeleted = false,
         });
 
-        var result = await CreateSyncService().EnsureHqProductsAsync(
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? capturedBeforeSnapshots = null;
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? capturedAfterSnapshots = null;
+        WarehouseProductChangeHistoryContextDto? capturedContext = null;
+        var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
+        historyService
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.Is<WarehouseProductChangeHistoryContextDto>(context =>
+                    context.Action == "Create"
+                    && context.Source == "LocalSupplierInvoiceHqProductSync"
+                    && context.SourceReference == "invoice-1"
+                    && context.BatchGuid.HasValue
+                    && context.ActorUserGuid == null
+                    && context.ActorName == "tester"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
+                WarehouseProductChangeHistoryContextDto,
+                CancellationToken
+            >((before, after, context, _) =>
+            {
+                capturedBeforeSnapshots = before;
+                capturedAfterSnapshots = after;
+                capturedContext = context;
+            })
+            .ReturnsAsync(1);
+
+        var result = await CreateSyncService(historyService.Object).EnsureHqProductsAsync(
             "invoice-1",
             new EnsureHqProductsRequest
             {
@@ -941,6 +972,21 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
             .FirstAsync(x => x.DetailGUID == "detail-1");
         Assert.False(string.IsNullOrWhiteSpace(detail.ProductCode));
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == detail.ProductCode);
+
+        Assert.NotNull(capturedBeforeSnapshots);
+        Assert.Empty(capturedBeforeSnapshots);
+        Assert.NotNull(capturedAfterSnapshots);
+        var createdSnapshot = Assert.Single(capturedAfterSnapshots);
+        Assert.Equal(product.ProductCode, createdSnapshot.Key);
+        AssertCreatedProductSnapshot(product, createdSnapshot.Value);
+        Assert.NotNull(capturedContext);
+        historyService.Verify(service => service.CaptureSnapshotsAsync(
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Never);
+        historyService.VerifyAll();
 
         var localPrices = await _localDb.Queryable<StoreRetailPrice>()
             .Where(x => x.ProductCode == detail.ProductCode)
@@ -984,18 +1030,10 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             IsDeleted = false,
         });
 
-        var capturedCodes = new List<IReadOnlyCollection<string>>();
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? capturedBeforeSnapshots = null;
+        IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? capturedAfterSnapshots = null;
         WarehouseProductChangeHistoryContextDto? capturedContext = null;
         var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
-        historyService
-            .Setup(service => service.CaptureSnapshotsAsync(
-                It.IsAny<IEnumerable<string>>(),
-                It.IsAny<CancellationToken>()
-            ))
-            .Callback<IEnumerable<string>, CancellationToken>((codes, _) =>
-                capturedCodes.Add(codes.ToArray())
-            )
-            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
         historyService
             .Setup(service => service.RecordChangesAsync(
                 It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
@@ -1015,7 +1053,12 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
                 IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>,
                 WarehouseProductChangeHistoryContextDto,
                 CancellationToken
-            >((_, _, context, _) => capturedContext = context)
+            >((before, after, context, _) =>
+            {
+                capturedBeforeSnapshots = before;
+                capturedAfterSnapshots = after;
+                capturedContext = context;
+            })
             .ReturnsAsync(1);
 
         var result = await CreateSyncService(historyService.Object).UpdateHqProductsAsync(
@@ -1033,9 +1076,17 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.True(result.Success, BuildFailureMessage(result));
         var product = await _localDb.Queryable<Product>()
             .SingleAsync(item => item.ItemNumber == "ITEM-HISTORY");
-        Assert.Equal(2, capturedCodes.Count);
-        Assert.Contains(product.ProductCode!, capturedCodes[1]);
+        Assert.NotNull(capturedBeforeSnapshots);
+        Assert.Empty(capturedBeforeSnapshots);
+        Assert.NotNull(capturedAfterSnapshots);
+        var createdSnapshot = Assert.Single(capturedAfterSnapshots);
+        Assert.Equal(product.ProductCode, createdSnapshot.Key);
+        AssertCreatedProductSnapshot(product, createdSnapshot.Value);
         Assert.NotNull(capturedContext);
+        historyService.Verify(service => service.CaptureSnapshotsAsync(
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Never);
         historyService.VerifyAll();
     }
 
@@ -1061,12 +1112,6 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         });
 
         var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
-        historyService
-            .Setup(service => service.CaptureSnapshotsAsync(
-                It.IsAny<IEnumerable<string>>(),
-                It.IsAny<CancellationToken>()
-            ))
-            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
 
         var result = await CreateSyncService(historyService.Object).EnsureHqProductsAsync(
             "invoice-existing-history",
@@ -1079,6 +1124,10 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         );
 
         Assert.True(result.Success, BuildFailureMessage(result));
+        historyService.Verify(service => service.CaptureSnapshotsAsync(
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Never);
         historyService.Verify(service => service.RecordChangesAsync(
             It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
             It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
@@ -1108,12 +1157,6 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var historyService = new Mock<IWarehouseProductChangeHistoryService>(MockBehavior.Strict);
         historyService
-            .Setup(service => service.CaptureSnapshotsAsync(
-                It.IsAny<IEnumerable<string>>(),
-                It.IsAny<CancellationToken>()
-            ))
-            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
-        historyService
             .Setup(service => service.RecordChangesAsync(
                 It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
                 It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
@@ -1133,12 +1176,18 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         );
 
         Assert.False(result.Success);
+        historyService.Verify(service => service.CaptureSnapshotsAsync(
+            It.IsAny<IEnumerable<string>>(),
+            It.IsAny<CancellationToken>()
+        ), Times.Never);
         Assert.Equal(
             0,
             await _localDb.Queryable<Product>()
                 .Where(item => item.ItemNumber == "ITEM-HISTORY-ROLLBACK")
                 .CountAsync()
         );
+        Assert.Equal(0, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
         historyService.VerifyAll();
     }
 
@@ -1388,6 +1437,47 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         return errors == null
             ? result.Message
             : $"{result.Message}: {string.Join("; ", errors.Select(x => $"{x.DetailGuid}/{x.StoreCode}: {x.Message}"))}";
+    }
+
+    private static void AssertCreatedProductSnapshot(
+        Product product,
+        WarehouseProductChangeSnapshotDto snapshot
+    )
+    {
+        Assert.Equal(product.ProductCode, snapshot.ProductCode);
+        Assert.Equal(product.PurchasePrice, snapshot.ImportPrice);
+        Assert.Equal(product.RetailPrice, snapshot.RetailPrice);
+        Assert.Equal(product.LocalSupplierCode, snapshot.LocalSupplierCode);
+        Assert.Equal(product.ProductName, snapshot.ProductName);
+        Assert.Equal(product.EnglishName, snapshot.EnglishName);
+        Assert.Equal(product.ItemNumber, snapshot.ItemNumber);
+        Assert.Equal(product.Barcode, snapshot.Barcode);
+        Assert.Equal(product.ProductType, snapshot.ProductType);
+        Assert.Equal(product.ProductCategoryGUID, snapshot.ProductCategoryGuid);
+        Assert.Equal(product.WarehouseCategoryGUID, snapshot.WarehouseCategoryGuid);
+        Assert.Equal(product.MiddlePackageQuantity, snapshot.MiddlePackageQuantity);
+        Assert.Equal(product.ProductImage, snapshot.ProductImage);
+        Assert.Equal(product.IsAutoPricing, snapshot.IsAutoPricing);
+        Assert.Equal(product.IsActive, snapshot.IsActive);
+        Assert.False(snapshot.WarehouseProductExists);
+        Assert.Null(snapshot.WarehouseSource);
+        Assert.Null(snapshot.DomesticSource);
+
+        var productSource = Assert.IsType<WarehouseProductChangeSourceValuesDto>(snapshot.ProductSource);
+        Assert.Equal(snapshot.ImportPrice, productSource.ImportPrice);
+        Assert.Equal(snapshot.RetailPrice, productSource.RetailPrice);
+        Assert.Equal(snapshot.LocalSupplierCode, productSource.LocalSupplierCode);
+        Assert.Equal(snapshot.ProductName, productSource.ProductName);
+        Assert.Equal(snapshot.EnglishName, productSource.EnglishName);
+        Assert.Equal(snapshot.ItemNumber, productSource.ItemNumber);
+        Assert.Equal(snapshot.Barcode, productSource.Barcode);
+        Assert.Equal(snapshot.ProductType, productSource.ProductType);
+        Assert.Equal(snapshot.ProductCategoryGuid, productSource.ProductCategoryGuid);
+        Assert.Equal(snapshot.WarehouseCategoryGuid, productSource.WarehouseCategoryGuid);
+        Assert.Equal(snapshot.MiddlePackageQuantity, productSource.MiddlePackageQuantity);
+        Assert.Equal(snapshot.ProductImage, productSource.ProductImage);
+        Assert.Equal(snapshot.IsAutoPricing, productSource.IsAutoPricing);
+        Assert.Equal(snapshot.IsActive, productSource.IsActive);
     }
 
     private async Task SeedStoreAsync(string storeCode, bool active)
