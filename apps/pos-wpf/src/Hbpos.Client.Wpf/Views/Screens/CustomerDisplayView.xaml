@@ -46,9 +46,7 @@
         </Style>
     </UserControl.Resources>
 
-    <Viewbox HorizontalAlignment="Center"
-             VerticalAlignment="Center"
-             Stretch="Uniform"
+    <Viewbox Stretch="Uniform"
              StretchDirection="Both"
              UseLayoutRounding="True"
              SnapsToDevicePixels="True">

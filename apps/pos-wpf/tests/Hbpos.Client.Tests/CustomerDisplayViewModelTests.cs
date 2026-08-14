@@ -76,8 +76,8 @@ public sealed class CustomerDisplayViewModelTests
         var viewbox = Assert.Single(userControl.Elements(presentation + "Viewbox"));
         var designCanvas = Assert.Single(viewbox.Elements(presentation + "Grid"));
 
-        Assert.Equal("Center", viewbox.Attribute("HorizontalAlignment")?.Value);
-        Assert.Equal("Center", viewbox.Attribute("VerticalAlignment")?.Value);
+        Assert.Null(viewbox.Attribute("HorizontalAlignment"));
+        Assert.Null(viewbox.Attribute("VerticalAlignment"));
         Assert.Equal("Uniform", viewbox.Attribute("Stretch")?.Value);
         Assert.Equal("Both", viewbox.Attribute("StretchDirection")?.Value);
         Assert.Equal("1366", designCanvas.Attribute("Width")?.Value);
