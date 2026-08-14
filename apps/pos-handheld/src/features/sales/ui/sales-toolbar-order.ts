@@ -1,31 +1,71 @@
 export type SalesToolbarActionId =
-  | "held-orders"
-  | "daily-close"
+  | "hold"
+  | "merge-cart"
   | "returns"
+  | "local-history"
+  | "held-orders"
+  | "reprint-receipt"
+  | "cash-drawer"
+  | "daily-close"
   | "remote-history"
   | "installments"
   | "settings"
   | "attendance-audit"
   | "sync-history"
   | "catalog-maintenance"
-  | "hold"
   | "language"
   | "lock";
 
 export const DEFAULT_SALES_TOOLBAR_ORDER = [
-  "held-orders",
-  "daily-close",
+  "hold",
+  "merge-cart",
   "returns",
+  "local-history",
+  "held-orders",
+  "reprint-receipt",
+  "cash-drawer",
+  "daily-close",
   "remote-history",
   "installments",
   "sync-history",
   "catalog-maintenance",
   "attendance-audit",
   "settings",
-  "hold",
   "language",
   "lock",
 ] as const satisfies readonly SalesToolbarActionId[];
+
+const LEGACY_DEFAULT_SALES_TOOLBAR_ORDERS: readonly (readonly string[])[] = [
+  [
+    "held-orders",
+    "daily-close",
+    "returns",
+    "remote-history",
+    "installments",
+    "sync-history",
+    "catalog-maintenance",
+    "attendance-audit",
+    "settings",
+    "hold",
+    "language",
+    "lock",
+  ],
+  [
+    "held-orders",
+    "daily-close",
+    "returns",
+    "special-products",
+    "remote-history",
+    "installments",
+    "sync-history",
+    "catalog-maintenance",
+    "attendance-audit",
+    "settings",
+    "hold",
+    "language",
+    "lock",
+  ],
+];
 
 const salesToolbarActionIds = new Set<string>(DEFAULT_SALES_TOOLBAR_ORDER);
 
@@ -35,6 +75,16 @@ const salesToolbarActionIds = new Set<string>(DEFAULT_SALES_TOOLBAR_ORDER);
 export function reconcileSalesToolbarOrder(
   stored: readonly string[] | null | undefined,
 ): SalesToolbarActionId[] {
+  // 仅迁移旧版原始默认值；任何真实用户重排仍按原相对顺序保留。
+  if (
+    stored &&
+    LEGACY_DEFAULT_SALES_TOOLBAR_ORDERS.some((legacyOrder) =>
+      hasSameStringOrder(stored, legacyOrder),
+    )
+  ) {
+    return [...DEFAULT_SALES_TOOLBAR_ORDER];
+  }
+
   const seen = new Set<SalesToolbarActionId>();
   const reconciled: SalesToolbarActionId[] = [];
 
@@ -127,4 +177,14 @@ function findReconciliationAnchor(
     if (currentIndex >= 0) return currentIndex;
   }
   return -1;
+}
+
+function hasSameStringOrder(
+  first: readonly string[],
+  second: readonly string[],
+): boolean {
+  return (
+    first.length === second.length &&
+    first.every((value, index) => value === second[index])
+  );
 }

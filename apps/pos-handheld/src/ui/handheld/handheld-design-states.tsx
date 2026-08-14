@@ -44,7 +44,7 @@ export const handheldDesignStates = [
   { id: "40", slug: "transaction-settings" },
   { id: "41", slug: "required-update" },
   { id: "42", slug: "update-recovery" },
-  { id: "43", slug: "pda-scan-ready" },
+  { id: "43", slug: "pda-sales-input" },
   { id: "44", slug: "pda-scan-result" },
   { id: "45", slug: "pda-printer-connect" },
   { id: "46", slug: "pda-print-drawer-result" },

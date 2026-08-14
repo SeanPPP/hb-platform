@@ -3,15 +3,18 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Image,
   Modal,
+  PanResponder,
   StyleSheet,
   Text,
   View,
@@ -54,7 +57,7 @@ import {
 import type { CartLine, CartSnapshot } from "@/core/contracts";
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
 import {
-  PosKeyboardAwareScrollView,
+  PosKeyboardAwareFlatList,
   PosKeyboardAwareTextInput,
 } from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
@@ -75,6 +78,8 @@ import { posColors } from "@/ui/theme";
 const QUICK_DISCOUNTS = [0, 1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const QUICK_ORDER_DISCOUNTS = [1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const AVERAGE_CART_LINE_HEIGHT = 128;
+const CART_LINE_REMOVE_ACTION_WIDTH = 96;
+const CART_LINE_SWIPE_ACTIVATION_DISTANCE = 12;
 
 type LineEditMode =
   "quantity" | "price" | "discount-amount" | "discount-percent";
@@ -258,6 +263,10 @@ export function SalesScreen({
     ? drawerWarningCopyKey(state.success.drawerDisposition)
     : null;
   const cartEmpty = state.cart.lines.length === 0;
+  const displayedCartLines = useMemo(
+    () => [...state.cart.lines].reverse(),
+    [state.cart.lines],
+  );
   const searchResultsAreCurrent =
     state.searchStatus === "ready" &&
     searchResultsQuery !== null &&
@@ -282,6 +291,7 @@ export function SalesScreen({
     checkoutVerifying ||
     newTransactionBlocked;
   // 窄屏成功页优先保证找零金额完整可读，390×844 及以上保持原有视觉尺度。
+  const compactSalesLayout = windowWidth <= 360;
   const compactSuccessLayout = windowWidth <= 360 || windowHeight <= 640;
   const selectedCartActionLine = cartItemActionsLineId
     ? (state.cart.lines.find((line) => line.lineId === cartItemActionsLineId) ??
@@ -368,7 +378,7 @@ export function SalesScreen({
         cartListRef.current?.scrollToIndex({
           animated: true,
           index: info.index,
-          viewPosition: 1,
+          viewPosition: 0,
         });
       }, 32);
     },
@@ -386,7 +396,9 @@ export function SalesScreen({
       cartRevealIndexRef.current = null;
       return;
     }
-    const index = state.cart.lines.findIndex((line) => line.lineId === lineId);
+    const index = displayedCartLines.findIndex(
+      (line) => line.lineId === lineId,
+    );
     if (index < 0) {
       cartRevealIndexRef.current = null;
       return;
@@ -395,9 +407,9 @@ export function SalesScreen({
     cartListRef.current?.scrollToIndex({
       animated: true,
       index,
-      viewPosition: 1,
+      viewPosition: 0,
     });
-  }, [state.cart.lines, state.revealLineId, state.revealRevision]);
+  }, [displayedCartLines, state.revealLineId, state.revealRevision]);
 
   useEffect(
     () => () => {
@@ -832,25 +844,31 @@ export function SalesScreen({
 
   const renderCartLine = useCallback(
     ({ item, index }: ListRenderItemInfo<CartLine>) => (
-      <CartLineRow
-        disabled={!state.capabilities.cartEditing || transactionActionsDisabled}
-        index={index}
-        isSelected={state.selectedLineId === item.lineId}
-        item={item}
-        locale={locale}
-        onDecrease={handleDecreaseCartLine}
-        onDiscount={setDiscountLineId}
-        onEdit={openLineEditor}
-        onIncrease={handleIncreaseCartLine}
-        onRemove={handleRemoveCartLine}
-        onSelect={handleSelectCartLine}
-        {...(resolveCartProductImage
-          ? { resolveProductImage: resolveCartProductImage }
-          : {})}
-        t={t}
-      />
+      <View style={styles.cartListItem}>
+        <CartLineRow
+          compact={compactSalesLayout}
+          disabled={
+            !state.capabilities.cartEditing || transactionActionsDisabled
+          }
+          index={index}
+          isSelected={state.selectedLineId === item.lineId}
+          item={item}
+          locale={locale}
+          onDecrease={handleDecreaseCartLine}
+          onDiscount={setDiscountLineId}
+          onEdit={openLineEditor}
+          onIncrease={handleIncreaseCartLine}
+          onRemove={handleRemoveCartLine}
+          onSelect={handleSelectCartLine}
+          {...(resolveCartProductImage
+            ? { resolveProductImage: resolveCartProductImage }
+            : {})}
+          t={t}
+        />
+      </View>
     ),
     [
+      compactSalesLayout,
       locale,
       handleDecreaseCartLine,
       handleIncreaseCartLine,
@@ -1002,6 +1020,82 @@ export function SalesScreen({
     !state.capabilities.cashCheckout;
   const cashDraft = deriveCashDraft(state.cart, state.cashTenderedText);
   const toolbarActions: readonly SalesToolbarAction[] = [
+    {
+      disabled:
+        !state.capabilities.hold || cartEmpty || transactionActionsDisabled,
+      id: "hold",
+      label: t("functions.hold"),
+      onPress: () => {
+        void presenter.holdCart();
+      },
+      testID: "sales-hold",
+      tone: "secondary",
+    },
+    {
+      disabled: mergeCartDisabled,
+      id: "merge-cart",
+      label: t("functions.mergeCart"),
+      onPress: () => {
+        void presenter.mergeCompatibleLines();
+      },
+      testID: "sales-merge-cart",
+      tone: "secondary",
+    },
+    ...(onOpenReturns
+      ? [
+          {
+            id: "returns" as const,
+            label: t("functions.returns"),
+            onPress: onOpenReturns,
+            testID: "sales-open-returns",
+            tone: "secondary" as const,
+          },
+        ]
+      : []),
+    ...(onOpenLocalHistory
+      ? [
+          {
+            id: "local-history" as const,
+            label: t("functions.localHistory"),
+            onPress: onOpenLocalHistory,
+            testID: "sales-open-local-history",
+            tone: "secondary" as const,
+          },
+        ]
+      : []),
+    ...(onOpenHeldOrders
+      ? [
+          {
+            id: "held-orders" as const,
+            label: t("functions.heldSales"),
+            onPress: onOpenHeldOrders,
+            testID: "sales-open-held-orders",
+            tone: "secondary" as const,
+          },
+        ]
+      : []),
+    {
+      disabled: !onReprintReceipt || utilityActionPending !== null,
+      id: "reprint-receipt",
+      label:
+        utilityActionPending === "reprint"
+          ? t("functions.reprinting")
+          : t("functions.reprintReceipt"),
+      onPress: () => runUtilityAction("reprint", onReprintReceipt),
+      testID: "sales-reprint-receipt",
+      tone: "quiet",
+    },
+    {
+      disabled: !onOpenCashDrawer || utilityActionPending !== null,
+      id: "cash-drawer",
+      label:
+        utilityActionPending === "drawer"
+          ? t("functions.openingDrawer")
+          : t("functions.openDrawer"),
+      onPress: () => runUtilityAction("drawer", onOpenCashDrawer),
+      testID: "sales-open-cash-drawer",
+      tone: "quiet",
+    },
     ...(onOpenDailyClose
       ? [
           {
@@ -1094,25 +1188,94 @@ export function SalesScreen({
     <HandheldScreenFrame
       contentStyle={styles.screenContent}
       footer={
-        <HandheldActionButton
-          disabled={
-            cartEmpty ||
-            !onOpenPayment ||
-            !state.capabilities.cartEditing ||
-            state.phase !== "selling"
-          }
-          label={
-            cartEmpty ? t("summary.checkoutDisabled") : t("summary.goToPayment")
-          }
-          onPress={() => {
-            if (!onOpenPayment) return;
-            void presenter.prepareOnlineCheckout().then((preparedCart) => {
-              if (preparedCart) onOpenPayment(preparedCart);
-            });
-          }}
-          sound="navigate"
-          testID="sales-open-payment"
-        />
+        <View style={styles.checkoutDock}>
+          <View style={styles.summaryPane} testID="sales-summary-pane">
+            <View
+              style={styles.summaryOverview}
+              testID="sales-summary-overview"
+            >
+              <View style={styles.summaryMetrics}>
+                <Text style={styles.summaryTitle}>{t("summary.title")}</Text>
+                <SummaryRow
+                  amount={formatAud(state.cart.subtotal.cents, locale)}
+                  label={t("summary.subtotal")}
+                />
+                <SummaryRow
+                  amount={`−${formatAud(state.cart.discount.cents, locale)}`}
+                  amountTestID="sales-summary-discount-amount"
+                  amountTone="danger"
+                  label={t("summary.discount")}
+                  muted
+                />
+              </View>
+              <View style={styles.summaryTotal}>
+                <Text style={styles.totalLabel}>{t("summary.total")}</Text>
+                <Text
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.72}
+                  numberOfLines={1}
+                  style={styles.totalAmount}
+                >
+                  {formatAud(state.cart.actualAmount.cents, locale)}
+                </Text>
+              </View>
+            </View>
+            <View
+              style={styles.summaryEditActions}
+              testID="sales-summary-actions"
+            >
+              <ActionButton
+                disabled={
+                  cartEmpty ||
+                  !state.capabilities.cartEditing ||
+                  transactionActionsDisabled
+                }
+                label={t("summary.orderDiscount")}
+                onPress={() => setOrderDiscountVisible(true)}
+                sound="navigate"
+                style={styles.summaryEditAction}
+                testID="sales-order-discount"
+                tone="secondary"
+              />
+              <ActionButton
+                disabled={
+                  cartEmpty ||
+                  !state.capabilities.cartEditing ||
+                  transactionActionsDisabled
+                }
+                label={t("summary.clearCart")}
+                onPress={() => setClearCartVisible(true)}
+                style={styles.summaryEditAction}
+                testID="sales-clear-cart"
+                tone="danger"
+              />
+            </View>
+          </View>
+          <HandheldActionButton
+            disabled={
+              cartEmpty ||
+              !onOpenPayment ||
+              !state.capabilities.cartEditing ||
+              state.phase !== "selling"
+            }
+            label={
+              cartEmpty
+                ? t("summary.checkoutDisabled")
+                : `${t("summary.goToPayment")} · ${formatAud(
+                    state.cart.actualAmount.cents,
+                    locale,
+                  )}`
+            }
+            onPress={() => {
+              if (!onOpenPayment) return;
+              void presenter.prepareOnlineCheckout().then((preparedCart) => {
+                if (preparedCart) onOpenPayment(preparedCart);
+              });
+            }}
+            sound="navigate"
+            testID="sales-open-payment"
+          />
+        </View>
       }
       header={
         <>
@@ -1206,29 +1369,12 @@ export function SalesScreen({
         slug={cartEmpty ? "sales-empty" : "sales-active"}
         style={styles.salesStateSurface}
       >
-        <PosKeyboardAwareScrollView
-          contentContainerStyle={styles.workspaceRow}
-          showsVerticalScrollIndicator={false}
-          style={styles.workspaceScroll}
-          testID="sales-function-scroll"
-        >
-          {/* 键盘感知合同要求输入保持在滚动容器的词法子树；HID/软键盘状态机沿用原回调。 */}
-          <HandheldSection
-            action={
-              onOpenCameraScanner ? (
-                <CatalogIconButton
-                  accessibilityLabel={t("catalog.camera")}
-                  disabled={catalogActionsDisabled}
-                  icon="camera-outline"
-                  iconTestID="sales-camera-icon"
-                  onPress={openCameraScanner}
-                  testID="sales-open-camera-scanner"
-                />
-              ) : undefined
-            }
-            testID="sales-product-entry"
-            title={t("functions.productEntry")}
-          >
+        <PosKeyboardAwareFlatList<CartLine>
+          ListHeaderComponent={
+            <View style={styles.workspaceHeader}>
+              {/* 键盘感知合同要求输入保持在滚动容器的词法子树；HID/软键盘状态机沿用原回调。 */}
+              <HandheldStateSurface slug="pda-sales-input">
+                <HandheldSection testID="sales-product-entry">
             <View style={styles.searchInputRow} testID="sales-search-input-row">
               <PosKeyboardAwareTextInput
                 ref={searchInputRef}
@@ -1270,6 +1416,16 @@ export function SalesScreen({
                 onPress={requestSearchKeyboard}
                 testID="sales-show-keyboard"
               />
+              {onOpenCameraScanner ? (
+                <CatalogIconButton
+                  accessibilityLabel={t("catalog.camera")}
+                  disabled={catalogActionsDisabled}
+                  icon="camera-outline"
+                  iconTestID="sales-camera-icon"
+                  onPress={openCameraScanner}
+                  testID="sales-open-camera-scanner"
+                />
+              ) : null}
             </View>
             <View
               style={styles.searchActions}
@@ -1329,32 +1485,39 @@ export function SalesScreen({
                   variant="secondary"
                 />
               </HandheldStateSurface>
-            ) : (
-              <HandheldStateSurface
-                slug="pda-scan-ready"
-                style={styles.pdaState}
-              >
-                <View style={styles.pdaStateCopy}>
-                  <Text style={styles.pdaStateTitle}>
-                    {t("pda.scanReadyTitle")}
-                  </Text>
-                  <Text style={styles.pdaStateHint}>
-                    {t("pda.scanReadyHint")}
+            ) : null}
+                </HandheldSection>
+              </HandheldStateSurface>
+              {connectivity === "offline" ? (
+                <View
+                  accessibilityRole="alert"
+                  style={styles.offlineCard}
+                  testID="sales-offline-cash-only"
+                >
+                  <Text style={styles.offlineTitle}>{t("summary.cashOnly")}</Text>
+                  <Text style={styles.offlineHint}>
+                    {t("summary.cashOnlyHint")}
                   </Text>
                 </View>
-              </HandheldStateSurface>
-            )}
-          </HandheldSection>
-          <View style={styles.transactionPane} testID="sales-transaction-pane">
-            <View style={styles.cartPane}>
+              ) : null}
+              <View
+                style={styles.cartPaneHeaderSegment}
+                testID="sales-transaction-pane"
+              >
               <View style={styles.cartHeader}>
                 <Text style={styles.paneTitle}>{t("cart.title")}</Text>
                 <Text style={styles.cartCount}>
                   {t("cart.items", { count: state.cart.lines.length })}
                 </Text>
               </View>
-              {cartEmpty ? (
-                <View style={styles.emptyCart} testID="sales-cart-empty">
+              </View>
+            </View>
+          }
+          ListEmptyComponent={
+            <View
+              style={[styles.cartPaneEmptySegment, styles.emptyCart]}
+              testID="sales-cart-empty"
+            >
                   <Text style={styles.emptyCartIcon}>＋</Text>
                   <Text style={styles.emptyCartTitle}>
                     {t("cart.emptyTitle")}
@@ -1362,213 +1525,51 @@ export function SalesScreen({
                   <Text style={styles.emptyCartHint}>
                     {t("cart.emptyHint")}
                   </Text>
-                </View>
-              ) : (
-                <FlatList
-                  contentContainerStyle={styles.cartList}
-                  data={state.cart.lines}
-                  initialNumToRender={10}
-                  keyExtractor={cartLineKeyExtractor}
-                  maxToRenderPerBatch={8}
-                  onScrollToIndexFailed={retryCartReveal}
-                  ref={cartListRef}
-                  removeClippedSubviews
-                  renderItem={renderCartLine}
-                  style={styles.cartListViewport}
-                  testID="sales-cart-list"
-                  updateCellsBatchingPeriod={32}
-                  windowSize={7}
-                />
-              )}
             </View>
-
-            <View style={styles.summaryPane} testID="sales-summary-pane">
-              <View style={styles.summaryMetrics}>
-                <Text style={styles.summaryTitle}>{t("summary.title")}</Text>
-                <SummaryRow
-                  amount={formatAud(state.cart.subtotal.cents, locale)}
-                  label={t("summary.subtotal")}
-                />
-                <SummaryRow
-                  amount={`−${formatAud(state.cart.discount.cents, locale)}`}
-                  amountTestID="sales-summary-discount-amount"
-                  amountTone="danger"
-                  label={t("summary.discount")}
-                  muted
-                />
-              </View>
-              <View style={styles.summaryTotal}>
-                <Text style={styles.totalLabel}>{t("summary.total")}</Text>
-                <Text
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.72}
-                  numberOfLines={1}
-                  style={styles.totalAmount}
-                >
-                  {formatAud(state.cart.actualAmount.cents, locale)}
-                </Text>
-              </View>
-              <View style={styles.summaryEditActions}>
-                <ActionButton
-                  disabled={
-                    cartEmpty ||
-                    !state.capabilities.cartEditing ||
-                    transactionActionsDisabled
-                  }
-                  label={t("summary.orderDiscount")}
-                  onPress={() => setOrderDiscountVisible(true)}
-                  sound="navigate"
-                  style={styles.summaryEditAction}
-                  testID="sales-order-discount"
-                  tone="secondary"
-                />
-                <ActionButton
-                  disabled={
-                    cartEmpty ||
-                    !state.capabilities.cartEditing ||
-                    transactionActionsDisabled
-                  }
-                  label={t("summary.clearCart")}
-                  onPress={() => setClearCartVisible(true)}
-                  style={styles.summaryEditAction}
-                  testID="sales-clear-cart"
-                  tone="danger"
-                />
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.functionPane} testID="sales-function-pane">
-            <View
-              style={styles.functionScrollContent}
-              testID="sales-actions-scroll"
-            >
-              <Text style={styles.paneTitle}>{t("functions.title")}</Text>
-
-              <View style={styles.functionDivider} />
-              <Text style={styles.functionSectionTitle}>
-                {t("functions.saleActions")}
-              </Text>
-              <View
-                style={styles.functionGrid}
-                testID="sales-transaction-functions"
-              >
-                <ActionButton
-                  disabled={
-                    !state.capabilities.hold ||
-                    cartEmpty ||
-                    transactionActionsDisabled
-                  }
-                  label={t("functions.hold")}
-                  onPress={() => {
-                    void presenter.holdCart();
-                  }}
-                  style={styles.functionAction}
-                  testID="sales-hold"
-                  tone="secondary"
-                />
-                <ActionButton
-                  disabled={mergeCartDisabled}
-                  label={t("functions.mergeCart")}
-                  onPress={() => {
-                    void presenter.mergeCompatibleLines();
-                  }}
-                  style={styles.functionAction}
-                  testID="sales-merge-cart"
-                  tone="secondary"
-                />
-                {onOpenReturns ? (
-                  <ActionButton
-                    label={t("functions.returns")}
-                    onPress={onOpenReturns}
-                    sound="navigate"
-                    style={styles.functionAction}
-                    testID="sales-open-returns"
-                    tone="secondary"
-                  />
-                ) : null}
-                {onOpenLocalHistory ? (
-                  <ActionButton
-                    label={t("functions.localHistory")}
-                    onPress={onOpenLocalHistory}
-                    sound="navigate"
-                    style={styles.functionAction}
-                    testID="sales-open-local-history"
-                    tone="secondary"
-                  />
-                ) : null}
-                {onOpenHeldOrders ? (
-                  <ActionButton
-                    label={t("functions.heldSales")}
-                    onPress={onOpenHeldOrders}
-                    sound="navigate"
-                    style={styles.functionAction}
-                    testID="sales-open-held-orders"
-                    tone="secondary"
-                  />
-                ) : null}
-                <ActionButton
-                  disabled={!onReprintReceipt || utilityActionPending !== null}
-                  label={
-                    utilityActionPending === "reprint"
-                      ? t("functions.reprinting")
-                      : t("functions.reprintReceipt")
-                  }
-                  onPress={() => runUtilityAction("reprint", onReprintReceipt)}
-                  style={styles.functionAction}
-                  testID="sales-reprint-receipt"
-                  tone="quiet"
-                />
-                <ActionButton
-                  disabled={!onOpenCashDrawer || utilityActionPending !== null}
-                  label={
-                    utilityActionPending === "drawer"
-                      ? t("functions.openingDrawer")
-                      : t("functions.openDrawer")
-                  }
-                  onPress={() => runUtilityAction("drawer", onOpenCashDrawer)}
-                  style={styles.functionAction}
-                  testID="sales-open-cash-drawer"
-                  tone="quiet"
-                />
-              </View>
-              {utilityActionResult ? (
-                <HandheldStateSurface slug="pda-print-drawer-result">
-                  <Text
-                    accessibilityLiveRegion="polite"
-                    style={[
-                      styles.utilityResult,
-                      utilityActionResult.result.kind !== "completed" &&
-                        styles.utilityResultWarning,
-                    ]}
-                    testID="sales-utility-action-result"
-                  >
-                    {t(
-                      utilityResultCopyKey(
-                        utilityActionResult.action,
-                        utilityActionResult.result.kind,
-                      ),
-                    )}
-                  </Text>
-                </HandheldStateSurface>
-              ) : null}
-            </View>
-
-            {connectivity === "offline" ? (
-              <View
-                accessibilityRole="alert"
-                style={styles.offlineCard}
-                testID="sales-offline-cash-only"
-              >
-                <Text style={styles.offlineTitle}>{t("summary.cashOnly")}</Text>
-                <Text style={styles.offlineHint}>
-                  {t("summary.cashOnlyHint")}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        </PosKeyboardAwareScrollView>
+          }
+          ListFooterComponent={
+            !cartEmpty ? <View style={styles.cartPaneFooterSegment} /> : null
+          }
+          contentContainerStyle={styles.workspaceList}
+          data={displayedCartLines}
+          initialNumToRender={10}
+          keyExtractor={cartLineKeyExtractor}
+          maxToRenderPerBatch={8}
+          onScrollToIndexFailed={retryCartReveal}
+          ref={cartListRef}
+          removeClippedSubviews
+          renderItem={renderCartLine}
+          showsVerticalScrollIndicator={false}
+          style={styles.workspaceListViewport}
+          testID="sales-cart-list"
+          updateCellsBatchingPeriod={32}
+          windowSize={7}
+        />
       </HandheldStateSurface>
+
+      {utilityActionResult ? (
+        <HandheldStateSurface
+          slug="pda-print-drawer-result"
+          style={styles.utilityResultSurface}
+        >
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[
+              styles.utilityResult,
+              utilityActionResult.result.kind !== "completed" &&
+                styles.utilityResultWarning,
+            ]}
+            testID="sales-utility-action-result"
+          >
+            {t(
+              utilityResultCopyKey(
+                utilityActionResult.action,
+                utilityActionResult.result.kind,
+              ),
+            )}
+          </Text>
+        </HandheldStateSurface>
+      ) : null}
 
       {state.errorCode ? (
         <ErrorBanner
@@ -2338,6 +2339,7 @@ function ProductSearchRow({
 }
 
 type CartLineRowProps = Readonly<{
+  compact: boolean;
   disabled: boolean;
   index: number;
   isSelected: boolean;
@@ -2360,6 +2362,7 @@ type CartLineRowProps = Readonly<{
 }>;
 
 const CartLineRow = memo(function CartLineRow({
+  compact,
   disabled,
   index,
   isSelected,
@@ -2375,6 +2378,76 @@ const CartLineRow = memo(function CartLineRow({
   t,
 }: CartLineRowProps) {
   const [imageUri, setImageUri] = useState<string | null | undefined>();
+  const [removeActionVisible, setRemoveActionVisible] = useState(false);
+  const swipeOffset = useRef(new Animated.Value(0)).current;
+  const swipeStartOffsetRef = useRef(0);
+  const removeActionVisibleRef = useRef(false);
+
+  const settleSwipe = useCallback(
+    (visible: boolean): void => {
+      removeActionVisibleRef.current = visible;
+      setRemoveActionVisible(visible);
+      Animated.spring(swipeOffset, {
+        bounciness: 0,
+        speed: 24,
+        toValue: visible ? -CART_LINE_REMOVE_ACTION_WIDTH : 0,
+        useNativeDriver: true,
+      }).start();
+    },
+    [swipeOffset],
+  );
+
+  const removeLine = useCallback((): void => {
+    settleSwipe(false);
+    onRemove(item.lineId);
+  }, [item.lineId, onRemove, settleSwipe]);
+
+  const swipeResponder = useMemo(() => {
+    const shouldBeginSwipe = (dx: number, dy: number): boolean =>
+      !disabled &&
+      Math.abs(dx) >= CART_LINE_SWIPE_ACTIVATION_DISTANCE &&
+      Math.abs(dx) > Math.abs(dy) &&
+      (dx < 0 || removeActionVisibleRef.current);
+
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_event, gestureState) =>
+        shouldBeginSwipe(gestureState.dx, gestureState.dy),
+      onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+        shouldBeginSwipe(gestureState.dx, gestureState.dy),
+      onPanResponderGrant: () => {
+        swipeOffset.stopAnimation();
+        swipeStartOffsetRef.current = removeActionVisibleRef.current
+          ? -CART_LINE_REMOVE_ACTION_WIDTH
+          : 0;
+      },
+      onPanResponderMove: (_event, gestureState) => {
+        const nextOffset = Math.max(
+          -CART_LINE_REMOVE_ACTION_WIDTH,
+          Math.min(0, swipeStartOffsetRef.current + gestureState.dx),
+        );
+        swipeOffset.setValue(nextOffset);
+      },
+      onPanResponderRelease: (_event, gestureState) => {
+        const projectedOffset =
+          swipeStartOffsetRef.current +
+          gestureState.dx +
+          gestureState.vx * 24;
+        settleSwipe(
+          projectedOffset <= -CART_LINE_REMOVE_ACTION_WIDTH / 2,
+        );
+      },
+      onPanResponderTerminate: () => {
+        settleSwipe(removeActionVisibleRef.current);
+      },
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+    });
+  }, [disabled, settleSwipe, swipeOffset]);
+
+  useEffect(() => {
+    if (disabled && removeActionVisibleRef.current) settleSwipe(false);
+  }, [disabled, settleSwipe]);
+
   useEffect(() => {
     setImageUri(undefined);
     if (!resolveProductImage) return;
@@ -2395,20 +2468,63 @@ const CartLineRow = memo(function CartLineRow({
   }, [item.lookupCode, item.productCode, resolveProductImage]);
 
   return (
-    <PosPressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: isSelected }}
-      onPress={() => onSelect(item.lineId)}
-      style={({ pressed }) => [
-        styles.cartLine,
-        item.actualAmount.cents < 0 && styles.cartLineNegative,
-        item.actualAmount.cents === 0 && styles.cartLineZero,
-        isSelected && styles.cartLineSelected,
-        pressed && styles.cartLinePressed,
-      ]}
-      testID={`sales-line-${item.lineId}`}
-    >
-      <View style={styles.cartLineTop}>
+    <View style={styles.cartLineSwipeContainer}>
+      <View
+        accessibilityElementsHidden={!removeActionVisible}
+        importantForAccessibility={
+          removeActionVisible ? "auto" : "no-hide-descendants"
+        }
+        style={styles.cartLineRemoveAction}
+        testID={`sales-line-${item.lineId}-remove-action`}
+      >
+        <ActionButton
+          disabled={disabled}
+          label={t("cart.remove")}
+          onPress={removeLine}
+          style={styles.cartLineRemoveButton}
+          testID={`sales-line-${item.lineId}-remove`}
+          tone="danger"
+        />
+      </View>
+      <Animated.View
+        {...swipeResponder.panHandlers}
+        style={[
+          styles.cartLineSwipeSurface,
+          { transform: [{ translateX: swipeOffset }] },
+        ]}
+        testID={`sales-line-${item.lineId}-swipe-surface`}
+      >
+        <PosPressable
+          accessibilityActions={[
+            { label: t("cart.remove"), name: "delete" },
+          ]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: isSelected }}
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "delete" && !disabled) {
+              removeLine();
+            }
+          }}
+          onPress={() => {
+            if (removeActionVisibleRef.current) {
+              settleSwipe(false);
+              return;
+            }
+            onSelect(item.lineId);
+          }}
+          style={({ pressed }) => [
+            styles.cartLine,
+            compact && styles.cartLineCompact,
+            item.actualAmount.cents < 0 && styles.cartLineNegative,
+            item.actualAmount.cents === 0 && styles.cartLineZero,
+            isSelected && styles.cartLineSelected,
+            pressed && styles.cartLinePressed,
+          ]}
+          testID={`sales-line-${item.lineId}`}
+        >
+          <View
+            style={[styles.cartLineTop, compact && styles.cartLineTopCompact]}
+          >
         <Text
           accessibilityLabel={t("cart.lineNumber", {
             number: index + 1,
@@ -2426,7 +2542,13 @@ const CartLineRow = memo(function CartLineRow({
           placeholderLabel={t("cart.imagePlaceholder")}
           testID={`sales-line-${item.lineId}-image`}
         />
-        <View style={styles.cartLineIdentity}>
+        <View
+          style={[
+            styles.cartLineIdentity,
+            compact && styles.cartLineIdentityCompact,
+          ]}
+          testID={`sales-line-${item.lineId}-identity`}
+        >
           <Text numberOfLines={2} style={styles.cartLineName}>
             {item.displayName}
           </Text>
@@ -2445,11 +2567,20 @@ const CartLineRow = memo(function CartLineRow({
             ) : null}
           </Text>
         </View>
-        <Text style={styles.cartLineTotal}>
+        <Text
+          style={[
+            styles.cartLineTotal,
+            compact && styles.cartLineTotalCompact,
+          ]}
+          testID={`sales-line-${item.lineId}-total`}
+        >
           {formatAud(item.actualAmount.cents, locale)}
         </Text>
       </View>
-      <View style={styles.lineControls}>
+          <View
+            style={styles.lineControls}
+            testID={`sales-line-${item.lineId}-controls`}
+          >
         <ActionButton
           accessibilityLabel={t("cart.decrease")}
           disabled={disabled}
@@ -2486,15 +2617,10 @@ const CartLineRow = memo(function CartLineRow({
           testID={`sales-line-${item.lineId}-discount`}
           tone="secondary"
         />
-        <ActionButton
-          disabled={disabled}
-          label={t("cart.remove")}
-          onPress={() => onRemove(item.lineId)}
-          testID={`sales-line-${item.lineId}-remove`}
-          tone="danger"
-        />
-      </View>
-    </PosPressable>
+          </View>
+        </PosPressable>
+      </Animated.View>
+    </View>
   );
 }, cartLineRowPropsEqual);
 
@@ -2505,6 +2631,7 @@ function cartLineRowPropsEqual(
   const before = previous.item;
   const after = next.item;
   return (
+    previous.compact === next.compact &&
     previous.disabled === next.disabled &&
     previous.index === next.index &&
     previous.isSelected === next.isSelected &&
@@ -2940,6 +3067,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
+  cartLineCompact: {
+    paddingHorizontal: 10,
+  },
+  cartLineRemoveAction: {
+    bottom: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    width: CART_LINE_REMOVE_ACTION_WIDTH,
+  },
+  cartLineRemoveButton: {
+    borderRadius: 0,
+    flex: 1,
+    paddingHorizontal: 8,
+  },
+  cartLineSwipeContainer: {
+    borderRadius: 4,
+    overflow: "hidden",
+    position: "relative",
+  },
+  cartLineSwipeSurface: {
+    backgroundColor: posColors.surface,
+  },
   cartLineNegative: {
     backgroundColor: posColors.redSoft,
     borderColor: posColors.red,
@@ -2964,6 +3114,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 120,
   },
+  cartLineIdentityCompact: {
+    minWidth: 0,
+  },
   cartLineName: {
     color: posColors.ink,
     fontSize: 15,
@@ -2986,10 +3139,19 @@ const styles = StyleSheet.create({
     minWidth: 80,
     textAlign: "right",
   },
+  cartLineTotalCompact: {
+    flexBasis: "100%",
+    minWidth: 0,
+  },
   cartLineTop: {
     alignItems: "center",
     flexDirection: "row",
     gap: 12,
+  },
+  cartLineTopCompact: {
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: 8,
   },
   cartActionsGrid: {
     flexDirection: "column",
@@ -3012,24 +3174,45 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     marginTop: 4,
   },
-  cartList: {
-    gap: 8,
-    paddingBottom: 12,
-  },
-  cartListViewport: {
-    flex: 1,
-    minHeight: 0,
-  },
-  cartPane: {
+  cartListItem: {
     backgroundColor: "#F8F6F1",
     borderColor: posColors.border,
-    borderRadius: 5,
-    borderWidth: 1,
-    flex: 1,
-    gap: 12,
-    minHeight: 280,
-    minWidth: 0,
-    padding: 14,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    paddingBottom: 8,
+    paddingHorizontal: 14,
+  },
+  cartPaneEmptySegment: {
+    backgroundColor: "#F8F6F1",
+    borderBottomLeftRadius: 5,
+    borderBottomRightRadius: 5,
+    borderColor: posColors.border,
+    borderBottomWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    minHeight: 240,
+  },
+  cartPaneFooterSegment: {
+    backgroundColor: "#F8F6F1",
+    borderBottomLeftRadius: 5,
+    borderBottomRightRadius: 5,
+    borderColor: posColors.border,
+    borderBottomWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    height: 6,
+  },
+  cartPaneHeaderSegment: {
+    backgroundColor: "#F8F6F1",
+    borderColor: posColors.border,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderTopLeftRadius: 5,
+    borderTopRightRadius: 5,
+    borderTopWidth: 1,
+    paddingBottom: 12,
+    paddingHorizontal: 14,
+    paddingTop: 14,
   },
   cartProductImage: {
     height: "100%",
@@ -3144,6 +3327,9 @@ const styles = StyleSheet.create({
   checkoutButton: {
     minHeight: 64,
     width: "100%",
+  },
+  checkoutDock: {
+    gap: 8,
   },
   onlineCheckoutButton: {
     marginTop: 10,
@@ -3263,50 +3449,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     marginBottom: 7,
-  },
-  functionAction: {
-    flexBasis: "47%",
-    flexGrow: 1,
-    paddingHorizontal: 8,
-  },
-  functionDivider: {
-    backgroundColor: posColors.border,
-    height: 1,
-    marginVertical: 4,
-  },
-  functionGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  functionPane: {
-    backgroundColor: posColors.surface,
-    borderColor: posColors.border,
-    borderRadius: 5,
-    borderWidth: 1,
-    flexBasis: "auto",
-    flexGrow: 0,
-    flexShrink: 0,
-    maxWidth: "100%",
-    minWidth: 0,
-    padding: 14,
-    width: "100%",
-  },
-  functionScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  functionScrollContent: {
-    gap: 10,
-    paddingBottom: 12,
-  },
-  functionSectionTitle: {
-    color: posColors.mutedInk,
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 0.5,
-    marginTop: 2,
-    textTransform: "uppercase",
   },
   header: {
     alignItems: "center",
@@ -3807,23 +3949,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexDirection: "column",
     gap: 8,
-    minHeight: 132,
-    padding: 14,
+    padding: 10,
+    shadowColor: posColors.ink,
+    shadowOffset: { height: -1, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   summaryEditAction: {
     flex: 1,
     paddingHorizontal: 8,
   },
   summaryEditActions: {
-    flexBasis: "auto",
-    flexDirection: "column",
+    flexDirection: "row",
     gap: 8,
     minWidth: 0,
   },
   summaryMetrics: {
     flex: 1,
     justifyContent: "center",
-    minWidth: 148,
+    minWidth: 0,
+  },
+  summaryOverview: {
+    alignItems: "stretch",
+    flexDirection: "row",
+    gap: 10,
   },
   summaryRow: {
     alignItems: "center",
@@ -3844,19 +3994,21 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   summaryTotal: {
-    borderTopColor: posColors.border,
-    borderTopWidth: 1,
-    flexBasis: "auto",
+    alignItems: "flex-end",
+    borderLeftColor: posColors.border,
+    borderLeftWidth: 1,
+    flexBasis: 116,
     justifyContent: "center",
-    minWidth: 0,
-    paddingTop: 8,
+    minWidth: 104,
+    paddingLeft: 10,
   },
   totalAmount: {
     color: posColors.ink,
-    fontSize: 31,
+    fontSize: 28,
     fontVariant: ["tabular-nums"],
     fontWeight: "900",
     letterSpacing: -0.8,
+    textAlign: "right",
   },
   totalLabel: {
     color: posColors.ink,
@@ -3868,13 +4020,6 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     flexDirection: "row",
     justifyContent: "space-between",
-  },
-  transactionPane: {
-    flexGrow: 0,
-    flexShrink: 0,
-    gap: 10,
-    minHeight: 560,
-    minWidth: 0,
   },
   utilityResult: {
     backgroundColor: posColors.greenSoft,
@@ -3891,6 +4036,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFF4D8",
     borderColor: posColors.orange,
     color: "#744024",
+  },
+  utilityResultSurface: {
+    marginHorizontal: 10,
   },
   screenContent: {
     paddingHorizontal: 0,
@@ -3914,13 +4062,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: 1,
   },
-  workspaceRow: {
-    flexDirection: "column",
-    flexGrow: 1,
+  workspaceHeader: {
     gap: 10,
+  },
+  workspaceList: {
+    flexGrow: 1,
     padding: 10,
   },
-  workspaceScroll: {
+  workspaceListViewport: {
     flex: 1,
   },
 });

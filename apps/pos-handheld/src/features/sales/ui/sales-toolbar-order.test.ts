@@ -7,44 +7,56 @@ import {
   reconcileSalesToolbarOrder,
 } from "./sales-toolbar-order";
 
+const LEGACY_DEFAULT_SALES_TOOLBAR_ORDER = [
+  "held-orders",
+  "daily-close",
+  "returns",
+  "remote-history",
+  "installments",
+  "sync-history",
+  "catalog-maintenance",
+  "attendance-audit",
+  "settings",
+  "hold",
+  "language",
+  "lock",
+] as const;
+
 test("销售工具栏顺序会去除未知和重复 ID，并补齐默认项", () => {
+  const reconciled = reconcileSalesToolbarOrder([
+    "lock",
+    "unknown-action",
+    "hold",
+    "lock",
+    "returns",
+  ]);
+
   assert.deepEqual(
-    reconcileSalesToolbarOrder([
-      "lock",
-      "unknown-action",
-      "held-orders",
-      "lock",
-      "returns",
-    ]),
-    [
-      "lock",
-      "held-orders",
-      "daily-close",
-      "returns",
-      "remote-history",
-      "installments",
-      "sync-history",
-      "catalog-maintenance",
-      "attendance-audit",
-      "settings",
-      "hold",
-      "language",
-    ],
+    reconciled.filter((actionId) =>
+      ["lock", "hold", "returns"].includes(actionId),
+    ),
+    ["lock", "hold", "returns"],
   );
+  assert.deepEqual([...new Set(reconciled)], reconciled);
+  assert.deepEqual(new Set(reconciled), new Set(DEFAULT_SALES_TOOLBAR_ORDER));
 });
 
-test("默认顺序与当前顶部按钮顺序一致", () => {
+test("默认顺序优先展示交易功能，再展示低频终端功能", () => {
   assert.deepEqual(DEFAULT_SALES_TOOLBAR_ORDER, [
-    "held-orders",
-    "daily-close",
+    "hold",
+    "merge-cart",
     "returns",
+    "local-history",
+    "held-orders",
+    "reprint-receipt",
+    "cash-drawer",
+    "daily-close",
     "remote-history",
     "installments",
     "sync-history",
     "catalog-maintenance",
     "attendance-audit",
     "settings",
-    "hold",
     "language",
     "lock",
   ]);
@@ -62,30 +74,46 @@ test("空的持久化值会恢复完整默认顺序", () => {
 test("缺失的新操作会补回其默认相邻操作之间", () => {
   assert.deepEqual(
     reconcileSalesToolbarOrder(
-      DEFAULT_SALES_TOOLBAR_ORDER.filter((actionId) => actionId !== "language"),
+      DEFAULT_SALES_TOOLBAR_ORDER.filter(
+        (actionId) => actionId !== "cash-drawer",
+      ),
     ),
     [...DEFAULT_SALES_TOOLBAR_ORDER],
   );
 });
 
-test("旧持久化顺序会移除特殊商品并保留其余操作的相对顺序", () => {
+test("旧版默认持久化值会迁移到交易功能优先的新默认顺序", () => {
   assert.deepEqual(
-    reconcileSalesToolbarOrder([
-      "held-orders",
-      "daily-close",
-      "returns",
-      "special-products",
-      "remote-history",
-      "installments",
-      "sync-history",
-      "catalog-maintenance",
-      "attendance-audit",
-      "settings",
-      "hold",
-      "language",
-      "lock",
-    ]),
+    reconcileSalesToolbarOrder(LEGACY_DEFAULT_SALES_TOOLBAR_ORDER),
     [...DEFAULT_SALES_TOOLBAR_ORDER],
+  );
+});
+
+test("更早含特殊商品的旧版默认值也会迁移", () => {
+  assert.deepEqual(
+    reconcileSalesToolbarOrder(
+      LEGACY_DEFAULT_SALES_TOOLBAR_ORDER.flatMap((actionId) =>
+        actionId === "returns"
+          ? [actionId, "special-products"]
+          : [actionId],
+      ),
+    ),
+    [...DEFAULT_SALES_TOOLBAR_ORDER],
+  );
+});
+
+test("旧版真实自定义顺序继续保留已知操作的相对顺序", () => {
+  const customized = [
+    "hold",
+    ...LEGACY_DEFAULT_SALES_TOOLBAR_ORDER.filter(
+      (actionId) => actionId !== "hold",
+    ),
+  ];
+  const reconciled = reconcileSalesToolbarOrder(customized);
+
+  assert.deepEqual(
+    reconciled.filter((actionId) => customized.includes(actionId)),
+    customized,
   );
 });
 
@@ -98,15 +126,19 @@ test("重排可见操作时，隐藏操作保留其原来的槽位", () => {
     ]),
     [
       "returns",
-      "daily-close",
+      "merge-cart",
       "held-orders",
+      "local-history",
+      "hold",
+      "reprint-receipt",
+      "cash-drawer",
+      "daily-close",
       "remote-history",
       "installments",
       "sync-history",
       "catalog-maintenance",
       "attendance-audit",
       "settings",
-      "hold",
       "language",
       "lock",
     ],
@@ -121,19 +153,6 @@ test("可见顺序中的无效或重复值不会挤占有效操作槽位", () =>
       "hold",
       "held-orders",
     ]),
-    [
-      "hold",
-      "daily-close",
-      "returns",
-      "remote-history",
-      "installments",
-      "sync-history",
-      "catalog-maintenance",
-      "attendance-audit",
-      "settings",
-      "held-orders",
-      "language",
-      "lock",
-    ],
+    [...DEFAULT_SALES_TOOLBAR_ORDER],
   );
 });

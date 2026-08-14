@@ -11,6 +11,7 @@ import {
 import { salesEnglishCopy, salesText } from "./sales-copy";
 import {
   EMPTY_SALE_CART,
+  formatAud,
   MIN_TOUCH_TARGET,
   SalesPresenter,
   type SalesCapabilities,
@@ -81,6 +82,50 @@ function descendantTestIds(root: unknown): string[] {
   };
   visit(root);
   return result;
+}
+
+function cartLinePanEvent(
+  previousX: number,
+  currentX: number,
+  timeStamp: number,
+  previousY = 100,
+  currentY = 100,
+) {
+  const touch = {
+    identifier: 0,
+    locationX: currentX,
+    locationY: currentY,
+    pageX: currentX,
+    pageY: currentY,
+    target: 1,
+    timestamp: timeStamp,
+  };
+  return {
+    nativeEvent: {
+      ...touch,
+      changedTouches: [touch],
+      touches: [touch],
+    },
+    touchHistory: {
+      indexOfSingleActiveTouch: 0,
+      mostRecentTimeStamp: timeStamp,
+      numberActiveTouches: 1,
+      touchBank: [
+        {
+          currentPageX: currentX,
+          currentPageY: currentY,
+          currentTimeStamp: timeStamp,
+          previousPageX: previousX,
+          previousPageY: previousY,
+          previousTimeStamp: Math.max(0, timeStamp - 16),
+          startPageX: 240,
+          startPageY: 100,
+          startTimeStamp: 1,
+          touchActive: true,
+        },
+      ],
+    },
+  };
 }
 
 class ScreenCartPort implements SalesCartPort {
@@ -394,7 +439,7 @@ describe("SalesScreen", () => {
     expect(copy).not.toMatch(/ipad/iu);
   });
 
-  it("手持商品录入对齐 iPad 图标布局，只保留无码和特殊商品文字按钮", async () => {
+  it("手持商品录入隐藏标题和待机提示，并把相机放在键盘后", async () => {
     const onOpenCameraScanner = jest.fn();
     const onOpenSpecialProducts = jest.fn();
     const emptyPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
@@ -439,6 +484,8 @@ describe("SalesScreen", () => {
       "sales-search-icon",
       "sales-show-keyboard",
       "sales-keyboard-icon",
+      "sales-open-camera-scanner",
+      "sales-camera-icon",
     ]);
     expect(
       flattenedStyle(empty.getByTestId("sales-search-button")),
@@ -478,6 +525,13 @@ describe("SalesScreen", () => {
     expect(empty.queryByText("搜索")).toBeNull();
     expect(empty.queryByText("按编码加入")).toBeNull();
     expect(empty.queryByText("相机扫码")).toBeNull();
+    expect(empty.queryByText("商品录入")).toBeNull();
+    expect(empty.queryByText("扫码器就绪")).toBeNull();
+    expect(empty.getByTestId("handheld-state-pda-sales-input")).toBeTruthy();
+    expect(
+      empty.queryByText("请使用 PDA 扳机扫码；相机扫码仅作为备用。"),
+    ).toBeNull();
+    expect(empty.queryByTestId("handheld-state-pda-scan-ready")).toBeNull();
     expect(
       empty.queryByText(
         "点击搜索框默认只接收 HID 扫码，并以回车提交；触摸或中文输入请点击上方“键盘”按钮。",
@@ -493,7 +547,7 @@ describe("SalesScreen", () => {
     emptyPresenter.destroy();
   });
 
-  it("竖屏 DOM 顺序为状态、商品录入、购物车、汇总、固定付款", async () => {
+  it("竖屏保留单一购物车列表，并把汇总与付款共同固定在 footer", async () => {
     const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
     const screen = await render(
       <SalesScreen
@@ -503,27 +557,58 @@ describe("SalesScreen", () => {
       />,
     );
 
+    const cartList = screen.getByTestId("sales-cart-list");
+    const listTestIds = descendantTestIds(cartList);
+    expect(screen.queryByTestId("sales-function-scroll")).toBeNull();
+    expect(listTestIds).toEqual(
+      expect.arrayContaining([
+        "sales-product-entry",
+        "sales-line-line-1",
+      ]),
+    );
+    expect(listTestIds).not.toContain("sales-summary-pane");
+    expect(listTestIds).not.toContain("sales-function-pane");
+    expect(listTestIds).not.toContain("sales-open-payment");
+    expect(screen.queryByTestId("sales-function-pane")).toBeNull();
+
     const testIds = descendantTestIds(screen.toJSON());
     const positions = [
       "handheld-operational-strip",
       "sales-product-entry",
       "sales-line-line-1",
       "sales-summary-pane",
+      "sales-order-discount",
+      "sales-clear-cart",
       "sales-open-payment",
     ].map((testID) => testIds.indexOf(testID));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual(
       [...positions].sort((left, right) => left - right),
     );
-    expect(screen.getByTestId("sales-screen-footer")).toContainElement(
-      screen.getByTestId("sales-open-payment"),
+    const footer = screen.getByTestId("sales-screen-footer");
+    for (const testID of [
+      "sales-summary-pane",
+      "sales-order-discount",
+      "sales-clear-cart",
+      "sales-open-payment",
+    ]) {
+      expect(footer).toContainElement(screen.getByTestId(testID));
+    }
+    expect(
+      flattenedStyle(screen.getByTestId("sales-summary-overview")),
+    ).toMatchObject({ flexDirection: "row" });
+    expect(
+      flattenedStyle(screen.getByTestId("sales-summary-actions")),
+    ).toMatchObject({ flexDirection: "row" });
+    expect(flattenedStyle(screen.getByTestId("sales-summary-pane"))).toMatchObject(
+      { elevation: 3 },
     );
 
     salesPresenter.destroy();
     await screen.unmount();
   });
 
-  it("PDA 扫码待机与真实扫描结果互相切换，打印钱箱结果只由真实履约回调触发", async () => {
+  it("默认不显示扫码待机文案，真实扫描和打印结果仍明确反馈", async () => {
     let publishLookupOutcome: ((event: SalesFeedbackEvent) => void) | undefined;
     const scanWorkflow: SalesWorkflowPort = {
       ...workflow(),
@@ -548,7 +633,7 @@ describe("SalesScreen", () => {
       />,
     );
 
-    expect(screen.getByTestId("handheld-state-pda-scan-ready")).toBeTruthy();
+    expect(screen.queryByTestId("handheld-state-pda-scan-ready")).toBeNull();
     expect(screen.queryByTestId("handheld-state-pda-scan-result")).toBeNull();
     await act(async () => {
       publishLookupOutcome?.({
@@ -560,11 +645,13 @@ describe("SalesScreen", () => {
     expect(screen.getByTestId("handheld-state-pda-scan-result")).toBeTruthy();
     expect(screen.queryByTestId("handheld-state-pda-scan-ready")).toBeNull();
     await fireEvent.press(screen.getByTestId("sales-scan-result-dismiss"));
-    expect(screen.getByTestId("handheld-state-pda-scan-ready")).toBeTruthy();
+    expect(screen.queryByTestId("handheld-state-pda-scan-ready")).toBeNull();
+    expect(screen.queryByTestId("handheld-state-pda-scan-result")).toBeNull();
 
     expect(
       screen.queryByTestId("handheld-state-pda-print-drawer-result"),
     ).toBeNull();
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
     await fireEvent.press(screen.getByTestId("sales-reprint-receipt"));
     await waitFor(() => {
       expect(onReprintReceipt).toHaveBeenCalledTimes(1);
@@ -744,12 +831,18 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("更多弹窗承载低频功能，本机动作留在单列功能区并保持 48px 触控目标", async () => {
+  it("更多弹窗承载全部交易功能，并保持默认顺序和 48px 触控目标", async () => {
     const onOpenHeldOrders = jest.fn();
+    const onOpenCashDrawer = jest.fn(async () => ({
+      kind: "completed" as const,
+    }));
     const onOpenDailyClose = jest.fn();
     const onOpenLocalHistory = jest.fn();
     const onOpenRemoteHistory = jest.fn();
     const onOpenReturns = jest.fn();
+    const onReprintReceipt = jest.fn(async () => ({
+      kind: "completed" as const,
+    }));
     const onOpenSpecialProducts = jest.fn();
     const onOpenSyncHistory = jest.fn();
     const onOpenCatalogMaintenance = jest.fn();
@@ -760,6 +853,7 @@ describe("SalesScreen", () => {
       <SalesScreen
         locale="zh"
         onOpenCatalogMaintenance={onOpenCatalogMaintenance}
+        onOpenCashDrawer={onOpenCashDrawer}
         onOpenDailyClose={onOpenDailyClose}
         onOpenHeldOrders={onOpenHeldOrders}
         onOpenInstallments={onOpenInstallments}
@@ -769,6 +863,7 @@ describe("SalesScreen", () => {
         onOpenSettings={onOpenSettings}
         onOpenSpecialProducts={onOpenSpecialProducts}
         onOpenSyncHistory={onOpenSyncHistory}
+        onReprintReceipt={onReprintReceipt}
         presenter={salesPresenter}
         showStatusStrip={false}
       />,
@@ -793,9 +888,52 @@ describe("SalesScreen", () => {
       ).toBeNull();
     };
 
-    await pressVisibleAction("sales-open-held-orders", onOpenHeldOrders);
-    await pressVisibleAction("sales-open-returns", onOpenReturns);
-    await pressVisibleAction("sales-open-local-history", onOpenLocalHistory);
+    expect(screen.queryByTestId("sales-function-pane")).toBeNull();
+    for (const testID of [
+      "sales-hold",
+      "sales-merge-cart",
+      "sales-open-returns",
+      "sales-open-local-history",
+      "sales-open-held-orders",
+      "sales-reprint-receipt",
+      "sales-open-cash-drawer",
+    ]) {
+      expect(screen.queryByTestId(testID)).toBeNull();
+    }
+
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    const menuTestIds = descendantTestIds(
+      screen.getByTestId("sales-toolbar-actions"),
+    );
+    const transactionActionIds = [
+      "sales-hold",
+      "sales-merge-cart",
+      "sales-open-returns",
+      "sales-open-local-history",
+      "sales-open-held-orders",
+      "sales-reprint-receipt",
+      "sales-open-cash-drawer",
+    ];
+    const transactionPositions = transactionActionIds.map((testID) =>
+      menuTestIds.indexOf(testID),
+    );
+    expect(transactionPositions.every((position) => position >= 0)).toBe(true);
+    expect(transactionPositions).toEqual(
+      [...transactionPositions].sort((left, right) => left - right),
+    );
+    expect(Math.max(...transactionPositions)).toBeLessThan(
+      menuTestIds.indexOf("sales-open-daily-close"),
+    );
+    for (const testID of transactionActionIds) {
+      expect(
+        StyleSheet.flatten(screen.getByTestId(testID).props.style).minHeight,
+      ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+    }
+    await fireEvent.press(screen.getByTestId("sales-toolbar-close"));
+
+    await pressMoreAction("sales-open-held-orders", onOpenHeldOrders);
+    await pressMoreAction("sales-open-returns", onOpenReturns);
+    await pressMoreAction("sales-open-local-history", onOpenLocalHistory);
     await pressVisibleAction(
       "sales-open-special-products",
       onOpenSpecialProducts,
@@ -812,8 +950,8 @@ describe("SalesScreen", () => {
     );
 
     expect(screen.queryByTestId("sales-open-camera-scanner")).toBeNull();
-    expect(screen.getByTestId("sales-hold")).toBeTruthy();
     await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    expect(screen.getByTestId("sales-hold")).toBeTruthy();
     expect(screen.getByTestId("sales-lock")).toBeTruthy();
     await fireEvent.press(screen.getByTestId("sales-toolbar-close"));
 
@@ -831,15 +969,10 @@ describe("SalesScreen", () => {
       />,
     );
 
-    expect(
-      withoutNavigation.queryByTestId("sales-open-held-orders"),
-    ).toBeNull();
-    expect(withoutNavigation.queryByTestId("sales-open-returns")).toBeNull();
+    expect(withoutNavigation.queryByTestId("sales-hold")).toBeNull();
+    expect(withoutNavigation.queryByTestId("sales-merge-cart")).toBeNull();
     expect(
       withoutNavigation.queryByTestId("sales-open-special-products"),
-    ).toBeNull();
-    expect(
-      withoutNavigation.queryByTestId("sales-open-local-history"),
     ).toBeNull();
     expect(
       withoutNavigation.queryByTestId("sales-open-camera-scanner"),
@@ -853,6 +986,26 @@ describe("SalesScreen", () => {
       flattenedStyle(withoutNavigation.getByTestId("sales-open-item-button")),
     ).toMatchObject({ flexGrow: 1 });
     await fireEvent.press(withoutNavigation.getByTestId("sales-toolbar"));
+    expect(withoutNavigation.getByTestId("sales-hold")).toBeTruthy();
+    expect(withoutNavigation.getByTestId("sales-merge-cart")).toBeTruthy();
+    expect(
+      withoutNavigation.queryByTestId("sales-open-held-orders"),
+    ).toBeNull();
+    expect(withoutNavigation.queryByTestId("sales-open-returns")).toBeNull();
+    expect(
+      withoutNavigation.queryByTestId("sales-open-local-history"),
+    ).toBeNull();
+    for (const testID of [
+      "sales-reprint-receipt",
+      "sales-open-cash-drawer",
+    ]) {
+      const disabledAction = withoutNavigation.getByTestId(testID);
+      expect(flattenedStyle(disabledAction)).toMatchObject({ opacity: 0.72 });
+      await fireEvent.press(disabledAction);
+      expect(
+        withoutNavigation.getByTestId("handheld-state-sales-more-actions"),
+      ).toBeTruthy();
+    }
     expect(
       withoutNavigation.queryByTestId("sales-open-daily-close"),
     ).toBeNull();
@@ -874,7 +1027,7 @@ describe("SalesScreen", () => {
     await withoutNavigation.unmount();
   });
 
-  it("横屏主工作区为双栏，购物车图片与交易汇总都属于当前交易区域", async () => {
+  it("单列交易列表包含购物车图片，交易汇总固定在列表外", async () => {
     const resolveCartProductImage = jest.fn(
       async (_input: { productCode: string; lookupCode: string }) =>
         "https://pos.example.test/images/P-001.png",
@@ -900,15 +1053,17 @@ describe("SalesScreen", () => {
       />,
     );
 
-    const transactionPane = screen.getByTestId("sales-transaction-pane");
-    expect(screen.getByTestId("sales-function-pane")).toBeTruthy();
-    expect(
-      transactionPane.children.some(
-        (child) =>
-          typeof child !== "string" &&
-          child.props.testID === "sales-summary-pane",
-      ),
-    ).toBe(true);
+    const transactionPane = screen.getByTestId("sales-cart-list");
+    expect(screen.queryByTestId("sales-function-pane")).toBeNull();
+    expect(descendantTestIds(transactionPane)).toEqual(
+      expect.arrayContaining(["sales-line-line-1"]),
+    );
+    expect(descendantTestIds(transactionPane)).not.toContain(
+      "sales-summary-pane",
+    );
+    expect(screen.getByTestId("sales-screen-footer")).toContainElement(
+      screen.getByTestId("sales-summary-pane"),
+    );
 
     const lineNumber = screen.getByTestId("sales-line-line-1-line-number");
     expect(lineNumber.props.accessibilityLabel).toBe("第 1 行");
@@ -945,6 +1100,120 @@ describe("SalesScreen", () => {
 
     salesPresenter.destroy();
     await screen.unmount();
+  });
+
+  it("购物车按加入顺序倒序展示，最新商品位于第一行", async () => {
+    const baseLine = cartSnapshot().lines[0]!;
+    const cart = new ScreenCartPort({
+      ...cartSnapshot(),
+      revision: 3,
+      lines: [
+        { ...baseLine, lineId: "line-1", displayName: "First item" },
+        { ...baseLine, lineId: "line-2", displayName: "Second item" },
+        { ...baseLine, lineId: "line-3", displayName: "Latest item" },
+      ],
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    const cartList = screen.getByTestId("sales-cart-list");
+    expect(
+      (cartList.props.data as readonly CartLine[]).map((line) => line.lineId),
+    ).toEqual(["line-3", "line-2", "line-1"]);
+    expect(
+      descendantTestIds(cartList).filter((testID) =>
+        /^sales-line-line-\d+$/.test(testID),
+      ),
+    ).toEqual([
+      "sales-line-line-3",
+      "sales-line-line-2",
+      "sales-line-line-1",
+    ]);
+    expect(
+      screen.getByTestId("sales-line-line-3-line-number").props
+        .accessibilityLabel,
+    ).toBe("第 1 行");
+    expect(
+      screen.getByTestId("sales-line-line-1-line-number").props
+        .accessibilityLabel,
+    ).toBe("第 3 行");
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("320×568 销售页允许商品信息和金额换行，不截断固定付款入口", async () => {
+    const compactMetrics = {
+      width: 320,
+      height: 568,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    const baseLine = cartSnapshot().lines[0]!;
+    const cart = new ScreenCartPort({
+      ...cartSnapshot(),
+      lines: [
+        baseLine,
+        {
+          ...baseLine,
+          displayName: "A long compact-screen product name",
+          lineId: "line-latest",
+        },
+      ],
+    });
+    const salesPresenter = presenter(cart);
+
+    await act(async () => {
+      Dimensions.set({ window: compactMetrics, screen: compactMetrics });
+    });
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          onOpenPayment={jest.fn()}
+          presenter={salesPresenter}
+          showStatusStrip={false}
+        />,
+      );
+
+      expect(flattenedStyle(screen.getByTestId("sales-cart-list"))).toMatchObject(
+        { flex: 1 },
+      );
+      expect(
+        flattenedStyle(screen.getByTestId("sales-line-line-latest"))
+          .paddingHorizontal,
+      ).toBeLessThanOrEqual(10);
+      expect(
+        flattenedStyle(
+          screen.getByTestId("sales-line-line-latest-identity"),
+        ).minWidth,
+      ).toBe(0);
+      expect(
+        flattenedStyle(screen.getByTestId("sales-line-line-latest-total")),
+      ).toMatchObject({ flexBasis: "100%", minWidth: 0 });
+      expect(screen.getByTestId("sales-screen-footer")).toContainElement(
+        screen.getByTestId("sales-open-payment"),
+      );
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
   });
 
   it("购物车按选中、负金额、零金额和普通金额优先级显示单选底色", async () => {
@@ -1024,11 +1293,11 @@ describe("SalesScreen", () => {
       />,
     );
 
-    expect(
-      screen.getByTestId("sales-merge-cart").props.accessibilityState,
-    ).toMatchObject({
-      disabled: true,
-    });
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    expect(flattenedStyle(screen.getByTestId("sales-merge-cart"))).toMatchObject(
+      { opacity: 0.72 },
+    );
+    await fireEvent.press(screen.getByTestId("sales-toolbar-close"));
 
     cart.mergeAvailable = true;
     cart.mergeResult = {
@@ -1038,11 +1307,10 @@ describe("SalesScreen", () => {
     await act(async () => {
       cart.publish({ ...cart.snapshot, revision: cart.snapshot.revision + 1 });
     });
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
     expect(
-      screen.getByTestId("sales-merge-cart").props.accessibilityState,
-    ).toMatchObject({
-      disabled: false,
-    });
+      flattenedStyle(screen.getByTestId("sales-merge-cart")).opacity,
+    ).not.toBe(0.72);
 
     await fireEvent.press(screen.getByTestId("sales-merge-cart"));
     expect(cart.edits).toContainEqual({ operation: "merge-compatible-lines" });
@@ -1083,7 +1351,9 @@ describe("SalesScreen", () => {
 
   it("数百行购物车配置有限首屏、批次和窗口虚拟化参数", async () => {
     const baseLine = cartSnapshot().lines[0]!;
-    const resolveCartProductImage = jest.fn(async () => null);
+    const resolveCartProductImage = jest.fn(
+      async (_input: { productCode: string; lookupCode: string }) => null,
+    );
     const cart = new ScreenCartPort({
       ...cartSnapshot(),
       revision: 300,
@@ -1111,6 +1381,14 @@ describe("SalesScreen", () => {
       windowSize: 7,
     });
     expect(resolveCartProductImage).toHaveBeenCalledTimes(10);
+    expect(resolveCartProductImage).toHaveBeenNthCalledWith(1, {
+      lookupCode: "BC-300",
+      productCode: "P-300",
+    });
+    expect(resolveCartProductImage).toHaveBeenNthCalledWith(10, {
+      lookupCode: "BC-291",
+      productCode: "P-291",
+    });
     const checksAfterInitialRender = cart.mergeCompatibilityChecks;
     await fireEvent.changeText(
       screen.getByTestId("sales-search-input"),
@@ -1162,8 +1440,8 @@ describe("SalesScreen", () => {
       });
       expect(scrollToIndex).toHaveBeenLastCalledWith({
         animated: true,
-        index: 2,
-        viewPosition: 1,
+        index: 0,
+        viewPosition: 0,
       });
       scrollToIndex.mockClear();
 
@@ -1662,14 +1940,19 @@ describe("SalesScreen", () => {
         showStatusStrip={false}
       />,
     );
-    expect(
-      withoutActions.getByTestId("sales-reprint-receipt").props
-        .accessibilityState,
-    ).toEqual({ disabled: true });
-    expect(
-      withoutActions.getByTestId("sales-open-cash-drawer").props
-        .accessibilityState,
-    ).toEqual({ disabled: true });
+    await fireEvent.press(withoutActions.getByTestId("sales-toolbar"));
+    for (const testID of [
+      "sales-reprint-receipt",
+      "sales-open-cash-drawer",
+    ]) {
+      const disabledAction = withoutActions.getByTestId(testID);
+      expect(flattenedStyle(disabledAction)).toMatchObject({ opacity: 0.72 });
+      await fireEvent.press(disabledAction);
+      expect(
+        withoutActions.getByTestId("handheld-state-sales-more-actions"),
+      ).toBeTruthy();
+    }
+    await fireEvent.press(withoutActions.getByTestId("sales-toolbar-close"));
     noActionPresenter.destroy();
     await withoutActions.unmount();
 
@@ -1694,19 +1977,24 @@ describe("SalesScreen", () => {
       />,
     );
 
-    const reprint = screen.getByTestId("sales-reprint-receipt");
-    await fireEvent.press(reprint);
-    await fireEvent.press(reprint);
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    await fireEvent.press(screen.getByTestId("sales-reprint-receipt"));
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    const pendingReprint = screen.getByTestId("sales-reprint-receipt");
+    expect(flattenedStyle(pendingReprint)).toMatchObject({ opacity: 0.72 });
+    await fireEvent.press(pendingReprint);
     expect(onReprintReceipt).toHaveBeenCalledTimes(1);
     expect(
-      screen.getByTestId("sales-open-cash-drawer").props.accessibilityState,
-    ).toEqual({ disabled: true });
+      flattenedStyle(screen.getByTestId("sales-open-cash-drawer")),
+    ).toMatchObject({ opacity: 0.72 });
+    await fireEvent.press(screen.getByTestId("sales-toolbar-close"));
     await act(async () => {
       finishReprint?.({ kind: "completed" });
       await Promise.resolve();
     });
     expect(screen.getByText("上一张小票已发送到打印机。")).toBeTruthy();
 
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
     await fireEvent.press(screen.getByTestId("sales-open-cash-drawer"));
     expect(onOpenCashDrawer).toHaveBeenCalledTimes(1);
     expect(screen.getByText("此操作需要主管授权。")).toBeTruthy();
@@ -1803,7 +2091,7 @@ describe("SalesScreen", () => {
 
     jest.useFakeTimers();
     try {
-      expect(screen.getByTestId("sales-function-scroll").props).toMatchObject({
+      expect(screen.getByTestId("sales-cart-list").props).toMatchObject({
         automaticallyAdjustKeyboardInsets: true,
         keyboardDismissMode: "interactive",
         keyboardShouldPersistTaps: "handled",
@@ -2438,9 +2726,12 @@ describe("SalesScreen", () => {
   });
 
   it("购物车非空时只显示统一支付入口，离线仍可进入支付页", async () => {
+    const amountCents = 997;
     const onOpenPayment = jest.fn();
     usePosShellStore.getState().setConnectivity("online");
-    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+    const salesPresenter = presenter(
+      new ScreenCartPort(cartSnapshot(amountCents)),
+    );
     const screen = await render(
       <SalesScreen
         locale="zh"
@@ -2454,6 +2745,9 @@ describe("SalesScreen", () => {
     expect(paymentButton.props.accessibilityState).toMatchObject({
       disabled: false,
     });
+    expect(paymentButton.props.accessibilityLabel).toBe(
+      `跳转支付 · ${formatAud(amountCents, "zh")}`,
+    );
     expect(
       StyleSheet.flatten(paymentButton.props.style).minHeight,
     ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
@@ -2464,7 +2758,7 @@ describe("SalesScreen", () => {
     expect(onOpenPayment).toHaveBeenLastCalledWith(
       expect.objectContaining({
         revision: 1,
-        actualAmount: { currency: "AUD", cents: 995 },
+        actualAmount: { currency: "AUD", cents: amountCents },
       }),
     );
 
@@ -2536,12 +2830,17 @@ describe("SalesScreen", () => {
       "sales-line-line-1-remove",
       "sales-order-discount",
       "sales-clear-cart",
-      "sales-hold",
     ]) {
-      expect(screen.getByTestId(testID).props.accessibilityState).toMatchObject(
-        { disabled: true },
-      );
+      expect(
+        screen.getByTestId(testID, { includeHiddenElements: true }).props
+          .accessibilityState,
+      ).toMatchObject({ disabled: true });
     }
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    expect(flattenedStyle(screen.getByTestId("sales-hold"))).toMatchObject({
+      opacity: 0.72,
+    });
+    await fireEvent.press(screen.getByTestId("sales-toolbar-close"));
     expect(screen.queryByTestId("sales-cash-modal")).toBeNull();
 
     await act(async () => {
@@ -2557,7 +2856,7 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("购物车行提供数量、折扣和删除触控入口", async () => {
+  it("购物车行默认隐藏删除操作，左滑后才可删除", async () => {
     const cart = new ScreenCartPort(cartSnapshot());
     const salesPresenter = presenter(cart);
     const screen = await render(
@@ -2576,11 +2875,80 @@ describe("SalesScreen", () => {
     await fireEvent.press(screen.getByTestId("sales-discount-1000"));
     expect(cart.discounts).toEqual([{ lineId: "line-1", basisPoints: 1_000 }]);
 
+    expect(
+      descendantTestIds(screen.getByTestId("sales-line-line-1-controls")),
+    ).not.toContain("sales-line-line-1-remove");
+    expect(
+      screen.getByTestId("sales-line-line-1-remove-action", {
+        includeHiddenElements: true,
+      }).props.accessibilityElementsHidden,
+    ).toBe(true);
+
+    const swipeSurface = screen.getByTestId("sales-line-line-1-swipe-surface");
+    const startEvent = cartLinePanEvent(240, 240, 1);
+    const activationEvent = cartLinePanEvent(240, 220, 20);
+    const dragEvent = cartLinePanEvent(220, 100, 80);
+    await act(async () => {
+      swipeSurface.props.onStartShouldSetResponderCapture(startEvent);
+      expect(
+        swipeSurface.props.onMoveShouldSetResponderCapture(activationEvent),
+      ).toBe(true);
+      swipeSurface.props.onResponderGrant(activationEvent);
+      swipeSurface.props.onResponderMove(dragEvent);
+      swipeSurface.props.onResponderRelease(dragEvent);
+    });
+    expect(
+      screen.getByTestId("sales-line-line-1-remove-action").props
+        .accessibilityElementsHidden,
+    ).toBe(false);
+
     await fireEvent.press(screen.getByTestId("sales-line-line-1-remove"));
     expect(salesPresenter.getState().cart.lines).toHaveLength(0);
 
     salesPresenter.destroy();
     await screen.unmount();
+
+    for (const rejectedEvent of [
+      cartLinePanEvent(240, 265, 20),
+      cartLinePanEvent(240, 236, 20, 100, 140),
+    ]) {
+      const rejectionPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+      const rejectionScreen = await render(
+        <SalesScreen
+          locale="en"
+          presenter={rejectionPresenter}
+          showStatusStrip={false}
+        />,
+      );
+      expect(
+        rejectionScreen.getByTestId("sales-line-line-1-swipe-surface").props
+          .onMoveShouldSetResponderCapture(rejectedEvent),
+      ).toBe(false);
+      rejectionPresenter.destroy();
+      await rejectionScreen.unmount();
+    }
+
+    const disabledPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      capabilities: { ...ALL_CAPABILITIES, cartEditing: false },
+    });
+    const disabledScreen = await render(
+      <SalesScreen
+        locale="en"
+        presenter={disabledPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    expect(
+      disabledScreen.getByTestId("sales-line-line-1-swipe-surface").props
+        .onMoveShouldSetResponderCapture(activationEvent),
+    ).toBe(false);
+    expect(
+      disabledScreen.getByTestId("sales-line-line-1-remove-action", {
+        includeHiddenElements: true,
+      }).props.accessibilityElementsHidden,
+    ).toBe(true);
+    disabledPresenter.destroy();
+    await disabledScreen.unmount();
   });
 
   it("商品行预填值退格后继续逐位输入而不会覆盖整个值", async () => {
@@ -2849,6 +3217,7 @@ describe("SalesScreen", () => {
     await fireEvent(searchInput, "submitEditing");
     expect(addByLookupCode).toHaveBeenCalledWith("930000000099");
 
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
     await fireEvent.press(screen.getByTestId("sales-hold"));
     expect(holdCart).toHaveBeenCalledTimes(1);
     mockStatusStripProps = null;

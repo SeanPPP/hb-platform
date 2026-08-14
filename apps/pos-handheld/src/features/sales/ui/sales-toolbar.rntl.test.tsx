@@ -6,7 +6,10 @@ import {
   SalesToolbar,
   type SalesToolbarAction,
 } from "./sales-toolbar";
-import { DEFAULT_SALES_TOOLBAR_ORDER } from "./sales-toolbar-order";
+import {
+  DEFAULT_SALES_TOOLBAR_ORDER,
+  mergeVisibleSalesToolbarOrder,
+} from "./sales-toolbar-order";
 
 import { PosSoundContext } from "@/ui/feedback/pos-sound-context";
 
@@ -218,11 +221,12 @@ describe("SalesToolbar", () => {
 
     expect(heldOrdersPress).not.toHaveBeenCalled();
     expect(onOrderChange).toHaveBeenCalledTimes(1);
-    expect(onOrderChange).toHaveBeenLastCalledWith([
-      "daily-close",
-      "held-orders",
-      ...DEFAULT_SALES_TOOLBAR_ORDER.slice(2),
-    ]);
+    expect(onOrderChange).toHaveBeenLastCalledWith(
+      mergeVisibleSalesToolbarOrder(DEFAULT_SALES_TOOLBAR_ORDER, [
+        "daily-close",
+        "held-orders",
+      ]),
+    );
     expect(
       screen.getByTestId("sales-toolbar-actions").props.scrollEnabled,
     ).toBe(true);
@@ -307,23 +311,24 @@ describe("SalesToolbar", () => {
     );
     await fireEvent.press(screen.getByTestId("sales-toolbar"));
     expect(
-      screen.getByTestId("toolbar-held-orders").props.accessibilityActions,
+      screen.getByTestId("toolbar-returns").props.accessibilityActions,
     ).toEqual([{ label: "Move later", name: "move-later" }]);
 
     await fireEvent(
       screen.getByTestId("toolbar-daily-close"),
       "accessibilityAction",
-      { nativeEvent: { actionName: "move-later" } },
+      { nativeEvent: { actionName: "move-earlier" } },
     );
 
-    expect(onOrderChange).toHaveBeenCalledWith([
-      "held-orders",
-      "returns",
-      "daily-close",
-      ...DEFAULT_SALES_TOOLBAR_ORDER.slice(3),
-    ]);
+    expect(onOrderChange).toHaveBeenCalledWith(
+      mergeVisibleSalesToolbarOrder(DEFAULT_SALES_TOOLBAR_ORDER, [
+        "returns",
+        "daily-close",
+        "held-orders",
+      ]),
+    );
     expect(announce).toHaveBeenCalledWith(
-      "daily-close moved to position 3 of 3.",
+      "daily-close moved to position 2 of 3.",
     );
     await screen.unmount();
   });

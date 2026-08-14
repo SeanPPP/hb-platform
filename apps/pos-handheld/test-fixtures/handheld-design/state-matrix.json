@@ -60,7 +60,7 @@
     { "id": "40", "slug": "transaction-settings", "title": "交易语言安全设置", "group": "设置与恢复", "route": "/settings", "surface": "state" },
     { "id": "41", "slug": "required-update", "title": "强制升级", "group": "设置与恢复", "route": "/update-recovery", "surface": "state" },
     { "id": "42", "slug": "update-recovery", "title": "更新恢复与日志导出", "group": "设置与恢复", "route": "/update-recovery", "surface": "route" },
-    { "id": "43", "slug": "pda-scan-ready", "title": "PDA 扫码待机销售", "group": "PDA 专项", "route": "/sales", "surface": "state", "pda": true },
+    { "id": "43", "slug": "pda-sales-input", "title": "PDA 精简商品录入", "group": "PDA 专项", "route": "/sales", "surface": "state", "pda": true },
     { "id": "44", "slug": "pda-scan-result", "title": "PDA 扫码结果", "group": "PDA 专项", "route": "/sales", "surface": "state", "pda": true },
     { "id": "45", "slug": "pda-printer-connect", "title": "N160 权限连接", "group": "PDA 专项", "route": "/settings", "surface": "state", "pda": true },
     { "id": "46", "slug": "pda-print-drawer-result", "title": "打印与钱箱结果", "group": "PDA 专项", "route": "/sales", "surface": "state", "pda": true }
