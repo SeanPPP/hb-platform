@@ -33,14 +33,14 @@
                         HorizontalAlignment="Stretch"
                         VerticalAlignment="Center"
                         MaxWidth="364">
-                <!-- 82 - 两侧边框 2 - 两侧内边距 24 = 56，确保品牌标识完整显示。 -->
+                <!-- 内容区保留 60 DIP，56 DIP 品牌标识居中后四边各有 2 DIP 像素取整余量。 -->
                 <Border Width="82"
                         Height="82"
                         Background="#FFE8F0FE"
                         BorderBrush="#FFD3E2FF"
                         BorderThickness="1"
                         CornerRadius="22"
-                        Padding="12"
+                        Padding="10"
                         HorizontalAlignment="Center">
                     <Border Width="56"
                             Height="56"
@@ -48,6 +48,8 @@
                             BorderBrush="#FFD94827"
                             BorderThickness="1"
                             CornerRadius="12"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
                             SnapsToDevicePixels="True"
                             UseLayoutRounding="True"
                             AutomationProperties.AutomationId="StartupBrandMark">

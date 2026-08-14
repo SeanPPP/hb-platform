@@ -220,8 +220,9 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
-    public void Startup_brand_frame_has_enough_inner_space_for_vector_mark()
+    public void Startup_brand_frame_keeps_rounding_clearance_around_vector_mark()
     {
+        const double minimumClearancePerEdge = 2;
         var document = XDocument.Load(Path.Combine(
             FindRepoRoot(),
             "apps",
@@ -241,13 +242,17 @@ public sealed class MainWindowXamlTests
         var borderThickness = ReadUniformLength(frame, "BorderThickness");
         var markWidth = ReadUniformLength(brandMark, "Width");
         var markHeight = ReadUniformLength(brandMark, "Height");
+        var frameContentWidth = frameWidth - ((padding + borderThickness) * 2);
+        var frameContentHeight = frameHeight - ((padding + borderThickness) * 2);
 
         Assert.True(
-            frameWidth - ((padding + borderThickness) * 2) >= markWidth,
-            "Startup brand frame content width must not clip the vector mark.");
+            frameContentWidth - markWidth >= minimumClearancePerEdge * 2,
+            "Startup brand frame must leave at least 2 DIP clearance on each horizontal edge.");
         Assert.True(
-            frameHeight - ((padding + borderThickness) * 2) >= markHeight,
-            "Startup brand frame content height must not clip the vector mark.");
+            frameContentHeight - markHeight >= minimumClearancePerEdge * 2,
+            "Startup brand frame must leave at least 2 DIP clearance on each vertical edge.");
+        Assert.Equal("Center", (string?)brandMark.Attribute("HorizontalAlignment"));
+        Assert.Equal("Center", (string?)brandMark.Attribute("VerticalAlignment"));
     }
 
     [Fact]
