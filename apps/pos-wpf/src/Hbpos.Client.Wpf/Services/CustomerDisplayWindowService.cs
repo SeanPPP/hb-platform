@@ -70,7 +70,8 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
         bool CenterAfterPlacement,
         bool UseFullDisplayBoundsForPlacement,
         WindowState FinalWindowState,
-        bool TitleBarVisibleAfterStateChange);
+        bool TitleBarVisibleAfterStateChange,
+        bool Topmost);
 
     public void Prewarm(CustomerDisplayViewModel viewModel)
     {
@@ -196,18 +197,37 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
 
     private void ApplyMode(CustomerDisplayWindow window, Window owner, DisplayBounds targetDisplay, CustomerDisplayWindowMode mode)
     {
+        ApplyModeCore(
+            window,
+            owner,
+            targetDisplay,
+            mode,
+            showWindow: window.Show,
+            setTitleBarVisible: window.SetTitleBarVisible,
+            refreshContentLayout: window.RefreshContentLayout);
+    }
+
+    internal void ApplyModeCore(
+        Window window,
+        Window owner,
+        DisplayBounds targetDisplay,
+        CustomerDisplayWindowMode mode,
+        Action showWindow,
+        Action<bool> setTitleBarVisible,
+        Action refreshContentLayout)
+    {
         var stopwatch = Stopwatch.StartNew();
         var plan = GetLayoutPlan(mode);
         ConsoleLog.Write(
             "CustomerDisplay",
             $"window apply-mode start mode={mode} wasVisible={window.IsVisible} targetLeft={targetDisplay.MonitorLeft} targetTop={targetDisplay.MonitorTop} targetWidth={targetDisplay.MonitorWidth} targetHeight={targetDisplay.MonitorHeight}");
         window.WindowState = WindowState.Normal;
-        window.SetTitleBarVisible(plan.TitleBarVisibleDuringPlacement);
+        setTitleBarVisible(plan.TitleBarVisibleDuringPlacement);
 
         if (!window.IsVisible)
         {
             var showStopwatch = Stopwatch.StartNew();
-            window.Show();
+            showWindow();
             showStopwatch.Stop();
             ConsoleLog.Write("CustomerDisplay", $"window show completed mode={mode} elapsedMs={showStopwatch.ElapsedMilliseconds}");
         }
@@ -227,8 +247,9 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
         }
 
         window.WindowState = plan.FinalWindowState;
-        window.SetTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
-        window.RefreshContentLayout();
+        setTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
+        window.Topmost = plan.Topmost;
+        refreshContentLayout();
         RestoreOwnerActivation(owner);
         stopwatch.Stop();
         ConsoleLog.Write(
@@ -245,19 +266,23 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
                 CenterAfterPlacement: true,
                 UseFullDisplayBoundsForPlacement: false,
                 FinalWindowState: WindowState.Normal,
-                TitleBarVisibleAfterStateChange: true),
+                TitleBarVisibleAfterStateChange: true,
+                Topmost: false),
+            // 全屏使用完整显示器边界和置顶状态，保持 Normal 避免 WPF 最大化回到工作区边界。
             CustomerDisplayWindowMode.Fullscreen => new CustomerDisplayLayoutPlan(
                 TitleBarVisibleDuringPlacement: true,
                 CenterAfterPlacement: false,
                 UseFullDisplayBoundsForPlacement: true,
-                FinalWindowState: WindowState.Maximized,
-                TitleBarVisibleAfterStateChange: false),
+                FinalWindowState: WindowState.Normal,
+                TitleBarVisibleAfterStateChange: false,
+                Topmost: true),
             _ => new CustomerDisplayLayoutPlan(
                 TitleBarVisibleDuringPlacement: false,
                 CenterAfterPlacement: false,
                 UseFullDisplayBoundsForPlacement: false,
                 FinalWindowState: WindowState.Normal,
-                TitleBarVisibleAfterStateChange: false)
+                TitleBarVisibleAfterStateChange: false,
+                Topmost: false)
         };
     }
 

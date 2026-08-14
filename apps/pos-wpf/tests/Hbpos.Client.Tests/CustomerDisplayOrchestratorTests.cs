@@ -3,6 +3,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Advertisements;
+using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Tests;
 
@@ -112,6 +113,35 @@ public sealed class CustomerDisplayOrchestratorTests
         Assert.False(customerDisplay.IsAdvertisementAvailable);
         Assert.Null(customerDisplay.CurrentAdvertisement);
         Assert.False(customerDisplay.IsIdleAdvertisementVisible);
+    }
+
+    [Fact]
+    public void LoadFromCart_preserves_customer_facing_discount_values()
+    {
+        var orchestrator = new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService());
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-DISCOUNT", "Discounted Item", "930000000001", 10m));
+        cart.AddItem(CreateItem("SKU-REGULAR", "Regular Item", "930000000002", 5m));
+        cart.SetLineDiscountPercent(cart.Lines.Single(line => line.LookupCode == "930000000001"), 10m);
+        var customerDisplay = new CustomerDisplayViewModel();
+
+        orchestrator.LoadFromCart(
+            customerDisplay,
+            CreateSession(),
+            cart,
+            refreshAdvertisements: false);
+
+        var discounted = customerDisplay.Lines.Single(line => line.LookupCode == "930000000001");
+        Assert.Equal(10m, discounted.GrossAmount);
+        Assert.Equal(9m, discounted.ActualAmount);
+        Assert.True(discounted.HasDiscount);
+        Assert.Equal("-10%", discounted.DiscountRateText);
+
+        var regular = customerDisplay.Lines.Single(line => line.LookupCode == "930000000002");
+        Assert.Equal(5m, regular.GrossAmount);
+        Assert.Equal(5m, regular.ActualAmount);
+        Assert.False(regular.HasDiscount);
+        Assert.Empty(regular.DiscountRateText);
     }
 
     [Fact]
@@ -268,6 +298,28 @@ public sealed class CustomerDisplayOrchestratorTests
             CashierName: "Alice",
             IsOnline: true,
             PendingSyncCount: 0);
+    }
+
+    private static SellableItemDto CreateItem(
+        string productCode,
+        string displayName,
+        string lookupCode,
+        decimal price)
+    {
+        return new SellableItemDto(
+            StoreCode: "S001",
+            ProductCode: productCode,
+            ReferenceCode: null,
+            DisplayName: displayName,
+            LookupCode: lookupCode,
+            ItemNumber: productCode,
+            Barcode: lookupCode,
+            RetailPrice: price,
+            PriceSource: PriceSourceKind.StoreRetailPrice,
+            PriceSourceLabel: "StoreRetailPrice",
+            QuantityFactor: 1m,
+            UpdatedAt: DateTimeOffset.UtcNow,
+            ProductImage: null);
     }
 
     private static AdvertisementPlaybackItemDto CreateImageAdvertisement(string id)

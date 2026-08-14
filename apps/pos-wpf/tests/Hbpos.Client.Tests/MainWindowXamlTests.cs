@@ -181,6 +181,43 @@ public sealed class MainWindowXamlTests
         }
     }
 
+    [Fact]
+    public void Startup_brand_uses_crisp_vector_mark_instead_of_scaling_window_icon()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "StartupSplashWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var window = Assert.IsType<XElement>(document.Root);
+
+        var brandMark = Assert.Single(document.Descendants().Where(element =>
+            element.Attributes().Any(attribute =>
+                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
+
+        Assert.Equal(presentation + "Border", brandMark.Name);
+        Assert.Equal("56", (string?)brandMark.Attribute("Width"));
+        Assert.Equal("56", (string?)brandMark.Attribute("Height"));
+        Assert.Empty(brandMark.Descendants(presentation + "Image"));
+
+        var initials = Assert.Single(brandMark.Descendants(presentation + "TextBlock"));
+        Assert.Equal("HB", (string?)initials.Attribute("Text"));
+        Assert.Contains(initials.Attributes(), attribute =>
+            string.Equals(attribute.Name.LocalName, "TextOptions.TextFormattingMode", StringComparison.Ordinal) &&
+            string.Equals(attribute.Value, "Display", StringComparison.Ordinal));
+        Assert.Contains(initials.Attributes(), attribute =>
+            string.Equals(attribute.Name.LocalName, "TextOptions.TextRenderingMode", StringComparison.Ordinal) &&
+            string.Equals(attribute.Value, "ClearType", StringComparison.Ordinal));
+
+        Assert.Equal(
+            "pack://application:,,,/Resources/AppIcon.ico",
+            (string?)window.Attribute("Icon"));
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

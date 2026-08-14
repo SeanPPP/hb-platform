@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -8,16 +10,28 @@ namespace Hbpos.Client.Tests;
 
 public sealed class CustomerDisplayWindowServiceTests
 {
+    private static readonly DisplayBounds TargetDisplay = new(
+        IntPtr.Zero,
+        MonitorLeft: 100,
+        MonitorTop: 200,
+        MonitorWidth: 1920,
+        MonitorHeight: 1080,
+        WorkAreaLeft: 140,
+        WorkAreaTop: 240,
+        WorkAreaWidth: 1000,
+        WorkAreaHeight: 700);
+
     [Fact]
-    public void Fullscreen_layout_plan_matches_maximize_then_hide_titlebar_flow()
+    public void Fullscreen_layout_plan_uses_full_bounds_normal_state_and_topmost()
     {
         var plan = CustomerDisplayWindowService.GetLayoutPlan(CustomerDisplayWindowMode.Fullscreen);
 
         Assert.True(plan.TitleBarVisibleDuringPlacement);
         Assert.False(plan.CenterAfterPlacement);
         Assert.True(plan.UseFullDisplayBoundsForPlacement);
-        Assert.Equal(WindowState.Maximized, plan.FinalWindowState);
+        Assert.Equal(WindowState.Normal, plan.FinalWindowState);
         Assert.False(plan.TitleBarVisibleAfterStateChange);
+        Assert.True(ReadTopmost(plan));
     }
 
     [Fact]
@@ -30,6 +44,116 @@ public sealed class CustomerDisplayWindowServiceTests
         Assert.False(plan.UseFullDisplayBoundsForPlacement);
         Assert.Equal(WindowState.Normal, plan.FinalWindowState);
         Assert.True(plan.TitleBarVisibleAfterStateChange);
+        Assert.False(ReadTopmost(plan));
+    }
+
+    private static bool ReadTopmost(object plan)
+    {
+        var property = plan.GetType().GetProperty("Topmost");
+        Assert.NotNull(property);
+        return Assert.IsType<bool>(property.GetValue(plan));
+    }
+
+    [Fact]
+    public Task ApplyMode_fullscreen_then_normal_restores_window_state_and_uses_expected_bounds()
+    {
+        return RunOnStaDispatcherAsync(() =>
+        {
+            var service = new CustomerDisplayWindowService(new DeterministicDisplayTopologyService());
+            var window = new Window
+            {
+                Width = 1024,
+                Height = 640,
+                MinWidth = 800,
+                MinHeight = 520,
+                ResizeMode = ResizeMode.CanResize,
+                WindowState = WindowState.Normal
+            };
+            var owner = new Window();
+            var titleBar = new Border();
+
+            void SetTitleBarVisible(bool isVisible)
+            {
+                titleBar.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+                window.ResizeMode = isVisible ? ResizeMode.CanResize : ResizeMode.NoResize;
+            }
+
+            service.ApplyModeCore(
+                window,
+                owner,
+                TargetDisplay,
+                CustomerDisplayWindowMode.Fullscreen,
+                showWindow: static () => { },
+                setTitleBarVisible: SetTitleBarVisible,
+                refreshContentLayout: static () => { });
+
+            Assert.Equal(WindowState.Normal, window.WindowState);
+            Assert.True(window.Topmost);
+            Assert.Equal(Visibility.Collapsed, titleBar.Visibility);
+            Assert.Equal(ResizeMode.NoResize, window.ResizeMode);
+            Assert.Equal(100d, window.Left);
+            Assert.Equal(200d, window.Top);
+            Assert.Equal(1920d, window.Width);
+            Assert.Equal(1080d, window.Height);
+
+            service.ApplyModeCore(
+                window,
+                owner,
+                TargetDisplay,
+                CustomerDisplayWindowMode.Normal,
+                showWindow: static () => { },
+                setTitleBarVisible: SetTitleBarVisible,
+                refreshContentLayout: static () => { });
+
+            Assert.Equal(WindowState.Normal, window.WindowState);
+            Assert.False(window.Topmost);
+            Assert.Equal(Visibility.Visible, titleBar.Visibility);
+            Assert.Equal(ResizeMode.CanResize, window.ResizeMode);
+            Assert.Equal(240d, window.Left);
+            Assert.Equal(317d, window.Top);
+            Assert.Equal(800d, window.Width);
+            Assert.Equal(546d, window.Height);
+        });
+    }
+
+    private static async Task RunOnStaDispatcherAsync(Action action)
+    {
+        var dispatcherReady = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+                dispatcherReady.TrySetResult(dispatcher);
+                Dispatcher.Run();
+            }
+            catch (Exception ex)
+            {
+                dispatcherReady.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Hbpos.Client.Tests.CustomerDisplayWindowDispatcher"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await dispatcher.InvokeAsync(action, DispatcherPriority.Normal).Task;
+        }
+        finally
+        {
+            if (!dispatcher.HasShutdownStarted)
+            {
+                dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
+            }
+
+            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+        }
     }
 
     [Fact]
@@ -179,6 +303,53 @@ public sealed class CustomerDisplayWindowServiceTests
                 storeCode,
                 DateTimeOffset.UtcNow,
                 []));
+        }
+    }
+
+    private sealed class DeterministicDisplayTopologyService : IDisplayTopologyService
+    {
+        public IReadOnlyList<DisplayBounds> GetDisplays()
+        {
+            return [TargetDisplay];
+        }
+
+        public DisplayBounds? FindDisplayAwayFrom(Window owner)
+        {
+            return TargetDisplay;
+        }
+
+        public void AttachWorkAreaConstraint(Window window)
+        {
+        }
+
+        public void FitToDisplayWorkArea(Window window, DisplayBounds display)
+        {
+            ApplyBounds(
+                window,
+                display.WorkAreaLeft,
+                display.WorkAreaTop,
+                display.WorkAreaWidth,
+                display.WorkAreaHeight);
+        }
+
+        public void FitToDisplayBounds(Window window, DisplayBounds display)
+        {
+            ApplyBounds(
+                window,
+                display.MonitorLeft,
+                display.MonitorTop,
+                display.MonitorWidth,
+                display.MonitorHeight);
+        }
+
+        private static void ApplyBounds(Window window, int left, int top, int width, int height)
+        {
+            window.Left = left;
+            window.Top = top;
+            window.Width = Math.Max(window.MinWidth, width);
+            window.Height = Math.Max(window.MinHeight, height);
+            window.MaxWidth = window.Width;
+            window.MaxHeight = window.Height;
         }
     }
 }

@@ -10,7 +10,7 @@ namespace Hbpos.Client.Wpf.Views.Screens;
 
 public partial class CustomerDisplayView : UserControl
 {
-    private static readonly GridLength VisibleSummaryRowHeight = new(132);
+    private static readonly GridLength VisibleSummaryRowHeight = new(152);
     private static readonly GridLength HiddenSummaryRowHeight = new(0);
     private readonly DispatcherTimer _imageAdvanceTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _videoTimeoutTimer = new() { Interval = TimeSpan.FromSeconds(30) };

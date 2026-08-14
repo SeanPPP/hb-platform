@@ -1,9 +1,34 @@
+using Hbpos.Client.Wpf.ViewModels;
 using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
 
 public sealed class TransactionHistoryViewLayoutTests
 {
+    [Fact]
+    public void History_order_id_run_uses_one_way_binding_for_read_only_property()
+    {
+        var displayOrderId = typeof(HistoryOrderListItem).GetProperty(nameof(HistoryOrderListItem.DisplayOrderId));
+        Assert.NotNull(displayOrderId);
+        Assert.False(displayOrderId!.CanWrite);
+
+        var view = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var orderIdRun = Assert.Single(view.Descendants(presentation + "Run").Where(element =>
+            ((string?)element.Attribute("Text"))?.Contains("Binding DisplayOrderId", StringComparison.Ordinal) == true));
+
+        Assert.Equal("{Binding DisplayOrderId, Mode=OneWay}", (string?)orderIdRun.Attribute("Text"));
+    }
+
     [Fact]
     public void History_list_uses_two_line_summary_columns_and_compact_icon_actions()
     {

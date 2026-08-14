@@ -502,7 +502,7 @@
                                                    Style="{StaticResource HistoryPrimaryTextStyle}"
                                                    ToolTip="{Binding DisplayOrderId}">
                                             <Run Text="#" />
-                                            <Run Text="{Binding DisplayOrderId}" />
+                                            <Run Text="{Binding DisplayOrderId, Mode=OneWay}" />
                                         </TextBlock>
                                         <TextBlock Grid.Row="1"
                                                    Text="{Binding SoldAtDisplay}"

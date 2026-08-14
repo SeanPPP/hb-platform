@@ -41,8 +41,25 @@
                         CornerRadius="22"
                         Padding="13"
                         HorizontalAlignment="Center">
-                    <Image Source="pack://application:,,,/Resources/AppIcon.ico"
-                           Stretch="Uniform" />
+                    <Border Width="56"
+                            Height="56"
+                            Background="#FFEE5835"
+                            BorderBrush="#FFD94827"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            SnapsToDevicePixels="True"
+                            UseLayoutRounding="True"
+                            AutomationProperties.AutomationId="StartupBrandMark">
+                        <TextBlock Text="HB"
+                                   FontFamily="{StaticResource PosFontFamily}"
+                                   FontSize="28"
+                                   FontWeight="Black"
+                                   Foreground="White"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   TextOptions.TextFormattingMode="Display"
+                                   TextOptions.TextRenderingMode="ClearType" />
+                    </Border>
                 </Border>
                 <TextBlock Text="{loc:Loc startup.title}"
                            Margin="0,16,0,0"

@@ -94,7 +94,12 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
             line.LookupCode,
             line.Quantity,
             line.UnitPrice,
-            line.ActualAmount));
+            line.ActualAmount)
+        {
+            GrossAmount = line.GrossAmount,
+            HasDiscount = line.HasDiscount,
+            DiscountRateText = line.DiscountRateText
+        });
         customerDisplay.TerminalName = session.DeviceCode;
         customerDisplay.LoadLines(lines, cart.TotalAmount, cart.DiscountAmount);
         if (!refreshAdvertisements)

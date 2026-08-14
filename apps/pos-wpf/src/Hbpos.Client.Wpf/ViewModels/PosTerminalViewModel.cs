@@ -889,6 +889,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        if (IsLastBoundSharedHeldOrderLine(lineSnapshot) &&
+            !await TryReleaseSharedHeldOrderAsync())
+        {
+            return;
+        }
+
+        // owner-release 会原子清空已恢复购物车；兼容仅解绑的测试/替代实现时再走普通删行。
+        if (lineSnapshot is not null && !_cart.Lines.Contains(lineSnapshot))
+        {
+            SetStatus("pos.status.ready");
+            return;
+        }
+
         ExecuteCartMutation("remove-line", () => _workflowService.RemoveLine(lineSnapshot));
     }
 
@@ -921,6 +934,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        if (lineSnapshot?.Quantity == 1m &&
+            IsLastBoundSharedHeldOrderLine(lineSnapshot) &&
+            !await TryReleaseSharedHeldOrderAsync())
+        {
+            return;
+        }
+
+        if (lineSnapshot is not null && !_cart.Lines.Contains(lineSnapshot))
+        {
+            SetStatus("pos.status.ready");
+            return;
+        }
+
         ExecuteCartMutation("decrease-line", () => _workflowService.DecreaseLine(lineSnapshot));
     }
 
@@ -1166,39 +1192,59 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         using var authorizationActivation = permissionGrant.Activate();
-        if (_cart.CreateSnapshot().SharedHeldOrderClaimId is Guid claimId)
+        if (!await TryReleaseSharedHeldOrderAsync())
         {
-            if (_releaseSharedHeldOrderAsync is null)
-            {
-                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
-                return;
-            }
-
-            try
-            {
-                await _releaseSharedHeldOrderAsync(claimId, Session, CancellationToken.None);
-            }
-            catch (Exception exception) when (
-                exception is not OutOfMemoryException
-                    and not StackOverflowException
-                    and not OperationCanceledException)
-            {
-                // 只记录 claim 标识与异常类型，禁止把 payload 或服务端响应写入日志。
-                ConsoleLog.Write(
-                    "HeldOrderRelease",
-                    $"owner release failed claimId={claimId:D} error={exception.GetType().Name}");
-                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
-                return;
-            }
-
-            if (_cart.CreateSnapshot().SharedHeldOrderClaimId is not null)
-            {
-                SetStatus("pos.status.sharedHeldOrderReleaseFailed");
-                return;
-            }
+            return;
         }
 
         ExecuteCartMutation("clear-cart", () => _workflowService.ClearCart());
+    }
+
+    private bool IsLastBoundSharedHeldOrderLine(CartLine? line)
+    {
+        return line is not null &&
+               _cart.Lines.Count == 1 &&
+               ReferenceEquals(_cart.Lines[0], line) &&
+               _cart.CreateSnapshot().SharedHeldOrderClaimId is not null;
+    }
+
+    private async Task<bool> TryReleaseSharedHeldOrderAsync()
+    {
+        if (_cart.CreateSnapshot().SharedHeldOrderClaimId is not Guid claimId)
+        {
+            return true;
+        }
+
+        if (_releaseSharedHeldOrderAsync is null)
+        {
+            SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+            return false;
+        }
+
+        try
+        {
+            await _releaseSharedHeldOrderAsync(claimId, Session, CancellationToken.None);
+        }
+        catch (Exception exception) when (
+            exception is not OutOfMemoryException
+                and not StackOverflowException
+                and not OperationCanceledException)
+        {
+            // 只记录 claim 标识与异常类型，禁止把 payload 或服务端响应写入日志。
+            ConsoleLog.Write(
+                "HeldOrderRelease",
+                $"owner release failed claimId={claimId:D} error={exception.GetType().Name}");
+            SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+            return false;
+        }
+
+        if (_cart.CreateSnapshot().SharedHeldOrderClaimId is not null)
+        {
+            SetStatus("pos.status.sharedHeldOrderReleaseFailed");
+            return false;
+        }
+
+        return true;
     }
 
     private async Task OpenPaymentAsync()
