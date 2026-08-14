@@ -1,6 +1,8 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   AddUserToStoreDto,
+  BatchUpdateStoresRequest,
+  BatchUpdateStoresResult,
   CreateStoreDto,
   StoreDetailDto,
   StoreDto,
@@ -86,6 +88,16 @@ export async function createStore(payload: CreateStoreDto): Promise<StoreDetailD
 export async function updateStore(guid: string, payload: UpdateStoreDto): Promise<StoreDetailDto> {
   const response = await request.put<ApiResponse<StoreDetailApiDto>>(`/api/stores/guid/${guid}`, payload)
   return mapStoreDetail(unwrapApiData(response))
+}
+
+export async function batchUpdateStores(
+  payload: BatchUpdateStoresRequest,
+): Promise<BatchUpdateStoresResult> {
+  const response = await request.patch<ApiResponse<BatchUpdateStoresResult>>(
+    '/api/stores/batch',
+    payload,
+  )
+  return unwrapApiData(response)
 }
 
 export async function syncStoreToHq(guid: string): Promise<boolean> {

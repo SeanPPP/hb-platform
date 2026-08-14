@@ -124,8 +124,8 @@ assertOccurrenceExactly(
 assertOccurrenceExactly(
   storeTypesSource,
   'timeZoneId?: string',
-  3,
-  'StoreDto、CreateStoreDto 和 UpdateStoreDto 都应声明可选时区字段',
+  5,
+  '列表查询、StoreDto、CreateStoreDto、UpdateStoreDto 和批量请求都应声明可选时区字段',
 )
 assertIncludes(
   pageSource,
@@ -152,6 +152,42 @@ assertIncludes(
   pageSource,
   "dataIndex: 'timeZoneId'",
   '分店列表应显示时区列',
+)
+assertOccurrenceExactly(
+  pageSource,
+  "fixed: 'left'",
+  3,
+  '序号、分店名称和分店编码应固定在表格左侧',
+)
+assertIncludes(
+  pageSource,
+  "fixed: 'right'",
+  '操作列应固定在表格右侧',
+)
+assertIncludes(
+  pageSource,
+  'fixed: true',
+  '批量勾选列应与左侧关键列一起固定',
+)
+assertIncludes(
+  pageSource,
+  'timeZoneFilterOptions',
+  '分店列表应构造受控时区筛选选项',
+)
+assertIncludes(
+  pageSource,
+  'filterMultiple: false',
+  '时区筛选应限制为单选',
+)
+assertIncludes(
+  pageSource,
+  'UNSET_STORE_TIME_ZONE_FILTER',
+  '时区筛选应包含未设置分店的保留标识',
+)
+assertIncludes(
+  pageSource,
+  'timeZoneId: nextTimeZoneFilter',
+  '时区筛选应作为服务端分页查询参数提交',
 )
 assertIncludes(
   pageSource,
@@ -182,6 +218,16 @@ assertIncludes(
   enSource,
   '"timeZoneRequired": "Please select a time zone"',
   '英文文案应包含时区必填提示',
+)
+assertIncludes(
+  zhSource,
+  '"timeZoneUnset": "未设置"',
+  '中文文案应包含未设置时区筛选项',
+)
+assertIncludes(
+  enSource,
+  '"timeZoneUnset": "Not set"',
+  '英文文案应包含未设置时区筛选项',
 )
 
 assertOccurrenceAtLeast(
@@ -233,8 +279,8 @@ assertIncludes(
 assertOccurrenceExactly(
   storeTypesSource,
   'returnPolicy?: string',
-  3,
-  'StoreDto、CreateStoreDto 和 UpdateStoreDto 都应声明可选退换货政策字段',
+  4,
+  'StoreDto、CreateStoreDto、UpdateStoreDto 和批量请求都应声明可选退换货政策字段',
 )
 assertIncludes(
   zhSource,
@@ -255,6 +301,77 @@ assertIncludes(
   enSource,
   '"returnPolicyMaxLength": "Return policy cannot exceed 500 characters"',
   '英文文案应明确说明退换货政策最大长度',
+)
+
+assertIncludes(
+  pageSource,
+  'usePermission(P.Stores.Edit)',
+  '只有拥有 Stores.Edit 权限的用户才能看到批量选择能力',
+)
+assertIncludes(
+  pageSource,
+  'preserveSelectedRowKeys: true',
+  '批量选择应在翻页时保留',
+)
+assertIncludes(
+  pageSource,
+  "shouldClearStoreSelection('filter')",
+  '品牌或状态筛选范围变化时应清空隐藏选择',
+)
+assertIncludes(
+  pageSource,
+  "t('system.stores.batchEdit')",
+  '工具栏应提供批量修改入口',
+)
+assertIncludes(
+  pageSource,
+  'buildBatchUpdateStoresRequest(selectedStoreGuids',
+  '批量弹窗提交应通过纯逻辑构造明确字段请求',
+)
+assertIncludes(
+  pageSource,
+  'applyTimeZoneId',
+  '批量弹窗应为时区提供独立修改开关',
+)
+assertIncludes(
+  pageSource,
+  'applyAbn',
+  '批量弹窗应为 ABN 提供独立修改开关',
+)
+assertIncludes(
+  pageSource,
+  'applyBrandName',
+  '批量弹窗应为品牌提供独立修改开关',
+)
+assertIncludes(
+  pageSource,
+  'applyIsActive',
+  '批量弹窗应把收银状态的修改开关与 Switch 分离',
+)
+assertIncludes(
+  pageSource,
+  'applyReturnPolicy',
+  '批量弹窗应为退换货政策提供独立修改开关',
+)
+assertIncludes(
+  zhSource,
+  '"batchEdit": "批量修改"',
+  '中文文案应包含批量修改入口',
+)
+assertIncludes(
+  enSource,
+  '"batchEdit": "Batch Edit"',
+  '英文文案应包含批量修改入口',
+)
+assertIncludes(
+  zhSource,
+  '"batchCashRegisterDisableWarning"',
+  '中文文案应包含批量停用收银警告',
+)
+assertIncludes(
+  enSource,
+  '"batchCashRegisterDisableWarning"',
+  '英文文案应包含批量停用收银警告',
 )
 
 console.log('storeFormValidation.test: ok')

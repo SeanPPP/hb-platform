@@ -1,5 +1,12 @@
-import { createStore, getActiveStores, getNextStoreCode, getStores, syncStoreToHq } from './storeService'
-import type { StoreDto } from '../types/store'
+import {
+  batchUpdateStores,
+  createStore,
+  getActiveStores,
+  getNextStoreCode,
+  getStores,
+  syncStoreToHq,
+} from './storeService'
+import type { BatchUpdateStoresRequest, StoreDto } from '../types/store'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
   const actualJson = JSON.stringify(actual)
@@ -70,6 +77,7 @@ try {
     pageSize: 50,
     brandName: 'Hot Bargain',
     isActive: true,
+    timeZoneId: 'Australia/Sydney',
     sortField: 'brandName',
     sortOrder: 'desc',
   })
@@ -82,10 +90,19 @@ try {
       ['pageSize', '50'],
       ['brandName', 'Hot Bargain'],
       ['isActive', 'true'],
+      ['timeZoneId', 'Australia/Sydney'],
       ['sortField', 'brandName'],
       ['sortOrder', 'desc'],
     ],
-    '分店列表查询应该透传品牌、状态和排序参数',
+    '分店列表查询应该透传品牌、状态、时区和排序参数',
+  )
+
+  requestedUrl = ''
+  await getStores({ timeZoneId: '__unset__' })
+  assertDeepEqual(
+    Array.from(new URL(requestedUrl, 'http://localhost').searchParams.entries()),
+    [['timeZoneId', '__unset__']],
+    '分店列表查询应该透传未设置时区筛选标识',
   )
 
   let nextCodeUrl = ''
@@ -203,6 +220,77 @@ try {
     failed = error instanceof Error && error.message === '同步HQ分店失败'
   }
   assertDeepEqual(failed, true, '同步HQ分店业务失败时应抛出后端错误消息')
+
+  let capturedBatchUrl = ''
+  let capturedBatchInit: RequestInit | undefined
+  globalThis.fetch = (async (input, init) => {
+    capturedBatchUrl = String(input)
+    capturedBatchInit = init
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        requestedCount: 2,
+        updatedCount: 2,
+        updatedStoreGuids: ['store-1', 'store-2'],
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const batchPayload: BatchUpdateStoresRequest = {
+    storeGuids: ['store-1', 'store-2'],
+    fields: ['abn', 'isActive'],
+    abn: null,
+    isActive: false,
+  }
+  const batchResult = await batchUpdateStores(batchPayload)
+  assertDeepEqual(
+    {
+      path: new URL(capturedBatchUrl, 'http://localhost').pathname,
+      method: capturedBatchInit?.method,
+      body: JSON.parse(String(capturedBatchInit?.body)),
+      result: batchResult,
+    },
+    {
+      path: '/api/stores/batch',
+      method: 'PATCH',
+      body: batchPayload,
+      result: {
+        requestedCount: 2,
+        updatedCount: 2,
+        updatedStoreGuids: ['store-1', 'store-2'],
+      },
+    },
+    '批量修改分店应使用 PATCH 路径并原样保留 null 与 false',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: false,
+    message: '部分分店不存在或已删除',
+    errorCode: 'STORE_BATCH_TARGET_INVALID',
+    data: {
+      requestedCount: 2,
+      updatedCount: 0,
+      updatedStoreGuids: [],
+    },
+  }), {
+    status: 409,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  let batchFailure = ''
+  try {
+    await batchUpdateStores(batchPayload)
+  } catch (error) {
+    batchFailure = error instanceof Error ? error.message : ''
+  }
+  assertDeepEqual(
+    batchFailure,
+    '部分分店不存在或已删除',
+    '批量修改业务错误应保留后端错误消息',
+  )
 } finally {
   globalThis.fetch = originalFetch
 }

@@ -89,15 +89,16 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
-    public async Task StoreDtos_退换货政策四个DTO均声明500长度上限()
+    public async Task StoreDtos_退换货政策整表DTO与批量补丁保持各自校验语义()
     {
         var dtoSource = await File.ReadAllTextAsync(Path.Combine(
             FindRepoRoot(),
             "services/backend/BlazorApp.Shared/DTOs/StoreDtos.cs"));
 
-        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(
+        Assert.Equal(5, System.Text.RegularExpressions.Regex.Matches(
             dtoSource,
             @"public string\? ReturnPolicy \{ get; set; \}").Count);
+        // 四个整表 DTO 继续使用 DataAnnotation；批量补丁只在 fields 选中时由服务校验。
         Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(
             dtoSource,
             @"\[StringLength\(500, ErrorMessage = ""退换货政策长度不能超过500个字符""\)\]").Count);

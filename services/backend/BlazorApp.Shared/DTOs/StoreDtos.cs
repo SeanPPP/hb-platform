@@ -33,6 +33,11 @@ namespace BlazorApp.Shared.DTOs
         public string? BrandName { get; set; }
 
         /// <summary>
+        /// 分店考勤时区精确筛选；特殊值 "__unset__" 匹配 TimeZoneId 为 NULL 或空字符串。
+        /// </summary>
+        public string? TimeZoneId { get; set; }
+
+        /// <summary>
         /// 用户GUID过滤
         /// </summary>
         public string? UserGUID { get; set; }
@@ -194,6 +199,56 @@ namespace BlazorApp.Shared.DTOs
         /// 是否启用状态
         /// </summary>
         public bool IsActive { get; set; } = true;
+    }
+
+    /// <summary>
+    /// 分店批量修改允许的字段名。
+    /// </summary>
+    public static class StoreBatchUpdateFieldNames
+    {
+        public const string TimeZoneId = "timeZoneId";
+        public const string ABN = "abn";
+        public const string BrandName = "brandName";
+        public const string IsActive = "isActive";
+        public const string ReturnPolicy = "returnPolicy";
+    }
+
+    /// <summary>
+    /// 分店批量修改请求；只有 Fields 中明确列出的字段才会被更新。
+    /// </summary>
+    public class BatchUpdateStoresDto
+    {
+        [Required(ErrorMessage = "至少选择一家分店")]
+        [MinLength(1, ErrorMessage = "至少选择一家分店")]
+        [MaxLength(100, ErrorMessage = "每批最多修改100家分店")]
+        public List<string> StoreGuids { get; set; } = new();
+
+        [Required(ErrorMessage = "至少选择一个修改字段")]
+        [MinLength(1, ErrorMessage = "至少选择一个修改字段")]
+        [MaxLength(5, ErrorMessage = "每批最多修改5个字段")]
+        public List<string> Fields { get; set; } = new();
+
+        public string? TimeZoneId { get; set; }
+
+        public string? ABN { get; set; }
+
+        public string? BrandName { get; set; }
+
+        public bool? IsActive { get; set; }
+
+        public string? ReturnPolicy { get; set; }
+    }
+
+    /// <summary>
+    /// 分店批量修改结果。
+    /// </summary>
+    public class BatchUpdateStoresResultDto
+    {
+        public int RequestedCount { get; set; }
+
+        public int UpdatedCount { get; set; }
+
+        public List<string> UpdatedStoreGuids { get; set; } = new();
     }
 
     /// <summary>

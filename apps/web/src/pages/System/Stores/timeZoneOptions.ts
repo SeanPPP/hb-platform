@@ -4,6 +4,8 @@ export const storeTimeZoneOptions = [
   { value: 'Australia/Melbourne', label: 'Australia/Melbourne (Victoria)' },
 ]
 
+export const UNSET_STORE_TIME_ZONE_FILTER = '__unset__'
+
 export function formatStoreTimeZoneId(timeZoneId?: string) {
   if (!timeZoneId) {
     return '--'

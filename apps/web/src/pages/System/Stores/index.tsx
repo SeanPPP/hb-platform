@@ -1,7 +1,9 @@
 import { CloudSyncOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Drawer,
   Form,
@@ -19,14 +21,24 @@ import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { FilterValue, SorterResult } from 'antd/es/table/interface'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { HasPermission } from '../../../components/Access'
+import { HasPermission, usePermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
-import { createStore, getNextStoreCode, getStoreByGuid, getStores, syncStoreToHq, updateStore } from '../../../services/storeService'
+import { batchUpdateStores, createStore, getNextStoreCode, getStoreByGuid, getStores, syncStoreToHq, updateStore } from '../../../services/storeService'
 import type { CreateStoreDto, StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import { RequestError } from '../../../utils/request'
 import StoreUserManagement from './StoreUserManagement'
-import { formatStoreTimeZoneId, storeTimeZoneOptions } from './timeZoneOptions'
+import {
+  BatchUpdateRequestError,
+  buildBatchUpdateStoresRequest,
+  shouldClearStoreSelection,
+  type BatchUpdateStoreFormValues,
+} from './batchUpdateLogic'
+import {
+  UNSET_STORE_TIME_ZONE_FILTER,
+  formatStoreTimeZoneId,
+  storeTimeZoneOptions,
+} from './timeZoneOptions'
 import {
   DEFAULT_SYSTEM_LIST_PAGE_SIZE,
   createLatestRequestGuard,
@@ -90,6 +102,7 @@ function getApiErrorCode(error: unknown) {
 
 export default function SystemStoresPage() {
   const { t } = useTranslation()
+  const canEditStores = usePermission(P.Stores.Edit)
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<StoreDto[]>([])
@@ -99,6 +112,7 @@ export default function SystemStoresPage() {
   const mainListRequestGuardRef = useRef(createLatestRequestGuard())
   const [brandFilter, setBrandFilter] = useState<string | undefined>()
   const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>()
+  const [timeZoneFilter, setTimeZoneFilter] = useState<string | undefined>()
   const [sortBy, setSortBy] = useState<string | undefined>()
   const [sortOrder, setSortOrder] = useState<StoreSortOrder>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -109,12 +123,22 @@ export default function SystemStoresPage() {
   const [editingStore, setEditingStore] = useState<StoreDetailDto | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createSaving, setCreateSaving] = useState(false)
+  const [selectedStoreGuids, setSelectedStoreGuids] = useState<string[]>([])
+  const [batchEditOpen, setBatchEditOpen] = useState(false)
+  const [batchEditSaving, setBatchEditSaving] = useState(false)
   const [storeCodeLoading, setStoreCodeLoading] = useState(false)
   const [syncingStoreGuids, setSyncingStoreGuids] = useState<Set<string>>(() => new Set())
   const [storeUserOpen, setStoreUserOpen] = useState(false)
   const [storeUserTarget, setStoreUserTarget] = useState<StoreDto | null>(null)
   const [form] = Form.useForm<UpdateStoreDto>()
   const [createForm] = Form.useForm<CreateStoreDto>()
+  const [batchEditForm] = Form.useForm<BatchUpdateStoreFormValues>()
+  const applyTimeZoneId = Form.useWatch('applyTimeZoneId', batchEditForm)
+  const applyAbn = Form.useWatch('applyAbn', batchEditForm)
+  const applyBrandName = Form.useWatch('applyBrandName', batchEditForm)
+  const applyIsActive = Form.useWatch('applyIsActive', batchEditForm)
+  const batchIsActive = Form.useWatch('isActive', batchEditForm)
+  const applyReturnPolicy = Form.useWatch('applyReturnPolicy', batchEditForm)
 
   const loadData = async (
     nextPage = page,
@@ -123,6 +147,7 @@ export default function SystemStoresPage() {
     nextIsActiveFilter = isActiveFilter,
     nextSortBy = sortBy,
     nextSortOrder = sortOrder,
+    nextTimeZoneFilter = timeZoneFilter,
   ) => {
     await runLatestGuardedRequest(mainListRequestGuardRef.current, () => getStores({
         page: nextPage,
@@ -130,6 +155,7 @@ export default function SystemStoresPage() {
         search: keyword || undefined,
         brandName: nextBrandFilter || undefined,
         isActive: nextIsActiveFilter,
+        timeZoneId: nextTimeZoneFilter,
         sortField: nextSortBy,
         sortOrder: nextSortOrder === 'ascend' ? 'asc' : nextSortOrder === 'descend' ? 'desc' : undefined,
       }), {
@@ -141,6 +167,7 @@ export default function SystemStoresPage() {
         setPageSize(result.pageSize)
         setBrandFilter(nextBrandFilter)
         setIsActiveFilter(nextIsActiveFilter)
+        setTimeZoneFilter(nextTimeZoneFilter)
         setSortBy(nextSortBy)
         setSortOrder(nextSortOrder ?? null)
       },
@@ -159,6 +186,15 @@ export default function SystemStoresPage() {
       mainListRequestGuardRef.current.invalidate()
     }
   }, [])
+
+  const clearStoreSelection = () => setSelectedStoreGuids([])
+
+  const handleQuery = () => {
+    if (shouldClearStoreSelection('query')) {
+      clearStoreSelection()
+    }
+    void loadData(1, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)
+  }
 
   const reloadStoreDetail = async (storeGuid: string) => {
     const detail = await getStoreByGuid(storeGuid)
@@ -288,6 +324,66 @@ export default function SystemStoresPage() {
     }
   }
 
+  const handleOpenBatchEdit = () => {
+    if (selectedStoreGuids.length === 0) {
+      return
+    }
+
+    batchEditForm.resetFields()
+    batchEditForm.setFieldsValue({
+      applyTimeZoneId: false,
+      applyAbn: false,
+      applyBrandName: false,
+      applyIsActive: false,
+      isActive: false,
+      applyReturnPolicy: false,
+    })
+    setBatchEditOpen(true)
+  }
+
+  const handleCloseBatchEdit = () => {
+    if (batchEditSaving) {
+      return
+    }
+    setBatchEditOpen(false)
+    batchEditForm.resetFields()
+  }
+
+  const handleBatchEditSubmit = async () => {
+    try {
+      const values = await batchEditForm.validateFields()
+      const payload = buildBatchUpdateStoresRequest(selectedStoreGuids, values)
+      setBatchEditSaving(true)
+      const result = await batchUpdateStores(payload)
+
+      message.success(t('system.stores.batchUpdateSuccess', { count: result.updatedCount }))
+      setBatchEditOpen(false)
+      batchEditForm.resetFields()
+      clearStoreSelection()
+      await loadData(page, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+        return
+      }
+
+      if (error instanceof BatchUpdateRequestError) {
+        const messageKey = {
+          INVALID_TARGETS: 'system.stores.batchSelectionLimit',
+          NO_FIELDS_SELECTED: 'system.stores.batchSelectFieldRequired',
+          TIME_ZONE_REQUIRED: 'system.stores.batchTimeZoneRequired',
+          IS_ACTIVE_REQUIRED: 'system.stores.batchCashRegisterRequired',
+        }[error.code]
+        message.warning(t(messageKey ?? 'system.stores.batchUpdateFailed'))
+        return
+      }
+
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('system.stores.batchUpdateFailed'))
+    } finally {
+      setBatchEditSaving(false)
+    }
+  }
+
   const handleOpenStoreUsers = (store: StoreDto) => {
     setStoreUserTarget(store)
     setStoreUserOpen(true)
@@ -332,6 +428,11 @@ export default function SystemStoresPage() {
       .map((brandName) => ({ text: brandName, value: brandName }))
   }, [brandFilter, data])
 
+  const timeZoneFilterOptions = useMemo(() => [
+    ...storeTimeZoneOptions.map((option) => ({ text: option.label, value: option.value })),
+    { text: t('system.stores.timeZoneUnset'), value: UNSET_STORE_TIME_ZONE_FILTER },
+  ], [t])
+
   const handleTableChange = (
     pagination: TablePaginationConfig,
     filters: Record<string, FilterValue | null>,
@@ -350,6 +451,12 @@ export default function SystemStoresPage() {
     const nextIsActiveValue = filters.isActive?.[0]
     const nextIsActiveFilter =
       nextIsActiveValue === 'true' ? true : nextIsActiveValue === 'false' ? false : undefined
+    const nextTimeZoneValue = filters.timeZoneId?.[0]
+    const nextTimeZoneFilter = typeof nextTimeZoneValue === 'string' ? nextTimeZoneValue : undefined
+
+    if (extra.action === 'filter' && shouldClearStoreSelection('filter')) {
+      clearStoreSelection()
+    }
 
     // 表格筛选和排序都走服务端查询，避免分页后只在当前页内处理数据。
     const nextPagination = resolveSystemListPagination(extra.action, pagination, pageSize)
@@ -360,6 +467,7 @@ export default function SystemStoresPage() {
       nextIsActiveFilter,
       nextSortBy,
       nextSortOrder,
+      nextTimeZoneFilter,
     )
   }
 
@@ -368,12 +476,14 @@ export default function SystemStoresPage() {
       title: t('common.index'),
       key: 'rowIndex',
       width: 64,
+      fixed: 'left',
       render: (_value, _record, index) => (page - 1) * pageSize + index + 1,
     },
     {
       title: t('system.stores.storeName'),
       dataIndex: 'storeName',
       width: 190,
+      fixed: 'left',
       sorter: true,
       sortOrder: sortBy === 'storeName' ? sortOrder : null,
     },
@@ -381,6 +491,7 @@ export default function SystemStoresPage() {
       title: t('system.stores.storeCode'),
       dataIndex: 'storeCode',
       width: 96,
+      fixed: 'left',
       sorter: true,
       sortOrder: sortBy === 'storeCode' ? sortOrder : null,
     },
@@ -404,6 +515,9 @@ export default function SystemStoresPage() {
       title: t('system.stores.timeZone'),
       dataIndex: 'timeZoneId',
       width: 220,
+      filters: timeZoneFilterOptions,
+      filterMultiple: false,
+      filteredValue: timeZoneFilter ? [timeZoneFilter] : null,
       render: formatStoreTimeZoneId,
     },
     {
@@ -458,6 +572,7 @@ export default function SystemStoresPage() {
       title: t('column.action'),
       key: 'action',
       width: 220,
+      fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
           <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
@@ -499,7 +614,7 @@ export default function SystemStoresPage() {
             style={{ width: 260 }}
             allowClear
           />
-          <Button type="primary" onClick={() => void loadData(1, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)}>
+          <Button type="primary" onClick={handleQuery}>
             {t('common.query')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)}>
@@ -510,16 +625,43 @@ export default function SystemStoresPage() {
               {t('system.stores.createStore')}
             </Button>
           </HasPermission>
+          <HasPermission code={P.Stores.Edit}>
+            <Space size={8}>
+              <Button
+                icon={<EditOutlined />}
+                disabled={selectedStoreGuids.length === 0}
+                onClick={handleOpenBatchEdit}
+              >
+                {t('system.stores.batchEdit')}
+              </Button>
+              <Typography.Text type={selectedStoreGuids.length > 0 ? undefined : 'secondary'}>
+                {t('system.stores.selectedStoreCount', { count: selectedStoreGuids.length })}
+              </Typography.Text>
+            </Space>
+          </HasPermission>
         </Space>
 
         <Table
           rowKey="storeGUID"
+          rowSelection={canEditStores ? {
+            selectedRowKeys: selectedStoreGuids,
+            preserveSelectedRowKeys: true,
+            fixed: true,
+            onChange: (selectedRowKeys) => {
+              const nextStoreGuids = selectedRowKeys.map(String)
+              if (nextStoreGuids.length > 100) {
+                message.warning(t('system.stores.batchSelectionLimit'))
+                return
+              }
+              setSelectedStoreGuids(nextStoreGuids)
+            },
+          } : undefined}
           loading={loading}
           columns={columns}
           dataSource={data}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1700 }}
+          scroll={{ x: 1760 }}
           onChange={handleTableChange}
           pagination={{
             current: page,
@@ -529,6 +671,140 @@ export default function SystemStoresPage() {
           }}
         />
       </Card>
+
+      <Modal
+        title={t('system.stores.batchEditTitle')}
+        open={batchEditOpen}
+        onCancel={handleCloseBatchEdit}
+        onOk={() => void handleBatchEditSubmit()}
+        okText={t('system.stores.batchConfirm', { count: selectedStoreGuids.length })}
+        confirmLoading={batchEditSaving}
+        cancelButtonProps={{ disabled: batchEditSaving }}
+        closable={!batchEditSaving}
+        keyboard={!batchEditSaving}
+        maskClosable={!batchEditSaving}
+        width={680}
+        destroyOnHidden
+      >
+        <Form
+          form={batchEditForm}
+          layout="vertical"
+          initialValues={{
+            applyTimeZoneId: false,
+            applyAbn: false,
+            applyBrandName: false,
+            applyIsActive: false,
+            isActive: false,
+            applyReturnPolicy: false,
+          }}
+          autoComplete="off"
+        >
+          <Alert
+            type="info"
+            showIcon
+            message={t('system.stores.batchEditSummary', { count: selectedStoreGuids.length })}
+            description={(
+              <Space direction="vertical" size={2}>
+                <span>{t('system.stores.batchEditHint')}</span>
+                <Typography.Text type="secondary">
+                  {t('system.stores.batchTextClearHint')}
+                </Typography.Text>
+              </Space>
+            )}
+            style={{ marginBottom: 16 }}
+          />
+
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, paddingInline: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 16, alignItems: 'center', paddingBlock: 12, borderBottom: '1px solid #f5f5f5' }}>
+              <Form.Item name="applyTimeZoneId" valuePropName="checked" noStyle>
+                <Checkbox autoFocus>
+                  {t('system.stores.batchModifyField', { field: t('system.stores.timeZone') })}
+                </Checkbox>
+              </Form.Item>
+              <Form.Item
+                name="timeZoneId"
+                rules={applyTimeZoneId ? [{ required: true, message: t('system.stores.batchTimeZoneRequired') }] : []}
+                style={{ marginBottom: 0 }}
+              >
+                <Select
+                  disabled={!applyTimeZoneId}
+                  options={storeTimeZoneOptions}
+                  placeholder={t('system.stores.timeZoneRequired')}
+                />
+              </Form.Item>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 16, alignItems: 'center', paddingBlock: 12, borderBottom: '1px solid #f5f5f5' }}>
+              <Form.Item name="applyAbn" valuePropName="checked" noStyle>
+                <Checkbox>
+                  {t('system.stores.batchModifyField', { field: t('system.stores.abn') })}
+                </Checkbox>
+              </Form.Item>
+              <Form.Item
+                name="abn"
+                rules={applyAbn ? [{ max: 20, message: t('system.stores.abnMaxLength') }] : []}
+                style={{ marginBottom: 0 }}
+              >
+                <Input disabled={!applyAbn} allowClear />
+              </Form.Item>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 16, alignItems: 'center', paddingBlock: 12, borderBottom: '1px solid #f5f5f5' }}>
+              <Form.Item name="applyBrandName" valuePropName="checked" noStyle>
+                <Checkbox>
+                  {t('system.stores.batchModifyField', { field: t('system.stores.brandName') })}
+                </Checkbox>
+              </Form.Item>
+              <Form.Item
+                name="brandName"
+                rules={applyBrandName ? [{ max: 100, message: t('system.stores.brandNameMaxLength') }] : []}
+                style={{ marginBottom: 0 }}
+              >
+                <Input disabled={!applyBrandName} allowClear />
+              </Form.Item>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 16, alignItems: 'center', paddingBlock: 12, borderBottom: '1px solid #f5f5f5' }}>
+              <Form.Item name="applyIsActive" valuePropName="checked" noStyle>
+                <Checkbox>
+                  {t('system.stores.batchModifyField', { field: t('system.stores.cashRegisterEnabled') })}
+                </Checkbox>
+              </Form.Item>
+              <Form.Item name="isActive" valuePropName="checked" style={{ marginBottom: 0 }}>
+                <Switch
+                  disabled={!applyIsActive}
+                  checkedChildren={t('common.active')}
+                  unCheckedChildren={t('common.inactive')}
+                />
+              </Form.Item>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 16, alignItems: 'start', paddingBlock: 12 }}>
+              <Form.Item name="applyReturnPolicy" valuePropName="checked" noStyle>
+                <Checkbox>
+                  {t('system.stores.batchModifyField', { field: t('system.stores.returnPolicy') })}
+                </Checkbox>
+              </Form.Item>
+              <Form.Item
+                name="returnPolicy"
+                rules={applyReturnPolicy ? [{ max: 500, message: t('system.stores.returnPolicyMaxLength') }] : []}
+                style={{ marginBottom: 0 }}
+              >
+                <Input.TextArea disabled={!applyReturnPolicy} rows={3} allowClear />
+              </Form.Item>
+            </div>
+          </div>
+
+          {applyIsActive && batchIsActive === false ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('system.stores.batchCashRegisterDisableWarning')}
+              style={{ marginTop: 16 }}
+            />
+          ) : null}
+        </Form>
+      </Modal>
 
       <Drawer
         title={detailStore ? t('system.stores.detailTitle', { name: detailStore.storeCode }) : t('system.stores.detailTitleShort')}

@@ -1158,6 +1158,472 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateStoresAsync_UpdatesFiveSelectedFieldsAtomically()
+        {
+            var originalUpdatedAt = DateTime.UtcNow.AddDays(-1);
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-batch-1",
+                    StoreName = "Batch Store 1",
+                    StoreCode = "1871",
+                    Address = "Address 1",
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    ABN = "old-abn-1",
+                    BrandName = "Old Brand 1",
+                    ReturnPolicy = "Old policy 1",
+                    IsActive = true,
+                    CreatedAt = originalUpdatedAt,
+                    UpdatedAt = originalUpdatedAt,
+                },
+                new Store
+                {
+                    StoreGUID = "store-batch-2",
+                    StoreName = "Batch Store 2",
+                    StoreCode = "1872",
+                    Address = "Address 2",
+                    TimeZoneId = StoreTimeZonePolicy.Melbourne,
+                    ABN = "old-abn-2",
+                    BrandName = "Old Brand 2",
+                    ReturnPolicy = "Old policy 2",
+                    IsActive = true,
+                    CreatedAt = originalUpdatedAt,
+                    UpdatedAt = originalUpdatedAt,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-1", "store-batch-2" },
+                    Fields = new List<string>
+                    {
+                        "timeZoneId",
+                        "abn",
+                        "brandName",
+                        "isActive",
+                        "returnPolicy",
+                    },
+                    TimeZoneId = "  australia/sydney  ",
+                    ABN = "   ",
+                    BrandName = "  Unified Brand  ",
+                    IsActive = false,
+                    ReturnPolicy = "  30 days with receipt.  ",
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data!.RequestedCount);
+            Assert.Equal(2, result.Data.UpdatedCount);
+            Assert.Equal(
+                new[] { "store-batch-1", "store-batch-2" },
+                result.Data.UpdatedStoreGuids
+            );
+
+            var stores = await _db.Queryable<Store>()
+                .Where(store => new[] { "store-batch-1", "store-batch-2" }.Contains(store.StoreGUID))
+                .OrderBy(store => store.StoreGUID)
+                .ToListAsync();
+            Assert.Equal(2, stores.Count);
+            Assert.All(stores, store =>
+            {
+                Assert.Equal(StoreTimeZonePolicy.Sydney, store.TimeZoneId);
+                Assert.Null(store.ABN);
+                Assert.Equal("Unified Brand", store.BrandName);
+                Assert.False(store.IsActive);
+                Assert.Equal("30 days with receipt.", store.ReturnPolicy);
+                Assert.True(store.UpdatedAt > originalUpdatedAt);
+            });
+            Assert.Equal("Batch Store 1", stores[0].StoreName);
+            Assert.Equal("Address 1", stores[0].Address);
+            Assert.Equal("Batch Store 2", stores[1].StoreName);
+            Assert.Equal("Address 2", stores[1].Address);
+            Assert.Equal(stores[0].UpdatedAt, stores[1].UpdatedAt);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_IgnoresValuesForUnselectedFields()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-batch-selected-fields",
+                StoreName = "Selected Fields Store",
+                StoreCode = "1873",
+                TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                ABN = "old-abn",
+                BrandName = "Keep Brand",
+                ReturnPolicy = "Keep policy",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-selected-fields" },
+                    Fields = new List<string> { "abn" },
+                    ABN = "   ",
+                    TimeZoneId = "Australia/Perth",
+                    BrandName = new string('b', 101),
+                    ReturnPolicy = new string('r', 501),
+                    IsActive = false,
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-batch-selected-fields");
+            Assert.Null(store!.ABN);
+            Assert.Equal(StoreTimeZonePolicy.Brisbane, store.TimeZoneId);
+            Assert.Equal("Keep Brand", store.BrandName);
+            Assert.Equal("Keep policy", store.ReturnPolicy);
+            Assert.True(store.IsActive);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_RejectsInvalidRequestShapesWithoutWriting()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-batch-validation",
+                StoreName = "Validation Store",
+                StoreCode = "1874",
+                BrandName = "Original Brand",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            var invalidRequests = new[]
+            {
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string>(),
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = Enumerable.Range(1, 101).Select(index => $"store-{index}").ToList(),
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string>
+                    {
+                        "store-batch-validation",
+                        "store-batch-validation",
+                    },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-validation" },
+                    Fields = new List<string>(),
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-validation" },
+                    Fields = new List<string> { "brandName", "brandName" },
+                    BrandName = "Changed",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-validation" },
+                    Fields = new List<string> { "storeName" },
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-validation" },
+                    Fields = new List<string> { "isActive" },
+                },
+            };
+
+            foreach (var request in invalidRequests)
+            {
+                var result = await CreateStoreService().BatchUpdateStoresAsync(request);
+
+                Assert.False(result.Success);
+                Assert.NotNull(result.Data);
+                Assert.Equal(0, result.Data!.UpdatedCount);
+            }
+
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-batch-validation");
+            Assert.Equal("Original Brand", store!.BrandName);
+            Assert.True(store.IsActive);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_RejectsInvalidSelectedValuesWithoutWriting()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-batch-value-validation",
+                StoreName = "Value Validation Store",
+                StoreCode = "1875",
+                TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                ABN = "Original ABN",
+                BrandName = "Original Brand",
+                ReturnPolicy = "Original policy",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            var invalidRequests = new[]
+            {
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-value-validation" },
+                    Fields = new List<string> { "timeZoneId" },
+                    TimeZoneId = "   ",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-value-validation" },
+                    Fields = new List<string> { "timeZoneId" },
+                    TimeZoneId = "Australia/Perth",
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-value-validation" },
+                    Fields = new List<string> { "abn" },
+                    ABN = new string('a', 21),
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-value-validation" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = new string('b', 101),
+                },
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-value-validation" },
+                    Fields = new List<string> { "returnPolicy" },
+                    ReturnPolicy = new string('r', 501),
+                },
+            };
+
+            foreach (var request in invalidRequests)
+            {
+                var result = await CreateStoreService().BatchUpdateStoresAsync(request);
+
+                Assert.False(result.Success);
+                Assert.NotNull(result.Data);
+                Assert.Equal(0, result.Data!.UpdatedCount);
+            }
+
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-batch-value-validation");
+            Assert.Equal(StoreTimeZonePolicy.Brisbane, store!.TimeZoneId);
+            Assert.Equal("Original ABN", store.ABN);
+            Assert.Equal("Original Brand", store.BrandName);
+            Assert.Equal("Original policy", store.ReturnPolicy);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_WhenTargetIsMissing_RollsBackWholeBatch()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-batch-existing",
+                StoreName = "Existing Batch Store",
+                StoreCode = "1876",
+                BrandName = "Original Brand",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-existing", "store-batch-missing" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed Brand",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_BATCH_TARGET_INVALID", result.ErrorCode);
+            Assert.NotNull(result.Data);
+            Assert.Equal(0, result.Data!.UpdatedCount);
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-batch-existing");
+            Assert.Equal("Original Brand", store!.BrandName);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_WhenTargetIsSoftDeleted_RollsBackWholeBatch()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-batch-active",
+                    StoreName = "Active Batch Store",
+                    StoreCode = "1877",
+                    BrandName = "Active Brand",
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-batch-deleted",
+                    StoreName = "Deleted Batch Store",
+                    StoreCode = "1878",
+                    BrandName = "Deleted Brand",
+                    IsActive = true,
+                    IsDeleted = true,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-batch-active", "store-batch-deleted" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed Brand",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_BATCH_TARGET_INVALID", result.ErrorCode);
+            Assert.NotNull(result.Data);
+            Assert.Equal(0, result.Data!.UpdatedCount);
+            var activeStore = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == "store-batch-active");
+            Assert.Equal("Active Brand", activeStore!.BrandName);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_WhenAffectedRowCountConflicts_RollsBackWholeBatch()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-batch-conflict-1",
+                    StoreName = "Conflict Store 1",
+                    StoreCode = "1879",
+                    BrandName = "Original Brand 1",
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-batch-conflict-2",
+                    StoreName = "Conflict Store 2",
+                    StoreCode = "1880",
+                    BrandName = "Original Brand 2",
+                    IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+            _db.Ado.ExecuteCommand(
+                """
+                CREATE TRIGGER IgnoreSecondBatchStoreUpdate
+                BEFORE UPDATE ON "Store"
+                WHEN OLD."StoreGUID" = 'store-batch-conflict-2'
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+                """
+            );
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string>
+                    {
+                        "store-batch-conflict-1",
+                        "store-batch-conflict-2",
+                    },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed Brand",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_BATCH_CONFLICT", result.ErrorCode);
+            Assert.NotNull(result.Data);
+            Assert.Equal(0, result.Data!.UpdatedCount);
+            var stores = await _db.Queryable<Store>()
+                .Where(store => new[]
+                {
+                    "store-batch-conflict-1",
+                    "store-batch-conflict-2",
+                }.Contains(store.StoreGUID))
+                .OrderBy(store => store.StoreGUID)
+                .ToListAsync();
+            Assert.Equal("Original Brand 1", stores[0].BrandName);
+            Assert.Equal("Original Brand 2", stores[1].BrandName);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_TreatsCaseVariantTargetsAsDistinct()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-A",
+                    StoreCode = "1881",
+                    StoreName = "Upper Case Store",
+                    BrandName = "Original A",
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-a",
+                    StoreCode = "1882",
+                    StoreName = "Lower Case Store",
+                    BrandName = "Original a",
+                    IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-A", "store-a" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Updated Brand",
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data!.UpdatedCount);
+
+            var upper = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreGUID == "store-A");
+            var lower = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreGUID == "store-a");
+            Assert.Equal("Updated Brand", upper!.BrandName);
+            Assert.Equal("Updated Brand", lower!.BrandName);
+        }
+
+        [Fact]
+        public async Task BatchUpdateStoresAsync_RejectsExactDuplicateTargets()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-dup-exact",
+                StoreCode = "1883",
+                StoreName = "Exact Duplicate Store",
+                BrandName = "Original",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().BatchUpdateStoresAsync(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-dup-exact", "store-dup-exact" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Changed",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_STORE_BATCH_REQUEST", result.ErrorCode);
+            Assert.Equal(0, result.Data!.UpdatedCount);
+        }
+
+        [Fact]
         public async Task CreateStoreAsync_WhenIsActiveTrue_PersistsCashRegisterEnabled()
         {
             var service = CreateStoreService();
@@ -1782,6 +2248,125 @@ namespace BlazorApp.Api.Tests
                 userCountSortedItems.Select(item => item.StoreGUID).ToArray()
             );
             Assert.Equal(new[] { 2, 1, 0 }, userCountSortedItems.Select(item => item.TotalUsers).ToArray());
+        }
+
+        [Theory]
+        [InlineData(StoreTimeZonePolicy.Brisbane, 2)]
+        [InlineData(StoreTimeZonePolicy.Sydney, 1)]
+        [InlineData(StoreTimeZonePolicy.Melbourne, 1)]
+        public async Task GetStoresAsync_FiltersByEachStandardTimeZoneId(
+            string timeZoneId,
+            int expectedTotal
+        )
+        {
+            await SeedStoresForTimeZoneFilterAsync();
+            var service = CreateStoreService();
+
+            var filtered = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    TimeZoneId = timeZoneId,
+                    Page = 1,
+                    PageSize = 20,
+                }
+            );
+
+            Assert.True(filtered.Success, filtered.Message);
+            Assert.Equal(expectedTotal, filtered.Data!.Total);
+            Assert.All(
+                filtered.Data.Items!,
+                item => Assert.Equal(timeZoneId, item.TimeZoneId)
+            );
+        }
+
+        [Fact]
+        public async Task GetStoresAsync_BlankOrMissingTimeZoneIdDoesNotFilter()
+        {
+            await SeedStoresForTimeZoneFilterAsync();
+            var service = CreateStoreService();
+
+            var unfiltered = await service.GetStoresAsync(
+                new StoreQueryDto { Page = 1, PageSize = 50 }
+            );
+            Assert.True(unfiltered.Success, unfiltered.Message);
+            Assert.Equal(6, unfiltered.Data!.Total);
+
+            var whitespace = await service.GetStoresAsync(
+                new StoreQueryDto { TimeZoneId = "   ", Page = 1, PageSize = 50 }
+            );
+            Assert.True(whitespace.Success, whitespace.Message);
+            Assert.Equal(6, whitespace.Data!.Total);
+        }
+
+        [Fact]
+        public async Task GetStoresAsync_FiltersByUnsetTimeZoneSentinel()
+        {
+            await SeedStoresForTimeZoneFilterAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    TimeZoneId = "  __unset__  ",
+                    Page = 1,
+                    PageSize = 20,
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data!.Total);
+            var storeGuids = result.Data.Items!
+                .Select(item => item.StoreGUID)
+                .OrderBy(storeGuid => storeGuid, StringComparer.Ordinal)
+                .ToArray();
+            Assert.Equal(new[] { "store-tz-empty", "store-tz-null" }, storeGuids);
+        }
+
+        [Fact]
+        public async Task GetStoresAsync_TimeZoneFilterCombinesWithBrandAndActiveAndKeepsPagedTotal()
+        {
+            await SeedStoresForTimeZoneFilterAsync();
+            var service = CreateStoreService();
+
+            var combined = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    BrandName = "Hot Bargain",
+                    IsActive = true,
+                    Page = 1,
+                    PageSize = 20,
+                }
+            );
+
+            Assert.True(combined.Success, combined.Message);
+            Assert.Equal(1, combined.Data!.Total);
+            var combinedItem = Assert.Single(combined.Data.Items!);
+            Assert.Equal("store-tz-bris-active", combinedItem.StoreGUID);
+
+            var firstPage = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    Page = 1,
+                    PageSize = 1,
+                }
+            );
+            Assert.True(firstPage.Success, firstPage.Message);
+            Assert.Equal(2, firstPage.Data!.Total);
+            Assert.Single(firstPage.Data.Items!);
+
+            var secondPage = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    Page = 2,
+                    PageSize = 1,
+                }
+            );
+            Assert.True(secondPage.Success, secondPage.Message);
+            Assert.Equal(2, secondPage.Data!.Total);
+            Assert.Single(secondPage.Data.Items!);
         }
 
         [Fact]
@@ -2801,7 +3386,90 @@ namespace BlazorApp.Api.Tests
             Assert.IsType<BadRequestObjectResult>(result);
         }
 
+        [Fact]
+        public async Task StoresController_BatchStoreValidationFailureReturnsHttpBadRequest()
+        {
+            var storeService = new Mock<IStoreService>();
+            storeService
+                .Setup(service => service.BatchUpdateStoresAsync(
+                    It.IsAny<BatchUpdateStoresDto>()
+                ))
+                .ReturnsAsync(ApiResponse<BatchUpdateStoresResultDto>.Error(
+                    "批量修改字段无效",
+                    "INVALID_STORE_BATCH_FIELDS"
+                ));
+            var controller = CreateStoresController(storeService.Object);
+
+            var result = await controller.BatchUpdateStores(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-1" },
+                    Fields = new List<string> { "unknown" },
+                }
+            );
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
         [Theory]
+        [InlineData("STORE_BATCH_TARGET_INVALID")]
+        [InlineData("STORE_BATCH_CONFLICT")]
+        public async Task StoresController_BatchStoreConflictReturnsHttpConflict(string errorCode)
+        {
+            var storeService = new Mock<IStoreService>();
+            storeService
+                .Setup(service => service.BatchUpdateStoresAsync(
+                    It.IsAny<BatchUpdateStoresDto>()
+                ))
+                .ReturnsAsync(ApiResponse<BatchUpdateStoresResultDto>.Error(
+                    "批量修改冲突",
+                    errorCode
+                ));
+            var controller = CreateStoresController(storeService.Object);
+
+            var result = await controller.BatchUpdateStores(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-1" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Brand",
+                }
+            );
+
+            Assert.IsType<ConflictObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task StoresController_BatchStoreUnexpectedFailureReturnsHttpInternalServerError()
+        {
+            var storeService = new Mock<IStoreService>();
+            storeService
+                .Setup(service => service.BatchUpdateStoresAsync(
+                    It.IsAny<BatchUpdateStoresDto>()
+                ))
+                .ReturnsAsync(ApiResponse<BatchUpdateStoresResultDto>.Error(
+                    "批量修改分店失败",
+                    "BATCH_UPDATE_STORES_ERROR"
+                ));
+            var controller = CreateStoresController(storeService.Object);
+
+            var result = await controller.BatchUpdateStores(
+                new BatchUpdateStoresDto
+                {
+                    StoreGuids = new List<string> { "store-1" },
+                    Fields = new List<string> { "brandName" },
+                    BrandName = "Brand",
+                }
+            );
+
+            Assert.Equal(
+                StatusCodes.Status500InternalServerError,
+                Assert.IsType<ObjectResult>(result).StatusCode
+            );
+        }
+
+        [Theory]
+        [InlineData(nameof(StoresController.BatchUpdateStores))]
         [InlineData(nameof(StoresController.AddUserToStore))]
         [InlineData(nameof(StoresController.RemoveUserFromStore))]
         [InlineData(nameof(StoresController.SetPrimaryUser))]
@@ -2814,6 +3482,19 @@ namespace BlazorApp.Api.Tests
 
             Assert.NotNull(authorize);
             Assert.Equal(Permissions.Stores.Edit, authorize!.Policy);
+        }
+
+        [Fact]
+        public void StoresController_BatchUpdateStoresUsesPatchBatchRoute()
+        {
+            var method = typeof(StoresController).GetMethod(
+                nameof(StoresController.BatchUpdateStores)
+            );
+
+            var route = method?.GetCustomAttribute<HttpPatchAttribute>();
+
+            Assert.NotNull(route);
+            Assert.Equal("batch", route!.Template);
         }
 
         [Theory]
@@ -3310,6 +3991,67 @@ namespace BlazorApp.Api.Tests
                     BrandName = "Other Brand",
                     Phone = "0731000003",
                     IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedStoresForTimeZoneFilterAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-tz-bris-active",
+                    StoreCode = "TZ01",
+                    StoreName = "Brisbane Active",
+                    BrandName = "Hot Bargain",
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-tz-bris-inactive",
+                    StoreCode = "TZ02",
+                    StoreName = "Brisbane Inactive",
+                    BrandName = "Hot Bargain",
+                    TimeZoneId = StoreTimeZonePolicy.Brisbane,
+                    IsActive = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-tz-sydney",
+                    StoreCode = "TZ03",
+                    StoreName = "Sydney Store",
+                    BrandName = "Hot Bargain",
+                    TimeZoneId = StoreTimeZonePolicy.Sydney,
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-tz-melbourne",
+                    StoreCode = "TZ04",
+                    StoreName = "Melbourne Store",
+                    BrandName = "Other Brand",
+                    TimeZoneId = StoreTimeZonePolicy.Melbourne,
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-tz-null",
+                    StoreCode = "TZ05",
+                    StoreName = "Null TimeZone Store",
+                    BrandName = "Hot Bargain",
+                    TimeZoneId = null,
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-tz-empty",
+                    StoreCode = "TZ06",
+                    StoreName = "Empty TimeZone Store",
+                    BrandName = "Other Brand",
+                    TimeZoneId = string.Empty,
+                    IsActive = false,
                 },
             }).ExecuteCommandAsync();
         }

@@ -21,6 +21,18 @@ namespace BlazorApp.Api.Services
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> HqBranchSyncLocks =
             new(StringComparer.OrdinalIgnoreCase);
 
+        private static readonly HashSet<string> AllowedBatchUpdateFields = new(
+            new[]
+            {
+                StoreBatchUpdateFieldNames.TimeZoneId,
+                StoreBatchUpdateFieldNames.ABN,
+                StoreBatchUpdateFieldNames.BrandName,
+                StoreBatchUpdateFieldNames.IsActive,
+                StoreBatchUpdateFieldNames.ReturnPolicy,
+            },
+            StringComparer.Ordinal
+        );
+
         // 数据库上下文，用于数据库操作
         private readonly SqlSugarContext _context;
 
@@ -175,6 +187,22 @@ namespace BlazorApp.Api.Services
                 if (!string.IsNullOrEmpty(brandName))
                 {
                     storeQuery = storeQuery.Where(s => s.BrandName == brandName);
+                }
+
+                // 4.1 分店时区精确筛选：哨兵值 "__unset__" 匹配 NULL/空字符串，其余按存储值精确匹配。
+                var timeZoneId = query.TimeZoneId?.Trim();
+                if (!string.IsNullOrEmpty(timeZoneId))
+                {
+                    if (timeZoneId == "__unset__")
+                    {
+                        storeQuery = storeQuery.Where(s =>
+                            s.TimeZoneId == null || s.TimeZoneId == ""
+                        );
+                    }
+                    else
+                    {
+                        storeQuery = storeQuery.Where(s => s.TimeZoneId == timeZoneId);
+                    }
                 }
 
                 // 5. 用户关联筛选条件 - 使用子查询优化性能
@@ -573,6 +601,247 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "更新分店失败，GUID: {StoreGUID}", guid);
                 return ApiResponse<StoreDto>.Error("更新分店失败", "UPDATE_STORE_ERROR");
             }
+        }
+
+        /// <summary>
+        /// 原子批量修改分店的指定字段；未列入 Fields 的值即使传入也会被忽略。
+        /// </summary>
+        public async Task<ApiResponse<BatchUpdateStoresResultDto>> BatchUpdateStoresAsync(
+            BatchUpdateStoresDto dto
+        )
+        {
+            var requestedCount = dto?.StoreGuids?.Count ?? 0;
+
+            try
+            {
+                if (dto == null)
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "批量修改请求不能为空",
+                        "INVALID_STORE_BATCH_REQUEST"
+                    );
+                }
+
+                var storeGuids = dto.StoreGuids ?? new List<string>();
+                if (
+                    storeGuids.Count is < 1 or > 100
+                    || storeGuids.Any(string.IsNullOrWhiteSpace)
+                    || storeGuids.Distinct(StringComparer.Ordinal).Count()
+                        != storeGuids.Count
+                )
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "每批必须包含1至100个不重复的分店标识",
+                        "INVALID_STORE_BATCH_REQUEST"
+                    );
+                }
+
+                var fields = dto.Fields ?? new List<string>();
+                if (
+                    fields.Count is < 1 or > 5
+                    || fields.Any(string.IsNullOrWhiteSpace)
+                    || fields.Distinct(StringComparer.Ordinal).Count() != fields.Count
+                    || fields.Any(field => !AllowedBatchUpdateFields.Contains(field))
+                )
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "批量修改字段无效",
+                        "INVALID_STORE_BATCH_FIELDS"
+                    );
+                }
+
+                var selectedFields = fields.ToHashSet(StringComparer.Ordinal);
+                var updateTimeZone = selectedFields.Contains(
+                    StoreBatchUpdateFieldNames.TimeZoneId
+                );
+                var updateAbn = selectedFields.Contains(StoreBatchUpdateFieldNames.ABN);
+                var updateBrandName = selectedFields.Contains(
+                    StoreBatchUpdateFieldNames.BrandName
+                );
+                var updateIsActive = selectedFields.Contains(
+                    StoreBatchUpdateFieldNames.IsActive
+                );
+                var updateReturnPolicy = selectedFields.Contains(
+                    StoreBatchUpdateFieldNames.ReturnPolicy
+                );
+
+                string? normalizedTimeZoneId = null;
+                if (
+                    updateTimeZone
+                    && (
+                        !StoreTimeZonePolicy.TryNormalize(
+                            dto.TimeZoneId,
+                            out normalizedTimeZoneId
+                        )
+                        || normalizedTimeZoneId == null
+                    )
+                )
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "门店时区必须为 Australia/Brisbane、Australia/Sydney 或 Australia/Melbourne",
+                        "INVALID_STORE_TIME_ZONE"
+                    );
+                }
+
+                var normalizedAbn = NormalizeNullableBatchText(dto.ABN);
+                if (updateAbn && normalizedAbn?.Length > 20)
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "ABN长度不能超过20个字符",
+                        "INVALID_STORE_BATCH_VALUE"
+                    );
+                }
+
+                var normalizedBrandName = NormalizeNullableBatchText(dto.BrandName);
+                if (updateBrandName && normalizedBrandName?.Length > 100)
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "品牌名称长度不能超过100个字符",
+                        "INVALID_STORE_BATCH_VALUE"
+                    );
+                }
+
+                var normalizedReturnPolicy = NormalizeNullableBatchText(dto.ReturnPolicy);
+                if (updateReturnPolicy && normalizedReturnPolicy?.Length > 500)
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "退换货政策长度不能超过500个字符",
+                        "INVALID_STORE_BATCH_VALUE"
+                    );
+                }
+
+                if (updateIsActive && !dto.IsActive.HasValue)
+                {
+                    return CreateBatchUpdateError(
+                        requestedCount,
+                        "是否启用收银必须提供明确的布尔值",
+                        "INVALID_STORE_BATCH_VALUE"
+                    );
+                }
+
+                var db = _context.Db;
+                await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Serializable);
+                try
+                {
+                    var existingStoreGuids = await db.Queryable<Store>()
+                        .Where(store =>
+                            storeGuids.Contains(store.StoreGUID) && store.IsDeleted == false
+                        )
+                        .Select(store => store.StoreGUID)
+                        .ToListAsync();
+                    var existingStoreGuidSet = existingStoreGuids.ToHashSet(
+                        StringComparer.Ordinal
+                    );
+                    var invalidStoreGuids = storeGuids
+                        .Where(storeGuid => !existingStoreGuidSet.Contains(storeGuid))
+                        .ToList();
+
+                    if (invalidStoreGuids.Count > 0)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return CreateBatchUpdateError(
+                            requestedCount,
+                            "部分分店不存在或已删除",
+                            "STORE_BATCH_TARGET_INVALID",
+                            new { invalidStoreGuids }
+                        );
+                    }
+
+                    var updatedAt = DateTime.UtcNow;
+                    var updater = db.Updateable<Store>()
+                        .SetColumnsIF(
+                            updateTimeZone,
+                            store => store.TimeZoneId == normalizedTimeZoneId
+                        )
+                        .SetColumnsIF(updateAbn, store => store.ABN == normalizedAbn)
+                        .SetColumnsIF(
+                            updateBrandName,
+                            store => store.BrandName == normalizedBrandName
+                        )
+                        .SetColumnsIF(
+                            updateIsActive,
+                            store => store.IsActive == dto.IsActive!.Value
+                        )
+                        .SetColumnsIF(
+                            updateReturnPolicy,
+                            store => store.ReturnPolicy == normalizedReturnPolicy
+                        )
+                        .SetColumns(store => store.UpdatedAt == updatedAt)
+                        .Where(store =>
+                            storeGuids.Contains(store.StoreGUID) && store.IsDeleted == false
+                        );
+
+                    var affectedRows = await updater.ExecuteCommandAsync();
+                    if (affectedRows != requestedCount)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return CreateBatchUpdateError(
+                            requestedCount,
+                            "批量修改期间分店数据发生变化，请刷新后重试",
+                            "STORE_BATCH_CONFLICT",
+                            new { requestedCount, affectedRows }
+                        );
+                    }
+
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<BatchUpdateStoresResultDto>.OK(
+                        new BatchUpdateStoresResultDto
+                        {
+                            RequestedCount = requestedCount,
+                            UpdatedCount = affectedRows,
+                            UpdatedStoreGuids = new List<string>(storeGuids),
+                        },
+                        $"成功修改{affectedRows}家分店"
+                    );
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量修改分店失败，目标数量: {RequestedCount}", requestedCount);
+                return CreateBatchUpdateError(
+                    requestedCount,
+                    "批量修改分店失败",
+                    "BATCH_UPDATE_STORES_ERROR"
+                );
+            }
+        }
+
+        private static string? NormalizeNullableBatchText(string? value)
+        {
+            var normalized = value?.Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+        }
+
+        private static ApiResponse<BatchUpdateStoresResultDto> CreateBatchUpdateError(
+            int requestedCount,
+            string message,
+            string errorCode,
+            object? details = null
+        )
+        {
+            var response = ApiResponse<BatchUpdateStoresResultDto>.Error(
+                message,
+                errorCode,
+                details
+            );
+            response.Data = new BatchUpdateStoresResultDto
+            {
+                RequestedCount = requestedCount,
+                UpdatedCount = 0,
+            };
+            return response;
         }
 
         /// <summary>

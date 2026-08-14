@@ -270,6 +270,62 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 原子批量修改分店的指定字段，不触发HQ同步。
+        /// </summary>
+        [HttpPatch("batch")]
+        [Authorize(Policy = Permissions.Stores.Edit)]
+        public async Task<IActionResult> BatchUpdateStores([FromBody] BatchUpdateStoresDto dto)
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    var response = ApiResponse<BatchUpdateStoresResultDto>.Error(
+                        "请求参数验证失败",
+                        "VALIDATION_ERROR",
+                        ModelState
+                    );
+                    response.Data = new BatchUpdateStoresResultDto
+                    {
+                        RequestedCount = dto?.StoreGuids?.Count ?? 0,
+                        UpdatedCount = 0,
+                    };
+                    return BadRequest(response);
+                }
+
+                var result = await _storeService.BatchUpdateStoresAsync(dto);
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+
+                return result.ErrorCode switch
+                {
+                    "STORE_BATCH_TARGET_INVALID" or "STORE_BATCH_CONFLICT" => Conflict(result),
+                    "BATCH_UPDATE_STORES_ERROR" => StatusCode(
+                        StatusCodes.Status500InternalServerError,
+                        result
+                    ),
+                    _ => BadRequest(result),
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量修改分店失败");
+                var response = ApiResponse<BatchUpdateStoresResultDto>.Error(
+                    "服务器内部错误",
+                    "INTERNAL_SERVER_ERROR"
+                );
+                response.Data = new BatchUpdateStoresResultDto
+                {
+                    RequestedCount = dto?.StoreGuids?.Count ?? 0,
+                    UpdatedCount = 0,
+                };
+                return StatusCode(StatusCodes.Status500InternalServerError, response);
+            }
+        }
+
+        /// <summary>
         /// 根据GUID删除分店
         /// </summary>
         [HttpDelete("guid/{guid}")]

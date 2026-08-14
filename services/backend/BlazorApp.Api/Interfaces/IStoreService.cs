@@ -49,6 +49,13 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<StoreDto>> UpdateStoreByGuidAsync(string guid, UpdateStoreDto dto);
 
         /// <summary>
+        /// 原子批量修改分店的指定字段
+        /// </summary>
+        Task<ApiResponse<BatchUpdateStoresResultDto>> BatchUpdateStoresAsync(
+            BatchUpdateStoresDto dto
+        );
+
+        /// <summary>
         /// 根据GUID删除分店
         /// </summary>
         Task<ApiResponse<bool>> DeleteStoreByGuidAsync(string guid);

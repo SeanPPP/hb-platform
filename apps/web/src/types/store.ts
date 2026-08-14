@@ -23,6 +23,7 @@ export interface StoreQueryDto {
   search?: string
   isActive?: boolean
   brandName?: string
+  timeZoneId?: string
   userGUID?: string
   sortField?: string
   sortOrder?: string
@@ -54,6 +55,29 @@ export interface UpdateStoreDto {
   timeZoneId?: string
   returnPolicy?: string
   isActive?: boolean
+}
+
+export type StoreBatchUpdateField =
+  | 'timeZoneId'
+  | 'abn'
+  | 'brandName'
+  | 'isActive'
+  | 'returnPolicy'
+
+export interface BatchUpdateStoresRequest {
+  storeGuids: string[]
+  fields: StoreBatchUpdateField[]
+  timeZoneId?: string
+  abn?: string | null
+  brandName?: string | null
+  isActive?: boolean
+  returnPolicy?: string | null
+}
+
+export interface BatchUpdateStoresResult {
+  requestedCount: number
+  updatedCount: number
+  updatedStoreGuids: string[]
 }
 
 export interface StoreUserDto {
