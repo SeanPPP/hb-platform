@@ -96,6 +96,80 @@ jest.mock("@/ui/shell/status-strip", () => ({
   PosStatusStrip: () => null,
 }));
 
+async function openPaymentEntry(
+  screen: Awaited<ReturnType<typeof render>>,
+  method: PaymentUiMethod = "cash",
+): Promise<void> {
+  await fireEvent.press(screen.getByTestId(`payment-method-${method}`));
+}
+
+test("点击付款方式后才打开金额输入弹窗", async () => {
+  const { presenter, spies } = createUiPresenter({
+    selectedMethod: "cash",
+    total: aud(1_000),
+    remaining: aud(1_000),
+  });
+  const screen = await render(
+    <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+  );
+
+  expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+  expect(screen.queryByTestId("payment-entry-pane")).toBeNull();
+  expect(screen.queryByTestId("payment-amount")).toBeNull();
+
+  await fireEvent.press(screen.getByTestId("payment-method-cash"));
+
+  expect(spies.selectMethod).toHaveBeenCalledWith("cash");
+  expect(screen.getByTestId("payment-entry-modal")).toBeTruthy();
+  expect(screen.getByTestId("payment-entry-pane")).toBeTruthy();
+  expect(screen.getByTestId("payment-amount").props.value).toBe("10.00");
+
+  await act(async () => {
+    screen.getByTestId("payment-entry-native-modal").props.onRequestClose();
+  });
+  expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+
+  await openPaymentEntry(screen, "cash");
+  await fireEvent.press(screen.getByTestId("payment-entry-cancel"));
+  expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+  expect(spies.cancel).not.toHaveBeenCalled();
+});
+
+test("提交失败时保留金额弹窗并宣告字段错误", async () => {
+  const harness = createUiPresenter({
+    selectedMethod: "cash",
+    total: aud(1_000),
+    remaining: aud(1_000),
+  });
+  harness.spies.submitSelected.mockImplementation(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      fieldIssue: "amount-required",
+    });
+    return false;
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await openPaymentEntry(screen, "cash");
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-entry-modal")).toBeTruthy(),
+  );
+  expect(screen.getByTestId("payment-field-error").props.accessibilityRole).toBe(
+    "alert",
+  );
+  expect(screen.getByTestId("payment-field-error")).toHaveTextContent(
+    "请输入付款金额。",
+  );
+});
+
 test("付款内容滚动区采用系统键盘避让且金额输入仍禁用软键盘", async () => {
   const { presenter } = createUiPresenter({
     phase: "ready",
@@ -122,6 +196,11 @@ test("付款内容滚动区采用系统键盘避让且金额输入仍禁用软�
     keyboardDismissMode: "interactive",
     keyboardShouldPersistTaps: "handled",
   });
+  await openPaymentEntry(screen, "cash");
+  const entryScroll = screen.getByTestId("payment-entry-scroll");
+  expect(entryScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  expect(entryScroll.props.keyboardDismissMode).toBe("interactive");
+  expect(entryScroll.props.keyboardShouldPersistTaps).toBe("handled");
   expect(screen.getByTestId("payment-amount").props.showSoftInputOnFocus).toBe(
     false,
   );
@@ -159,13 +238,13 @@ test("手持付款页保持 48px 触控，礼券输入只安全遮罩且成功�
   await waitFor(() =>
     expect(screen.getByTestId("payment-status-ready")).toBeTruthy(),
   );
-  await fireEvent.press(screen.getByTestId("payment-key-1"));
-  expect(screen.getByTestId("payment-amount").props.value).toBe("1");
   const voucherMethod = screen.getByTestId("payment-method-voucher");
   expect(
     StyleSheet.flatten(voucherMethod.props.style).minHeight,
   ).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
   await fireEvent.press(voucherMethod);
+  await fireEvent.press(screen.getByTestId("payment-key-1"));
+  expect(screen.getByTestId("payment-amount").props.value).toBe("1");
 
   const voucherInput = screen.getByTestId("payment-voucher-code");
   expect(voucherInput.props.secureTextEntry).toBe(true);
@@ -1159,7 +1238,7 @@ test.each(
       label: `${viewport.label} ${flow}`,
     })),
   ),
-)("$label 仍为单列手持滚动流且保留原付款动作", async ({
+)("$label 仍为单列手持滚动流且通过弹窗提供付款动作", async ({
   flow,
   height,
   width,
@@ -1206,6 +1285,7 @@ test.each(
     />,
   );
 
+  await openPaymentEntry(screen, "cash");
   expect(screen.getByTestId("payment-content-scroll").props.scrollEnabled).toBe(
     true,
   );
@@ -1233,7 +1313,7 @@ test.each(
     true,
   );
   expect(screen.getByTestId("payment-entry-scroll").props.scrollEnabled).toBe(
-    false,
+    true,
   );
   expect(screen.getByTestId("payment-summary-scroll").props.scrollEnabled).toBe(
     false,
@@ -1343,7 +1423,7 @@ test.each([
   await screen.unmount();
 });
 
-test("任意视口都保持单列付款流，并只提供五个现金快捷金额", async () => {
+test("任意视口都保持单列付款流，并在金额弹窗提供五个现金快捷金额", async () => {
   setPaymentWindowSize(1366, 1024);
   const { presenter, spies } = createUiPresenter({
     selectedMethod: "cash",
@@ -1355,6 +1435,7 @@ test("任意视口都保持单列付款流，并只提供五个现金快捷金�
       showStatusStrip={false}
     />,
   );
+  await openPaymentEntry(screen, "cash");
 
   expect(
     StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style)
@@ -1436,6 +1517,7 @@ test("宽屏模拟仍使用手持单列密度，数字键盘和支付动作保�
       showStatusStrip={false}
     />,
   );
+  await openPaymentEntry(screen, "cash");
 
   expect(
     StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style)
@@ -1481,6 +1563,7 @@ test("窄屏支付页改为单列且分期开关保持可达", async () => {
       showStatusStrip={false}
     />,
   );
+  await openPaymentEntry(screen, "square");
 
   expect(
     StyleSheet.flatten(screen.getByTestId("payment-workspace").props.style)
@@ -1498,7 +1581,7 @@ test("窄屏支付页改为单列且分期开关保持可达", async () => {
     scrollEnabled: true,
   });
   expect(screen.getByTestId("payment-entry-scroll").props.scrollEnabled).toBe(
-    false,
+    true,
   );
   expect(screen.getByTestId("payment-summary-scroll").props.scrollEnabled).toBe(
     false,
@@ -2091,6 +2174,7 @@ test("分期现金超付显示入账与找零，并可确认付款", async () =>
     />,
   );
 
+  await openPaymentEntry(screen, "cash");
   await fireEvent.changeText(screen.getByTestId("payment-amount"), "60.00");
   await fireEvent.press(screen.getByTestId("payment-submit"));
 
@@ -2295,15 +2379,21 @@ test("真实分期 presenter 点击客户编辑仍保留实例上下文", async 
   await waitFor(() =>
     expect(screen.getByTestId("payment-customer-edit")).toBeTruthy(),
   );
+  await openPaymentEntry(screen, "cash");
   await fireEvent.changeText(
     screen.getByTestId("payment-amount"),
     "50.00",
   );
   await fireEvent.press(screen.getByTestId("payment-submit"));
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-confirm")).toBeTruthy(),
+  );
   await fireEvent.press(screen.getByTestId("payment-confirm"));
-  expect(
-    screen.getByText("请填写分期顾客姓名和联系电话。"),
-  ).toBeTruthy();
+  await waitFor(() =>
+    expect(
+      screen.getByText("请填写分期顾客姓名和联系电话。"),
+    ).toBeTruthy(),
+  );
   expect(
     screen.queryByTestId("payment-full-installment-confirmation"),
   ).toBeNull();

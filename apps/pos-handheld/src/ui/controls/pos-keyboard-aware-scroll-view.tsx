@@ -5,9 +5,14 @@ import {
   useContext,
   useEffect,
   useRef,
+  type ForwardedRef,
+  type ReactElement,
+  type Ref,
 } from "react";
 import {
+  FlatList,
   ScrollView,
+  type FlatListProps,
   type FocusEvent,
   type ScrollViewProps,
   type TextInput,
@@ -78,6 +83,42 @@ export const PosKeyboardAwareScrollView = forwardRef<
 });
 
 PosKeyboardAwareScrollView.displayName = "PosKeyboardAwareScrollView";
+
+export type PosKeyboardAwareFlatListProps<ItemT> = FlatListProps<ItemT> &
+  Readonly<{ keyboardRevealOffset?: number }>;
+
+/** 以 PosKeyboardAwareScrollView 作为 FlatList 的滚动组件，复用固定键盘策略与聚焦揭示。 */
+const PosKeyboardAwareFlatListWithRef = forwardRef(
+  function PosKeyboardAwareFlatList<ItemT>(
+    { keyboardRevealOffset, ...props }: PosKeyboardAwareFlatListProps<ItemT>,
+    forwardedRef: ForwardedRef<FlatList<ItemT>>,
+  ) {
+    return (
+      <FlatList
+        {...props}
+        ref={forwardedRef}
+        renderScrollComponent={(scrollProps: ScrollViewProps) => (
+          <PosKeyboardAwareScrollView
+            {...scrollProps}
+            {...(keyboardRevealOffset !== undefined
+              ? { keyboardRevealOffset }
+              : {})}
+          />
+        )}
+      />
+    );
+  },
+);
+
+PosKeyboardAwareFlatListWithRef.displayName = "PosKeyboardAwareFlatList";
+
+export const PosKeyboardAwareFlatList = PosKeyboardAwareFlatListWithRef as <
+  ItemT,
+>(
+  props: PosKeyboardAwareFlatListProps<ItemT> & {
+    ref?: Ref<FlatList<ItemT>>;
+  },
+) => ReactElement;
 
 export const PosKeyboardAwareTextInput = forwardRef<
   TextInput,

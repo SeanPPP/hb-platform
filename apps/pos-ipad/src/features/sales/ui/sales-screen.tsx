@@ -3,15 +3,18 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Image,
   Modal,
+  PanResponder,
   StyleSheet,
   Text,
   View,
@@ -71,6 +74,8 @@ import { posColors } from "@/ui/theme";
 const QUICK_DISCOUNTS = [0, 1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const QUICK_ORDER_DISCOUNTS = [1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const AVERAGE_CART_LINE_HEIGHT = 128;
+const CART_LINE_REMOVE_ACTION_WIDTH = 96;
+const CART_LINE_SWIPE_ACTIVATION_DISTANCE = 12;
 
 type LineEditMode =
   "quantity" | "price" | "discount-amount" | "discount-percent";
@@ -1478,7 +1483,10 @@ export function SalesScreen({
             label={
               cartEmpty
                 ? t("summary.checkoutDisabled")
-                : t("summary.goToPayment")
+                : `${t("summary.goToPayment")} · ${formatAud(
+                    state.cart.actualAmount.cents,
+                    locale,
+                  )}`
             }
             onPress={() => {
               if (!onOpenPayment) return;
@@ -2302,6 +2310,76 @@ const CartLineRow = memo(function CartLineRow({
   const [resolvedBarcode, setResolvedBarcode] = useState<
     string | null | undefined
   >();
+  const [removeActionVisible, setRemoveActionVisible] = useState(false);
+  const swipeOffset = useRef(new Animated.Value(0)).current;
+  const swipeStartOffsetRef = useRef(0);
+  const removeActionVisibleRef = useRef(false);
+
+  const settleSwipe = useCallback(
+    (visible: boolean): void => {
+      removeActionVisibleRef.current = visible;
+      setRemoveActionVisible(visible);
+      Animated.spring(swipeOffset, {
+        bounciness: 0,
+        speed: 24,
+        toValue: visible ? -CART_LINE_REMOVE_ACTION_WIDTH : 0,
+        useNativeDriver: true,
+      }).start();
+    },
+    [swipeOffset],
+  );
+
+  const removeLine = useCallback((): void => {
+    settleSwipe(false);
+    onRemove(item.lineId);
+  }, [item.lineId, onRemove, settleSwipe]);
+
+  const swipeResponder = useMemo(() => {
+    const shouldBeginSwipe = (dx: number, dy: number): boolean =>
+      !disabled &&
+      Math.abs(dx) >= CART_LINE_SWIPE_ACTIVATION_DISTANCE &&
+      Math.abs(dx) > Math.abs(dy) &&
+      (dx < 0 || removeActionVisibleRef.current);
+
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_event, gestureState) =>
+        shouldBeginSwipe(gestureState.dx, gestureState.dy),
+      onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+        shouldBeginSwipe(gestureState.dx, gestureState.dy),
+      onPanResponderGrant: () => {
+        swipeOffset.stopAnimation();
+        swipeStartOffsetRef.current = removeActionVisibleRef.current
+          ? -CART_LINE_REMOVE_ACTION_WIDTH
+          : 0;
+      },
+      onPanResponderMove: (_event, gestureState) => {
+        const nextOffset = Math.max(
+          -CART_LINE_REMOVE_ACTION_WIDTH,
+          Math.min(0, swipeStartOffsetRef.current + gestureState.dx),
+        );
+        swipeOffset.setValue(nextOffset);
+      },
+      onPanResponderRelease: (_event, gestureState) => {
+        const projectedOffset =
+          swipeStartOffsetRef.current +
+          gestureState.dx +
+          gestureState.vx * 24;
+        settleSwipe(
+          projectedOffset <= -CART_LINE_REMOVE_ACTION_WIDTH / 2,
+        );
+      },
+      onPanResponderTerminate: () => {
+        settleSwipe(removeActionVisibleRef.current);
+      },
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+    });
+  }, [disabled, settleSwipe, swipeOffset]);
+
+  useEffect(() => {
+    if (disabled && removeActionVisibleRef.current) settleSwipe(false);
+  }, [disabled, settleSwipe]);
+
   useEffect(() => {
     setImageUri(undefined);
     setResolvedBarcode(undefined);
@@ -2346,20 +2424,60 @@ const CartLineRow = memo(function CartLineRow({
       : resolvedBarcode || fallbackLookupCode;
 
   return (
-    <PosPressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: isSelected }}
-      onPress={() => onSelect(item.lineId)}
-      style={({ pressed }) => [
-        styles.cartLine,
-        item.actualAmount.cents < 0 && styles.cartLineNegative,
-        item.actualAmount.cents === 0 && styles.cartLineZero,
-        isSelected && styles.cartLineSelected,
-        pressed && styles.cartLinePressed,
-      ]}
-      testID={`sales-line-${item.lineId}`}
-    >
-      <View style={styles.cartLineTop}>
+    <View style={styles.cartLineSwipeContainer}>
+      <View
+        accessibilityElementsHidden={!removeActionVisible}
+        importantForAccessibility={
+          removeActionVisible ? "auto" : "no-hide-descendants"
+        }
+        style={styles.cartLineRemoveAction}
+        testID={`sales-line-${item.lineId}-remove-action`}
+      >
+        <ActionButton
+          disabled={disabled}
+          label={t("cart.remove")}
+          onPress={removeLine}
+          style={styles.cartLineRemoveButton}
+          testID={`sales-line-${item.lineId}-remove`}
+          tone="danger"
+        />
+      </View>
+      <Animated.View
+        {...swipeResponder.panHandlers}
+        style={[
+          styles.cartLineSwipeSurface,
+          { transform: [{ translateX: swipeOffset }] },
+        ]}
+        testID={`sales-line-${item.lineId}-swipe-surface`}
+      >
+        <PosPressable
+          accessibilityActions={[
+            { label: t("cart.remove"), name: "delete" },
+          ]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: isSelected }}
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "delete" && !disabled) {
+              removeLine();
+            }
+          }}
+          onPress={() => {
+            if (removeActionVisibleRef.current) {
+              settleSwipe(false);
+              return;
+            }
+            onSelect(item.lineId);
+          }}
+          style={({ pressed }) => [
+            styles.cartLine,
+            item.actualAmount.cents < 0 && styles.cartLineNegative,
+            item.actualAmount.cents === 0 && styles.cartLineZero,
+            isSelected && styles.cartLineSelected,
+            pressed && styles.cartLinePressed,
+          ]}
+          testID={`sales-line-${item.lineId}`}
+        >
+          <View style={styles.cartLineTop}>
         <Text
           accessibilityLabel={t("cart.lineNumber", {
             number: index + 1,
@@ -2404,7 +2522,10 @@ const CartLineRow = memo(function CartLineRow({
           {formatAud(item.actualAmount.cents, locale)}
         </Text>
       </View>
-      <View style={styles.lineControls}>
+          <View
+            style={styles.lineControls}
+            testID={`sales-line-${item.lineId}-controls`}
+          >
         <ActionButton
           accessibilityLabel={t("cart.decrease")}
           disabled={disabled}
@@ -2441,15 +2562,10 @@ const CartLineRow = memo(function CartLineRow({
           testID={`sales-line-${item.lineId}-discount`}
           tone="secondary"
         />
-        <ActionButton
-          disabled={disabled}
-          label={t("cart.remove")}
-          onPress={() => onRemove(item.lineId)}
-          testID={`sales-line-${item.lineId}-remove`}
-          tone="danger"
-        />
-      </View>
-    </PosPressable>
+          </View>
+        </PosPressable>
+      </Animated.View>
+    </View>
   );
 }, cartLineRowPropsEqual);
 
@@ -2896,6 +3012,26 @@ const styles = StyleSheet.create({
     minHeight: 120,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  cartLineRemoveAction: {
+    bottom: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    width: CART_LINE_REMOVE_ACTION_WIDTH,
+  },
+  cartLineRemoveButton: {
+    borderRadius: 0,
+    flex: 1,
+    paddingHorizontal: 8,
+  },
+  cartLineSwipeContainer: {
+    borderRadius: 4,
+    overflow: "hidden",
+    position: "relative",
+  },
+  cartLineSwipeSurface: {
+    backgroundColor: posColors.surface,
   },
   cartLineNegative: {
     backgroundColor: posColors.redSoft,

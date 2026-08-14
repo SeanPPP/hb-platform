@@ -9,6 +9,7 @@ import { FlatList, ScrollView, StyleSheet, TextInput } from "react-native";
 
 import {
   EMPTY_SALE_CART,
+  formatAud,
   MIN_TOUCH_TARGET,
   SalesPresenter,
   type SalesCapabilities,
@@ -91,6 +92,50 @@ function descendantTestIds(root: unknown): string[] {
   };
   visit(root);
   return result;
+}
+
+function cartLinePanEvent(
+  previousX: number,
+  currentX: number,
+  timeStamp: number,
+  previousY = 100,
+  currentY = 100,
+) {
+  const touch = {
+    identifier: 0,
+    locationX: currentX,
+    locationY: currentY,
+    pageX: currentX,
+    pageY: currentY,
+    target: 1,
+    timestamp: timeStamp,
+  };
+  return {
+    nativeEvent: {
+      ...touch,
+      changedTouches: [touch],
+      touches: [touch],
+    },
+    touchHistory: {
+      indexOfSingleActiveTouch: 0,
+      mostRecentTimeStamp: timeStamp,
+      numberActiveTouches: 1,
+      touchBank: [
+        {
+          currentPageX: currentX,
+          currentPageY: currentY,
+          currentTimeStamp: timeStamp,
+          previousPageX: previousX,
+          previousPageY: previousY,
+          previousTimeStamp: Math.max(0, timeStamp - 16),
+          startPageX: 240,
+          startPageY: 100,
+          startTimeStamp: 1,
+          touchActive: true,
+        },
+      ],
+    },
+  };
 }
 
 class ScreenCartPort implements SalesCartPort {
@@ -2838,9 +2883,12 @@ describe("SalesScreen", () => {
   });
 
   it("购物车非空时只显示统一支付入口，离线仍可进入支付页", async () => {
+    const amountCents = 997;
     const onOpenPayment = jest.fn();
     usePosShellStore.getState().setConnectivity("online");
-    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+    const salesPresenter = presenter(
+      new ScreenCartPort(cartSnapshot(amountCents)),
+    );
     const screen = await render(
       <SalesScreen
         locale="zh"
@@ -2854,6 +2902,9 @@ describe("SalesScreen", () => {
     expect(paymentButton.props.accessibilityState).toMatchObject({
       disabled: false,
     });
+    expect(paymentButton.props.accessibilityLabel).toBe(
+      `跳转支付 · ${formatAud(amountCents, "zh")}`,
+    );
     expect(
       StyleSheet.flatten(paymentButton.props.style).minHeight,
     ).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
@@ -2864,7 +2915,7 @@ describe("SalesScreen", () => {
     expect(onOpenPayment).toHaveBeenLastCalledWith(
       expect.objectContaining({
         revision: 1,
-        actualAmount: { currency: "AUD", cents: 995 },
+        actualAmount: { currency: "AUD", cents: amountCents },
       }),
     );
 
@@ -2939,7 +2990,8 @@ describe("SalesScreen", () => {
       "sales-hold",
     ]) {
       expect(
-        screen.getByTestId(testID).props.accessibilityState,
+        screen.getByTestId(testID, { includeHiddenElements: true }).props
+          .accessibilityState,
       ).toMatchObject({ disabled: true });
     }
     expect(screen.queryByTestId("sales-cash-modal")).toBeNull();
@@ -2957,7 +3009,7 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
-  it("购物车行提供数量、折扣和删除触控入口", async () => {
+  it("购物车行默认隐藏删除操作，左滑后才可删除", async () => {
     const cart = new ScreenCartPort(cartSnapshot());
     const salesPresenter = presenter(cart);
     const screen = await render(
@@ -2976,11 +3028,80 @@ describe("SalesScreen", () => {
     await fireEvent.press(screen.getByTestId("sales-discount-1000"));
     expect(cart.discounts).toEqual([{ lineId: "line-1", basisPoints: 1_000 }]);
 
+    expect(
+      descendantTestIds(screen.getByTestId("sales-line-line-1-controls")),
+    ).not.toContain("sales-line-line-1-remove");
+    expect(
+      screen.getByTestId("sales-line-line-1-remove-action", {
+        includeHiddenElements: true,
+      }).props.accessibilityElementsHidden,
+    ).toBe(true);
+
+    const swipeSurface = screen.getByTestId("sales-line-line-1-swipe-surface");
+    const startEvent = cartLinePanEvent(240, 240, 1);
+    const activationEvent = cartLinePanEvent(240, 220, 20);
+    const dragEvent = cartLinePanEvent(220, 100, 80);
+    await act(async () => {
+      swipeSurface.props.onStartShouldSetResponderCapture(startEvent);
+      expect(
+        swipeSurface.props.onMoveShouldSetResponderCapture(activationEvent),
+      ).toBe(true);
+      swipeSurface.props.onResponderGrant(activationEvent);
+      swipeSurface.props.onResponderMove(dragEvent);
+      swipeSurface.props.onResponderRelease(dragEvent);
+    });
+    expect(
+      screen.getByTestId("sales-line-line-1-remove-action").props
+        .accessibilityElementsHidden,
+    ).toBe(false);
+
     await fireEvent.press(screen.getByTestId("sales-line-line-1-remove"));
     expect(salesPresenter.getState().cart.lines).toHaveLength(0);
 
     salesPresenter.destroy();
     await screen.unmount();
+
+    for (const rejectedEvent of [
+      cartLinePanEvent(240, 265, 20),
+      cartLinePanEvent(240, 236, 20, 100, 140),
+    ]) {
+      const rejectionPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+      const rejectionScreen = await render(
+        <SalesScreen
+          locale="en"
+          presenter={rejectionPresenter}
+          showStatusStrip={false}
+        />,
+      );
+      expect(
+        rejectionScreen.getByTestId("sales-line-line-1-swipe-surface").props
+          .onMoveShouldSetResponderCapture(rejectedEvent),
+      ).toBe(false);
+      rejectionPresenter.destroy();
+      await rejectionScreen.unmount();
+    }
+
+    const disabledPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      capabilities: { ...ALL_CAPABILITIES, cartEditing: false },
+    });
+    const disabledScreen = await render(
+      <SalesScreen
+        locale="en"
+        presenter={disabledPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    expect(
+      disabledScreen.getByTestId("sales-line-line-1-swipe-surface").props
+        .onMoveShouldSetResponderCapture(activationEvent),
+    ).toBe(false);
+    expect(
+      disabledScreen.getByTestId("sales-line-line-1-remove-action", {
+        includeHiddenElements: true,
+      }).props.accessibilityElementsHidden,
+    ).toBe(true);
+    disabledPresenter.destroy();
+    await disabledScreen.unmount();
   });
 
   it("商品行预填值退格后继续逐位输入而不会覆盖整个值", async () => {

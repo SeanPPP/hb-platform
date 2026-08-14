@@ -131,6 +131,48 @@ test("所有系统软键盘输入都位于键盘感知滚动容器内", async ()
   assert.deepEqual([...seenAwareHosts].sort(), [...keyboardAwareHosts].sort());
 });
 
+test("PosKeyboardAwareFlatList 与 PosKeyboardAwareScrollView 都识别为键盘感知容器", () => {
+  const sourceText = `
+import { PosKeyboardAwareFlatList, PosKeyboardAwareScrollView, PosKeyboardAwareTextInput } from "@/ui/controls/pos-keyboard-aware-scroll-view";
+
+export function FlatListScreen() {
+  return (
+    <PosKeyboardAwareFlatList
+      data={[1, 2]}
+      renderItem={() => <PosKeyboardAwareTextInput testID="flat-input" />}
+    />
+  );
+}
+
+export function ScrollViewScreen() {
+  return (
+    <PosKeyboardAwareScrollView>
+      <PosKeyboardAwareTextInput testID="scroll-input" />
+    </PosKeyboardAwareScrollView>
+  );
+}
+`;
+  const sourceFile = ts.createSourceFile(
+    "virtual-keyboard-aware-screen.tsx",
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const importedTags = importedJsxTags(sourceFile);
+
+  assert.ok(importedTags.awareScroll.has("PosKeyboardAwareFlatList"));
+  assert.ok(importedTags.awareScroll.has("PosKeyboardAwareScrollView"));
+  assert.deepEqual(
+    findUnprotectedAwareInputs(
+      sourceFile,
+      "virtual-keyboard-aware-screen.tsx",
+      importedTags,
+    ),
+    [],
+  );
+});
+
 test("日结保留已验证的键盘 inset 与焦点滚动闭环", async () => {
   const dailyCloseSource = await readFile(
     new URL(
@@ -203,6 +245,11 @@ function importedJsxTags(sourceFile) {
       if (
         moduleName === "@/ui/controls/pos-keyboard-aware-scroll-view" &&
         importedName === "PosKeyboardAwareScrollView"
+      ) {
+        tags.awareScroll.add(localName);
+      } else if (
+        moduleName === "@/ui/controls/pos-keyboard-aware-scroll-view" &&
+        importedName === "PosKeyboardAwareFlatList"
       ) {
         tags.awareScroll.add(localName);
       } else if (
@@ -321,8 +368,12 @@ function hasAwareScrollAncestor(
   let current = node.parent;
   while (current && current !== componentBody) {
     if (
-      ts.isJsxElement(current) &&
-      awareScrollNames.has(current.openingElement.tagName.getText(sourceFile))
+      (ts.isJsxElement(current) &&
+        awareScrollNames.has(
+          current.openingElement.tagName.getText(sourceFile),
+        )) ||
+      (ts.isJsxSelfClosingElement(current) &&
+        awareScrollNames.has(current.tagName.getText(sourceFile)))
     ) {
       return true;
     }

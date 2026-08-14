@@ -126,6 +126,7 @@ export function PaymentScreen({
     preparedCashCancellationOpen,
     setPreparedCashCancellationOpen,
   ] = useState(false);
+  const [paymentEntryOpen, setPaymentEntryOpen] = useState(false);
   const latestState = useRef(state);
   latestState.current = state;
 
@@ -288,6 +289,12 @@ export function PaymentScreen({
     state.phase !== "cash-confirming" &&
     (state.allowedActions.start || state.allowedActions.addCash);
 
+  useEffect(() => {
+    if (!showEntry || !state.selectedMethod) {
+      setPaymentEntryOpen(false);
+    }
+  }, [showEntry, state.selectedMethod]);
+
   return (
     <SafeAreaView style={styles.safeArea} testID="payment-screen">
       <View style={styles.header}>
@@ -379,24 +386,51 @@ export function PaymentScreen({
               state={state}
               t={t}
             />
-            <View
-              style={[
-                styles.entryPane,
-                shortLandscape && styles.entryPaneShort,
-                compact && styles.entryPaneCompact,
-              ]}
-              testID="payment-entry-pane"
+            <Modal
+              animationType="fade"
+              onRequestClose={() => setPaymentEntryOpen(false)}
+              testID="payment-entry-native-modal"
+              transparent
+              visible={paymentEntryOpen && showEntry}
             >
-              <ScrollView
+              <View
+                accessibilityViewIsModal
+                style={styles.entryModalBackdrop}
+                testID="payment-entry-modal"
+              >
+                <View
+                  style={[
+                    styles.entryPane,
+                    shortLandscape && styles.entryPaneShort,
+                    compact && styles.entryPaneCompact,
+                    styles.entryModalCard,
+                  ]}
+                  testID="payment-entry-pane"
+                >
+                  <View style={styles.entryModalHeader}>
+                    <Text style={styles.entryModalTitle}>
+                      {state.selectedMethod
+                        ? t(paymentMethodCopyKey(state.selectedMethod))
+                        : t("method.title")}
+                    </Text>
+                    <Text style={styles.entryModalRemaining}>
+                      {`${t("summary.remaining")} · ${formatAud(
+                        state.remaining.cents,
+                        locale,
+                      )}`}
+                    </Text>
+                  </View>
+              <PosKeyboardAwareScrollView
                 contentContainerStyle={[
                   styles.entryScrollContent,
                   compact && styles.entryScrollContentCompact,
                 ]}
                 nestedScrollEnabled
-                scrollEnabled={!compact}
+                scrollEnabled
                 style={[
                   styles.entryScroll,
                   compact && styles.entryScrollCompact,
+                  styles.entryModalScroll,
                 ]}
                 testID="payment-entry-scroll"
               >
@@ -516,7 +550,7 @@ export function PaymentScreen({
                     {t(paymentFieldIssueCopyKey(state.fieldIssue))}
                   </Text>
                 ) : null}
-              </ScrollView>
+              </PosKeyboardAwareScrollView>
               {showEntry ? (
                 <View
                   style={[
@@ -528,15 +562,7 @@ export function PaymentScreen({
                   <ActionButton
                     disabled={state.busy}
                     label={t("action.cancel")}
-                    onPress={() => {
-                      if (state.allowedActions.cancel) {
-                        void presenter.cancel();
-                      } else if (onBack && canLeave) {
-                        onBack();
-                      } else {
-                        presenter.setAmountText("");
-                      }
-                    }}
+                    onPress={() => setPaymentEntryOpen(false)}
                     style={styles.formAction}
                     sound="danger"
                     testID="payment-entry-cancel"
@@ -556,14 +582,28 @@ export function PaymentScreen({
                         : t("action.pay")
                     }
                     onPress={() => {
-                      void presenter.submitSelected();
+                      void presenter.submitSelected().then((submitted) => {
+                        if (submitted) setPaymentEntryOpen(false);
+                      });
                     }}
                     style={styles.formAction}
                     testID="payment-submit"
                   />
                 </View>
               ) : null}
-            </View>
+                </View>
+              </View>
+            </Modal>
+
+            {!paymentEntryOpen && state.fieldIssue ? (
+              <Text
+                accessibilityRole="alert"
+                style={styles.fieldError}
+                testID="payment-field-error"
+              >
+                {t(paymentFieldIssueCopyKey(state.fieldIssue))}
+              </Text>
+            ) : null}
 
             <PaymentSummary
               compact={compact}
@@ -586,6 +626,11 @@ export function PaymentScreen({
                   return;
                 }
                 void presenter.confirm?.();
+              }}
+              onSelectMethod={(method) => {
+                if (presenter.selectMethod(method)) {
+                  setPaymentEntryOpen(true);
+                }
               }}
               presenter={presenter}
               shortLandscape={shortLandscape}
@@ -1454,6 +1499,7 @@ function PaymentSummary({
   locale,
   onCancelPreparedCash,
   onConfirm,
+  onSelectMethod,
   presenter,
   shortLandscape,
   state,
@@ -1463,6 +1509,7 @@ function PaymentSummary({
   locale: PaymentLocale;
   onCancelPreparedCash(): void;
   onConfirm(): void;
+  onSelectMethod(method: PaymentUiMethod): void;
   presenter: PaymentScreenPresenter;
   shortLandscape: boolean;
   state: PaymentPresenterState;
@@ -1512,7 +1559,7 @@ function PaymentSummary({
               disabled={!canSelectPaymentMethod(state, method)}
               key={method}
               label={t(paymentMethodCopyKey(method))}
-              onPress={() => presenter.selectMethod(method)}
+              onPress={() => onSelectMethod(method)}
               testID={`payment-method-${method}`}
             />
           ))}
@@ -2704,6 +2751,40 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     overflow: "visible",
   },
+  entryModalBackdrop: {
+    flex: 1,
+    padding: 24,
+    backgroundColor: "rgba(15, 32, 48, 0.58)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  entryModalCard: {
+    flex: 0,
+    width: "100%",
+    maxWidth: 720,
+    height: "88%",
+    padding: 20,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  entryModalHeader: {
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: posColors.border,
+    gap: 4,
+  },
+  entryModalTitle: {
+    color: posColors.ink,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  entryModalRemaining: {
+    color: posColors.mutedInk,
+    fontSize: 14,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
   entryPane: {
     flex: 42,
     minHeight: 0,
@@ -2723,6 +2804,9 @@ const styles = StyleSheet.create({
   entryScroll: {
     flex: 1,
     minHeight: 0,
+  },
+  entryModalScroll: {
+    flex: 1,
   },
   entryScrollCompact: {
     flex: 0,

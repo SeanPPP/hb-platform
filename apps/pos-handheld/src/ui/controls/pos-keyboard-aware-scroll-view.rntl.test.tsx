@@ -1,9 +1,10 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render } from "@testing-library/react-native";
 import { createRef } from "react";
-import { ScrollView, TextInput } from "react-native";
+import { FlatList, ScrollView, TextInput } from "react-native";
 
 import {
+  PosKeyboardAwareFlatList,
   PosKeyboardAwareScrollView,
   PosKeyboardAwareTextInput,
 } from "./pos-keyboard-aware-scroll-view";
@@ -181,5 +182,89 @@ describe("PosKeyboardAwareScrollView", () => {
     expect(onFocus).toHaveBeenCalledWith(focusEvent);
     expect(onChangeText).toHaveBeenCalledWith("Standalone");
     expect(ref.current).not.toBeNull();
+  });
+});
+
+describe("PosKeyboardAwareFlatList", () => {
+  it("固定键盘策略并把 FlatList 属性、ref 转发到底层滚动组件", async () => {
+    const ref = createRef<FlatList<{ id: string }>>();
+    const screen = await render(
+      <PosKeyboardAwareFlatList
+        accessibilityLabel="Keyboard aware list"
+        automaticallyAdjustKeyboardInsets={false}
+        contentContainerStyle={{ padding: 24 }}
+        data={[{ id: "1" }]}
+        keyboardDismissMode="none"
+        keyboardShouldPersistTaps="always"
+        keyExtractor={(item) => item.id}
+        ref={ref}
+        renderItem={({ item }) => (
+          <PosKeyboardAwareTextInput testID={`input-${item.id}`} />
+        )}
+        testID="keyboard-aware-list"
+      />,
+    );
+
+    const scroll = screen.getByTestId("keyboard-aware-list");
+    expect(scroll.props.accessibilityLabel).toBe("Keyboard aware list");
+    expect(scroll.props.contentContainerStyle).toEqual({ padding: 24 });
+    expect(scroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+    expect(scroll.props.keyboardDismissMode).toBe("interactive");
+    expect(scroll.props.keyboardShouldPersistTaps).toBe("handled");
+    expect(screen.getByTestId("input-1")).toBeTruthy();
+    expect(ref.current).not.toBeNull();
+    expect(typeof ref.current?.scrollToOffset).toBe("function");
+  });
+
+  it("自定义 keyboardRevealOffset，并在列表内输入聚焦时按该间距揭示", async () => {
+    const revealFocusedInput = jest.spyOn(
+      ScrollView.prototype,
+      "scrollResponderScrollNativeHandleToKeyboard",
+    );
+    const screen = await render(
+      <PosKeyboardAwareFlatList
+        data={[{ id: "1" }]}
+        keyboardRevealOffset={48}
+        keyExtractor={(item) => item.id}
+        renderItem={() => <PosKeyboardAwareTextInput testID="list-input" />}
+      />,
+    );
+
+    await fireEvent(screen.getByTestId("list-input"), "focus", {
+      target: 707,
+    });
+
+    expect(revealFocusedInput).toHaveBeenCalledTimes(1);
+    expect(revealFocusedInput).toHaveBeenCalledWith(707, 48, true);
+    revealFocusedInput.mockRestore();
+  });
+
+  it("列表内 HID 输入聚焦保持静默，不触发揭示滚动", async () => {
+    const revealFocusedInput = jest.spyOn(
+      ScrollView.prototype,
+      "scrollResponderScrollNativeHandleToKeyboard",
+    );
+    const screen = await render(
+      <PosKeyboardAwareFlatList
+        data={[{ id: "1" }]}
+        keyExtractor={(item) => item.id}
+        renderItem={() => (
+          <PosKeyboardAwareTextInput
+            showSoftInputOnFocus={false}
+            testID="hid-list-input"
+          />
+        )}
+      />,
+    );
+
+    await fireEvent(screen.getByTestId("hid-list-input"), "focus", {
+      target: 808,
+    });
+
+    expect(revealFocusedInput).not.toHaveBeenCalled();
+    expect(screen.getByTestId("hid-list-input").props.showSoftInputOnFocus).toBe(
+      false,
+    );
+    revealFocusedInput.mockRestore();
   });
 });
