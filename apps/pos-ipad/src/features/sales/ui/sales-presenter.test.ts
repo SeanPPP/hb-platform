@@ -364,9 +364,11 @@ test("搜索商品和无码商品成功加入后选择各自实际新增行", as
     await presenter.addProduct({
       productCode: "P-NEW",
       itemNumber: "I-NEW",
+      barcode: "930000000088",
       lookupCode: "930000000088",
       displayName: "新增商品",
       unitPriceCents: 500,
+      discountRate: null,
     }),
     true,
   );
@@ -783,9 +785,11 @@ test("关闭查询会使迟到搜索失效，旧结果既不改状态也不发�
     {
       productCode: "P-TEA",
       itemNumber: "100",
+      barcode: "930000000001",
       lookupCode: "930000000001",
       displayName: "Tea",
       unitPriceCents: 500,
+      discountRate: null,
     },
   ]);
 

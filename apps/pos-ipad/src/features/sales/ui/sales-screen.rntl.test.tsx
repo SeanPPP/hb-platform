@@ -14,6 +14,7 @@ import {
   type SalesCapabilities,
   type SalesCartPort,
   type SalesCashCompletion,
+  type SalesProductSearchItem,
   type SalesWorkflowPort,
 } from "./sales-presenter";
 import { SalesScreen } from "./sales-screen";
@@ -21,6 +22,20 @@ import { SalesScreen } from "./sales-screen";
 import { createAud, type CartLine, type CartSnapshot } from "@/core/contracts";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { posColors } from "@/ui/theme";
+
+jest.mock("@expo/vector-icons", () => {
+  const { Text } = jest.requireActual(
+    "react-native",
+  ) as typeof import("react-native");
+  return {
+    MaterialCommunityIcons: ({
+      name,
+      ...props
+    }: Readonly<{ name: string; testID?: string }>) => (
+      <Text {...props}>{name}</Text>
+    ),
+  };
+});
 
 jest.mock("@/ui/feedback", () => ({
   usePosSound: () => ({ play: jest.fn() }),
@@ -406,6 +421,7 @@ describe("SalesScreen", () => {
         cameraScanner={cameraScanner}
         locale="zh"
         onManualInputFocusChange={onManualInputFocusChange}
+        onOpenSpecialProducts={() => undefined}
         presenter={salesPresenter}
         showStatusStrip={false}
       />,
@@ -414,6 +430,12 @@ describe("SalesScreen", () => {
     const cameraRow = screen.getByTestId("sales-camera-scanner-row");
     const cameraAction = screen.getByTestId("sales-open-camera-scanner");
     const searchAction = screen.getByTestId("sales-search-button");
+    const searchInputRow = screen.getByTestId("sales-search-input-row");
+    const keyboardAction = screen.getByTestId("sales-show-keyboard");
+    const openItemAction = screen.getByTestId("sales-open-item-button");
+    const specialProductsAction = screen.getByTestId(
+      "sales-open-special-products",
+    );
     const modeControl = screen.getByTestId("sales-camera-mode-control");
     const modeToggle = screen.getByTestId("sales-camera-mode-toggle");
     expect(modeToggle.props.disabled).toBe(false);
@@ -427,18 +449,44 @@ describe("SalesScreen", () => {
     expect(flattenedStyle(modeControl).justifyContent).toBe("center");
     expect(flattenedStyle(modeControl).flexShrink).toBe(1);
     expect(flattenedStyle(cameraAction).flexBasis).toBe("47%");
-    expect(flattenedStyle(cameraAction).flexBasis).toBe(
-      flattenedStyle(searchAction).flexBasis,
-    );
-    expect(flattenedStyle(cameraAction).flexGrow).toBe(
-      flattenedStyle(searchAction).flexGrow,
-    );
     expect(flattenedStyle(modeControl).flexBasis).toBe(
       flattenedStyle(cameraAction).flexBasis,
     );
     expect(flattenedStyle(modeControl).flexGrow).toBe(
       flattenedStyle(cameraAction).flexGrow,
     );
+    expect(flattenedStyle(searchAction)).toMatchObject({
+      backgroundColor: posColors.surface,
+      borderColor: posColors.ink,
+      height: 48,
+      width: 48,
+    });
+    expect(flattenedStyle(keyboardAction)).toMatchObject({
+      backgroundColor: posColors.surface,
+      borderColor: posColors.ink,
+      height: 48,
+      width: 48,
+    });
+    expect(screen.getByTestId("sales-keyboard-icon").props.children).toBe(
+      "keyboard-outline",
+    );
+    expect(descendantTestIds(searchInputRow)).toEqual([
+      "sales-search-input-row",
+      "sales-search-input",
+      "sales-search-button",
+      "sales-search-icon",
+      "sales-show-keyboard",
+      "sales-keyboard-icon",
+    ]);
+    expect(screen.queryByTestId("sales-add-code-button")).toBeNull();
+    expect(flattenedStyle(openItemAction)).toMatchObject({
+      backgroundColor: posColors.yellowSoft,
+      borderColor: posColors.yellow,
+    });
+    expect(flattenedStyle(specialProductsAction)).toMatchObject({
+      backgroundColor: posColors.blueSoft,
+      borderColor: posColors.blue,
+    });
     expect(flattenedStyle(modeToggle).alignSelf).toBe("center");
     expect(
       descendantTestIds(cameraRow).filter((testID) =>
@@ -1431,9 +1479,11 @@ describe("SalesScreen", () => {
         await salesPresenter.addProduct({
           productCode: "P-001",
           itemNumber: "I-001",
+          barcode: "930000000001",
           lookupCode: "930000000001",
           displayName: "Fresh milk",
           unitPriceCents: 995,
+          discountRate: null,
         }),
       ).toBe(true);
     });
@@ -1494,9 +1544,11 @@ describe("SalesScreen", () => {
         await salesPresenter.addProduct({
           productCode: "P-001",
           itemNumber: "I-001",
+          barcode: "930000000001",
           lookupCode: "930000000001",
           displayName: "Fresh milk",
           unitPriceCents: 995,
+          discountRate: null,
         }),
       ).toBe(true);
     });
@@ -1584,9 +1636,20 @@ describe("SalesScreen", () => {
       {
         productCode: "P-SEARCH",
         itemNumber: "I-SEARCH",
+        barcode: "930000000099",
         lookupCode: "930000000099",
         displayName: "Search result",
         unitPriceCents: 250,
+        discountRate: null,
+      },
+      {
+        productCode: "P-OTHER",
+        itemNumber: "I-OTHER",
+        barcode: "930000000098",
+        lookupCode: "930000000098",
+        displayName: "Other result",
+        unitPriceCents: 300,
+        discountRate: null,
       },
     ]);
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
@@ -1606,7 +1669,9 @@ describe("SalesScreen", () => {
 
     await fireEvent.changeText(screen.getByTestId("sales-search-input"), "奶");
     await fireEvent.press(screen.getByTestId("sales-search-button"));
-    expect(screen.getByTestId("sales-search-results-drawer")).toBeTruthy();
+    expect(
+      await screen.findByTestId("sales-search-results-drawer"),
+    ).toBeTruthy();
     const addButton = await screen.findByTestId("sales-product-P-SEARCH-add");
     expect(findRenderedNodesByType(screen.toJSON(), "Image")).toHaveLength(0);
     await fireEvent.press(addButton);
@@ -1629,13 +1694,229 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("单一商品搜索结果直接加入购物车且不打开结果抽屉", async () => {
+    let shouldFail = false;
+    const addProduct = jest.fn(
+      async (_product: SalesProductSearchItem) => {
+        if (shouldFail) throw new Error("add failed");
+      },
+    );
+    const searchProducts = jest.fn(async () => [
+      {
+        productCode: "P-SINGLE",
+        itemNumber: "I-SINGLE",
+        barcode: "930000000088",
+        lookupCode: "930000000088",
+        displayName: "Single result",
+        unitPriceCents: 350,
+        discountRate: 0.2,
+      },
+    ]);
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        addProduct,
+        searchProducts,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.changeText(screen.getByTestId("sales-search-input"), "奶");
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+
+    await waitFor(() => expect(addProduct).toHaveBeenCalledTimes(1));
+    expect(addProduct).toHaveBeenCalledWith(
+      expect.objectContaining({ lookupCode: "930000000088" }),
+    );
+    expect(screen.queryByTestId("sales-search-results-drawer")).toBeNull();
+
+    shouldFail = true;
+    await fireEvent.changeText(screen.getByTestId("sales-search-input"), "奶");
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+    await waitFor(() => expect(addProduct).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByTestId("sales-search-results-drawer"),
+    ).toBeTruthy();
+    expect(screen.getByTestId("sales-product-P-SINGLE-add")).toBeTruthy();
+    expect(screen.getAllByText("商品无法加入购物车。").length).toBeGreaterThan(
+      0,
+    );
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("多个商品搜索结果显示图片、货号、条码、零售价和折扣率", async () => {
+    const searchProducts = jest.fn(async () => [
+      {
+        productCode: "P-DETAIL-A",
+        itemNumber: "I-DETAIL-A",
+        barcode: "930000000071",
+        lookupCode: "LOOKUP-A",
+        displayName: "Detailed product A",
+        unitPriceCents: 250,
+        discountRate: 0.2,
+      },
+      {
+        productCode: "P-DETAIL-B",
+        itemNumber: null,
+        barcode: null,
+        lookupCode: "LOOKUP-B",
+        displayName: "Detailed product B",
+        unitPriceCents: 500,
+        discountRate: null,
+      },
+    ]);
+    const resolveCartProductImage = jest.fn(async () =>
+      "https://pos.example.test/images/detail-a.png",
+    );
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        searchProducts,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        resolveCartProductImage={resolveCartProductImage}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.changeText(screen.getByTestId("sales-search-input"), "detail");
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+
+    expect(await screen.findByText("货号：I-DETAIL-A")).toBeTruthy();
+    expect(screen.getByText("条码：930000000071")).toBeTruthy();
+    expect(screen.getByText("零售价：$2.50")).toBeTruthy();
+    expect(screen.getByText("折扣：20%")).toBeTruthy();
+    expect(screen.getByText("货号：—")).toBeTruthy();
+    expect(screen.getByText("条码：LOOKUP-B")).toBeTruthy();
+    expect(screen.getByText("折扣：无")).toBeTruthy();
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sales-product-P-DETAIL-A-image-content").props
+          .source,
+      ).toEqual({
+        uri: "https://pos.example.test/images/detail-a.png",
+      });
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("商品搜索没有结果时打开空结果抽屉", async () => {
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        searchProducts: async () => [],
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.changeText(screen.getByTestId("sales-search-input"), "不存在");
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+
+    expect(
+      await screen.findByTestId("sales-search-results-drawer"),
+    ).toBeTruthy();
+    expect(screen.getByTestId("sales-search-results-empty")).toBeTruthy();
+    expect(screen.getByText("没有匹配商品")).toBeTruthy();
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("搜索进行中修改输入会丢弃迟到结果且不会自动加入", async () => {
+    let resolveSearch:
+      | ((results: readonly SalesProductSearchItem[]) => void)
+      | undefined;
+    const pendingSearch = new Promise<readonly SalesProductSearchItem[]>(
+      (resolve) => {
+        resolveSearch = resolve;
+      },
+    );
+    const addProduct = jest.fn(
+      async (_product: SalesProductSearchItem) => undefined,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        addProduct,
+        searchProducts: async () => pendingSearch,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    const searchInput = screen.getByTestId("sales-search-input");
+
+    await fireEvent.changeText(searchInput, "旧查询");
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+    expect(screen.getByTestId("sales-search-progress")).toBeTruthy();
+    await fireEvent.changeText(searchInput, "新查询");
+    await act(async () => {
+      resolveSearch?.([
+        {
+          productCode: "P-STALE",
+          itemNumber: "I-STALE",
+          barcode: "930000000077",
+          lookupCode: "930000000077",
+          displayName: "Stale result",
+          unitPriceCents: 700,
+          discountRate: null,
+        },
+      ]);
+      await pendingSearch;
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("sales-search-progress")).toBeNull();
+    });
+    expect(addProduct).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("sales-search-results-drawer")).toBeNull();
+    expect(screen.getByTestId("sales-search-input").props.value).toBe("新查询");
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("新搜索等待、失败或空白时不显示上一轮结果，并在抽屉提示必填", async () => {
     const resultA = {
       productCode: "P-A",
       itemNumber: "I-A",
+      barcode: "BARCODE-A",
       lookupCode: "LOOKUP-A",
       displayName: "Product A",
       unitPriceCents: 100,
+      discountRate: null,
+    };
+    const resultA2 = {
+      ...resultA,
+      productCode: "P-A2",
+      itemNumber: "I-A2",
+      barcode: "BARCODE-A2",
+      lookupCode: "LOOKUP-A2",
+      displayName: "Product A2",
     };
     let rejectSearchB: ((reason?: unknown) => void) | undefined;
     const searchB = new Promise<readonly (typeof resultA)[]>(
@@ -1644,7 +1925,7 @@ describe("SalesScreen", () => {
       },
     );
     const searchProducts = jest.fn((query: string) =>
-      query === "A" ? Promise.resolve([resultA]) : searchB,
+      query === "A" ? Promise.resolve([resultA, resultA2]) : searchB,
     );
     const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
       workflow: {
@@ -1668,7 +1949,12 @@ describe("SalesScreen", () => {
 
     await fireEvent.changeText(searchInput, "B");
     await fireEvent.press(screen.getByTestId("sales-search-button"));
-    expect(screen.getByTestId("sales-search-results-loading")).toBeTruthy();
+    expect(screen.getByTestId("sales-search-progress")).toBeTruthy();
+    expect(
+      screen.getByTestId("sales-search-button").props.accessibilityState,
+    ).toEqual({ busy: true, disabled: true });
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+    expect(screen.queryByTestId("sales-search-results-drawer")).toBeNull();
     expect(screen.queryByTestId("sales-product-P-A-add")).toBeNull();
 
     await act(async () => {
@@ -1676,17 +1962,21 @@ describe("SalesScreen", () => {
       await Promise.resolve();
     });
     expect(screen.queryByTestId("sales-product-P-A-add")).toBeNull();
-    expect(
-      screen.getAllByText("商品搜索失败，请重试。").length,
-    ).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        screen.getAllByText("商品搜索失败，请重试。").length,
+      ).toBeGreaterThan(0);
+    });
 
     await fireEvent.press(screen.getByTestId("sales-search-results-close"));
     await fireEvent.changeText(searchInput, "");
     await fireEvent.press(screen.getByTestId("sales-search-button"));
     expect(screen.queryByTestId("sales-product-P-A-add")).toBeNull();
-    expect(
-      screen.getAllByText("请输入条码、货号或商品名称。").length,
-    ).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        screen.getAllByText("请输入条码、货号或商品名称。").length,
+      ).toBeGreaterThan(0);
+    });
     expect(searchProducts.mock.calls.map(([query]) => query)).toEqual(["A", "B"]);
 
     salesPresenter.destroy();
@@ -1951,7 +2241,13 @@ describe("SalesScreen", () => {
         'Tapping the search field keeps HID-only input and submits scans with Enter. For touch or Chinese input, tap the "Keyboard" button above.',
       ),
     ).toBeNull();
-    expect(englishScreen.getByText("Keyboard")).toBeTruthy();
+    expect(englishScreen.queryByText("Keyboard")).toBeNull();
+    expect(
+      englishScreen.getByTestId("sales-show-keyboard").props.accessibilityLabel,
+    ).toBe("Keyboard");
+    expect(
+      englishScreen.getByTestId("sales-keyboard-icon").props.children,
+    ).toBe("keyboard-outline");
 
     englishPresenter.destroy();
     await englishScreen.unmount();
@@ -2788,11 +3084,14 @@ describe("SalesScreen", () => {
       {
         productCode: "P-SEARCH",
         itemNumber: "I-SEARCH",
+        barcode: "930000000099",
         lookupCode: "930000000099",
         displayName: "Search result",
         unitPriceCents: 250,
+        discountRate: null,
       },
     ]);
+    const addProduct = jest.fn(async () => undefined);
     const addByLookupCode = jest.fn(async (_lookupCode: string) => null);
     const holdCart = jest.fn(async () => undefined);
     const lockTerminal = jest.fn(async () => undefined);
@@ -2800,6 +3099,7 @@ describe("SalesScreen", () => {
     const injectedWorkflow: SalesWorkflowPort = {
       ...workflow(),
       searchProducts,
+      addProduct,
       addByLookupCode,
       holdCart,
       lockTerminal,
@@ -2819,9 +3119,8 @@ describe("SalesScreen", () => {
     await fireEvent.changeText(searchInput, "milk");
     await fireEvent.press(screen.getByTestId("sales-search-button"));
     expect(searchProducts).toHaveBeenCalledWith("milk");
-    expect(
-      await screen.findByTestId("sales-product-P-SEARCH-add"),
-    ).toBeTruthy();
+    await waitFor(() => expect(addProduct).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("sales-search-results-drawer")).toBeNull();
 
     await fireEvent.changeText(searchInput, "930000000099");
     await fireEvent(searchInput, "submitEditing");

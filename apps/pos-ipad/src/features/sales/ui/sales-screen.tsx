@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   memo,
   useCallback,
@@ -7,6 +8,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   Modal,
@@ -137,7 +139,7 @@ type ActionButtonProps = Readonly<{
   label: string;
   onPress(): void;
   disabled?: boolean;
-  tone?: "primary" | "secondary" | "danger" | "quiet";
+  tone?: "primary" | "secondary" | "danger" | "quiet" | "warning" | "info";
   sound?: "tap" | "key" | "navigate" | "danger";
   testID?: string;
   style?: StyleProp<ViewStyle>;
@@ -212,6 +214,7 @@ export function SalesScreen({
   const [searchResultsQuery, setSearchResultsQuery] = useState<string | null>(
     null,
   );
+  const [combinedSearchPending, setCombinedSearchPending] = useState(false);
   const [utilityActionPending, setUtilityActionPending] =
     useState<SalesUtilityAction | null>(null);
   const [utilityActionResult, setUtilityActionResult] = useState<Readonly<{
@@ -242,6 +245,7 @@ export function SalesScreen({
     null,
   );
   const searchRequestGenerationRef = useRef(0);
+  const combinedSearchPendingRef = useRef(false);
   const beginNumericInputRef = useRef<() => void>(() => undefined);
   const cameraCloseRequestedRef = useRef(false);
   manualInputFocusChangeRef.current = onManualInputFocusChange;
@@ -611,17 +615,44 @@ export function SalesScreen({
     beginNumericInputRef.current();
   }, [state.phase]);
 
-  const openProductSearchDrawer = (): void => {
+  const runCombinedProductSearch = (): void => {
+    if (combinedSearchPendingRef.current) return;
     const query = state.query.trim();
     const generation = ++searchRequestGenerationRef.current;
+    combinedSearchPendingRef.current = true;
+    setCombinedSearchPending(true);
     setSearchDrawerQuery(query);
     setSearchResultsQuery(null);
-    setSearchDrawerVisible(true);
-    void presenter.searchProducts().then((searched) => {
-      if (generation === searchRequestGenerationRef.current && searched) {
+    setSearchDrawerVisible(false);
+    void presenter
+      .searchProducts()
+      .then(async (searched) => {
+        if (generation !== searchRequestGenerationRef.current) return;
+        const latest = presenter.getState();
+        if (latest.query.trim() !== query) return;
+        if (!searched) {
+          if (latest.errorCode) setSearchDrawerVisible(true);
+          return;
+        }
+
         setSearchResultsQuery(query);
-      }
-    });
+        if (latest.searchResults.length !== 1) {
+          setSearchDrawerVisible(true);
+          return;
+        }
+
+        const added = await presenter.addProduct(latest.searchResults[0]!);
+        if (generation !== searchRequestGenerationRef.current || added) return;
+        if (presenter.getState().query.trim() === query) {
+          setSearchResultsQuery(query);
+          setSearchDrawerVisible(true);
+        }
+      })
+      .finally(() => {
+        if (generation !== searchRequestGenerationRef.current) return;
+        combinedSearchPendingRef.current = false;
+        setCombinedSearchPending(false);
+      });
   };
 
   const runUtilityAction = (
@@ -1149,7 +1180,7 @@ export function SalesScreen({
               />
             ) : (
               <>
-            <View style={styles.searchInputRow}>
+            <View style={styles.searchInputRow} testID="sales-search-input-row">
               <PosKeyboardAwareTextInput
                 ref={searchInputRef}
                 accessibilityLabel={t("catalog.searchPlaceholder")}
@@ -1173,35 +1204,25 @@ export function SalesScreen({
                 testID="sales-search-input"
                 value={state.query}
               />
-              <ActionButton
+              <CatalogIconButton
+                accessibilityLabel={t("catalog.searchAndAdd")}
+                disabled={catalogActionsDisabled || combinedSearchPending}
+                icon="magnify"
+                iconTestID="sales-search-icon"
+                loading={combinedSearchPending}
+                onPress={runCombinedProductSearch}
+                testID="sales-search-button"
+              />
+              <CatalogIconButton
+                accessibilityLabel={t("catalog.keyboard")}
                 disabled={catalogActionsDisabled}
-                label={t("catalog.keyboard")}
+                icon="keyboard-outline"
+                iconTestID="sales-keyboard-icon"
                 onPress={requestSearchKeyboard}
-                sound="navigate"
-                style={styles.searchKeyboardAction}
                 testID="sales-show-keyboard"
-                tone="secondary"
               />
             </View>
             <View style={styles.searchActions}>
-              <ActionButton
-                disabled={catalogActionsDisabled}
-                label={t("catalog.search")}
-                onPress={openProductSearchDrawer}
-                sound="navigate"
-                style={styles.searchAction}
-                testID="sales-search-button"
-                tone="secondary"
-              />
-              <ActionButton
-                disabled={catalogActionsDisabled}
-                label={t("catalog.addCode")}
-                onPress={() => {
-                  void presenter.addLookupCode();
-                }}
-                style={styles.searchAction}
-                testID="sales-add-code-button"
-              />
               <ActionButton
                 disabled={catalogActionsDisabled}
                 label={t("catalog.openItem")}
@@ -1213,7 +1234,7 @@ export function SalesScreen({
                 sound="navigate"
                 style={styles.searchAction}
                 testID="sales-open-item-button"
-                tone="secondary"
+                tone="warning"
               />
               {onOpenSpecialProducts ? (
                 <ActionButton
@@ -1223,7 +1244,7 @@ export function SalesScreen({
                   sound="navigate"
                   style={styles.searchAction}
                   testID="sales-open-special-products"
-                  tone="secondary"
+                  tone="info"
                 />
               ) : null}
             </View>
@@ -1557,6 +1578,9 @@ export function SalesScreen({
                       if (added) setSearchDrawerVisible(false);
                     });
                   }}
+                  {...(resolveCartProductImage
+                    ? { resolveProductImage: resolveCartProductImage }
+                    : {})}
                   t={t}
                 />
               )}
@@ -2097,42 +2121,123 @@ export function SalesScreen({
   );
 }
 
+function formatCatalogField(
+  label: string,
+  value: string,
+  locale: SalesLocale,
+): string {
+  return `${label}${locale === "zh" ? "：" : ": "}${value}`;
+}
+
+function formatCatalogDiscountRate(
+  discountRate: number | null,
+  locale: SalesLocale,
+): string | null {
+  if (
+    discountRate === null ||
+    !Number.isFinite(discountRate) ||
+    discountRate <= 0
+  ) {
+    return null;
+  }
+  return new Intl.NumberFormat(locale === "zh" ? "zh-AU" : "en-AU", {
+    style: "percent",
+    maximumFractionDigits: 2,
+  }).format(discountRate);
+}
+
 function ProductSearchRow({
   disabled = false,
   item,
   locale,
   onAdd,
+  resolveProductImage,
   t,
 }: Readonly<{
   disabled?: boolean;
   item: SalesProductSearchItem;
   locale: SalesLocale;
   onAdd(): void;
+  resolveProductImage?: (input: {
+    productCode: string;
+    lookupCode: string;
+  }) => Promise<string | null>;
   t(
     key: SalesCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ): string;
 }>) {
+  const [imageUri, setImageUri] = useState<string | null | undefined>();
+  useEffect(() => {
+    setImageUri(undefined);
+    if (!resolveProductImage) return;
+    let active = true;
+    void resolveProductImage({
+      productCode: item.productCode,
+      lookupCode: item.lookupCode,
+    })
+      .then((resolved) => {
+        if (active) setImageUri(resolved?.trim() || null);
+      })
+      .catch(() => {
+        if (active) setImageUri(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [item.lookupCode, item.productCode, resolveProductImage]);
+
+  const itemNumber = item.itemNumber?.trim() || "—";
+  const barcode = item.barcode?.trim() || item.lookupCode;
+  const discountRate = formatCatalogDiscountRate(item.discountRate, locale);
   return (
     <View style={styles.productRow}>
-      <View style={styles.productIdentity}>
-        <Text numberOfLines={2} style={styles.productName}>
-          {item.displayName}
-        </Text>
-        <Text numberOfLines={1} style={styles.productCode}>
-          {item.lookupCode}
-        </Text>
+      <View style={styles.productRowMain}>
+        <CartProductThumbnail
+          accessibilityLabel={t("cart.productImage", {
+            product: item.displayName,
+          })}
+          imageUri={imageUri}
+          placeholderLabel={t("cart.imagePlaceholder")}
+          testID={`sales-product-${item.productCode}-image`}
+        />
+        <View style={styles.productIdentity}>
+          <Text numberOfLines={2} style={styles.productName}>
+            {item.displayName}
+          </Text>
+          <Text numberOfLines={1} style={styles.productCode}>
+            {formatCatalogField(t("catalog.itemNumber"), itemNumber, locale)}
+          </Text>
+          <Text numberOfLines={1} style={styles.productCode}>
+            {formatCatalogField(t("catalog.barcode"), barcode, locale)}
+          </Text>
+        </View>
       </View>
-      <Text style={styles.productPrice}>
-        {formatAud(item.unitPriceCents, locale)}
-      </Text>
-      <ActionButton
-        disabled={disabled}
-        label={t("catalog.add")}
-        onPress={onAdd}
-        testID={`sales-product-${item.productCode}-add`}
-        tone="secondary"
-      />
+      <View style={styles.productRowFooter}>
+        <View style={styles.productPricing}>
+          <Text style={styles.productPrice}>
+            {formatCatalogField(
+              t("catalog.retailPrice"),
+              formatAud(item.unitPriceCents, locale),
+              locale,
+            )}
+          </Text>
+          <Text style={styles.productDiscount}>
+            {formatCatalogField(
+              t("catalog.discount"),
+              discountRate ?? t("catalog.noDiscount"),
+              locale,
+            )}
+          </Text>
+        </View>
+        <ActionButton
+          disabled={disabled}
+          label={t("catalog.add")}
+          onPress={onAdd}
+          testID={`sales-product-${item.productCode}-add`}
+          tone="secondary"
+        />
+      </View>
     </View>
   );
 }
@@ -2496,11 +2601,65 @@ function ActionButton({
           styles.actionButtonText,
           (tone === "quiet" || tone === "secondary") && styles.quietButtonText,
           tone === "danger" && styles.dangerButtonText,
+          tone === "info" && styles.infoButtonText,
+          tone === "warning" && styles.warningButtonText,
           disabled && styles.actionButtonTextDisabled,
         ]}
       >
         {label}
       </Text>
+    </PosPressable>
+  );
+}
+
+function CatalogIconButton({
+  accessibilityLabel,
+  disabled,
+  icon,
+  iconTestID,
+  loading = false,
+  onPress,
+  testID,
+}: Readonly<{
+  accessibilityLabel: string;
+  disabled: boolean;
+  icon: "keyboard-outline" | "magnify";
+  iconTestID: string;
+  loading?: boolean;
+  onPress(): void;
+  testID: string;
+}>) {
+  return (
+    <PosPressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      accessibilityState={{ busy: loading, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      sound="navigate"
+      style={({ pressed }) => [
+        styles.actionButton,
+        actionToneStyles.secondary,
+        styles.searchIconAction,
+        disabled && styles.actionButtonDisabled,
+        pressed && !disabled && styles.actionButtonPressed,
+      ]}
+      testID={testID}
+    >
+      {loading ? (
+        <ActivityIndicator
+          color={posColors.ink}
+          size="small"
+          testID="sales-search-progress"
+        />
+      ) : (
+        <MaterialCommunityIcons
+          color={posColors.ink}
+          name={icon}
+          size={24}
+          testID={iconTestID}
+        />
+      )}
     </PosPressable>
   );
 }
@@ -2609,6 +2768,10 @@ const actionToneStyles = StyleSheet.create({
     backgroundColor: posColors.redSoft,
     borderColor: posColors.red,
   },
+  info: {
+    backgroundColor: posColors.blueSoft,
+    borderColor: posColors.blue,
+  },
   primary: {
     backgroundColor: posColors.orange,
     borderColor: posColors.orange,
@@ -2620,6 +2783,10 @@ const actionToneStyles = StyleSheet.create({
   secondary: {
     backgroundColor: posColors.surface,
     borderColor: posColors.ink,
+  },
+  warning: {
+    backgroundColor: posColors.yellowSoft,
+    borderColor: posColors.yellow,
   },
 });
 
@@ -3009,6 +3176,9 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "700",
   },
+  infoButtonText: {
+    color: posColors.blue,
+  },
   fieldLabel: {
     color: posColors.ink,
     fontSize: 13,
@@ -3239,6 +3409,7 @@ const styles = StyleSheet.create({
   },
   productIdentity: {
     flex: 1,
+    minWidth: 0,
   },
   productName: {
     color: posColors.ink,
@@ -3248,18 +3419,37 @@ const styles = StyleSheet.create({
   },
   productPrice: {
     color: posColors.ink,
-    fontSize: 14,
+    fontSize: 13,
     fontVariant: ["tabular-nums"],
     fontWeight: "800",
   },
+  productDiscount: {
+    color: posColors.red,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  productPricing: {
+    flex: 1,
+    gap: 3,
+    minWidth: 0,
+  },
   productRow: {
-    alignItems: "center",
     borderBottomColor: posColors.border,
     borderBottomWidth: 1,
+    minHeight: 116,
+    paddingVertical: 10,
+  },
+  productRowFooter: {
+    alignItems: "center",
     flexDirection: "row",
-    gap: 8,
-    minHeight: 66,
-    paddingVertical: 8,
+    gap: 10,
+    justifyContent: "space-between",
+    marginTop: 8,
+  },
+  productRowMain: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
   },
   quantityText: {
     color: posColors.ink,
@@ -3274,6 +3464,9 @@ const styles = StyleSheet.create({
     minWidth: MIN_TOUCH_TARGET,
   },
   quietButtonText: {
+    color: posColors.ink,
+  },
+  warningButtonText: {
     color: posColors.ink,
   },
   runtimeBanner: {
@@ -3396,8 +3589,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
-  searchKeyboardAction: {
-    paddingHorizontal: 10,
+  searchIconAction: {
+    height: 48,
+    paddingHorizontal: 0,
+    width: 48,
   },
   searchMessage: {
     color: posColors.mutedInk,

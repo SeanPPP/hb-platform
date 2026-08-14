@@ -65,9 +65,11 @@ export function transportFailureErrorCode(
 export type SalesProductSearchItem = Readonly<{
   productCode: string;
   itemNumber: string | null;
+  barcode: string | null;
   lookupCode: string;
   displayName: string;
   unitPriceCents: number;
+  discountRate: number | null;
 }>;
 
 /** 业务反馈与声音解耦；路由层仅将其映射为本地提示音。 */

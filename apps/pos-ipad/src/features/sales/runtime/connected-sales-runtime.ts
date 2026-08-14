@@ -777,10 +777,11 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
           0,
         );
         this.sessionGuard.assertActive();
-        return matches
-          .filter(
+        return deduplicateProductSearchMatches(
+          matches.filter(
             (match) => match.storeCode === this.identity.storeCode,
-          )
+          ),
+        )
           .map(toSearchItem);
       },
     );
@@ -1410,10 +1411,31 @@ function toSearchItem(item: LocalCatalogMatch): SalesProductSearchItem {
   return {
     productCode: item.productCode,
     itemNumber: item.itemNumber,
+    barcode: item.barcode,
     lookupCode: item.lookupCode,
     displayName: item.displayName,
     unitPriceCents: item.retailPriceCents,
+    discountRate: item.discountRate,
   };
+}
+
+function deduplicateProductSearchMatches(
+  matches: readonly LocalCatalogMatch[],
+): readonly LocalCatalogMatch[] {
+  const seenProductPrices = new Set<string>();
+  return matches.filter((match) => {
+    // 套装码必须保留为独立售卖选择；门店套装价会使用 multi-code 来源。
+    if (isProductSetMatch(match)) return true;
+    const key = `${match.productCode.trim().toUpperCase()}\u0000${match.retailPriceCents}`;
+    if (seenProductPrices.has(key)) return false;
+    seenProductPrices.add(key);
+    return true;
+  });
+}
+
+function isProductSetMatch(match: LocalCatalogMatch): boolean {
+  const sourceLabel = match.priceSourceLabel.trim().toLowerCase();
+  return match.priceSource === 2 || sourceLabel === "set" || sourceLabel.startsWith("set-");
 }
 
 function assertIdentity(identity: ConnectedSalesIdentity): void {

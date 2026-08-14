@@ -66,7 +66,15 @@ test("目录搜索和 HID 精确扫码只使用本地目录，并以稳定 produ
     "930000000001",
   );
 
-  assert.deepEqual(results, [{ productCode: "P-TEA", itemNumber: "100", lookupCode: "930000000001", displayName: "Tea", unitPriceCents: 500 }]);
+  assert.deepEqual(results, [{
+    productCode: "P-TEA",
+    itemNumber: "100",
+    barcode: "930000000001",
+    lookupCode: "930000000001",
+    displayName: "Tea",
+    unitPriceCents: 500,
+    discountRate: null,
+  }]);
   assert.equal(lineId, "line-1");
   assert.equal(dependencies.cart.getSnapshot().lines[0]?.productCode, "P-TEA");
   assert.equal(dependencies.cart.getSnapshot().lines[0]?.lookupCode, "930000000001");
@@ -74,6 +82,63 @@ test("目录搜索和 HID 精确扫码只使用本地目录，并以稳定 produ
   await assert.rejects(
     () => dependencies.workflow.addProduct({ ...results[0]!, productCode: "forged" }),
     /identity/i,
+  );
+});
+
+test("目录搜索过滤同商品同价普通编码，并保留套装和不同价格结果", async () => {
+  const dependencies = connected({
+    catalog: new Catalog([
+      item(),
+      item({
+        lookupCode: "100",
+        lookupCodeNormalized: "100",
+      }),
+      item({
+        lookupCode: "MULTI-SAME",
+        lookupCodeNormalized: "MULTI-SAME",
+        priceSource: 3,
+        priceSourceLabel: "multi-code",
+      }),
+      item({
+        lookupCode: "CLEARANCE-DIFFERENT",
+        lookupCodeNormalized: "CLEARANCE-DIFFERENT",
+        retailPriceCents: 450,
+        priceSource: 4,
+        priceSourceLabel: "clearance",
+      }),
+      item({
+        lookupCode: "SET-SAME",
+        lookupCodeNormalized: "SET-SAME",
+        priceSource: 2,
+        priceSourceLabel: "set",
+      }),
+      item({
+        lookupCode: "SET-STORE-SAME",
+        lookupCodeNormalized: "SET-STORE-SAME",
+        priceSource: 3,
+        priceSourceLabel: "set-store-multi-code",
+      }),
+      item({
+        lookupCode: "SET-DIFFERENT",
+        lookupCodeNormalized: "SET-DIFFERENT",
+        retailPriceCents: 900,
+        priceSource: 2,
+        priceSourceLabel: "set",
+      }),
+    ]),
+  });
+
+  const results = await dependencies.workflow.searchProducts("tea");
+
+  assert.deepEqual(
+    results.map((result) => result.lookupCode),
+    [
+      "930000000001",
+      "CLEARANCE-DIFFERENT",
+      "SET-SAME",
+      "SET-STORE-SAME",
+      "SET-DIFFERENT",
+    ],
   );
 });
 
@@ -93,13 +158,10 @@ test("本地、搜索和远程目录结果都把 discountRate 转为目录基线
     "catalog",
   );
 
-  await local.workflow.addProduct({
-    productCode: localItem.productCode,
-    itemNumber: localItem.itemNumber,
-    lookupCode: localItem.lookupCode,
-    displayName: localItem.displayName,
-    unitPriceCents: localItem.retailPriceCents,
-  });
+  const [localSearchResult] = await local.workflow.searchProducts("tea");
+  assert.equal(localSearchResult?.barcode, localItem.barcode);
+  assert.equal(localSearchResult?.discountRate, 0.2);
+  await local.workflow.addProduct(localSearchResult!);
   line = local.cart.getSnapshot().lines[0]!;
   assert.equal(line.quantity, "2");
   assert.equal(line.discount.cents, 280);
@@ -304,9 +366,11 @@ test("每次扫码仅发布一个权威 outcome，并以 disposition 区分新�
   await dependencies.workflow.addProduct({
     productCode: "P-TEA",
     itemNumber: "100",
+    barcode: "930000000001",
     lookupCode: "930000000001",
     displayName: "Tea",
     unitPriceCents: 500,
+    discountRate: null,
   });
   await dependencies.workflow.addOpenItem(120);
 
@@ -504,9 +568,11 @@ test("HID 扫码只连续合并最后一行，搜索选择仍沿用全局 addIte
   await dependencies.workflow.addProduct({
     productCode: tea.productCode,
     itemNumber: tea.itemNumber,
+    barcode: tea.barcode,
     lookupCode: tea.lookupCode,
     displayName: tea.displayName,
     unitPriceCents: tea.retailPriceCents,
+    discountRate: tea.discountRate,
   });
   assert.deepEqual(
     dependencies.cart
