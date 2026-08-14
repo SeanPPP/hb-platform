@@ -213,7 +213,7 @@ final class HBExternalDisplayViewController: UIViewController {
     advertContainer.layer.masksToBounds = true
     advertContainer.translatesAutoresizingMaskIntoConstraints = false
 
-    advertImageView.contentMode = .scaleAspectFill
+    advertImageView.contentMode = .scaleAspectFit
     advertImageView.translatesAutoresizingMaskIntoConstraints = false
     advertContainer.addSubview(advertImageView)
 
@@ -293,6 +293,9 @@ final class HBExternalDisplayViewController: UIViewController {
           : fullScreenAdvertLayoutConstraints
       )
       checkoutPanel.isHidden = fullScreenAdvert
+      advertContainer.backgroundColor = fullScreenAdvert
+        ? .clear
+        : UIColor.white.withAlphaComponent(0.055)
       advertContainer.layer.cornerRadius = fullScreenAdvert ? 0 : 24
       NSLayoutConstraint.activate(
         fullScreenAdvert
@@ -452,7 +455,7 @@ final class HBExternalDisplayViewController: UIViewController {
         return "advert-video-unavailable"
       }
       let layer = AVPlayerLayer(player: player)
-      layer.videoGravity = .resizeAspectFill
+      layer.videoGravity = .resizeAspect
       advertContainer.layer.insertSublayer(layer, at: 0)
       videoPlayer = player
       videoLayer = layer

@@ -74,19 +74,28 @@ test("idle 空购物篮且有广告时 RN surface 全屏透明且不渲染交易
   const surfaceStyle = StyleSheet.flatten(
     screen.getByTestId("external-display-surface").props.style,
   );
+  const advertWindowStyle = StyleSheet.flatten(
+    screen.getByTestId("external-display-advert-window").props.style,
+  );
 
   expect(
     screen.queryByTestId("external-display-transaction-panel"),
   ).toBeNull();
-  expect(surfaceStyle).toMatchObject({ backgroundColor: "transparent" });
+  expect(surfaceStyle).toMatchObject({
+    backgroundColor: "transparent",
+    flex: 1,
+  });
   expect(surfaceStyle).not.toHaveProperty("gap");
   expect(surfaceStyle).not.toHaveProperty("paddingHorizontal");
   expect(surfaceStyle).not.toHaveProperty("paddingVertical");
-  expect(
-    StyleSheet.flatten(
-      screen.getByTestId("external-display-advert-window").props.style,
-    ),
-  ).toMatchObject({ backgroundColor: "transparent", flex: 1 });
+  expect(advertWindowStyle).toMatchObject({
+    backgroundColor: "transparent",
+    flex: 1,
+  });
+  expect(advertWindowStyle).not.toHaveProperty("borderRadius");
+  expect(advertWindowStyle).not.toHaveProperty("borderWidth");
+  expect(advertWindowStyle).not.toHaveProperty("margin");
+  expect(advertWindowStyle).not.toHaveProperty("padding");
   expect(screen.queryByText("Welcome")).toBeNull();
 });
 

@@ -169,6 +169,10 @@ test("UIKit fallback switches exactly between transaction columns and full-scree
     source,
     /advertContainer\.layer\.cornerRadius\s*=\s*fullScreenAdvert\s*\?\s*0\s*:\s*24/,
   );
+  assert.match(
+    source,
+    /advertContainer\.backgroundColor\s*=\s*fullScreenAdvert\s*\?\s*\.clear\s*:\s*UIColor\.white\.withAlphaComponent\(0\.055\)/,
+  );
   assert.match(source, /UIView\.performWithoutAnimation/);
 
   for (const edge of ["leading", "trailing", "top", "bottom"]) {
@@ -219,11 +223,12 @@ test("UIKit fallback renders a non-zero discount as an explicit deduction", asyn
   );
 });
 
-test("UIKit fallback fills media, reuses identical adverts, and clears identity on stop", async () => {
+test("UIKit fallback fits media without cropping, reuses identical adverts, and clears identity on stop", async () => {
   const source = await read("ios/HBExternalDisplayViewController.swift");
 
-  assert.match(source, /advertImageView\.contentMode\s*=\s*\.scaleAspectFill/);
-  assert.match(source, /layer\.videoGravity\s*=\s*\.resizeAspectFill/);
+  assert.match(source, /advertImageView\.contentMode\s*=\s*\.scaleAspectFit/);
+  assert.match(source, /layer\.videoGravity\s*=\s*\.resizeAspect\b/);
+  assert.match(source, /videoLayer\?\.frame\s*=\s*advertContainer\.bounds/);
   assert.match(
     source,
     /struct AdvertIdentity:[\s\S]*let kind: String[\s\S]*let localUri: String/,
