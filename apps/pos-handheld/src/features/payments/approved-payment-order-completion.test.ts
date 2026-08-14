@@ -40,6 +40,7 @@ test("重启后的 Approved execution 只以原 attempt.orderGuid 计划并提�
       attemptId: "attempt-restarted",
       orderGuid: "order-before-provider-call",
       ...plan(),
+      recalledHoldCompletion: null,
     },
   ]);
   assert.deepEqual(completed, result());

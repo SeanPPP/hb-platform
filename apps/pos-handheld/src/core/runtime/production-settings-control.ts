@@ -13,6 +13,7 @@ import {
   type SettingsPendingDataSnapshot,
   type SettingsPrinterDevice,
   type SettingsScannerTestResult,
+  type SettingsLinklyPairingPort,
   type SettingsSnapshot,
 } from "../../features/settings/settings-presenter";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
@@ -39,6 +40,7 @@ export type ProductionSettingsControlDependencies = Readonly<{
   paymentConfigurationTransition: Readonly<{
     run<T>(operation: () => Promise<T>): Promise<T>;
   }>;
+  linklySetup?: SettingsLinklyPairingPort | undefined;
   runtimeReload: Readonly<{
     reload(signal: AbortSignal): Promise<void>;
   }>;
@@ -180,7 +182,10 @@ export class ProductionSettingsControl implements SettingsControlPort {
     assertActive: () => void = () => undefined,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
-    if (action.kind === "change-payment-settings") {
+    if (
+      action.kind === "change-payment-settings" ||
+      action.kind === "pair-linkly"
+    ) {
       // transition 已按目录→购物车固定锁序封住新业务并等待在途 operation；
       // 这里直接进入 guarded，不能再次申请同一目录门造成自锁。
       return this.input.paymentConfigurationTransition.run(() =>
@@ -270,6 +275,23 @@ export class ProductionSettingsControl implements SettingsControlPort {
           this.input.runtimeReload.reload(signal),
         );
         return completed(action.kind);
+      case "pair-linkly": {
+        if (!this.input.linklySetup) {
+          throw new Error("Linkly setup adapter is unavailable.");
+        }
+        // 这是不可逆外部提交：只在提交前检查 abort/lease，POST 返回后保留
+        // completed/unknown 终态，避免 signal 或 cashier lease 变化诱导重放 PairCode。
+        throwIfAborted(signal);
+        assertActive();
+        const result = await this.input.linklySetup.pair(
+          action.environment,
+          action.pairCode,
+          signal,
+        );
+        return result.status === "unknown"
+          ? Object.freeze({ status: "unknown", kind: action.kind })
+          : completed(action.kind);
+      }
       case "reset-catalog": {
         if (this.catalogRefreshBlocks()) {
           return safetyBlocked();
@@ -322,7 +344,10 @@ function pendingDataBlocksAction(
   action: SettingsDangerousConfirmation,
   pending: SettingsPendingDataSnapshot,
 ): boolean {
-  if (action.kind === "change-payment-settings") {
+  if (
+    action.kind === "change-payment-settings" ||
+    action.kind === "pair-linkly"
+  ) {
     // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
     // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
     return (

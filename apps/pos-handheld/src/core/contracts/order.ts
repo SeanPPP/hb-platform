@@ -104,6 +104,8 @@ export type ApprovedPaymentOrderCommit = Readonly<{
   completionAuditEvents: readonly AuditEventDraft[];
   outbox: OutboxMessageDraft;
   fulfilment: CashFulfilmentDraft;
+  /** 最后一笔电子 tender 与恢复挂单必须在同一事务内完成。 */
+  recalledHoldCompletion: RecalledHoldCompletion | null;
 }>;
 
 export type ApprovedPaymentOrderCommitResult = Readonly<{

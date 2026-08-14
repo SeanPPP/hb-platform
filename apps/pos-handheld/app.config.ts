@@ -6,7 +6,8 @@ const supportedInterfaceOrientations = [
 ];
 // Expo 配置与客户端共同读取纯 JSON 身份合同，避免构建身份与更新校验漂移。
 const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
-const localHbposApiBaseUrl = "http://192.168.31.246:5159";
+const localHbposApiBaseUrl = "http://192.168.31.246:5003";
+const legacyLocalHbposApiBaseUrl = "http://192.168.31.246:5159";
 const defaultTrustedApkOrigin =
   "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com";
 const posHandheldProductionChannel = "pos-handheld-production";
@@ -136,7 +137,9 @@ function buildHbposApiConfiguration(
     defaultHbposApiBaseUrl;
   const candidates = [
     apiBaseUrl,
-    ...(requireHttpsApiOrigins ? [] : [localHbposApiBaseUrl]),
+    ...(requireHttpsApiOrigins
+      ? []
+      : [localHbposApiBaseUrl, legacyLocalHbposApiBaseUrl]),
     ...(process.env.EXPO_PUBLIC_HBPOS_TRUSTED_API_ORIGINS ?? "")
       .split(",")
       .map((value: string) => value.trim())

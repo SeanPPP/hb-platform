@@ -1204,7 +1204,10 @@ export class PricingCart {
     for (const line of lines) {
       if (
         line.kind !== "sale" ||
-        line.basePriceSource === "open-item"
+        line.basePriceSource === "open-item" ||
+        // 冻结共享挂单允许称重小数；现有兼容合并使用整数 BigInt 求和，
+        // 因此小数行保持原样，避免销售页能力探测同步抛错。
+        !Number.isSafeInteger(line.quantity)
       ) {
         continue;
       }

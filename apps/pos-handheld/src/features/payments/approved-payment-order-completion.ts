@@ -8,6 +8,8 @@ import type {
   ApprovedPaymentOrderCommit,
   ApprovedPaymentOrderCommitPort,
   ApprovedPaymentOrderCommitResult,
+  RecallActiveBinding,
+  RecalledHoldCompletion,
 } from "@/core/contracts";
 
 export type ApprovedPaymentOrderCompletionPlan = Pick<
@@ -25,6 +27,13 @@ export interface ApprovedPaymentOrderCompletionPlannerPort {
 export type ApprovedPaymentOrderCompletionServiceOptions = Readonly<{
   planner: ApprovedPaymentOrderCompletionPlannerPort;
   committer: ApprovedPaymentOrderCommitPort;
+  recallCompletion?: Readonly<{
+    resolveBinding(
+      orderGuid: string,
+    ): RecallActiveBinding | null | Promise<RecallActiveBinding | null>;
+    createId(): string;
+    nowIso(): string;
+  }>;
 }>;
 
 export class ApprovedPaymentOrderCompletionRecoveryRequiredError extends Error {
@@ -72,6 +81,11 @@ export class ApprovedPaymentOrderCompletionService {
     }
 
     const plan = await this.options.planner.plan(execution, actor);
+    const recalledHoldCompletion = await createRecalledHoldCompletion(
+      this.options.recallCompletion,
+      attempt.orderGuid,
+      actor,
+    );
     const commit: ApprovedPaymentOrderCommit = {
       attemptId: attempt.attemptId,
       orderGuid: attempt.orderGuid,
@@ -79,6 +93,7 @@ export class ApprovedPaymentOrderCompletionService {
       completionAuditEvents: plan.completionAuditEvents,
       outbox: plan.outbox,
       fulfilment: plan.fulfilment,
+      recalledHoldCompletion,
     };
 
     try {
@@ -91,4 +106,36 @@ export class ApprovedPaymentOrderCompletionService {
       );
     }
   }
+}
+
+async function createRecalledHoldCompletion(
+  capability: ApprovedPaymentOrderCompletionServiceOptions["recallCompletion"],
+  orderGuid: string,
+  actor: AuditActorSnapshot,
+): Promise<RecalledHoldCompletion | null> {
+  if (!capability) return null;
+  const binding = await capability.resolveBinding(orderGuid);
+  if (!binding) return null;
+  const recalledAtIso = capability.nowIso();
+  return {
+    binding,
+    recalledAtIso,
+    recallAudit: {
+      eventId: capability.createId(),
+      eventType: "ORDER_RECALL",
+      occurredAtIso: recalledAtIso,
+      orderGuid,
+      correlationId: binding.holdId,
+      payload: {
+        source: "pos-handheld",
+        action: "recall",
+        result: "completed",
+        storeCode: binding.scope.storeCode,
+        deviceCode: binding.scope.deviceCode,
+        cashierId: actor.cashierId,
+        cashierName: actor.cashierName,
+        userGuid: actor.userGuid,
+      },
+    },
+  };
 }

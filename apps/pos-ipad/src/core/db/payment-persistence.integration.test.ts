@@ -13,6 +13,7 @@ import type {
 import type {
   CartSnapshot,
   PricingCartStateSnapshot,
+  RecallActiveBinding,
 } from "../contracts";
 import { HbposOrderSyncAdapter } from "../sync/hbpos-sync-adapters";
 
@@ -5261,6 +5262,56 @@ test("真实 SQLite：VoucherProtectedToken stable vpr_、phase CAS、重启恢�
   }
 });
 
+test("真实 SQLite：支付草稿重启恢复保留精确召回 binding", async () => {
+  await withDatabase("draft-recalled-binding-recovery", async (connection) => {
+    await migrateFresh(connection);
+    const identity = {
+      storeCode: "S-RECALLED",
+      deviceCode: "D-RECALLED",
+      cashierId: "C-RECALLED",
+      cashierName: "Recalled cashier",
+    };
+    const recallBinding: RecallActiveBinding = {
+      kind: "recalled",
+      scope: {
+        storeCode: identity.storeCode,
+        deviceCode: identity.deviceCode,
+      },
+      holdId: "hold-recalled-payment",
+      recallAttemptId: "attempt-recalled-payment",
+    };
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("order-recalled-payment", "audit-recalled-payment"),
+      () => T1,
+    );
+    await store.createOrReuseDraft(draftInput({
+      draftId: "draft-recalled-payment",
+      identity,
+      recallBinding,
+    }));
+
+    const recovery = await store.findBlockingRecovery({
+      storeCode: identity.storeCode,
+      deviceCode: identity.deviceCode,
+    });
+    assert.ok(recovery);
+    assert.deepEqual(recovery.recallBinding, recallBinding);
+
+    assert.throws(
+      () => store.createOrReuseDraft(draftInput({
+        draftId: "draft-wrong-recalled-scope",
+        identity,
+        recallBinding: {
+          ...recallBinding,
+          scope: { ...recallBinding.scope, deviceCode: "D-OTHER" },
+        },
+      })),
+      /recall binding scope/u,
+    );
+  });
+});
+
 function draftInput(
   overrides: Partial<{
     draftId: string;
@@ -5272,6 +5323,7 @@ function draftInput(
     };
     cart: CartSnapshot;
     pricingState: PricingCartStateSnapshot;
+    recallBinding: RecallActiveBinding | null;
   }> = {},
 ) {
   return {
@@ -5285,6 +5337,7 @@ function draftInput(
     soldAtIso: T0,
     cart: overrides.cart ?? saleCart(),
     pricingState: overrides.pricingState ?? salePricingState(),
+    recallBinding: overrides.recallBinding ?? null,
   };
 }
 

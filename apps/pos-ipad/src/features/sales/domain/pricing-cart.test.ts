@@ -619,6 +619,37 @@ test("restore 精确接受 frozen SharedSaleCartV1 的正有限小数数量（�
   );
 });
 
+test("restore 的小数数量兼容行不参与整数合并且销售页能力探测不抛错", () => {
+  const source = new PricingCart({ asOfIso });
+  const weighted = {
+    productCode: "P-WEIGHTED",
+    lookupCode: "WEIGHTED",
+    unitPrice: createAud(100),
+  };
+  source.addScannedItem(item("weighted-1", weighted));
+  source.addScannedItem(item("separator", { lookupCode: "SEPARATOR" }));
+  source.addScannedItem(item("weighted-2", weighted));
+  const state = source.stateSnapshot();
+  const restored = PricingCart.restore({
+    ...state,
+    lines: state.lines.map((line) =>
+      line.lineId === "weighted-1"
+        ? { ...line, quantity: 0.25 }
+        : line.lineId === "weighted-2"
+          ? { ...line, quantity: 0.75 }
+          : line,
+    ),
+  });
+  const before = restored.stateSnapshot();
+
+  assert.equal(restored.hasMergeCompatibleLines(), false);
+  assert.deepEqual(restored.mergeCompatibleLines(), {
+    groups: [],
+    removedLineCount: 0,
+  });
+  assert.deepEqual(restored.stateSnapshot(), before);
+});
+
 test("restore 显示快照按 C# decimal AwayFromZero：0.29 × 50 必须为 15 分", () => {
   const source = new PricingCart({ asOfIso });
   source.addItem(item("line-a", { unitPrice: createAud(50) }));

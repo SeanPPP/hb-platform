@@ -1,4 +1,17 @@
 import {
+  SqliteSharedHeldOrderClaimRepository,
+  type SharedHeldOrderClaimRepositoryPort,
+  type SharedPayloadEncryptorPort,
+} from "../../features/shared-held-orders/shared-held-order-claim-repository";
+import {
+  SqliteSharedHeldOrderLocalPublication,
+  type SharedHeldOrderLocalPublicationPort,
+} from "../../features/shared-held-orders/shared-held-order-local-publication";
+import {
+  SqliteSharedHeldOrderPublicationQueue,
+  type SharedHeldOrderPublicationQueuePort,
+} from "../../features/shared-held-orders/shared-held-order-publication-queue";
+import {
   freezeAuditScope,
   type AuditScope,
 } from "../contracts/audit-scope";
@@ -73,6 +86,7 @@ import { SqlitePaymentProtectedMaterialReader } from "./sqlite-payment-protected
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import {
   createSqliteRepositories,
+  persistRecalledHoldOrderSourceAndClaim,
   type PosRepositoryBundle,
   type SensitivePayloadEncryptor,
 } from "./sqlite-repositories";
@@ -570,6 +584,33 @@ export class PosDatabase implements DatabasePort {
   public localHistory(scope: LocalHistoryStoreScope): SqliteLocalHistoryStore {
     return new SqliteLocalHistoryStore(this.connection, scope);
   }
+
+  /**
+   * 跨设备共享挂单运行时仅经此 facade 取得 claim 持久化口；绝不把裸连接交给 feature。
+   */
+  public sharedHeldOrderClaims(
+    encryptor: SharedPayloadEncryptorPort,
+  ): SharedHeldOrderClaimRepositoryPort {
+    return new SqliteSharedHeldOrderClaimRepository(
+      this.connection,
+      encryptor,
+    );
+  }
+
+  /** 发布队列：只读/退避写，绝不返回明文 payload。 */
+  public sharedHeldOrderPublicationQueue(): SharedHeldOrderPublicationQueuePort {
+    return new SqliteSharedHeldOrderPublicationQueue(this.connection);
+  }
+
+  /** 原设备离线 recall 的本地副本读取口（只读，不改变挂单状态）。 */
+  public sharedHeldOrderLocalPublication(
+    encryptor: SharedPayloadEncryptorPort,
+  ): SharedHeldOrderLocalPublicationPort {
+    return new SqliteSharedHeldOrderLocalPublication(
+      this.connection,
+      encryptor,
+    );
+  }
 }
 
 function createSqlCipherKeyPragma(key: string): string {
@@ -854,9 +895,23 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
     }
 
     const completed = completedAmountCents === actualAmountCents;
+    let recalledHoldCompletion: RecalledHoldCompletion | null = null;
     if (completed) {
       assertApprovedPaymentFulfilment(input);
       for (const event of input.completionAuditEvents) assertSafeAuditPayload(event.payload);
+      recalledHoldCompletion = validateApprovedPaymentRecallCompletion(
+        input,
+        order,
+      );
+      const terminalFence = await readTerminalCartFenceForCheckout(
+        transaction,
+        intentText(order.store_code),
+        intentText(order.device_code),
+      );
+      validateApprovedPaymentRecallFence(
+        recalledHoldCompletion,
+        terminalFence,
+      );
     }
 
     // 在写 tender 前先以读取到的精确状态做 CAS；任何竞争或终态变化都整事务失败。
@@ -891,6 +946,13 @@ export class SqliteApprovedPaymentOrderCommitter implements ApprovedPaymentOrder
       [input.outbox.messageId, input.outbox.aggregateId, input.outbox.kind, input.outbox.payloadJson, input.outbox.nextAttemptAtIso, now, now],
     );
     await persistApprovedPaymentFulfilment(transaction, input.fulfilment, input.orderGuid, this.encryptor, now);
+    if (recalledHoldCompletion) {
+      await completeRecalledHoldInApprovedPaymentTransaction(
+        transaction,
+        input.orderGuid,
+        recalledHoldCompletion,
+      );
+    }
     return { replayed: false, orderGuid: input.orderGuid, tenderGuid: input.tenderGuid, completed: true, signedTenderAmountCents: amountCents };
   }
 }
@@ -1492,6 +1554,176 @@ function validateTerminalFenceForCheckout(
   }
 }
 
+function validateApprovedPaymentRecallCompletion(
+  input: ApprovedPaymentOrderCommit,
+  order: ApprovedPaymentOrderRow,
+): RecalledHoldCompletion | null {
+  const completion = input.recalledHoldCompletion;
+  if (completion === null) return null;
+  const binding = completion.binding;
+  if (binding.kind !== "recalled") {
+    throw new Error("Approved payment recall binding is invalid.");
+  }
+  const scope = {
+    storeCode: strictIdentifier(
+      binding.scope.storeCode,
+      "approved recall store code",
+    ),
+    deviceCode: strictIdentifier(
+      binding.scope.deviceCode,
+      "approved recall device code",
+    ),
+  };
+  if (
+    scope.storeCode !==
+      strictIdentifier(order.store_code, "approved payment order store code") ||
+    scope.deviceCode !==
+      strictIdentifier(order.device_code, "approved payment order device code")
+  ) {
+    throw new Error("Approved recalled payment belongs to a different terminal.");
+  }
+  const holdId = strictIdentifier(binding.holdId, "approved recall hold id");
+  const recallAttemptId = strictIdentifier(
+    binding.recallAttemptId,
+    "approved recall attempt id",
+  );
+  const recalledAtIso = canonicalIso(
+    completion.recalledAtIso,
+    "approved recall completion time",
+  );
+  return {
+    binding: {
+      kind: "recalled",
+      scope,
+      holdId,
+      recallAttemptId,
+    },
+    recalledAtIso,
+    recallAudit: validateRecallCompletionAudit(
+      completion.recallAudit,
+      input.orderGuid,
+      holdId,
+      recalledAtIso,
+    ),
+  };
+}
+
+function validateApprovedPaymentRecallFence(
+  completion: RecalledHoldCompletion | null,
+  state: TerminalCartFenceCheckoutState | null,
+): void {
+  if (completion === null) {
+    if (state !== null) {
+      throw new Error(
+        "Ordinary approved payment is blocked by an active terminal cart fence.",
+      );
+    }
+    return;
+  }
+  if (!state) {
+    throw new Error(
+      "Recalled approved payment has no active terminal cart fence.",
+    );
+  }
+  const { binding } = completion;
+  const { fence } = state;
+  if (
+    fence.kind !== "RecallActive" ||
+    fence.scope.storeCode !== binding.scope.storeCode ||
+    fence.scope.deviceCode !== binding.scope.deviceCode ||
+    fence.holdId !== binding.holdId ||
+    fence.recallAttemptId !== binding.recallAttemptId ||
+    fence.boundOrderGuid !== null ||
+    state.heldStatus !== "Recalling" ||
+    state.heldStoreCode !== binding.scope.storeCode ||
+    state.heldDeviceCode !== binding.scope.deviceCode ||
+    state.heldRecallAttemptId !== binding.recallAttemptId
+  ) {
+    throw new Error(
+      "Recalled approved payment does not match the active recall fence.",
+    );
+  }
+}
+
+async function completeRecalledHoldInApprovedPaymentTransaction(
+  transaction: SqliteConnectionPort,
+  orderGuidInput: string,
+  completion: RecalledHoldCompletion,
+): Promise<void> {
+  const orderGuid = strictIdentifier(
+    orderGuidInput,
+    "approved recalled payment order guid",
+  );
+  const { binding } = completion;
+  // 在线支付先把 fence 精确绑定到当前订单，再在同一事务内完成并删除。
+  const bound = await transaction.run(
+    `UPDATE terminal_cart_fences
+     SET bound_order_guid = ?
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid IS NULL`,
+    [
+      orderGuid,
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.holdId,
+      binding.recallAttemptId,
+    ],
+  );
+  if (bound.changes !== 1) {
+    throw new Error("Recall fence changed before approved payment completion.");
+  }
+  // 绑定后同一事务写不可变订单来源；RemoteClaim 且已 Active 的本地 claim 绑定并 Completed。
+  await persistRecalledHoldOrderSourceAndClaim(transaction, {
+    orderGuid,
+    holdId: binding.holdId,
+    recallAttemptId: binding.recallAttemptId,
+    recalledAtIso: completion.recalledAtIso,
+  });
+  const changed = await transaction.run(
+    `UPDATE held_order_records
+     SET status = 'Recalled', recalled_at_iso = ?, updated_at_iso = ?
+     WHERE hold_id = ? AND store_code = ? AND device_code = ?
+       AND recall_attempt_id = ? AND status = 'Recalling'`,
+    [
+      completion.recalledAtIso,
+      completion.recalledAtIso,
+      binding.holdId,
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.recallAttemptId,
+    ],
+  );
+  if (changed.changes !== 1) {
+    throw new Error("Recalled hold changed before approved payment completion.");
+  }
+  await appendScopedAuditEvent(
+    transaction,
+    completion.recallAudit,
+    freezeAuditScope(binding.scope),
+    completion.recalledAtIso,
+  );
+  const deleted = await transaction.run(
+    `DELETE FROM terminal_cart_fences
+     WHERE store_code = ? AND device_code = ?
+       AND kind = 'RecallActive' AND hold_id = ?
+       AND recall_attempt_id = ? AND bound_order_guid = ?`,
+    [
+      binding.scope.storeCode,
+      binding.scope.deviceCode,
+      binding.holdId,
+      binding.recallAttemptId,
+      orderGuid,
+    ],
+  );
+  if (deleted.changes !== 1) {
+    throw new Error("Recall fence changed before approved payment completion.");
+  }
+  if (completion.recallAudit.orderGuid !== orderGuid) {
+    throw new Error("Recall audit order changed during approved payment completion.");
+  }
+}
+
 async function completeRecalledHoldInCashTransaction(
   transaction: SqliteConnectionPort,
   input: DurableCashOrderCommit,
@@ -1515,6 +1747,13 @@ async function completeRecalledHoldInCashTransaction(
   if (changed.changes !== 1) {
     throw new Error("Recalled hold changed before cash completion.");
   }
+  // 现金路径以 held CAS 精确绑定；随后同事务写不可变来源并完成 RemoteClaim。
+  await persistRecalledHoldOrderSourceAndClaim(transaction, {
+    orderGuid: input.command.order.orderGuid,
+    holdId: binding.holdId,
+    recallAttemptId: binding.recallAttemptId,
+    recalledAtIso: completion.recalledAtIso,
+  });
   const audit = completion.recallAudit;
   await appendScopedAuditEvent(
     transaction,

@@ -425,6 +425,7 @@ function paymentCartRecovery(
         checkoutIntentId: recovery.draftId,
         cart: recovery.cart,
         pricingState: recovery.pricingState,
+        recallBinding: recovery.recallBinding,
       };
     },
   };
@@ -463,6 +464,8 @@ function paymentDraftPort(
         draftId: request.checkoutIntentId,
         cart: request.lease.cart,
         pricingState: request.lease.pricingState,
+        // 支付 lease 独占期间 binding 不可改变；与草稿同事务写入后可安全跨崩溃恢复。
+        recallBinding: input.activeCart.read().recallBinding,
         identity: {
           storeCode: identity.storeCode,
           deviceCode: identity.deviceCode,

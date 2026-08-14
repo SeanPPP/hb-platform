@@ -13,6 +13,7 @@ import {
   type PaymentOperation,
   type PaymentProvider,
   type PricingCartStateSnapshot,
+  type RecallActiveBinding,
 } from "../contracts";
 
 import type { SqliteConnectionPort } from "./types";
@@ -33,6 +34,8 @@ export type CreateOrReusePaymentDraftInput = Readonly<{
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
   identity: PaymentDraftIdentity;
+  /** 支付开始于召回购物车时，必须与草稿一起耐久保存精确围栏身份。 */
+  recallBinding: RecallActiveBinding | null;
   /** 仅首次插入保存；canonical fingerprint 故意不包含可变化的当前时间。 */
   soldAtIso: string;
 }>;
@@ -96,6 +99,7 @@ type RecoveryBase = Readonly<{
   identity: PaymentDraftIdentity;
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
   boundAction: RecoveredPaymentBoundAction | null;
 }>;
 
@@ -962,6 +966,7 @@ type NormalizedDraft = Readonly<{
   pricingStateJson: string;
   soldAtIso: string;
   originalOrderGuid: string | null;
+  recallBinding: RecallActiveBinding | null;
   fingerprint: string;
 }>;
 
@@ -1147,6 +1152,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
   const pricingState = normalizePricingState(input.pricingState, cart);
   const pricingStateJson = JSON.stringify(pricingState);
   const originalOrderGuid = deriveOriginalOrderGuid(cart);
+  const recallBinding = normalizeRecallBinding(input.recallBinding, identity);
   // soldAtIso 刻意不参与签名：崩溃重放时新进程的 now 不得改变原草稿身份。
   const fingerprint = JSON.stringify({
     version: 2,
@@ -1154,6 +1160,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
     cart,
     pricingState,
     originalOrderGuid,
+    recallBinding,
   });
   return {
     draftId,
@@ -1163,6 +1170,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
     pricingStateJson,
     soldAtIso,
     originalOrderGuid,
+    recallBinding,
     fingerprint,
   };
 }
@@ -1171,6 +1179,7 @@ function decodeFingerprint(value: string): Readonly<{
   identity: PaymentDraftIdentity;
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
 }> {
   let parsed: unknown;
   try {
@@ -1189,15 +1198,22 @@ function decodeFingerprint(value: string): Readonly<{
     identity?: PaymentDraftIdentity;
     cart?: CartSnapshot;
     pricingState?: PricingCartStateSnapshot;
+    recallBinding?: RecallActiveBinding | null;
   };
+  const identity = normalizeIdentity(decoded.identity as PaymentDraftIdentity);
   const cart = normalizeCart(decoded.cart as CartSnapshot, false);
   return {
-    identity: normalizeIdentity(decoded.identity as PaymentDraftIdentity),
+    identity,
     cart,
     pricingState: normalizePricingState(
       decoded.pricingState as PricingCartStateSnapshot,
       cart,
       false,
+    ),
+    // 旧版 version 2 指纹没有该可选字段，只能按普通支付恢复；不得猜测挂单身份。
+    recallBinding: normalizeRecallBinding(
+      decoded.recallBinding ?? null,
+      identity,
     ),
   };
 }
@@ -1594,6 +1610,7 @@ async function recoveryBase(
     identity: persistedIdentity,
     cart: decoded.cart,
     pricingState,
+    recallBinding: decoded.recallBinding,
     boundAction,
   };
 }
@@ -1938,6 +1955,42 @@ function normalizeIdentity(input: PaymentDraftIdentity): PaymentDraftIdentity {
     deviceCode: strictId(input.deviceCode, "payment device code"),
     cashierId: strictId(input.cashierId, "payment cashier id"),
     cashierName: strictText(input.cashierName, "payment cashier name", 256),
+  });
+}
+
+function normalizeRecallBinding(
+  input: RecallActiveBinding | null,
+  identity: PaymentDraftIdentity,
+): RecallActiveBinding | null {
+  if (input === null) return null;
+  if (!input || typeof input !== "object" || input.kind !== "recalled") {
+    throw new TypeError("Payment recall binding is invalid.");
+  }
+  const storeCode = strictText(
+    input.scope?.storeCode,
+    "payment recall store code",
+    64,
+  );
+  const deviceCode = strictId(
+    input.scope?.deviceCode,
+    "payment recall device code",
+  );
+  if (
+    storeCode !== identity.storeCode ||
+    deviceCode !== identity.deviceCode
+  ) {
+    throw new TypeError(
+      "Payment recall binding scope does not match draft identity.",
+    );
+  }
+  return Object.freeze({
+    kind: "recalled",
+    scope: Object.freeze({ storeCode, deviceCode }),
+    holdId: strictId(input.holdId, "payment recall hold id"),
+    recallAttemptId: strictId(
+      input.recallAttemptId,
+      "payment recall attempt id",
+    ),
   });
 }
 

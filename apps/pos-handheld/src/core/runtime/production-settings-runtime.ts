@@ -4,6 +4,7 @@ import {
   type SettingsControlPort,
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
+  type SettingsLinklySetupReadPort,
   type SettingsSquareSetupControlPort,
 } from "../../features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
@@ -100,18 +101,22 @@ function securedSettingsPort(
           signal,
           () => assertSameSession(lease.get(), identity),
         );
-      assertSameSession(lease.get(), identity);
+      if (action.kind !== "pair-linkly") {
+        assertSameSession(lease.get(), identity);
+      }
       return result;
     };
-    // restart/payment 的最终互斥由 transition 按目录→购物车顺序取得；
+    // restart/payment/pair 的最终互斥由 transition 按目录→购物车顺序取得；
     // 若这里先持有普通购物车 lease，transition 会等待当前动作自身而永久自锁。
     return action.kind === "restart-app" ||
-      action.kind === "change-payment-settings"
+      action.kind === "change-payment-settings" ||
+      action.kind === "pair-linkly"
       ? execute()
       : input.runDangerousExclusive(execute);
   };
 
   const squareSetup = input.control.squareSetup;
+  const linklySetup = input.control.linklySetup;
 
   const secured: SettingsControlPort = {
     ...(squareSetup
@@ -164,6 +169,17 @@ function securedSettingsPort(
                 ),
               ),
           } satisfies SettingsSquareSetupControlPort),
+        }
+      : {}),
+    ...(linklySetup
+      ? {
+          // 配对没有直接 mutation 端口；危险 pair 只通过 executeDangerousAction。
+          linklySetup: Object.freeze({
+            readState: (
+              environment: Parameters<SettingsLinklySetupReadPort["readState"]>[0],
+              signal: Parameters<SettingsLinklySetupReadPort["readState"]>[1],
+            ) => run(() => linklySetup.readState(environment, signal)),
+          }),
         }
       : {}),
     getCatalogRefreshState: () => {

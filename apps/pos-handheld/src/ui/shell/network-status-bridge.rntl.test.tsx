@@ -19,14 +19,14 @@ jest.mock("expo-network", () => ({
   addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
 }));
 
-// app.config extra：本地 API 地址（与用户环境 192.168.31.246:5159 一致）。
+// app.config extra：本地 API 地址（与用户环境 192.168.31.246:5003 一致）。
 jest.mock("expo-constants", () => ({
   __esModule: true,
   default: {
     expoConfig: {
       extra: {
         hbpos: {
-          apiBaseUrl: "http://192.168.31.246:5159/pos-api",
+          apiBaseUrl: "http://192.168.31.246:5003/pos-api",
           trustedApiOrigins: [],
         },
       },
@@ -80,7 +80,7 @@ test("设备在线但后端已停止（health 非 2xx）时，收银页 connecti
     expect(usePosShellStore.getState().connectivity).toBe("offline");
   });
   expect(fetchMock).toHaveBeenCalledWith(
-    "http://192.168.31.246:5159/pos-api/api/v1/health",
+    "http://192.168.31.246:5003/pos-api/api/v1/health",
     expect.objectContaining({ method: "GET" }),
   );
 });

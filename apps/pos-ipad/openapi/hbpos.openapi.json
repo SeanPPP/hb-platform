@@ -4167,6 +4167,103 @@
         }
       }
     },
+    "/api/v1/app-updates/pos-handheld": {
+      "get": {
+        "tags": [
+          "PosHandheldAppUpdate"
+        ],
+        "parameters": [
+          {
+            "name": "version",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "build",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldNativeUpdateResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldNativeUpdateResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldNativeUpdateResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app-updates/pos-handheld/ota": {
+      "get": {
+        "tags": [
+          "PosHandheldAppUpdate"
+        ],
+        "parameters": [
+          {
+            "name": "runtimeVersion",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currentUpdateId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currentUpdateGroupId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldOtaUpdateResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldOtaUpdateResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PosHandheldOtaUpdateResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/app-updates/pos-ipad": {
       "get": {
         "tags": [
@@ -9979,6 +10076,165 @@
             "items": {
               "$ref": "#/components/schemas/CardTransactionDto"
             },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosHandheldNativeUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "policyVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "latestVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "latestBuild": {
+            "type": "string",
+            "nullable": true
+          },
+          "minimumSupportedVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "distribution": {
+            "type": "string",
+            "nullable": true
+          },
+          "downloadUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "fileSize": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "sha256": {
+            "type": "string",
+            "nullable": true
+          },
+          "packageName": {
+            "type": "string",
+            "nullable": true
+          },
+          "signingCertificateSha256": {
+            "type": "string",
+            "nullable": true
+          },
+          "bundleIdentifier": {
+            "type": "string",
+            "nullable": true
+          },
+          "appStoreId": {
+            "type": "string",
+            "nullable": true
+          },
+          "releaseMessage": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosHandheldNativeUpdateResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PosHandheldNativeUpdateResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosHandheldOtaUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "policyVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "appKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectName": {
+            "type": "string",
+            "nullable": true
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "channel": {
+            "type": "string",
+            "nullable": true
+          },
+          "runtimeVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "updateId": {
+            "type": "string",
+            "nullable": true
+          },
+          "updateGroupId": {
+            "type": "string",
+            "nullable": true
+          },
+          "releaseMessage": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PosHandheldOtaUpdateResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/PosHandheldOtaUpdateResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
             "nullable": true
           }
         },

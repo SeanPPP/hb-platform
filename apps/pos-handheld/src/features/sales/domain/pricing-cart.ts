@@ -8,6 +8,7 @@ import {
   type PriceSource,
   normalizeLineSyncProvenance,
 } from "../../../core/contracts";
+import { multiplyCentsAwayFromZero } from "../../../core/contracts/money";
 
 import type {
   AddCartItemInput,
@@ -15,7 +16,9 @@ import type {
   CartAddDisposition,
   MergeCompatibleCartLinesResult,
   PricingCartLineState,
+  PricingCartDiscountSource,
   PricingCartOptions,
+  PricingCartSnapshot,
   PricingCartStateSnapshot,
   PricingDiscountState,
   PromotionDefinition,
@@ -33,6 +36,7 @@ type MutablePricingLine = {
   quantity: number;
   unitPriceCents: number;
   basePriceSource: Exclude<PriceSource, "promotion">;
+  catalogDiscountBasisPoints: number;
   syncProvenance: LineSyncProvenance | undefined;
   kind: CartLineKind;
   returnSourceKey: string | null;
@@ -84,6 +88,21 @@ function assertAudCents(
   return money.cents;
 }
 
+function assertCatalogDiscountBasisPoints(
+  value: number,
+  label: string,
+): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > 10_000
+  ) {
+    throw new RangeError(`${label} must be an integer between 0 and 10000`);
+  }
+
+  return value;
+}
+
 function bigIntToSafeInteger(value: bigint, label: string): number {
   if (
     value > MAX_SAFE_INTEGER_BIGINT ||
@@ -100,7 +119,9 @@ function multiplySafe(
   right: number,
   label: string,
 ): number {
-  return bigIntToSafeInteger(BigInt(left) * BigInt(right), label);
+  // 与共享挂单 canonical 乘法一致：整数走 BigInt，称重小数按
+  // C# decimal AwayFromZero 精确取整，避免 0.29 × 50 错成 14。
+  return multiplyCentsAwayFromZero(left, right, label);
 }
 
 function sumSafe(values: Iterable<number>, label: string): number {
@@ -260,6 +281,10 @@ function cloneLineState(line: MutablePricingLine): PricingCartLineState {
     quantity: line.quantity,
     unitPriceCents: line.unitPriceCents,
     basePriceSource: line.basePriceSource,
+    // 零基线省略字段，兼容旧快照；非零目录基线必须持久化。
+    ...(line.catalogDiscountBasisPoints === 0
+      ? {}
+      : { catalogDiscountBasisPoints: line.catalogDiscountBasisPoints }),
     ...(line.syncProvenance === undefined
       ? {}
       : {
@@ -285,6 +310,7 @@ function cloneMutableLine(line: MutablePricingLine): MutablePricingLine {
     quantity: line.quantity,
     unitPriceCents: line.unitPriceCents,
     basePriceSource: line.basePriceSource,
+    catalogDiscountBasisPoints: line.catalogDiscountBasisPoints,
     syncProvenance:
       line.syncProvenance === undefined
         ? undefined
@@ -371,8 +397,10 @@ export class PricingCart {
       seenLineIds.add(line.lineId);
       assertNonBlank(line.productCode, "cart product code");
       assertNonBlank(line.displayName, "cart display name");
-      if (!PricingCart.isPositiveQuantity(line.quantity)) {
-        throw new TypeError("cart line quantity must be a positive integer");
+      if (!PricingCart.isRestorableQuantity(line.quantity)) {
+        throw new TypeError(
+          "cart line quantity must be a positive finite number",
+        );
       }
       assertSafeInteger(line.unitPriceCents, "cart unit price");
       if (line.unitPriceCents < 0) {
@@ -385,6 +413,21 @@ export class PricingCart {
       ) {
         throw new TypeError("cart base price source is invalid");
       }
+      const catalogDiscountBasisPoints =
+        assertCatalogDiscountBasisPoints(
+          line.catalogDiscountBasisPoints ?? 0,
+          "cart catalog discount basis points",
+        );
+      if (
+        catalogDiscountBasisPoints > 0 &&
+        (line.kind !== "sale" || line.basePriceSource === "open-item")
+      ) {
+        throw new TypeError(
+          line.basePriceSource === "open-item"
+            ? "open-item lines cannot contain a catalog discount"
+            : "return lines cannot contain a catalog discount",
+        );
+      }
 
       const restored: MutablePricingLine = {
         lineId: line.lineId,
@@ -395,6 +438,7 @@ export class PricingCart {
         quantity: line.quantity,
         unitPriceCents: line.unitPriceCents,
         basePriceSource: line.basePriceSource,
+        catalogDiscountBasisPoints,
         syncProvenance:
           line.syncProvenance === undefined
             ? undefined
@@ -421,6 +465,11 @@ export class PricingCart {
   addItemWithDisposition(input: AddCartItemInput): CartAddDisposition {
     const quantity = input.quantity ?? 1;
     this.assertNewLineInput(input, quantity);
+    const catalogDiscountBasisPoints =
+      assertCatalogDiscountBasisPoints(
+        input.catalogDiscountBasisPoints ?? 0,
+        "cart catalog discount basis points",
+      );
     const syncProvenance = normalizeLineSyncProvenance(
       input.syncProvenance,
     );
@@ -450,6 +499,8 @@ export class PricingCart {
           "merged cart quantity",
         );
         this.assertGrossSafe(nextQuantity, existing.unitPriceCents);
+        // 同一安全身份再次命中时也要刷新当前目录折扣基线。
+        existing.catalogDiscountBasisPoints = catalogDiscountBasisPoints;
         existing.quantity = nextQuantity;
         this.normalizeDiscountAfterGrossChange(existing);
         this.finishMutation();
@@ -476,6 +527,11 @@ export class PricingCart {
   ): CartAddDisposition {
     const quantity = input.quantity ?? 1;
     this.assertNewLineInput(input, quantity);
+    const catalogDiscountBasisPoints =
+      assertCatalogDiscountBasisPoints(
+        input.catalogDiscountBasisPoints ?? 0,
+        "cart catalog discount basis points",
+      );
     const syncProvenance = normalizeLineSyncProvenance(
       input.syncProvenance,
     );
@@ -513,6 +569,7 @@ export class PricingCart {
         "merged scanned cart quantity",
       );
       this.assertGrossSafe(nextQuantity, lastLine.unitPriceCents);
+      lastLine.catalogDiscountBasisPoints = catalogDiscountBasisPoints;
       lastLine.quantity = nextQuantity;
       this.normalizeDiscountAfterGrossChange(lastLine);
       this.finishMutation();
@@ -602,6 +659,7 @@ export class PricingCart {
       quantity,
       unitPriceCents,
       basePriceSource: "open-item",
+      catalogDiscountBasisPoints: 0,
       syncProvenance,
       kind: "sale",
       returnSourceKey: null,
@@ -634,6 +692,11 @@ export class PricingCart {
     if (input.item.retailPriceCents < 0) {
       throw new RangeError("catalog retail price must not be negative");
     }
+    const catalogDiscountBasisPoints =
+      assertCatalogDiscountBasisPoints(
+        input.item.catalogDiscountBasisPoints ?? 0,
+        "catalog discount basis points",
+      );
 
     const updatedLineIds: string[] = [];
     for (const line of this.lines) {
@@ -657,7 +720,13 @@ export class PricingCart {
       const catalogPriceChanged =
         line.basePriceSource === "catalog" &&
         line.unitPriceCents !== input.item.retailPriceCents;
-      if (!metadataChanged && !catalogPriceChanged) {
+      const catalogDiscountChanged =
+        line.catalogDiscountBasisPoints !== catalogDiscountBasisPoints;
+      if (
+        !metadataChanged &&
+        !catalogPriceChanged &&
+        !catalogDiscountChanged
+      ) {
         continue;
       }
 
@@ -675,6 +744,9 @@ export class PricingCart {
         this.assertGrossSafe(line.quantity, input.item.retailPriceCents);
         line.unitPriceCents = input.item.retailPriceCents;
         this.normalizeDiscountAfterGrossChange(line);
+      }
+      if (catalogDiscountChanged) {
+        line.catalogDiscountBasisPoints = catalogDiscountBasisPoints;
       }
       updatedLineIds.push(line.lineId);
     }
@@ -858,7 +930,11 @@ export class PricingCart {
       10_000,
       "order percentage discount",
     );
-    this.applyOrderDiscount(discountCents, totalGross);
+    this.applyOrderDiscount(
+      discountCents,
+      totalGross,
+      basisPoints > 0,
+    );
     this.finishMutation();
     return true;
   }
@@ -887,10 +963,11 @@ export class PricingCart {
     this.finishMutation();
   }
 
-  snapshot(): CartSnapshot {
+  snapshot(): PricingCartSnapshot {
     const lines = this.lines.map((line) => {
       const gross = this.lineGross(line);
-      const discount = this.lineDiscount(line);
+      const discountSource = this.discountSource(line, gross);
+      const discount = this.lineDiscount(line, gross, discountSource);
       const actual =
         line.kind === "return" ? -gross : gross - discount;
       return {
@@ -903,8 +980,9 @@ export class PricingCart {
         unitPrice: createAud(line.unitPriceCents),
         discount: createAud(discount),
         actualAmount: createAud(actual),
+        discountSource,
         priceSource:
-          line.discountState.kind === "promotion" && discount > 0
+          discountSource === "promotion"
             ? ("promotion" as const)
             : line.basePriceSource,
         ...(line.syncProvenance === undefined
@@ -963,6 +1041,12 @@ export class PricingCart {
     return Number.isSafeInteger(quantity) && quantity > 0;
   }
 
+  /** 恢复入口接受 SharedSaleCart 冻结的正有限小数称重数量；
+   * 普通加购和改数量仍由 isPositiveQuantity 保持正整数语义。 */
+  private static isRestorableQuantity(quantity: number): boolean {
+    return Number.isFinite(quantity) && quantity > 0;
+  }
+
   private appendItem(
     input: AddCartItemInput,
     quantity: number,
@@ -979,6 +1063,16 @@ export class PricingCart {
     if (priceSource !== "catalog" && priceSource !== "manual") {
       throw new TypeError("cart item price source is invalid");
     }
+    const catalogDiscountBasisPoints =
+      assertCatalogDiscountBasisPoints(
+        input.catalogDiscountBasisPoints ?? 0,
+        "cart catalog discount basis points",
+      );
+    if (kind !== "sale" && catalogDiscountBasisPoints > 0) {
+      throw new TypeError(
+        "return and open-item lines cannot contain a catalog discount",
+      );
+    }
     this.assertGrossSafe(quantity, unitPriceCents);
 
     this.lines.push({
@@ -990,6 +1084,7 @@ export class PricingCart {
       quantity,
       unitPriceCents,
       basePriceSource: priceSource,
+      catalogDiscountBasisPoints,
       syncProvenance,
       kind,
       returnSourceKey: input.returnSourceKey ?? null,
@@ -1106,7 +1201,10 @@ export class PricingCart {
     for (const line of lines) {
       if (
         line.kind !== "sale" ||
-        line.basePriceSource === "open-item"
+        line.basePriceSource === "open-item" ||
+        // 冻结共享挂单允许称重小数；现有兼容合并使用整数 BigInt 求和，
+        // 因此小数行保持原样，避免销售页能力探测同步抛错。
+        !Number.isSafeInteger(line.quantity)
       ) {
         continue;
       }
@@ -1133,6 +1231,7 @@ export class PricingCart {
         normalizeProductCode(line.productCode),
         line.unitPriceCents,
         line.basePriceSource,
+        line.catalogDiscountBasisPoints,
         provenance,
         discountKey,
       ]);
@@ -1211,6 +1310,31 @@ export class PricingCart {
   ): boolean {
     const mergedDiscount = this.mergedDiscountState(lines);
     if (mergedDiscount === null) return false;
+    if (mergedDiscount.kind === "none") {
+      const catalogDiscountBasisPoints =
+        lines[0]!.catalogDiscountBasisPoints;
+      if (catalogDiscountBasisPoints === 0) return true;
+      const currentDiscount = sumSafe(
+        lines.map((line) => this.lineDiscount(line)),
+        "compatible catalog discount",
+      );
+      const mergedQuantity = sumSafe(
+        lines.map((line) => line.quantity),
+        "compatible catalog quantity",
+      );
+      const mergedGross = multiplySafe(
+        mergedQuantity,
+        lines[0]!.unitPriceCents,
+        "compatible catalog gross",
+      );
+      const mergedDiscountCents = roundProductRatio(
+        mergedGross,
+        catalogDiscountBasisPoints,
+        10_000,
+        "compatible catalog discount",
+      );
+      return currentDiscount === mergedDiscountCents;
+    }
     if (mergedDiscount.kind !== "manual-percent") return true;
 
     const currentDiscount = sumSafe(
@@ -1327,27 +1451,77 @@ export class PricingCart {
     );
   }
 
-  private lineDiscount(line: MutablePricingLine): number {
+  private discountSource(
+    line: MutablePricingLine,
+    gross = this.lineGross(line),
+  ): PricingCartDiscountSource {
     if (line.kind === "return") {
-      return 0;
+      return "none";
     }
 
-    const gross = this.lineGross(line);
-    switch (line.discountState.kind) {
+    if (
+      (line.discountState.kind === "manual-amount" &&
+        line.discountState.cents <= gross) ||
+      (line.discountState.kind === "manual-percent" &&
+        line.discountState.basisPoints > 0)
+    ) {
+      return "manual";
+    }
+    if (
+      line.basePriceSource !== "open-item" &&
+      line.catalogDiscountBasisPoints > 0
+    ) {
+      return "catalog";
+    }
+    if (
+      line.discountState.kind === "promotion" &&
+      line.discountState.cents > 0
+    ) {
+      return "promotion";
+    }
+    return "none";
+  }
+
+  private lineDiscount(
+    line: MutablePricingLine,
+    gross = this.lineGross(line),
+    source = this.discountSource(line, gross),
+  ): number {
+    switch (source) {
       case "none":
         return 0;
-      case "manual-amount":
-      case "promotion":
-        return Math.min(gross, Math.max(0, line.discountState.cents));
-      case "manual-percent":
+      case "catalog":
         return Math.min(
           gross,
           roundProductRatio(
             gross,
-            line.discountState.basisPoints,
+            line.catalogDiscountBasisPoints,
             10_000,
-            "line percentage discount",
+            "catalog percentage discount",
           ),
+        );
+      case "manual":
+        if (line.discountState.kind === "manual-amount") {
+          return Math.min(gross, line.discountState.cents);
+        }
+        if (line.discountState.kind === "manual-percent") {
+          return Math.min(
+            gross,
+            roundProductRatio(
+              gross,
+              line.discountState.basisPoints,
+              10_000,
+              "line percentage discount",
+            ),
+          );
+        }
+        return 0;
+      case "promotion":
+        return Math.min(
+          gross,
+          line.discountState.kind === "promotion"
+            ? Math.max(0, line.discountState.cents)
+            : 0,
         );
     }
   }
@@ -1358,8 +1532,8 @@ export class PricingCart {
     const gross = this.lineGross(line);
     if (line.discountState.kind === "manual-amount") {
       const cents = Math.min(gross, line.discountState.cents);
-      line.discountState =
-        cents > 0 ? { kind: "manual-amount", cents } : NONE_DISCOUNT;
+      // manual-amount:0 是整单折扣分摊为零的显式人工覆盖，不能归一化为 none。
+      line.discountState = { kind: "manual-amount", cents };
     } else if (line.discountState.kind === "promotion") {
       line.discountState = NONE_DISCOUNT;
     }
@@ -1383,6 +1557,7 @@ export class PricingCart {
   private applyOrderDiscount(
     discountCents: number,
     totalGross: number,
+    preserveManualOverrideWhenZero = false,
   ): void {
     let remainingDiscount = Math.min(
       totalGross,
@@ -1391,6 +1566,15 @@ export class PricingCart {
     const discountable = this.lines.filter(
       (line) => this.lineGross(line) > 0,
     );
+
+    if (remainingDiscount === 0) {
+      for (const line of discountable) {
+        line.discountState = preserveManualOverrideWhenZero
+          ? { kind: "manual-amount", cents: 0 }
+          : NONE_DISCOUNT;
+      }
+      return;
+    }
 
     for (let index = 0; index < discountable.length; index += 1) {
       const line = discountable[index]!;
@@ -1409,10 +1593,7 @@ export class PricingCart {
         remainingDiscount,
         Math.max(0, proposed),
       );
-      line.discountState =
-        lineDiscount > 0
-          ? { kind: "manual-amount", cents: lineDiscount }
-          : NONE_DISCOUNT;
+      line.discountState = { kind: "manual-amount", cents: lineDiscount };
       remainingDiscount -= lineDiscount;
     }
   }
@@ -1445,10 +1626,15 @@ export class PricingCart {
 
     if (
       state.kind === "promotion" &&
-      (line.basePriceSource === "open-item" ||
+      (line.catalogDiscountBasisPoints > 0 ||
+        line.basePriceSource === "open-item" ||
         state.promotionIds.some((id) => id.trim().length === 0))
     ) {
-      throw new TypeError("restored promotion discount is invalid");
+      throw new TypeError(
+        line.catalogDiscountBasisPoints > 0
+          ? "catalog discount cannot coexist with restored promotion discount"
+          : "restored promotion discount is invalid",
+      );
     }
   }
 
@@ -1460,15 +1646,15 @@ export class PricingCart {
     }
 
     const eligibleLines = this.lines.filter((line) => {
-      const discount = this.lineDiscount(line);
       const hasManualDiscount =
-        (line.discountState.kind === "manual-amount" ||
-          line.discountState.kind === "manual-percent") &&
-        discount > 0;
+        line.discountState.kind === "manual-amount" ||
+        (line.discountState.kind === "manual-percent" &&
+          line.discountState.basisPoints > 0);
       return (
         line.kind === "sale" &&
         line.basePriceSource !== "open-item" &&
         !hasManualDiscount &&
+        line.catalogDiscountBasisPoints === 0 &&
         line.unitPriceCents > 0 &&
         this.lineGross(line) > 0
       );

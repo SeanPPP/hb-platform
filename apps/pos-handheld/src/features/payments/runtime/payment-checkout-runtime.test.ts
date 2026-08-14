@@ -659,6 +659,143 @@ test("Cancelled 先以原 action 耐久 close，严格成功后才释放 lease�
   assert.equal(approvedHarness.lease.releaseCalls, 0);
 });
 
+test("Square 终端先取消后自动耐久结束支付并允许返回收银", async () => {
+  const harness = createHarness();
+  const pending = attempt({ state: "Pending" });
+  const cancelledAttempt = { ...pending, state: "Cancelled" as const };
+  harness.attempts.put(pending);
+  harness.mixed.recoverOnlineAttempt = async () => {
+    harness.attempts.put(cancelledAttempt);
+    harness.drafts.recovery = cancellationRecovery(cancelledAttempt);
+    return mixed("cancelled", { attemptId: cancelledAttempt.attemptId });
+  };
+  const runtime = harness.runtime();
+
+  const terminalCancelled = await runtime.recover({
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+  });
+
+  assert.equal(terminalCancelled.status, "cancelled");
+  assert.equal(harness.attempts.cancelCalls, 0);
+  assert.deepEqual(harness.drafts.closeInputs, [
+    { orderGuid: "order-1", actionId: "card-action-1" },
+  ]);
+  assert.equal(harness.lease.releaseCalls, 1);
+  assert.equal(terminalCancelled.attemptId, null);
+  assert.deepEqual(terminalCancelled.allowedActions, {
+    start: false,
+    changeProvider: false,
+    recover: false,
+    cancel: false,
+    addCash: false,
+    removeTender: false,
+  });
+});
+
+test("冷启动发现 Square 已取消 action 时复用原 action 做本地收尾", async () => {
+  const harness = createHarness();
+  const cancelledAttempt = attempt({ state: "Cancelled" });
+  harness.attempts.put(cancelledAttempt);
+  harness.drafts.recovery = {
+    ...cancellationRecovery(cancelledAttempt),
+    attemptId: null,
+  };
+  harness.mixed.onlineResult = mixed("cancelled", {
+    attemptId: cancelledAttempt.attemptId,
+  });
+
+  const result = await harness.runtime().resumeCurrent();
+
+  assert.equal(harness.attempts.cancelCalls, 0);
+  assert.deepEqual(harness.mixed.lastOnlineInput, {
+    actionId: "card-action-1",
+    orderGuid: "order-1",
+    provider: "square",
+    amount: aud(1_000),
+  });
+  assert.deepEqual(harness.drafts.closeInputs, [
+    { orderGuid: "order-1", actionId: "card-action-1" },
+  ]);
+  assert.equal(harness.lease.releaseCalls, 1);
+  assert.equal(result?.status, "cancelled");
+  assert.equal(result?.attemptId, null);
+});
+
+test("Square 终端取消但 immutable action 缺失时保持锁定且不释放 lease", async () => {
+  const harness = createHarness();
+  const pending = attempt({ state: "Pending" });
+  const cancelledAttempt = { ...pending, state: "Cancelled" as const };
+  harness.attempts.put(pending);
+  harness.mixed.recoverOnlineAttempt = async () => {
+    harness.attempts.put(cancelledAttempt);
+    harness.drafts.recovery = {
+      draft: harness.drafts.current,
+      attemptId: null,
+      preparedAction: null,
+    };
+    return mixed("cancelled", { attemptId: cancelledAttempt.attemptId });
+  };
+
+  const result = await harness.runtime().recover({
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+  });
+
+  assert.equal(result.status, "recovery-required");
+  assert.equal(result.errorCode, "PAYMENT_CANCEL_FAILED");
+  assert.equal(result.attemptId, cancelledAttempt.attemptId);
+  assert.equal(result.allowedActions.cancel, true);
+  assert.equal(harness.attempts.cancelCalls, 0);
+  assert.equal(harness.drafts.closeCalls, 0);
+  assert.equal(harness.lease.releaseCalls, 0);
+});
+
+test("Square 终端取消后的本地 close 失败时继续锁定恢复且不释放 lease", async () => {
+  const harness = createHarness();
+  const pending = attempt({ state: "Pending" });
+  const cancelledAttempt = { ...pending, state: "Cancelled" as const };
+  harness.attempts.put(pending);
+  harness.drafts.closeError = new Error("sqlite close failed");
+  harness.mixed.recoverOnlineAttempt = async () => {
+    harness.attempts.put(cancelledAttempt);
+    harness.drafts.recovery = cancellationRecovery(cancelledAttempt);
+    return mixed("cancelled", { attemptId: cancelledAttempt.attemptId });
+  };
+  const runtime = harness.runtime();
+
+  const result = await runtime.recover({
+    orderGuid: pending.orderGuid,
+    attemptId: pending.attemptId,
+  });
+
+  assert.equal(result.status, "recovery-required");
+  assert.equal(result.errorCode, "PAYMENT_CANCEL_FAILED");
+  assert.equal(result.attemptId, cancelledAttempt.attemptId);
+  assert.deepEqual(result.allowedActions, {
+    start: false,
+    changeProvider: false,
+    recover: false,
+    cancel: true,
+    addCash: false,
+    removeTender: false,
+  });
+  assert.equal(harness.drafts.closeCalls, 1);
+  assert.equal(harness.lease.releaseCalls, 0);
+
+  harness.drafts.closeError = null;
+  const retried = await runtime.cancel({
+    orderGuid: cancelledAttempt.orderGuid,
+    attemptId: cancelledAttempt.attemptId,
+  });
+
+  assert.equal(harness.attempts.cancelCalls, 0);
+  assert.equal(harness.drafts.closeCalls, 2);
+  assert.equal(harness.lease.releaseCalls, 1);
+  assert.equal(retried.status, "cancelled");
+  assert.equal(retried.attemptId, null);
+});
+
 test("Cancelled close 幂等重放仍验证投影后释放，且沿用同一 immutable actionId", async () => {
   const harness = createHarness();
   const cancelledAttempt = attempt({ state: "Cancelled" });

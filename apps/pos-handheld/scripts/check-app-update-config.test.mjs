@@ -126,6 +126,12 @@ test("本地 HTTP API 只进入 development；preview/production/android-interna
   const development = resolveConfig({ EAS_BUILD_PROFILE: "development" });
   assert.equal(
     development.extra?.hbpos?.trustedApiOrigins.includes(
+      "http://192.168.31.246:5003",
+    ),
+    true,
+  );
+  assert.equal(
+    development.extra?.hbpos?.trustedApiOrigins.includes(
       "http://192.168.31.246:5159",
     ),
     true,

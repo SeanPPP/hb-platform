@@ -2,13 +2,61 @@ import { beforeEach, expect, jest, test } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react-native";
 
 import HeldOrdersRoute from "../../../app/held-orders";
+import { SharedHeldOrderCoordinatorError } from "../../features/shared-held-orders/shared-held-order-coordinator";
+
+type MockSharedHeldOrderTakeResult = Readonly<{
+  outcome: "restored";
+  claimGuid: string;
+  holdGuid: string;
+}>;
 
 let mockRuntime: any;
 let mockActiveCashier: any;
 let mockScreenProps: any;
 const mockClearActiveCashier = jest.fn();
 const mockCreatePresenter = jest.fn();
+const mockAttachSharedOrders = jest.fn();
 const mockDestroyPresenter = jest.fn();
+const mockListPending = jest.fn(
+  async (): Promise<unknown[]> => [],
+);
+const mockTakeRemoteHold = jest.fn(
+  async (holdGuid: string): Promise<MockSharedHeldOrderTakeResult> => ({
+    outcome: "restored",
+    claimGuid: "claim-1",
+    holdGuid,
+  }),
+);
+const mockRecallLocalPublication = jest.fn(
+  async (holdGuid: string): Promise<MockSharedHeldOrderTakeResult> => ({
+    outcome: "restored",
+    claimGuid: "claim-1",
+    holdGuid,
+  }),
+);
+const mockOwnerRelease = jest.fn(async (holdGuid: string) => ({
+  claimGuid: "claim-1",
+  holdGuid,
+}));
+const mockCancelOwnedHold = jest.fn(async (_holdGuid: string) => undefined);
+const mockListLocalShareState = jest.fn(async () => [
+  { holdId: "local-1", shareState: "Published" as const, blockReason: null },
+]);
+const mockRequestShare = jest.fn(async (_holdGuid: string) => "requested" as const);
+const mockForceRelease = jest.fn(async (holdGuid: string, reason: string) => ({
+  ok: true as const,
+  code: "force-released" as const,
+  holdId: holdGuid,
+  reason,
+}));
+const mockCreateCoordinator = jest.fn(() => ({
+  takeRemoteHold: mockTakeRemoteHold,
+  recallLocalPublication: mockRecallLocalPublication,
+  ownerRelease: mockOwnerRelease,
+  cancelOwnedHold: mockCancelOwnedHold,
+  forceRelease: mockForceRelease,
+  requestShare: mockRequestShare,
+}));
 const mockRouterDismissTo = jest.fn();
 
 jest.mock("expo-router", () => {
@@ -86,7 +134,12 @@ beforeEach(() => {
   };
   mockCreatePresenter.mockReturnValue({
     destroy: mockDestroyPresenter,
+    attachSharedOrders: mockAttachSharedOrders,
   });
+  mockListPending.mockResolvedValue([]);
+  mockListLocalShareState.mockResolvedValue([
+    { holdId: "local-1", shareState: "Published", blockReason: null },
+  ]);
   mockRuntime = readyRuntime();
 });
 
@@ -98,6 +151,18 @@ test("挂单路由零参数创建 presenter，返回销售且卸载时销毁", a
   });
   expect(mockCreatePresenter).toHaveBeenCalledTimes(1);
   expect(mockCreatePresenter).toHaveBeenCalledWith();
+  expect(mockCreateCoordinator).toHaveBeenCalledTimes(1);
+  expect(mockAttachSharedOrders).toHaveBeenCalledTimes(1);
+  const port = mockAttachSharedOrders.mock.calls[0]?.[0] as any;
+  expect(port).toBeDefined();
+  expect(typeof port.listRemotePending).toBe("function");
+  expect(typeof port.listLocalShareState).toBe("function");
+  expect(typeof port.takeRemoteHold).toBe("function");
+  expect(typeof port.recallLocalPublication).toBe("function");
+  expect(typeof port.releaseOwnedClaim).toBe("function");
+  expect(typeof port.cancelOwnedHold).toBe("function");
+  expect(typeof port.forceRelease).toBe("function");
+  expect(typeof port.requestShare).toBe("function");
 
   mockScreenProps.onBack();
   expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
@@ -119,6 +184,78 @@ test("presenter 创建失败时清除收银会话并安全返回登录", async (
   expect(mockCreatePresenter).toHaveBeenCalledWith();
 });
 
+test("挂单路由把远端列表投影为视图行并把 coordinator 取单结果传给 presenter", async () => {
+  mockListPending.mockResolvedValue([
+    {
+      holdGuid: "remote-1",
+      storeCode: "BNE",
+      deviceCode: "HANDHELD-2",
+      heldByCashierId: "C2",
+      heldByCashierName: "Other Cashier",
+      heldAtIso: "2026-07-28T02:00:00.000Z",
+      updatedAtIso: "2026-07-28T02:00:00.000Z",
+      lineCount: 3,
+      totalCents: 3_300,
+      discountCents: 0,
+      actualCents: 3_300,
+      revision: 1,
+    },
+  ]);
+  const screen = await render(<HeldOrdersRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("held-orders-screen")).toBeTruthy();
+  });
+  const port = mockAttachSharedOrders.mock.calls[0]?.[0] as any;
+  expect(port).toBeDefined();
+  await expect(port.listRemotePending()).resolves.toEqual([
+    {
+      holdGuid: "remote-1",
+      deviceCode: "HANDHELD-2",
+      cashierName: "Other Cashier",
+      heldAtIso: "2026-07-28T02:00:00.000Z",
+      lineCount: 3,
+      actualCents: 3_300,
+    },
+  ]);
+  await expect(port.takeRemoteHold("remote-1")).resolves.toEqual({
+    holdGuid: "remote-1",
+    ok: true,
+    outcome: "restored",
+  });
+  expect(mockTakeRemoteHold).toHaveBeenCalledWith("remote-1");
+  await expect(port.recallLocalPublication("remote-1")).resolves.toEqual({
+    holdGuid: "remote-1",
+    ok: true,
+    outcome: "restored",
+  });
+  expect(mockRecallLocalPublication).toHaveBeenCalledWith("remote-1");
+  await expect(port.releaseOwnedClaim?.("remote-1")).resolves.toBe(true);
+  expect(mockOwnerRelease).toHaveBeenCalledWith("remote-1");
+  mockOwnerRelease.mockRejectedValueOnce(
+    new SharedHeldOrderCoordinatorError("NOT_FOUND", "not shared"),
+  );
+  await expect(port.releaseOwnedClaim?.("legacy-1")).resolves.toBe(false);
+  await expect(port.cancelOwnedHold?.("remote-1")).resolves.toBeUndefined();
+  expect(mockCancelOwnedHold).toHaveBeenCalledWith("remote-1");
+  await expect(port.listLocalShareState?.()).resolves.toEqual([
+    { holdId: "local-1", shareState: "Published", blockReason: null },
+  ]);
+  await expect(port.requestShare?.("local-1")).resolves.toBe("requested");
+  expect(mockRequestShare).toHaveBeenCalledWith("local-1");
+  await expect(
+    port.forceRelease?.({ holdGuid: "remote-1", reason: "duplicate" }),
+  ).resolves.toMatchObject({
+    ok: true,
+    code: "force-released",
+    holdId: "remote-1",
+  });
+  expect(mockForceRelease).toHaveBeenCalledWith("remote-1", "duplicate");
+
+  await screen.unmount();
+  expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
 test("没有收银员会话时返回登录页", async () => {
   mockActiveCashier = null;
   const screen = await render(<HeldOrdersRoute />);
@@ -132,6 +269,12 @@ function readyRuntime() {
     state: { phase: "ready", device: "authorized-online" },
     services: {
       heldOrders: { createPresenter: mockCreatePresenter },
+      sharedHeldOrders: {
+        api: { listPending: mockListPending },
+        listLocalShareState: mockListLocalShareState,
+        requestShare: mockRequestShare,
+        createCoordinator: mockCreateCoordinator,
+      },
     },
   };
 }

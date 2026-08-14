@@ -38,6 +38,9 @@ import {
   type ActivePricingCartPort,
   type HeldOrderActionResult,
   type HeldOrderAuthorizationPort,
+  RECALL_RESTORE_PERMISSION,
+  type SharedHeldOrderLocalShareRow,
+  type SharedHeldOrderShareRequestOutcome,
 } from "../../features/held-orders/held-orders-domain";
 import { HeldOrdersOrchestrator } from "../../features/held-orders/held-orders-orchestrator";
 import { HeldOrdersPresenter } from "../../features/held-orders/held-orders-presenter";
@@ -115,6 +118,27 @@ import {
   SETTINGS_CATALOG_RESET_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
+import {
+  SharedHeldOrderCoordinator,
+  SharedHeldOrderCoordinatorError,
+  type SharedHeldOrderOwnerReleaseResult,
+  type SharedHeldOrderReconcileResult,
+  type SharedHeldOrderTakeResult,
+} from "../../features/shared-held-orders/shared-held-order-coordinator";
+import {
+  SharedHeldOrderApiError,
+  SharedHeldOrderNetworkApi,
+  type SharedHeldOrderNetworkApiPort,
+} from "../../features/shared-held-orders/shared-held-order-network-api";
+import {
+  SharedHeldOrderPublicationLoop,
+  type SharedHeldOrderPublicationSchedulerPort,
+} from "../../features/shared-held-orders/shared-held-order-publication-loop";
+import {
+  SharedHeldOrderPublicationWorker,
+  type SharedHeldOrderPublicationRunResult,
+} from "../../features/shared-held-orders/shared-held-order-publication-worker";
+import type { SharedHeldOrderPublicationQueuePort } from "../../features/shared-held-orders/shared-held-order-publication-queue";
 import { HbposSpecialProductsApi } from "../../features/special-products/hbpos-special-products-api";
 import { SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION } from "../../features/special-products/special-products-authorization";
 import { SpecialProductsPresenter } from "../../features/special-products/special-products-presenter";
@@ -277,6 +301,24 @@ export type PosHeldOrdersRuntimeService = Readonly<{
   createPresenter(): HeldOrdersPresenter;
 }>;
 
+export type PosSharedHeldOrdersRuntimeService = Readonly<{
+  api: SharedHeldOrderNetworkApiPort;
+  listLocalShareState(): Promise<readonly SharedHeldOrderLocalShareRow[]>;
+  requestShare(holdGuid: string): Promise<SharedHeldOrderShareRequestOutcome>;
+  createCoordinator(cashierLease?: TrustedCashierLease): Readonly<{
+    takeRemoteHold(holdGuid: string): Promise<SharedHeldOrderTakeResult>;
+    recallLocalPublication(holdGuid: string): Promise<SharedHeldOrderTakeResult>;
+    reconcileClaims(): Promise<SharedHeldOrderReconcileResult>;
+    ownerRelease(holdGuid: string): Promise<SharedHeldOrderOwnerReleaseResult>;
+    cancelOwnedHold(holdGuid: string): Promise<void>;
+    forceRelease?(
+      holdGuid: string,
+      reason: string,
+    ): Promise<HeldOrderActionResult>;
+    runPublicationOnce(): Promise<SharedHeldOrderPublicationRunResult>;
+  }>;
+}>;
+
 export type PosSyncHistoryRuntimeService = Readonly<{
   createPresenter(permissionCodes: readonly string[]): SyncHistoryPresenter;
 }>;
@@ -362,6 +404,7 @@ export type ProductionPosRuntimeServices = Readonly<{
   dailyClose: DailyCloseRuntimeFactory;
   sales: PosSalesRuntimeService;
   heldOrders: PosHeldOrdersRuntimeService;
+  sharedHeldOrders: PosSharedHeldOrdersRuntimeService;
   syncHistory: PosSyncHistoryRuntimeService;
   returns: PosReturnsRuntimeService;
   installments: PosInstallmentsRuntimeService;
@@ -418,6 +461,7 @@ export type ProductionSettingsRuntimeConfiguration = Pick<
   | "appVersion"
   | "updateChannel"
   | "squareSetup"
+  | "linklySetup"
   | "readDevicePresentation"
   | "paymentConfiguration"
   | "apiConfiguration"
@@ -482,6 +526,10 @@ export type ProductionPosRuntimeCompositionDependencies = Readonly<{
   attendanceAudit?:
     | ProductionAttendanceAuditRuntimeConfiguration
     | undefined;
+  /** 测试可注入确定性调度器；生产默认每十秒唤醒一次耐久发布队列。 */
+  sharedHeldOrderPublicationScheduler?:
+    | SharedHeldOrderPublicationSchedulerPort
+    | undefined;
 }>;
 
 /**
@@ -506,6 +554,9 @@ export function createProductionPosRuntimeServices(
         .catch(() => undefined);
     },
   );
+  let sharedHeldOrderPublicationLoop: SharedHeldOrderPublicationLoop | null =
+    null;
+  let reconcileSharedHeldOrdersAfterSignIn: (() => Promise<void>) | null = null;
   const operationAuthorization = input.operationAuthorization
     ? new OperationAuthorizationService({
         cashierAuthentication:
@@ -516,6 +567,7 @@ export function createProductionPosRuntimeServices(
       })
     : null;
   const invalidateCurrentCashier = () => {
+    sharedHeldOrderPublicationLoop?.pause();
     currentCashier.clear();
     operationAuthorization?.clearRequestingCashier();
   };
@@ -632,6 +684,13 @@ export function createProductionPosRuntimeServices(
       } catch {
         // 已完成的可信登录不能因旁路审计故障被回滚或重新暴露旧会话。
       }
+      try {
+        await reconcileSharedHeldOrdersAfterSignIn?.();
+      } catch {
+        // 本地 OfflineOrigin 已在远端调用前恢复；claims/mine 离线或事实冲突
+        // 只能保留 durable 状态等待重试，不能回滚已经成功的收银员登录。
+      }
+      sharedHeldOrderPublicationLoop?.resume();
       return summary;
     },
   };
@@ -1481,6 +1540,169 @@ export function createProductionPosRuntimeServices(
       nowIso: input.clock.nowIso,
     });
   };
+  const sharedHeldOrdersApi = new SharedHeldOrderNetworkApi(input.transport);
+  const sharedHeldOrderPublicationQueue: SharedHeldOrderPublicationQueuePort | null =
+    typeof input.database.sharedHeldOrderPublicationQueue === "function"
+      ? input.database.sharedHeldOrderPublicationQueue()
+      : null;
+  const sharedHeldOrdersAvailable =
+    sharedHeldOrderPublicationQueue !== null &&
+    typeof input.database.sharedHeldOrderClaims === "function" &&
+    typeof input.database.sharedHeldOrderLocalPublication === "function";
+  if (sharedHeldOrderPublicationQueue) {
+    const sharedHeldOrderPublicationWorker =
+      new SharedHeldOrderPublicationWorker({
+        queue: sharedHeldOrderPublicationQueue,
+        api: sharedHeldOrdersApi,
+        encryptor: input.encryptor,
+        nowIso: input.clock.nowIso,
+        scope: {
+          storeCode: input.auditMetadata.storeCode,
+          deviceCode: input.auditMetadata.deviceCode,
+        },
+      });
+    sharedHeldOrderPublicationLoop = new SharedHeldOrderPublicationLoop({
+      worker: sharedHeldOrderPublicationWorker,
+      scheduler:
+        input.sharedHeldOrderPublicationScheduler ??
+        {
+          every(intervalMs, task) {
+            const timer = setInterval(task, intervalMs);
+            return () => clearInterval(timer);
+          },
+        },
+      intervalMs: 10_000,
+    });
+  }
+  const createSharedHeldOrdersCoordinator = (
+    cashierLease: TrustedCashierLease = currentCashier.createLease(),
+  ) => {
+    if (!sharedHeldOrdersAvailable) {
+      throw new Error("SHARED_HELD_ORDERS_UNAVAILABLE");
+    }
+    const session = trustedSalesSession(cashierLease, input.auditMetadata);
+    const claims = input.database.sharedHeldOrderClaims(input.encryptor);
+    const localPublications =
+      input.database.sharedHeldOrderLocalPublication(input.encryptor);
+    const coordinator = new SharedHeldOrderCoordinator({
+      api: sharedHeldOrdersApi,
+      claims,
+      localPublications,
+      activeCart: createHeldActiveCartPort(activePricingCart),
+      identity: session,
+      createId: input.createId,
+      nowIso: input.clock.nowIso,
+    });
+    const forceRelease = operationAuthorization
+      ? async (
+          holdGuid: string,
+          reason: string,
+        ): Promise<HeldOrderActionResult> => {
+          const authorization = createHeldOrderAuthorization(
+            operationAuthorization,
+            input.createId,
+            cashierLease,
+          );
+          const authorized = await authorization.authorizeAndRun(
+            {
+              permissionCode: RECALL_RESTORE_PERMISSION,
+              action: "release",
+            },
+            () => coordinator.forceRelease(holdGuid, reason),
+          );
+          return authorized.authorized
+            ? {
+                ok: true,
+                code: "force-released",
+                holdId: authorized.value.holdGuid,
+              }
+            : { ok: false, code: "authorization-denied", holdId: holdGuid };
+        }
+      : null;
+    return {
+      takeRemoteHold: (holdGuid: string) => coordinator.takeRemoteHold(holdGuid),
+      recallLocalPublication: async (holdGuid: string) => {
+        trustedSalesSession(cashierLease, input.auditMetadata);
+        const publicationLoop = sharedHeldOrderPublicationLoop!;
+        // 本机取回与后台发布共用屏障：先等在途 publish 完整收口，再建立
+        // OfflineOrigin claim，避免迟到 publish 让已取回挂单重新出现在远端。
+        await publicationLoop.pauseAndWait();
+        try {
+          trustedSalesSession(cashierLease, input.auditMetadata);
+          return await coordinator.recallLocalPublication(holdGuid);
+        } finally {
+          try {
+            trustedSalesSession(cashierLease, input.auditMetadata);
+            publicationLoop.resume();
+          } catch {
+            // 换班、锁屏或 runtime 关闭后绝不复活后台发布循环。
+          }
+        }
+      },
+      reconcileClaims: () => coordinator.reconcileClaims(),
+      ownerRelease: (holdGuid: string) => coordinator.ownerRelease(holdGuid),
+      cancelOwnedHold: async (holdGuid: string): Promise<void> => {
+        trustedSalesSession(cashierLease, input.auditMetadata);
+        const publicationLoop = sharedHeldOrderPublicationLoop!;
+        await publicationLoop.pauseAndWait();
+        try {
+          // 等待期间可能换班或锁屏；调用服务端前必须重新验证原 cashier lease。
+          const activeSession = trustedSalesSession(
+            cashierLease,
+            input.auditMetadata,
+          );
+          try {
+            await sharedHeldOrdersApi.cancel(holdGuid);
+          } catch (error: unknown) {
+            if (!isSharedHeldOrderNotFound(error)) throw error;
+            const cart = await localPublications.loadDeletePending(holdGuid, {
+              storeCode: activeSession.storeCode,
+              deviceCode: activeSession.deviceCode,
+            });
+            if (!cart) throw error;
+
+            // 404 不能直接当作已删除：旧 publish 即使客户端超时，仍可能稍后
+            // 抵达服务端。用相同 HoldGuid/幂等键补建权威事实，再取消为稳定终态；
+            // 后到的 publish 只会重放同一条 Cancelled，不会复活挂单。
+            trustedSalesSession(cashierLease, input.auditMetadata);
+            const published = await sharedHeldOrdersApi.publish({
+              holdGuid,
+              storeCode: activeSession.storeCode,
+              deviceCode: activeSession.deviceCode,
+              cart,
+              idempotencyKey: holdGuid,
+            });
+            if (published.status === "Cancelled") return;
+            if (published.status !== "Pending") {
+              throw new SharedHeldOrderCoordinatorError(
+                "CONFLICT",
+                "服务端挂单已进入不可取消终态，本地删除保持阻断。",
+              );
+            }
+            trustedSalesSession(cashierLease, input.auditMetadata);
+            await sharedHeldOrdersApi.cancel(holdGuid);
+          }
+        } finally {
+          try {
+            trustedSalesSession(cashierLease, input.auditMetadata);
+            publicationLoop.resume();
+          } catch {
+            // 换班、锁屏或 runtime 关闭后绝不复活后台发布循环。
+          }
+        }
+      },
+      ...(forceRelease ? { forceRelease } : {}),
+      runPublicationOnce: () => {
+        trustedSalesSession(cashierLease, input.auditMetadata);
+        return sharedHeldOrderPublicationLoop!.runNow();
+      },
+    };
+  };
+  if (sharedHeldOrdersAvailable) {
+    reconcileSharedHeldOrdersAfterSignIn = async () => {
+      await createSharedHeldOrdersCoordinator().reconcileClaims();
+    };
+  }
   const capabilities: PosRuntimeCapabilities = {
     catalog: { status: "available" },
     cashCheckout: { status: "available" },
@@ -1566,7 +1788,10 @@ export function createProductionPosRuntimeServices(
       return () => {
         // runtime 重载会重新构造组合根；先解除 scope 订阅，避免旧 cashier/cart 闭包被永久保留。
         disposeDeviceScopeListener();
-        shutdown ??= catalogRefreshCoordinator.shutdown();
+        shutdown ??= Promise.all([
+          catalogRefreshCoordinator.shutdown(),
+          sharedHeldOrderPublicationLoop?.shutdown() ?? Promise.resolve(),
+        ]).then(() => undefined);
         return shutdown;
       };
     })(),
@@ -1823,6 +2048,9 @@ export function createProductionPosRuntimeServices(
         const heldOrders = operationAuthorization
           ? createHeldOrdersOrchestrator(cashierLease)
           : null;
+        const sharedHeldOrders = sharedHeldOrdersAvailable
+          ? createSharedHeldOrdersCoordinator(cashierLease)
+          : null;
         return createConnectedSalesPresenter({
           activeCartSession: activePricingCart,
           catalog,
@@ -1848,6 +2076,30 @@ export function createProductionPosRuntimeServices(
                       heldOrders,
                       cart,
                     ),
+                },
+              }
+            : {}),
+          ...(sharedHeldOrders
+            ? {
+                // 优先释放共享 claim；仅明确不存在共享 claim 时，才按 legacy fence
+                // 释放本地挂单。其他共享错误保持 fail-closed，避免制造孤儿状态。
+                releaseRecalledCart: {
+                  releaseRecalledCart: async (holdGuid: string) => {
+                    try {
+                      await sharedHeldOrders.ownerRelease(holdGuid);
+                      return;
+                    } catch (error: unknown) {
+                      if (
+                        !heldOrders ||
+                        !(error instanceof SharedHeldOrderCoordinatorError) ||
+                        error.code !== "NOT_FOUND"
+                      ) {
+                        throw error;
+                      }
+                    }
+                    const result = await heldOrders.release(holdGuid);
+                    if (!result.ok) throw heldOrderFailure(result);
+                  },
                 },
               }
             : {}),
@@ -1881,9 +2133,63 @@ export function createProductionPosRuntimeServices(
     heldOrders: {
       createPresenter: () => {
         assertRuntimeInitialized(initialize);
-        return new HeldOrdersPresenter(createHeldOrdersOrchestrator());
+        return new HeldOrdersPresenter(createHeldOrdersOrchestrator(), {
+          ...(input.businessTimeZone !== undefined
+            ? { businessTimeZone: input.businessTimeZone }
+            : {}),
+          currentDeviceCode: input.auditMetadata.deviceCode,
+          now: input.clock.now,
+        });
       },
     },
+    sharedHeldOrders: sharedHeldOrdersAvailable
+      ? {
+          api: sharedHeldOrdersApi,
+          listLocalShareState: () => {
+            const session = currentCashier.require();
+            assertTrustedCashierScope(session, input.auditMetadata);
+            return sharedHeldOrderPublicationQueue!.listShareStates(
+              {
+                storeCode: input.auditMetadata.storeCode,
+                deviceCode: input.auditMetadata.deviceCode,
+              },
+              500,
+            );
+          },
+          requestShare: async (holdGuid: string) => {
+            assertRuntimeInitialized(initialize);
+            const session = currentCashier.require();
+            assertTrustedCashierScope(session, input.auditMetadata);
+            const outcome =
+              await sharedHeldOrderPublicationQueue!.requestShare({
+                holdId: holdGuid,
+                scope: {
+                  storeCode: input.auditMetadata.storeCode,
+                  deviceCode: input.auditMetadata.deviceCode,
+                },
+                requestedAtIso: input.clock.nowIso(),
+              });
+            if (outcome === "requested" || outcome === "already-requested") {
+              // 意图已耐久写入；网络失败由原发布队列的退避/重试保留，不能回滚用户点击。
+              if (sharedHeldOrderPublicationLoop) {
+                void sharedHeldOrderPublicationLoop.runNow().catch(() => {
+                  // runNow 的失败只影响本次唤醒，不影响已写入的 share_requested_at_iso。
+                });
+              }
+            }
+            return outcome;
+          },
+          createCoordinator: createSharedHeldOrdersCoordinator,
+        }
+      : {
+          // 旧测试替身/未升级的组合根只能看到明确不可用，不伪造共享成功。
+          api: sharedHeldOrdersApi,
+          listLocalShareState: async () => [],
+          requestShare: async () => "ineligible" as const,
+          createCoordinator: () => {
+            throw new Error("SHARED_HELD_ORDERS_UNAVAILABLE");
+          },
+        },
     syncHistory,
     returns,
     installments,
@@ -2384,6 +2690,11 @@ async function initializeTerminalCartFence(
   // 启动时绝不读取或展示上一位收银员的冻结购物车；只保存私有 binding 并锁住
   // 普通编辑。之后必须由已登录收银员完成双权限 recover/release 才能继续。
   activeCart.blockForRecallRecovery(binding);
+}
+
+function isSharedHeldOrderNotFound(error: unknown): boolean {
+  return error instanceof SharedHeldOrderApiError &&
+    (error.status === 404 || error.code === "SHARED_HELD_ORDER_NOT_FOUND");
 }
 
 function createHeldActiveCartPort(

@@ -115,6 +115,7 @@ import {
   type PosDeviceSessionRuntimeService,
 } from "./public-device-session";
 import { resolveHbposApiUrl } from "./runtime-config";
+import { HbposSettingsLinklySetupApi } from "./settings-linkly-setup-api";
 import { HbposSettingsPaymentTestApi } from "./settings-payment-test-api";
 import { SettingsScannerTestCoordinator } from "./settings-scanner-test";
 import { HbposSettingsSquareSetupApi } from "./settings-square-setup-api";
@@ -781,6 +782,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       new HbposSettingsPaymentTestApi(transport);
     const squareSetupApi =
       new HbposSettingsSquareSetupApi(transport);
+    const linklySetupApi =
+      new HbposSettingsLinklySetupApi(transport);
     const currentPaymentSettings =
       settingsPaymentConfiguration(paymentPublicConfiguration);
     const readUpdateSnapshot = () =>
@@ -915,6 +918,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         appVersion,
         updateChannel,
         squareSetup: squareSetupApi,
+        linklySetup: linklySetupApi,
         printer,
         readDevicePresentation: () =>
           readSettingsDevicePresentation(publicDeviceSession),

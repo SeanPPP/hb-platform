@@ -130,6 +130,63 @@ test("生产组合把可选 Square setup 能力转给 Presenter 且不暴露 tok
   ]);
 });
 
+test("生产组合隔离 Linkly health 读取与配对写入，并只经危险动作提交一次", async () => {
+  const events: string[] = [];
+  let paired = false;
+  const base = dependencies();
+  const runtime = createProductionSettingsComposition({
+    ...base,
+    paymentConfiguration: {
+      ...base.paymentConfiguration,
+      current: null,
+      availability: {
+        ...base.paymentConfiguration.availability,
+        linkly: {
+          available: false,
+          blockerCode: "LINKLY_CONFIGURATION_MISSING",
+        },
+      },
+    },
+    linklySetup: {
+      readState: async (environment, signal) => {
+        assert.equal(signal.aborted, false);
+        events.push(`health:${environment}:${paired ? "paired" : "unpaired"}`);
+        return {
+          environment,
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          isReady: paired,
+          checks: [
+            { code: "STORE_CREDENTIAL", isReady: true, message: "ready" },
+            { code: "TERMINAL_SECRET", isReady: paired, message: null },
+            { code: "TERMINAL_POS_ID", isReady: paired, message: null },
+          ],
+        };
+      },
+      pair: async (environment, pairCode, signal) => {
+        assert.equal(signal.aborted, false);
+        events.push(`pair:${environment}:${pairCode}`);
+        paired = true;
+        return { status: "completed" };
+      },
+    },
+  });
+  const presenter = runtime.createPresenter();
+
+  await presenter.load();
+  assert.equal(presenter.getState().linklySetup?.health.value?.isReady, false);
+  assert.equal(presenter.requestLinklyPair("123456"), true);
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(events, [
+    "health:Production:unpaired",
+    "pair:Production:123456",
+    "health:Production:paired",
+  ]);
+  assert.equal(presenter.getState().statusCode, "linkly-paired");
+  assert.equal(presenter.getState().linklySetup?.health.value?.isReady, true);
+});
+
 test("生产组合每次创建 Square 配对码只生成一个幂等键并调用底层 API 一次", async () => {
   let createIdCalls = 0;
   let createCalls = 0;

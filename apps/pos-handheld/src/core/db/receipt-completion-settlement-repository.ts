@@ -125,10 +125,15 @@ export class ReceiptCompletionSettlementRepository {
           proof.correlationId === correlationId &&
           proof.appliedCents === amountCents,
       );
+      const finalProof = finalProofs.length === 1 ? finalProofs[0] : undefined;
       if (
         payload?.method !== "cash" ||
         !isPositiveCents(amountCents) ||
-        finalProofs.length !== 1
+        !finalProof ||
+        !isFinalCashAppendProof(finalProof) ||
+        cashProofs.some(
+          (proof) => proof !== finalProof && !isExactCashAppendProof(proof),
+        )
       ) {
         return null;
       }
@@ -137,6 +142,7 @@ export class ReceiptCompletionSettlementRepository {
       const method = payload?.method;
       const amountCents = payload?.amountCents;
       if (
+        cashProofs.some((proof) => !isExactCashAppendProof(proof)) ||
         (method !== "card" && method !== "voucher") ||
         payload?.attemptId !== correlationId ||
         !isPositiveCents(amountCents)
@@ -204,6 +210,7 @@ function completionSettlement(
 type MixedCashAppendProof = Readonly<{
   cashChangeCents: number;
   appliedCents: number;
+  tenderedCents: number;
   tenderGuid: string;
   correlationId: string;
 }>;
@@ -227,7 +234,6 @@ function mixedCashAppendProof(
     !isPositiveCents(appliedCents) ||
     !isNonNegativeCents(changeCents) ||
     !isNonNegativeCents(tenderedCents) ||
-    tenderedCents - appliedCents !== changeCents ||
     !tenderGuid ||
     !correlationId
   ) {
@@ -236,9 +242,31 @@ function mixedCashAppendProof(
   return {
     cashChangeCents: changeCents,
     appliedCents,
+    tenderedCents,
     tenderGuid,
     correlationId,
   };
+}
+
+function isExactCashAppendProof(proof: MixedCashAppendProof): boolean {
+  return proof.cashChangeCents === proof.tenderedCents - proof.appliedCents;
+}
+
+function isFinalCashAppendProof(proof: MixedCashAppendProof): boolean {
+  if (isExactCashAppendProof(proof)) return true;
+
+  // 最终现金镜像写入端按 AUD 五分舍入；旧版逐分实收仍由精确规则兼容。
+  const cashDueCents = roundCashDueCents(proof.appliedCents);
+  return (
+    proof.tenderedCents >= cashDueCents &&
+    proof.tenderedCents % 5 === 0 &&
+    proof.cashChangeCents === proof.tenderedCents - cashDueCents
+  );
+}
+
+function roundCashDueCents(amountCents: number): number {
+  const remainder = amountCents % 5;
+  return amountCents - remainder + (remainder >= 3 ? 5 : 0);
 }
 
 function auditPayload(

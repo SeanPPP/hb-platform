@@ -610,77 +610,63 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       return cancelCloseRecoverySnapshot(draft, attempt);
     }
 
-    let execution: PaymentAttemptExecutionResult;
-    try {
-      execution = await this.options.attempts.cancelAttempt(attempt.attemptId);
-    } catch (error) {
-      await this.assertProviderAction(attempt.provider);
-      await this.assertExact(lease);
-      const refreshed = await this.refreshDraft(draft.orderGuid);
-      await this.assertProviderAction(attempt.provider);
-      await this.assertExact(lease);
-      return publicSnapshot(
-        refreshed,
-        attempt,
-        "recovery-required",
-        error instanceof PaymentAttemptOfflineError
-          ? "ONLINE_REQUIRED"
-          : "PAYMENT_CANCEL_FAILED",
-      );
-    }
-    await this.assertProviderAction(attempt.provider);
-    await this.assertExact(lease);
-    assertSameAttempt(execution.attempt, attempt);
-
-    if (execution.attempt.state === "Approved") {
-      const mixed = await this.options.mixed.recoverOnlineAttempt({
-        orderGuid: draft.orderGuid,
-        attemptId: attempt.attemptId,
-      });
-      if (mixed.status !== "completed") {
+    let resolvedAttempt = attempt;
+    if (attempt.state !== "Cancelled") {
+      let execution: PaymentAttemptExecutionResult;
+      try {
+        execution = await this.options.attempts.cancelAttempt(attempt.attemptId);
+      } catch (error) {
         await this.assertProviderAction(attempt.provider);
         await this.assertExact(lease);
+        const refreshed = await this.refreshDraft(draft.orderGuid);
+        await this.assertProviderAction(attempt.provider);
+        await this.assertExact(lease);
+        return publicSnapshot(
+          refreshed,
+          attempt,
+          "recovery-required",
+          error instanceof PaymentAttemptOfflineError
+            ? "ONLINE_REQUIRED"
+            : "PAYMENT_CANCEL_FAILED",
+        );
       }
-      return this.finishMixedResult(draft, lease, mixed, attempt.provider);
+      await this.assertProviderAction(attempt.provider);
+      await this.assertExact(lease);
+      assertSameAttempt(execution.attempt, attempt);
+      resolvedAttempt = execution.attempt;
+
+      if (resolvedAttempt.state === "Approved") {
+        const mixed = await this.options.mixed.recoverOnlineAttempt({
+          orderGuid: draft.orderGuid,
+          attemptId: attempt.attemptId,
+        });
+        if (mixed.status !== "completed") {
+          await this.assertProviderAction(attempt.provider);
+          await this.assertExact(lease);
+        }
+        return this.finishMixedResult(draft, lease, mixed, attempt.provider);
+      }
     }
 
     const refreshed = await this.refreshDraft(draft.orderGuid);
     await this.assertProviderAction(attempt.provider);
     await this.assertExact(lease);
     if (
-      execution.attempt.state === "Cancelled" &&
+      resolvedAttempt.state === "Cancelled" &&
       refreshed.tenders.length === 0 &&
       refreshed.remaining.cents === refreshed.total.cents
     ) {
-      let closed: PaymentCheckoutDraftCancelledCloseResult;
-      try {
-        closed = await this.options.drafts.closeCancelled({
-          orderGuid: refreshed.orderGuid,
-          actionId: preparedAction.actionId,
-        });
-        assertCancelledCloseProjection(refreshed, closed.draft);
-      } catch {
-        await this.assertProviderAction(attempt.provider);
-        await this.assertExact(lease);
-        return cancelCloseRecoverySnapshot(refreshed, execution.attempt);
-      }
-      await this.assertProviderAction(attempt.provider);
-      await this.assertExact(lease);
-      await this.options.cartLease.releaseAfterSafeCancel(
+      return this.closeCancelledAttempt(
+        refreshed,
         lease,
-        draft.orderGuid,
-      );
-      await this.assertProviderAction(attempt.provider);
-      return publicSnapshot(
-        closed.draft,
-        execution.attempt,
-        "cancelled",
+        resolvedAttempt,
+        preparedAction,
       );
     }
     return publicSnapshot(
       refreshed,
-      execution.attempt,
-      statusForAttempt(execution.attempt),
+      resolvedAttempt,
+      statusForAttempt(resolvedAttempt),
     );
   }
 
@@ -890,6 +876,26 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     ) {
       throw new PaymentCheckoutRuntimeError(
         "PAYMENT_ATTEMPT_IDENTITY_MISMATCH",
+      );
+    }
+    if (
+      result.status === "cancelled" &&
+      attempt?.state === "Cancelled" &&
+      draft.tenders.length === 0 &&
+      draft.remaining.cents === draft.total.cents
+    ) {
+      // 终端已确认零扣款取消：只沿用原 immutable action 做本地耐久收尾，禁止再次请求 provider。
+      const preparedAction = await this.cancelPreparedActionOrNull(
+        draft,
+        attempt,
+      );
+      await this.assertProviderAction(attempt.provider);
+      await this.assertExact(lease);
+      return this.closeCancelledAttempt(
+        draft,
+        lease,
+        attempt,
+        preparedAction,
       );
     }
     const snapshot = publicSnapshot(
@@ -1152,6 +1158,46 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     return recovery.preparedAction;
   }
 
+  private async closeCancelledAttempt(
+    draft: PaymentCheckoutDraft,
+    lease: PaymentCartLease,
+    attempt: PaymentAttempt,
+    preparedAction: PaymentCheckoutPreparedAction | null,
+  ): Promise<PaymentCheckoutPublicSnapshot> {
+    if (
+      attempt.state !== "Cancelled" ||
+      draft.tenders.length !== 0 ||
+      draft.remaining.cents !== draft.total.cents ||
+      preparedAction === null
+    ) {
+      return cancelCloseRecoverySnapshot(draft, attempt);
+    }
+
+    let closed: PaymentCheckoutDraftCancelledCloseResult;
+    try {
+      await this.assertProviderAction(attempt.provider);
+      await this.assertExact(lease);
+      closed = await this.options.drafts.closeCancelled({
+        orderGuid: draft.orderGuid,
+        actionId: preparedAction.actionId,
+      });
+      assertCancelledCloseProjection(draft, closed.draft);
+    } catch {
+      await this.assertProviderAction(attempt.provider);
+      await this.assertExact(lease);
+      return cancelCloseRecoverySnapshot(draft, attempt);
+    }
+
+    await this.assertProviderAction(attempt.provider);
+    await this.assertExact(lease);
+    await this.options.cartLease.releaseAfterSafeCancel(
+      lease,
+      draft.orderGuid,
+    );
+    await this.assertProviderAction(attempt.provider);
+    return abandonedSnapshot(closed.draft);
+  }
+
   private deleteFlight(checkoutIntentId: string, flight: CheckoutFlight): void {
     if (this.checkoutFlights.get(checkoutIntentId) === flight) {
       this.checkoutFlights.delete(checkoutIntentId);
@@ -1175,6 +1221,11 @@ function publicSnapshot(
     preparedAction !== null;
   const completed = status === "completed";
   const terminal = attempt?.state === "Declined" || attempt?.state === "Cancelled";
+  const canCloseCancelled =
+    status === "cancelled" &&
+    attempt?.state === "Cancelled" &&
+    draft.tenders.length === 0 &&
+    draft.remaining.cents === draft.total.cents;
   const canStart =
     !completed &&
     draft.remaining.cents > 0 &&
@@ -1213,7 +1264,8 @@ function publicSnapshot(
       cancel:
         !completed &&
         ((attempt !== null &&
-          ["Created", "Submitted", "Pending"].includes(attempt.state)) ||
+          (["Created", "Submitted", "Pending"].includes(attempt.state) ||
+            canCloseCancelled)) ||
           (attempt === null &&
             preparedAction === null &&
             status === "draft-prepared" &&

@@ -142,6 +142,7 @@ test("冷启动先恢复 promotion/asOf/手工折扣状态并立即持有写锁"
     checkoutIntentId: "checkout-recovery",
     cart: recovered,
     pricingState,
+    recallBinding: null,
   };
   const leaseCoordinator = createCoordinator(active, material);
 
@@ -162,12 +163,13 @@ test("冷启动先恢复 promotion/asOf/手工折扣状态并立即持有写锁"
   assert.deepEqual(active.read().cart, recovered);
 });
 
-test("恢复材料不能覆盖 RecallActive 或已有普通购物车", async () => {
+test("恢复材料不能覆盖普通购物车，RecallActive 只接纳精确耐久 binding", async () => {
   const source = cartWithDiscount();
   const material: PaymentCartRecoveryMaterial = {
     checkoutIntentId: "checkout-conflict",
     cart: source.snapshot(),
     pricingState: source.stateSnapshot(),
+    recallBinding: null,
   };
   const nonEmpty = session(cartWithDiscount());
   await assert.rejects(
@@ -175,15 +177,44 @@ test("恢复材料不能覆盖 RecallActive 或已有普通购物车", async () 
     hasCode("ACTIVE_PRICING_CART_BUSY"),
   );
 
-  const recalled = session();
-  recalled.blockForRecallRecovery({
+  const binding = {
     kind: "recalled",
     scope: { storeCode: "S1", deviceCode: "D1" },
     holdId: "hold-1",
     recallAttemptId: "recall-1",
-  });
+  } as const;
+  const recalled = session();
+  recalled.blockForRecallRecovery(binding);
+  const recovered = await createCoordinator(recalled, {
+    ...material,
+    recallBinding: binding,
+  }).initializeRecovery();
+  assert.ok(recovered);
+  assert.deepEqual(recalled.read().recallBinding, binding);
+  assert.equal(recalled.read().terminalRecoveryRequired, false);
+
+  const missingBinding = session();
+  missingBinding.blockForRecallRecovery(binding);
   await assert.rejects(
-    () => createCoordinator(recalled, material).initializeRecovery(),
+    () => createCoordinator(missingBinding, material).initializeRecovery(),
+    hasCode("ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED"),
+  );
+
+  const wrongBinding = session();
+  wrongBinding.blockForRecallRecovery(binding);
+  await assert.rejects(
+    () => createCoordinator(wrongBinding, {
+      ...material,
+      recallBinding: { ...binding, recallAttemptId: "recall-other" },
+    }).initializeRecovery(),
+    hasCode("ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED"),
+  );
+
+  await assert.rejects(
+    () => createCoordinator(session(), {
+      ...material,
+      recallBinding: binding,
+    }).initializeRecovery(),
     hasCode("ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED"),
   );
 });

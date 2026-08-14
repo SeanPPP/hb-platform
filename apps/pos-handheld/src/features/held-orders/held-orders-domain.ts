@@ -65,7 +65,7 @@ export interface HeldOrderAuthorizationPort {
   authorizeAndRun<T>(
     input: Readonly<{
       permissionCode: string;
-      action: "hold" | "list" | "recall" | "recover" | "release";
+      action: "hold" | "list" | "recall" | "recover" | "release" | "delete";
     }>,
     operation: () => T | Promise<T>,
   ): Promise<
@@ -73,6 +73,27 @@ export interface HeldOrderAuthorizationPort {
     | Readonly<{ authorized: false }>
   >;
 }
+
+/**
+ * 手持 POS 复用旧 core contract 的挂单 Port；删除分阶段能力只在本 feature
+ * 通过扩展口声明，避免越界修改共享的 core/contracts/held-orders.ts。
+ */
+export type HeldOrderDeleteStage = Readonly<{
+  holdId: string;
+  remoteCancellationRequired: boolean;
+}>;
+
+export type HeldOrderDeleteRepositoryPort = HeldOrderRecordRepositoryPort & {
+  stageDeletePending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+    stagedAtIso: string;
+  }>): Promise<HeldOrderDeleteStage | null>;
+  deleteStagedPending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+  }>): Promise<boolean>;
+};
 
 export type HeldOrdersOrchestratorOptions = Readonly<{
   repository: HeldOrderRecordRepositoryPort;
@@ -88,6 +109,7 @@ export type HeldOrderActionCode =
   | "recalled"
   | "recovered"
   | "released"
+  | "deleted"
   | "authorization-denied"
   | "sale-mode-required"
   | "cart-empty"
@@ -102,13 +124,92 @@ export type HeldOrderActionCode =
   | "complete-failed"
   | "rollback-failed"
   | "release-failed"
-  | "load-failed";
+  | "delete-failed"
+  | "delete-shared-failed"
+  | "load-failed"
+  | "shared-prepared-awaiting-activation"
+  | "shared-fence-held"
+  | "shared-restore-failed"
+  | "shared-conflict"
+  | "shared-not-available"
+  | "force-released"
+  | "force-release-failed"
+  | "force-release-unavailable"
+  | "force-release-reason-required";
 
 export type HeldOrderActionResult = Readonly<{
   ok: boolean;
   code: HeldOrderActionCode;
   holdId?: string;
 }>;
+
+/**
+ * 跨设备共享挂单的远端 Pending 行（服务端 listPending 的视图投影）。
+ * 只暴露列表所需字段，绝不携带 canonical 购物车 payload。
+ */
+export type SharedHeldOrderRemoteRow = Readonly<{
+  holdGuid: string;
+  deviceCode: string;
+  cashierName: string;
+  heldAtIso: string;
+  lineCount: number;
+  actualCents: number;
+}>;
+
+/** 本地挂单的共享发布状态（可选数据源；组合根未接线时 presenter 保守合并）。 */
+export type SharedHeldOrderLocalShareRow = Readonly<{
+  holdId: string;
+  shareState: "NeedsEvaluation" | "PendingPublish" | "Published" | "Blocked";
+  blockReason: string | null;
+  requestedAtIso?: string | null | undefined;
+  isSyntheticSharedClaim?: boolean | undefined;
+}>;
+
+export type SharedHeldOrderShareRequestOutcome =
+  | "requested"
+  | "already-requested"
+  | "ineligible"
+  | "not-found";
+
+export type SharedHeldOrderTakeViewOutcome =
+  | "restored"
+  | "prepared-awaiting-activation"
+  | "fence-held"
+  | "conflict";
+
+export type SharedHeldOrderTakeViewResult = Readonly<{
+  ok: boolean;
+  outcome: SharedHeldOrderTakeViewOutcome;
+  holdGuid: string;
+}>;
+
+/**
+ * 共享挂单视图端口：presenter 只依赖该端口，绝不在此层伪造持久能力。
+ * 组合根负责把 shared coordinator/API 适配进来；forceRelease 未接线时
+ * UI 不显示入口，presenter 返回 force-release-unavailable。
+ */
+export interface SharedHeldOrdersViewPort {
+  listRemotePending(): Promise<readonly SharedHeldOrderRemoteRow[]>;
+  listLocalShareState?(): Promise<readonly SharedHeldOrderLocalShareRow[]>;
+  requestShare?(holdGuid: string): Promise<SharedHeldOrderShareRequestOutcome>;
+  takeRemoteHold(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
+  recallLocalPublication(holdGuid: string): Promise<SharedHeldOrderTakeViewResult>;
+  /** 仅原设备可取消其已发布挂单；组合根负责先暂停并等待本地发布循环。 */
+  cancelOwnedHold?(holdGuid: string): Promise<void>;
+  /**
+   * 优先释放本机 shared claim；返回 false 表示不存在 shared claim，调用方才可
+   * 回退 legacy release，避免后者只清 fence 而留下 shared claim 孤儿。
+   */
+  releaseOwnedClaim?(holdGuid: string): Promise<boolean>;
+  /**
+   * 可选强制释放。实现必须由组合根包一层 supervisor/History.Recall 授权，
+   * 并在调用服务端 force-release 前拒绝空原因。
+   */
+  forceRelease?(input: Readonly<{
+    holdGuid: string;
+    reason: string;
+  }>): Promise<HeldOrderActionResult>;
+}
 
 export function heldOrderScope(identity: HeldOrderIdentity): HeldOrderScope {
   return {

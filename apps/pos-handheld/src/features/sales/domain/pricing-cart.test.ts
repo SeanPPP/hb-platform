@@ -78,6 +78,7 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
     unitPrice: createAud(1_000),
     discount: createAud(0),
     actualAmount: createAud(2_000),
+    discountSource: "none",
     priceSource: "catalog",
     syncProvenance: { referenceCode: null, priceSource: 0 },
     kind: "sale",
@@ -96,6 +97,49 @@ test("cart merges normalized sale lookups but keeps OPENITEM lines independent",
       ["open-2", "open-item", 789],
     ],
   );
+});
+
+test("catalog 折扣基线参与定价并在清除人工折扣后恢复", () => {
+  const cart = new PricingCart({ asOfIso });
+  const catalogItem = {
+    ...item("catalog", {
+      unitPrice: createAud(699),
+      quantity: 2,
+    }),
+    catalogDiscountBasisPoints: 2_000,
+  } as AddCartItemInput;
+
+  cart.addItem(catalogItem);
+  let line = cart.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 280);
+  assert.equal(line.actualAmount.cents, 1_118);
+
+  assert.equal(cart.setLineDiscountPercentBps("catalog", 1_000), true);
+  line = cart.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 140);
+
+  assert.equal(cart.setLineDiscountPercentBps("catalog", 0), true);
+  line = cart.snapshot().lines[0]!;
+  assert.equal(line.discount.cents, 280);
+});
+
+test("非零整单百分比舍入为零仍保留 manual-amount:0 并覆盖目录折扣", () => {
+  const cart = new PricingCart({ asOfIso });
+  cart.addItem({
+    ...item("cent-catalog", { unitPrice: createAud(1) }),
+    catalogDiscountBasisPoints: 10_000,
+  } as AddCartItemInput);
+
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 1);
+  assert.equal(cart.setOrderDiscountPercentBps(1), true);
+  assert.deepEqual(cart.stateSnapshot().lines[0]?.discountState, {
+    kind: "manual-amount",
+    cents: 0,
+  });
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 0);
+
+  assert.equal(cart.setOrderDiscountPercentBps(0), true);
+  assert.equal(cart.snapshot().lines[0]?.discount.cents, 1);
 });
 
 test("加购 disposition 明确区分新增行与合并行，旧 string API 保持兼容", () => {
@@ -444,6 +488,96 @@ test("feature-private state restores percent behavior while frozen snapshots sta
     "manual-percent",
   );
   assert.deepEqual(restored.snapshot(), restored.snapshot());
+});
+
+test("restore 精确接受 frozen SharedSaleCart 的正有限小数数量，普通加购仍拒绝小数", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("weighted", { unitPrice: createAud(1_000) }));
+  const state = source.stateSnapshot();
+
+  const restored = PricingCart.restore({
+    ...state,
+    lines: [{ ...state.lines[0]!, quantity: 1.25 }],
+  });
+
+  assert.equal(restored.stateSnapshot().lines[0]!.quantity, 1.25);
+  assert.equal(restored.snapshot().lines[0]!.quantity, "1.25");
+  assert.equal(restored.snapshot().lines[0]!.actualAmount.cents, 1_250);
+  assert.equal(
+    PricingCart.restore(restored.stateSnapshot()).stateSnapshot().lines[0]!
+      .quantity,
+    1.25,
+  );
+
+  const regular = new PricingCart({ asOfIso });
+  assert.throws(
+    () => regular.addItem(item("weighted-new", { quantity: 1.25 })),
+    /positive integer/,
+  );
+});
+
+test("restore 的小数数量兼容行不参与整数合并且销售页能力探测不抛错", () => {
+  const source = new PricingCart({ asOfIso });
+  const weighted = {
+    productCode: "P-WEIGHTED",
+    lookupCode: "WEIGHTED",
+    unitPrice: createAud(100),
+  };
+  source.addScannedItem(item("weighted-1", weighted));
+  source.addScannedItem(item("separator", { lookupCode: "SEPARATOR" }));
+  source.addScannedItem(item("weighted-2", weighted));
+  const state = source.stateSnapshot();
+  const restored = PricingCart.restore({
+    ...state,
+    lines: state.lines.map((line) =>
+      line.lineId === "weighted-1"
+        ? { ...line, quantity: 0.25 }
+        : line.lineId === "weighted-2"
+          ? { ...line, quantity: 0.75 }
+          : line,
+    ),
+  });
+  const before = restored.stateSnapshot();
+
+  assert.equal(restored.hasMergeCompatibleLines(), false);
+  assert.deepEqual(restored.mergeCompatibleLines(), {
+    groups: [],
+    removedLineCount: 0,
+  });
+  assert.deepEqual(restored.stateSnapshot(), before);
+});
+
+test("restore 按 C# decimal AwayFromZero 计算 0.29 × 50 为 15 分", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("weighted", { unitPrice: createAud(50) }));
+  const state = source.stateSnapshot();
+
+  const restored = PricingCart.restore({
+    ...state,
+    lines: [{ ...state.lines[0]!, quantity: 0.29 }],
+  });
+
+  assert.equal(restored.snapshot().lines[0]!.actualAmount.cents, 15);
+  assert.equal(restored.snapshot().actualAmount.cents, 15);
+  assert.equal(restored.snapshot().subtotal.cents, 15);
+});
+
+test("restore 仍拒绝零、负数与非有限数量", () => {
+  const source = new PricingCart({ asOfIso });
+  source.addItem(item("line-a"));
+  const state = source.stateSnapshot();
+
+  for (const quantity of [0, -1, Number.NaN, Infinity, -Infinity]) {
+    assert.throws(
+      () =>
+        PricingCart.restore({
+          ...state,
+          lines: [{ ...state.lines[0]!, quantity }],
+        }),
+      /positive finite/,
+      `quantity ${String(quantity)} 必须被拒绝`,
+    );
+  }
 });
 
 test("zero-price lines remain representable without floating point coercion", () => {

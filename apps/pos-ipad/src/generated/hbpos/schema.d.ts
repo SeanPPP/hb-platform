@@ -3408,6 +3408,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/app-updates/pos-handheld": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    version?: string;
+                    build?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["PosHandheldNativeUpdateResponseApiResult"];
+                        "application/json": components["schemas"]["PosHandheldNativeUpdateResponseApiResult"];
+                        "text/json": components["schemas"]["PosHandheldNativeUpdateResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app-updates/pos-handheld/ota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    runtimeVersion?: string;
+                    currentUpdateId?: string;
+                    currentUpdateGroupId?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["PosHandheldOtaUpdateResponseApiResult"];
+                        "application/json": components["schemas"]["PosHandheldOtaUpdateResponseApiResult"];
+                        "text/json": components["schemas"]["PosHandheldOtaUpdateResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/app-updates/pos-ipad": {
         parameters: {
             query?: never;
@@ -5815,6 +5896,50 @@ export interface components {
             reference?: string | null;
             reservationToken?: string | null;
             cardTransactions?: components["schemas"]["CardTransactionDto"][] | null;
+        };
+        PosHandheldNativeUpdateResponse: {
+            state?: string | null;
+            policyVersion?: string | null;
+            platform?: string | null;
+            required?: boolean;
+            latestVersion?: string | null;
+            latestBuild?: string | null;
+            minimumSupportedVersion?: string | null;
+            distribution?: string | null;
+            downloadUrl?: string | null;
+            /** Format: int64 */
+            fileSize?: number | null;
+            sha256?: string | null;
+            packageName?: string | null;
+            signingCertificateSha256?: string | null;
+            bundleIdentifier?: string | null;
+            appStoreId?: string | null;
+            releaseMessage?: string | null;
+        };
+        PosHandheldNativeUpdateResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["PosHandheldNativeUpdateResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        PosHandheldOtaUpdateResponse: {
+            state?: string | null;
+            policyVersion?: string | null;
+            appKey?: string | null;
+            projectName?: string | null;
+            platform?: string | null;
+            required?: boolean;
+            channel?: string | null;
+            runtimeVersion?: string | null;
+            updateId?: string | null;
+            updateGroupId?: string | null;
+            releaseMessage?: string | null;
+        };
+        PosHandheldOtaUpdateResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["PosHandheldOtaUpdateResponse"];
+            errorCode?: string | null;
+            message?: string | null;
         };
         PosIpadAppUpdateResponse: {
             enabled?: boolean;

@@ -18,7 +18,7 @@ import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
-import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "@/core/security/pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 
 export type SettingsPane =
@@ -44,6 +44,60 @@ export type SettingsSquareSnapshot = SettingsPaymentProviderSnapshot &
     deviceId: string;
     locationId: string;
   }>;
+
+export type SettingsLinklyHealthCheck = Readonly<{
+  code: string;
+  isReady: boolean;
+  message: string | null;
+}>;
+
+export type SettingsLinklyHealthSnapshot = Readonly<{
+  environment: PaymentEnvironment;
+  storeCode: string;
+  deviceCode: string;
+  isReady: boolean;
+  checks: readonly SettingsLinklyHealthCheck[];
+}>;
+
+export type SettingsLinklyPairResult = Readonly<{
+  status: "completed" | "unknown";
+}>;
+
+export interface SettingsLinklySetupReadPort {
+  readState(
+    environment: PaymentEnvironment,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyHealthSnapshot>;
+}
+
+/** Settings 页面只可读取公开 health；不可把配对写能力暴露给 Presenter。 */
+export type SettingsLinklySetupControlPort = SettingsLinklySetupReadPort;
+
+/** 配对写端口只由危险动作路径持有。 */
+export interface SettingsLinklyPairingPort {
+  pair(
+    environment: PaymentEnvironment,
+    pairCode: string,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyPairResult>;
+}
+
+export type SettingsLinklyHealthResource = Readonly<{
+  kind: "idle" | "loading" | "ready" | "failed";
+  value: SettingsLinklyHealthSnapshot | null;
+}>;
+
+export type SettingsLinklyLogonTestState = Readonly<{
+  environment: PaymentEnvironment;
+  status: "idle" | "running" | "passed" | "failed";
+}>;
+
+export type SettingsLinklySetupState = Readonly<{
+  health: SettingsLinklyHealthResource;
+  logonTest: SettingsLinklyLogonTestState;
+  /** 仅用于清空 UI 瞬态 PairCode，不保存 PairCode 本身。 */
+  pairCodeResetToken: number;
+}>;
 
 export type SettingsHardwareSnapshot = Readonly<{
   printerStatus: "connected" | "disconnected" | "unavailable";
@@ -190,6 +244,11 @@ export type SettingsDangerousConfirmation =
       kind: "change-payment-settings";
       input: SettingsPaymentSettingsInput;
     }>
+  | Readonly<{
+      kind: "pair-linkly";
+      environment: PaymentEnvironment;
+      pairCode: string;
+    }>
   | Readonly<{ kind: "reset-catalog" }>
   | Readonly<{
       kind: "reregister-device";
@@ -209,8 +268,13 @@ export type SettingsDangerousActionResult =
       kind:
         | "change-api-address"
         | "change-payment-settings"
+        | "pair-linkly"
         | "reregister-device"
         | "restart-app";
+    }>
+  | Readonly<{
+      status: "unknown";
+      kind: "pair-linkly";
     }>
   | Readonly<{
       status: "completed";
@@ -220,6 +284,8 @@ export type SettingsDangerousActionResult =
 
 export interface SettingsControlPort {
   squareSetup?: SettingsSquareSetupControlPort | undefined;
+  /** 只允许读取 health；配对必须经过 executeDangerousAction。 */
+  linklySetup?: SettingsLinklySetupReadPort | undefined;
   loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
   getCatalogRefreshState(): CatalogRefreshState;
   subscribeCatalogRefresh(listener: () => void): () => void;
@@ -286,6 +352,12 @@ export type SettingsStatusCode =
   | "invalid-api-address"
   | "invalid-device-registration"
   | "load-failed"
+  | "linkly-health-load-failed"
+  | "linkly-pair-code-invalid"
+  | "linkly-pair-failed"
+  | "linkly-pair-unknown"
+  | "linkly-paired"
+  | "linkly-setup-required"
   | "payment-settings-invalid"
   | "payment-settings-save-failed"
   | "payment-settings-saved"
@@ -330,6 +402,7 @@ export type SettingsState = Readonly<{
   kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
   linkly: SettingsPaymentProviderSnapshot;
   linklyDraft: SettingsPaymentDraft["linkly"];
+  linklySetup: SettingsLinklySetupState | null;
   paymentProvider: SettingsPaymentProvider | null;
   paymentProviderDraft: SettingsPaymentProvider | null;
   printer: ReceiptPrinterSettings;
@@ -363,6 +436,7 @@ export class SettingsPresenter {
   private squareLocationsGeneration = 0;
   private squareDevicesGeneration = 0;
   private squareDeviceCodesGeneration = 0;
+  private linklySetupGeneration = 0;
   private actionInFlight: Promise<void> | null = null;
   private catalogRefreshInFlight: Promise<void> | null = null;
 
@@ -372,6 +446,7 @@ export class SettingsPresenter {
       access,
       options.port.getCatalogRefreshState(),
       options.port.squareSetup !== undefined,
+      options.port.linklySetup !== undefined,
     );
     this.catalogRefreshUnsubscribe =
       options.port.subscribeCatalogRefresh(
@@ -391,6 +466,7 @@ export class SettingsPresenter {
     if (this.destroyed) return;
     this.destroyed = true;
     this.loadGeneration += 1;
+    this.linklySetupGeneration += 1;
     this.invalidateSquareRequests("environment");
     this.catalogRefreshUnsubscribe();
     this.catalogRefreshUnsubscribe = () => undefined;
@@ -429,6 +505,9 @@ export class SettingsPresenter {
         linklyDraft: {
           environment: snapshot.linkly.environment,
         },
+        linklySetup: this.options.port.linklySetup
+          ? initialLinklySetupState(snapshot.linkly.environment)
+          : null,
         paymentProvider: snapshot.paymentProvider,
         paymentProviderDraft: snapshot.paymentProvider,
         printer: snapshot.printer,
@@ -458,6 +537,16 @@ export class SettingsPresenter {
         statusCode: null,
         terminalNameDraft: snapshot.device.terminalName,
       });
+      if (
+        this.options.port.linklySetup &&
+        this.state.access.canConfigurePayments
+      ) {
+        await this.loadLinklySetupState(
+          snapshot.linkly.environment,
+          generation,
+          true,
+        );
+      }
     } catch {
       if (!this.isCurrentLoad(generation)) return;
       this.patch({ kind: "failed", statusCode: "load-failed" });
@@ -1068,14 +1157,51 @@ export class SettingsPresenter {
 
   public setLinklyEnvironment(environment: PaymentEnvironment): void {
     if (!this.canEditPayments()) return;
+    if (environment === this.state.linklyDraft.environment) return;
+    const linklySetup = this.state.linklySetup
+      ? resetLinklySetupState(
+          this.state.linklySetup,
+          environment,
+          true,
+          true,
+        )
+      : null;
     this.patch({
       linklyDraft: { environment },
+      linklySetup,
       statusCode: null,
     });
+    if (this.options.port.linklySetup) {
+      void this.loadLinklySetupState(
+        environment,
+        this.loadGeneration,
+        true,
+      );
+    }
+  }
+
+  public refreshLinklySetup(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return Promise.resolve();
+    }
+    if (!this.options.port.linklySetup) return Promise.resolve();
+    const environment = this.state.linklyDraft.environment;
+    return this.runAction(() =>
+      this.loadLinklySetupState(environment, this.loadGeneration, false),
+    );
   }
 
   public setPaymentProvider(provider: SettingsPaymentProvider): void {
     if (!this.canEditPayments()) return;
+    if (
+      provider === "linkly" &&
+      this.options.port.linklySetup &&
+      isLinklyBaseSelectable(this.state) &&
+      !isLinklySetupReady(this.state, this.state.linklyDraft.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return;
+    }
     if (!isPaymentProviderSelectable(provider, this.state)) {
       this.patch({ statusCode: "payment-settings-invalid" });
       return;
@@ -1146,7 +1272,7 @@ export class SettingsPresenter {
       this.state.squareDraft,
       this.state.linklyDraft,
       isPaymentProviderSelectable("square", this.state),
-      isPaymentProviderAvailable("linkly", this.state),
+      isLinklyBaseSelectable(this.state),
     );
     if (
       !input ||
@@ -1161,6 +1287,14 @@ export class SettingsPresenter {
       this.patch({ statusCode: "payment-settings-saved" });
       return Promise.resolve();
     }
+    if (
+      input.provider === "linkly" &&
+      this.options.port.linklySetup &&
+      !isLinklySetupReady(this.state, input.linkly.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return Promise.resolve();
+    }
     this.requestConfirmation({
       kind: "change-payment-settings",
       input,
@@ -1168,20 +1302,60 @@ export class SettingsPresenter {
     return Promise.resolve();
   }
 
+  public requestLinklyPair(pairCode: string): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return false;
+    }
+    const normalizedPairCode = pairCode.trim();
+    if (!/^\d{6}$/u.test(normalizedPairCode)) {
+      this.patch({ statusCode: "linkly-pair-code-invalid" });
+      return false;
+    }
+    if (
+      !this.options.port.linklySetup ||
+      !hasLinklyCloudCredentials(
+        this.state,
+        this.state.linklyDraft.environment,
+      )
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return false;
+    }
+    return this.requestConfirmation({
+      kind: "pair-linkly",
+      environment: this.state.linklyDraft.environment,
+      pairCode: normalizedPairCode,
+    });
+  }
+
   public testPaymentProvider(provider: "square" | "linkly"): Promise<void> {
     if (!this.requirePermission(this.state.access.canConfigurePayments)) {
       return Promise.resolve();
     }
-    if (provider !== this.state.paymentProviderDraft) {
+    if (provider !== "linkly" && provider !== this.state.paymentProviderDraft) {
       this.patch({ statusCode: "payment-settings-invalid" });
       return Promise.resolve();
     }
+    if (
+      provider === "linkly" &&
+      this.options.port.linklySetup &&
+      !isLinklyHealthReady(this.state, this.state.linklyDraft.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return Promise.resolve();
+    }
+    const testProvider =
+      provider === "linkly" ? "linkly" : this.state.paymentProviderDraft;
     const input = normalizePaymentDraft(
-      this.state.paymentProviderDraft,
+      testProvider,
       this.state.squareDraft,
       this.state.linklyDraft,
       isPaymentProviderSelectable("square", this.state),
-      isPaymentProviderAvailable("linkly", this.state),
+      isLinklyBaseSelectable(this.state),
     );
     if (
       !input ||
@@ -1194,14 +1368,43 @@ export class SettingsPresenter {
       return Promise.resolve();
     }
     return this.runAction(async () => {
+      const linklyTestEnvironment =
+        provider === "linkly" ? input.linkly?.environment : null;
+      if (linklyTestEnvironment && this.state.linklySetup) {
+        this.patch({
+          linklySetup: updateLinklyLogonTest(
+            this.state.linklySetup,
+            linklyTestEnvironment,
+            "running",
+          ),
+        });
+      }
       try {
         await this.options.port.testPaymentProvider(
           provider,
           input,
           this.lifetime.signal,
         );
+        if (linklyTestEnvironment && this.state.linklySetup) {
+          this.patch({
+            linklySetup: updateLinklyLogonTest(
+              this.state.linklySetup,
+              linklyTestEnvironment,
+              "passed",
+            ),
+          });
+        }
         this.patch({ statusCode: "payment-test-passed" });
       } catch {
+        if (linklyTestEnvironment && this.state.linklySetup) {
+          this.patch({
+            linklySetup: updateLinklyLogonTest(
+              this.state.linklySetup,
+              linklyTestEnvironment,
+              "failed",
+            ),
+          });
+        }
         this.patch({ statusCode: "payment-test-failed" });
       }
     });
@@ -1568,6 +1771,32 @@ export class SettingsPresenter {
           });
           return;
         }
+        if (result.status === "unknown") {
+          if (confirmation.kind !== "pair-linkly") {
+            throw new Error("unexpected unknown dangerous action result");
+          }
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? resetLinklySetupState(
+                  this.state.linklySetup,
+                  confirmation.environment,
+                  true,
+                  true,
+                )
+              : null,
+            statusCode: "linkly-pair-unknown",
+          });
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            true,
+          );
+          if (this.state.linklySetup?.health.kind !== "failed") {
+            this.patch({ statusCode: "linkly-pair-unknown" });
+          }
+          return;
+        }
         if (result.kind !== confirmation.kind) {
           throw new Error("dangerous action result mismatch");
         }
@@ -1582,6 +1811,28 @@ export class SettingsPresenter {
         }
         if (confirmation.kind === "change-payment-settings") {
           this.applySavedPaymentSettings(confirmation.input);
+          return;
+        }
+        if (confirmation.kind === "pair-linkly") {
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? resetLinklySetupState(
+                  this.state.linklySetup,
+                  confirmation.environment,
+                  true,
+                  true,
+                )
+              : null,
+          });
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            true,
+          );
+          if (this.state.linklySetup?.health.kind !== "failed") {
+            this.patch({ statusCode: "linkly-paired" });
+          }
           return;
         }
         if (
@@ -1621,7 +1872,12 @@ export class SettingsPresenter {
       paymentProviderDraft: input.provider,
       ...(input.linkly
         ? {
-            linkly: { ...this.state.linkly, ...input.linkly },
+            linkly: {
+              ...this.state.linkly,
+              ...input.linkly,
+              available: true,
+              blockerCode: null,
+            },
             linklyDraft: input.linkly,
           }
         : {}),
@@ -1793,6 +2049,69 @@ export class SettingsPresenter {
     this.squareDeviceCodesGeneration += 1;
   }
 
+  private async loadLinklySetupState(
+    environment: PaymentEnvironment,
+    loadGeneration: number,
+    resetLogonTest: boolean,
+  ): Promise<void> {
+    const setup = this.options.port.linklySetup;
+    if (
+      !setup ||
+      this.destroyed ||
+      loadGeneration !== this.loadGeneration
+    ) {
+      return;
+    }
+    const generation = ++this.linklySetupGeneration;
+    const current =
+      this.state.linklySetup ?? initialLinklySetupState(environment);
+    this.patch({
+      linklySetup: resetLinklySetupState(
+        current,
+        environment,
+        resetLogonTest,
+        false,
+      ),
+    });
+    try {
+      const health = await setup.readState(environment, this.lifetime.signal);
+      if (
+        !this.isCurrentLinklySetupRequest(
+          environment,
+          loadGeneration,
+          generation,
+        ) ||
+        health.environment !== environment
+      ) {
+        return;
+      }
+      this.patch({
+        linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          health: Object.freeze({ kind: "ready", value: health }),
+        }),
+      });
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !this.isCurrentLinklySetupRequest(
+          environment,
+          loadGeneration,
+          generation,
+        )
+      ) {
+        return;
+      }
+      this.patch({
+        linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          health: Object.freeze({ kind: "failed", value: null }),
+        }),
+        statusCode: "linkly-health-load-failed",
+      });
+    }
+  }
+
   private isCurrentSquareEnvironmentRequest(
     environment: PaymentEnvironment,
     generation: number,
@@ -1859,6 +2178,18 @@ export class SettingsPresenter {
     return !this.destroyed && this.loadGeneration === generation;
   }
 
+  private isCurrentLinklySetupRequest(
+    environment: PaymentEnvironment,
+    loadGeneration: number,
+    generation: number,
+  ): boolean {
+    return (
+      this.isCurrentLoad(loadGeneration) &&
+      this.linklySetupGeneration === generation &&
+      this.state.linklyDraft.environment === environment
+    );
+  }
+
   private patch(patch: Partial<SettingsState>): void {
     if (this.destroyed) return;
     this.state = Object.freeze({ ...this.state, ...patch });
@@ -1896,7 +2227,7 @@ export function normalizeApiAddress(value: string): string {
   if (
     parsed.protocol === "http:" &&
     !isLoopbackHostname(parsed.hostname) &&
-    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+    !isTrustedLocalHbposApiOrigin(parsed.origin)
   ) {
     throw new Error("remote API requires HTTPS");
   }
@@ -1926,6 +2257,7 @@ function initialState(
   access: SettingsAccess,
   catalogRefresh: CatalogRefreshState,
   squareSetupAvailable: boolean,
+  linklySetupAvailable: boolean,
 ): SettingsState {
   const printer = Object.freeze({
     ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
@@ -1978,6 +2310,9 @@ function initialState(
     linklyDraft: Object.freeze({
       environment: linkly.environment,
     }),
+    linklySetup: linklySetupAvailable
+      ? initialLinklySetupState(linkly.environment)
+      : null,
     paymentProvider: null,
     paymentProviderDraft: null,
     printer,
@@ -1994,6 +2329,88 @@ function initialState(
     statusCode: access.canView ? null : "permission-required",
     terminalNameDraft: "",
   });
+}
+
+function initialLinklySetupState(
+  environment: PaymentEnvironment,
+): SettingsLinklySetupState {
+  return Object.freeze({
+    health: Object.freeze({ kind: "idle", value: null }),
+    logonTest: Object.freeze({ environment, status: "idle" }),
+    pairCodeResetToken: 0,
+  });
+}
+
+function resetLinklySetupState(
+  state: SettingsLinklySetupState,
+  environment: PaymentEnvironment,
+  resetLogonTest: boolean,
+  resetPairCode: boolean,
+): SettingsLinklySetupState {
+  return Object.freeze({
+    health: Object.freeze({ kind: "loading", value: null }),
+    logonTest: resetLogonTest
+      ? Object.freeze({ environment, status: "idle" })
+      : state.logonTest,
+    pairCodeResetToken: state.pairCodeResetToken + (resetPairCode ? 1 : 0),
+  });
+}
+
+function updateLinklyLogonTest(
+  state: SettingsLinklySetupState,
+  environment: PaymentEnvironment,
+  status: SettingsLinklyLogonTestState["status"],
+): SettingsLinklySetupState {
+  return Object.freeze({
+    ...state,
+    logonTest: Object.freeze({ environment, status }),
+  });
+}
+
+function hasLinklyCloudCredentials(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.checks.some(
+      (check) =>
+        check.code.trim().toUpperCase() === "STORE_CREDENTIAL" &&
+        check.isReady,
+    )
+  );
+}
+
+function isLinklySetupReady(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  const logonTest = state.linklySetup?.logonTest;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.isReady === true &&
+    logonTest?.environment === environment &&
+    logonTest.status === "passed"
+  );
+}
+
+function isLinklyHealthReady(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.isReady === true
+  );
 }
 
 function initialSquareSetupState(
@@ -2213,11 +2630,33 @@ function isPaymentProviderAvailable(
   return snapshot.available && snapshot.blockerCode === null;
 }
 
+function isLinklyBaseSelectable(
+  state: Pick<SettingsState, "linkly" | "linklySetup" | "square" | "squareSetup">,
+): boolean {
+  if (
+    !state.linkly.available &&
+    state.linkly.blockerCode === "LINKLY_CONFIGURATION_MISSING"
+  ) {
+    return true;
+  }
+  return isPaymentProviderAvailable("linkly", state);
+}
+
 function isPaymentProviderSelectable(
   provider: SettingsPaymentProvider,
-  state: Pick<SettingsState, "linkly" | "square" | "squareSetup">,
+  state: Pick<
+    SettingsState,
+    "linkly" | "linklyDraft" | "linklySetup" | "square" | "squareSetup"
+  >,
 ): boolean {
   if (provider === "square" && state.squareSetup.available) return true;
+  if (provider === "linkly") {
+    return (
+      isLinklyBaseSelectable(state) &&
+      (!state.linklySetup ||
+        isLinklySetupReady(state, state.linklyDraft.environment))
+    );
+  }
   return isPaymentProviderAvailable(provider, state);
 }
 
@@ -2395,6 +2834,8 @@ function dangerousActionFailureCode(
   switch (kind) {
     case "change-payment-settings":
       return "payment-settings-save-failed";
+    case "pair-linkly":
+      return "linkly-pair-failed";
     case "reset-catalog":
       return "catalog-reset-failed";
     case "reregister-device":

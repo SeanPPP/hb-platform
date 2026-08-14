@@ -1041,6 +1041,441 @@
         }
       }
     },
+    "/api/v1/held-orders/capabilities": {
+      "get": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCapabilitiesResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCapabilitiesResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCapabilitiesResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderPublishRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderPublishRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderPublishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderPublishResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderPublishResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderPublishResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderListItemDtoIReadOnlyListApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderListItemDtoIReadOnlyListApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderListItemDtoIReadOnlyListApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/{holdGuid}/claims/prepare": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/activate": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claimGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/release": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claimGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/{holdGuid}/claims/{claimGuid}/force-release": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claimGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderForceReleaseRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderForceReleaseRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedHeldOrderForceReleaseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderClaimDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/{holdGuid}/cancel": {
+      "post": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "holdGuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderCancelResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/held-orders/claims/mine": {
+      "get": {
+        "tags": [
+          "HeldOrders"
+        ],
+        "parameters": [
+          {
+            "name": "supportedPayloadVersions",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/installments/capabilities": {
       "get": {
         "tags": [
@@ -2152,6 +2587,174 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InstallmentCancelClaimDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/cloud-backend/pair": {
+      "post": {
+        "tags": [
+          "Linkly"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudBackendTerminalCredentialResponseApiResult"
                 }
               }
             }
@@ -6089,6 +6692,42 @@
         },
         "additionalProperties": false
       },
+      "HeldOrderDisposition": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "HeldOrderSourceDto": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "claimGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "sourceKind": {
+            "$ref": "#/components/schemas/HeldOrderSourceKind"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HeldOrderSourceKind": {
+        "enum": [
+          1,
+          2
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
       "InstallmentAppendPaymentRequest": {
         "type": "object",
         "properties": {
@@ -7671,6 +8310,20 @@
           "receivedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudBackendPairRequest": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "pairCode": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -9337,6 +9990,9 @@
               "$ref": "#/components/schemas/PaymentSyncDto"
             },
             "nullable": true
+          },
+          "heldOrderSource": {
+            "$ref": "#/components/schemas/HeldOrderSourceDto"
           }
         },
         "additionalProperties": false
@@ -9357,6 +10013,9 @@
           "message": {
             "type": "string",
             "nullable": true
+          },
+          "heldOrderDisposition": {
+            "$ref": "#/components/schemas/HeldOrderDisposition"
           }
         },
         "additionalProperties": false
@@ -9909,6 +10568,892 @@
           "message": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderCancelResponse": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "alreadyCancelled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderCancelResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderCancelResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderCapabilitiesResponse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "payloadVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "preparedTtlSeconds": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "forceReleaseSupported": {
+            "type": "boolean"
+          },
+          "supportedPayloadVersions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "nullable": true
+          },
+          "preferredPayloadVersion": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderCapabilitiesResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderCapabilitiesResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimDto": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "claimGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderClaimStatus"
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantDeviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierId": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierName": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "activatedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "releasedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "forceReleased": {
+            "type": "boolean"
+          },
+          "forceReleaseReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "forceReleaseCashierId": {
+            "type": "string",
+            "nullable": true
+          },
+          "forceReleaseCashierName": {
+            "type": "string",
+            "nullable": true
+          },
+          "forceReleasedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "alreadyExists": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimDtoApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderClaimDto"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimPrepareRequest": {
+        "type": "object",
+        "properties": {
+          "claimGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimPrepareResponse": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "claimGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderClaimStatus"
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
+          },
+          "claimantDeviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierId": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierName": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "alreadyExists": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimPrepareResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderClaimPrepareResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderClaimStatus": {
+        "enum": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "SharedHeldOrderForceReleaseRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderListItemDto": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "deviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "heldByCashierId": {
+            "type": "string",
+            "nullable": true
+          },
+          "heldByCashierName": {
+            "type": "string",
+            "nullable": true
+          },
+          "heldAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lineCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "discountCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "actualCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderListItemDtoIReadOnlyListApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedHeldOrderListItemDto"
+            },
+            "nullable": true
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderPublishRequest": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "deviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "cart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderPublishResponse": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "alreadyExists": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderPublishResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SharedHeldOrderPublishResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderRecoveryClaimDto": {
+        "type": "object",
+        "properties": {
+          "holdGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "claimGuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SharedHeldOrderClaimStatus"
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantDeviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierId": {
+            "type": "string",
+            "nullable": true
+          },
+          "claimantCashierName": {
+            "type": "string",
+            "nullable": true
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV1"
+              },
+              {
+                "$ref": "#/components/schemas/SharedSaleCartV2"
+              }
+            ]
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "activatedAtUtc": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderRecoveryClaimDtoIReadOnlyListApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedHeldOrderRecoveryClaimDto"
+            },
+            "nullable": true
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedHeldOrderStatus": {
+        "enum": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "SharedLineDiscountStateV1": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "nullable": true
+          },
+          "cents": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "basisPoints": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "promotionIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedLineSyncProvenanceV1": {
+        "type": "object",
+        "properties": {
+          "referenceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "priceSource": {
+            "$ref": "#/components/schemas/PriceSourceKind"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedPricingStateV1": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mode": {
+            "type": "string",
+            "nullable": true
+          },
+          "asOfIso": {
+            "type": "string",
+            "nullable": true
+          },
+          "promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedPromotionV1"
+            },
+            "nullable": true
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedSaleLineV1"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedPricingStateV2": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mode": {
+            "type": "string",
+            "nullable": true
+          },
+          "asOfIso": {
+            "type": "string",
+            "nullable": true
+          },
+          "promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedPromotionV1"
+            },
+            "nullable": true
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedSaleLineV2"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedPromotionProductV1": {
+        "type": "object",
+        "properties": {
+          "productCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "unitWeight": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedPromotionV1": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "effectiveStartIso": {
+            "type": "string",
+            "nullable": true
+          },
+          "effectiveEndIso": {
+            "type": "string",
+            "nullable": true
+          },
+          "isExclusive": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "applyQuantity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "fixedPriceCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "maxApplicationsPerOrder": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "products": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedPromotionProductV1"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedSaleCartV1": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pricingState": {
+            "$ref": "#/components/schemas/SharedPricingStateV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedSaleCartV2": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pricingState": {
+            "$ref": "#/components/schemas/SharedPricingStateV2"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedSaleLineV1": {
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "type": "string",
+            "nullable": true
+          },
+          "productCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "itemNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "lookupCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "number",
+            "format": "double"
+          },
+          "unitPriceCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "basePriceSource": {
+            "type": "string",
+            "nullable": true
+          },
+          "syncProvenance": {
+            "$ref": "#/components/schemas/SharedLineSyncProvenanceV1"
+          },
+          "kind": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnSourceKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalOrderGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "originalOrderDetailGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "discountState": {
+            "$ref": "#/components/schemas/SharedLineDiscountStateV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedSaleLineV2": {
+        "required": [
+          "catalogDiscountBasisPoints"
+        ],
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "type": "string",
+            "nullable": true
+          },
+          "productCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "itemNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "lookupCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "number",
+            "format": "double"
+          },
+          "unitPriceCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "basePriceSource": {
+            "type": "string",
+            "nullable": true
+          },
+          "syncProvenance": {
+            "$ref": "#/components/schemas/SharedLineSyncProvenanceV1"
+          },
+          "kind": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnSourceKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalOrderGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "originalOrderDetailGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "discountState": {
+            "$ref": "#/components/schemas/SharedLineDiscountStateV1"
+          },
+          "catalogDiscountBasisPoints": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false

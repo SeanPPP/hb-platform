@@ -17,7 +17,11 @@ import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
 } from "../contracts/line-sync-provenance";
-import { createAud, MoneySchema } from "../contracts/money";
+import {
+  createAud,
+  MoneySchema,
+  multiplyCentsAwayFromZero,
+} from "../contracts/money";
 import type {
   AuditEventDraft,
   LocalOrder,
@@ -216,6 +220,15 @@ class SqliteHeldOrderRepository implements HeldOrderRepositoryPort {
   public remove(holdId: string): Promise<void> { return this.db.run("DELETE FROM held_orders WHERE hold_id = ?", [holdId]).then(() => undefined); }
 }
 
+type HeldOrderDeleteStage = Readonly<{
+  holdId: string;
+  remoteCancellationRequired: boolean;
+}>;
+
+type HeldOrderSummaryWithSynthetic = HeldOrderSummary & {
+  isSyntheticSharedClaim?: boolean;
+};
+
 type HeldOrderRecordRow = Readonly<{
   hold_id: unknown;
   local_sequence: unknown;
@@ -233,6 +246,7 @@ type HeldOrderRecordRow = Readonly<{
   recall_attempt_id: unknown;
   payload_version?: unknown;
   payload_ciphertext?: unknown;
+  is_synthetic_shared_claim?: unknown;
 }>;
 
 type TerminalCartFenceRow = Readonly<{
@@ -251,6 +265,8 @@ type TerminalCartFenceRow = Readonly<{
  * 内更新挂单和栅栏，进程被杀后仍能判断应清车、恢复或释放。
  */
 export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositoryPort {
+  private syntheticClaimColumnSupport: Promise<boolean> | null = null;
+
   public constructor(
     private readonly db: SqliteConnectionPort,
     private readonly encryptor: SensitivePayloadEncryptor,
@@ -326,11 +342,15 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
   ): Promise<readonly HeldOrderSummary[]> {
     const scope = validateHeldOrderScope(scopeInput);
     const safeLimit = listLimit(limit);
+    // 兼容只升级到 M9-M39 的旧开发库测试/恢复工具；正式启动完成 M40 后固定走真实列。
+    const syntheticClaimProjection = await this.supportsSyntheticClaimColumn()
+      ? "is_synthetic_shared_claim"
+      : "0 AS is_synthetic_shared_claim";
     const rows = await this.db.getAll<HeldOrderRecordRow>(
       `SELECT hold_id, local_sequence, store_code, device_code,
         held_by_cashier_id, held_by_cashier_name, status, item_count,
         subtotal_cents, discount_cents, actual_amount_cents, held_at_iso,
-        recalling_at_iso
+        recalling_at_iso, ${syntheticClaimProjection}
        FROM held_order_records
        WHERE store_code = ? AND device_code = ? AND status = 'Pending'
        ORDER BY local_sequence DESC
@@ -338,6 +358,99 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
       [scope.storeCode, scope.deviceCode, safeLimit],
     );
     return rows.map(readHeldOrderSummary);
+  }
+
+  private supportsSyntheticClaimColumn(): Promise<boolean> {
+    this.syntheticClaimColumnSupport ??= this.db
+      .getFirst<{ count: unknown }>(
+        `SELECT COUNT(*) AS count
+         FROM pragma_table_info('held_order_records')
+         WHERE name = 'is_synthetic_shared_claim'`,
+      )
+      .then((row) => Number(row?.count ?? 0) === 1);
+    return this.syntheticClaimColumnSupport;
+  }
+
+  public async stageDeletePending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+    stagedAtIso: string;
+  }>): Promise<HeldOrderDeleteStage | null> {
+    const holdId = nonBlank(input.holdId, "hold id");
+    const scope = validateHeldOrderScope(input.scope);
+    const stagedAtIso = canonicalIso(input.stagedAtIso, "delete staged at");
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const row = await transaction.getFirst<{
+        share_state: string;
+        publish_block_reason: string | null;
+        remote_revision: number | null;
+      }>(
+        `SELECT share_state, publish_block_reason, remote_revision
+         FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0`,
+        [holdId, scope.storeCode, scope.deviceCode],
+      );
+      if (!row) return null;
+
+      const changed = await transaction.run(
+        `UPDATE held_order_records
+         SET share_state = 'Blocked',
+             publish_block_reason = 'LOCAL_DELETE_PENDING',
+             next_publish_at_iso = NULL,
+             publish_error_code = NULL,
+             updated_at_iso = ?
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM terminal_cart_fences fence
+             WHERE fence.hold_id = held_order_records.hold_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM shared_held_order_claim_records claim
+             WHERE claim.hold_guid = held_order_records.hold_id
+               AND claim.state IN ('Prepared', 'Active')
+           )`,
+        [stagedAtIso, holdId, scope.storeCode, scope.deviceCode],
+      );
+      if (changed.changes !== 1) return null;
+      return {
+        holdId,
+        remoteCancellationRequired:
+          row.remote_revision !== null ||
+          row.share_state === "PendingPublish" ||
+          row.share_state === "Published" ||
+          row.publish_block_reason === "LOCAL_DELETE_PENDING",
+      };
+    });
+  }
+
+  public async deleteStagedPending(input: Readonly<{
+    holdId: string;
+    scope: HeldOrderScope;
+  }>): Promise<boolean> {
+    const holdId = nonBlank(input.holdId, "hold id");
+    const scope = validateHeldOrderScope(input.scope);
+    return this.db.withExclusiveTransaction(async (transaction) => {
+      const deleted = await transaction.run(
+        `DELETE FROM held_order_records
+         WHERE hold_id = ? AND store_code = ? AND device_code = ?
+           AND status = 'Pending' AND is_synthetic_shared_claim = 0
+           AND share_state = 'Blocked'
+           AND publish_block_reason = 'LOCAL_DELETE_PENDING'
+           AND NOT EXISTS (
+             SELECT 1 FROM terminal_cart_fences fence
+             WHERE fence.hold_id = held_order_records.hold_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM shared_held_order_claim_records claim
+             WHERE claim.hold_guid = held_order_records.hold_id
+               AND claim.state IN ('Prepared', 'Active')
+           )`,
+        [holdId, scope.storeCode, scope.deviceCode],
+      );
+      return deleted.changes === 1;
+    });
   }
 
   public async claimRecall(input: Readonly<{
@@ -365,11 +478,13 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
           `Terminal cart already has an active fence for hold ${nonBlank(existingFence.hold_id, "terminal fence hold id")}.`,
         );
       }
-      const row = await transaction.getFirst<HeldOrderRecordRow>(
+      const row = await getFirstHeldOrderRecordCompat(
+        transaction,
         `SELECT hold_id, local_sequence, store_code, device_code,
           held_by_cashier_id, held_by_cashier_name, status, item_count,
           subtotal_cents, discount_cents, actual_amount_cents, held_at_iso,
-          recalling_at_iso, payload_version, payload_ciphertext
+          recalling_at_iso, payload_version, payload_ciphertext,
+          is_synthetic_shared_claim
          FROM held_order_records
          WHERE hold_id = ? AND store_code = ? AND device_code = ?
            AND status = 'Pending'`,
@@ -439,12 +554,14 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
     bindingInput: RecallActiveBinding,
   ): Promise<RecallClaim | null> {
     const binding = validateRecallBinding(bindingInput);
-    const row = await this.db.getFirst<HeldOrderRecordRow>(
+    const row = await getFirstHeldOrderRecordCompat(
+      this.db,
       `SELECT held.hold_id, held.local_sequence, held.store_code, held.device_code,
         held.held_by_cashier_id, held.held_by_cashier_name, held.status,
         held.item_count, held.subtotal_cents, held.discount_cents,
         held.actual_amount_cents, held.held_at_iso, held.recalling_at_iso,
-        held.recall_attempt_id, held.payload_version, held.payload_ciphertext
+        held.recall_attempt_id, held.payload_version, held.payload_ciphertext,
+        held.is_synthetic_shared_claim
        FROM terminal_cart_fences fence
        INNER JOIN held_order_records held
          ON held.hold_id = fence.hold_id
@@ -551,13 +668,14 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
     scopeInput: HeldOrderScope,
   ): Promise<readonly RecallClaim[]> {
     const scope = validateHeldOrderScope(scopeInput);
-    const rows = await this.db.getAll<HeldOrderRecordRow>(
+    const rows = await getAllHeldOrderRecordsCompat(
+      this.db,
       `SELECT held.hold_id, held.local_sequence, held.store_code,
         held.device_code, held.held_by_cashier_id, held.held_by_cashier_name,
         held.status, held.item_count, held.subtotal_cents,
         held.discount_cents, held.actual_amount_cents, held.held_at_iso,
         held.recalling_at_iso, held.recall_attempt_id, held.payload_version,
-        held.payload_ciphertext
+        held.payload_ciphertext, held.is_synthetic_shared_claim
        FROM held_order_records held
        INNER JOIN terminal_cart_fences fence
          ON fence.store_code = held.store_code
@@ -581,6 +699,291 @@ export class SqliteHeldOrderRecordRepository implements HeldOrderRecordRepositor
         payload: await decryptHeldOrderPayload(row, this.encryptor),
       };
     }));
+  }
+}
+
+async function getFirstHeldOrderRecordCompat(
+  db: SqliteConnectionPort,
+  sql: string,
+  parameters: readonly SqlValue[],
+): Promise<HeldOrderRecordRow | null> {
+  try {
+    return await db.getFirst<HeldOrderRecordRow>(sql, parameters);
+  } catch (error) {
+    if (!isMissingSyntheticSharedClaimColumn(error)) throw error;
+    return db.getFirst<HeldOrderRecordRow>(
+      withoutSyntheticSharedClaimColumn(sql),
+      parameters,
+    );
+  }
+}
+
+async function getAllHeldOrderRecordsCompat(
+  db: SqliteConnectionPort,
+  sql: string,
+  parameters: readonly SqlValue[],
+): Promise<readonly HeldOrderRecordRow[]> {
+  try {
+    return await db.getAll<HeldOrderRecordRow>(sql, parameters);
+  } catch (error) {
+    if (!isMissingSyntheticSharedClaimColumn(error)) throw error;
+    return db.getAll<HeldOrderRecordRow>(
+      withoutSyntheticSharedClaimColumn(sql),
+      parameters,
+    );
+  }
+}
+
+/** 旧迁移阶段没有 synthetic 列，也不可能存在远端 claim 行；仅投影为本地行。 */
+function withoutSyntheticSharedClaimColumn(sql: string): string {
+  const fallback = sql.replace(
+    /\b(?:held\.)?is_synthetic_shared_claim\b/,
+    "0 AS is_synthetic_shared_claim",
+  );
+  if (fallback === sql) {
+    throw new Error("Synthetic shared claim projection is missing.");
+  }
+  return fallback;
+}
+
+function isMissingSyntheticSharedClaimColumn(error: unknown): boolean {
+  return error instanceof Error &&
+    /\bno such column:\s*(?:held\.)?is_synthetic_shared_claim\b/i.test(error.message);
+}
+
+/**
+ * 取单完成事务内的共享挂单来源解析与写入（仅 held recall 完成路径使用）：
+ * - 根据 holdId + recallAttemptId 读取 durable claim 事实；只有真实本地挂单的
+ *   0 claim 行可判为 OfflineOrigin。synthetic 远端挂单若 claim 丢失必须整体失败，
+ *   不能静默降级成 OfflineOrigin；多行同样视为数据损坏。
+ * - 来源行与 local order/outbox 在同一事务内写入，之后任何列不可改写；
+ *   普通订单绝不调用这些函数，因此不查询、不写入来源表。
+ */
+export type ResolvedCompletionHeldSource = Readonly<{
+  claimGuid: string | null;
+  sourceKind: 1 | 2;
+  source: "RemoteClaim" | "OfflineOrigin" | null;
+  claimState: "Prepared" | "Active" | null;
+  activateIdempotencyKey: string | null;
+}>;
+
+export async function resolveHeldOrderSourceInTransaction(
+  transaction: SqliteConnectionPort,
+  holdId: string,
+  recallAttemptId: string,
+): Promise<ResolvedCompletionHeldSource> {
+  const rows = await transaction.getAll<{
+    claim_guid: string;
+    source: "RemoteClaim" | "OfflineOrigin";
+    state: "Prepared" | "Active";
+    activate_idempotency_key: string | null;
+  }>(
+    `SELECT claim_guid, source, state, activate_idempotency_key
+     FROM shared_held_order_claim_records
+     WHERE hold_guid = ? AND recall_attempt_id = ?
+       AND state IN ('Prepared', 'Active')`,
+    [holdId, recallAttemptId],
+  );
+  if (rows.length > 1) {
+    throw new Error(
+      "Multiple durable shared hold claims match one recall attempt.",
+    );
+  }
+  const row = rows[0];
+  if (!row) {
+    const held = await transaction.getFirst<{
+      is_synthetic_shared_claim: number;
+    }>(
+      `SELECT is_synthetic_shared_claim
+       FROM held_order_records
+       WHERE hold_id = ? AND recall_attempt_id = ?
+         AND status IN ('Recalling', 'Recalled')`,
+      [holdId, recallAttemptId],
+    );
+    if (!held) {
+      throw new Error("SHARED_HELD_ORDER_SOURCE_HOLD_MISSING");
+    }
+    if (held.is_synthetic_shared_claim === 1) {
+      throw new Error("SHARED_HELD_ORDER_SOURCE_CLAIM_MISSING");
+    }
+    if (held.is_synthetic_shared_claim !== 0) {
+      throw new Error("SHARED_HELD_ORDER_SOURCE_KIND_INVALID");
+    }
+    return {
+      claimGuid: null,
+      sourceKind: 2,
+      source: null,
+      claimState: null,
+      activateIdempotencyKey: null,
+    };
+  }
+  if (row.source !== "RemoteClaim" && row.source !== "OfflineOrigin") {
+    throw new Error("Shared held order claim source is invalid.");
+  }
+  return {
+    claimGuid: row.claim_guid,
+    sourceKind: row.source === "RemoteClaim" ? 1 : 2,
+    source: row.source,
+    claimState: row.state,
+    activateIdempotencyKey: row.activate_idempotency_key,
+  };
+}
+
+export async function writeOrderHeldOrderSourceInTransaction(
+  transaction: SqliteConnectionPort,
+  input: Readonly<{
+    orderGuid: string;
+    holdId: string;
+    claimGuid: string | null;
+    sourceKind: 1 | 2;
+    atIso: string;
+  }>,
+): Promise<void> {
+  const inserted = await transaction.run(
+    `INSERT INTO order_held_order_sources (
+      order_guid, hold_guid, claim_guid, source_kind, created_at_iso
+    ) VALUES (?, ?, ?, ?, ?)`,
+    [
+      input.orderGuid,
+      input.holdId,
+      input.claimGuid,
+      input.sourceKind,
+      input.atIso,
+    ],
+  );
+  if (inserted.changes !== 1) {
+    throw new Error("Shared held order source insert failed.");
+  }
+  // 标记列与来源行同事务写入；解析器只在标记为 1 时查询来源表，
+  // 保证普通订单零来源查询。
+  const marked = await transaction.run(
+    `UPDATE local_orders
+     SET is_shared_held_origin = 1, updated_at_iso = ?
+     WHERE order_guid = ? AND is_shared_held_origin = 0`,
+    [input.atIso, input.orderGuid],
+  );
+  if (marked.changes !== 1) {
+    throw new Error("Shared held origin marker changed before completion.");
+  }
+}
+
+/** durable 本地 claim 在同一事务内 Active -> 绑定 -> Completed。 */
+export async function completeSharedClaimInTransaction(
+  transaction: SqliteConnectionPort,
+  input: Readonly<{
+    claimGuid: string;
+    activateIdempotencyKey: string;
+    boundOrderGuid: string;
+    completedAtIso: string;
+  }>,
+): Promise<void> {
+  const bound = await transaction.run(
+    `UPDATE shared_held_order_claim_records
+     SET bound_order_guid = ?, updated_at_iso = ?
+     WHERE claim_guid = ? AND state = 'Active'
+       AND activate_idempotency_key = ? AND bound_order_guid IS NULL`,
+    [
+      input.boundOrderGuid,
+      input.completedAtIso,
+      input.claimGuid,
+      input.activateIdempotencyKey,
+    ],
+  );
+  if (bound.changes !== 1) {
+    throw new Error("Shared hold claim changed before order binding.");
+  }
+  const releaseKey = `completed:${input.boundOrderGuid}`;
+  const completed = await transaction.run(
+    `UPDATE shared_held_order_claim_records
+     SET state = 'Completed', release_idempotency_key = ?, updated_at_iso = ?
+     WHERE claim_guid = ? AND state = 'Active'
+       AND activate_idempotency_key = ? AND bound_order_guid = ?
+       AND release_idempotency_key IS NULL`,
+    [
+      releaseKey,
+      input.completedAtIso,
+      input.claimGuid,
+      input.activateIdempotencyKey,
+      input.boundOrderGuid,
+    ],
+  );
+  if (completed.changes !== 1) {
+    throw new Error("Shared hold claim changed before completion.");
+  }
+}
+
+/** activate 结果未知但订单已成交时，原子关闭 Prepared fence，防止崩溃恢复重复购物车。 */
+async function supersedePreparedSharedClaimInTransaction(
+  transaction: SqliteConnectionPort,
+  input: Readonly<{
+    claimGuid: string;
+    orderGuid: string;
+    completedAtIso: string;
+  }>,
+): Promise<void> {
+  const supersedeKey = `completed:${input.orderGuid}`;
+  const superseded = await transaction.run(
+    `UPDATE shared_held_order_claim_records
+     SET state = 'Superseded', supersede_idempotency_key = ?, updated_at_iso = ?
+     WHERE claim_guid = ? AND state = 'Prepared'
+       AND activate_idempotency_key IS NULL
+       AND release_idempotency_key IS NULL
+       AND supersede_idempotency_key IS NULL
+       AND bound_order_guid IS NULL`,
+    [supersedeKey, input.completedAtIso, input.claimGuid],
+  );
+  if (superseded.changes !== 1) {
+    throw new Error("Shared hold prepared claim changed before supersede.");
+  }
+}
+
+/**
+ * 现金/批准/混合现金共用：先解析 durable claim 事实，再原子写不可变来源；
+ * claim 已 Active 时在同一事务绑定并 Completed；Prepared（activate 结果未知）
+ * 在订单落地后同事务 Superseded，既保留来源证据也关闭恢复 fence。
+ */
+export async function persistRecalledHoldOrderSourceAndClaim(
+  transaction: SqliteConnectionPort,
+  input: Readonly<{
+    orderGuid: string;
+    holdId: string;
+    recallAttemptId: string;
+    recalledAtIso: string;
+  }>,
+): Promise<void> {
+  const source = await resolveHeldOrderSourceInTransaction(
+    transaction,
+    input.holdId,
+    input.recallAttemptId,
+  );
+  await writeOrderHeldOrderSourceInTransaction(transaction, {
+    orderGuid: input.orderGuid,
+    holdId: input.holdId,
+    claimGuid: source.sourceKind === 1 ? source.claimGuid : null,
+    sourceKind: source.sourceKind,
+    atIso: input.recalledAtIso,
+  });
+  if (
+    source.claimState === "Active" &&
+    source.claimGuid !== null &&
+    source.activateIdempotencyKey !== null
+  ) {
+    await completeSharedClaimInTransaction(transaction, {
+      claimGuid: source.claimGuid,
+      activateIdempotencyKey: source.activateIdempotencyKey,
+      boundOrderGuid: input.orderGuid,
+      completedAtIso: input.recalledAtIso,
+    });
+  } else if (
+    source.claimState === "Prepared" &&
+    source.claimGuid !== null &&
+    source.activateIdempotencyKey === null
+  ) {
+    await supersedePreparedSharedClaimInTransaction(transaction, {
+      claimGuid: source.claimGuid,
+      orderGuid: input.orderGuid,
+      completedAtIso: input.recalledAtIso,
+    });
   }
 }
 
@@ -1229,6 +1632,22 @@ function nonNegativeSafeInteger(value: unknown, label: string): number {
   return numberValue;
 }
 
+function validateCatalogDiscountBasisPoints(value: unknown): number {
+  // 旧挂单快照没有该字段时按零恢复；显式 null 或越界值仍视为损坏快照。
+  if (value === undefined) return 0;
+  if (value === null) {
+    throw new Error("Invalid held catalog discount basis points.");
+  }
+  const basisPoints = nonNegativeSafeInteger(
+    value,
+    "held catalog discount basis points",
+  );
+  if (basisPoints > 10_000) {
+    throw new Error("Invalid held catalog discount basis points.");
+  }
+  return basisPoints;
+}
+
 function validateHeldOrderScope(input: HeldOrderScope): HeldOrderScope {
   return {
     storeCode: nonBlank(input.storeCode, "held order store code"),
@@ -1298,8 +1717,7 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
     const productCode = nonBlank(line.productCode, "held cart product code");
     const lookupCode = nonBlank(line.lookupCode, "held cart lookup code");
     const displayName = nonBlank(line.displayName, "held cart display name");
-    const quantity = nonNegativeSafeInteger(line.quantity, "held cart quantity");
-    if (quantity === 0) throw new Error("Held cart quantity must be positive.");
+    const quantity = heldCartQuantity(line.quantity, "held cart quantity");
     const unitPriceCents = nonNegativeSafeInteger(line.unitPriceCents, "held cart unit price");
     const basePriceSource = line.basePriceSource;
     if (
@@ -1308,6 +1726,12 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
       basePriceSource !== "open-item"
     ) {
       throw new Error("Invalid held cart price source.");
+    }
+    const catalogDiscountBasisPoints = validateCatalogDiscountBasisPoints(
+      line.catalogDiscountBasisPoints,
+    );
+    if (basePriceSource === "open-item" && catalogDiscountBasisPoints > 0) {
+      throw new Error("Held open-item line cannot contain a catalog discount.");
     }
     let syncProvenance: LineSyncProvenance;
     try {
@@ -1324,6 +1748,14 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
     const originalOrderGuid = nullableText(line.originalOrderGuid, "held cart original order");
     const originalOrderDetailGuid = nullableText(line.originalOrderDetailGuid, "held cart original detail");
     const discountState = validatePricingDiscount(line.discountState, kind, unitPriceCents, quantity, basePriceSource);
+    if (
+      catalogDiscountBasisPoints > 0 &&
+      discountState.kind === "promotion"
+    ) {
+      throw new Error(
+        "Held catalog discount cannot coexist with promotion discount state.",
+      );
+    }
     return {
       lineId,
       productCode,
@@ -1333,6 +1765,7 @@ function validatePricingState(value: Record<string, unknown>): PricingCartStateS
       quantity,
       unitPriceCents,
       basePriceSource,
+      catalogDiscountBasisPoints,
       syncProvenance,
       kind,
       returnSourceKey,
@@ -1444,8 +1877,12 @@ function summarizePricingState(state: PricingCartStateSnapshot): Readonly<{
     const gross = BigInt(multiplyCents(line.quantity, line.unitPriceCents, "held cart line gross"));
     const lineDiscount = line.kind === "return"
       ? 0
-      : discountCents(line.discountState, Number(gross));
-    itemCount += BigInt(line.quantity);
+      : discountCents(
+          line.discountState,
+          Number(gross),
+          line.catalogDiscountBasisPoints ?? 0,
+        );
+    itemCount += heldLineItemCount(line.quantity);
     subtotal += line.kind === "return" ? -gross : gross;
     discount += BigInt(lineDiscount);
     actual += line.kind === "return" ? -gross : gross - BigInt(lineDiscount);
@@ -1461,20 +1898,53 @@ function summarizePricingState(state: PricingCartStateSnapshot): Readonly<{
 function discountCents(
   state: PricingCartStateSnapshot["lines"][number]["discountState"],
   gross: number,
+  catalogDiscountBasisPoints: number,
 ): number {
+  // manual-amount:0 是整单折扣的显式人工覆盖，必须先于 catalog 基线处理；
+  // 否则挂单列表摘要会与密文中的购物车及召回后金额不一致。
+  if (state.kind === "manual-amount") {
+    return Math.min(gross, state.cents);
+  }
+  if (state.kind === "manual-percent") {
+    return Math.min(gross, roundRatio(gross, state.basisPoints, 10_000));
+  }
+  if (catalogDiscountBasisPoints > 0) {
+    return Math.min(
+      gross,
+      roundRatio(gross, catalogDiscountBasisPoints, 10_000),
+    );
+  }
+
   switch (state.kind) {
     case "none":
       return 0;
-    case "manual-amount":
     case "promotion":
       return Math.min(gross, state.cents);
-    case "manual-percent":
-      return Math.min(gross, roundRatio(gross, state.basisPoints, 10_000));
   }
 }
 
 function multiplyCents(quantity: number, cents: number, label: string): number {
-  return bigintToSafeInteger(BigInt(quantity) * BigInt(cents), label);
+  // 与 canonical SharedSaleCartV1 一致：整数走 BigInt，称重小数按 C# decimal
+  // AwayFromZero 精确取整（0.29 * 50 = 15，而不是 BigInt 直接抛错）。
+  return multiplyCentsAwayFromZero(quantity, cents, label);
+}
+
+/** 称重小数数量按 1 行计件（CHECK item_count > 0）；整数路径保持原数量求和语义。 */
+function heldLineItemCount(quantity: number): bigint {
+  return BigInt(Number.isSafeInteger(quantity) && quantity > 0 ? quantity : 1);
+}
+
+/** 称重商品允许正有限小数（与 canonical SharedSaleCartV1 一致，上限 1_000_000）。 */
+function heldCartQuantity(value: unknown, label: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > 1_000_000
+  ) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  return value;
 }
 
 /** 与 PricingCart 一致：整数分币百分比在中点向远离零方向取整。 */
@@ -1498,7 +1968,7 @@ function bigintToSafeInteger(value: bigint, label: string): number {
   return Number(value);
 }
 
-function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummary {
+function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummaryWithSynthetic {
   const status = text(row.status);
   if (status !== "Pending" && status !== "Recalling" && status !== "Recalled") {
     throw new Error("Invalid held order status.");
@@ -1510,6 +1980,7 @@ function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummary {
   if (status !== "Pending" && recallingAtIso === null) {
     throw new Error("Invalid recalled held order state.");
   }
+  const isSyntheticSharedClaim = int(row.is_synthetic_shared_claim ?? 0) === 1;
   return {
     holdId: nonBlank(row.hold_id, "held order id"),
     localSequence: nonNegativeSafeInteger(row.local_sequence, "held order sequence"),
@@ -1530,6 +2001,7 @@ function readHeldOrderSummary(row: HeldOrderRecordRow): HeldOrderSummary {
     recallingAtIso: recallingAtIso === null
       ? null
       : canonicalIso(recallingAtIso, "held order recalling time"),
+    ...(isSyntheticSharedClaim ? { isSyntheticSharedClaim: true } : {}),
   };
 }
 
@@ -1577,7 +2049,70 @@ async function decryptHeldOrderPayload(
   } catch {
     throw new Error("Invalid held order payload ciphertext.");
   }
+  if (int(row.is_synthetic_shared_claim ?? 0) === 1) {
+    parsed = mapLegacySyntheticSharedPayload(parsed);
+  }
   return validateHeldOrderPayload(parsed);
+}
+
+/**
+ * 兼容旧版 RemoteClaim synthetic 行曾误存的 SharedSaleCartV1 wire 结构。
+ * 仅 synthetic 标记行可进入；字段仍交给现有严格 validator fail-closed 校验。
+ */
+function mapLegacySyntheticSharedPayload(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.pricingState)) return value;
+  const pricingState = value.pricingState;
+  if (!Array.isArray(pricingState.promotions) || !Array.isArray(pricingState.lines)) {
+    return value;
+  }
+  return {
+    version: value.version,
+    pricingState: {
+      ...pricingState,
+      promotions: pricingState.promotions.map((promotion) => {
+        if (!isRecord(promotion) || !("fixedPriceCents" in promotion)) {
+          return promotion;
+        }
+        const { fixedPriceCents, ...rest } = promotion;
+        return {
+          ...rest,
+          fixedPrice: { currency: "AUD", cents: fixedPriceCents },
+        };
+      }),
+      lines: pricingState.lines.map((line) => {
+        if (!isRecord(line) || !isRecord(line.discountState)) return line;
+        const discount = line.discountState;
+        switch (discount.mode) {
+          case "none":
+            return { ...line, discountState: { kind: "none" } };
+          case "manual-amount":
+            return {
+              ...line,
+              discountState: { kind: "manual-amount", cents: discount.cents },
+            };
+          case "manual-percent":
+            return {
+              ...line,
+              discountState: {
+                kind: "manual-percent",
+                basisPoints: discount.basisPoints,
+              },
+            };
+          case "promotion":
+            return {
+              ...line,
+              discountState: {
+                kind: "promotion",
+                cents: discount.cents,
+                promotionIds: discount.promotionIds,
+              },
+            };
+          default:
+            return line;
+        }
+      }),
+    },
+  };
 }
 
 function validateHeldOrderAudit(

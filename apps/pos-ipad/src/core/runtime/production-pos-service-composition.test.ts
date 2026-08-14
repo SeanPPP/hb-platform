@@ -635,7 +635,10 @@ test("支付成功重打在本地普通订单缺失时回退可信分期详情",
   );
 
   assert.deepEqual(result, { state: "Printed", errorCode: null });
-  assert.deepEqual(installmentRequests.map((request) => request.url), [
+  const installmentRequestUrls = installmentRequests
+    .map((request) => request.url)
+    .filter((url) => url.startsWith("/api/v1/installments/"));
+  assert.deepEqual(installmentRequestUrls, [
     `/api/v1/installments/${installmentGuid}`,
   ]);
   assert.equal(printedBytes.length, 1);
@@ -645,7 +648,12 @@ test("支付成功重打在本地普通订单缺失时回退可信分期详情",
     await services.fulfilment.reprintCurrentReceipt(ordinaryOrder.orderGuid),
     { state: "Printed", errorCode: null },
   );
-  assert.equal(installmentRequests.length, 1);
+  assert.equal(
+    installmentRequests.filter((request) =>
+      request.url.startsWith("/api/v1/installments/"),
+    ).length,
+    1,
+  );
   assert.equal(printedBytes.length, 2);
 });
 
@@ -1882,6 +1890,8 @@ test("销售挂单使用全局主管授权且只执行一次，会话失效取�
 
 test("共享挂单运行时在可信收银员下可创建协调器，API 走生产 transport", async () => {
   const calls: string[] = [];
+  const claimsMineUrl =
+    "/api/v1/held-orders/claims/mine?supportedPayloadVersions=1&supportedPayloadVersions=2";
   const transport: HbposTransport = {
     async request<T>(request: HbposTransportRequest) {
       calls.push(request.url);
@@ -1902,7 +1912,7 @@ test("共享挂单运行时在可信收银员下可创建协调器，API 走生�
   await services.cashierSession.signIn("cashier");
 
   assert.equal(
-    calls.filter((url) => url === "/api/v1/held-orders/claims/mine").length,
+    calls.filter((url) => url === claimsMineUrl).length,
     1,
   );
   assert.equal(typeof services.sharedHeldOrders.api.getCapabilities, "function");
@@ -1911,7 +1921,7 @@ test("共享挂单运行时在可信收银员下可创建协调器，API 走生�
   const reconcile = await coordinator.reconcileClaims();
   assert.deepEqual(reconcile.restoredClaimIds, []);
   assert.deepEqual(reconcile.mismatches, []);
-  assert.ok(calls.includes("/api/v1/held-orders/claims/mine"));
+  assert.ok(calls.includes(claimsMineUrl));
   await services.shutdownBackgroundWork();
 });
 
@@ -4218,7 +4228,10 @@ function createTestComposition(
       ? transport
       : {
           async request<T>(request: HbposTransportRequest) {
-            if (request.url === "/api/v1/held-orders/claims/mine") {
+            if (
+              request.url === "/api/v1/held-orders/claims/mine" ||
+              request.url.startsWith("/api/v1/held-orders/claims/mine?")
+            ) {
               return {
                 status: 200,
                 data: {

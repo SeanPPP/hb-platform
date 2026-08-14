@@ -47,6 +47,8 @@ export type PricingCartLineState = Readonly<{
   quantity: number;
   unitPriceCents: number;
   basePriceSource: Exclude<PriceSource, "promotion">;
+  /** 目录基线折扣；旧快照缺失时由恢复层按 0 处理。 */
+  catalogDiscountBasisPoints?: number;
   /**
    * 可恢复快照必须冻结加入购物车时的服务端售卖身份。
    * 仅旧版快照允许缺失；恢复后不能自行按当前目录补值。

@@ -74,6 +74,8 @@ export type SettingsScreenPresenter = Pick<
   | "requestAppRestart"
   | "requestCatalogReset"
   | "requestDeviceReregistration"
+  | "requestLinklyPair"
+  | "refreshLinklySetup"
   | "refreshSquareDeviceCode"
   | "savePaymentSettings"
   | "savePrinterSettings"
@@ -767,10 +769,16 @@ function PaymentsPane({
     state.square.blockerCode === "SQUARE_CONFIGURATION_MISSING";
   const linklyAvailable =
     state.linkly.available && state.linkly.blockerCode === null;
+  // 缺少公开环境属于可恢复的首次设置态；无效配置与读取失败仍保持关闭。
+  const linklyNeedsInitialSetup =
+    !state.linkly.available &&
+    state.linkly.blockerCode === "LINKLY_CONFIGURATION_MISSING";
+  const linklySelectable =
+    (linklyAvailable || linklyNeedsInitialSetup) &&
+    (!state.linklySetup || linklySelectionReady(state));
   const squareRuntimeDisabled =
     disabled || !squareAvailable || state.paymentProviderDraft !== "square";
-  const linklyDisabled =
-    disabled || !linklyAvailable || state.paymentProviderDraft !== "linkly";
+  const linklySetupDisabled = disabled;
   const squareSetupDisabled =
     disabled ||
     !state.squareSetup.available ||
@@ -840,7 +848,7 @@ function PaymentsPane({
             testID="settings-payment-provider-square"
           />
           <ToggleButton
-            disabled={disabled || !linklyAvailable}
+            disabled={disabled || !linklySelectable}
             label="Linkly"
             onPress={() => presenter.setPaymentProvider("linkly")}
             selected={state.paymentProviderDraft === "linkly"}
@@ -1044,13 +1052,15 @@ function PaymentsPane({
           style={styles.columnCard}
           title="Linkly"
         >
-          <Availability
-            available={linklyAvailable}
-            blockerCode={state.linkly.blockerCode}
-            locale={locale}
-          />
+          {!linklyNeedsInitialSetup || !state.linklySetup ? (
+            <Availability
+              available={linklyAvailable}
+              blockerCode={state.linkly.blockerCode}
+              locale={locale}
+            />
+          ) : null}
           <EnvironmentSelector
-            disabled={linklyDisabled}
+            disabled={linklySetupDisabled}
             environment={state.linklyDraft.environment}
             locale={locale}
             onSelect={(environment) =>
@@ -1059,13 +1069,22 @@ function PaymentsPane({
             prefix="settings-linkly"
           />
           <Text style={styles.sectionCopy}>{t("payments.linklyHint")}</Text>
-          <ActionButton
-            disabled={linklyDisabled}
-            label={t("action.test")}
-            onPress={() => void presenter.testPaymentProvider("linkly")}
-            testID="settings-linkly-test"
-            tone="secondary"
-          />
+          {state.linklySetup ? (
+            <LinklySetupCard
+              disabled={linklySetupDisabled}
+              locale={locale}
+              presenter={presenter}
+              state={state}
+            />
+          ) : (
+            <ActionButton
+              disabled={linklySetupDisabled}
+              label={t("action.test")}
+              onPress={() => void presenter.testPaymentProvider("linkly")}
+              testID="settings-linkly-test"
+              tone="secondary"
+            />
+          )}
         </SectionCard>
       </View>
       <SquarePickerModal
@@ -1159,6 +1178,125 @@ function SquareSummaryMetric({
       <Text style={styles.metricLabel}>{label}</Text>
       <Text numberOfLines={2} style={styles.squareSummaryValue}>
         {value}
+      </Text>
+    </View>
+  );
+}
+
+function LinklySetupCard({
+  disabled,
+  locale,
+  presenter,
+  state,
+}: Readonly<{
+  disabled: boolean;
+  locale: SettingsLocale;
+  presenter: SettingsScreenPresenter;
+  state: SettingsState;
+}>) {
+  const [pairCode, setPairCode] = useState("");
+  const setup = state.linklySetup;
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
+  useEffect(() => {
+    setPairCode("");
+  }, [state.linklyDraft.environment, setup?.pairCodeResetToken]);
+  if (!setup) return null;
+  const health = setup.health.value;
+  const healthReady = linklyHealthReady(state);
+  const storeCredentialsReady = linklyStoreCredentialsReady(state);
+  const terminalPaired = linklyTerminalPaired(state);
+  const healthStatus = linklyHealthStatusText(
+    locale,
+    setup.health.kind,
+    health?.isReady,
+  );
+
+  return (
+    <View style={styles.linklySetupCard} testID="settings-linkly-setup">
+      <View style={styles.squareSummaryRow}>
+        <SquareSummaryMetric
+          label={t("linkly.storeCredentials")}
+          testID="settings-linkly-store-credentials"
+          value={
+            storeCredentialsReady
+              ? `${t("linkly.statusReady")} · ${
+                  health?.storeCode || t("linkly.notAvailable")
+                }`
+              : t("linkly.statusNotReady")
+          }
+        />
+        <SquareSummaryMetric
+          label={t("linkly.currentPairing")}
+          testID="settings-linkly-current-pairing"
+          value={
+            terminalPaired
+              ? `${t("linkly.statusPaired")} · ${
+                  health?.deviceCode || t("linkly.notAvailable")
+                }`
+              : t("linkly.statusUnpaired")
+          }
+        />
+        <SquareSummaryMetric
+          label={t("linkly.backendReady")}
+          testID="settings-linkly-backend-ready"
+          value={healthStatus}
+        />
+      </View>
+      <View style={styles.actionRow}>
+        <ActionButton
+          compact
+          disabled={disabled || setup.health.kind === "loading"}
+          label={t("linkly.refresh")}
+          onPress={() => void presenter.refreshLinklySetup()}
+          testID="settings-linkly-refresh"
+          tone="secondary"
+        />
+        <ActionButton
+          compact
+          disabled={disabled || !healthReady}
+          label={t("action.test")}
+          onPress={() => void presenter.testPaymentProvider("linkly")}
+          testID="settings-linkly-test"
+          tone="secondary"
+        />
+      </View>
+      <FieldLabel label={t("linkly.pairCode")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("linkly.pairCode")}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!disabled}
+        keyboardType="number-pad"
+        maxLength={6}
+        onChangeText={(value) =>
+          setPairCode(value.replace(/[^0-9]/gu, "").slice(0, 6))
+        }
+        style={styles.textInput}
+        testID="settings-linkly-pair-code"
+        value={pairCode}
+      />
+      <Text style={styles.squareFieldHint}>{t("linkly.pairCodeHint")}</Text>
+      <ActionButton
+        compact
+        disabled={
+          disabled ||
+          !storeCredentialsReady ||
+          pairCode.length !== 6
+        }
+        label={t("linkly.pair")}
+        onPress={() => presenter.requestLinklyPair(pairCode)}
+        testID="settings-linkly-pair"
+      />
+      <Text style={styles.linklySetupStatus} testID="settings-linkly-logon-status">
+        {setup.logonTest.status === "passed"
+          ? t("linkly.logonPassed")
+          : t("linkly.logonRequired")}
+      </Text>
+      <Text style={styles.squarePairingNote} testID="settings-linkly-instructions">
+        {t("linkly.instructions")}
       </Text>
     </View>
   );
@@ -1531,6 +1669,76 @@ function squareTokenStatusText(
   return settingsText(
     locale,
     token.value.enabled ? "square.tokenReady" : "square.tokenDisabled",
+  );
+}
+
+function linklyStoreCredentialsReady(
+  state: Pick<SettingsState, "linklySetup">,
+): boolean {
+  const health = state.linklySetup?.health;
+  return Boolean(
+    health?.kind === "ready" &&
+      health.value?.checks.some(
+        (check) =>
+          check.code.trim().toUpperCase() === "STORE_CREDENTIAL" &&
+          check.isReady,
+      ),
+  );
+}
+
+function linklyTerminalPaired(
+  state: Pick<SettingsState, "linklySetup">,
+): boolean {
+  const health = state.linklySetup?.health;
+  const checks = health?.value?.checks ?? [];
+  return Boolean(
+    health?.kind === "ready" &&
+      checks.some(
+        (check) =>
+          check.code.trim().toUpperCase() === "TERMINAL_SECRET" &&
+          check.isReady,
+      ) &&
+      checks.some(
+        (check) =>
+          check.code.trim().toUpperCase() === "TERMINAL_POS_ID" &&
+          check.isReady,
+      ),
+  );
+}
+
+function linklyHealthReady(
+  state: Pick<SettingsState, "linklySetup" | "linklyDraft">,
+): boolean {
+  const setup = state.linklySetup;
+  return Boolean(
+    setup?.health.kind === "ready" &&
+      setup.health.value?.environment === state.linklyDraft.environment &&
+      setup.health.value.isReady === true,
+  );
+}
+
+function linklySelectionReady(
+  state: Pick<SettingsState, "linklySetup" | "linklyDraft">,
+): boolean {
+  const logonTest = state.linklySetup?.logonTest;
+  return (
+    linklyHealthReady(state) &&
+    logonTest?.environment === state.linklyDraft.environment &&
+    logonTest.status === "passed"
+  );
+}
+
+function linklyHealthStatusText(
+  locale: SettingsLocale,
+  kind: NonNullable<SettingsState["linklySetup"]>["health"]["kind"],
+  isReady: boolean | undefined,
+): string {
+  if (kind === "loading") return settingsText(locale, "linkly.statusLoading");
+  if (kind === "failed") return settingsText(locale, "linkly.statusUnavailable");
+  if (kind !== "ready") return settingsText(locale, "linkly.statusUnavailable");
+  return settingsText(
+    locale,
+    isReady === true ? "linkly.statusReady" : "linkly.statusNotReady",
   );
 }
 
@@ -2372,6 +2580,8 @@ function confirmationTitle(
       });
     case "change-payment-settings":
       return settingsText(locale, "confirmation.changePaymentSettings");
+    case "pair-linkly":
+      return settingsText(locale, "confirmation.pairLinkly");
     case "reset-catalog":
       return settingsText(locale, "confirmation.resetCatalog");
     case "reregister-device":
@@ -2400,6 +2610,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "catalog-downloaded",
     "catalog-reset",
     "device-reregister-started",
+    "linkly-paired",
     "payment-settings-saved",
     "payment-test-passed",
     "printer-connected",
@@ -2630,6 +2841,21 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     lineHeight: 19,
     marginTop: 4,
+  },
+  linklySetupCard: {
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 12,
+  },
+  linklySetupStatus: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
+    marginTop: 12,
   },
   squareFieldGroup: { marginTop: 3 },
   squareSelectionRow: {

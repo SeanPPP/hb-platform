@@ -37,8 +37,14 @@ assert.equal(packageLock.packages[""].version, "0.1.0");
 assert.equal(packageJson.main, "index.js");
 assert.equal(packageJson.private, true);
 assert.equal(appEntrySource.trim(), 'import "expo-router/entry";');
-assert.equal(packageJson.scripts.android, "expo run:android");
-assert.equal(packageJson.scripts.ios, "expo run:ios");
+assert.equal(
+  packageJson.scripts.android,
+  "npm run test:react-native-scheduler && expo run:android",
+);
+assert.equal(
+  packageJson.scripts.ios,
+  "npm run test:react-native-scheduler && expo run:ios",
+);
 assert.equal(packageJson.scripts["prebuild:android"], "expo prebuild --platform android");
 assert.equal(packageJson.scripts["prebuild:ios"], "expo prebuild --platform ios");
 

@@ -145,6 +145,26 @@ export const settingsEnglishCopy = {
   "eyebrow.eftpos": "EFTPOS",
   "payments.linklyHint":
     "Handheld POS uses the backend asynchronous Linkly channel; merchant authentication material is not stored here.",
+  "linkly.storeCredentials": "Store credentials",
+  "linkly.currentPairing": "Current device pairing",
+  "linkly.backendReady": "Backend ready",
+  "linkly.notAvailable": "Not available",
+  "linkly.statusLoading": "Checking…",
+  "linkly.statusReady": "Ready",
+  "linkly.statusNotReady": "Not ready",
+  "linkly.statusPaired": "Paired",
+  "linkly.statusUnpaired": "Not paired",
+  "linkly.statusUnavailable": "Unavailable",
+  "linkly.refresh": "Refresh status",
+  "linkly.pairCode": "6-digit Pair Code",
+  "linkly.pairCodeHint":
+    "Enter the six-digit code shown by the terminal.",
+  "linkly.pair": "Pair current terminal",
+  "linkly.logonPassed": "Logon test passed",
+  "linkly.logonRequired":
+    "Pair first, then run a successful logon test before selecting or saving Linkly.",
+  "linkly.instructions":
+    "On the terminal: FUNC → 8880 → OK / Enter. The Pair Code expires shortly; re-pairing replaces the current terminal binding and creates a new code.",
   "payments.save": "Save payment choices",
   "peripherals.title": "Peripherals",
   "peripherals.subtitle":
@@ -212,6 +232,7 @@ export const settingsEnglishCopy = {
   "availability.unavailable": "Runtime unavailable{{blocker}}",
   "confirmation.changeApiAddress": "Change API address\n{{apiBaseUrl}}",
   "confirmation.changePaymentSettings": "Change payment terminal settings",
+  "confirmation.pairLinkly": "Pair the current Linkly terminal",
   "confirmation.resetCatalog": "Reset local catalog",
   "confirmation.reregisterDevice": "Re-register device to {{targetStoreCode}}",
   "confirmation.restartApp": "Restart app safely",
@@ -242,6 +263,14 @@ export const settingsEnglishCopy = {
   "status.invalid-api-address": "Invalid API address",
   "status.invalid-device-registration": "Choose a different valid store",
   "status.load-failed": "Settings load failed",
+  "status.linkly-health-load-failed": "Could not refresh Linkly backend status",
+  "status.linkly-pair-code-invalid": "Enter a six-digit numeric Pair Code",
+  "status.linkly-pair-failed": "Linkly terminal pairing failed",
+  "status.linkly-pair-unknown":
+    "Pairing result unknown; status refreshed and no retry was sent",
+  "status.linkly-paired": "Linkly terminal paired; status refreshed",
+  "status.linkly-setup-required":
+    "Linkly backend must be ready and logon test must pass first",
   "status.payment-settings-invalid":
     "Public payment provider configuration is incomplete",
   "status.payment-settings-save-failed": "Payment settings save failed",
@@ -425,6 +454,25 @@ export const settingsChineseCopy = {
   "eyebrow.eftpos": "刷卡终端",
   "payments.linklyHint":
     "手持 POS 使用后端异步 Linkly 通道。商户与 POS 认证材料不会进入本机普通设置。",
+  "linkly.storeCredentials": "门店云端凭据",
+  "linkly.currentPairing": "当前设备配对",
+  "linkly.backendReady": "后端就绪",
+  "linkly.notAvailable": "不可用",
+  "linkly.statusLoading": "正在检查…",
+  "linkly.statusReady": "就绪",
+  "linkly.statusNotReady": "未就绪",
+  "linkly.statusPaired": "已配对",
+  "linkly.statusUnpaired": "未配对",
+  "linkly.statusUnavailable": "不可用",
+  "linkly.refresh": "刷新状态",
+  "linkly.pairCode": "6 位配对码",
+  "linkly.pairCodeHint": "输入终端显示的六位数字配对码。",
+  "linkly.pair": "配对当前终端",
+  "linkly.logonPassed": "登录测试已通过",
+  "linkly.logonRequired":
+    "请先配对，再通过登录测试，之后才能选择或保存 Linkly。",
+  "linkly.instructions":
+    "在终端上操作：FUNC → 8880 → OK / Enter。配对码短时有效会过期；重新配对会替换当前终端绑定并生成新码。",
   "payments.save": "保存支付终端选择",
   "peripherals.title": "外设",
   "peripherals.subtitle": "发现、连接并验证本机打印机、钱箱与扫描器。",
@@ -489,6 +537,7 @@ export const settingsChineseCopy = {
   "availability.unavailable": "运行时未配置{{blocker}}",
   "confirmation.changeApiAddress": "切换 API 地址\n{{apiBaseUrl}}",
   "confirmation.changePaymentSettings": "切换支付终端配置",
+  "confirmation.pairLinkly": "配对当前 Linkly 终端",
   "confirmation.resetCatalog": "重置本地商品目录",
   "confirmation.reregisterDevice": "重新注册到 {{targetStoreCode}}",
   "confirmation.restartApp": "安全重启应用",
@@ -516,6 +565,14 @@ export const settingsChineseCopy = {
   "status.invalid-api-address": "API 地址格式不安全",
   "status.invalid-device-registration": "请选择不同的有效门店",
   "status.load-failed": "读取设置失败",
+  "status.linkly-health-load-failed": "无法刷新 Linkly 后端状态",
+  "status.linkly-pair-code-invalid": "请输入六位数字配对码",
+  "status.linkly-pair-failed": "Linkly 终端配对失败",
+  "status.linkly-pair-unknown":
+    "配对结果未知；已刷新状态，且未自动重试",
+  "status.linkly-paired": "Linkly 终端已配对；状态已刷新",
+  "status.linkly-setup-required":
+    "Linkly 后端必须先就绪且登录测试通过",
   "status.payment-settings-invalid": "可用支付通道的公开配置不完整",
   "status.payment-settings-save-failed": "支付终端设置保存失败",
   "status.payment-settings-saved": "支付终端设置已保存",

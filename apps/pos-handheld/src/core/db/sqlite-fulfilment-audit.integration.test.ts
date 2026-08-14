@@ -287,7 +287,7 @@ test("真实 SQLite：M32 原有本机履约事实无损升级当前外部订单
      FROM print_jobs WHERE job_id = 'print-before-m33'`,
   );
   assert.deepEqual({ ...row }, {
-    version: 39,
+    version: POS_DATABASE_MIGRATIONS.at(-1)!.version,
     orderGuid: "order-before-m33",
     externalOrderGuid: null,
   });
@@ -353,7 +353,7 @@ test("真实 SQLite：M33 升级后允许分期历史外部订单审计并恢复
   assert.equal(created?.reprintSource, "installment-history");
   assert.equal(claimed?.reprintSource, "installment-history");
   assert.deepEqual({ ...row }, {
-    version: 39,
+    version: POS_DATABASE_MIGRATIONS.at(-1)!.version,
     printExternalOrderGuid: orderGuid,
     auditExternalOrderGuid: orderGuid,
     source: "installment-history",

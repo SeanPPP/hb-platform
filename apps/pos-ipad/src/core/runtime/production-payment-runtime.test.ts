@@ -152,6 +152,60 @@ test("生产支付只公开 presenter/恢复布尔值，启动前和无可信收
   );
 });
 
+test("RecallActive 与同一支付草稿并存时启动保留 binding 并锁住恢复购物车", async () => {
+  const cart = pricedCart();
+  const binding = {
+    kind: "recalled",
+    scope: { storeCode: "S1", deviceCode: "IPAD-1" },
+    holdId: "hold-payment-recovery",
+    recallAttemptId: "attempt-payment-recovery",
+  } as const;
+  const activeCart = new ActivePricingCartSession(
+    new PricingCart(),
+    () => new PricingCart(),
+  );
+  activeCart.blockForRecallRecovery(binding);
+  const baseDatabase = database();
+  const baseDrafts = baseDatabase.paymentDraftRecovery({
+    createOrderGuid: () => "unused-order",
+    createOrderLineGuid: () => "unused-line",
+    createAuditEventId: () => "unused-audit",
+  });
+  const runtime = createProductionPaymentRuntime({
+    database: {
+      ...baseDatabase,
+      paymentDraftRecovery: () => ({
+        ...baseDrafts,
+        async findBlockingRecovery() {
+          return { ...draftRecovery(cart), recallBinding: binding };
+        },
+      }),
+    } as unknown as PosDatabase,
+    repositories: repositories(),
+    encryptor,
+    activeCart,
+    currentCashier: new CurrentCashierSession(),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: {
+      now: () => new Date("2026-07-28T00:00:00.000Z"),
+      nowIso: () => "2026-07-28T00:00:00.000Z",
+    },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: bootstrap(() => undefined),
+    async drainFulfilment() {},
+  });
+
+  await runtime.initializeRecovery();
+  assert.deepEqual(activeCart.read().recallBinding, binding);
+  assert.deepEqual(activeCart.read().cart, cart.snapshot());
+  assert.equal(activeCart.read().terminalRecoveryRequired, false);
+  assert.throws(
+    () => activeCart.increaseLine("line-1"),
+    { code: "ACTIVE_PRICING_CART_BUSY" },
+  );
+});
+
 test("生产支付 facade 基于当前 cashier 的 TakeCash 权限透传现金可用性", async () => {
   const runtime = createProductionPaymentRuntime({
     database: database(),
@@ -1259,6 +1313,7 @@ function draftRecovery(cart: PricingCart): PaymentDraftRecovery {
     },
     cart: cart.snapshot(),
     pricingState: cart.stateSnapshot(),
+    recallBinding: null,
     boundAction: null,
   };
 }

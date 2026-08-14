@@ -162,6 +162,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 105,
           basePriceSource: "manual",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: "REF-PERCENT",
             priceSource: 1,
@@ -181,6 +182,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 500,
           basePriceSource: "catalog",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: null,
             priceSource: 2,
@@ -200,6 +202,7 @@ function payload(): HeldOrderPayloadV1 {
           quantity: 1,
           unitPriceCents: 200,
           basePriceSource: "open-item",
+          catalogDiscountBasisPoints: 0,
           syncProvenance: {
             referenceCode: "REF-OPENITEM",
             priceSource: 0,
@@ -644,6 +647,129 @@ test("真实 SQLite：首版 V2 只接受非空 sale 购物车，规范化 scope
     "SELECT event_id, correlation_id FROM audit_events WHERE event_id = 'audit-trim'",
   );
   assert.deepEqual({ ...savedAudit }, { event_id: "audit-trim", correlation_id: "hold-trim" });
+  await connection.close();
+});
+
+test("真实 SQLite：挂单摘要保留 catalogDiscountBasisPoints", async () => {
+  const { connection, records } = await open();
+  const sourceLine = payload().pricingState.lines[0]!;
+  const baselinePayload = {
+    ...payload(),
+    pricingState: {
+      ...payload().pricingState,
+      promotions: [],
+      lines: [{
+        ...sourceLine,
+        productCode: "P-CATALOG",
+        unitPriceCents: 100,
+        basePriceSource: "catalog",
+        catalogDiscountBasisPoints: 2_000,
+        discountState: { kind: "none" },
+      }],
+    },
+  } as unknown as HeldOrderPayloadV1;
+
+  await records.hold({
+    holdId: "catalog-baseline-hold",
+    scope,
+    heldBy,
+    payload: baselinePayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-catalog-baseline-hold", "ORDER_HOLD"),
+  });
+
+  assert.deepEqual(
+    (await records.listPending(scope, 10)).find(
+      (entry) => entry.holdId === "catalog-baseline-hold",
+    ),
+    {
+      holdId: "catalog-baseline-hold",
+      localSequence: 1,
+      scope,
+      heldBy,
+      status: "Pending",
+      itemCount: 1,
+      subtotalCents: 100,
+      discountCents: 20,
+      actualAmountCents: 80,
+      heldAtIso: nowIso,
+      recallingAtIso: null,
+    },
+  );
+
+  await confirmHoldClear(records, "catalog-baseline-hold");
+  const claimed = await records.claimRecall({
+    holdId: "catalog-baseline-hold",
+    scope,
+    recalledBy: heldBy,
+    recallAttemptId: "attempt-catalog-baseline",
+    recallingAtIso: "2026-07-28T08:01:00.000Z",
+  });
+  assert.equal(
+    claimed?.payload.pricingState.lines[0]?.catalogDiscountBasisPoints,
+    2_000,
+  );
+  await connection.close();
+});
+
+test("真实 SQLite：manual-amount 0 优先覆盖 catalogDiscountBasisPoints", async () => {
+  const { connection, records } = await open();
+  const sourceLine = payload().pricingState.lines[0]!;
+  const manualZeroPayload = {
+    version: 1,
+    pricingState: {
+      revision: 8,
+      mode: "sale",
+      asOfIso: nowIso,
+      promotions: [],
+      lines: [{
+        ...sourceLine,
+        productCode: "P-CATALOG-ZERO",
+        unitPriceCents: 1,
+        basePriceSource: "catalog",
+        catalogDiscountBasisPoints: 10_000,
+        discountState: { kind: "manual-amount", cents: 0 },
+      }],
+    },
+  } as unknown as HeldOrderPayloadV1;
+
+  await records.hold({
+    holdId: "catalog-zero-hold",
+    scope,
+    heldBy,
+    payload: manualZeroPayload,
+    heldAtIso: nowIso,
+    audit: audit("audit-catalog-zero-hold", "ORDER_HOLD"),
+  });
+
+  assert.deepEqual(
+    (await records.listPending(scope, 10)).find(
+      (entry) => entry.holdId === "catalog-zero-hold",
+    ),
+    {
+      holdId: "catalog-zero-hold",
+      localSequence: 1,
+      scope,
+      heldBy,
+      status: "Pending",
+      itemCount: 1,
+      subtotalCents: 1,
+      discountCents: 0,
+      actualAmountCents: 1,
+      heldAtIso: nowIso,
+      recallingAtIso: null,
+    },
+  );
+
+  await confirmHoldClear(records, "catalog-zero-hold");
+  const claimed = await records.claimRecall({
+    holdId: "catalog-zero-hold",
+    scope,
+    recalledBy: heldBy,
+    recallAttemptId: "attempt-catalog-zero",
+    recallingAtIso: "2026-07-28T08:01:00.000Z",
+  });
+  assert.deepEqual(claimed?.payload, manualZeroPayload);
   await connection.close();
 });
 

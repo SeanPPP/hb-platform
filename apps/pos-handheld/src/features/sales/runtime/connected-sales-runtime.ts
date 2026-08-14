@@ -74,6 +74,14 @@ export interface SalesHoldPort {
   hold(cart: CartSnapshot): Promise<void>;
 }
 
+/**
+ * 共享召回购物车的普通 owner release（正常清车路径）。
+ * 组合根注入共享挂单 coordinator；失败必须抛错，购物车与 binding 保持不变。
+ */
+export interface SalesRecalledCartReleasePort {
+  releaseRecalledCart(holdGuid: string): Promise<void>;
+}
+
 export interface SalesLockPort {
   lock(): Promise<void>;
 }
@@ -103,6 +111,7 @@ export type ConnectedSalesRuntimeDependencies = Readonly<{
   identity: ConnectedSalesIdentity;
   hold?: SalesHoldPort;
   lock?: SalesLockPort;
+  releaseRecalledCart?: SalesRecalledCartReleasePort | undefined;
   sessionGuard: ConnectedSalesSessionGuard;
   newTransactionGate: Readonly<{
     canStartNewTransaction(): boolean;
@@ -170,6 +179,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
     private readonly operations: AuthorizedSalesOperationExecutor,
     private readonly preparedCheckoutGate =
       new PreparedCheckoutMutationGate(),
+    private readonly releaseRecalledCart?: SalesRecalledCartReleasePort,
   ) {}
 
   public getSnapshot(): CartSnapshot {
@@ -424,6 +434,22 @@ export class PricingCartSalesAdapter implements SalesCartPort {
   }
 
   public async clearCart(): Promise<void> {
+    const binding = this.activeCart.read().recallBinding;
+    if (binding) {
+      // 共享召回购物车必须先走 owner release；未接线时 fail-closed，不能只清本地 UI。
+      if (!this.releaseRecalledCart) {
+        throw cartMutationRejected(
+          "Unable to clear a recalled cart without a release port.",
+        );
+      }
+      await this.runMutation(
+        SALES_PERMISSIONS.clearCart,
+        "clear-cart",
+        "CART_CLEAR",
+        () => this.releaseRecalledCart!.releaseRecalledCart(binding.holdId),
+      );
+      return;
+    }
     await this.runMutation(
       SALES_PERMISSIONS.clearCart,
       "clear-cart",
@@ -516,6 +542,9 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       displayName: item.displayName,
       quantity: item.quantityFactor,
       unitPrice: createAud(item.retailPriceCents),
+      catalogDiscountBasisPoints: discountRateToBasisPoints(
+        item.discountRate,
+      ),
       syncProvenance: {
         referenceCode: item.referenceCode,
         priceSource: item.priceSource,
@@ -580,6 +609,9 @@ export class PricingCartSalesAdapter implements SalesCartPort {
           lookupCode: item.lookupCode,
           displayName: item.displayName,
           retailPriceCents: item.retailPriceCents,
+          catalogDiscountBasisPoints: discountRateToBasisPoints(
+            item.discountRate,
+          ),
           priceSource: item.priceSource,
         },
       },
@@ -618,7 +650,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       | "CART_LINE_DISCOUNT_CHANGE"
       | "CART_ORDER_DISCOUNT_CHANGE"
       | "CART_CLEAR",
-    operation: () => void,
+    operation: () => void | Promise<void>,
   ): Promise<void> {
     this.preparedCheckoutGate.assertMutable();
     return this.operations.runCartMutation({
@@ -629,7 +661,7 @@ export class PricingCartSalesAdapter implements SalesCartPort {
       operation: () => {
         // 主管授权可能延迟返回；真正写 active cart 前必须再次检查结账围栏。
         this.preparedCheckoutGate.assertMutable();
-        operation();
+        return operation();
       },
     });
   }
@@ -661,6 +693,7 @@ export function createConnectedSalesDependencies(
     input.sessionGuard,
     operations,
     preparedCheckoutGate,
+    input.releaseRecalledCart,
   );
   const workflow = new ConnectedSalesWorkflow(
     cart,
@@ -1398,4 +1431,10 @@ function requiredText(value: string, label: string): string {
 
 function normalizeLookupCode(value: string): string {
   return value.trim().toUpperCase();
+}
+
+/** 目录接口使用 0..1 小数；购物车合同统一保存整数基点。 */
+function discountRateToBasisPoints(discountRate: number | null): number {
+  if (discountRate === null || !Number.isFinite(discountRate)) return 0;
+  return Math.min(10_000, Math.max(0, Math.round(discountRate * 10_000)));
 }

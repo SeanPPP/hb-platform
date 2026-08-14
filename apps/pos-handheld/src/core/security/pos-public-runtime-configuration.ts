@@ -1,4 +1,4 @@
-import { DEFAULT_LOCAL_HBPOS_API_BASE_URL } from "./pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "./pos-api-addresses";
 import type { SecureStorePort } from "./secure-storage";
 
 const THIS_DEVICE_ONLY = Object.freeze({
@@ -173,7 +173,7 @@ export function normalizePublicRuntimeApiBaseUrl(
   if (
     parsed.protocol === "http:" &&
     !isLoopback(parsed.hostname) &&
-    parsed.origin !== DEFAULT_LOCAL_HBPOS_API_BASE_URL
+    !isTrustedLocalHbposApiOrigin(parsed.origin)
   ) {
     throw new Error("Remote API base URL requires HTTPS.");
   }
@@ -261,7 +261,7 @@ export function normalizeTrustedApiOrigins(
         !(
           parsed.protocol === "http:" &&
           (isLoopback(parsed.hostname) ||
-            parsed.origin === DEFAULT_LOCAL_HBPOS_API_BASE_URL)
+            isTrustedLocalHbposApiOrigin(parsed.origin))
         )) ||
       parsed.username ||
       parsed.password ||

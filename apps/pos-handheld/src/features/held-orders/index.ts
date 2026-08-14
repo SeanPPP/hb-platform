@@ -13,13 +13,26 @@ export type {
   HeldOrderAuthorizationPort,
   HeldOrderIdentity,
   HeldOrdersOrchestratorOptions,
+  SharedHeldOrderLocalShareRow,
+  SharedHeldOrderRemoteRow,
+  SharedHeldOrderShareRequestOutcome,
+  SharedHeldOrderTakeViewResult,
+  SharedHeldOrdersViewPort,
 } from "./held-orders-domain";
 
 export { HeldOrdersOrchestrator } from "./held-orders-orchestrator";
 export { HeldOrdersPresenter } from "./held-orders-presenter";
-export type { HeldOrdersPresenterState } from "./held-orders-presenter";
+export type {
+  HeldOrderViewRow,
+  HeldOrderViewStatus,
+  HeldOrdersPresenterState,
+} from "./held-orders-presenter";
 export {
   heldOrdersText,
   resolveHeldOrdersLocale,
 } from "./held-orders-copy";
-export { HELD_ORDERS_MIN_TOUCH_TARGET, HeldOrdersScreen } from "./held-orders-screen";
+export {
+  HELD_ORDERS_AUTO_REFRESH_INTERVAL_MS,
+  HELD_ORDERS_MIN_TOUCH_TARGET,
+  HeldOrdersScreen,
+} from "./held-orders-screen";

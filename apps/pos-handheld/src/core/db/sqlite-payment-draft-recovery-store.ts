@@ -13,6 +13,7 @@ import {
   type PaymentOperation,
   type PaymentProvider,
   type PricingCartStateSnapshot,
+  type RecallActiveBinding,
 } from "../contracts";
 
 import type { SqliteConnectionPort } from "./types";
@@ -33,6 +34,8 @@ export type CreateOrReusePaymentDraftInput = Readonly<{
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
   identity: PaymentDraftIdentity;
+  /** 支付开始于召回购物车时，必须与草稿一起耐久保存精确围栏身份。 */
+  recallBinding: RecallActiveBinding | null;
   /** 仅首次插入保存；canonical fingerprint 故意不包含可变化的当前时间。 */
   soldAtIso: string;
 }>;
@@ -96,6 +99,7 @@ type RecoveryBase = Readonly<{
   identity: PaymentDraftIdentity;
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
   boundAction: RecoveredPaymentBoundAction | null;
 }>;
 
@@ -223,7 +227,17 @@ type BlockingAttemptRow = Readonly<{
 type BoundActionRow = Readonly<{
   action_id: unknown;
   request_signature: unknown;
-  attempt_id: unknown;
+  binding_attempt_id: unknown;
+  binding_idempotency_key: unknown;
+  persisted_attempt_id: unknown;
+  attempt_order_guid: unknown;
+  attempt_idempotency_key: unknown;
+  attempt_provider: unknown;
+  attempt_operation: unknown;
+  attempt_amount_cents: unknown;
+  attempt_state: unknown;
+  tender_count: unknown;
+  matching_tender_count: unknown;
 }>;
 
 /**
@@ -736,6 +750,12 @@ implements PersistedOrderDraftPort {
       if (!order || text(order.state, "payment order state") !== "Draft") {
         throw new Error("Only an untouched Draft payment order can be abandoned.");
       }
+      // 已明确 Declined 且零 tender 的历史仍是不可变账本事实，但不代表存在未决付款。
+      // 复用恢复解析校验每条 binding/attempt 身份；任何其他状态、缺失关联或损坏记录均失败关闭。
+      const unresolvedBoundAction = await readBoundAction(
+        transaction,
+        orderGuid,
+      );
       const usage = await transaction.getFirst<{
         tender_count: unknown;
         attempt_count: unknown;
@@ -747,13 +767,16 @@ implements PersistedOrderDraftPort {
           (SELECT COUNT(*) FROM payment_action_bindings WHERE order_guid = ?) AS action_count`,
         [orderGuid, orderGuid, orderGuid],
       );
+      const tenderCount = integer(usage?.tender_count, "draft tender count");
+      const attemptCount = integer(usage?.attempt_count, "draft attempt count");
+      const actionCount = integer(usage?.action_count, "draft action count");
       if (
-        integer(usage?.tender_count, "draft tender count") !== 0 ||
-        integer(usage?.attempt_count, "draft attempt count") !== 0 ||
-        integer(usage?.action_count, "draft action count") !== 0
+        tenderCount !== 0 ||
+        attemptCount !== actionCount ||
+        unresolvedBoundAction !== null
       ) {
         throw new Error(
-          "Payment draft with tender, attempt, or action binding cannot be abandoned.",
+          "Payment draft with tender or unresolved payment history cannot be abandoned.",
         );
       }
 
@@ -943,6 +966,7 @@ type NormalizedDraft = Readonly<{
   pricingStateJson: string;
   soldAtIso: string;
   originalOrderGuid: string | null;
+  recallBinding: RecallActiveBinding | null;
   fingerprint: string;
 }>;
 
@@ -1128,6 +1152,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
   const pricingState = normalizePricingState(input.pricingState, cart);
   const pricingStateJson = JSON.stringify(pricingState);
   const originalOrderGuid = deriveOriginalOrderGuid(cart);
+  const recallBinding = normalizeRecallBinding(input.recallBinding, identity);
   // soldAtIso 刻意不参与签名：崩溃重放时新进程的 now 不得改变原草稿身份。
   const fingerprint = JSON.stringify({
     version: 2,
@@ -1135,6 +1160,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
     cart,
     pricingState,
     originalOrderGuid,
+    recallBinding,
   });
   return {
     draftId,
@@ -1144,6 +1170,7 @@ function normalizeDraft(input: CreateOrReusePaymentDraftInput): NormalizedDraft 
     pricingStateJson,
     soldAtIso,
     originalOrderGuid,
+    recallBinding,
     fingerprint,
   };
 }
@@ -1152,6 +1179,7 @@ function decodeFingerprint(value: string): Readonly<{
   identity: PaymentDraftIdentity;
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
 }> {
   let parsed: unknown;
   try {
@@ -1170,15 +1198,22 @@ function decodeFingerprint(value: string): Readonly<{
     identity?: PaymentDraftIdentity;
     cart?: CartSnapshot;
     pricingState?: PricingCartStateSnapshot;
+    recallBinding?: RecallActiveBinding | null;
   };
+  const identity = normalizeIdentity(decoded.identity as PaymentDraftIdentity);
   const cart = normalizeCart(decoded.cart as CartSnapshot, false);
   return {
-    identity: normalizeIdentity(decoded.identity as PaymentDraftIdentity),
+    identity,
     cart,
     pricingState: normalizePricingState(
       decoded.pricingState as PricingCartStateSnapshot,
       cart,
       false,
+    ),
+    // 旧版 version 2 指纹没有该可选字段，只能按普通支付恢复；不得猜测挂单身份。
+    recallBinding: normalizeRecallBinding(
+      decoded.recallBinding ?? null,
+      identity,
     ),
   };
 }
@@ -1575,6 +1610,7 @@ async function recoveryBase(
     identity: persistedIdentity,
     cart: decoded.cart,
     pricingState,
+    recallBinding: decoded.recallBinding,
     boundAction,
   };
 }
@@ -1601,32 +1637,133 @@ async function readBoundAction(
   orderGuid: string,
 ): Promise<RecoveredPaymentBoundAction | null> {
   const rows = await transaction.getAll<BoundActionRow>(
-    `SELECT action_id, request_signature, attempt_id
-     FROM payment_action_bindings
-     WHERE order_guid = ?
-     ORDER BY created_at_iso, action_id
-     LIMIT 2`,
+    `SELECT binding.action_id, binding.request_signature,
+       binding.attempt_id AS binding_attempt_id,
+       binding.idempotency_key AS binding_idempotency_key,
+       attempt.attempt_id AS persisted_attempt_id,
+       attempt.order_guid AS attempt_order_guid,
+       attempt.idempotency_key AS attempt_idempotency_key,
+       attempt.provider AS attempt_provider,
+       attempt.operation AS attempt_operation,
+       attempt.amount_cents AS attempt_amount_cents,
+       attempt.state AS attempt_state,
+       (
+         SELECT COUNT(*) FROM order_tenders tender
+         WHERE tender.payment_attempt_id = binding.attempt_id
+       ) AS tender_count,
+       (
+         SELECT COUNT(*) FROM order_tenders tender
+         WHERE tender.payment_attempt_id = attempt.attempt_id
+           AND tender.order_guid = attempt.order_guid
+           AND tender.amount_cents = attempt.amount_cents
+           AND (
+             (attempt.provider IN ('square', 'linkly-cloud') AND tender.method = 'card')
+             OR (attempt.provider = 'voucher' AND tender.method = 'voucher')
+           )
+       ) AS matching_tender_count
+     FROM payment_action_bindings binding
+     LEFT JOIN payment_attempts attempt
+       ON attempt.attempt_id = binding.attempt_id
+     WHERE binding.order_guid = ?
+     ORDER BY binding.created_at_iso, binding.action_id`,
     [orderGuid],
   );
-  if (rows.length > 1) {
+
+  // 先校验每条不可变历史，再忽略可证明安全的终态，避免损坏记录被 SQL 过滤掉。
+  const candidates = rows.flatMap((row) => {
+    const candidate = recoverBoundActionCandidate(row, orderGuid);
+    return candidate ? [candidate] : [];
+  });
+  if (candidates.length > 1) {
     throw new Error("Multiple payment action bindings require support.");
   }
-  const row = rows[0];
-  if (!row) return null;
+  return candidates[0] ?? null;
+}
+
+function recoverBoundActionCandidate(
+  row: BoundActionRow,
+  orderGuid: string,
+): RecoveredPaymentBoundAction | null {
   const identity = parseBoundActionSignature(
     text(row.request_signature, "payment action request signature"),
   );
-  return {
+  const action: RecoveredPaymentBoundAction = {
     actionId: strictId(
       text(row.action_id, "payment action id"),
       "payment action id",
     ),
     attemptId: strictId(
-      text(row.attempt_id, "payment action attempt id"),
+      text(row.binding_attempt_id, "payment action attempt id"),
       "payment action attempt id",
     ),
     ...identity,
   };
+  const bindingIdempotencyKey = text(
+    row.binding_idempotency_key,
+    "payment action idempotency key",
+  );
+  const tenderCount = integer(
+    row.tender_count,
+    "payment action tender count",
+  );
+  const matchingTenderCount = integer(
+    row.matching_tender_count,
+    "matching payment action tender count",
+  );
+  if (
+    tenderCount < 0 ||
+    matchingTenderCount < 0 ||
+    matchingTenderCount > tenderCount
+  ) {
+    throw new Error("Payment action tender history is inconsistent.");
+  }
+
+  const persistedAttemptId = nullableText(row.persisted_attempt_id);
+  if (persistedAttemptId === null) {
+    if (tenderCount !== 0) {
+      throw new Error(
+        "Payment action without attempt unexpectedly has a tender.",
+      );
+    }
+    return action;
+  }
+
+  const state = paymentAttemptState(row.attempt_state);
+  if (
+    action.attemptId !==
+      strictId(persistedAttemptId, "persisted payment attempt id") ||
+    orderGuid !==
+      strictId(
+        text(row.attempt_order_guid, "payment attempt order guid"),
+        "payment attempt order guid",
+      ) ||
+    bindingIdempotencyKey !==
+      text(row.attempt_idempotency_key, "payment attempt idempotency key") ||
+    action.provider !== paymentProvider(row.attempt_provider) ||
+    action.operation !== paymentOperation(row.attempt_operation) ||
+    action.amount.cents !==
+      integer(row.attempt_amount_cents, "payment attempt amount")
+  ) {
+    throw new Error("Payment action binding and attempt identity diverged.");
+  }
+
+  if (state === "Declined") {
+    if (tenderCount !== 0) {
+      throw new Error(
+        "Declined payment action unexpectedly has a tender.",
+      );
+    }
+    return null;
+  }
+  // Approved 已由唯一匹配 tender 消费后不再是未决 action；abandon 仍由订单级 tender 门禁拒绝。
+  if (
+    state === "Approved" &&
+    tenderCount === 1 &&
+    matchingTenderCount === 1
+  ) {
+    return null;
+  }
+  return action;
 }
 
 function parseBoundActionSignature(
@@ -1821,6 +1958,42 @@ function normalizeIdentity(input: PaymentDraftIdentity): PaymentDraftIdentity {
   });
 }
 
+function normalizeRecallBinding(
+  input: RecallActiveBinding | null,
+  identity: PaymentDraftIdentity,
+): RecallActiveBinding | null {
+  if (input === null) return null;
+  if (!input || typeof input !== "object" || input.kind !== "recalled") {
+    throw new TypeError("Payment recall binding is invalid.");
+  }
+  const storeCode = strictText(
+    input.scope?.storeCode,
+    "payment recall store code",
+    64,
+  );
+  const deviceCode = strictId(
+    input.scope?.deviceCode,
+    "payment recall device code",
+  );
+  if (
+    storeCode !== identity.storeCode ||
+    deviceCode !== identity.deviceCode
+  ) {
+    throw new TypeError(
+      "Payment recall binding scope does not match draft identity.",
+    );
+  }
+  return Object.freeze({
+    kind: "recalled",
+    scope: Object.freeze({ storeCode, deviceCode }),
+    holdId: strictId(input.holdId, "payment recall hold id"),
+    recallAttemptId: strictId(
+      input.recallAttemptId,
+      "payment recall attempt id",
+    ),
+  });
+}
+
 function normalizeScope(input: PaymentRecoveryScope): PaymentRecoveryScope {
   return {
     storeCode: strictText(input.storeCode, "payment store code", 64),
@@ -1901,6 +2074,22 @@ function paymentOperation(value: unknown): PaymentOperation {
   const operation = text(value, "payment operation");
   if (operation === "purchase" || operation === "refund") return operation;
   throw new Error("Payment recovery operation is invalid.");
+}
+
+function paymentAttemptState(value: unknown): PaymentAttempt["state"] {
+  const state = text(value, "payment attempt state");
+  if (
+    state === "Created" ||
+    state === "Submitted" ||
+    state === "Pending" ||
+    state === "Approved" ||
+    state === "Declined" ||
+    state === "Cancelled" ||
+    state === "Unknown"
+  ) {
+    return state;
+  }
+  throw new Error("Payment recovery state is invalid.");
 }
 
 function blockingState(value: unknown): PaymentAttempt["state"] {

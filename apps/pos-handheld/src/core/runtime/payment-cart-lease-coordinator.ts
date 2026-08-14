@@ -11,12 +11,14 @@ import {
 import type {
   CartSnapshot,
   PricingCartStateSnapshot,
+  RecallActiveBinding,
 } from "../contracts";
 
 export type PaymentCartRecoveryMaterial = Readonly<{
   checkoutIntentId: string;
   cart: CartSnapshot;
   pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
 }>;
 
 export interface PaymentCartRecoveryMaterialPort {
@@ -139,10 +141,13 @@ implements PaymentCartLeasePort {
 
     const normalized = normalizeRecoveryMaterial(material);
     const current = this.activeCart.read();
-    if (current.terminalRecoveryRequired) {
+    if (
+      current.terminalRecoveryRequired !==
+        (normalized.recallBinding !== null)
+    ) {
       throw paymentLeaseError(
         ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED,
-        "Held-order recovery and payment recovery cannot own the cart together.",
+        "Payment recovery does not match the active held-order fence.",
       );
     }
     if (current.cart.lines.length > 0) {
@@ -154,7 +159,7 @@ implements PaymentCartLeasePort {
 
     const restored = this.activeCart.replace(
       normalized.pricingState,
-      null,
+      normalized.recallBinding,
     );
     assertCartValueMatches(restored.cart, normalized.cart);
     const lease = await this.acquireExact({
@@ -290,7 +295,32 @@ function normalizeRecoveryMaterial(
     checkoutIntentId,
     cart: material.cart,
     pricingState: material.pricingState,
+    recallBinding: normalizeRecallBinding(material.recallBinding),
   };
+}
+
+function normalizeRecallBinding(
+  input: RecallActiveBinding | null,
+): RecallActiveBinding | null {
+  if (input === null) return null;
+  if (!input || typeof input !== "object" || input.kind !== "recalled") {
+    throw paymentLeaseError(
+      "PAYMENT_CART_LEASE_CONFLICT",
+      "Payment recovery recall binding is invalid.",
+    );
+  }
+  return Object.freeze({
+    kind: "recalled",
+    scope: Object.freeze({
+      storeCode: requiredText(input.scope?.storeCode, "recall store code"),
+      deviceCode: requiredText(input.scope?.deviceCode, "recall device code"),
+    }),
+    holdId: requiredText(input.holdId, "recall hold id"),
+    recallAttemptId: requiredText(
+      input.recallAttemptId,
+      "recall attempt id",
+    ),
+  });
 }
 
 function assertHeldMatches(

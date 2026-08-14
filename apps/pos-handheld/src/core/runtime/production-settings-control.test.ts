@@ -898,6 +898,196 @@ test("支付配置之外的危险动作仍由完整待处理数据门禁阻断",
   assert.deepEqual(events, []);
 });
 
+test("Linkly 配对复用 payment configuration transition、pending-data gate，且不重试 unknown", async () => {
+  const events: string[] = [];
+  let pairResult: "completed" | "unknown" = "completed";
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async (
+          environment: "Sandbox" | "Production",
+          pairCode: string,
+        ) => {
+          events.push(`pair:${environment}:${pairCode}`);
+          return { status: pairResult };
+        },
+      },
+      paymentConfigurationTransition: {
+        run: async (operation) => {
+          events.push("transition:start");
+          const result = await operation();
+          events.push("transition:end");
+          return result;
+        },
+      },
+      pendingData: {
+        read: async () => {
+          events.push("pending");
+          return CLEAR;
+        },
+      },
+    }),
+  );
+  const action = {
+    kind: "pair-linkly" as const,
+    environment: "Sandbox" as const,
+    pairCode: "123456",
+  };
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(action, new AbortController().signal),
+    { status: "completed", kind: "pair-linkly" },
+  );
+  assert.deepEqual(events, [
+    "transition:start",
+    "pending",
+    "pair:Sandbox:123456",
+    "transition:end",
+  ]);
+
+  events.length = 0;
+  pairResult = "unknown";
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { ...action, pairCode: "654321" },
+      new AbortController().signal,
+    ),
+    { status: "unknown", kind: "pair-linkly" },
+  );
+  assert.deepEqual(events, [
+    "transition:start",
+    "pending",
+    "pair:Sandbox:654321",
+    "transition:end",
+  ]);
+
+  events.length = 0;
+  const blocked = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => {
+          events.push("unexpected-pair");
+          return { status: "completed" as const };
+        },
+      },
+      pendingData: {
+        read: async () => ({
+          ...CLEAR,
+          paymentConfigurationSensitiveOrderCount: 1,
+        }),
+      },
+    }),
+  );
+  assert.deepEqual(
+    await blocked.executeDangerousAction(
+      action,
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "pending-local-data" },
+  );
+  assert.deepEqual(events, []);
+});
+
+test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单", async () => {
+  let pending: SettingsPendingDataSnapshot = {
+    ...CLEAR,
+    pendingDurableWriteCount: 1,
+    pendingReturnCount: 1,
+    pendingSaleCount: 1,
+  };
+  let pairCalls = 0;
+  let saveCalls = 0;
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => {
+          pairCalls += 1;
+          return { status: "completed" as const };
+        },
+      },
+      paymentConfiguration: {
+        save: async () => {
+          saveCalls += 1;
+        },
+      },
+      pendingData: { read: async () => pending },
+    }),
+  );
+  const signal = new AbortController().signal;
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      {
+        kind: "pair-linkly",
+        environment: "Production",
+        pairCode: "123456",
+      },
+      signal,
+    ),
+    { status: "completed", kind: "pair-linkly" },
+  );
+  assert.deepEqual(
+    await subject.executeDangerousAction(paymentSettingsAction(), signal),
+    { status: "completed", kind: "change-payment-settings" },
+  );
+  assert.equal(pairCalls, 1);
+  assert.equal(saveCalls, 1);
+
+  pending = { ...CLEAR, paymentConfigurationSensitiveOrderCount: 1 };
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      {
+        kind: "pair-linkly",
+        environment: "Production",
+        pairCode: "654321",
+      },
+      signal,
+    ),
+    { status: "blocked", reason: "pending-local-data" },
+  );
+  assert.deepEqual(
+    await subject.executeDangerousAction(paymentSettingsAction(), signal),
+    { status: "blocked", reason: "pending-local-data" },
+  );
+  assert.equal(pairCalls, 1);
+  assert.equal(saveCalls, 1);
+});
+
+test("Linkly 配对 POST 返回后 signal 取消仍保留不可逆 completed 终态", async () => {
+  const controller = new AbortController();
+  let releasePair!: () => void;
+  const pairStarted = new Promise<void>((resolve) => {
+    releasePair = resolve;
+  });
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => {
+          await pairStarted;
+          controller.abort();
+          return { status: "completed" as const };
+        },
+      },
+      pendingData: { read: async () => CLEAR },
+    }),
+  );
+
+  const resultPromise = subject.executeDangerousAction(
+    {
+      kind: "pair-linkly",
+      environment: "Production",
+      pairCode: "123456",
+    },
+    controller.signal,
+  );
+  releasePair();
+
+  assert.deepEqual(await resultPromise, {
+    status: "completed",
+    kind: "pair-linkly",
+  });
+});
+
 test("重启安全决策失败时映射 safety-check-failed", async () => {
   const subject = new ProductionSettingsControl(
     deps({
