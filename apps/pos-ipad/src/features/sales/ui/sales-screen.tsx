@@ -104,11 +104,20 @@ export type SalesCameraScannerControl = Readonly<{
   onScan(value: string): boolean | Promise<boolean>;
 }>;
 
+export type SalesCartProductDetails = Readonly<{
+  barcode: string | null;
+  imageUri: string | null;
+}>;
+
 export type SalesScreenProps = Readonly<{
   presenter: SalesPresenter;
   cameraScanner?: SalesCameraScannerControl;
   locale?: SalesLocale;
   newTransactionGate?: NewTransactionGate;
+  resolveCartProductDetails?: (input: {
+    productCode: string;
+    lookupCode: string;
+  }) => Promise<SalesCartProductDetails | null>;
   resolveCartProductImage?: (input: {
     productCode: string;
     lookupCode: string;
@@ -159,6 +168,7 @@ export function SalesScreen({
   cameraScanner,
   locale: localeOverride,
   newTransactionGate,
+  resolveCartProductDetails,
   resolveCartProductImage,
   onOpenAttendanceAudit,
   onOpenCashDrawer,
@@ -797,6 +807,9 @@ export function SalesScreen({
         onIncrease={handleIncreaseCartLine}
         onRemove={handleRemoveCartLine}
         onSelect={handleSelectCartLine}
+        {...(resolveCartProductDetails
+          ? { resolveProductDetails: resolveCartProductDetails }
+          : {})}
         {...(resolveCartProductImage
           ? { resolveProductImage: resolveCartProductImage }
           : {})}
@@ -810,6 +823,7 @@ export function SalesScreen({
       handleRemoveCartLine,
       handleSelectCartLine,
       openLineEditor,
+      resolveCartProductDetails,
       resolveCartProductImage,
       state.capabilities.cartEditing,
       state.selectedLineId,
@@ -2254,6 +2268,10 @@ type CartLineRowProps = Readonly<{
   onIncrease(lineId: string): void;
   onRemove(lineId: string): void;
   onSelect(lineId: string): void;
+  resolveProductDetails?: (input: {
+    productCode: string;
+    lookupCode: string;
+  }) => Promise<SalesCartProductDetails | null>;
   resolveProductImage?: (input: {
     productCode: string;
     lookupCode: string;
@@ -2276,28 +2294,56 @@ const CartLineRow = memo(function CartLineRow({
   onIncrease,
   onRemove,
   onSelect,
+  resolveProductDetails,
   resolveProductImage,
   t,
 }: CartLineRowProps) {
   const [imageUri, setImageUri] = useState<string | null | undefined>();
+  const [resolvedBarcode, setResolvedBarcode] = useState<
+    string | null | undefined
+  >();
   useEffect(() => {
     setImageUri(undefined);
-    if (!resolveProductImage) return;
+    setResolvedBarcode(undefined);
+    if (!resolveProductDetails && !resolveProductImage) return;
     let active = true;
-    void resolveProductImage({
+    const identity = {
       productCode: item.productCode,
       lookupCode: item.lookupCode,
-    })
+    };
+    const pendingDetails = resolveProductDetails
+      ? resolveProductDetails(identity)
+      : resolveProductImage!(identity).then((resolvedImageUri) => ({
+          barcode: null,
+          imageUri: resolvedImageUri,
+        }));
+    void pendingDetails
       .then((resolved) => {
-        if (active) setImageUri(resolved?.trim() || null);
+        if (!active) return;
+        setImageUri(resolved?.imageUri?.trim() || null);
+        setResolvedBarcode(resolved?.barcode?.trim() || null);
       })
       .catch(() => {
-        if (active) setImageUri(null);
+        if (!active) return;
+        setImageUri(null);
+        setResolvedBarcode(null);
       });
     return () => {
       active = false;
     };
-  }, [item.lookupCode, item.productCode, resolveProductImage]);
+  }, [
+    item.lookupCode,
+    item.productCode,
+    resolveProductDetails,
+    resolveProductImage,
+  ]);
+
+  const itemNumber = item.itemNumber?.trim() || "—";
+  const fallbackLookupCode = item.lookupCode.trim() || "—";
+  const barcode =
+    resolveProductDetails && resolvedBarcode === undefined
+      ? "—"
+      : resolvedBarcode || fallbackLookupCode;
 
   return (
     <PosPressable
@@ -2335,8 +2381,12 @@ const CartLineRow = memo(function CartLineRow({
           <Text numberOfLines={2} style={styles.cartLineName}>
             {item.displayName}
           </Text>
-          <Text numberOfLines={1} style={styles.cartLineCode}>
-            {item.lookupCode || item.productCode}
+          <Text
+            numberOfLines={2}
+            style={styles.cartLineCode}
+            testID={`sales-line-${item.lineId}-identifiers`}
+          >
+            {`${formatCatalogField(t("catalog.itemNumber"), itemNumber, locale)} · ${formatCatalogField(t("catalog.barcode"), barcode, locale)}`}
           </Text>
           <Text style={styles.cartLineUnitPrice}>
             {formatAud(item.unitPrice.cents, locale)}
@@ -2420,10 +2470,12 @@ function cartLineRowPropsEqual(
     previous.onIncrease === next.onIncrease &&
     previous.onRemove === next.onRemove &&
     previous.onSelect === next.onSelect &&
+    previous.resolveProductDetails === next.resolveProductDetails &&
     previous.resolveProductImage === next.resolveProductImage &&
     previous.t === next.t &&
     before.lineId === after.lineId &&
     before.productCode === after.productCode &&
+    before.itemNumber === after.itemNumber &&
     before.lookupCode === after.lookupCode &&
     before.displayName === after.displayName &&
     before.quantity === after.quantity &&

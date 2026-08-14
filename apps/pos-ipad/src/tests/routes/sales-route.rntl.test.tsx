@@ -437,7 +437,7 @@ test("销售功能按钮只调用受保护履约 facade，并完整映射终态"
   await screen.unmount();
 });
 
-test("购物车图片接受目录复核后的相对地址和外部 HTTPS 地址", async () => {
+test("购物车商品详情返回真实条码，并接受目录复核后的可信图片地址", async () => {
   const screen = await render(<SalesRoute />);
   await waitFor(() => {
     expect(screen.getByTestId("sales-screen")).toBeTruthy();
@@ -448,7 +448,15 @@ test("购物车图片接受目录复核后的相对地址和外部 HTTPS 地址"
   };
   mockCatalogFindExact.mockResolvedValue({
     ...identity,
+    barcode: "934000000001",
     productImage: "/media/products/milk.png",
+  });
+
+  await expect(
+    mockSalesScreenProps.resolveCartProductDetails(identity),
+  ).resolves.toEqual({
+    barcode: "934000000001",
+    imageUri: "https://pos.example.test/media/products/milk.png",
   });
 
   await expect(

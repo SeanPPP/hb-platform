@@ -1199,6 +1199,129 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("购物车同时显示货号和目录条码，并在货号更新时刷新行内容", async () => {
+    const initialCart = cartSnapshot();
+    const cart = new ScreenCartPort({
+      ...initialCart,
+      lines: initialCart.lines.map((line) => ({
+        ...line,
+        lookupCode: "LOOKUP-001",
+      })),
+    });
+    let completeProductDetails!: (details: {
+      barcode: string | null;
+      imageUri: string | null;
+    }) => void;
+    const pendingProductDetails = new Promise<{
+      barcode: string | null;
+      imageUri: string | null;
+    }>((resolve) => {
+      completeProductDetails = resolve;
+    });
+    const resolveCartProductDetails = jest.fn(
+      (_input: { productCode: string; lookupCode: string }) =>
+        pendingProductDetails,
+    );
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        resolveCartProductDetails={resolveCartProductDetails}
+        showStatusStrip={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(resolveCartProductDetails).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      screen.getByTestId("sales-line-line-1-identifiers").props.children,
+    ).toBe("货号：I-001 · 条码：—");
+    await act(async () => {
+      completeProductDetails({
+        barcode: "930000000001",
+        imageUri: null,
+      });
+      await pendingProductDetails;
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sales-line-line-1-identifiers").props.children,
+      ).toBe("货号：I-001 · 条码：930000000001");
+    });
+    const identifiers = screen.getByTestId("sales-line-line-1-identifiers");
+    expect(identifiers.props.numberOfLines).toBe(2);
+    expect(resolveCartProductDetails).toHaveBeenCalledWith({
+      productCode: "P-001",
+      lookupCode: "LOOKUP-001",
+    });
+
+    await act(async () => {
+      cart.publish({
+        ...cart.snapshot,
+        revision: cart.snapshot.revision + 1,
+        lines: cart.snapshot.lines.map((line) => ({
+          ...line,
+          itemNumber: "I-002",
+        })),
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sales-line-line-1-identifiers").props.children,
+      ).toBe("货号：I-002 · 条码：930000000001");
+    });
+
+    await screen.rerender(
+      <SalesScreen
+        locale="en"
+        presenter={salesPresenter}
+        resolveCartProductDetails={resolveCartProductDetails}
+        showStatusStrip={false}
+      />,
+    );
+    expect(
+      screen.getByTestId("sales-line-line-1-identifiers").props.children,
+    ).toBe("Item: I-002 · Barcode: 930000000001");
+    expect(resolveCartProductDetails).toHaveBeenCalledTimes(1);
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("目录确认没有独立条码后才回退显示售卖查询码", async () => {
+    const initialCart = cartSnapshot();
+    const cart = new ScreenCartPort({
+      ...initialCart,
+      lines: initialCart.lines.map((line) => ({
+        ...line,
+        lookupCode: "LOOKUP-001",
+      })),
+    });
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        resolveCartProductDetails={async () => ({
+          barcode: null,
+          imageUri: null,
+        })}
+        showStatusStrip={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("sales-line-line-1-identifiers").props.children,
+      ).toBe("货号：I-001 · 条码：LOOKUP-001");
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
   it("购物车按选中、负金额、零金额和普通金额优先级显示单选底色", async () => {
     const baseLine = cartSnapshot().lines[0]!;
     const cart = new ScreenCartPort({

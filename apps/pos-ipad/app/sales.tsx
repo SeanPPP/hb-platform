@@ -30,6 +30,7 @@ import { REMOTE_HISTORY_VIEW_PERMISSION } from "@/features/remote-history";
 import { resolveTrustedProductImageUri } from "@/features/sales/runtime/trusted-product-image-uri";
 import {
   resolveSalesLocale,
+  type SalesCartProductDetails,
   type SalesPresenter,
   SalesScreen,
   type SalesToolbarActionId,
@@ -192,17 +193,22 @@ export default function SalesRoute() {
   const handleSwitchLanguage = useCallback(() => {
     void toggleAppLanguage();
   }, []);
-  const resolveCartProductImage = useCallback(
+  const resolveCartProductDetails = useCallback(
     async (input: Readonly<{ productCode: string; lookupCode: string }>) => {
       const services = runtime.services;
       if (!services) return null;
-      return resolveTrustedCartProductImage({
+      return resolveTrustedCartProductDetails({
         ...input,
         apiBaseUrl: services.apiBaseUrl,
         findExact: services.catalog.findExact,
       });
     },
     [runtime.services],
+  );
+  const resolveCartProductImage = useCallback(
+    async (input: Readonly<{ productCode: string; lookupCode: string }>) =>
+      (await resolveCartProductDetails(input))?.imageUri ?? null,
+    [resolveCartProductDetails],
   );
 
   useEffect(() => clearHidRestoreTimer, [clearHidRestoreTimer]);
@@ -390,6 +396,7 @@ export default function SalesRoute() {
         locale={resolveSalesLocale(i18n.resolvedLanguage ?? i18n.language)}
         newTransactionGate={updateGate}
         onManualInputFocusChange={handleManualInputFocusChange}
+        resolveCartProductDetails={resolveCartProductDetails}
         resolveCartProductImage={resolveCartProductImage}
         onSwitchLanguage={handleSwitchLanguage}
         onToolbarOrderChange={handleToolbarOrderChange}
@@ -645,7 +652,7 @@ function mapSalesUtilityResult(
   }
 }
 
-async function resolveTrustedCartProductImage(input: Readonly<{
+type TrustedCartProductResolverInput = Readonly<{
   productCode: string;
   lookupCode: string;
   apiBaseUrl: string;
@@ -653,11 +660,16 @@ async function resolveTrustedCartProductImage(input: Readonly<{
     | Readonly<{
         productCode: string;
         lookupCode: string;
+        barcode: string | null;
         productImage: string | null;
       }>
     | null
   >;
-}>): Promise<string | null> {
+}>;
+
+async function resolveTrustedCartProductDetails(
+  input: TrustedCartProductResolverInput,
+): Promise<SalesCartProductDetails | null> {
   const productCode = normalizeCatalogIdentity(input.productCode);
   const lookupCode = normalizeCatalogIdentity(input.lookupCode);
   if (!productCode || !lookupCode) return null;
@@ -671,7 +683,16 @@ async function resolveTrustedCartProductImage(input: Readonly<{
     return null;
   }
 
-  return resolveTrustedProductImageUri(match.productImage, input.apiBaseUrl);
+  return {
+    barcode:
+      typeof match.barcode === "string"
+        ? normalizeCatalogIdentity(match.barcode)
+        : null,
+    imageUri: resolveTrustedProductImageUri(
+      match.productImage,
+      input.apiBaseUrl,
+    ),
+  };
 }
 
 function normalizeCatalogIdentity(value: string): string | null {
