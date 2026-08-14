@@ -1,0 +1,2233 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  SETTINGS_APP_UPDATE_PERMISSION,
+  SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+  SETTINGS_CATALOG_RESET_PERMISSION,
+  SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+  SETTINGS_PAYMENT_TERMINAL_PERMISSION,
+  SETTINGS_RECEIPT_PRINTER_PERMISSION,
+  SETTINGS_VIEW_PERMISSION,
+} from "./settings-authorization";
+import {
+  SettingsPresenter,
+  type SettingsCashDrawerTestResult,
+  type SettingsClearSavedPrinterResult,
+  type SettingsControlPort,
+  type SettingsDangerousActionResult,
+  type SettingsDangerousConfirmation,
+  type SettingsPaymentSettingsInput,
+  type SettingsPendingDataSnapshot,
+  type SettingsSnapshot,
+} from "./settings-presenter";
+
+import {
+  DEFAULT_RECEIPT_PRINTER_SETTINGS,
+  type ReceiptPrinterSettings,
+} from "@/core/db/pos-settings-repository";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import {
+  SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES,
+  type SettingsSquareDevice,
+  type SettingsSquareDeviceCode,
+  type SettingsSquareEnvironment,
+  type SettingsSquareLocation,
+  type SettingsSquareTokenStatus,
+} from "@/features/settings/settings-square-setup";
+
+const allPermissions = [
+  SETTINGS_VIEW_PERMISSION,
+  SETTINGS_PAYMENT_TERMINAL_PERMISSION,
+  SETTINGS_RECEIPT_PRINTER_PERMISSION,
+  SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
+  SETTINGS_CATALOG_RESET_PERMISSION,
+  SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+  SETTINGS_APP_UPDATE_PERMISSION,
+] as const;
+
+test("无 View 权限时 fail closed 且不读取任何运行时设置", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = new SettingsPresenter({ permissions: [], port });
+
+  await presenter.load();
+
+  assert.equal(port.loadCalls, 0);
+  assert.equal(presenter.getState().kind, "unauthorized");
+  assert.equal(presenter.getState().statusCode, "permission-required");
+});
+
+test("加载公开配置但不包含 Square/Linkly 密钥字段", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+
+  await presenter.load();
+
+  assert.equal(port.loadCalls, 1);
+  assert.equal(presenter.getState().kind, "ready");
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "https://hotbargain.vip/pos-api",
+  );
+  assert.deepEqual(presenter.getState().squareDraft, {
+    environment: "Production",
+    deviceId: "sq-device-1",
+    locationId: "sq-location-1",
+  });
+  assert.deepEqual(presenter.getState().linklyDraft, {
+    environment: "Production",
+  });
+  assert.equal(presenter.getState().paymentProvider, "square");
+  assert.equal(presenter.getState().paymentProviderDraft, "square");
+  assert.equal(
+    "accessToken" in (presenter.getState().squareDraft as object),
+    false,
+  );
+  assert.equal("secret" in (presenter.getState().linklyDraft as object), false);
+});
+
+test("本机 Square 尚未绑定时仍可从 POS API 加载 token 与 locations", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    paymentProvider: null,
+    square: {
+      available: false,
+      blockerCode: "square-not-configured",
+      environment: "Production",
+      deviceId: "",
+      locationId: "",
+    },
+  };
+  squareSetup.tokenStatus = {
+    environment: "Production",
+    configured: true,
+    enabled: true,
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  squareSetup.locations = [
+    {
+      id: "location-production",
+      name: "Brisbane",
+      status: "ACTIVE",
+      currency: "AUD",
+      country: "AU",
+    },
+  ];
+  const presenter = createPresenter(port);
+
+  await presenter.load();
+  await (
+    presenter as unknown as { loadSquareLocations(): Promise<void> }
+  ).loadSquareLocations();
+
+  const setupState = (
+    presenter.getState() as unknown as {
+      squareSetup: {
+        token: { kind: string; value: SettingsSquareTokenStatus | null };
+        locations: { kind: string; items: readonly SettingsSquareLocation[] };
+      };
+    }
+  ).squareSetup;
+  assert.deepEqual(squareSetup.tokenCalls, ["Production"]);
+  assert.deepEqual(squareSetup.locationCalls, ["Production"]);
+  assert.equal(setupState.token.kind, "ready");
+  assert.equal(setupState.token.value?.enabled, true);
+  assert.equal(setupState.locations.kind, "ready");
+  assert.deepEqual(setupState.locations.items, squareSetup.locations);
+
+  presenter.setPaymentProvider("square");
+  assert.equal(presenter.getState().paymentProviderDraft, "square");
+  await presenter.savePaymentSettings();
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+});
+
+test("Square 远程选项重匹配已保存值，environment/location 变更级联清空", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  squareSetup.locations = [
+    squareLocation("SQ-LOCATION-1", "Brisbane"),
+    squareLocation("sq-location-2", "Gold Coast"),
+  ];
+  squareSetup.devices = [
+    squareDevice("device:sq-device-1", "SQ-LOCATION-1", "Front"),
+  ];
+  squareSetup.deviceCodes = [
+    squareDeviceCode(
+      "device-code-1",
+      "SQ-DEVICE-1",
+      "SQ-LOCATION-1",
+      "Front",
+    ),
+  ];
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  await presenter.loadSquareLocations();
+  assert.equal(
+    presenter.getState().squareSetup.selectedLocationId,
+    "SQ-LOCATION-1",
+  );
+  assert.equal(presenter.getState().squareDraft.locationId, "SQ-LOCATION-1");
+
+  await presenter.loadSquareDevices();
+  assert.deepEqual(
+    squareSetup.deviceCalls.map(({ environment, locationId }) => ({
+      environment,
+      locationId,
+    })),
+    [{ environment: "Production", locationId: "SQ-LOCATION-1" }],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceId,
+    "sq-device-1",
+  );
+  assert.equal(presenter.getState().squareDraft.deviceId, "sq-device-1");
+
+  await presenter.loadSquareDeviceCodes();
+  assert.deepEqual(
+    squareSetup.deviceCodeCalls.map(({ environment, locationId }) => ({
+      environment,
+      locationId,
+    })),
+    [{ environment: "Production", locationId: "SQ-LOCATION-1" }],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceCodeId,
+    "device-code-1",
+  );
+
+  presenter.setSquareLocationId("sq-location-2");
+  assert.equal(presenter.getState().squareSetup.selectedDeviceId, "");
+  assert.equal(presenter.getState().squareDraft.deviceId, "");
+  assert.equal(presenter.getState().squareSetup.devices.kind, "idle");
+  assert.equal(presenter.getState().squareSetup.deviceCodes.kind, "idle");
+
+  presenter.setSquareEnvironment("Sandbox");
+  assert.equal(presenter.getState().squareDraft.locationId, "");
+  assert.equal(presenter.getState().squareSetup.selectedLocationId, "");
+  assert.equal(presenter.getState().squareSetup.locations.kind, "idle");
+  assert.equal(presenter.getState().squareSetup.deviceCodes.kind, "disabled");
+});
+
+test("Sandbox 单 location 自动加载设备、合并官方测试设备并重匹配保存值", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  const savedTestDevice = SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES[0];
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    square: {
+      ...current.square,
+      environment: "Sandbox",
+      locationId: "saved-sandbox-location",
+      deviceId: `device:${savedTestDevice.id}`,
+    },
+  };
+  squareSetup.tokenStatus = {
+    environment: "Sandbox",
+    configured: true,
+    enabled: true,
+    updatedAt: null,
+  };
+  squareSetup.locations = [
+    squareLocation("sandbox-location", "Sandbox Store"),
+  ];
+  squareSetup.devices = [
+    squareDevice(
+      `device:${savedTestDevice.id}`,
+      "sandbox-location",
+      "Duplicate server test device",
+    ),
+  ];
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  await presenter.loadSquareLocations();
+
+  assert.deepEqual(
+    squareSetup.deviceCalls.map(({ environment, locationId }) => ({
+      environment,
+      locationId,
+    })),
+    [{ environment: "Sandbox", locationId: "sandbox-location" }],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedLocationId,
+    "sandbox-location",
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceId,
+    savedTestDevice.id,
+  );
+  assert.equal(
+    presenter.getState().squareSetup.devices.items.length,
+    SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES.length,
+  );
+  assert.equal(presenter.getState().squareSetup.deviceCodes.kind, "disabled");
+  assert.equal(squareSetup.deviceCodeCalls.length, 0);
+});
+
+test("Sandbox 首次配置自动选中成功测试终端并允许进入保存确认", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    paymentProvider: null,
+    square: {
+      ...current.square,
+      available: false,
+      blockerCode: "SQUARE_CONFIGURATION_MISSING",
+      deviceId: "",
+      locationId: "",
+    },
+  };
+  squareSetup.tokenStatus = {
+    environment: "Sandbox",
+    configured: true,
+    enabled: true,
+    updatedAt: null,
+  };
+  squareSetup.locations = [
+    squareLocation("sandbox-location", "Sandbox Store"),
+  ];
+  squareSetup.devices = [];
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setSquareEnvironment("Sandbox");
+  await presenter.loadSquareLocations();
+
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceId,
+    SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES[0].id,
+  );
+  presenter.setPaymentProvider("square");
+  await presenter.savePaymentSettings();
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+});
+
+test("Square 丢弃旧 environment 响应，destroy abort 后不转成失败态", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  const productionLocations = deferred<readonly SettingsSquareLocation[]>();
+  const sandboxLocations = deferred<readonly SettingsSquareLocation[]>();
+  squareSetup.tokenHandler = async (environment) => ({
+    environment,
+    configured: true,
+    enabled: true,
+    updatedAt: null,
+  });
+  squareSetup.locationHandler = (environment) =>
+    environment === "Production"
+      ? productionLocations.promise
+      : sandboxLocations.promise;
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  const productionLoad = presenter.loadSquareLocations();
+  await Promise.resolve();
+  presenter.setSquareEnvironment("Sandbox");
+  const sandboxLoad = presenter.loadSquareLocations();
+  sandboxLocations.resolve([
+    squareLocation("sandbox-current", "Current Sandbox"),
+  ]);
+  await sandboxLoad;
+  productionLocations.resolve([
+    squareLocation("production-late", "Late Production"),
+  ]);
+  await productionLoad;
+
+  assert.deepEqual(
+    presenter.getState().squareSetup.locations.items.map(({ id }) => id),
+    ["sandbox-current"],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.token.value?.environment,
+    "Sandbox",
+  );
+
+  const abortPort = new FakeSettingsPort();
+  const abortSetup = new FakeSquareSetupControlPort();
+  abortPort.squareSetup = abortSetup;
+  let abortObserved = false;
+  abortSetup.locationHandler = (_environment, signal) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          abortObserved = true;
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        },
+        { once: true },
+      );
+    });
+  const abortPresenter = createPresenter(abortPort);
+  await abortPresenter.load();
+  const abortedLoad = abortPresenter.loadSquareLocations();
+  await Promise.resolve();
+  abortPresenter.destroy();
+  await abortedLoad;
+
+  assert.equal(abortObserved, true);
+  assert.equal(abortPresenter.getState().squareSetup.locations.kind, "loading");
+});
+
+test("Square 仅允许保存当前 location 已加载且未禁用的 device", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  squareSetup.locations = [
+    squareLocation("sq-location-1", "Brisbane"),
+  ];
+  squareSetup.devices = [
+    squareDevice("device-disabled", "sq-location-1", "Disabled", "DISABLED"),
+    squareDevice("device-enabled", "sq-location-1", "Enabled", "ACTIVE"),
+  ];
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.loadSquareLocations();
+  await presenter.loadSquareDevices();
+
+  presenter.setSquareDeviceId("device-disabled");
+  await presenter.savePaymentSettings();
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+
+  presenter.setSquareDeviceId("device-outside-list");
+  await presenter.savePaymentSettings();
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+
+  presenter.setSquareDeviceId("device-enabled");
+  await presenter.savePaymentSettings();
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+});
+
+test("Production Device Code 创建后手动刷新；PAIRED 只重载并选中设备不自动保存", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  squareSetup.locations = [
+    squareLocation("sq-location-1", "Brisbane"),
+  ];
+  squareSetup.devices = [
+    squareDevice("sq-device-1", "sq-location-1", "Old device"),
+  ];
+  squareSetup.deviceCodes = [];
+  squareSetup.createdDeviceCode = squareDeviceCode(
+    "device-code-new",
+    null,
+    "sq-location-1",
+    "Front register",
+    "UNPAIRED",
+  );
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.loadSquareLocations();
+  await presenter.loadSquareDevices();
+  await presenter.loadSquareDeviceCodes();
+
+  assert.equal(
+    presenter.getState().squareDeviceCodeNameDraft,
+    "HBPOS Terminal",
+  );
+  presenter.setSquareDeviceCodeNameDraft(" Front register ");
+  await presenter.createSquareDeviceCode();
+  assert.deepEqual(
+    squareSetup.createDeviceCodeCalls.map(
+      ({ environment, locationId, name }) => ({
+        environment,
+        locationId,
+        name,
+      }),
+    ),
+    [
+      {
+        environment: "Production",
+        locationId: "sq-location-1",
+        name: "Front register",
+      },
+    ],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceCodeId,
+    "device-code-new",
+  );
+
+  squareSetup.devices = [
+    squareDevice("sq-device-paired", "sq-location-1", "Paired device"),
+  ];
+  squareSetup.refreshedDeviceCode = squareDeviceCode(
+    "device-code-new",
+    "sq-device-paired",
+    "sq-location-1",
+    "Front register",
+    "PAIRED",
+  );
+  await presenter.refreshSquareDeviceCode();
+
+  assert.deepEqual(
+    squareSetup.refreshDeviceCodeCalls.map(
+      ({ environment, deviceCodeId }) => ({ environment, deviceCodeId }),
+    ),
+    [{ environment: "Production", deviceCodeId: "device-code-new" }],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceId,
+    "sq-device-paired",
+  );
+  assert.equal(presenter.getState().squareDraft.deviceId, "sq-device-paired");
+  assert.equal(presenter.getState().confirmation, null);
+  assert.deepEqual(port.savedPayments, []);
+
+  presenter.setSquareEnvironment("Sandbox");
+  await presenter.createSquareDeviceCode();
+  await presenter.refreshSquareDeviceCode();
+  assert.equal(squareSetup.createDeviceCodeCalls.length, 1);
+  assert.equal(squareSetup.refreshDeviceCodeCalls.length, 1);
+  assert.equal(presenter.getState().squareSetup.deviceCodes.kind, "disabled");
+});
+
+test("Device Code A 配对后的迟到设备响应不会覆盖已切换到 Code B 的 draft", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  squareSetup.locations = [
+    squareLocation("sq-location-1", "Brisbane"),
+  ];
+  squareSetup.devices = [
+    squareDevice("sq-device-current", "sq-location-1", "Current device"),
+  ];
+  squareSetup.deviceCodes = [
+    squareDeviceCode(
+      "device-code-a",
+      "sq-device-current",
+      "sq-location-1",
+      "Code A",
+      "UNPAIRED",
+    ),
+    squareDeviceCode(
+      "device-code-b",
+      null,
+      "sq-location-1",
+      "Code B",
+      "UNPAIRED",
+    ),
+  ];
+  squareSetup.refreshedDeviceCode = squareDeviceCode(
+    "device-code-a",
+    "sq-device-a",
+    "sq-location-1",
+    "Code A",
+    "PAIRED",
+  );
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.loadSquareLocations();
+  await presenter.loadSquareDevices();
+  await presenter.loadSquareDeviceCodes();
+  presenter.setSquareDeviceCodeId("device-code-a");
+  presenter.setSquareDeviceId("sq-device-current");
+
+  const pairedDevices = deferred<readonly SettingsSquareDevice[]>();
+  squareSetup.deviceHandler = async () => pairedDevices.promise;
+  const refresh = presenter.refreshSquareDeviceCode();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(squareSetup.deviceCalls.length, 2);
+
+  presenter.setSquareDeviceCodeId("device-code-b");
+  pairedDevices.resolve([
+    squareDevice("sq-device-current", "sq-location-1", "Current device"),
+    squareDevice("sq-device-a", "sq-location-1", "Paired A device"),
+  ]);
+  await refresh;
+
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceCodeId,
+    "device-code-b",
+  );
+  assert.deepEqual(
+    presenter.getState().squareSetup.devices.items.map(({ id }) => id),
+    ["sq-device-current", "sq-device-a"],
+  );
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceId,
+    "sq-device-current",
+  );
+  assert.equal(presenter.getState().squareDraft.deviceId, "sq-device-current");
+});
+
+test("Device Code 创建 POST 在途时锁定作用域、合并重复调用并在完成后解锁", async () => {
+  const port = new FakeSettingsPort();
+  const squareSetup = new FakeSquareSetupControlPort();
+  port.squareSetup = squareSetup;
+  squareSetup.locations = [
+    squareLocation("sq-location-1", "Brisbane"),
+    squareLocation("sq-location-2", "Gold Coast"),
+  ];
+  const createdDeviceCode = deferred<SettingsSquareDeviceCode>();
+  squareSetup.createDeviceCodeHandler = async () =>
+    createdDeviceCode.promise;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.loadSquareLocations();
+
+  const firstCreate = presenter.createSquareDeviceCode();
+  const duplicateCreate = presenter.createSquareDeviceCode();
+  const callCountWhilePending = squareSetup.createDeviceCodeCalls.length;
+  const busyWhilePending = presenter.getState().busy;
+  presenter.setSquareEnvironment("Sandbox");
+  presenter.setSquareLocationId("sq-location-2");
+  presenter.setPaymentProvider("linkly");
+  const stateWhilePending = presenter.getState();
+
+  createdDeviceCode.resolve(
+    squareDeviceCode(
+      "device-code-created",
+      null,
+      "sq-location-1",
+      "HBPOS Terminal",
+      "UNPAIRED",
+    ),
+  );
+  await Promise.all([firstCreate, duplicateCreate]);
+
+  assert.equal(callCountWhilePending, 1);
+  assert.equal(busyWhilePending, true);
+  assert.equal(stateWhilePending.squareDraft.environment, "Production");
+  assert.equal(stateWhilePending.squareDraft.locationId, "sq-location-1");
+  assert.equal(stateWhilePending.paymentProviderDraft, "square");
+  assert.equal(presenter.getState().busy, false);
+  assert.equal(
+    presenter.getState().squareSetup.selectedDeviceCodeId,
+    "device-code-created",
+  );
+
+  presenter.setSquareLocationId("sq-location-2");
+  presenter.setPaymentProvider("linkly");
+  assert.equal(presenter.getState().squareDraft.locationId, "sq-location-2");
+  assert.equal(presenter.getState().paymentProviderDraft, "linkly");
+});
+
+test("Device Code 列表或刷新在途时不插入创建请求", async () => {
+  const listPort = new FakeSettingsPort();
+  const listSetup = new FakeSquareSetupControlPort();
+  listPort.squareSetup = listSetup;
+  listSetup.locations = [squareLocation("sq-location-1", "Brisbane")];
+  listSetup.createdDeviceCode = squareDeviceCode(
+    "unexpected-create-from-list",
+    null,
+    "sq-location-1",
+    "Unexpected",
+    "UNPAIRED",
+  );
+  const listPresenter = createPresenter(listPort);
+  await listPresenter.load();
+  await listPresenter.loadSquareLocations();
+  const listedCodes = deferred<readonly SettingsSquareDeviceCode[]>();
+  listSetup.deviceCodeHandler = async () => listedCodes.promise;
+
+  const listInFlight = listPresenter.loadSquareDeviceCodes();
+  await Promise.resolve();
+  await listPresenter.createSquareDeviceCode();
+  listedCodes.resolve([]);
+  await listInFlight;
+
+  assert.equal(listSetup.createDeviceCodeCalls.length, 0);
+
+  const refreshPort = new FakeSettingsPort();
+  const refreshSetup = new FakeSquareSetupControlPort();
+  refreshPort.squareSetup = refreshSetup;
+  refreshSetup.locations = [squareLocation("sq-location-1", "Brisbane")];
+  refreshSetup.deviceCodes = [
+    squareDeviceCode(
+      "device-code-refresh",
+      "sq-device-1",
+      "sq-location-1",
+      "Refresh",
+      "UNPAIRED",
+    ),
+  ];
+  refreshSetup.createdDeviceCode = squareDeviceCode(
+    "unexpected-create-from-refresh",
+    null,
+    "sq-location-1",
+    "Unexpected",
+    "UNPAIRED",
+  );
+  const refreshPresenter = createPresenter(refreshPort);
+  await refreshPresenter.load();
+  await refreshPresenter.loadSquareLocations();
+  await refreshPresenter.loadSquareDeviceCodes();
+  refreshPresenter.setSquareDeviceCodeId("device-code-refresh");
+  const refreshedCode = deferred<SettingsSquareDeviceCode>();
+  refreshSetup.refreshDeviceCodeHandler = async () => refreshedCode.promise;
+
+  const refreshInFlight = refreshPresenter.refreshSquareDeviceCode();
+  await Promise.resolve();
+  await refreshPresenter.createSquareDeviceCode();
+  refreshedCode.resolve(
+    squareDeviceCode(
+      "device-code-refresh",
+      "sq-device-1",
+      "sq-location-1",
+      "Refresh",
+      "UNPAIRED",
+    ),
+  );
+  await refreshInFlight;
+
+  assert.equal(refreshSetup.createDeviceCodeCalls.length, 0);
+});
+
+test("Square locations/devices 空列表或失败均不清除本机绑定", async () => {
+  const emptyLocationPort = new FakeSettingsPort();
+  const emptyLocationSetup = new FakeSquareSetupControlPort();
+  emptyLocationPort.squareSetup = emptyLocationSetup;
+  emptyLocationSetup.locations = [];
+  const emptyLocationPresenter = createPresenter(emptyLocationPort);
+  await emptyLocationPresenter.load();
+  await emptyLocationPresenter.loadSquareLocations();
+
+  assert.equal(
+    emptyLocationPresenter.getState().square.locationId,
+    "sq-location-1",
+  );
+  assert.equal(
+    emptyLocationPresenter.getState().squareDraft.locationId,
+    "sq-location-1",
+  );
+  assert.equal(
+    emptyLocationPresenter.getState().squareSetup.locations.kind,
+    "empty",
+  );
+
+  emptyLocationSetup.locationHandler = async () => {
+    throw new Error("locations unavailable");
+  };
+  await emptyLocationPresenter.loadSquareLocations();
+  assert.equal(
+    emptyLocationPresenter.getState().squareDraft.locationId,
+    "sq-location-1",
+  );
+  assert.equal(
+    emptyLocationPresenter.getState().squareSetup.locations.kind,
+    "failed",
+  );
+
+  const emptyDevicePort = new FakeSettingsPort();
+  const emptyDeviceSetup = new FakeSquareSetupControlPort();
+  emptyDevicePort.squareSetup = emptyDeviceSetup;
+  emptyDeviceSetup.locations = [
+    squareLocation("sq-location-1", "Brisbane"),
+  ];
+  emptyDeviceSetup.devices = [];
+  const emptyDevicePresenter = createPresenter(emptyDevicePort);
+  await emptyDevicePresenter.load();
+  await emptyDevicePresenter.loadSquareLocations();
+  await emptyDevicePresenter.loadSquareDevices();
+  assert.equal(
+    emptyDevicePresenter.getState().squareDraft.deviceId,
+    "sq-device-1",
+  );
+  assert.equal(
+    emptyDevicePresenter.getState().squareSetup.devices.kind,
+    "empty",
+  );
+
+  emptyDeviceSetup.deviceHandler = async () => {
+    throw new Error("devices unavailable");
+  };
+  await emptyDevicePresenter.loadSquareDevices();
+  assert.equal(
+    emptyDevicePresenter.getState().squareDraft.deviceId,
+    "sq-device-1",
+  );
+  assert.equal(
+    emptyDevicePresenter.getState().squareSetup.devices.kind,
+    "failed",
+  );
+});
+
+test("运行时快照即使夹带额外敏感字段也只按白名单进入 state", async () => {
+  const port = new FakeSettingsPort();
+  const clean = snapshot();
+  port.snapshotValue = {
+    ...clean,
+    hardware: {
+      ...clean.hardware,
+      scannerCredential: "scanner-credential-should-not-enter-state",
+    },
+    linkly: {
+      ...clean.linkly,
+      secret: "linkly-secret-should-not-enter-state",
+    },
+    printer: {
+      ...clean.printer,
+      accessToken: "printer-token-should-not-enter-state",
+    },
+    square: {
+      ...clean.square,
+      accessToken: "square-token-should-not-enter-state",
+      blockerCode: "SQUARE_ACCESS_TOKEN_ABC123",
+    },
+  } as unknown as SettingsSnapshot;
+  const presenter = createPresenter(port);
+
+  await presenter.load();
+
+  const serialized = JSON.stringify(presenter.getState());
+  assert.equal(
+    presenter.getState().square.blockerCode,
+    "invalid-provider-config",
+  );
+  for (const sensitive of [
+    "authorization",
+    "scannerCredential",
+    "secret",
+    "accessToken",
+    "SQUARE_ACCESS_TOKEN_ABC123",
+    "should-not-enter-state",
+  ]) {
+    assert.equal(serialized.includes(sensitive), false);
+  }
+});
+
+test("Square/Linkly 与打印机保存按精确权限执行并使用稳定状态码", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setSquareEnvironment("Sandbox");
+  presenter.setSquareLocationId(" sq-location-2 ");
+  presenter.setSquareDeviceId(" sq-device-2 ");
+  presenter.setLinklyEnvironment("Sandbox");
+  presenter.setPaymentProvider("square");
+  await presenter.testPaymentProvider("square");
+  assert.deepEqual(port.paymentTests, [
+    {
+      provider: "square",
+      input: {
+        provider: "square",
+        square: {
+          environment: "Sandbox",
+          locationId: "sq-location-2",
+          deviceId: "sq-device-2",
+        },
+        linkly: null,
+      },
+    },
+  ]);
+  await presenter.savePaymentSettings();
+
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+  assert.deepEqual(port.savedPayments, []);
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.savedPayments, [
+    {
+      provider: "square",
+      square: {
+        environment: "Sandbox",
+        locationId: "sq-location-2",
+        deviceId: "sq-device-2",
+      },
+      linkly: null,
+    },
+  ]);
+  assert.equal(presenter.getState().statusCode, "payment-settings-saved");
+
+  presenter.setPrinterEnabled(false);
+  presenter.setPrinterPeripheralId(" printer-2 ");
+  presenter.setPrinterPaper("58mm");
+  presenter.setPrinterLocale("zh-CN");
+  await presenter.savePrinterSettings();
+
+  assert.deepEqual(port.savedPrinters, [
+    {
+      ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
+      printEnabled: false,
+      peripheralId: "printer-2",
+      paper: "58mm",
+      locale: "zh-CN",
+    },
+  ]);
+  assert.equal(presenter.getState().statusCode, "printer-settings-saved");
+});
+
+test("钱箱测试先保存当前 draft，再单次执行受控动作并区分三种结果", async () => {
+  for (const [outcome, expectedStatus] of [
+    ["completed", "cash-drawer-test-passed"],
+    ["unknown", "cash-drawer-test-unknown"],
+    ["failed", "cash-drawer-test-failed"],
+  ] as const) {
+    const port = new FakeSettingsPort();
+    port.cashDrawerTestResult = { status: outcome, errorCode: null };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    presenter.setPrinterPeripheralId(" printer-current ");
+    presenter.setDrawerEnabled(true);
+
+    await presenter.testCashDrawer();
+
+    assert.deepEqual(port.printerEvents, [
+      "save:printer-current:true",
+      "test-cash-drawer",
+    ]);
+    assert.equal(port.cashDrawerTestCalls, 1);
+    assert.equal(presenter.getState().statusCode, expectedStatus);
+  }
+});
+
+test("钱箱测试保存失败时不执行硬件动作，缺少能力时也明确失败", async () => {
+  const saveFailurePort = new FakeSettingsPort();
+  saveFailurePort.failPrinterSave = true;
+  const saveFailurePresenter = createPresenter(saveFailurePort);
+  await saveFailurePresenter.load();
+  saveFailurePresenter.setPrinterPeripheralId("printer-1");
+  saveFailurePresenter.setDrawerEnabled(true);
+
+  await saveFailurePresenter.testCashDrawer();
+
+  assert.equal(saveFailurePort.cashDrawerTestCalls, 0);
+  assert.equal(
+    saveFailurePresenter.getState().statusCode,
+    "cash-drawer-test-failed",
+  );
+
+  const unavailablePort = new FakeSettingsPort();
+  unavailablePort.testCashDrawer = undefined;
+  const unavailablePresenter = createPresenter(unavailablePort);
+  await unavailablePresenter.load();
+
+  await unavailablePresenter.testCashDrawer();
+
+  assert.deepEqual(unavailablePort.savedPrinters, []);
+  assert.equal(
+    unavailablePresenter.getState().statusCode,
+    "cash-drawer-test-failed",
+  );
+});
+
+test("清除打印机区分完整成功、已清除但断开失败和持久化失败", async () => {
+  const completedPort = new FakeSettingsPort();
+  const completedPresenter = createPresenter(completedPort);
+  await completedPresenter.load();
+  completedPresenter.setPrinterPeripheralId("printer-1");
+
+  await completedPresenter.clearSavedPrinter();
+
+  assert.equal(completedPort.clearSavedPrinterCalls, 1);
+  assert.equal(completedPresenter.getState().printer.peripheralId, null);
+  assert.equal(
+    completedPresenter.getState().hardware.printerStatus,
+    "connected",
+  );
+  assert.equal(completedPresenter.getState().statusCode, "printer-cleared");
+
+  const disconnectFailurePort = new FakeSettingsPort();
+  disconnectFailurePort.clearSavedPrinterResult = {
+    status: "cleared-disconnect-failed",
+    errorCode: "PRINTER_DISCONNECT_FAILED",
+  };
+  const disconnectFailurePresenter = createPresenter(disconnectFailurePort);
+  await disconnectFailurePresenter.load();
+  disconnectFailurePresenter.setPrinterPeripheralId("printer-2");
+
+  await disconnectFailurePresenter.clearSavedPrinter();
+
+  assert.equal(
+    disconnectFailurePresenter.getState().printer.peripheralId,
+    null,
+  );
+  assert.equal(
+    disconnectFailurePresenter.getState().hardware.printerStatus,
+    "connected",
+  );
+  assert.equal(
+    disconnectFailurePresenter.getState().statusCode,
+    "printer-cleared-disconnect-failed",
+  );
+
+  const saveFailurePort = new FakeSettingsPort();
+  saveFailurePort.failClearSavedPrinter = true;
+  const saveFailurePresenter = createPresenter(saveFailurePort);
+  await saveFailurePresenter.load();
+  saveFailurePresenter.setPrinterPeripheralId("printer-kept");
+
+  await saveFailurePresenter.clearSavedPrinter();
+
+  assert.equal(
+    saveFailurePresenter.getState().printer.peripheralId,
+    "printer-kept",
+  );
+  assert.equal(
+    saveFailurePresenter.getState().statusCode,
+    "printer-clear-failed",
+  );
+});
+
+test("扫描打印机时 preferred 优先，其余按名称和 ID 稳定排序", async () => {
+  const port = new FakeSettingsPort();
+  port.printerDevices = [
+    {
+      id: "printer-z",
+      name: "Beta",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+    {
+      id: "printer-b",
+      name: "Alpha",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+    {
+      id: "printer-preferred",
+      name: " Printer001 ",
+      transport: "bluetooth-le",
+      preferred: true,
+    },
+    {
+      id: "printer-a",
+      name: "Alpha",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+  ];
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  await presenter.scanPrinters();
+
+  assert.deepEqual(presenter.getState().printerDevices, [
+    {
+      id: "printer-preferred",
+      name: "Printer001",
+      transport: "bluetooth-le",
+      preferred: true,
+    },
+    {
+      id: "printer-a",
+      name: "Alpha",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+    {
+      id: "printer-b",
+      name: "Alpha",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+    {
+      id: "printer-z",
+      name: "Beta",
+      transport: "bluetooth-le",
+      preferred: false,
+    },
+  ]);
+});
+
+for (const [nativeCode, expectedStatus] of [
+  [
+    "PRINTER_BLUETOOTH_PERMISSION_REQUIRED",
+    "printer-bluetooth-permission-required",
+  ],
+  [
+    "PRINTER_BLUETOOTH_AUTHORIZATION_PENDING",
+    "printer-bluetooth-authorization-pending",
+  ],
+  ["PRINTER_BLUETOOTH_RESTRICTED", "printer-bluetooth-restricted"],
+  ["PRINTER_BLUETOOTH_POWERED_OFF", "printer-bluetooth-powered-off"],
+] as const) {
+  test(`蓝牙扫描错误 ${nativeCode} 保留为专属界面状态`, async () => {
+    const port = new FakeSettingsPort();
+    port.printerScanError = Object.assign(new Error(nativeCode), {
+      code: nativeCode,
+    });
+    const presenter = createPresenter(port);
+    await presenter.load();
+
+    await presenter.scanPrinters();
+
+    assert.equal(presenter.getState().statusCode, expectedStatus);
+  });
+}
+
+test("连接打印机成功后保存当前 draft 与 UUID", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setPrinterEnabled(false);
+  presenter.setPrinterPaper("58mm");
+  presenter.setPrinterLocale("zh-CN");
+
+  await presenter.connectPrinter(" printer-2 ");
+
+  assert.deepEqual(port.connectedPrinterIds, ["printer-2"]);
+  assert.deepEqual(port.savedPrinters, [
+    {
+      ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
+      peripheralId: "printer-2",
+      paper: "58mm",
+      locale: "zh-CN",
+    },
+  ]);
+  assert.equal(presenter.getState().printer.peripheralId, "printer-2");
+  assert.equal(presenter.getState().hardware.printerStatus, "connected");
+  assert.equal(presenter.getState().statusCode, "printer-connected");
+});
+
+test("连接失败与已连接但保存失败使用不同状态且保留真实硬件状态", async () => {
+  const connectFailurePort = new FakeSettingsPort();
+  connectFailurePort.failPrinterConnect = true;
+  connectFailurePort.snapshotValue = {
+    ...snapshot(),
+    hardware: {
+      ...snapshot().hardware,
+      printerStatus: "disconnected",
+    },
+  };
+  const connectFailurePresenter = createPresenter(connectFailurePort);
+  await connectFailurePresenter.load();
+
+  await connectFailurePresenter.connectPrinter("printer-connect-fails");
+
+  assert.deepEqual(connectFailurePort.connectedPrinterIds, [
+    "printer-connect-fails",
+  ]);
+  assert.deepEqual(connectFailurePort.savedPrinters, []);
+  assert.equal(
+    connectFailurePresenter.getState().printer.peripheralId,
+    null,
+  );
+  assert.equal(
+    connectFailurePresenter.getState().hardware.printerStatus,
+    "disconnected",
+  );
+  assert.equal(
+    connectFailurePresenter.getState().statusCode,
+    "printer-connect-failed",
+  );
+
+  const saveFailurePort = new FakeSettingsPort();
+  saveFailurePort.failPrinterSave = true;
+  saveFailurePort.snapshotValue = {
+    ...snapshot(),
+    hardware: {
+      ...snapshot().hardware,
+      printerStatus: "disconnected",
+    },
+  };
+  const saveFailurePresenter = createPresenter(saveFailurePort);
+  await saveFailurePresenter.load();
+
+  await saveFailurePresenter.connectPrinter("printer-save-fails");
+
+  assert.deepEqual(saveFailurePort.connectedPrinterIds, [
+    "printer-save-fails",
+  ]);
+  assert.equal(saveFailurePort.savedPrinters.length, 1);
+  assert.equal(
+    saveFailurePort.savedPrinters[0]?.peripheralId,
+    "printer-save-fails",
+  );
+  assert.equal(
+    saveFailurePresenter.getState().printer.peripheralId,
+    "printer-save-fails",
+  );
+  assert.equal(
+    saveFailurePresenter.getState().hardware.printerStatus,
+    "connected",
+  );
+  assert.equal(
+    saveFailurePresenter.getState().statusCode,
+    "printer-connected-save-failed",
+  );
+});
+
+test("Square 不可用时仍可单独保存 Linkly 环境", async () => {
+  const port = new FakeSettingsPort();
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    square: {
+      available: false,
+      blockerCode: "square-not-configured",
+      environment: "Production",
+      deviceId: "",
+      locationId: "",
+    },
+    paymentProvider: null,
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setPaymentProvider("linkly");
+  presenter.setLinklyEnvironment("Sandbox");
+  await presenter.savePaymentSettings();
+
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.savedPayments, [
+    {
+      provider: "linkly",
+      square: null,
+      linkly: { environment: "Sandbox" },
+    },
+  ]);
+  assert.equal(presenter.getState().statusCode, "payment-settings-saved");
+});
+
+test("Square 与 Linkly 同时可用但未显式选择时支付保持 fail closed", async () => {
+  const port = new FakeSettingsPort();
+  port.snapshotValue = { ...snapshot(), paymentProvider: null };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  assert.equal(presenter.getState().paymentProvider, null);
+  assert.equal(presenter.getState().paymentProviderDraft, null);
+
+  await presenter.savePaymentSettings();
+  await presenter.testPaymentProvider("square");
+
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+  assert.deepEqual(port.paymentTests, []);
+  assert.deepEqual(port.savedPayments, []);
+});
+
+test("显式切换到 Linkly 时只保存 Linkly，不能依赖提供方顺序", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setPaymentProvider("linkly");
+  presenter.setLinklyEnvironment("Sandbox");
+  await presenter.testPaymentProvider("linkly");
+  await presenter.savePaymentSettings();
+  await presenter.confirmDangerousAction();
+
+  const expected = {
+    provider: "linkly" as const,
+    square: null,
+    linkly: { environment: "Sandbox" as const },
+  };
+  assert.deepEqual(port.paymentTests, [
+    { provider: "linkly", input: expected },
+  ]);
+  assert.deepEqual(port.savedPayments, [expected]);
+  assert.equal(presenter.getState().paymentProvider, "linkly");
+  assert.equal(presenter.getState().paymentProviderDraft, "linkly");
+});
+
+test("快照选择不可用提供方时清空活动选择，且不可再次选中", async () => {
+  const port = new FakeSettingsPort();
+  const current = snapshot();
+  port.snapshotValue = {
+    ...current,
+    paymentProvider: "square",
+    square: {
+      ...current.square,
+      blockerCode: "square-not-configured",
+    },
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  assert.equal(presenter.getState().paymentProvider, null);
+  assert.equal(presenter.getState().paymentProviderDraft, null);
+
+  presenter.setPaymentProvider("square");
+  await presenter.savePaymentSettings();
+
+  assert.equal(presenter.getState().paymentProviderDraft, null);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "payment-settings-invalid");
+});
+
+test("API 切换、目录重置、设备重注册与应用重启必须先确认", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("https://staging.example.com/pos-api/");
+  assert.equal(presenter.requestApiAddressChange(), true);
+  assert.equal(port.apiAddressChanges.length, 0);
+  assert.equal(presenter.getState().confirmation?.kind, "change-api-address");
+  await presenter.confirmDangerousAction();
+  assert.deepEqual(port.apiAddressChanges, [
+    "https://staging.example.com/pos-api",
+  ]);
+
+  assert.equal(presenter.requestCatalogReset(), true);
+  assert.equal(port.catalogResetCalls, 0);
+  await presenter.confirmDangerousAction();
+  assert.equal(port.catalogResetCalls, 1);
+
+  presenter.setReregisterStoreCode(" BNE-02 ");
+  presenter.setTerminalName(" iPad Front ");
+  assert.equal(presenter.requestDeviceReregistration(), true);
+  assert.equal(port.reregistrations.length, 0);
+  await presenter.confirmDangerousAction();
+  assert.deepEqual(port.reregistrations, [
+    { targetStoreCode: "BNE-02", terminalName: "iPad Front" },
+  ]);
+
+  assert.equal(presenter.requestAppRestart(), true);
+  assert.equal(port.restartCalls, 0);
+  await presenter.confirmDangerousAction();
+  assert.equal(port.restartCalls, 1);
+  assert.equal(port.dangerousActionCalls, 4);
+});
+
+test("任何待同步、未决支付、活动购物车或耐久写入都会阻断危险操作并保留本地数据", async () => {
+  const pendingCases: SettingsPendingDataSnapshot[] = [
+    safePending({ paymentConfigurationSensitiveOrderCount: 1 }),
+    safePending({ pendingSaleCount: 1 }),
+    safePending({ pendingReturnCount: 1 }),
+    safePending({ unresolvedPaymentCount: 1 }),
+    safePending({ pendingDurableWriteCount: 1 }),
+    safePending({ hasActiveCart: true }),
+    safePending({ hasSyncOrAuditInFlight: true }),
+    safePending({ hasFulfilmentInFlight: true }),
+  ];
+
+  for (const pending of pendingCases) {
+    const port = new FakeSettingsPort();
+    port.pending = pending;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    assert.equal(presenter.requestCatalogReset(), true);
+
+    await presenter.confirmDangerousAction();
+
+    assert.equal(port.catalogResetCalls, 0);
+    assert.equal(port.dangerousActionCalls, 1);
+    assert.equal(presenter.getState().statusCode, "pending-local-data");
+    assert.equal(presenter.getState().confirmation, null);
+    assert.deepEqual(port.pending, pending);
+  }
+});
+
+test("未决支付会阻断支付配置切换且不会持久化新环境", async () => {
+  const port = new FakeSettingsPort();
+  port.pending = safePending({ unresolvedPaymentCount: 1 });
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setSquareEnvironment("Sandbox");
+  presenter.setSquareLocationId("sq-location-1");
+  presenter.setSquareDeviceId("sq-device-1");
+  await presenter.savePaymentSettings();
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "change-payment-settings",
+  );
+
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.savedPayments, []);
+  assert.equal(presenter.getState().statusCode, "pending-local-data");
+  assert.equal(presenter.getState().square.environment, "Production");
+});
+
+test("安全检查失败时 fail closed，异常详情不会进入 UI 状态", async () => {
+  const port = new FakeSettingsPort();
+  port.failSafety = true;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setReregisterStoreCode("BNE-02");
+  presenter.requestDeviceReregistration();
+
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.reregistrations, []);
+  assert.equal(port.dangerousActionCalls, 1);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("Bearer secret"),
+    false,
+  );
+});
+
+test("确认期间锁定底层设置与其他确认，取消后才恢复编辑", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  const originalApiAddress = presenter.getState().apiAddressDraft;
+
+  assert.equal(presenter.requestCatalogReset(), true);
+  assert.equal(presenter.selectPane("payments"), false);
+  presenter.setApiAddressDraft("https://should-not-apply.example.com");
+  assert.equal(presenter.getState().apiAddressDraft, originalApiAddress);
+  assert.equal(presenter.requestAppRestart(), false);
+  assert.equal(presenter.getState().confirmation?.kind, "reset-catalog");
+
+  presenter.cancelConfirmation();
+  assert.equal(presenter.selectPane("payments"), true);
+  presenter.setApiAddressDraft("https://allowed.example.com");
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "https://allowed.example.com",
+  );
+});
+
+test("destroy 会 abort 等待中的扫码并让端口释放硬件监听", async () => {
+  const port = new FakeSettingsPort();
+  port.holdScannerUntilAbort = true;
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  const testInFlight = presenter.testScanner();
+  await Promise.resolve();
+  presenter.destroy();
+  await testInFlight;
+
+  assert.equal(port.scannerAbortObserved, true);
+});
+
+test("API 地址拒绝凭据、query 与 fragment，且不会打开确认框", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  for (const invalid of [
+    "not-a-url",
+    "http://example.com/pos-api",
+    "https://user:pass@example.com/pos-api",
+    "https://example.com/pos-api?token=secret",
+    "https://example.com/pos-api#secret",
+  ]) {
+    presenter.setApiAddressDraft(invalid);
+    assert.equal(presenter.requestApiAddressChange(), false);
+    assert.equal(presenter.getState().statusCode, "invalid-api-address");
+    assert.equal(presenter.getState().confirmation, null);
+  }
+
+  presenter.setApiAddressDraft("http://192.168.31.246:5159/pos-api/");
+  assert.equal(presenter.requestApiAddressChange(), true);
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "change-api-address",
+    apiBaseUrl: "http://192.168.31.246:5159/pos-api",
+  });
+});
+
+test("测试候选 API 只检查规范地址并显示结果，不切换当前地址", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("http://192.168.31.246:5159/");
+  await presenter.testApiAddress();
+
+  assert.deepEqual(port.apiAddressTests, ["http://192.168.31.246:5159"]);
+  assert.deepEqual(port.apiAddressChanges, []);
+  assert.equal(
+    presenter.getState().apiBaseUrl,
+    "https://hotbargain.vip/pos-api",
+  );
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "http://192.168.31.246:5159",
+  );
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "api-health-check-passed");
+
+  port.failApiHealth = true;
+  await presenter.testApiAddress();
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "http://192.168.31.246:5159",
+  );
+  assert.equal(presenter.getState().statusCode, "api-health-check-failed");
+});
+
+test("候选 API 健康检查失败时保留旧地址", async () => {
+  const port = new FakeSettingsPort();
+  port.failApiHealth = true;
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  presenter.setApiAddressDraft("https://offline.example.com/pos-api");
+  assert.equal(presenter.requestApiAddressChange(), true);
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.apiAddressChanges, []);
+  assert.equal(
+    presenter.getState().apiAddressDraft,
+    "https://hotbargain.vip/pos-api",
+  );
+  assert.equal(
+    presenter.getState().apiBaseUrl,
+    "https://hotbargain.vip/pos-api",
+  );
+  assert.equal(presenter.getState().statusCode, "api-health-check-failed");
+});
+
+test("目录下载与硬件测试使用单航班并返回安全结果", async () => {
+  let releaseCatalog!: () => void;
+  const port = new FakeSettingsPort();
+  port.catalogHold = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  const firstDownload = presenter.downloadCatalog();
+  const secondDownload = presenter.downloadCatalog();
+  assert.equal(firstDownload, secondDownload);
+  assert.equal(port.catalogDownloadCalls, 1);
+  releaseCatalog();
+  await firstDownload;
+  assert.equal(presenter.getState().catalog.snapshotId, "catalog-new");
+
+  await presenter.testPrinter();
+  await presenter.testScanner();
+
+  assert.equal(port.printerTestCalls, 1);
+  assert.equal(port.scannerTestCalls, 1);
+  assert.equal(
+    presenter.getState().hardware.lastScannerValue,
+    "••••0001 · 12 chars",
+  );
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("930000000001"),
+    false,
+  );
+});
+
+test("设置呈现器立即恢复共享目录进度，销毁只退订且不取消刷新", async () => {
+  let releaseCatalog!: () => void;
+  const port = new FakeSettingsPort();
+  port.catalogHold = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress({
+      currentStep: "products",
+      elapsedMilliseconds: 76_000,
+      overallPercent: 35,
+      steps: [
+        { step: "prepare", percent: 100 },
+        {
+          step: "products",
+          percent: 25,
+          completedItemCount: 500,
+          totalItemCount: 2_000,
+          completedPageCount: 1,
+          totalPageCount: 4,
+        },
+        { step: "promotions", percent: 0 },
+        { step: "activate", percent: 0 },
+      ],
+    }),
+  });
+  const presenter = createPresenter(port);
+
+  const recoveredRefresh = presenter.getState().catalogRefresh;
+  assert.equal(recoveredRefresh.kind, "running");
+  assert.equal(
+    recoveredRefresh.kind === "running"
+      ? recoveredRefresh.progress.elapsedMilliseconds
+      : null,
+    76_000,
+  );
+  await presenter.load();
+
+  const download = presenter.downloadCatalog();
+  await Promise.resolve();
+  presenter.destroy();
+
+  assert.equal(port.catalogRefreshListenerCount, 0);
+  assert.equal(port.catalogDownloadSignal?.aborted, false);
+  releaseCatalog();
+  await download;
+});
+
+test("共享目录刷新状态持续同步；成功更新摘要，失败只暴露稳定安全码", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  port.publishCatalogRefresh({
+    kind: "success",
+    storeCode: "BNE-01",
+    summary: {
+      snapshotId: "catalog-background",
+      catalogVersion: "v-background",
+      itemCount: 81,
+      activatedAt: "2026-07-29T01:00:00.000Z",
+    },
+    progress: catalogProgress({
+      currentStep: "activate",
+      elapsedMilliseconds: 91_000,
+      overallPercent: 100,
+      steps: [
+        { step: "prepare", percent: 100 },
+        { step: "products", percent: 100 },
+        { step: "promotions", percent: 100 },
+        { step: "activate", percent: 100 },
+      ],
+    }),
+  });
+
+  assert.equal(presenter.getState().catalog.snapshotId, "catalog-background");
+  assert.equal(presenter.getState().catalog.itemCount, 81);
+  assert.equal(presenter.getState().catalogRefresh.kind, "success");
+
+  port.publishCatalogRefresh({
+    kind: "failed",
+    storeCode: "BNE-01",
+    errorCode: "catalog-refresh-network-failed",
+    progress: catalogProgress({
+      elapsedMilliseconds: 94_000,
+    }),
+  });
+  assert.equal(presenter.getState().catalogRefresh.kind, "failed");
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("Bearer secret"),
+    false,
+  );
+});
+
+test("目录刷新中阻断所有会重绑运行时的危险操作，但不锁定页签", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress(),
+  });
+
+  presenter.setApiAddressDraft("https://next.example.test/pos-api");
+  assert.equal(presenter.requestApiAddressChange(), false);
+  assert.equal(presenter.requestCatalogReset(), false);
+  await presenter.savePaymentSettings();
+  presenter.setReregisterStoreCode("BNE-02");
+  assert.equal(presenter.requestDeviceReregistration(), false);
+  assert.equal(presenter.requestAppRestart(), false);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.selectPane("payments"), true);
+  assert.equal(port.dangerousActionCalls, 0);
+});
+
+test("确认后目录刷新才开始时，执行前再次 fail closed", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setApiAddressDraft("https://next.example.test/pos-api");
+  assert.equal(presenter.requestApiAddressChange(), true);
+
+  port.publishCatalogRefresh({
+    kind: "running",
+    storeCode: "BNE-01",
+    progress: catalogProgress(),
+  });
+  await presenter.confirmDangerousAction();
+
+  assert.equal(port.dangerousActionCalls, 0);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
+});
+
+test("缺少细分权限时写操作 fail closed", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = new SettingsPresenter({
+    permissions: [SETTINGS_VIEW_PERMISSION],
+    port,
+  });
+  await presenter.load();
+
+  presenter.setSquareEnvironment("Sandbox");
+  await presenter.savePaymentSettings();
+  presenter.setPrinterEnabled(false);
+  await presenter.savePrinterSettings();
+  presenter.requestCatalogReset();
+  presenter.setReregisterStoreCode("BNE-02");
+  presenter.requestDeviceReregistration();
+
+  assert.deepEqual(port.savedPayments, []);
+  assert.deepEqual(port.savedPrinters, []);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "permission-required");
+});
+
+function createPresenter(port: FakeSettingsPort): SettingsPresenter {
+  return new SettingsPresenter({ permissions: allPermissions, port });
+}
+
+function safePending(
+  patch: Partial<SettingsPendingDataSnapshot> = {},
+): SettingsPendingDataSnapshot {
+  return {
+    hasActiveCart: false,
+    hasFulfilmentInFlight: false,
+    hasSyncOrAuditInFlight: false,
+    paymentConfigurationSensitiveOrderCount: 0,
+    pendingDurableWriteCount: 0,
+    pendingReturnCount: 0,
+    pendingSaleCount: 0,
+    unresolvedPaymentCount: 0,
+    ...patch,
+  };
+}
+
+class FakeSettingsPort implements SettingsControlPort {
+  public squareSetup: FakeSquareSetupControlPort | undefined;
+  public loadCalls = 0;
+  public safetyCalls = 0;
+  public dangerousActionCalls = 0;
+  public catalogDownloadCalls = 0;
+  public catalogResetCalls = 0;
+  public printerTestCalls = 0;
+  public cashDrawerTestCalls = 0;
+  public clearSavedPrinterCalls = 0;
+  public scannerTestCalls = 0;
+  public restartCalls = 0;
+  public catalogHold: Promise<void> | null = null;
+  public catalogDownloadSignal: AbortSignal | null = null;
+  public catalogRefreshListenerCount = 0;
+  private catalogRefreshState: CatalogRefreshState = { kind: "idle" };
+  private readonly catalogRefreshListeners = new Set<() => void>();
+  public failSafety = false;
+  public failApiHealth = false;
+  public pending = safePending();
+  public snapshotValue: SettingsSnapshot | null = null;
+  public holdScannerUntilAbort = false;
+  public scannerAbortObserved = false;
+  public failPrinterConnect = false;
+  public failPrinterSave = false;
+  public failClearSavedPrinter = false;
+  public printerScanError: unknown = null;
+  public cashDrawerTestResult: SettingsCashDrawerTestResult = {
+    status: "completed",
+    errorCode: null,
+  };
+  public clearSavedPrinterResult: SettingsClearSavedPrinterResult = {
+    status: "completed",
+    errorCode: null,
+  };
+  public readonly apiAddressChanges: string[] = [];
+  public readonly apiAddressTests: string[] = [];
+  public readonly connectedPrinterIds: string[] = [];
+  public readonly savedPayments: SettingsPaymentSettingsInput[] = [];
+  public readonly paymentTests: Readonly<{
+    provider: "square" | "linkly";
+    input: SettingsPaymentSettingsInput;
+  }>[] = [];
+  public readonly savedPrinters: ReceiptPrinterSettings[] = [];
+  public readonly printerEvents: string[] = [];
+  public printerDevices: readonly Readonly<{
+    id: string;
+    name: string;
+    transport: string;
+    preferred: boolean;
+  }>[] = [];
+  public readonly reregistrations: {
+    targetStoreCode: string;
+    terminalName?: string;
+  }[] = [];
+
+  public async loadSnapshot(): Promise<SettingsSnapshot> {
+    this.loadCalls += 1;
+    return this.snapshotValue ?? snapshot();
+  }
+
+  public getCatalogRefreshState() {
+    return this.catalogRefreshState;
+  }
+
+  public subscribeCatalogRefresh(listener: () => void): () => void {
+    this.catalogRefreshListeners.add(listener);
+    this.catalogRefreshListenerCount = this.catalogRefreshListeners.size;
+    return () => {
+      this.catalogRefreshListeners.delete(listener);
+      this.catalogRefreshListenerCount = this.catalogRefreshListeners.size;
+    };
+  }
+
+  public publishCatalogRefresh(
+    state: CatalogRefreshState,
+  ): void {
+    this.catalogRefreshState = state;
+    for (const listener of this.catalogRefreshListeners) listener();
+  }
+
+  public async testApiAddress(apiBaseUrl: string): Promise<boolean> {
+    this.apiAddressTests.push(apiBaseUrl);
+    return !this.failApiHealth;
+  }
+
+  public async executeDangerousAction(
+    action: SettingsDangerousConfirmation,
+  ): Promise<SettingsDangerousActionResult> {
+    this.dangerousActionCalls += 1;
+    if (this.failSafety) {
+      return {
+        status: "blocked" as const,
+        reason: "safety-check-failed" as const,
+      };
+    }
+    if (
+      this.pending.hasActiveCart ||
+      this.pending.hasFulfilmentInFlight ||
+      this.pending.hasSyncOrAuditInFlight ||
+      this.pending.paymentConfigurationSensitiveOrderCount > 0 ||
+      this.pending.pendingDurableWriteCount > 0 ||
+      this.pending.pendingReturnCount > 0 ||
+      this.pending.pendingSaleCount > 0 ||
+      this.pending.unresolvedPaymentCount > 0
+    ) {
+      return {
+        status: "blocked" as const,
+        reason: "pending-local-data" as const,
+      };
+    }
+    if (action.kind === "change-api-address" && this.failApiHealth) {
+      return {
+        status: "blocked" as const,
+        reason: "candidate-unreachable" as const,
+      };
+    }
+    if (action.kind === "change-api-address") {
+      this.apiAddressChanges.push(action.apiBaseUrl);
+      return { status: "completed" as const, kind: action.kind };
+    }
+    if (action.kind === "reset-catalog") {
+      this.catalogResetCalls += 1;
+      return {
+        status: "completed" as const,
+        kind: action.kind,
+        catalog: {
+          snapshotId: null,
+          itemCount: 0,
+          activatedAt: null,
+        },
+      };
+    }
+    if (action.kind === "reregister-device") {
+      this.reregistrations.push({
+        targetStoreCode: action.targetStoreCode,
+        ...(action.terminalName ? { terminalName: action.terminalName } : {}),
+      });
+      return { status: "completed" as const, kind: action.kind };
+    }
+    if (action.kind === "change-payment-settings") {
+      this.savedPayments.push(action.input);
+      return { status: "completed" as const, kind: action.kind };
+    }
+    this.restartCalls += 1;
+    return { status: "completed" as const, kind: action.kind };
+  }
+
+  public async downloadCatalog(signal: AbortSignal) {
+    this.catalogDownloadCalls += 1;
+    this.catalogDownloadSignal = signal;
+    await this.catalogHold;
+    return {
+      snapshotId: "catalog-new",
+      itemCount: 77,
+      activatedAt: "2026-07-28T02:00:00.000Z",
+    };
+  }
+
+  public async testPaymentProvider(
+    provider: "square" | "linkly",
+    input: SettingsPaymentSettingsInput,
+  ): Promise<void> {
+    this.paymentTests.push({ provider, input });
+  }
+
+  public async savePrinterSettings(
+    input: ReceiptPrinterSettings,
+  ): Promise<void> {
+    this.savedPrinters.push(input);
+    this.printerEvents.push(
+      `save:${input.peripheralId ?? "none"}:${input.drawerEnabled}`,
+    );
+    if (this.failPrinterSave) {
+      throw new Error("printer settings save failed");
+    }
+  }
+
+  public async scanPrinters() {
+    if (this.printerScanError) throw this.printerScanError;
+    return this.printerDevices;
+  }
+
+  public async connectPrinter(peripheralId: string): Promise<void> {
+    this.connectedPrinterIds.push(peripheralId);
+    if (this.failPrinterConnect) {
+      throw new Error("printer connect failed");
+    }
+  }
+
+  public async testPrinter(): Promise<void> {
+    this.printerTestCalls += 1;
+  }
+
+  public testCashDrawer: SettingsControlPort["testCashDrawer"] = async () => {
+    this.cashDrawerTestCalls += 1;
+    this.printerEvents.push("test-cash-drawer");
+    return this.cashDrawerTestResult;
+  };
+
+  public clearSavedPrinter: SettingsControlPort["clearSavedPrinter"] =
+    async () => {
+      this.clearSavedPrinterCalls += 1;
+      if (this.failClearSavedPrinter) {
+        throw new Error("printer settings clear failed");
+      }
+      return this.clearSavedPrinterResult;
+    };
+
+  public async testScanner(signal?: AbortSignal) {
+    this.scannerTestCalls += 1;
+    if (this.holdScannerUntilAbort) {
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            this.scannerAbortObserved = true;
+            reject(new Error("scanner test aborted"));
+          },
+          { once: true },
+        );
+      });
+    }
+    return { source: "hid" as const, value: "930000000001" };
+  }
+
+  public async checkForAppUpdate() {
+    return {
+      channel: "production",
+      currentVersion: "1.0.0",
+      availableVersion: "1.1.0",
+      updateRequired: false,
+      restartAvailable: true,
+    };
+  }
+}
+
+class FakeSquareSetupControlPort {
+  public tokenStatus: SettingsSquareTokenStatus = {
+    environment: "Production",
+    configured: true,
+    enabled: true,
+    updatedAt: null,
+  };
+  public locations: readonly SettingsSquareLocation[] = [];
+  public devices: readonly SettingsSquareDevice[] = [];
+  public deviceCodes: readonly SettingsSquareDeviceCode[] = [];
+  public readonly tokenCalls: SettingsSquareEnvironment[] = [];
+  public readonly locationCalls: SettingsSquareEnvironment[] = [];
+  public readonly deviceCalls: Readonly<{
+    environment: SettingsSquareEnvironment;
+    locationId: string;
+    signal: AbortSignal;
+  }>[] = [];
+  public readonly deviceCodeCalls: Readonly<{
+    environment: SettingsSquareEnvironment;
+    locationId: string;
+    signal: AbortSignal;
+  }>[] = [];
+  public readonly createDeviceCodeCalls: Readonly<{
+    environment: SettingsSquareEnvironment;
+    locationId: string;
+    name: string;
+    signal: AbortSignal;
+  }>[] = [];
+  public readonly refreshDeviceCodeCalls: Readonly<{
+    environment: SettingsSquareEnvironment;
+    deviceCodeId: string;
+    signal: AbortSignal;
+  }>[] = [];
+  public tokenHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        signal: AbortSignal,
+      ) => Promise<SettingsSquareTokenStatus>)
+    | null = null;
+  public locationHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        signal: AbortSignal,
+      ) => Promise<readonly SettingsSquareLocation[]>)
+    | null = null;
+  public deviceHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        locationId: string,
+        signal: AbortSignal,
+      ) => Promise<readonly SettingsSquareDevice[]>)
+    | null = null;
+  public deviceCodeHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        locationId: string,
+        signal: AbortSignal,
+      ) => Promise<readonly SettingsSquareDeviceCode[]>)
+    | null = null;
+  public createDeviceCodeHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        locationId: string,
+        name: string,
+        signal: AbortSignal,
+      ) => Promise<SettingsSquareDeviceCode>)
+    | null = null;
+  public refreshDeviceCodeHandler:
+    | ((
+        environment: SettingsSquareEnvironment,
+        deviceCodeId: string,
+        signal: AbortSignal,
+      ) => Promise<SettingsSquareDeviceCode>)
+    | null = null;
+  public createdDeviceCode: SettingsSquareDeviceCode | null = null;
+  public refreshedDeviceCode: SettingsSquareDeviceCode | null = null;
+
+  public async getSquareTokenStatus(
+    environment: SettingsSquareEnvironment,
+    signal: AbortSignal,
+  ): Promise<SettingsSquareTokenStatus> {
+    this.tokenCalls.push(environment);
+    if (this.tokenHandler) return this.tokenHandler(environment, signal);
+    return this.tokenStatus;
+  }
+
+  public async listSquareLocations(
+    environment: SettingsSquareEnvironment,
+    signal: AbortSignal,
+  ): Promise<readonly SettingsSquareLocation[]> {
+    this.locationCalls.push(environment);
+    if (this.locationHandler) {
+      return this.locationHandler(environment, signal);
+    }
+    return this.locations;
+  }
+
+  public async listSquareDevices(
+    environment: SettingsSquareEnvironment,
+    locationId: string,
+    signal: AbortSignal,
+  ): Promise<readonly SettingsSquareDevice[]> {
+    this.deviceCalls.push({ environment, locationId, signal });
+    if (this.deviceHandler) {
+      return this.deviceHandler(environment, locationId, signal);
+    }
+    return this.devices;
+  }
+
+  public async listSquareDeviceCodes(
+    environment: SettingsSquareEnvironment,
+    locationId: string,
+    signal: AbortSignal,
+  ): Promise<readonly SettingsSquareDeviceCode[]> {
+    this.deviceCodeCalls.push({ environment, locationId, signal });
+    if (this.deviceCodeHandler) {
+      return this.deviceCodeHandler(environment, locationId, signal);
+    }
+    return this.deviceCodes;
+  }
+
+  public async createSquareDeviceCode(
+    environment: SettingsSquareEnvironment,
+    locationId: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<SettingsSquareDeviceCode> {
+    this.createDeviceCodeCalls.push({
+      environment,
+      locationId,
+      name,
+      signal,
+    });
+    if (this.createDeviceCodeHandler) {
+      return this.createDeviceCodeHandler(
+        environment,
+        locationId,
+        name,
+        signal,
+      );
+    }
+    if (!this.createdDeviceCode) {
+      throw new Error("unexpected create Square device code");
+    }
+    return this.createdDeviceCode;
+  }
+
+  public async getSquareDeviceCode(
+    environment: SettingsSquareEnvironment,
+    deviceCodeId: string,
+    signal: AbortSignal,
+  ): Promise<SettingsSquareDeviceCode> {
+    this.refreshDeviceCodeCalls.push({
+      environment,
+      deviceCodeId,
+      signal,
+    });
+    if (this.refreshDeviceCodeHandler) {
+      return this.refreshDeviceCodeHandler(
+        environment,
+        deviceCodeId,
+        signal,
+      );
+    }
+    if (!this.refreshedDeviceCode) {
+      throw new Error("unexpected refresh Square device code");
+    }
+    return this.refreshedDeviceCode;
+  }
+}
+
+function catalogProgress(
+  patch: Partial<
+    Extract<
+      ReturnType<SettingsControlPort["getCatalogRefreshState"]>,
+      { kind: "running" }
+    >["progress"]
+  > = {},
+) {
+  return {
+    currentStep: "prepare" as const,
+    overallPercent: 0,
+    elapsedMilliseconds: 0,
+    steps: [
+      { step: "prepare" as const, percent: 0 },
+      { step: "products" as const, percent: 0 },
+      { step: "promotions" as const, percent: 0 },
+      { step: "activate" as const, percent: 0 },
+    ],
+    ...patch,
+  };
+}
+
+function snapshot(): SettingsSnapshot {
+  return {
+    apiBaseUrl: "https://hotbargain.vip/pos-api",
+    appUpdate: {
+      channel: "production",
+      currentVersion: "1.0.0",
+      availableVersion: null,
+      updateRequired: false,
+      restartAvailable: false,
+    },
+    catalog: {
+      snapshotId: "catalog-old",
+      itemCount: 42,
+      activatedAt: "2026-07-27T01:00:00.000Z",
+    },
+    device: {
+      deviceCode: "POS-01",
+      storeCode: "BNE-01",
+      storeName: "Brisbane",
+      terminalName: "Front",
+    },
+    hardware: {
+      printerStatus: "connected",
+      scannerStatus: "ready",
+      lastScannerValue: null,
+    },
+    paymentProvider: "square",
+    linkly: {
+      available: true,
+      blockerCode: null,
+      environment: "Production",
+    },
+    printer: DEFAULT_RECEIPT_PRINTER_SETTINGS,
+    square: {
+      available: true,
+      blockerCode: null,
+      environment: "Production",
+      deviceId: "sq-device-1",
+      locationId: "sq-location-1",
+    },
+  };
+}
+
+function squareLocation(
+  id: string,
+  name: string,
+): SettingsSquareLocation {
+  return { id, name, status: "ACTIVE", currency: "AUD", country: "AU" };
+}
+
+function squareDevice(
+  id: string,
+  locationId: string,
+  name: string,
+  status = "ACTIVE",
+): SettingsSquareDevice {
+  return {
+    id,
+    code: null,
+    name,
+    status,
+    locationId,
+    sandboxTest: false,
+  };
+}
+
+function squareDeviceCode(
+  id: string,
+  deviceId: string | null,
+  locationId: string,
+  name: string,
+  status = "PAIRED",
+): SettingsSquareDeviceCode {
+  return {
+    id,
+    code: "ABCD-EFGH",
+    status,
+    deviceId,
+    locationId,
+    name,
+  };
+}
+
+function deferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}> {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (error: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: resolvePromise,
+    reject: rejectPromise,
+  };
+}

@@ -1,0 +1,54 @@
+{
+  "cli": {
+    "version": "21.3.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "pos-handheld-development",
+      "env": {
+        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "development"
+      }
+    },
+    "development-simulator": {
+      "extends": "development",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "pos-handheld-preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "preview"
+      }
+    },
+    "production": {
+      "distribution": "store",
+      "channel": "pos-handheld-production",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "production"
+      }
+    },
+    "android-internal": {
+      "distribution": "internal",
+      "channel": "pos-handheld-production",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "production"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

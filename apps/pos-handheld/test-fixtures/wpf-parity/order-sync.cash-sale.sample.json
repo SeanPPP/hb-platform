@@ -1,0 +1,40 @@
+{
+  "orderGuid": "10000000-0000-4000-8000-000000000001",
+  "storeCode": "TEST01",
+  "deviceCode": "IPAD-TEST-01",
+  "cashierId": "CASHIER-001",
+  "cashierName": "Parity Cashier",
+  "soldAt": "2026-01-01T10:00:00+10:00",
+  "totalAmount": 7.82,
+  "discountAmount": 0,
+  "actualAmount": 7.8,
+  "lines": [
+    {
+      "orderLineGuid": "20000000-0000-4000-8000-000000000001",
+      "productCode": "PARITY-ITEM-001",
+      "referenceCode": null,
+      "displayName": "Parity Item",
+      "lookupCode": "930000000001",
+      "quantity": 1,
+      "unitPrice": 7.82,
+      "discountAmount": 0,
+      "actualAmount": 7.82,
+      "priceSource": "Catalog",
+      "itemNumber": "PARITY-ITEM-001",
+      "kind": "Sale",
+      "returnSourceKey": null,
+      "originalOrderGuid": null,
+      "originalOrderDetailGuid": null
+    }
+  ],
+  "payments": [
+    {
+      "paymentGuid": "30000000-0000-4000-8000-000000000001",
+      "method": "Cash",
+      "amount": 7.8,
+      "reference": null,
+      "reservationToken": null,
+      "cardTransactions": null
+    }
+  ]
+}

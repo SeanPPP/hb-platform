@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "data": {
+    "state": "optional",
+    "policyVersion": "9",
+    "appKey": "pos-handheld",
+    "projectName": "hb-pos-handheld",
+    "platform": "iOS",
+    "required": false,
+    "channel": "pos-handheld-production",
+    "runtimeVersion": "1.2.3",
+    "updateId": "ios-update-9",
+    "updateGroupId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "releaseMessage": null
+  }
+}

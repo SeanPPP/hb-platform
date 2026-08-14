@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "data": {
+    "state": "optional",
+    "policyVersion": "10",
+    "appKey": "pos-handheld",
+    "projectName": "hb-pos-handheld",
+    "platform": "Android",
+    "required": false,
+    "channel": "pos-handheld-production",
+    "runtimeVersion": "1.2.3",
+    "updateId": "android-update-10",
+    "updateGroupId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "releaseMessage": "Android OTA"
+  }
+}
