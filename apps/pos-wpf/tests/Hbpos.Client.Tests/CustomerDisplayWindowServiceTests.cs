@@ -9,15 +9,16 @@ namespace Hbpos.Client.Tests;
 public sealed class CustomerDisplayWindowServiceTests
 {
     [Fact]
-    public void Fullscreen_layout_plan_matches_maximize_then_hide_titlebar_flow()
+    public void Fullscreen_layout_plan_uses_full_bounds_normal_state_and_topmost()
     {
         var plan = CustomerDisplayWindowService.GetLayoutPlan(CustomerDisplayWindowMode.Fullscreen);
 
         Assert.True(plan.TitleBarVisibleDuringPlacement);
         Assert.False(plan.CenterAfterPlacement);
         Assert.True(plan.UseFullDisplayBoundsForPlacement);
-        Assert.Equal(WindowState.Maximized, plan.FinalWindowState);
+        Assert.Equal(WindowState.Normal, plan.FinalWindowState);
         Assert.False(plan.TitleBarVisibleAfterStateChange);
+        Assert.True(ReadTopmost(plan));
     }
 
     [Fact]
@@ -30,6 +31,14 @@ public sealed class CustomerDisplayWindowServiceTests
         Assert.False(plan.UseFullDisplayBoundsForPlacement);
         Assert.Equal(WindowState.Normal, plan.FinalWindowState);
         Assert.True(plan.TitleBarVisibleAfterStateChange);
+        Assert.False(ReadTopmost(plan));
+    }
+
+    private static bool ReadTopmost(object plan)
+    {
+        var property = plan.GetType().GetProperty("Topmost");
+        Assert.NotNull(property);
+        return Assert.IsType<bool>(property.GetValue(plan));
     }
 
     [Fact]

@@ -70,7 +70,8 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
         bool CenterAfterPlacement,
         bool UseFullDisplayBoundsForPlacement,
         WindowState FinalWindowState,
-        bool TitleBarVisibleAfterStateChange);
+        bool TitleBarVisibleAfterStateChange,
+        bool Topmost);
 
     public void Prewarm(CustomerDisplayViewModel viewModel)
     {
@@ -228,6 +229,7 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
 
         window.WindowState = plan.FinalWindowState;
         window.SetTitleBarVisible(plan.TitleBarVisibleAfterStateChange);
+        window.Topmost = plan.Topmost;
         window.RefreshContentLayout();
         RestoreOwnerActivation(owner);
         stopwatch.Stop();
@@ -245,19 +247,23 @@ public sealed class CustomerDisplayWindowService : ICustomerDisplayWindowService
                 CenterAfterPlacement: true,
                 UseFullDisplayBoundsForPlacement: false,
                 FinalWindowState: WindowState.Normal,
-                TitleBarVisibleAfterStateChange: true),
+                TitleBarVisibleAfterStateChange: true,
+                Topmost: false),
+            // 全屏使用完整显示器边界和置顶状态，保持 Normal 避免 WPF 最大化回到工作区边界。
             CustomerDisplayWindowMode.Fullscreen => new CustomerDisplayLayoutPlan(
                 TitleBarVisibleDuringPlacement: true,
                 CenterAfterPlacement: false,
                 UseFullDisplayBoundsForPlacement: true,
-                FinalWindowState: WindowState.Maximized,
-                TitleBarVisibleAfterStateChange: false),
+                FinalWindowState: WindowState.Normal,
+                TitleBarVisibleAfterStateChange: false,
+                Topmost: true),
             _ => new CustomerDisplayLayoutPlan(
                 TitleBarVisibleDuringPlacement: false,
                 CenterAfterPlacement: false,
                 UseFullDisplayBoundsForPlacement: false,
                 FinalWindowState: WindowState.Normal,
-                TitleBarVisibleAfterStateChange: false)
+                TitleBarVisibleAfterStateChange: false,
+                Topmost: false)
         };
     }
 
