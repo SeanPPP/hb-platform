@@ -26,7 +26,7 @@ afterEach(() => {
   registerExternalDisplayReactSurface(null);
 });
 
-test("外接客显使用中英文键渲染且整个 surface 永远不接收触摸", async () => {
+test("外接客显固定使用英文且整个 surface 永远不接收触摸", async () => {
   const chinese = await createTestI18n("zh");
   const screen = await render(
     <I18nextProvider i18n={chinese}>
@@ -43,8 +43,11 @@ test("外接客显使用中英文键渲染且整个 surface 永远不接收触�
   expect(screen.getByTestId("external-display-surface").props.accessible).toBe(
     false,
   );
-  expect(screen.getAllByText("找零")).toHaveLength(2);
-  expect(screen.getByText("1 件商品")).toBeTruthy();
+  expect(screen.getByText("Your change")).toBeTruthy();
+  expect(screen.getByText("CHANGE")).toBeTruthy();
+  expect(screen.getByText("1 item")).toBeTruthy();
+  expect(screen.queryByText("找零")).toBeNull();
+  expect(screen.queryByText("1 件商品")).toBeNull();
   expect(screen.getByText("Tea")).toBeTruthy();
   expect(screen.queryAllByRole("button")).toHaveLength(0);
   screen.unmount();

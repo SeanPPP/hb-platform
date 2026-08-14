@@ -71,7 +71,8 @@ export function ExternalDisplaySurface({
   surfaceId,
   snapshot: initialSnapshot,
 }: ExternalDisplaySurfaceProps) {
-  const { t } = useTranslation();
+  // 客显面向顾客固定使用英文，不跟随收银主界面的语言切换。
+  const { t } = useTranslation(undefined, { lng: "en" });
   const [snapshot, setSnapshot] = useState(() =>
     parseSnapshot(initialSnapshot),
   );
