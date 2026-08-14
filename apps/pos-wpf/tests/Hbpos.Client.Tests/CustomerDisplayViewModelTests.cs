@@ -42,7 +42,15 @@ public sealed class CustomerDisplayViewModelTests
     {
         var (xaml, _) = ReadCustomerDisplayViewFiles();
 
-        Assert.Equal(2, xaml.Split("Stretch=\"Uniform\"", StringSplitOptions.None).Length - 1);
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var mediaElements = document
+            .Descendants(presentation + "Image")
+            .Concat(document.Descendants(presentation + "MediaElement"))
+            .ToArray();
+
+        Assert.Equal(2, mediaElements.Length);
+        Assert.All(mediaElements, element => Assert.Equal("Uniform", element.Attribute("Stretch")?.Value));
         Assert.DoesNotContain("Stretch=\"UniformToFill\"", xaml);
     }
 
@@ -55,6 +63,71 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Contains("Text=\"{Binding GrossAmount, StringFormat={}{0:C2}}\"", xaml);
         Assert.Contains("TextDecorations=\"Strikethrough\"", xaml);
         Assert.Contains("<DataTrigger Binding=\"{Binding HasDiscount}\" Value=\"True\">", xaml);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_wraps_content_in_uniform_fixed_design_canvas()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var userControl = document.Root!;
+        var viewbox = Assert.Single(userControl.Elements(presentation + "Viewbox"));
+        var designCanvas = Assert.Single(viewbox.Elements(presentation + "Grid"));
+
+        Assert.Equal("Center", viewbox.Attribute("HorizontalAlignment")?.Value);
+        Assert.Equal("Center", viewbox.Attribute("VerticalAlignment")?.Value);
+        Assert.Equal("Uniform", viewbox.Attribute("Stretch")?.Value);
+        Assert.Equal("Both", viewbox.Attribute("StretchDirection")?.Value);
+        Assert.Equal("1366", designCanvas.Attribute("Width")?.Value);
+        Assert.Equal("768", designCanvas.Attribute("Height")?.Value);
+        Assert.Equal("True", userControl.Attribute("UseLayoutRounding")?.Value);
+        Assert.Equal("True", userControl.Attribute("SnapsToDevicePixels")?.Value);
+        Assert.Equal("True", designCanvas.Attribute("UseLayoutRounding")?.Value);
+        Assert.Equal("True", designCanvas.Attribute("SnapsToDevicePixels")?.Value);
+        Assert.Equal(
+            "{StaticResource PosCustomerDisplayBackgroundBrush}",
+            userControl.Attribute("Background")?.Value);
+        Assert.Equal(
+            "{StaticResource PosCustomerDisplayBackgroundBrush}",
+            designCanvas.Attribute("Background")?.Value);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_uses_compact_left_aligned_quantity_and_sku_grid()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var compactStatsGrid = Assert.Single(document
+            .Descendants(presentation + "Grid")
+            .Where(grid => grid
+                .Element(presentation + "Grid.ColumnDefinitions")?
+                .Elements(presentation + "ColumnDefinition")
+                .Select(column => column.Attribute("Width")?.Value)
+                .SequenceEqual(["Auto", "Auto", "32", "Auto", "Auto"]) == true));
+
+        Assert.Equal("Left", compactStatsGrid.Attribute("HorizontalAlignment")?.Value);
+
+        var itemQuantity = Assert.Single(compactStatsGrid.Elements(presentation + "TextBlock")
+            .Where(textBlock => textBlock.Attribute("Text")?.Value == "{loc:Loc customer.itemQuantity}"));
+        var itemQuantityValue = Assert.Single(compactStatsGrid.Elements(presentation + "TextBlock")
+            .Where(textBlock => textBlock.Attribute("Text")?.Value.Contains(
+                "Binding TotalItemQuantity",
+                StringComparison.Ordinal) == true));
+        var skuCount = Assert.Single(compactStatsGrid.Elements(presentation + "TextBlock")
+            .Where(textBlock => textBlock.Attribute("Text")?.Value == "{loc:Loc customer.skuCount}"));
+        var skuCountValue = Assert.Single(compactStatsGrid.Elements(presentation + "TextBlock")
+            .Where(textBlock => textBlock.Attribute("Text")?.Value == "{Binding SkuCount}"));
+
+        Assert.Equal("8,0,0,0", itemQuantityValue.Attribute("Margin")?.Value);
+        Assert.Equal("8,0,0,0", skuCountValue.Attribute("Margin")?.Value);
+        Assert.Null(itemQuantity.Attribute("Grid.Column"));
+        Assert.Equal("1", itemQuantityValue.Attribute("Grid.Column")?.Value);
+        Assert.Equal("3", skuCount.Attribute("Grid.Column")?.Value);
+        Assert.Equal("4", skuCountValue.Attribute("Grid.Column")?.Value);
     }
 
     [Fact]
@@ -356,7 +429,12 @@ public sealed class CustomerDisplayViewModelTests
 
     private static XElement FindBoundViewbox(XDocument document, XNamespace presentation, string propertyName)
     {
-        return Assert.Single(document
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var summaryPanel = Assert.Single(document
+            .Descendants(presentation + "Border")
+            .Where(element => element.Attribute(x + "Name")?.Value == "SummaryPanel"));
+
+        return Assert.Single(summaryPanel
             .Descendants(presentation + "Viewbox")
             .Where(viewbox => viewbox
                 .Descendants(presentation + "TextBlock")
