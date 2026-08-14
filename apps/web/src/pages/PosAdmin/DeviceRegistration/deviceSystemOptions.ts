@@ -6,6 +6,19 @@ export const EDITABLE_DEVICE_SYSTEM_OPTIONS = ['Android', 'iOS', 'iPadOS', 'Wind
 
 const LEGACY_IOS_CANONICALIZATION_OPTIONS = ['iOS', 'iPadOS'] as const
 
+export function supportsTransactionGate(
+  deviceSystem?: string | null,
+  deviceType?: string | null,
+): boolean {
+  const normalizedSystem = deviceSystem?.trim().toLowerCase()
+  return (
+    deviceType?.trim().toLowerCase() === 'pos' &&
+    (normalizedSystem === 'ipados' ||
+      normalizedSystem === 'ios' ||
+      normalizedSystem === 'android')
+  )
+}
+
 export function isEnabledLegacyIosPos(
   status: number,
   currentSystem: string,

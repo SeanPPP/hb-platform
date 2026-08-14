@@ -18,6 +18,7 @@ const DOWNLOAD_DIRECTORY =
   "file:///data/user/0/com.hbweb.poshandheld/cache/hb-app-updates/";
 
 const androidDecision: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "required",
   policyVersion: "android-policy-200",
   platform: "Android",
@@ -37,6 +38,7 @@ const androidDecision: PosHandheldUpdatePolicy = Object.freeze({
 });
 
 const iosDecision: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "optional",
   policyVersion: "ios-policy-300",
   platform: "iOS",

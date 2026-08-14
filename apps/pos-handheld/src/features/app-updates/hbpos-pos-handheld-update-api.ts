@@ -10,6 +10,7 @@ import {
 import type { DeviceSystem } from "@/core/contracts/security";
 
 const JAVASCRIPT_SAFE_INTEGER_MAX = "9007199254740991";
+const ALLOW_TRANSACTIONS_HEADER = "x-hbpos-allow-transactions";
 
 export type PosHandheldUpdateClientMetadata = Readonly<{
   version: string;
@@ -51,8 +52,28 @@ export class HbposPosHandheldUpdateApi implements PosHandheldUpdatePolicyRemoteP
     ) {
       throw new TypeError("Handheld update response platform does not match device.");
     }
-    return normalizePosHandheldUpdatePolicy(policy);
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+      return normalizePosHandheldUpdatePolicy(policy);
+    }
+    return normalizePosHandheldUpdatePolicy({
+      ...policy,
+      enabled: readAllowTransactions(response.headers),
+    });
   }
+}
+
+function readAllowTransactions(
+  headers: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const rawValue = Object.entries(headers ?? {}).find(
+    ([name]) => name.trim().toLowerCase() === ALLOW_TRANSACTIONS_HEADER,
+  )?.[1];
+  if (rawValue === undefined) return true;
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new TypeError("Handheld transaction permission header is invalid.");
 }
 
 function requiredDevicePlatform(value: unknown): DeviceSystem {

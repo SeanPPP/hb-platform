@@ -7,6 +7,7 @@ import {
 } from "./app-updates";
 
 const androidDecision = Object.freeze({
+  enabled: true,
   state: "required",
   policyVersion: "android-policy-200",
   platform: "Android",
@@ -26,6 +27,7 @@ const androidDecision = Object.freeze({
 });
 
 const iosDecision = Object.freeze({
+  enabled: true,
   state: "optional",
   policyVersion: "ios-policy-300",
   platform: "iOS",
@@ -155,6 +157,7 @@ test("TestFlight 只接受 optional canonical join URL，required 必须 fail cl
 
 test("none 决策必须显式给出全部 null 元数据，不能藏安装入口", () => {
   const none = {
+    enabled: true,
     state: "none",
     policyVersion: "none",
     platform: "Android",
@@ -180,6 +183,23 @@ test("none 决策必须显式给出全部 null 元数据，不能藏安装入口
         downloadUrl: androidDecision.downloadUrl,
       }),
     /none|metadata|target/i,
+  );
+});
+
+test("设备交易权限保留 false，旧策略缺字段默认允许，非法值拒绝", () => {
+  const disabled = normalizePosHandheldUpdatePolicy({
+    ...androidDecision,
+    enabled: false,
+  });
+  assert.equal(disabled.enabled, false);
+
+  const legacy = { ...iosDecision } as Record<string, unknown>;
+  delete legacy.enabled;
+  assert.equal(normalizePosHandheldUpdatePolicy(legacy).enabled, true);
+
+  assert.throws(
+    () => normalizePosHandheldUpdatePolicy({ ...iosDecision, enabled: "false" }),
+    /enabled|transaction/i,
   );
 });
 

@@ -5,6 +5,7 @@ import {
   getRegisteredDeviceSystemEditOptions,
   isEnabledLegacyIosPos,
   REGISTERED_DEVICE_SYSTEM_OPTIONS,
+  supportsTransactionGate,
 } from './deviceSystemOptions'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
@@ -79,6 +80,24 @@ assertDeepEqual(
   isEnabledLegacyIosPos(1, 'iOS', 'Mobile'),
   false,
   'Enabled Mobile iOS should not enter canonicalization mode',
+)
+assertDeepEqual(
+  [
+    supportsTransactionGate('iPadOS', 'POS'),
+    supportsTransactionGate('iOS', 'POS'),
+    supportsTransactionGate('Android', 'POS'),
+  ],
+  [true, true, true],
+  'iPad POS and iOS or Android handheld POS should support the transaction gate',
+)
+assertDeepEqual(
+  [
+    supportsTransactionGate('Windows', 'POS'),
+    supportsTransactionGate('Android', 'PDA'),
+    supportsTransactionGate('iOS', 'Mobile'),
+  ],
+  [false, false, false],
+  'Windows POS and non-POS registrations should not expose the transaction gate',
 )
 
 console.log('deviceSystemOptions.test: ok')

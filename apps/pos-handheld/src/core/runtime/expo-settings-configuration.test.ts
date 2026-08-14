@@ -58,6 +58,7 @@ test("更新策略只映射公开版本字段，restart 可用性由受保护协
       channel: "preview",
       currentVersion: "1.0.0",
       policy: {
+        enabled: true,
         state: "required",
         policyVersion: "ios-required-110",
         platform: "iOS",

@@ -103,6 +103,7 @@ test("分期只允许 WPF 的单向业务状态迁移", () => {
 
 test("手持端更新策略在本地同时门禁离线现金，但始终开放恢复与补传", () => {
   const policy = normalizePosHandheldUpdatePolicy({
+    enabled: false,
     state: "required",
     policyVersion: "ios-required-130",
     platform: "iOS",
@@ -135,41 +136,52 @@ test("手持端更新策略在本地同时门禁离线现金，但始终开放�
   );
 });
 
-test("设备已授权后仅 required 策略阻止新交易", () => {
+test("设备权限关闭或 required 策略阻止新交易，未检查时默认允许", () => {
+  const allowedPolicy = {
+    enabled: true,
+    state: "none" as const,
+    policyVersion: "none",
+    platform: "iOS" as const,
+    required: false,
+    latestVersion: null,
+    latestBuild: null,
+    minimumSupportedVersion: null,
+    distribution: null,
+    downloadUrl: null,
+    fileSize: null,
+    sha256: null,
+    packageName: null,
+    signingCertificateSha256: null,
+    bundleIdentifier: null,
+    appStoreId: null,
+    releaseMessage: null,
+  };
   assert.deepEqual(
-    deriveNewTransactionGate({
-      state: "none",
-      policyVersion: "none",
-      platform: "iOS",
-      required: false,
-      latestVersion: null,
-      latestBuild: null,
-      minimumSupportedVersion: null,
-      distribution: null,
-      downloadUrl: null,
-      fileSize: null,
-      sha256: null,
-      packageName: null,
-      signingCertificateSha256: null,
-      bundleIdentifier: null,
-      appStoreId: null,
-      releaseMessage: null,
-    }),
+    deriveNewTransactionGate(allowedPolicy),
     {
       state: "enabled",
       canStartNewTransaction: true,
       canContinueRecovery: true,
     },
   );
+  assert.deepEqual(
+    deriveNewTransactionGate({ ...allowedPolicy, enabled: false }),
+    {
+      state: "disabled",
+      canStartNewTransaction: false,
+      canContinueRecovery: true,
+    },
+  );
   assert.deepEqual(deriveNewTransactionGate(null), {
     state: "unchecked",
-    canStartNewTransaction: false,
+    canStartNewTransaction: true,
     canContinueRecovery: true,
   });
 });
 
 test("手持端更新策略必须显式拥有完整后端字段，none 元数据只能为 null", () => {
   const complete: Record<string, unknown> = {
+    enabled: true,
     state: "none",
     policyVersion: "none",
     platform: "iOS",
@@ -187,7 +199,7 @@ test("手持端更新策略必须显式拥有完整后端字段，none 元数据
     appStoreId: null,
     releaseMessage: null,
   };
-  for (const field of Object.keys(complete)) {
+  for (const field of Object.keys(complete).filter((field) => field !== "enabled")) {
     const incomplete = { ...complete };
     delete incomplete[field];
     assert.throws(() => normalizePosHandheldUpdatePolicy(incomplete));
@@ -223,6 +235,9 @@ test("手持端更新策略必须显式拥有完整后端字段，none 元数据
     normalizePosHandheldUpdatePolicy(complete),
     complete,
   );
+  const legacy = { ...complete };
+  delete legacy.enabled;
+  assert.deepEqual(normalizePosHandheldUpdatePolicy(legacy), complete);
 });
 
 test("设备重注册在旧 scope 未决事实归零前失败关闭但不删除本地数据", () => {

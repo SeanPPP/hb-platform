@@ -57,6 +57,7 @@ import {
   getRegisteredDeviceSystemEditOptions,
   isEnabledLegacyIosPos,
   REGISTERED_DEVICE_SYSTEM_OPTIONS,
+  supportsTransactionGate,
 } from './deviceSystemOptions'
 
 const STATUS_COLOR_MAP: Record<number, string> = {
@@ -118,17 +119,6 @@ function renderDeviceTypeTag(value?: string | null) {
 
 function renderDeviceSystemTag(value?: string | null) {
   return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : EMPTY_VALUE
-}
-
-function supportsIpadTransactionGate(
-  deviceSystem?: string | null,
-  deviceType?: string | null
-) {
-  const normalizedSystem = deviceSystem?.trim().toLowerCase()
-  return (
-    deviceType?.trim().toLowerCase() === 'pos' &&
-    (normalizedSystem === 'ipados' || normalizedSystem === 'ios')
-  )
 }
 
 function getUpdateTail(updateId?: string | null) {
@@ -237,7 +227,7 @@ export default function DeviceRegistrationPage() {
   const [editForm] = Form.useForm<DeviceEditFormValues>()
   const editingDeviceType = Form.useWatch('deviceType', editForm)
   const editingDeviceSystem = Form.useWatch('deviceSystem', editForm)
-  const editingSupportsTransactionGate = supportsIpadTransactionGate(
+  const editingSupportsTransactionGate = supportsTransactionGate(
     editingDeviceSystem,
     editingDeviceType
   )
@@ -617,7 +607,7 @@ export default function DeviceRegistrationPage() {
         dataIndex: 'allowTransactions',
         width: 120,
         render: (value: boolean, record) =>
-          supportsIpadTransactionGate(record.deviceSystem, record.deviceType) ? (
+          supportsTransactionGate(record.deviceSystem, record.deviceType) ? (
             <Tag color={value ? 'green' : 'red'}>
               {t(
                 value

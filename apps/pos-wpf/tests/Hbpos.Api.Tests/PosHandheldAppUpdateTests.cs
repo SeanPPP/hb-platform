@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Controllers;
 using Hbpos.Api.Services;
@@ -75,6 +76,39 @@ public sealed class PosHandheldAppUpdateTests
         Assert.Equal("0247", gateway.NativeRequest!.StoreCode);
         Assert.Equal(platform, gateway.NativeRequest.Platform);
         Assert.Equal("2.0.0", envelope.Data!.LatestVersion);
+    }
+
+    [Theory]
+    [InlineData("iOS", null, "true")]
+    [InlineData("iOS", false, "false")]
+    [InlineData("Android", null, "true")]
+    [InlineData("Android", false, "false")]
+    public async Task Native_decision_exposes_transaction_permission_without_changing_legacy_body(
+        string platform,
+        bool? allowTransactions,
+        string expectedHeader)
+    {
+        var gateway = new RecordingGateway
+        {
+            NativeDecision = CreateNoUpdateDecision(platform),
+        };
+        var controller = CreateController(
+            gateway,
+            "0247",
+            platform,
+            allowTransactions);
+
+        var result = await controller.Check("1.0.0", "100", CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var envelope = Assert.IsType<ApiResult<PosHandheldNativeUpdateResponse>>(ok.Value);
+        var body = JsonSerializer.SerializeToElement(
+            envelope.Data,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.False(body.TryGetProperty("enabled", out _));
+        Assert.Equal(
+            expectedHeader,
+            controller.Response.Headers["X-HBPOS-Allow-Transactions"].ToString());
     }
 
     [Fact]
@@ -696,8 +730,21 @@ public sealed class PosHandheldAppUpdateTests
     private static PosHandheldAppUpdateController CreateController(
         IPosHandheldUpdateDecisionGateway gateway,
         string storeCode,
-        string platform)
+        string platform,
+        bool? allowTransactions = null)
     {
+        var claims = new List<Claim>
+        {
+            new(DeviceAuthConstants.StoreCodeClaim, storeCode),
+            new(DeviceAuthConstants.DeviceSystemClaim, platform),
+        };
+        if (allowTransactions.HasValue)
+        {
+            claims.Add(new Claim(
+                DeviceAuthConstants.AllowTransactionsClaim,
+                allowTransactions.Value.ToString()));
+        }
+
         return new PosHandheldAppUpdateController(gateway)
         {
             ControllerContext = new ControllerContext
@@ -706,10 +753,7 @@ public sealed class PosHandheldAppUpdateTests
                 {
                     User = new ClaimsPrincipal(
                         new ClaimsIdentity(
-                        [
-                            new Claim(DeviceAuthConstants.StoreCodeClaim, storeCode),
-                            new Claim(DeviceAuthConstants.DeviceSystemClaim, platform),
-                        ],
+                            claims,
                             DeviceAuthConstants.Scheme
                         )
                     )
@@ -717,6 +761,25 @@ public sealed class PosHandheldAppUpdateTests
             }
         };
     }
+
+    private static PosHandheldNativeUpdateResponse CreateNoUpdateDecision(string platform) =>
+        new(
+            State: "none",
+            PolicyVersion: "none",
+            Platform: platform,
+            Required: false,
+            LatestVersion: null,
+            LatestBuild: null,
+            MinimumSupportedVersion: null,
+            Distribution: null,
+            DownloadUrl: null,
+            FileSize: null,
+            Sha256: null,
+            PackageName: null,
+            SigningCertificateSha256: null,
+            BundleIdentifier: null,
+            AppStoreId: null,
+            ReleaseMessage: null);
 
     private sealed class RecordingGateway : IPosHandheldUpdateDecisionGateway
     {

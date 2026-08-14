@@ -273,6 +273,7 @@ beforeEach(() => {
     canContinueRecovery: true,
   };
   mockUpdatePolicy = {
+    enabled: true,
     appStoreId: null,
     bundleIdentifier: null,
     distribution: null,
@@ -346,6 +347,21 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("更新服务尚未注入时使用默认允许的新交易门禁", async () => {
+  delete mockRuntime.services.appUpdates;
+
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+  });
+  expect(mockSalesScreenProps.newTransactionGate).toEqual({
+    state: "unchecked",
+    canStartNewTransaction: true,
+    canContinueRecovery: true,
+  });
 });
 
 test("销售反馈逐项映射声音 cue，并在路由卸载时解除订阅", async () => {

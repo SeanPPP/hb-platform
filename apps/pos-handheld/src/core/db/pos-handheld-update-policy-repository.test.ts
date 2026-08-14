@@ -18,6 +18,7 @@ import type {
 } from "@/core/contracts/ota-app-updates";
 
 const policy: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "optional",
   policyVersion: "ios-native-130",
   platform: "iOS",
@@ -86,6 +87,7 @@ const currentNativeScope: NativeAppUpdateCacheScope = Object.freeze({
   installedBuild: policy.latestBuild ?? "130",
 });
 const noneNativePolicy: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "none",
   policyVersion: "none",
   platform: "iOS",

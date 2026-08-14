@@ -17,6 +17,7 @@ public sealed class PosHandheldAppUpdateController(
 ) : ControllerBase
 {
     private const long JavaScriptSafeIntegerMax = 9007199254740991;
+    private const string AllowTransactionsHeaderName = "X-HBPOS-Allow-Transactions";
 
     [HttpGet]
     public async Task<ActionResult<ApiResult<PosHandheldNativeUpdateResponse>>> Check(
@@ -54,6 +55,10 @@ public sealed class PosHandheldAppUpdateController(
             );
         }
 
+        // 保持旧手持端严格校验的响应体不变；新客户端从认证响应头读取交易权限。
+        Response.Headers[AllowTransactionsHeaderName] = AllowsTransactions()
+            ? "true"
+            : "false";
         return Ok(ApiResult<PosHandheldNativeUpdateResponse>.Ok(decision));
     }
 
@@ -155,5 +160,13 @@ public sealed class PosHandheldAppUpdateController(
 
         return long.TryParse(value, out var build)
             && build is > 0 and <= JavaScriptSafeIntegerMax;
+    }
+
+    private bool AllowsTransactions()
+    {
+        var claimValue = HttpContext?.User.FindFirstValue(
+            DeviceAuthConstants.AllowTransactionsClaim);
+        // 兼容没有该 claim 的旧认证票据；只有明确 false 才关闭新交易。
+        return !bool.TryParse(claimValue, out var allowed) || allowed;
     }
 }

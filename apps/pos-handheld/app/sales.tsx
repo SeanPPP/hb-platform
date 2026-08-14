@@ -61,7 +61,7 @@ type SalesBootstrapFailureStage =
 
 const UNCHECKED_UPDATE_GATE: NewTransactionGate = Object.freeze({
   state: "unchecked",
-  canStartNewTransaction: false,
+  canStartNewTransaction: true,
   canContinueRecovery: true,
 });
 
@@ -74,11 +74,11 @@ export default function SalesRoute() {
   const gate = resolveProtectedSalesRouteGate(runtime.state, activeCashier);
   const subscribeUpdateGate = useCallback(
     (listener: () => void) =>
-      runtime.services?.appUpdates.subscribe(listener) ?? (() => undefined),
+      runtime.services?.appUpdates?.subscribe(listener) ?? (() => undefined),
     [runtime.services],
   );
   const getUpdateGate = useCallback(
-    () => runtime.services?.appUpdates.getGate() ?? UNCHECKED_UPDATE_GATE,
+    () => runtime.services?.appUpdates?.getGate() ?? UNCHECKED_UPDATE_GATE,
     [runtime.services],
   );
   const updateGate = useSyncExternalStore(
@@ -278,7 +278,7 @@ export default function SalesRoute() {
     return <BootstrapScreen />;
   }
   const services = runtime.services;
-  const updatePolicy = services.appUpdates.getPolicy();
+  const updatePolicy = services.appUpdates?.getPolicy() ?? null;
   const iosUpdateDownloadUrl =
     updatePolicy?.platform === "iOS" &&
     (updatePolicy.distribution === "app-store" ||

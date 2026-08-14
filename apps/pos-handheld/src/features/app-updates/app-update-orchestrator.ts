@@ -201,6 +201,14 @@ export class AppUpdateOrchestrator {
     ) {
       return requiredGate("ota-update");
     }
+    // 设备权限是独立门禁，不能因 OTA 未检查或平台不匹配被降级为 unchecked。
+    if (nativeGate.state === "disabled") {
+      return Object.freeze({
+        state: nativeGate.state,
+        canStartNewTransaction: nativeGate.canStartNewTransaction,
+        canContinueRecovery: nativeGate.canContinueRecovery,
+      });
+    }
     if (
       nativeGate.state === "unchecked" ||
       (nativePolicy !== null &&
@@ -209,7 +217,7 @@ export class AppUpdateOrchestrator {
     ) {
       return Object.freeze({
         state: "unchecked",
-        canStartNewTransaction: false,
+        canStartNewTransaction: true,
         canContinueRecovery: true,
       });
     }

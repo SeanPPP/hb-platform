@@ -70,7 +70,11 @@ export function createAxiosHbposTransport(
     async request<T>(request: HbposTransportRequest): Promise<HbposTransportResponse<T>> {
       try {
         const response = await instance.request<T>(toAxiosRequest(request));
-        return { status: response.status, data: response.data };
+        return {
+          status: response.status,
+          data: response.data,
+          headers: normalizeResponseHeaders(response.headers),
+        };
       } catch (error: unknown) {
         if (error instanceof HbposApiError) {
           throw error;
@@ -120,6 +124,32 @@ export function createAxiosHbposTransport(
       }
     }
   };
+}
+
+function normalizeResponseHeaders(
+  input: unknown,
+): Readonly<Record<string, string>> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return Object.freeze({});
+  }
+  const candidate = input as Readonly<{ toJSON?: () => unknown }>;
+  const source = typeof candidate.toJSON === "function"
+    ? candidate.toJSON()
+    : input;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return Object.freeze({});
+  }
+
+  const normalized: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(source)) {
+    if (rawValue === null || rawValue === undefined) continue;
+    const name = rawName.trim().toLowerCase();
+    if (!name) continue;
+    normalized[name] = Array.isArray(rawValue)
+      ? rawValue.map(String).join(", ")
+      : String(rawValue);
+  }
+  return Object.freeze(normalized);
 }
 
 function getRequestCredentials(

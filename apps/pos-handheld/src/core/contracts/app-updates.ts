@@ -13,10 +13,11 @@ export type PosHandheldUpdateDistribution =
   | null;
 
 /**
- * 该结构与 pos-handheld backend 决策一一对应；Android 安装身份不得在
- * transport、缓存或编排层被裁剪成单一 URL。
+ * 更新字段与 pos-handheld backend 决策一一对应；enabled 由认证响应头合并。
+ * Android 安装身份不得在 transport、缓存或编排层被裁剪成单一 URL。
  */
 export type PosHandheldUpdatePolicy = Readonly<{
+  enabled: boolean;
   state: PosHandheldUpdateState;
   policyVersion: string;
   platform: DeviceSystem;
@@ -55,16 +56,18 @@ export interface PosHandheldUpdatePolicyStorePort {
 export function deriveNewTransactionGate(
   policy: PosHandheldUpdatePolicy | null,
 ): NewTransactionGate {
-  // 首次更新策略尚未完成时保持失败关闭；只有 backend 的 required 决策阻止新交易。
+  // 首次检查和旧缓存默认允许；required 升级优先于设备交易开关。
   const state =
     policy === null
       ? "unchecked"
       : policy.required
         ? "force-update"
-        : "enabled";
+        : policy.enabled
+          ? "enabled"
+          : "disabled";
   return Object.freeze({
     state,
-    canStartNewTransaction: state === "enabled",
+    canStartNewTransaction: state === "enabled" || state === "unchecked",
     canContinueRecovery: true as const,
   });
 }
@@ -93,7 +96,7 @@ export function normalizePosHandheldUpdatePolicy(
     "appStoreId",
     "releaseMessage",
   ] as const;
-  const allowed = new Set<string>(requiredFields);
+  const allowed = new Set<string>([...requiredFields, "enabled"]);
   if (Object.keys(input).some((key) => !allowed.has(key))) {
     throw new TypeError("Handheld update policy contains an unsupported field.");
   }
@@ -101,6 +104,10 @@ export function normalizePosHandheldUpdatePolicy(
     throw new TypeError("Handheld update policy must explicitly contain all fields.");
   }
 
+  const enabled = hasOwn(input, "enabled") ? input.enabled : true;
+  if (typeof enabled !== "boolean") {
+    throw new TypeError("Handheld update policy enabled flag is invalid.");
+  }
   const state = requiredState(input.state);
   const policyVersion = requiredPolicyVersion(input.policyVersion, state);
   const platform = requiredPlatform(input.platform);
@@ -185,6 +192,7 @@ export function normalizePosHandheldUpdatePolicy(
   }
 
   return Object.freeze({
+    enabled,
     state,
     policyVersion,
     platform,

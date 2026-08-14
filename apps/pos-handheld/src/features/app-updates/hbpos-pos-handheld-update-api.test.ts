@@ -12,13 +12,20 @@ import type {
 class RecordingTransport implements HbposTransport {
   public readonly requests: HbposTransportRequest[] = [];
 
-  public constructor(private readonly payload: unknown) {}
+  public constructor(
+    private readonly payload: unknown,
+    private readonly headers?: Readonly<Record<string, string>>,
+  ) {}
 
   public async request<T>(
     request: HbposTransportRequest,
   ): Promise<HbposTransportResponse<T>> {
     this.requests.push(request);
-    return { status: 200, data: this.payload as T };
+    return {
+      status: 200,
+      data: this.payload as T,
+      ...(this.headers ? { headers: this.headers } : {}),
+    };
   }
 }
 
@@ -70,7 +77,10 @@ test("iOS GET 使用 pos-handheld 路径并保留完整 TestFlight 决策", asyn
   const transport = new RecordingTransport({ success: true, data: iosDecision });
   const api = new HbposPosHandheldUpdateApi(transport, "iOS");
 
-  assert.deepEqual(await api.getPolicy(metadata), iosDecision);
+  assert.deepEqual(await api.getPolicy(metadata), {
+    ...iosDecision,
+    enabled: true,
+  });
   assert.deepEqual(transport.requests, [
     {
       method: "GET",
@@ -84,15 +94,42 @@ test("Android GET 从 response 到 policy 不丢失 size/hash/package/signature/
   const transport = new RecordingTransport({
     success: true,
     data: androidDecision,
+  }, {
+    "x-hbpos-allow-transactions": "false",
   });
   const api = new HbposPosHandheldUpdateApi(transport, "Android");
 
-  assert.deepEqual(await api.getPolicy(metadata), androidDecision);
+  assert.deepEqual(await api.getPolicy(metadata), {
+    ...androidDecision,
+    enabled: false,
+  });
   assert.deepEqual(transport.requests[0], {
     method: "GET",
     url: "/api/v1/app-updates/pos-handheld",
     params: metadata,
   });
+});
+
+test("交易权限响应头大小写兼容但非法值拒绝，缺失时默认允许", async () => {
+  const allowed = await new HbposPosHandheldUpdateApi(
+    new RecordingTransport(
+      { success: true, data: iosDecision },
+      { "X-HBPOS-Allow-Transactions": " TRUE " },
+    ),
+    "iOS",
+  ).getPolicy(metadata);
+  assert.equal(allowed.enabled, true);
+
+  await assert.rejects(
+    () => new HbposPosHandheldUpdateApi(
+      new RecordingTransport(
+        { success: true, data: iosDecision },
+        { "x-hbpos-allow-transactions": "0" },
+      ),
+      "iOS",
+    ).getPolicy(metadata),
+    /transaction permission|header/i,
+  );
 });
 
 test("response 平台不匹配、Android 元数据缺失或未知本机平台均 fail closed", async () => {

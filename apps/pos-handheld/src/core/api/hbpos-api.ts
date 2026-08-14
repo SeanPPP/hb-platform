@@ -49,6 +49,7 @@ export type HbposTransportRequest = Readonly<{
 export type HbposTransportResponse<T> = Readonly<{
   status: number;
   data: T;
+  headers?: Readonly<Record<string, string>>;
 }>;
 
 export interface HbposTransport {

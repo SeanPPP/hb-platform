@@ -80,6 +80,30 @@ test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证
   assert.equal(request?.headers?.["X-HBPOS-Cashier-Authorization"], "cashier-secret");
 });
 
+test("Axios transport 向领域适配器暴露规范化响应头", async () => {
+  const instance = create({
+    adapter: async (config) => ({
+      config,
+      status: 200,
+      statusText: "OK",
+      headers: { "X-HBPOS-Allow-Transactions": "false" },
+      data: { success: true },
+    }),
+  });
+  const transport = createAxiosHbposTransport(
+    "https://hbpos.example",
+    { async getCredentials() { return {}; } },
+    instance,
+  );
+
+  const response = await transport.request({
+    method: "GET",
+    url: "/api/v1/app-updates/pos-handheld",
+  });
+
+  assert.equal(response.headers?.["x-hbpos-allow-transactions"], "false");
+});
+
 test("请求最终 origin 偏离已选 API 时在读取凭据前失败关闭", async () => {
   let credentialReads = 0;
   let adapterCalls = 0;

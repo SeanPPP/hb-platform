@@ -10,13 +10,15 @@ import {
   UpdateTransitionLeaseCoordinator,
 } from "./update-transition-lease-coordinator";
 
-import type {
-  NewTransactionGate,
-  PosHandheldUpdatePolicy,
+import {
+  deriveNewTransactionGate,
+  type NewTransactionGate,
+  type PosHandheldUpdatePolicy,
 } from "@/core/contracts/app-updates";
 import type { PosHandheldOtaUpdatePolicy } from "@/core/contracts/ota-app-updates";
 
 const nativeEnabled: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "none",
   policyVersion: "none",
   platform: "iOS",
@@ -35,6 +37,7 @@ const nativeEnabled: PosHandheldUpdatePolicy = Object.freeze({
   releaseMessage: null,
 });
 const nativeOptional: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "optional",
   policyVersion: "ios-native-110",
   platform: "iOS",
@@ -58,7 +61,12 @@ const nativeRequired = Object.freeze({
   policyVersion: "ios-native-required-110",
   required: true,
 });
+const nativeDisabled = Object.freeze({
+  ...nativeEnabled,
+  enabled: false,
+});
 const androidRequired: PosHandheldUpdatePolicy = Object.freeze({
+  enabled: true,
   state: "required",
   policyVersion: "android-native-required-200",
   platform: "Android",
@@ -119,6 +127,24 @@ test("统一展示严格遵循 native required > OTA required > native optional 
     chooseAppUpdatePresentation(nativeEnabled, otaOptional, "1.0.0").kind,
     "ota",
   );
+});
+
+test("设备交易开关关闭时即使 OTA 策略缺失也必须阻止新交易", () => {
+  const orchestrator = new AppUpdateOrchestrator({
+    installedVersion: "1.0.0",
+    native: new FakeNative(nativeDisabled),
+    ota: new FakeOta(null),
+    ...transitionDependencies(),
+    safety: {
+      getSafetySnapshot: () => safeSnapshot(),
+    },
+  });
+
+  assert.deepEqual(orchestrator.getGate(), {
+    state: "disabled",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
 });
 
 test("Android APK 决策独立于 iOS OTA/App Store 分支", async () => {
@@ -353,11 +379,12 @@ test("交易门禁快照在语义未变时保持身份，并与订阅者共享�
   unsubscribe();
 });
 
-test("四种门禁语义的重复 getGate 均复用同一快照", () => {
+test("五种门禁语义的重复 getGate 均复用同一快照", () => {
   const cases = [
     { native: null, ota: null, state: "unchecked" },
     { native: nativeRequired, ota: otaOptional, state: "force-update" },
     { native: nativeEnabled, ota: otaRequired, state: "ota-update" },
+    { native: nativeDisabled, ota: null, state: "disabled" },
     { native: nativeEnabled, ota: otaOptional, state: "enabled" },
   ] as const;
 
@@ -602,11 +629,7 @@ class FakeNative {
   }
 
   public getGate(): NewTransactionGate {
-    return {
-      state: this.policy === null ? "unchecked" : "enabled",
-      canStartNewTransaction: this.policy !== null,
-      canContinueRecovery: true,
-    };
+    return deriveNewTransactionGate(this.policy);
   }
 
   public subscribe(listener: (gate: NewTransactionGate) => void) {
