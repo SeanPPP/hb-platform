@@ -1,0 +1,3013 @@
+import {
+  resolveSettingsAccess,
+  type SettingsAccess,
+} from "./settings-authorization";
+import {
+  mergeSettingsSquareDevices,
+  normalizeSettingsSquareDeviceId,
+  SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES,
+  type SettingsSquareDevice,
+  type SettingsSquareDeviceCode,
+  type SettingsSquareEnvironment,
+  type SettingsSquareLocation,
+  type SettingsSquareSetupPort,
+  type SettingsSquareTokenStatus,
+} from "./settings-square-setup";
+
+import {
+  DEFAULT_RECEIPT_PRINTER_SETTINGS,
+  type ReceiptPrinterSettings,
+} from "@/core/db/pos-settings-repository";
+import { isTrustedLocalHbposApiOrigin } from "@/core/security/pos-api-addresses";
+import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+
+export type SettingsPane =
+  "general" | "payments" | "peripherals" | "device" | "hardware";
+
+export type PaymentEnvironment = "Sandbox" | "Production";
+export type SettingsPaymentProvider = "square" | "linkly";
+
+export type SettingsCatalogSnapshot = Readonly<{
+  snapshotId: string | null;
+  itemCount: number;
+  activatedAt: string | null;
+}>;
+
+export type SettingsPaymentProviderSnapshot = Readonly<{
+  available: boolean;
+  blockerCode: string | null;
+  environment: PaymentEnvironment;
+}>;
+
+export type SettingsSquareSnapshot = SettingsPaymentProviderSnapshot &
+  Readonly<{
+    deviceId: string;
+    locationId: string;
+  }>;
+
+export type SettingsLinklyHealthCheck = Readonly<{
+  code: string;
+  isReady: boolean;
+  message: string | null;
+}>;
+
+export type SettingsLinklyHealthSnapshot = Readonly<{
+  environment: PaymentEnvironment;
+  storeCode: string;
+  deviceCode: string;
+  isReady: boolean;
+  checks: readonly SettingsLinklyHealthCheck[];
+}>;
+
+export type SettingsLinklyPairResult = Readonly<{
+  status: "completed" | "unknown";
+}>;
+
+export interface SettingsLinklySetupReadPort {
+  readState(
+    environment: PaymentEnvironment,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyHealthSnapshot>;
+}
+
+/** Settings 页面只可读取公开 health；不可把配对写能力暴露给 Presenter。 */
+export type SettingsLinklySetupControlPort = SettingsLinklySetupReadPort;
+
+/** 配对写端口只由危险动作路径持有。 */
+export interface SettingsLinklyPairingPort {
+  pair(
+    environment: PaymentEnvironment,
+    pairCode: string,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyPairResult>;
+}
+
+export type SettingsLinklyHealthResource = Readonly<{
+  kind: "idle" | "loading" | "ready" | "failed";
+  value: SettingsLinklyHealthSnapshot | null;
+}>;
+
+export type SettingsLinklyLogonTestState = Readonly<{
+  environment: PaymentEnvironment;
+  status: "idle" | "running" | "passed" | "failed";
+}>;
+
+export type SettingsLinklySetupState = Readonly<{
+  health: SettingsLinklyHealthResource;
+  logonTest: SettingsLinklyLogonTestState;
+  /** 仅用于清空 UI 瞬态 PairCode，不保存 PairCode 本身。 */
+  pairCodeResetToken: number;
+}>;
+
+export type SettingsHardwareSnapshot = Readonly<{
+  printerStatus: "connected" | "disconnected" | "unavailable";
+  scannerStatus: "ready" | "unavailable";
+  lastScannerValue: string | null;
+}>;
+
+export type SettingsAppUpdateSnapshot = Readonly<{
+  channel: string;
+  currentVersion: string;
+  availableVersion: string | null;
+  updateRequired: boolean;
+  restartAvailable: boolean;
+}>;
+
+export type SettingsDeviceSnapshot = Readonly<{
+  deviceCode: string;
+  storeCode: string;
+  storeName: string;
+  terminalName: string;
+}>;
+
+export type SettingsSnapshot = Readonly<{
+  apiBaseUrl: string;
+  appUpdate: SettingsAppUpdateSnapshot;
+  catalog: SettingsCatalogSnapshot;
+  device: SettingsDeviceSnapshot;
+  hardware: SettingsHardwareSnapshot;
+  linkly: SettingsPaymentProviderSnapshot;
+  paymentProvider: SettingsPaymentProvider | null;
+  printer: ReceiptPrinterSettings;
+  square: SettingsSquareSnapshot;
+}>;
+
+export type SettingsPaymentDraft = Readonly<{
+  square: Readonly<{
+    environment: PaymentEnvironment;
+    deviceId: string;
+    locationId: string;
+  }>;
+  linkly: Readonly<{
+    environment: PaymentEnvironment;
+  }>;
+}>;
+
+export type SettingsPaymentSettingsInput =
+  | Readonly<{
+      provider: "square";
+      square: SettingsPaymentDraft["square"];
+      linkly: null;
+    }>
+  | Readonly<{
+      provider: "linkly";
+      square: null;
+      linkly: SettingsPaymentDraft["linkly"];
+    }>;
+
+export type SettingsSquareRequestKind =
+  | "disabled"
+  | "idle"
+  | "loading"
+  | "ready"
+  | "empty"
+  | "failed";
+
+export type SettingsSquareValueState<T> = Readonly<{
+  kind: SettingsSquareRequestKind;
+  value: T | null;
+}>;
+
+export type SettingsSquareListState<T> = Readonly<{
+  kind: SettingsSquareRequestKind;
+  items: readonly T[];
+}>;
+
+export type SettingsSquareSetupState = Readonly<{
+  available: boolean;
+  token: SettingsSquareValueState<SettingsSquareTokenStatus>;
+  locations: SettingsSquareListState<SettingsSquareLocation>;
+  devices: SettingsSquareListState<SettingsSquareDevice>;
+  deviceCodes: SettingsSquareListState<SettingsSquareDeviceCode>;
+  selectedLocationId: string;
+  selectedDeviceId: string;
+  selectedDeviceCodeId: string;
+  devicesLoadedForLocationId: string | null;
+  deviceCodesLoadedForLocationId: string | null;
+}>;
+
+/**
+ * 设置 UI 不接触幂等键；组合根必须在每次 create 点击时生成一次并转发到底层 API。
+ */
+export interface SettingsSquareSetupControlPort
+  extends Omit<SettingsSquareSetupPort, "createSquareDeviceCode"> {
+  createSquareDeviceCode(
+    environment: SettingsSquareEnvironment,
+    locationId: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<SettingsSquareDeviceCode>;
+}
+
+export type SettingsPendingDataSnapshot = Readonly<{
+  hasActiveCart: boolean;
+  hasFulfilmentInFlight: boolean;
+  hasSyncOrAuditInFlight: boolean;
+  paymentConfigurationSensitiveOrderCount: number;
+  pendingDurableWriteCount: number;
+  pendingReturnCount: number;
+  pendingSaleCount: number;
+  unresolvedPaymentCount: number;
+}>;
+
+export type SettingsPrinterDevice = Readonly<{
+  id: string;
+  name: string;
+  transport: string;
+  preferred: boolean;
+}>;
+
+export const SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN =
+  "SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN";
+
+export type SettingsCashDrawerTestResult = Readonly<{
+  status: "completed" | "unknown" | "failed";
+  errorCode: string | null;
+}>;
+
+export type SettingsClearSavedPrinterResult = Readonly<{
+  status: "completed" | "cleared-disconnect-failed";
+  errorCode: string | null;
+}>;
+
+export type SettingsScannerTestResult = Readonly<{
+  source: "camera" | "hid";
+  value: string;
+}>;
+
+export type SettingsDangerousConfirmation =
+  | Readonly<{
+      kind: "change-api-address";
+      apiBaseUrl: string;
+    }>
+  | Readonly<{
+      kind: "change-payment-settings";
+      input: SettingsPaymentSettingsInput;
+    }>
+  | Readonly<{
+      kind: "pair-linkly";
+      environment: PaymentEnvironment;
+      pairCode: string;
+    }>
+  | Readonly<{ kind: "reset-catalog" }>
+  | Readonly<{
+      kind: "reregister-device";
+      targetStoreCode: string;
+      terminalName?: string;
+    }>
+  | Readonly<{ kind: "restart-app" }>;
+
+export type SettingsDangerousActionResult =
+  | Readonly<{
+      status: "blocked";
+      reason:
+        "candidate-unreachable" | "pending-local-data" | "safety-check-failed";
+    }>
+  | Readonly<{
+      status: "completed";
+      kind:
+        | "change-api-address"
+        | "change-payment-settings"
+        | "pair-linkly"
+        | "reregister-device"
+        | "restart-app";
+    }>
+  | Readonly<{
+      status: "unknown";
+      kind: "pair-linkly";
+    }>
+  | Readonly<{
+      status: "completed";
+      kind: "reset-catalog";
+      catalog: SettingsCatalogSnapshot;
+    }>;
+
+export interface SettingsControlPort {
+  squareSetup?: SettingsSquareSetupControlPort | undefined;
+  /** 只允许读取 health；配对必须经过 executeDangerousAction。 */
+  linklySetup?: SettingsLinklySetupReadPort | undefined;
+  loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
+  getCatalogRefreshState(): CatalogRefreshState;
+  subscribeCatalogRefresh(listener: () => void): () => void;
+  downloadCatalog(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
+  /**
+   * 只探测候选地址，不保存配置、不重载运行时。
+   */
+  testApiAddress(
+    apiBaseUrl: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  testPaymentProvider(
+    provider: "square" | "linkly",
+    input: SettingsPaymentSettingsInput,
+    signal: AbortSignal,
+  ): Promise<void>;
+  savePrinterSettings(
+    settings: ReceiptPrinterSettings,
+    signal: AbortSignal,
+  ): Promise<void>;
+  scanPrinters(signal: AbortSignal): Promise<readonly SettingsPrinterDevice[]>;
+  connectPrinter(peripheralId: string, signal: AbortSignal): Promise<void>;
+  testPrinter(signal: AbortSignal): Promise<void>;
+  /**
+   * 可选能力由生产运行时转发到受 CashDrawer.Open 权限、lease 与审计保护的动作。
+   */
+  testCashDrawer?:
+    | ((signal: AbortSignal) => Promise<SettingsCashDrawerTestResult>)
+    | undefined;
+  clearSavedPrinter?:
+    | ((signal: AbortSignal) => Promise<SettingsClearSavedPrinterResult>)
+    | undefined;
+  testScanner(signal: AbortSignal): Promise<SettingsScannerTestResult>;
+  checkForAppUpdate(signal: AbortSignal): Promise<SettingsAppUpdateSnapshot>;
+
+  /**
+   * 组合根必须在一个互斥临界区内重新读取活动购物车、待同步销售/退款、
+   * 未决支付与耐久写入，并在临界区释放前执行动作，禁止新业务状态穿插。
+   * API 切换还必须先 GET 候选地址的 /api/v1/health；失败时保留旧地址。
+   * signal 中止时，硬件监听和协调器租约都必须立即释放。
+   */
+  executeDangerousAction(
+    action: SettingsDangerousConfirmation,
+    signal: AbortSignal,
+  ): Promise<SettingsDangerousActionResult>;
+}
+
+export type SettingsStatusCode =
+  | "api-address-saved"
+  | "api-health-check-failed"
+  | "api-health-check-passed"
+  | "app-restart-requested"
+  | "app-update-check-failed"
+  | "app-update-checked"
+  | "cash-drawer-test-failed"
+  | "cash-drawer-test-passed"
+  | "cash-drawer-test-unknown"
+  | "catalog-download-failed"
+  | "catalog-downloaded"
+  | "catalog-reset"
+  | "catalog-reset-failed"
+  | "device-reregister-failed"
+  | "device-reregister-started"
+  | "invalid-api-address"
+  | "invalid-device-registration"
+  | "load-failed"
+  | "linkly-health-load-failed"
+  | "linkly-pair-code-invalid"
+  | "linkly-pair-failed"
+  | "linkly-pair-unknown"
+  | "linkly-paired"
+  | "linkly-setup-required"
+  | "payment-settings-invalid"
+  | "payment-settings-save-failed"
+  | "payment-settings-saved"
+  | "payment-test-failed"
+  | "payment-test-passed"
+  | "pending-local-data"
+  | "permission-required"
+  | "printer-connect-failed"
+  | "printer-connected"
+  | "printer-connected-save-failed"
+  | "printer-clear-failed"
+  | "printer-cleared"
+  | "printer-cleared-disconnect-failed"
+  | "printer-bluetooth-authorization-pending"
+  | "printer-bluetooth-permission-required"
+  | "printer-bluetooth-powered-off"
+  | "printer-bluetooth-restricted"
+  | "printer-scan-failed"
+  | "printer-scan-finished"
+  | "printer-settings-save-failed"
+  | "printer-settings-saved"
+  | "printer-test-failed"
+  | "printer-test-passed"
+  | "printer-test-unknown"
+  | "restart-failed"
+  | "safety-check-failed"
+  | "scanner-test-failed"
+  | "scanner-test-passed";
+
+export type SettingsState = Readonly<{
+  access: SettingsAccess;
+  activePane: SettingsPane;
+  apiBaseUrl: string;
+  apiAddressDraft: string;
+  appUpdate: SettingsAppUpdateSnapshot;
+  busy: boolean;
+  catalog: SettingsCatalogSnapshot;
+  catalogRefresh: CatalogRefreshState;
+  confirmation: SettingsDangerousConfirmation | null;
+  device: SettingsDeviceSnapshot;
+  hardware: SettingsHardwareSnapshot;
+  kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
+  linkly: SettingsPaymentProviderSnapshot;
+  linklyDraft: SettingsPaymentDraft["linkly"];
+  linklySetup: SettingsLinklySetupState | null;
+  paymentProvider: SettingsPaymentProvider | null;
+  paymentProviderDraft: SettingsPaymentProvider | null;
+  printer: ReceiptPrinterSettings;
+  printerDevices: readonly SettingsPrinterDevice[];
+  reregisterStoreCode: string;
+  square: SettingsSquareSnapshot;
+  squareDraft: SettingsPaymentDraft["square"];
+  squareDeviceCodeNameDraft: string;
+  squareSetup: SettingsSquareSetupState;
+  statusCode: SettingsStatusCode | null;
+  terminalNameDraft: string;
+}>;
+
+export type SettingsPresenterOptions = Readonly<{
+  permissions: readonly string[];
+  port: SettingsControlPort;
+}>;
+
+/**
+ * Settings 只编排公开配置与窄硬件端口。支付凭据、设备密钥、数据库和 HTTP
+ * transport 都不能进入 state；危险动作还必须通过待同步数据的 fail-closed 门禁。
+ */
+export class SettingsPresenter {
+  private readonly listeners = new Set<() => void>();
+  private readonly lifetime = new AbortController();
+  private catalogRefreshUnsubscribe: () => void = () => undefined;
+  private state: SettingsState;
+  private destroyed = false;
+  private loadGeneration = 0;
+  private squareTokenGeneration = 0;
+  private squareLocationsGeneration = 0;
+  private squareDevicesGeneration = 0;
+  private squareDeviceCodesGeneration = 0;
+  private linklySetupGeneration = 0;
+  private actionInFlight: Promise<void> | null = null;
+  private catalogRefreshInFlight: Promise<void> | null = null;
+
+  public constructor(private readonly options: SettingsPresenterOptions) {
+    const access = resolveSettingsAccess(options.permissions);
+    this.state = initialState(
+      access,
+      options.port.getCatalogRefreshState(),
+      options.port.squareSetup !== undefined,
+      options.port.linklySetup !== undefined,
+    );
+    this.catalogRefreshUnsubscribe =
+      options.port.subscribeCatalogRefresh(
+        this.handleCatalogRefreshChanged,
+      );
+  }
+
+  public readonly getState = (): SettingsState => this.state;
+
+  public readonly subscribe = (listener: () => void): (() => void) => {
+    if (this.destroyed) return () => undefined;
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  public destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.loadGeneration += 1;
+    this.linklySetupGeneration += 1;
+    this.invalidateSquareRequests("environment");
+    this.catalogRefreshUnsubscribe();
+    this.catalogRefreshUnsubscribe = () => undefined;
+    this.lifetime.abort();
+    this.listeners.clear();
+  }
+
+  public async load(): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.state.access.canView) {
+      this.patch({
+        kind: "unauthorized",
+        statusCode: "permission-required",
+      });
+      return;
+    }
+    const generation = ++this.loadGeneration;
+    this.patch({ kind: "loading", statusCode: null });
+    try {
+      const snapshot = normalizeSnapshot(
+        await this.options.port.loadSnapshot(this.lifetime.signal),
+      );
+      if (!this.isCurrentLoad(generation)) return;
+      this.patch({
+        apiBaseUrl: snapshot.apiBaseUrl,
+        apiAddressDraft: snapshot.apiBaseUrl,
+        appUpdate: snapshot.appUpdate,
+        catalog: catalogSnapshotForRefresh(
+          snapshot.catalog,
+          this.state.catalogRefresh,
+        ),
+        device: snapshot.device,
+        hardware: snapshot.hardware,
+        kind: "ready",
+        linkly: snapshot.linkly,
+        linklyDraft: {
+          environment: snapshot.linkly.environment,
+        },
+        linklySetup: this.options.port.linklySetup
+          ? initialLinklySetupState(snapshot.linkly.environment)
+          : null,
+        paymentProvider: snapshot.paymentProvider,
+        paymentProviderDraft: snapshot.paymentProvider,
+        printer: snapshot.printer,
+        reregisterStoreCode: "",
+        square: snapshot.square,
+        squareDraft: {
+          deviceId: snapshot.square.deviceId,
+          environment: snapshot.square.environment,
+          locationId: snapshot.square.locationId,
+        },
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            kind:
+              this.state.squareSetup.available &&
+              snapshot.square.environment === "Production"
+                ? "idle"
+                : "disabled",
+            items: Object.freeze([]),
+          }),
+          selectedDeviceId: snapshot.square.deviceId,
+          selectedLocationId: snapshot.square.locationId,
+          selectedDeviceCodeId: "",
+          devicesLoadedForLocationId: null,
+          deviceCodesLoadedForLocationId: null,
+        }),
+        statusCode: null,
+        terminalNameDraft: snapshot.device.terminalName,
+      });
+      if (
+        this.options.port.linklySetup &&
+        this.state.access.canConfigurePayments
+      ) {
+        await this.loadLinklySetupState(
+          snapshot.linkly.environment,
+          generation,
+          true,
+        );
+      }
+    } catch {
+      if (!this.isCurrentLoad(generation)) return;
+      this.patch({ kind: "failed", statusCode: "load-failed" });
+    }
+  }
+
+  public selectPane(pane: SettingsPane): boolean {
+    if (this.destroyed || this.state.busy || this.state.confirmation !== null) {
+      return false;
+    }
+    this.patch({ activePane: pane, statusCode: null });
+    return true;
+  }
+
+  public setApiAddressDraft(value: string): void {
+    if (!this.canEdit()) return;
+    this.patch({ apiAddressDraft: value, statusCode: null });
+  }
+
+  public testApiAddress(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return Promise.resolve();
+    }
+    let apiBaseUrl: string;
+    try {
+      apiBaseUrl = normalizeApiAddress(this.state.apiAddressDraft);
+    } catch {
+      this.patch({ statusCode: "invalid-api-address" });
+      return Promise.resolve();
+    }
+    this.patch({ apiAddressDraft: apiBaseUrl });
+    return this.runAction(async () => {
+      try {
+        const reachable = await this.options.port.testApiAddress(
+          apiBaseUrl,
+          this.lifetime.signal,
+        );
+        this.patch({
+          statusCode: reachable
+            ? "api-health-check-passed"
+            : "api-health-check-failed",
+        });
+      } catch {
+        this.patch({ statusCode: "api-health-check-failed" });
+      }
+    });
+  }
+
+  public setSquareEnvironment(environment: PaymentEnvironment): void {
+    if (!this.canEditPayments()) return;
+    if (environment === this.state.squareDraft.environment) return;
+    this.invalidateSquareRequests("environment");
+    const available = this.state.squareSetup.available;
+    const idleKind: SettingsSquareRequestKind = available
+      ? "idle"
+      : "disabled";
+    this.patch({
+      squareDraft: { environment, locationId: "", deviceId: "" },
+      squareDeviceCodeNameDraft: "HBPOS Terminal",
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        token: Object.freeze({ kind: idleKind, value: null }),
+        locations: Object.freeze({
+          kind: idleKind,
+          items: Object.freeze([]),
+        }),
+        devices: Object.freeze({
+          kind: idleKind,
+          items: Object.freeze([]),
+        }),
+        deviceCodes: Object.freeze({
+          kind:
+            available && environment === "Production"
+              ? "idle"
+              : "disabled",
+          items: Object.freeze([]),
+        }),
+        selectedLocationId: "",
+        selectedDeviceId: "",
+        selectedDeviceCodeId: "",
+        devicesLoadedForLocationId: null,
+        deviceCodesLoadedForLocationId: null,
+      }),
+      statusCode: null,
+    });
+  }
+
+  public async loadSquareLocations(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return;
+    }
+    const squareSetup = this.options.port.squareSetup;
+    if (!squareSetup) return;
+    const environment = this.state.squareDraft.environment;
+    const tokenGeneration = ++this.squareTokenGeneration;
+    const locationsGeneration = ++this.squareLocationsGeneration;
+    this.patch({
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        token: Object.freeze({
+          ...this.state.squareSetup.token,
+          kind: "loading",
+        }),
+        locations: Object.freeze({
+          ...this.state.squareSetup.locations,
+          kind: "loading",
+        }),
+      }),
+      statusCode: null,
+    });
+    const [tokenResult, locationsResult] = await Promise.allSettled([
+      squareSetup.getSquareTokenStatus(
+        environment,
+        this.lifetime.signal,
+      ),
+      squareSetup.listSquareLocations(
+        environment,
+        this.lifetime.signal,
+      ),
+    ]);
+    if (
+      this.isCurrentSquareEnvironmentRequest(
+        environment,
+        tokenGeneration,
+        this.squareTokenGeneration,
+      )
+    ) {
+      const token =
+        tokenResult.status === "fulfilled" &&
+        tokenResult.value.environment === environment
+          ? tokenResult.value
+          : null;
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          token: token
+            ? Object.freeze({ kind: "ready", value: token })
+            : Object.freeze({
+                ...this.state.squareSetup.token,
+                kind: "failed",
+              }),
+        }),
+      });
+    }
+    if (
+      !this.isCurrentSquareEnvironmentRequest(
+        environment,
+        locationsGeneration,
+        this.squareLocationsGeneration,
+      )
+    ) {
+      return;
+    }
+    if (locationsResult.status === "rejected") {
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          locations: Object.freeze({
+            ...this.state.squareSetup.locations,
+            kind: "failed",
+          }),
+        }),
+      });
+      return;
+    }
+    const locationItems = Object.freeze([...locationsResult.value]);
+    if (locationItems.length === 0) {
+      this.invalidateSquareRequests("location");
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          locations: Object.freeze({ kind: "empty", items: locationItems }),
+          devices: Object.freeze({ kind: "idle", items: Object.freeze([]) }),
+          deviceCodes: Object.freeze({
+            kind: environment === "Production" ? "idle" : "disabled",
+            items: Object.freeze([]),
+          }),
+          selectedLocationId: "",
+          selectedDeviceId: "",
+          selectedDeviceCodeId: "",
+          devicesLoadedForLocationId: null,
+          deviceCodesLoadedForLocationId: null,
+        }),
+      });
+      return;
+    }
+    const matchedLocation = findSquareLocation(
+      locationItems,
+      this.state.squareDraft.locationId,
+    );
+    const selectedLocation =
+      matchedLocation ??
+      (environment === "Sandbox" && locationItems.length === 1
+        ? locationItems[0]
+        : null);
+    const selectedLocationId = selectedLocation?.id ?? "";
+    this.invalidateSquareRequests("location");
+    this.patch({
+      squareDraft: {
+        ...this.state.squareDraft,
+        locationId: selectedLocationId,
+        ...(selectedLocationId ? {} : { deviceId: "" }),
+      },
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        locations: Object.freeze({ kind: "ready", items: locationItems }),
+        devices: Object.freeze({ kind: "idle", items: Object.freeze([]) }),
+        deviceCodes: Object.freeze({
+          kind: environment === "Production" ? "idle" : "disabled",
+          items: Object.freeze([]),
+        }),
+        selectedLocationId,
+        selectedDeviceId: selectedLocationId
+          ? this.state.squareSetup.selectedDeviceId
+          : "",
+        selectedDeviceCodeId: "",
+        devicesLoadedForLocationId: null,
+        deviceCodesLoadedForLocationId: null,
+      }),
+    });
+    if (environment === "Sandbox" && selectedLocationId) {
+      await this.loadSquareDevices();
+    }
+  }
+
+  public setSquareLocationId(locationId: string): void {
+    if (!this.canEditPayments()) return;
+    if (!this.state.squareSetup.available) {
+      this.patch({
+        squareDraft: { ...this.state.squareDraft, locationId },
+        statusCode: null,
+      });
+      return;
+    }
+    const requestedId = safePublicIdentifier(locationId);
+    const matched = findSquareLocation(
+      this.state.squareSetup.locations.items,
+      requestedId,
+    );
+    const selectedLocationId = matched?.id ?? "";
+    if (
+      selectedLocationId === this.state.squareSetup.selectedLocationId &&
+      selectedLocationId === this.state.squareDraft.locationId
+    ) {
+      return;
+    }
+    this.invalidateSquareRequests("location");
+    this.patch({
+      squareDraft: {
+        ...this.state.squareDraft,
+        locationId: selectedLocationId,
+        deviceId: "",
+      },
+      squareDeviceCodeNameDraft: "HBPOS Terminal",
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        devices: Object.freeze({ kind: "idle", items: Object.freeze([]) }),
+        deviceCodes: Object.freeze({
+          kind:
+            this.state.squareDraft.environment === "Production"
+              ? "idle"
+              : "disabled",
+          items: Object.freeze([]),
+        }),
+        selectedLocationId,
+        selectedDeviceId: "",
+        selectedDeviceCodeId: "",
+        devicesLoadedForLocationId: null,
+        deviceCodesLoadedForLocationId: null,
+      }),
+      statusCode: null,
+    });
+  }
+
+  public setSquareDeviceId(deviceId: string): void {
+    if (!this.canEditPayments()) return;
+    if (!this.state.squareSetup.available) {
+      this.patch({
+        squareDraft: { ...this.state.squareDraft, deviceId },
+        statusCode: null,
+      });
+      return;
+    }
+    const requestedId = normalizeSettingsSquareDeviceId(deviceId) ?? "";
+    const matched = findSquareDevice(
+      this.state.squareSetup.devices.items,
+      requestedId,
+    );
+    const selectedDeviceId =
+      matched && !isSquareDeviceDisabled(matched) ? matched.id : "";
+    this.patch({
+      squareDraft: { ...this.state.squareDraft, deviceId: selectedDeviceId },
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        selectedDeviceId,
+      }),
+      statusCode: null,
+    });
+  }
+
+  public async loadSquareDevices(): Promise<void> {
+    await this.loadSquareDevicesForSelection(null);
+  }
+
+  public setSquareDeviceCodeNameDraft(value: string): void {
+    if (!this.canEditPayments()) return;
+    this.patch({ squareDeviceCodeNameDraft: value, statusCode: null });
+  }
+
+  public setSquareDeviceCodeId(deviceCodeId: string): void {
+    if (!this.canEditPayments()) return;
+    const selected = findSquareDeviceCode(
+      this.state.squareSetup.deviceCodes.items,
+      deviceCodeId,
+    );
+    this.squareDeviceCodesGeneration += 1;
+    this.patch({
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        selectedDeviceCodeId: selected?.id ?? "",
+      }),
+      statusCode: null,
+    });
+  }
+
+  public async loadSquareDeviceCodes(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return;
+    }
+    const squareSetup = this.options.port.squareSetup;
+    if (!squareSetup) return;
+    const environment = this.state.squareDraft.environment;
+    if (environment !== "Production") {
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            kind: "disabled",
+            items: Object.freeze([]),
+          }),
+          selectedDeviceCodeId: "",
+          deviceCodesLoadedForLocationId: null,
+        }),
+      });
+      return;
+    }
+    const selectedLocation = findSquareLocation(
+      this.state.squareSetup.locations.items,
+      this.state.squareSetup.selectedLocationId,
+    );
+    if (!selectedLocation) return;
+    const locationId = selectedLocation.id;
+    const generation = ++this.squareDeviceCodesGeneration;
+    this.patch({
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        deviceCodes: Object.freeze({
+          ...this.state.squareSetup.deviceCodes,
+          kind: "loading",
+        }),
+      }),
+      statusCode: null,
+    });
+    try {
+      const deviceCodes = Object.freeze([
+        ...(await squareSetup.listSquareDeviceCodes(
+          environment,
+          locationId,
+          this.lifetime.signal,
+        )),
+      ]);
+      if (
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDeviceCodesGeneration,
+        )
+      ) {
+        return;
+      }
+      const selectedDeviceCode =
+        findSquareDeviceCode(
+          deviceCodes,
+          this.state.squareSetup.selectedDeviceCodeId,
+        ) ??
+        deviceCodes.find((deviceCode) =>
+          equalSquareDeviceId(
+            deviceCode.deviceId ?? "",
+            this.state.squareDraft.deviceId || this.state.square.deviceId,
+          ),
+        ) ??
+        null;
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            kind: deviceCodes.length === 0 ? "empty" : "ready",
+            items: deviceCodes,
+          }),
+          selectedDeviceCodeId: selectedDeviceCode?.id ?? "",
+          deviceCodesLoadedForLocationId: locationId,
+        }),
+      });
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDeviceCodesGeneration,
+        )
+      ) {
+        return;
+      }
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            ...this.state.squareSetup.deviceCodes,
+            kind: "failed",
+          }),
+        }),
+      });
+    }
+  }
+
+  public async createSquareDeviceCode(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return;
+    }
+    if (this.state.squareSetup.deviceCodes.kind === "loading") return;
+    const squareSetup = this.options.port.squareSetup;
+    if (!squareSetup || this.state.squareDraft.environment !== "Production") {
+      return;
+    }
+    const selectedLocation = findSquareLocation(
+      this.state.squareSetup.locations.items,
+      this.state.squareSetup.selectedLocationId,
+    );
+    const name = safeSquareDeviceCodeName(
+      this.state.squareDeviceCodeNameDraft,
+    );
+    if (!selectedLocation || !name) return;
+    const environment = "Production" as const;
+    const locationId = selectedLocation.id;
+    return this.runAction(async () => {
+      const generation = ++this.squareDeviceCodesGeneration;
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            ...this.state.squareSetup.deviceCodes,
+            kind: "loading",
+          }),
+        }),
+        statusCode: null,
+      });
+      try {
+        const created = await squareSetup.createSquareDeviceCode(
+          environment,
+          locationId,
+          name,
+          this.lifetime.signal,
+        );
+        if (
+          !safePublicIdentifier(created.id) ||
+          !this.isCurrentSquareLocationRequest(
+            environment,
+            locationId,
+            generation,
+            this.squareDeviceCodesGeneration,
+          )
+        ) {
+          return;
+        }
+        const items = replaceSquareDeviceCode(
+          this.state.squareSetup.deviceCodes.items,
+          created,
+        );
+        this.patch({
+          squareSetup: Object.freeze({
+            ...this.state.squareSetup,
+            deviceCodes: Object.freeze({ kind: "ready", items }),
+            selectedDeviceCodeId: created.id,
+            deviceCodesLoadedForLocationId: locationId,
+          }),
+        });
+      } catch (error) {
+        if (
+          isAbortError(error) ||
+          !this.isCurrentSquareLocationRequest(
+            environment,
+            locationId,
+            generation,
+            this.squareDeviceCodesGeneration,
+          )
+        ) {
+          return;
+        }
+        this.patch({
+          squareSetup: Object.freeze({
+            ...this.state.squareSetup,
+            deviceCodes: Object.freeze({
+              ...this.state.squareSetup.deviceCodes,
+              kind: "failed",
+            }),
+          }),
+        });
+      }
+    });
+  }
+
+  public async refreshSquareDeviceCode(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return;
+    }
+    const squareSetup = this.options.port.squareSetup;
+    if (!squareSetup || this.state.squareDraft.environment !== "Production") {
+      return;
+    }
+    const selectedLocation = findSquareLocation(
+      this.state.squareSetup.locations.items,
+      this.state.squareSetup.selectedLocationId,
+    );
+    const selectedDeviceCode = findSquareDeviceCode(
+      this.state.squareSetup.deviceCodes.items,
+      this.state.squareSetup.selectedDeviceCodeId,
+    );
+    if (!selectedLocation || !selectedDeviceCode) return;
+    const environment = "Production" as const;
+    const locationId = selectedLocation.id;
+    const deviceCodeId = selectedDeviceCode.id;
+    const generation = ++this.squareDeviceCodesGeneration;
+    this.patch({
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        deviceCodes: Object.freeze({
+          ...this.state.squareSetup.deviceCodes,
+          kind: "loading",
+        }),
+      }),
+      statusCode: null,
+    });
+    try {
+      const refreshed = await squareSetup.getSquareDeviceCode(
+        environment,
+        deviceCodeId,
+        this.lifetime.signal,
+      );
+      if (
+        !safePublicIdentifier(refreshed.id) ||
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDeviceCodesGeneration,
+        )
+      ) {
+        return;
+      }
+      const items = replaceSquareDeviceCode(
+        this.state.squareSetup.deviceCodes.items,
+        refreshed,
+      );
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({ kind: "ready", items }),
+          selectedDeviceCodeId: refreshed.id,
+          deviceCodesLoadedForLocationId: locationId,
+        }),
+      });
+      if (
+        refreshed.status?.trim().toUpperCase() === "PAIRED" &&
+        normalizeSettingsSquareDeviceId(refreshed.deviceId)
+      ) {
+        // 配对只更新候选设备；正式保存仍必须经过显式保存、确认和待同步数据门禁。
+        await this.loadSquareDevicesForSelection(
+          refreshed.deviceId,
+          deviceCodeId,
+        );
+      }
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDeviceCodesGeneration,
+        )
+      ) {
+        return;
+      }
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          deviceCodes: Object.freeze({
+            ...this.state.squareSetup.deviceCodes,
+            kind: "failed",
+          }),
+        }),
+      });
+    }
+  }
+
+  public setLinklyEnvironment(environment: PaymentEnvironment): void {
+    if (!this.canEditPayments()) return;
+    if (environment === this.state.linklyDraft.environment) return;
+    const linklySetup = this.state.linklySetup
+      ? resetLinklySetupState(
+          this.state.linklySetup,
+          environment,
+          true,
+          true,
+        )
+      : null;
+    this.patch({
+      linklyDraft: { environment },
+      linklySetup,
+      statusCode: null,
+    });
+    if (this.options.port.linklySetup) {
+      void this.loadLinklySetupState(
+        environment,
+        this.loadGeneration,
+        true,
+      );
+    }
+  }
+
+  public refreshLinklySetup(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return Promise.resolve();
+    }
+    if (!this.options.port.linklySetup) return Promise.resolve();
+    const environment = this.state.linklyDraft.environment;
+    return this.runAction(() =>
+      this.loadLinklySetupState(environment, this.loadGeneration, false),
+    );
+  }
+
+  public setPaymentProvider(provider: SettingsPaymentProvider): void {
+    if (!this.canEditPayments()) return;
+    if (
+      provider === "linkly" &&
+      this.options.port.linklySetup &&
+      isLinklyBaseSelectable(this.state) &&
+      !isLinklySetupReady(this.state, this.state.linklyDraft.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return;
+    }
+    if (!isPaymentProviderSelectable(provider, this.state)) {
+      this.patch({ statusCode: "payment-settings-invalid" });
+      return;
+    }
+    this.patch({ paymentProviderDraft: provider, statusCode: null });
+  }
+
+  public setPrinterEnabled(enabled: boolean): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, printEnabled: enabled },
+      statusCode: null,
+    });
+  }
+
+  public setDrawerEnabled(enabled: boolean): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, drawerEnabled: enabled },
+      statusCode: null,
+    });
+  }
+
+  public setPrinterPeripheralId(peripheralId: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, peripheralId },
+      statusCode: null,
+    });
+  }
+
+  public setPrinterPaper(paper: ReceiptPrinterSettings["paper"]): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, paper },
+      statusCode: null,
+    });
+  }
+
+  public setPrinterLocale(locale: ReceiptPrinterSettings["locale"]): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, locale },
+      statusCode: null,
+    });
+  }
+
+  public setReregisterStoreCode(value: string): void {
+    if (!this.canEdit()) return;
+    this.patch({ reregisterStoreCode: value, statusCode: null });
+  }
+
+  public setTerminalName(value: string): void {
+    if (!this.canEdit()) return;
+    this.patch({ terminalNameDraft: value, statusCode: null });
+  }
+
+  public savePaymentSettings(): Promise<void> {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return Promise.resolve();
+    }
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return Promise.resolve();
+    }
+    const input = normalizePaymentDraft(
+      this.state.paymentProviderDraft,
+      this.state.squareDraft,
+      this.state.linklyDraft,
+      isPaymentProviderSelectable("square", this.state),
+      isLinklyBaseSelectable(this.state),
+    );
+    if (
+      !input ||
+      (input.provider === "square" &&
+        !isLoadedSquareSelectionValid(this.state, input.square))
+    ) {
+      this.patch({ statusCode: "payment-settings-invalid" });
+      return Promise.resolve();
+    }
+    const current = currentPaymentSettings(this.state);
+    if (current && paymentSettingsEqual(input, current)) {
+      this.patch({ statusCode: "payment-settings-saved" });
+      return Promise.resolve();
+    }
+    if (
+      input.provider === "linkly" &&
+      this.options.port.linklySetup &&
+      !isLinklySetupReady(this.state, input.linkly.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return Promise.resolve();
+    }
+    this.requestConfirmation({
+      kind: "change-payment-settings",
+      input,
+    });
+    return Promise.resolve();
+  }
+
+  public requestLinklyPair(pairCode: string): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return false;
+    }
+    const normalizedPairCode = pairCode.trim();
+    if (!/^\d{6}$/u.test(normalizedPairCode)) {
+      this.patch({ statusCode: "linkly-pair-code-invalid" });
+      return false;
+    }
+    if (
+      !this.options.port.linklySetup ||
+      !hasLinklyCloudCredentials(
+        this.state,
+        this.state.linklyDraft.environment,
+      )
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return false;
+    }
+    return this.requestConfirmation({
+      kind: "pair-linkly",
+      environment: this.state.linklyDraft.environment,
+      pairCode: normalizedPairCode,
+    });
+  }
+
+  public testPaymentProvider(provider: "square" | "linkly"): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return Promise.resolve();
+    }
+    if (provider !== "linkly" && provider !== this.state.paymentProviderDraft) {
+      this.patch({ statusCode: "payment-settings-invalid" });
+      return Promise.resolve();
+    }
+    if (
+      provider === "linkly" &&
+      this.options.port.linklySetup &&
+      !isLinklyHealthReady(this.state, this.state.linklyDraft.environment)
+    ) {
+      this.patch({ statusCode: "linkly-setup-required" });
+      return Promise.resolve();
+    }
+    const testProvider =
+      provider === "linkly" ? "linkly" : this.state.paymentProviderDraft;
+    const input = normalizePaymentDraft(
+      testProvider,
+      this.state.squareDraft,
+      this.state.linklyDraft,
+      isPaymentProviderSelectable("square", this.state),
+      isLinklyBaseSelectable(this.state),
+    );
+    if (
+      !input ||
+      (provider === "square"
+        ? input.square === null ||
+          !isLoadedSquareSelectionValid(this.state, input.square)
+        : input.linkly === null)
+    ) {
+      this.patch({ statusCode: "payment-settings-invalid" });
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      const linklyTestEnvironment =
+        provider === "linkly" ? input.linkly?.environment : null;
+      if (linklyTestEnvironment && this.state.linklySetup) {
+        this.patch({
+          linklySetup: updateLinklyLogonTest(
+            this.state.linklySetup,
+            linklyTestEnvironment,
+            "running",
+          ),
+        });
+      }
+      try {
+        await this.options.port.testPaymentProvider(
+          provider,
+          input,
+          this.lifetime.signal,
+        );
+        if (linklyTestEnvironment && this.state.linklySetup) {
+          this.patch({
+            linklySetup: updateLinklyLogonTest(
+              this.state.linklySetup,
+              linklyTestEnvironment,
+              "passed",
+            ),
+          });
+        }
+        this.patch({ statusCode: "payment-test-passed" });
+      } catch {
+        if (linklyTestEnvironment && this.state.linklySetup) {
+          this.patch({
+            linklySetup: updateLinklyLogonTest(
+              this.state.linklySetup,
+              linklyTestEnvironment,
+              "failed",
+            ),
+          });
+        }
+        this.patch({ statusCode: "payment-test-failed" });
+      }
+    });
+  }
+
+  public savePrinterSettings(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    const settings = normalizePrinterSettings(this.state.printer);
+    return this.runAction(async () => {
+      try {
+        await this.options.port.savePrinterSettings(
+          settings,
+          this.lifetime.signal,
+        );
+        this.patch({
+          printer: settings,
+          statusCode: "printer-settings-saved",
+        });
+      } catch {
+        this.patch({ statusCode: "printer-settings-save-failed" });
+      }
+    });
+  }
+
+  public scanPrinters(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        const devices = await this.options.port.scanPrinters(
+          this.lifetime.signal,
+        );
+        this.patch({
+          printerDevices: Object.freeze(
+            devices
+              .map(normalizePrinterDevice)
+              .sort(comparePrinterDevices),
+          ),
+          statusCode: "printer-scan-finished",
+        });
+      } catch (error) {
+        this.patch({
+          statusCode: printerScanFailureStatus(error),
+        });
+      }
+    });
+  }
+
+  public connectPrinter(peripheralId: string): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    const normalizedId = peripheralId.trim();
+    if (!normalizedId) {
+      this.patch({ statusCode: "printer-connect-failed" });
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        await this.options.port.connectPrinter(
+          normalizedId,
+          this.lifetime.signal,
+        );
+      } catch {
+        this.patch({ statusCode: "printer-connect-failed" });
+        return;
+      }
+
+      const settings = normalizePrinterSettings({
+        ...this.state.printer,
+        peripheralId: normalizedId,
+      });
+      this.patch({
+        hardware: {
+          ...this.state.hardware,
+          printerStatus: "connected",
+        },
+        printer: settings,
+      });
+      try {
+        await this.options.port.savePrinterSettings(
+          settings,
+          this.lifetime.signal,
+        );
+        this.patch({ statusCode: "printer-connected" });
+      } catch {
+        // 硬件连接已经成立；保存失败时保留真实连接态与 draft，供用户明确重试保存。
+        this.patch({ statusCode: "printer-connected-save-failed" });
+      }
+    });
+  }
+
+  public testPrinter(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        await this.options.port.testPrinter(this.lifetime.signal);
+        this.patch({ statusCode: "printer-test-passed" });
+      } catch (error) {
+        this.patch({
+          statusCode: isPrinterTestOutcomeUnknown(error)
+            ? "printer-test-unknown"
+            : "printer-test-failed",
+        });
+      }
+    });
+  }
+
+  public testCashDrawer(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      const testCashDrawer = this.options.port.testCashDrawer;
+      if (!testCashDrawer) {
+        this.patch({ statusCode: "cash-drawer-test-failed" });
+        return;
+      }
+      try {
+        // 测试必须先保存当前 draft；正式受控动作随后只读取持久设置，不能误用旧外设。
+        await this.options.port.savePrinterSettings(
+          normalizePrinterSettings(this.state.printer),
+          this.lifetime.signal,
+        );
+      } catch {
+        this.patch({ statusCode: "cash-drawer-test-failed" });
+        return;
+      }
+      try {
+        const result = await testCashDrawer.call(
+          this.options.port,
+          this.lifetime.signal,
+        );
+        this.patch({ statusCode: cashDrawerTestStatus(result) });
+      } catch {
+        this.patch({ statusCode: "cash-drawer-test-failed" });
+      }
+    });
+  }
+
+  public clearSavedPrinter(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      const clearSavedPrinter = this.options.port.clearSavedPrinter;
+      if (!clearSavedPrinter) {
+        this.patch({ statusCode: "printer-clear-failed" });
+        return;
+      }
+      try {
+        const result = await clearSavedPrinter.call(
+          this.options.port,
+          this.lifetime.signal,
+        );
+        const printer = normalizePrinterSettings({
+          ...this.state.printer,
+          peripheralId: null,
+        });
+        if (result.status === "completed") {
+          this.patch({
+            printer,
+            statusCode: "printer-cleared",
+          });
+          return;
+        }
+        // peripheralId 已先耐久清除；断开失败时仍必须让 draft 与持久状态一致。
+        this.patch({
+          printer,
+          statusCode: "printer-cleared-disconnect-failed",
+        });
+      } catch {
+        // 持久化失败时组合层不会断开，旧 ID 与当前硬件状态都必须保留。
+        this.patch({ statusCode: "printer-clear-failed" });
+      }
+    });
+  }
+
+  public testScanner(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canTestScanner)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        const result = await this.options.port.testScanner(
+          this.lifetime.signal,
+        );
+        const value = result.value.trim();
+        if (!value || value.length > 512) {
+          throw new Error("invalid scanner result");
+        }
+        this.patch({
+          hardware: {
+            ...this.state.hardware,
+            // 硬件测试只保留长度与脱敏尾码，避免员工码、券码等误扫后进入 UI state。
+            lastScannerValue: maskScannerValue(value),
+            scannerStatus: "ready",
+          },
+          statusCode: "scanner-test-passed",
+        });
+      } catch {
+        this.patch({ statusCode: "scanner-test-failed" });
+      }
+    });
+  }
+
+  public downloadCatalog(): Promise<void> {
+    if (this.catalogRefreshInFlight) return this.catalogRefreshInFlight;
+    if (!this.requirePermission(this.state.access.canDownloadCatalog)) {
+      return Promise.resolve();
+    }
+    // 目录任务由应用级协调器持有；页面销毁不能中止其 signal。
+    const signal = new AbortController().signal;
+    const operation = (async () => {
+      try {
+        const catalog = normalizeCatalog(
+          await this.options.port.downloadCatalog(signal),
+        );
+        if (this.destroyed) return;
+        this.patch({
+          catalog,
+          statusCode: "catalog-downloaded",
+        });
+      } catch {
+        if (this.destroyed) return;
+        this.patch({ statusCode: "catalog-download-failed" });
+      }
+    })().finally(() => {
+      if (this.catalogRefreshInFlight === operation) {
+        this.catalogRefreshInFlight = null;
+      }
+    });
+    this.catalogRefreshInFlight = operation;
+    return operation;
+  }
+
+  public checkForAppUpdate(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canManageAppUpdate)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        const appUpdate = normalizeAppUpdate(
+          await this.options.port.checkForAppUpdate(this.lifetime.signal),
+        );
+        this.patch({
+          appUpdate,
+          statusCode: "app-update-checked",
+        });
+      } catch {
+        this.patch({ statusCode: "app-update-check-failed" });
+      }
+    });
+  }
+
+  public requestApiAddressChange(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return false;
+    }
+    let apiBaseUrl: string;
+    try {
+      apiBaseUrl = normalizeApiAddress(this.state.apiAddressDraft);
+    } catch {
+      this.patch({ confirmation: null, statusCode: "invalid-api-address" });
+      return false;
+    }
+    return this.requestConfirmation({
+      kind: "change-api-address",
+      apiBaseUrl,
+    });
+  }
+
+  public requestCatalogReset(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canResetCatalog)) {
+      return false;
+    }
+    return this.requestConfirmation({ kind: "reset-catalog" });
+  }
+
+  public requestDeviceReregistration(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return false;
+    }
+    const targetStoreCode = this.state.reregisterStoreCode.trim();
+    const terminalName = this.state.terminalNameDraft.trim();
+    if (!targetStoreCode || targetStoreCode === this.state.device.storeCode) {
+      this.patch({
+        confirmation: null,
+        statusCode: "invalid-device-registration",
+      });
+      return false;
+    }
+    return this.requestConfirmation({
+      kind: "reregister-device",
+      targetStoreCode,
+      ...(terminalName ? { terminalName } : {}),
+    });
+  }
+
+  public requestAppRestart(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canManageAppUpdate)) {
+      return false;
+    }
+    return this.requestConfirmation({ kind: "restart-app" });
+  }
+
+  public cancelConfirmation(): void {
+    if (this.destroyed || this.state.busy) return;
+    this.patch({ confirmation: null, statusCode: null });
+  }
+
+  public confirmDangerousAction(): Promise<void> {
+    const confirmation = this.state.confirmation;
+    if (!confirmation || this.destroyed) return Promise.resolve();
+    if (
+      this.catalogRefreshRunning() &&
+      conflictsWithCatalogRefresh(confirmation)
+    ) {
+      this.patch({
+        confirmation: null,
+        statusCode: "safety-check-failed",
+      });
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        const result = await this.options.port.executeDangerousAction(
+          confirmation,
+          this.lifetime.signal,
+        );
+        if (result.status === "blocked") {
+          this.patch({
+            ...(confirmation.kind === "change-api-address"
+              ? { apiAddressDraft: this.state.apiBaseUrl }
+              : {}),
+            confirmation: null,
+            statusCode:
+              result.reason === "candidate-unreachable"
+                ? confirmation.kind === "change-api-address"
+                  ? "api-health-check-failed"
+                  : "safety-check-failed"
+                : result.reason,
+          });
+          return;
+        }
+        if (result.status === "unknown") {
+          if (confirmation.kind !== "pair-linkly") {
+            throw new Error("unexpected unknown dangerous action result");
+          }
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? resetLinklySetupState(
+                  this.state.linklySetup,
+                  confirmation.environment,
+                  true,
+                  true,
+                )
+              : null,
+            statusCode: "linkly-pair-unknown",
+          });
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            true,
+          );
+          if (this.state.linklySetup?.health.kind !== "failed") {
+            this.patch({ statusCode: "linkly-pair-unknown" });
+          }
+          return;
+        }
+        if (result.kind !== confirmation.kind) {
+          throw new Error("dangerous action result mismatch");
+        }
+        if (confirmation.kind === "change-api-address") {
+          this.patch({
+            apiBaseUrl: confirmation.apiBaseUrl,
+            apiAddressDraft: confirmation.apiBaseUrl,
+            confirmation: null,
+            statusCode: "api-address-saved",
+          });
+          return;
+        }
+        if (confirmation.kind === "change-payment-settings") {
+          this.applySavedPaymentSettings(confirmation.input);
+          return;
+        }
+        if (confirmation.kind === "pair-linkly") {
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? resetLinklySetupState(
+                  this.state.linklySetup,
+                  confirmation.environment,
+                  true,
+                  true,
+                )
+              : null,
+          });
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            true,
+          );
+          if (this.state.linklySetup?.health.kind !== "failed") {
+            this.patch({ statusCode: "linkly-paired" });
+          }
+          return;
+        }
+        if (
+          confirmation.kind === "reset-catalog" &&
+          result.kind === "reset-catalog"
+        ) {
+          this.patch({
+            catalog: normalizeCatalog(result.catalog),
+            confirmation: null,
+            statusCode: "catalog-reset",
+          });
+          return;
+        }
+        this.patch({
+          confirmation: null,
+          statusCode:
+            confirmation.kind === "reregister-device"
+              ? "device-reregister-started"
+              : "app-restart-requested",
+        });
+      } catch {
+        this.patch({
+          ...(confirmation.kind === "change-api-address"
+            ? { apiAddressDraft: this.state.apiBaseUrl }
+            : {}),
+          confirmation: null,
+          statusCode: dangerousActionFailureCode(confirmation.kind),
+        });
+      }
+    });
+  }
+
+  private applySavedPaymentSettings(input: SettingsPaymentSettingsInput): void {
+    this.patch({
+      confirmation: null,
+      paymentProvider: input.provider,
+      paymentProviderDraft: input.provider,
+      ...(input.linkly
+        ? {
+            linkly: {
+              ...this.state.linkly,
+              ...input.linkly,
+              available: true,
+              blockerCode: null,
+            },
+            linklyDraft: input.linkly,
+          }
+        : {}),
+      ...(input.square
+        ? {
+            square: {
+              ...this.state.square,
+              ...input.square,
+              available: true,
+              blockerCode: null,
+            },
+            squareDraft: input.square,
+          }
+        : {}),
+      statusCode: "payment-settings-saved",
+    });
+  }
+
+  private requestConfirmation(
+    confirmation: SettingsDangerousConfirmation,
+  ): boolean {
+    if (this.destroyed || this.state.busy || this.state.confirmation !== null) {
+      return false;
+    }
+    this.patch({ confirmation, statusCode: null });
+    return true;
+  }
+
+  private requirePermission(granted: boolean): boolean {
+    if (
+      this.destroyed ||
+      this.state.busy ||
+      this.state.confirmation !== null ||
+      this.state.kind !== "ready" ||
+      !granted
+    ) {
+      if (!granted && this.state.confirmation === null) {
+        this.patch({ statusCode: "permission-required" });
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private async loadSquareDevicesForSelection(
+    preferredDeviceId: string | null,
+    expectedDeviceCodeId: string | null = null,
+  ): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) {
+      return;
+    }
+    const squareSetup = this.options.port.squareSetup;
+    if (!squareSetup) return;
+    const environment = this.state.squareDraft.environment;
+    const selectedLocation = findSquareLocation(
+      this.state.squareSetup.locations.items,
+      this.state.squareSetup.selectedLocationId,
+    );
+    if (!selectedLocation) return;
+    const locationId = selectedLocation.id;
+    const generation = ++this.squareDevicesGeneration;
+    this.patch({
+      squareSetup: Object.freeze({
+        ...this.state.squareSetup,
+        devices: Object.freeze({
+          ...this.state.squareSetup.devices,
+          kind: "loading",
+        }),
+      }),
+      statusCode: null,
+    });
+    try {
+      const devices = mergeSettingsSquareDevices(
+        environment,
+        locationId,
+        await squareSetup.listSquareDevices(
+          environment,
+          locationId,
+          this.lifetime.signal,
+        ),
+      );
+      if (
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDevicesGeneration,
+        )
+      ) {
+        return;
+      }
+      if (devices.length === 0) {
+        this.patch({
+          squareSetup: Object.freeze({
+            ...this.state.squareSetup,
+            devices: Object.freeze({ kind: "empty", items: devices }),
+            selectedDeviceId: "",
+            devicesLoadedForLocationId: locationId,
+          }),
+        });
+        return;
+      }
+      const preferredDeviceStillApplies =
+        preferredDeviceId !== null &&
+        (expectedDeviceCodeId === null ||
+          equalPublicIdentifier(
+            expectedDeviceCodeId,
+            this.state.squareSetup.selectedDeviceCodeId,
+          ));
+      const candidateDeviceId = preferredDeviceStillApplies
+        ? preferredDeviceId
+        : this.state.squareDraft.deviceId ||
+          (this.state.square.environment === environment
+            ? this.state.square.deviceId
+            : "");
+      // Sandbox 首次配置没有历史终端时，默认使用官方成功信用卡测试终端。
+      const selectedDevice = findSquareDevice(
+        devices,
+        candidateDeviceId ||
+          (environment === "Sandbox"
+            ? SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES[0].id
+            : ""),
+      );
+      const selectedDeviceId = selectedDevice?.id ?? "";
+      this.patch({
+        squareDraft: {
+          ...this.state.squareDraft,
+          deviceId: selectedDeviceId,
+        },
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          devices: Object.freeze({ kind: "ready", items: devices }),
+          selectedDeviceId,
+          devicesLoadedForLocationId: locationId,
+        }),
+      });
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !this.isCurrentSquareLocationRequest(
+          environment,
+          locationId,
+          generation,
+          this.squareDevicesGeneration,
+        )
+      ) {
+        return;
+      }
+      this.patch({
+        squareSetup: Object.freeze({
+          ...this.state.squareSetup,
+          devices: Object.freeze({
+            ...this.state.squareSetup.devices,
+            kind: "failed",
+          }),
+        }),
+      });
+    }
+  }
+
+  private invalidateSquareRequests(
+    scope: "environment" | "location",
+  ): void {
+    if (scope === "environment") {
+      this.squareTokenGeneration += 1;
+      this.squareLocationsGeneration += 1;
+    }
+    this.squareDevicesGeneration += 1;
+    this.squareDeviceCodesGeneration += 1;
+  }
+
+  private async loadLinklySetupState(
+    environment: PaymentEnvironment,
+    loadGeneration: number,
+    resetLogonTest: boolean,
+  ): Promise<void> {
+    const setup = this.options.port.linklySetup;
+    if (
+      !setup ||
+      this.destroyed ||
+      loadGeneration !== this.loadGeneration
+    ) {
+      return;
+    }
+    const generation = ++this.linklySetupGeneration;
+    const current =
+      this.state.linklySetup ?? initialLinklySetupState(environment);
+    this.patch({
+      linklySetup: resetLinklySetupState(
+        current,
+        environment,
+        resetLogonTest,
+        false,
+      ),
+    });
+    try {
+      const health = await setup.readState(environment, this.lifetime.signal);
+      if (
+        !this.isCurrentLinklySetupRequest(
+          environment,
+          loadGeneration,
+          generation,
+        ) ||
+        health.environment !== environment
+      ) {
+        return;
+      }
+      this.patch({
+        linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          health: Object.freeze({ kind: "ready", value: health }),
+        }),
+      });
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !this.isCurrentLinklySetupRequest(
+          environment,
+          loadGeneration,
+          generation,
+        )
+      ) {
+        return;
+      }
+      this.patch({
+        linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          health: Object.freeze({ kind: "failed", value: null }),
+        }),
+        statusCode: "linkly-health-load-failed",
+      });
+    }
+  }
+
+  private isCurrentSquareEnvironmentRequest(
+    environment: PaymentEnvironment,
+    generation: number,
+    currentGeneration: number,
+  ): boolean {
+    return (
+      !this.destroyed &&
+      environment === this.state.squareDraft.environment &&
+      generation === currentGeneration
+    );
+  }
+
+  private isCurrentSquareLocationRequest(
+    environment: PaymentEnvironment,
+    locationId: string,
+    generation: number,
+    currentGeneration: number,
+  ): boolean {
+    return (
+      this.isCurrentSquareEnvironmentRequest(
+        environment,
+        generation,
+        currentGeneration,
+      ) &&
+      equalPublicIdentifier(
+        locationId,
+        this.state.squareSetup.selectedLocationId,
+      )
+    );
+  }
+
+  private canEdit(): boolean {
+    return (
+      !this.destroyed &&
+      !this.state.busy &&
+      this.state.confirmation === null &&
+      this.state.kind === "ready"
+    );
+  }
+
+  private canEditPayments(): boolean {
+    return this.canEdit() && this.state.access.canConfigurePayments;
+  }
+
+  private canEditPrinter(): boolean {
+    return this.canEdit() && this.state.access.canConfigurePrinter;
+  }
+
+  private runAction(action: () => Promise<void>): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    if (this.actionInFlight) return this.actionInFlight;
+    this.patch({ busy: true, statusCode: null });
+    const operation = action().finally(() => {
+      if (this.actionInFlight === operation) {
+        this.actionInFlight = null;
+        this.patch({ busy: false });
+      }
+    });
+    this.actionInFlight = operation;
+    return operation;
+  }
+
+  private isCurrentLoad(generation: number): boolean {
+    return !this.destroyed && this.loadGeneration === generation;
+  }
+
+  private isCurrentLinklySetupRequest(
+    environment: PaymentEnvironment,
+    loadGeneration: number,
+    generation: number,
+  ): boolean {
+    return (
+      this.isCurrentLoad(loadGeneration) &&
+      this.linklySetupGeneration === generation &&
+      this.state.linklyDraft.environment === environment
+    );
+  }
+
+  private patch(patch: Partial<SettingsState>): void {
+    if (this.destroyed) return;
+    this.state = Object.freeze({ ...this.state, ...patch });
+    for (const listener of this.listeners) listener();
+  }
+
+  private readonly handleCatalogRefreshChanged = (): void => {
+    if (this.destroyed) return;
+    const catalogRefresh = this.options.port.getCatalogRefreshState();
+    this.patch({
+      catalog: catalogSnapshotForRefresh(
+        this.state.catalog,
+        catalogRefresh,
+      ),
+      catalogRefresh,
+    });
+  };
+
+  private catalogRefreshRunning(): boolean {
+    return this.state.catalogRefresh.kind === "running";
+  }
+}
+
+export function normalizeApiAddress(value: string): string {
+  const source = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(source);
+  } catch {
+    throw new Error("invalid API address");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("invalid API scheme");
+  }
+  if (
+    parsed.protocol === "http:" &&
+    !isLoopbackHostname(parsed.hostname) &&
+    !isTrustedLocalHbposApiOrigin(parsed.origin)
+  ) {
+    throw new Error("remote API requires HTTPS");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("unsafe API address");
+  }
+  const path = parsed.pathname.replace(/\/+$/, "");
+  return `${parsed.origin}${path}`;
+}
+
+export function hasPendingLocalData(
+  snapshot: SettingsPendingDataSnapshot,
+): boolean {
+  return (
+    snapshot.hasActiveCart ||
+    snapshot.hasFulfilmentInFlight ||
+    snapshot.hasSyncOrAuditInFlight ||
+    snapshot.paymentConfigurationSensitiveOrderCount > 0 ||
+    snapshot.pendingDurableWriteCount > 0 ||
+    snapshot.pendingReturnCount > 0 ||
+    snapshot.pendingSaleCount > 0 ||
+    snapshot.unresolvedPaymentCount > 0
+  );
+}
+
+function initialState(
+  access: SettingsAccess,
+  catalogRefresh: CatalogRefreshState,
+  squareSetupAvailable: boolean,
+  linklySetupAvailable: boolean,
+): SettingsState {
+  const printer = Object.freeze({
+    ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
+  });
+  const square = Object.freeze({
+    available: false,
+    blockerCode: null,
+    environment: "Production" as const,
+    deviceId: "",
+    locationId: "",
+  });
+  const linkly = Object.freeze({
+    available: false,
+    blockerCode: null,
+    environment: "Production" as const,
+  });
+  return Object.freeze({
+    access,
+    activePane: "general",
+    apiBaseUrl: "",
+    apiAddressDraft: "",
+    appUpdate: Object.freeze({
+      channel: "production",
+      currentVersion: "",
+      availableVersion: null,
+      updateRequired: false,
+      restartAvailable: false,
+    }),
+    busy: false,
+    catalog: Object.freeze({
+      snapshotId: null,
+      itemCount: 0,
+      activatedAt: null,
+    }),
+    catalogRefresh,
+    confirmation: null,
+    device: Object.freeze({
+      deviceCode: "",
+      storeCode: "",
+      storeName: "",
+      terminalName: "",
+    }),
+    hardware: Object.freeze({
+      printerStatus: "unavailable",
+      scannerStatus: "unavailable",
+      lastScannerValue: null,
+    }),
+    kind: access.canView ? "idle" : "unauthorized",
+    linkly,
+    linklyDraft: Object.freeze({
+      environment: linkly.environment,
+    }),
+    linklySetup: linklySetupAvailable
+      ? initialLinklySetupState(linkly.environment)
+      : null,
+    paymentProvider: null,
+    paymentProviderDraft: null,
+    printer,
+    printerDevices: Object.freeze([]),
+    reregisterStoreCode: "",
+    square,
+    squareDraft: Object.freeze({
+      deviceId: "",
+      environment: square.environment,
+      locationId: "",
+    }),
+    squareDeviceCodeNameDraft: "HBPOS Terminal",
+    squareSetup: initialSquareSetupState(squareSetupAvailable),
+    statusCode: access.canView ? null : "permission-required",
+    terminalNameDraft: "",
+  });
+}
+
+function initialLinklySetupState(
+  environment: PaymentEnvironment,
+): SettingsLinklySetupState {
+  return Object.freeze({
+    health: Object.freeze({ kind: "idle", value: null }),
+    logonTest: Object.freeze({ environment, status: "idle" }),
+    pairCodeResetToken: 0,
+  });
+}
+
+function resetLinklySetupState(
+  state: SettingsLinklySetupState,
+  environment: PaymentEnvironment,
+  resetLogonTest: boolean,
+  resetPairCode: boolean,
+): SettingsLinklySetupState {
+  return Object.freeze({
+    health: Object.freeze({ kind: "loading", value: null }),
+    logonTest: resetLogonTest
+      ? Object.freeze({ environment, status: "idle" })
+      : state.logonTest,
+    pairCodeResetToken: state.pairCodeResetToken + (resetPairCode ? 1 : 0),
+  });
+}
+
+function updateLinklyLogonTest(
+  state: SettingsLinklySetupState,
+  environment: PaymentEnvironment,
+  status: SettingsLinklyLogonTestState["status"],
+): SettingsLinklySetupState {
+  return Object.freeze({
+    ...state,
+    logonTest: Object.freeze({ environment, status }),
+  });
+}
+
+function hasLinklyCloudCredentials(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.checks.some(
+      (check) =>
+        check.code.trim().toUpperCase() === "STORE_CREDENTIAL" &&
+        check.isReady,
+    )
+  );
+}
+
+function isLinklySetupReady(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  const logonTest = state.linklySetup?.logonTest;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.isReady === true &&
+    logonTest?.environment === environment &&
+    logonTest.status === "passed"
+  );
+}
+
+function isLinklyHealthReady(
+  state: Pick<SettingsState, "linklySetup">,
+  environment: PaymentEnvironment,
+): boolean {
+  const health = state.linklySetup?.health;
+  const value = health?.value;
+  return (
+    health?.kind === "ready" &&
+    value?.environment === environment &&
+    value.isReady === true
+  );
+}
+
+function initialSquareSetupState(
+  available: boolean,
+): SettingsSquareSetupState {
+  const kind: SettingsSquareRequestKind = available ? "idle" : "disabled";
+  return Object.freeze({
+    available,
+    token: Object.freeze({ kind, value: null }),
+    locations: Object.freeze({ kind, items: Object.freeze([]) }),
+    devices: Object.freeze({ kind, items: Object.freeze([]) }),
+    deviceCodes: Object.freeze({ kind, items: Object.freeze([]) }),
+    selectedLocationId: "",
+    selectedDeviceId: "",
+    selectedDeviceCodeId: "",
+    devicesLoadedForLocationId: null,
+    deviceCodesLoadedForLocationId: null,
+  });
+}
+
+function catalogSnapshotForRefresh(
+  fallback: SettingsCatalogSnapshot,
+  refresh: CatalogRefreshState,
+): SettingsCatalogSnapshot {
+  if (refresh.kind !== "success" && refresh.kind !== "warning") {
+    return fallback;
+  }
+  return normalizeCatalog({
+    snapshotId: refresh.summary.snapshotId,
+    itemCount: refresh.summary.itemCount,
+    activatedAt: refresh.summary.activatedAt,
+  });
+}
+
+function conflictsWithCatalogRefresh(
+  _confirmation: SettingsDangerousConfirmation,
+): boolean {
+  return true;
+}
+
+function normalizeSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
+  const linkly = Object.freeze({
+    available: booleanValue(snapshot.linkly.available),
+    blockerCode: safeBlockerCode(snapshot.linkly.blockerCode),
+    environment: paymentEnvironment(snapshot.linkly.environment),
+  });
+  const square = Object.freeze({
+    available: booleanValue(snapshot.square.available),
+    blockerCode: safeBlockerCode(snapshot.square.blockerCode),
+    environment: paymentEnvironment(snapshot.square.environment),
+    deviceId: boundedPublicIdentifier(snapshot.square.deviceId),
+    locationId: boundedPublicIdentifier(snapshot.square.locationId),
+  });
+  const requestedProvider = settingsPaymentProvider(snapshot.paymentProvider);
+  const paymentProvider =
+    requestedProvider &&
+    isNormalizedPaymentProviderConfigured(requestedProvider, square, linkly)
+      ? requestedProvider
+      : null;
+  return Object.freeze({
+    apiBaseUrl: normalizeApiAddress(snapshot.apiBaseUrl),
+    appUpdate: normalizeAppUpdate(snapshot.appUpdate),
+    catalog: normalizeCatalog(snapshot.catalog),
+    device: Object.freeze({
+      deviceCode: snapshot.device.deviceCode.trim(),
+      storeCode: snapshot.device.storeCode.trim(),
+      storeName: snapshot.device.storeName.trim(),
+      terminalName: snapshot.device.terminalName.trim(),
+    }),
+    hardware: Object.freeze({
+      printerStatus: hardwareConnectionStatus(
+        snapshot.hardware.printerStatus,
+      ),
+      scannerStatus: scannerStatus(snapshot.hardware.scannerStatus),
+      lastScannerValue: safeMaskedScannerValue(
+        snapshot.hardware.lastScannerValue,
+      ),
+    }),
+    linkly,
+    paymentProvider,
+    printer: normalizePrinterSettings(snapshot.printer),
+    square,
+  });
+}
+
+function normalizePaymentDraft(
+  provider: SettingsPaymentProvider | null,
+  square: SettingsPaymentDraft["square"],
+  linkly: SettingsPaymentDraft["linkly"],
+  squareAvailable: boolean,
+  linklyAvailable: boolean,
+): SettingsPaymentSettingsInput | null {
+  if (provider === "square") {
+    if (!squareAvailable) return null;
+    const locationId = square.locationId.trim();
+    const deviceId = square.deviceId.trim();
+    if (!locationId || !deviceId) return null;
+    return Object.freeze({
+      provider,
+      square: Object.freeze({
+        environment: paymentEnvironment(square.environment),
+        locationId: boundedPublicIdentifier(locationId),
+        deviceId: boundedPublicIdentifier(deviceId),
+      }),
+      linkly: null,
+    });
+  }
+  if (provider === "linkly") {
+    if (!linklyAvailable) return null;
+    return Object.freeze({
+      provider,
+      square: null,
+      linkly: Object.freeze({
+        environment: paymentEnvironment(linkly.environment),
+      }),
+    });
+  }
+  return null;
+}
+
+function normalizePrinterSettings(
+  settings: ReceiptPrinterSettings,
+): ReceiptPrinterSettings {
+  return Object.freeze({
+    printEnabled: booleanValue(settings.printEnabled),
+    drawerEnabled: booleanValue(settings.drawerEnabled),
+    peripheralId: settings.peripheralId
+      ? boundedPublicIdentifier(settings.peripheralId)
+      : null,
+    paper: settings.paper === "58mm" ? "58mm" : "80mm",
+    locale: settings.locale === "zh-CN" ? "zh-CN" : "en",
+    brandName: boundedPublicText(settings.brandName, 120),
+    storeName: boundedPublicText(settings.storeName, 120),
+    address: boundedPublicText(settings.address, 240),
+    phone: boundedPublicText(settings.phone, 60),
+    abn: boundedPublicText(settings.abn, 32),
+  });
+}
+
+function normalizeCatalog(
+  catalog: SettingsCatalogSnapshot,
+): SettingsCatalogSnapshot {
+  if (!Number.isSafeInteger(catalog.itemCount) || catalog.itemCount < 0) {
+    throw new Error("invalid catalog count");
+  }
+  return Object.freeze({
+    snapshotId: catalog.snapshotId?.trim() || null,
+    itemCount: catalog.itemCount,
+    activatedAt: catalog.activatedAt?.trim() || null,
+  });
+}
+
+function normalizeAppUpdate(
+  update: SettingsAppUpdateSnapshot,
+): SettingsAppUpdateSnapshot {
+  return Object.freeze({
+    channel: update.channel.trim() || "production",
+    currentVersion: update.currentVersion.trim(),
+    availableVersion: update.availableVersion?.trim() || null,
+    updateRequired: update.updateRequired,
+    restartAvailable: update.restartAvailable,
+  });
+}
+
+function maskScannerValue(value: string): string {
+  const characters = Array.from(value);
+  const suffix =
+    characters.length >= 8
+      ? characters
+          .slice(-4)
+          .join("")
+          .replace(/[^A-Za-z0-9]/gu, "•")
+      : "";
+  return `${suffix ? `••••${suffix}` : "••••"} · ${characters.length} chars`;
+}
+
+function currentPaymentSettings(
+  state: SettingsState,
+): SettingsPaymentSettingsInput | null {
+  return normalizePaymentDraft(
+    state.paymentProvider,
+    {
+      environment: state.square.environment,
+      deviceId: state.square.deviceId,
+      locationId: state.square.locationId,
+    },
+    { environment: state.linkly.environment },
+    isPaymentProviderAvailable("square", state),
+    isPaymentProviderAvailable("linkly", state),
+  );
+}
+
+function paymentSettingsEqual(
+  left: SettingsPaymentSettingsInput,
+  right: SettingsPaymentSettingsInput,
+): boolean {
+  if (left.provider !== right.provider) return false;
+  if (left.provider === "square" && right.provider === "square") {
+    return (
+      left.square.environment === right.square.environment &&
+      left.square.deviceId === right.square.deviceId &&
+      left.square.locationId === right.square.locationId
+    );
+  }
+  return (
+    left.provider === "linkly" &&
+    right.provider === "linkly" &&
+    left.linkly.environment === right.linkly.environment
+  );
+}
+
+function isPaymentProviderAvailable(
+  provider: SettingsPaymentProvider,
+  state: Pick<SettingsState, "linkly" | "square">,
+): boolean {
+  const snapshot = provider === "square" ? state.square : state.linkly;
+  return snapshot.available && snapshot.blockerCode === null;
+}
+
+function isLinklyBaseSelectable(
+  state: Pick<SettingsState, "linkly" | "linklySetup" | "square" | "squareSetup">,
+): boolean {
+  if (
+    !state.linkly.available &&
+    state.linkly.blockerCode === "LINKLY_CONFIGURATION_MISSING"
+  ) {
+    return true;
+  }
+  return isPaymentProviderAvailable("linkly", state);
+}
+
+function isPaymentProviderSelectable(
+  provider: SettingsPaymentProvider,
+  state: Pick<
+    SettingsState,
+    "linkly" | "linklyDraft" | "linklySetup" | "square" | "squareSetup"
+  >,
+): boolean {
+  if (provider === "square" && state.squareSetup.available) return true;
+  if (provider === "linkly") {
+    return (
+      isLinklyBaseSelectable(state) &&
+      (!state.linklySetup ||
+        isLinklySetupReady(state, state.linklyDraft.environment))
+    );
+  }
+  return isPaymentProviderAvailable(provider, state);
+}
+
+function isLoadedSquareSelectionValid(
+  state: SettingsState,
+  square: SettingsPaymentDraft["square"],
+): boolean {
+  if (!state.squareSetup.available) return true;
+  const token = state.squareSetup.token.value;
+  if (
+    state.squareSetup.token.kind !== "ready" ||
+    !token?.configured ||
+    !token.enabled ||
+    token.environment !== square.environment
+  ) {
+    return false;
+  }
+  const location = findSquareLocation(
+    state.squareSetup.locations.items,
+    square.locationId,
+  );
+  const device = findSquareDevice(
+    state.squareSetup.devices.items,
+    square.deviceId,
+  );
+  return (
+    state.squareSetup.locations.kind === "ready" &&
+    state.squareSetup.devices.kind === "ready" &&
+    location !== null &&
+    device !== null &&
+    !isSquareDeviceDisabled(device) &&
+    equalPublicIdentifier(
+      state.squareSetup.selectedLocationId,
+      location.id,
+    ) &&
+    equalSquareDeviceId(state.squareSetup.selectedDeviceId, device.id) &&
+    equalPublicIdentifier(
+      state.squareSetup.devicesLoadedForLocationId ?? "",
+      location.id,
+    ) &&
+    equalPublicIdentifier(device.locationId ?? "", location.id)
+  );
+}
+
+function isNormalizedPaymentProviderConfigured(
+  provider: SettingsPaymentProvider,
+  square: SettingsSquareSnapshot,
+  linkly: SettingsPaymentProviderSnapshot,
+): boolean {
+  if (
+    !isPaymentProviderAvailable(provider, {
+      square,
+      linkly,
+    })
+  ) {
+    return false;
+  }
+  return (
+    provider === "linkly" ||
+    (square.locationId.length > 0 && square.deviceId.length > 0)
+  );
+}
+
+function settingsPaymentProvider(
+  value: unknown,
+): SettingsPaymentProvider | null {
+  return value === "square" || value === "linkly" ? value : null;
+}
+
+function findSquareLocation(
+  locations: readonly SettingsSquareLocation[],
+  locationId: string,
+): SettingsSquareLocation | null {
+  const requestedId = safePublicIdentifier(locationId);
+  if (!requestedId) return null;
+  return (
+    locations.find((location) =>
+      equalPublicIdentifier(location.id, requestedId),
+    ) ?? null
+  );
+}
+
+function findSquareDevice(
+  devices: readonly SettingsSquareDevice[],
+  deviceId: string,
+): SettingsSquareDevice | null {
+  const requestedId = normalizeSettingsSquareDeviceId(deviceId);
+  if (!requestedId) return null;
+  return (
+    devices.find((device) => equalSquareDeviceId(device.id, requestedId)) ??
+    null
+  );
+}
+
+function findSquareDeviceCode(
+  deviceCodes: readonly SettingsSquareDeviceCode[],
+  deviceCodeId: string,
+): SettingsSquareDeviceCode | null {
+  const requestedId = safePublicIdentifier(deviceCodeId);
+  if (!requestedId) return null;
+  return (
+    deviceCodes.find((deviceCode) =>
+      equalPublicIdentifier(deviceCode.id, requestedId),
+    ) ?? null
+  );
+}
+
+function replaceSquareDeviceCode(
+  deviceCodes: readonly SettingsSquareDeviceCode[],
+  updated: SettingsSquareDeviceCode,
+): readonly SettingsSquareDeviceCode[] {
+  return Object.freeze([
+    updated,
+    ...deviceCodes.filter(
+      (deviceCode) => !equalPublicIdentifier(deviceCode.id, updated.id),
+    ),
+  ]);
+}
+
+function equalPublicIdentifier(left: string, right: string): boolean {
+  return (
+    safePublicIdentifier(left).toLowerCase() ===
+    safePublicIdentifier(right).toLowerCase()
+  );
+}
+
+function equalSquareDeviceId(left: string, right: string): boolean {
+  const normalizedLeft = normalizeSettingsSquareDeviceId(left);
+  const normalizedRight = normalizeSettingsSquareDeviceId(right);
+  return (
+    normalizedLeft !== null &&
+    normalizedRight !== null &&
+    normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+  );
+}
+
+function safePublicIdentifier(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 128 ||
+    /[\u0000-\u001F\u007F]/u.test(value)
+  ) {
+    return "";
+  }
+  return value.trim();
+}
+
+function safeSquareDeviceCodeName(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 120 ||
+    /[\u0000-\u001F\u007F]/u.test(value)
+  ) {
+    return "";
+  }
+  return value.trim();
+}
+
+function isSquareDeviceDisabled(device: SettingsSquareDevice): boolean {
+  return device.status?.trim().toUpperCase() === "DISABLED";
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
+}
+
+function dangerousActionFailureCode(
+  kind: SettingsDangerousConfirmation["kind"],
+): SettingsStatusCode {
+  switch (kind) {
+    case "change-payment-settings":
+      return "payment-settings-save-failed";
+    case "pair-linkly":
+      return "linkly-pair-failed";
+    case "reset-catalog":
+      return "catalog-reset-failed";
+    case "reregister-device":
+      return "device-reregister-failed";
+    default:
+      return "restart-failed";
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/u, "");
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "[::1]" ||
+    normalized === "::1" ||
+    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
+  );
+}
+
+function booleanValue(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error("invalid boolean");
+  return value;
+}
+
+function paymentEnvironment(value: unknown): PaymentEnvironment {
+  if (value !== "Sandbox" && value !== "Production") {
+    throw new Error("invalid payment environment");
+  }
+  return value;
+}
+
+function hardwareConnectionStatus(
+  value: unknown,
+): "connected" | "disconnected" | "unavailable" {
+  if (
+    value !== "connected" &&
+    value !== "disconnected" &&
+    value !== "unavailable"
+  ) {
+    throw new Error("invalid hardware status");
+  }
+  return value;
+}
+
+function scannerStatus(value: unknown): "ready" | "unavailable" {
+  if (value !== "ready" && value !== "unavailable") {
+    throw new Error("invalid scanner status");
+  }
+  return value;
+}
+
+const SAFE_PAYMENT_BLOCKER_CODES = new Set([
+  "SQUARE_CONFIGURATION_MISSING",
+  "SQUARE_CONFIGURATION_INVALID",
+  "SQUARE_CONFIGURATION_LOAD_FAILED",
+  "LINKLY_CONFIGURATION_MISSING",
+  "LINKLY_CONFIGURATION_INVALID",
+  "LINKLY_CONFIGURATION_LOAD_FAILED",
+  "VOUCHER_CONFIGURATION_DISABLED",
+  "VOUCHER_CONFIGURATION_LOAD_FAILED",
+  "PAYMENT_PROVIDER_UNKNOWN",
+  "invalid-provider-config",
+]);
+
+function safeBlockerCode(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !SAFE_PAYMENT_BLOCKER_CODES.has(value)) {
+    return "invalid-provider-config";
+  }
+  return value;
+}
+
+function boundedPublicIdentifier(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 128 ||
+    /[\u0000-\u001F\u007F]/u.test(value)
+  ) {
+    throw new Error("invalid public identifier");
+  }
+  return value.trim();
+}
+
+function boundedPublicText(value: unknown, maxLength: number): string {
+  if (
+    typeof value !== "string" ||
+    value.length > maxLength ||
+    /[\u0000-\u001F\u007F]/u.test(value)
+  ) {
+    throw new Error("invalid public text");
+  }
+  return value.trim();
+}
+
+function safeMaskedScannerValue(value: unknown): string | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "string" ||
+    !/^••••(?:[A-Za-z0-9•]{4})? · \d{1,3} chars$/u.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function normalizePrinterDevice(
+  device: SettingsPrinterDevice,
+): SettingsPrinterDevice {
+  return Object.freeze({
+    id: boundedPublicIdentifier(device.id),
+    name: boundedPublicText(device.name, 120),
+    transport: boundedPublicText(device.transport, 32),
+    preferred: device.preferred === true,
+  });
+}
+
+function comparePrinterDevices(
+  left: SettingsPrinterDevice,
+  right: SettingsPrinterDevice,
+): number {
+  if (left.preferred !== right.preferred) {
+    return left.preferred ? -1 : 1;
+  }
+  return compareStableText(left.name, right.name) ||
+    compareStableText(left.id, right.id);
+}
+
+function compareStableText(left: string, right: string): number {
+  const foldedLeft = left.toLowerCase();
+  const foldedRight = right.toLowerCase();
+  if (foldedLeft < foldedRight) return -1;
+  if (foldedLeft > foldedRight) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function isPrinterTestOutcomeUnknown(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN
+  );
+}
+
+function cashDrawerTestStatus(
+  result: SettingsCashDrawerTestResult,
+): SettingsStatusCode {
+  switch (result.status) {
+    case "completed":
+      return "cash-drawer-test-passed";
+    case "unknown":
+      return "cash-drawer-test-unknown";
+    case "failed":
+      return "cash-drawer-test-failed";
+  }
+}
+
+function printerScanFailureStatus(error: unknown): SettingsStatusCode {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return "printer-scan-failed";
+  }
+  const code = typeof error.code === "string" ? error.code.trim() : "";
+  const bluetoothStatusByCode: Readonly<Record<string, SettingsStatusCode>> = {
+    PRINTER_BLUETOOTH_AUTHORIZATION_PENDING:
+      "printer-bluetooth-authorization-pending",
+    PRINTER_BLUETOOTH_PERMISSION_REQUIRED:
+      "printer-bluetooth-permission-required",
+    PRINTER_BLUETOOTH_POWERED_OFF: "printer-bluetooth-powered-off",
+    PRINTER_BLUETOOTH_RESTRICTED: "printer-bluetooth-restricted",
+  };
+  return bluetoothStatusByCode[code] ?? "printer-scan-failed";
+}

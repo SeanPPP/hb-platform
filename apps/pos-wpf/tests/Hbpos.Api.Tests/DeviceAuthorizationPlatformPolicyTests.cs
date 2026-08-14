@@ -19,8 +19,11 @@ public sealed class DeviceAuthorizationPlatformPolicyTests
     [InlineData("iPadOS", "HW-001", "HW-001", true)]
     [InlineData("iPadOS", "HW-001", "HW-OTHER", false)]
     [InlineData("Android", "HW-001", "", false)]
-    [InlineData("Android", "HW-001", "HW-001", false)]
-    public void Hardware_header_policy_keeps_windows_compatibility_and_requires_ipad_exact_match(
+    [InlineData("Android", "HW-001", "HW-001", true)]
+    [InlineData("iOS", "HW-001", "", false)]
+    [InlineData("iOS", "HW-001", "HW-001", true)]
+    [InlineData("watchOS", "HW-001", "HW-001", false)]
+    public void Hardware_header_policy_keeps_windows_compatibility_and_requires_mobile_exact_match(
         string deviceSystem,
         string registeredHardwareId,
         string submittedHardwareId,

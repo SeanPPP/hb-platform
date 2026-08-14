@@ -12,6 +12,9 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(IsPrimaryKey = true, IsIdentity = false)]
         public Guid Id { get; set; } = Guid.NewGuid();
 
+        [SugarColumn(Length = 80, IsNullable = false)]
+        public string AppKey { get; set; } = "mobile";
+
         [SugarColumn(Length = 120, IsNullable = false)]
         public string EasBuildId { get; set; } = string.Empty;
 
@@ -56,6 +59,12 @@ namespace BlazorApp.Shared.Models.HBweb
 
         [SugarColumn(Length = 500, IsNullable = true)]
         public string? CosObjectKey { get; set; }
+
+        [SugarColumn(Length = 64, IsNullable = true)]
+        public string? ArtifactSha256 { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public long? ArtifactSize { get; set; }
 
         [SugarColumn(IsNullable = true)]
         public DateTime? CosMirroredAt { get; set; }

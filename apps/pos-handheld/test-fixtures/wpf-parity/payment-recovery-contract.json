@@ -1,0 +1,126 @@
+{
+  "square": {
+    "createHasClientIdempotencyKey": true,
+    "unknownAllowsFreshCharge": false,
+    "durableFields": [
+      {
+        "name": "idempotencyKey",
+        "evidence": "IdempotencyKey"
+      },
+      {
+        "name": "checkoutId",
+        "evidence": "CheckoutId"
+      },
+      {
+        "name": "paymentId",
+        "evidence": "PaymentId"
+      }
+    ],
+    "requiredRoutes": [
+      {
+        "attribute": "HttpPost",
+        "template": "checkouts",
+        "purpose": "create-or-replay-with-the-same-idempotency-key"
+      },
+      {
+        "attribute": "HttpGet",
+        "template": "checkouts/{checkoutId}",
+        "purpose": "recover-checkout-status"
+      },
+      {
+        "attribute": "HttpGet",
+        "template": "payments/{paymentId}",
+        "purpose": "verify-final-payment"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "checkouts/{checkoutId}/cancel",
+        "purpose": "explicit-cancel-only"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "checkouts/{checkoutId}/dismiss",
+        "purpose": "explicit-dismiss-only"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "refunds",
+        "purpose": "idempotent-refund"
+      }
+    ],
+    "unknownRecovery": [
+      "Persist attempt, order draft and idempotency key before POST /checkouts.",
+      "If create response is lost, replay POST /checkouts with the same idempotency key; never generate another key.",
+      "Persist CheckoutId immediately, poll checkout, then persist and verify PaymentId.",
+      "Only a completed payment can become Approved; otherwise retain Pending or Unknown.",
+      "Cancel and dismiss require an explicit operator action and a known CheckoutId."
+    ]
+  },
+  "linkly": {
+    "createHasClientIdempotencyKey": false,
+    "unknownAllowsFreshCharge": false,
+    "durableFields": [
+      {
+        "name": "sessionId",
+        "evidence": "SessionId"
+      },
+      {
+        "name": "txnRef",
+        "evidence": "TxnRef"
+      },
+      {
+        "name": "rfn",
+        "evidence": "PurchaseAnalysisData"
+      }
+    ],
+    "requiredRoutes": [
+      {
+        "attribute": "HttpPost",
+        "template": "cloud-backend/transactions",
+        "purpose": "create-transaction"
+      },
+      {
+        "attribute": "HttpGet",
+        "template": "cloud-backend/transactions/active",
+        "purpose": "find-response-lost-active-session"
+      },
+      {
+        "attribute": "HttpGet",
+        "template": "cloud-backend/transactions/resumable",
+        "purpose": "find-recoverable-session"
+      },
+      {
+        "attribute": "HttpGet",
+        "template": "cloud-backend/transactions/{sessionId}/status",
+        "purpose": "recover-status"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "cloud-backend/transactions/{sessionId}/recover",
+        "purpose": "request-provider-recovery"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "cloud-backend/transactions/{sessionId}/sendkey",
+        "purpose": "terminal-interaction"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "cloud-backend/transactions/{sessionId}/receipt/printed",
+        "purpose": "receipt-marker"
+      },
+      {
+        "attribute": "HttpPost",
+        "template": "cloud-backend/transactions/{sessionId}/acknowledge",
+        "purpose": "client-acknowledgement"
+      }
+    ],
+    "unknownRecovery": [
+      "Persist local attempt and order draft before POST /transactions.",
+      "Because create has no client idempotency key, an ambiguous create must query active then resumable; it must not repeat POST.",
+      "Bind the recovered SessionId to the existing attempt, then use status and recover until a final provider result exists.",
+      "Persist TxnRef and parse RFN from the official transaction payload PurchaseAnalysisData before completing the order.",
+      "Unknown blocks new card payment, automatic cancellation, refund and provider switching."
+    ]
+  }
+}

@@ -1,0 +1,1106 @@
+import {
+  CurrentCashierSession,
+  type TrustedCashierLease,
+  type TrustedCashierSession,
+} from "./current-cashier-session";
+import {
+  ActivePricingCartPaymentLeaseCoordinator,
+  type PaymentCartRecoveryMaterialPort,
+} from "./payment-cart-lease-coordinator";
+import {
+  OrderRepositoryPaymentCompletionProjection,
+  OrderRepositoryPaymentReceiptRenderer,
+  PersistedPaymentCompletionSettings,
+  type PaymentReceiptSettingsPort,
+} from "./payment-completion-runtime";
+import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
+import { ProductionReturnRefundAdapter } from "./production-return-refund-adapter";
+
+import type {
+  AuditActorSnapshot,
+  CartSnapshot,
+  Money,
+  OrderTender,
+} from "@/core/contracts";
+import type { PosDatabase } from "@/core/db/pos-database";
+import type {
+  PaymentDraftRecovery,
+  PaymentRecoveryScope,
+  SqlitePaymentDraftRecoveryStore,
+} from "@/core/db/sqlite-payment-draft-recovery-store";
+import type {
+  PosRepositoryBundle,
+  SensitivePayloadEncryptor,
+} from "@/core/db/sqlite-repositories";
+import type {
+  VoucherTenderReversalRecord,
+  VoucherTenderReversalRecoveryStorePort,
+  VoucherTenderReversalStorePort,
+} from "@/core/db/sqlite-voucher-tender-reversal-store";
+import type { HbposAuditMetadata } from "@/core/sync/hbpos-sync-adapters";
+import {
+  ApprovedPaymentOrderCompletionService,
+} from "@/features/payments/approved-payment-order-completion";
+import {
+  MixedPaymentCoordinator,
+  type MixedPaymentOrderTruthPort,
+  type MixedTenderReversalPort,
+} from "@/features/payments/mixed";
+import {
+  VoucherTenderReversalService,
+} from "@/features/payments/mixed/voucher-tender-reversal-service";
+import {
+  PaymentAttemptService,
+  type PaymentConnectivityPort,
+} from "@/features/payments/payment-attempt-service";
+import {
+  PaymentCheckoutRuntime,
+  PaymentCheckoutRuntimeError,
+  type PaymentCheckoutDraft,
+  type PaymentCheckoutDraftPort,
+  type PaymentCheckoutPublicSnapshot,
+  type PaymentCheckoutRecoveryRecord,
+  type PaymentCheckoutRuntimePort,
+  type PaymentPermissionCode,
+} from "@/features/payments/runtime/payment-checkout-runtime";
+import {
+  PaymentFinalCompletionPlanner,
+  SafeApprovedPaymentCompletionPlanner,
+} from "@/features/payments/runtime/payment-completion-planner";
+import type {
+  VoucherApprovedPurchaseReleasePort,
+} from "@/features/payments/runtime/payment-provider-registry";
+import { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
+import {
+  PaymentPresenter,
+  type PaymentCheckoutEntryContext,
+} from "@/features/payments/ui/payment-presenter";
+import type {
+  DurableOnlineReturnRefundPort,
+} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+import type { ActivePricingCartSession } from "@/features/sales/runtime";
+
+const CASH_DRAWER_PERMISSION =
+  "Permissions.PosTerminal.CashDrawer.Open";
+
+export type PosPaymentRuntimeService =
+  | Readonly<{
+      status: "available";
+      /**
+       * entry 只用于首次页面展示；真实订单、金额和 revision 始终由 SQLCipher
+       * draft 与独占购物车 lease 复核。
+       */
+      createPresenter(
+        entry: PaymentCheckoutEntryContext | null,
+      ): PaymentPresenter;
+      /** 仅返回脱敏布尔值，供登录后的路由把崩溃恢复导向支付页。 */
+      hasRecoveryRequired(): Promise<boolean>;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      blockers: readonly string[];
+    }>;
+
+export type ProductionPaymentRuntime = Readonly<{
+  service: PosPaymentRuntimeService;
+  /** 仅供生产组合根接入退货编排；不会进入 route 可见的 payments service。 */
+  returnRefund: DurableOnlineReturnRefundPort | null;
+  initializeRecovery(): Promise<void>;
+}>;
+
+export type ProductionPaymentRuntimeDependencies = Readonly<{
+  database: PosDatabase;
+  repositories: PosRepositoryBundle;
+  encryptor: SensitivePayloadEncryptor;
+  activeCart: ActivePricingCartSession;
+  currentCashier: CurrentCashierSession;
+  terminal: Pick<HbposAuditMetadata, "storeCode" | "deviceCode">;
+  clock: Readonly<{
+    now(): Date;
+    nowIso(): string;
+  }>;
+  createId(): string;
+  connectivity: PaymentConnectivityPort;
+  bootstrap?: PaymentProviderRuntimeBootstrap | undefined;
+  receiptSettings?: PaymentReceiptSettingsPort | undefined;
+  drainFulfilment(): Promise<unknown>;
+}>;
+
+/**
+ * 支付生产组合根。公开面只有 presenter 工厂与恢复布尔值；attempt service、
+ * provider registry、数据库、可信会话及 Linkly session 均留在闭包内。
+ */
+export function createProductionPaymentRuntime(
+  input: ProductionPaymentRuntimeDependencies,
+): ProductionPaymentRuntime {
+  if (!input.bootstrap) {
+    return {
+      initializeRecovery: async () => undefined,
+      returnRefund: null,
+      service: {
+        status: "unavailable",
+        blockers: [
+          "SQUARE_TERMINAL_CONFIGURATION_MISSING",
+          "LINKLY_ENVIRONMENT_MISSING",
+          "VOUCHER_PROTECTED_TOKEN_STORE_MISSING",
+          "APPROVED_PAYMENT_COMPLETION_PLANNER_MISSING",
+        ],
+      },
+    };
+  }
+
+  const terminalScope = normalizeScope(input.terminal);
+  const receiptSettings: PaymentReceiptSettingsPort = input.receiptSettings ?? {
+    getReceiptPrinterSettings: () =>
+      input.database.settings().getReceiptPrinterSettings(),
+  };
+  const voucherRelease = availableVoucherRelease(input.bootstrap);
+  const drafts = input.database.paymentDraftRecovery({
+    createOrderGuid: input.createId,
+    createOrderLineGuid: input.createId,
+    createAuditEventId: input.createId,
+  });
+  const cartLease = new ActivePricingCartPaymentLeaseCoordinator(
+    input.activeCart,
+    paymentCartRecovery(drafts, terminalScope),
+    input.createId,
+  );
+  let recoveryInitialized = false;
+  let returnRefund: ProductionReturnRefundAdapter | null = null;
+  const attempts = new PaymentAttemptService({
+    ledger: input.repositories.payments,
+    actionBindings: input.database.paymentActionBindings(),
+    drafts,
+    providers: input.bootstrap.providers,
+    connectivity: input.connectivity,
+    createAttemptId: input.createId,
+    createIdempotencyKey: input.createId,
+    nowIso: input.clock.nowIso,
+    trustedRefundReferenceSeed: (request) => {
+      if (!returnRefund) {
+        throw new Error("RETURN_REFUND_RUNTIME_NOT_INITIALIZED");
+      }
+      return returnRefund.trustedRefundReferenceSeed(request);
+    },
+  });
+  const voucherPreparation = new DurableVoucherPreparationService(
+    input.database.voucherPreparationStore(
+      input.encryptor,
+      input.createId,
+    ),
+    {
+      resolve: async () => {
+        const session = requireScopedCurrentCashier(input);
+        return {
+          storeCode: session.storeCode,
+          cashierId: session.cashierId,
+        };
+      },
+    },
+    {
+      assertActive: async () => {
+        requireScopedCurrentCashier(input);
+      },
+    },
+  );
+  returnRefund = new ProductionReturnRefundAdapter({
+    paymentAttempts: attempts,
+    capacityVault: input.database.returnCapacityVault(input.encryptor),
+    providers: input.bootstrap.providers,
+    voucherPreparation,
+  });
+
+  // Registry 构造早于可信收银员；这里只绑定一次动态、带 epoch 复核的受保护上下文。
+  input.bootstrap.bindVoucherContextProvider(async (attempt) => {
+    const lease = input.currentCashier.createLease();
+    const before = requireScopedLease(lease, input.terminal);
+    const context = await voucherPreparation.contextForAttempt(attempt);
+    const after = requireScopedLease(lease, input.terminal);
+    if (
+      before !== after ||
+      context.storeCode !== after.storeCode ||
+      context.cashierId !== after.cashierId
+    ) {
+      throw new PaymentCheckoutRuntimeError(
+        "VOUCHER_CONTEXT_NOT_PREPARED",
+      );
+    }
+    return context;
+  });
+
+  const createContext = () => {
+    if (!recoveryInitialized) {
+      throw new Error("PAYMENT_RUNTIME_NOT_INITIALIZED");
+    }
+    const cashierLease = input.currentCashier.createLease();
+    const actor = paymentAuditActor(
+      requireScopedLease(cashierLease, input.terminal),
+    );
+    const guard = paymentSessionGuard(cashierLease, input.terminal);
+    const draftPort = paymentDraftPort(
+      drafts,
+      terminalScope,
+      cashierLease,
+      actor,
+      input,
+      voucherRelease !== null,
+    );
+    const finalPlanner = new PaymentFinalCompletionPlanner({
+      settings: new PersistedPaymentCompletionSettings(
+        receiptSettings,
+        {
+          canOpenCashDrawer: () =>
+            requireScopedLease(cashierLease, input.terminal)
+              .permissionCodes.includes(CASH_DRAWER_PERMISSION),
+        },
+      ),
+      renderer: new OrderRepositoryPaymentReceiptRenderer(
+        input.repositories.orders,
+        receiptSettings,
+      ),
+      createId: input.createId,
+      nowIso: input.clock.nowIso,
+    });
+    const approvedCompletion = new ApprovedPaymentOrderCompletionService({
+      planner: new SafeApprovedPaymentCompletionPlanner({
+        projection: new OrderRepositoryPaymentCompletionProjection(
+          input.repositories.orders,
+        ),
+        finalPlanner,
+        createId: input.createId,
+        nowIso: input.clock.nowIso,
+      }),
+      committer: input.database.paymentOrderCommitter(input.encryptor),
+      recallCompletion: {
+        // 支付 lease 持有期间 active cart 是唯一可信的恢复挂单绑定。
+        resolveBinding: () => input.activeCart.read().recallBinding,
+        createId: input.createId,
+        nowIso: input.clock.nowIso,
+      },
+    });
+    const orderTruth = input.database.mixedPaymentOrderTruth();
+    const tenders = input.database.mixedPaymentTenders(
+      {
+        createTenderGuid: input.createId,
+        createAuditEventId: input.createId,
+      },
+      {
+        planner: finalPlanner,
+        encryptor: input.encryptor,
+        recallCompletion: {
+          async resolve(orderGuid, actor) {
+            const binding = input.activeCart.read().recallBinding;
+            if (!binding) return null;
+            const recalledAtIso = input.clock.nowIso();
+            return {
+              binding,
+              recalledAtIso,
+              recallAudit: {
+                eventId: input.createId(),
+                eventType: "ORDER_RECALL",
+                occurredAtIso: recalledAtIso,
+                orderGuid,
+                correlationId: binding.holdId,
+                payload: {
+                  source: "pos-handheld",
+                  action: "recall",
+                  result: "completed",
+                  storeCode: binding.scope.storeCode,
+                  deviceCode: binding.scope.deviceCode,
+                  cashierId: actor.cashierId,
+                  cashierName: actor.cashierName,
+                  userGuid: actor.userGuid,
+                },
+              },
+            };
+          },
+        },
+      },
+    );
+    const voucherReversalStore = voucherTenderReversalStore(input);
+    const voucherReversal = voucherRelease
+      ? new VoucherTenderReversalService({
+          store: voucherReversalStore,
+          paymentAttempts: attempts,
+          release: voucherRelease,
+        })
+      : null;
+    const mixed = new MixedPaymentCoordinator({
+      actor,
+      orderTruth,
+      paymentAttempts: attempts,
+      approvedCompletion,
+      cashTender: tenders,
+      tenderReversal: createProductionTenderReversalRouter({
+        orderTruth,
+        cash: tenders,
+        voucher: voucherReversal,
+      }),
+    });
+    const runtime = new PaymentCheckoutRuntime({
+      mixed,
+      attempts,
+      drafts: draftPort,
+      cartLease,
+      providers: input.bootstrap!.providers,
+      trustedSession: guard,
+      permissions: guard,
+      voucherPreparation: {
+        async preparePurchase(request) {
+          await guard.assertActive();
+          const prepared =
+            await voucherPreparation.preparePurchase(request);
+          await guard.assertActive();
+          return prepared;
+        },
+      },
+    });
+    return {
+      runtime: withPostCommitFulfilment(
+        withPersistedVoucherTenderReversalRecovery({
+          runtime,
+          store: voucherReversalStore,
+          scope: terminalScope,
+          retryAvailable: voucherReversal !== null,
+        }),
+        input.drainFulfilment,
+      ),
+      linkly: input.bootstrap!.createLinklyOperator({
+        attempts,
+        trustedSession: guard,
+        permissions: guard,
+      }),
+    };
+  };
+
+  return {
+    returnRefund,
+    initializeRecovery: async () => {
+      await cartLease.initializeRecovery();
+      recoveryInitialized = true;
+    },
+    service: {
+      status: "available",
+      createPresenter(entry) {
+        const context = createContext();
+        return new PaymentPresenter({
+          runtime: context.runtime,
+          ...(context.linkly
+            ? { linklyOperator: context.linkly }
+            : {}),
+          entry: normalizeEntry(entry, input.activeCart.getSnapshot()),
+          createActionId: input.createId,
+        });
+      },
+      async hasRecoveryRequired() {
+        const context = createContext();
+        return (await context.runtime.findRecoveryRequired()) !== null;
+      },
+    },
+  };
+}
+
+function paymentAuditActor(
+  session: TrustedCashierSession,
+): AuditActorSnapshot {
+  return Object.freeze({
+    cashierId: session.cashierId,
+    cashierName: session.cashierName,
+    userGuid: session.userGuid,
+  });
+}
+
+function paymentCartRecovery(
+  drafts: SqlitePaymentDraftRecoveryStore,
+  scope: PaymentRecoveryScope,
+): PaymentCartRecoveryMaterialPort {
+  return {
+    async findBlockingCart() {
+      const recovery = await drafts.findBlockingRecovery(scope);
+      if (!recovery) return null;
+      if (!recovery.draftId) {
+        throw new Error("PAYMENT_RECOVERY_DRAFT_BINDING_MISSING");
+      }
+      return {
+        checkoutIntentId: recovery.draftId,
+        cart: recovery.cart,
+        pricingState: recovery.pricingState,
+        recallBinding: recovery.recallBinding,
+      };
+    },
+  };
+}
+
+function paymentDraftPort(
+  store: SqlitePaymentDraftRecoveryStore,
+  scope: PaymentRecoveryScope,
+  cashierLease: TrustedCashierLease,
+  actor: AuditActorSnapshot,
+  input: ProductionPaymentRuntimeDependencies,
+  voucherReversalAvailable: boolean,
+): PaymentCheckoutDraftPort {
+  const assertActive = () =>
+    requireScopedLease(cashierLease, input.terminal);
+  const read = async (orderGuid: string) => {
+    assertActive();
+    const draft = await store.readDraft(orderGuid, scope);
+    assertActive();
+    return draft
+      ? publicDraft(draft, voucherReversalAvailable)
+      : null;
+  };
+  const readAfterDurableCompletion = async (orderGuid: string) => {
+    // 不可逆支付已提交后只能使用组合根冻结的原 scope 读取耐久真相，绝不重新读取收银员或终端身份。
+    const draft = await store.readDraft(orderGuid, scope);
+    return draft
+      ? publicDraft(draft, voucherReversalAvailable)
+      : null;
+  };
+
+  return {
+    async createOrReuse(request) {
+      const identity = assertActive();
+      const mutation = await store.createOrReuseDraft({
+        draftId: request.checkoutIntentId,
+        cart: request.lease.cart,
+        pricingState: request.lease.pricingState,
+        // 支付 lease 独占期间 binding 不可改变；与草稿同事务写入后可安全跨崩溃恢复。
+        recallBinding: input.activeCart.read().recallBinding,
+        identity: {
+          storeCode: identity.storeCode,
+          deviceCode: identity.deviceCode,
+          cashierId: identity.cashierId,
+          cashierName: identity.cashierName,
+        },
+        soldAtIso: input.clock.nowIso(),
+      });
+      assertActive();
+      if (mutation.draftId !== request.checkoutIntentId) {
+        throw new PaymentCheckoutRuntimeError(
+          "PAYMENT_DRAFT_CONFLICT",
+        );
+      }
+      const draft = await read(mutation.orderGuid);
+      if (!draft) {
+        throw new PaymentCheckoutRuntimeError(
+          "PAYMENT_DRAFT_NOT_FOUND",
+        );
+      }
+      return draft;
+    },
+    read,
+    readAfterDurableCompletion,
+    async findBlockingRecovery() {
+      assertActive();
+      const recovery = await store.findBlockingRecovery(scope);
+      assertActive();
+      if (!recovery) return null;
+      return toCheckoutRecovery(
+        store,
+        scope,
+        recovery,
+        assertActive,
+        voucherReversalAvailable,
+      );
+    },
+    async abandonPrepared(request) {
+      assertActive();
+      const draft = await read(request.orderGuid);
+      if (!draft) {
+        throw new PaymentCheckoutRuntimeError(
+          "PAYMENT_DRAFT_NOT_FOUND",
+        );
+      }
+      const command = {
+        ...scope,
+        orderGuid: draft.orderGuid,
+        draftId: draft.checkoutIntentId,
+        actionId: request.actionId,
+        actor,
+      };
+      const result = draft.cancellableAfterReversal
+        ? await store.closeFullyReversedDraft(command)
+        : await store.abandonPreparedDraft(command);
+      // store resolve 即 durable commit；之后不再读取或复核可能已过期的收银员会话。
+      return { replayed: result.replayed };
+    },
+    async closeCancelled(request) {
+      assertActive();
+      const result = await store.closeCancelledDraft({
+        ...scope,
+        orderGuid: request.orderGuid,
+        actionId: request.actionId,
+        actor,
+      });
+      assertActive();
+      return {
+        draft: publicDraft(
+          result.draft,
+          voucherReversalAvailable,
+        ),
+        replayed: result.replayed,
+      };
+    },
+  };
+}
+
+async function toCheckoutRecovery(
+  store: SqlitePaymentDraftRecoveryStore,
+  scope: PaymentRecoveryScope,
+  recovery: PaymentDraftRecovery,
+  assertActive: () => TrustedCashierSession,
+  voucherReversalAvailable: boolean,
+): Promise<PaymentCheckoutRecoveryRecord> {
+  const draft = await store.readDraft(recovery.orderGuid, scope);
+  assertActive();
+  if (!draft) {
+    throw new PaymentCheckoutRuntimeError("PAYMENT_DRAFT_NOT_FOUND");
+  }
+  const action = recovery.boundAction;
+  if (action && action.operation !== "purchase") {
+    throw new PaymentCheckoutRuntimeError(
+      "PAYMENT_ATTEMPT_IDENTITY_MISMATCH",
+    );
+  }
+  return {
+    draft: publicDraft(draft, voucherReversalAvailable),
+    attemptId:
+      recovery.kind === "AttemptBlocking"
+        ? recovery.attemptId
+        : null,
+    preparedAction: action
+      ? {
+          actionId: action.actionId,
+          provider: action.provider,
+          operation: "purchase",
+          amount: copyMoney(action.amount),
+        }
+      : null,
+  };
+}
+
+function publicDraft(
+  draft: PaymentCheckoutDraft,
+  voucherReversalAvailable: boolean,
+): PaymentCheckoutDraft {
+  const canReverse = draft.state === "Draft" || draft.state === "Completing";
+  return Object.freeze({
+    ...draft,
+    total: copyMoney(draft.total),
+    remaining: copyMoney(draft.remaining),
+    // 卡 reversal 未提供生产恢复语义；礼券只在窄 release capability 可用时开放。
+    tenders: Object.freeze(
+      draft.tenders.map((tender) =>
+        Object.freeze({
+          ...tender,
+          amount: copyMoney(tender.amount),
+          reversible:
+            canReverse &&
+            (tender.method === "cash" ||
+              (tender.method === "voucher" &&
+                voucherReversalAvailable)) &&
+            tender.reversible,
+        }),
+      ),
+    ),
+  });
+}
+
+export function createProductionTenderReversalRouter(
+  options: Readonly<{
+    orderTruth: MixedPaymentOrderTruthPort;
+    cash: MixedTenderReversalPort;
+    voucher: MixedTenderReversalPort | null;
+  }>,
+): MixedTenderReversalPort {
+  return {
+    async reverseTender(command) {
+      const order = await options.orderTruth.getPaymentTruth(
+        command.orderGuid,
+      );
+      const source = order?.tenders.find(
+        (tender: OrderTender) =>
+          tender.tenderGuid === command.tenderGuid,
+      );
+      if (
+        !source ||
+        source.amount.currency !== "AUD" ||
+        source.amount.cents <= 0
+      ) {
+        throw new Error("TENDER_REVERSAL_UNAVAILABLE");
+      }
+      if (source.method === "cash") {
+        return options.cash.reverseTender(command);
+      }
+      if (source.method === "voucher" && options.voucher) {
+        return options.voucher.reverseTender(command);
+      }
+      // 银行卡以及缺少 release capability 的礼券都不会落到任何 provider。
+      throw new Error("TENDER_REVERSAL_UNAVAILABLE");
+    },
+  };
+}
+
+type AvailableVoucherRelease = Extract<
+  VoucherApprovedPurchaseReleasePort,
+  { status: "available" }
+>;
+
+function availableVoucherRelease(
+  bootstrap: PaymentProviderRuntimeBootstrap,
+): AvailableVoucherRelease | null {
+  const candidate = (
+    bootstrap as PaymentProviderRuntimeBootstrap &
+      Partial<{
+        voucherApprovedPurchaseRelease:
+          VoucherApprovedPurchaseReleasePort;
+      }>
+  ).voucherApprovedPurchaseRelease;
+  return candidate?.status === "available" ? candidate : null;
+}
+
+function voucherTenderReversalStore(
+  input: Pick<
+    ProductionPaymentRuntimeDependencies,
+    "database" | "encryptor" | "createId"
+  >,
+): VoucherTenderReversalStorePort &
+  VoucherTenderReversalRecoveryStorePort {
+  return input.database.voucherTenderReversals(
+    input.encryptor,
+    {
+      createReversalTenderGuid: input.createId,
+      createAuditEventId: input.createId,
+    },
+  );
+}
+
+function withPersistedVoucherTenderReversalRecovery(
+  options: Readonly<{
+    runtime: PaymentCheckoutRuntimePort;
+    store: VoucherTenderReversalRecoveryStorePort;
+    scope: PaymentRecoveryScope;
+    retryAvailable: boolean;
+  }>,
+): PaymentCheckoutRuntimePort {
+  const readBlocking = () => options.store.findBlocking(options.scope);
+  const projectCurrent = async (
+    snapshot: PaymentCheckoutPublicSnapshot,
+  ): Promise<PaymentCheckoutPublicSnapshot> => {
+    const blocking = await readBlocking();
+    if (!blocking) return snapshot;
+    if (blocking.orderGuid !== snapshot.orderGuid) {
+      throw new PaymentCheckoutRuntimeError(
+        "TENDER_REVERSAL_RECOVERY_REQUIRED",
+      );
+    }
+    return persistedVoucherReversalSnapshot(
+      snapshot,
+      blocking,
+      options.retryAvailable,
+    );
+  };
+  const assertNoBlocking = async (
+    orderGuid: string,
+  ): Promise<void> => {
+    // 先走公开 read，重新复核当前收银员、门店和 View 权限。
+    await options.runtime.read(orderGuid);
+    const blocking = await readBlocking();
+    if (blocking) {
+      throw new PaymentCheckoutRuntimeError(
+        blocking.state === "Blocked"
+          ? "TENDER_REVERSAL_BLOCKED"
+          : "TENDER_REVERSAL_RECOVERY_REQUIRED",
+      );
+    }
+  };
+  const assertNoScopedBlocking = async (): Promise<void> => {
+    const blocking = await readBlocking();
+    if (blocking) {
+      // start 尚无 orderGuid；先用持久 action 找回订单，再经公开 read
+      // 复核当前收银员、门店和 View 权限，随后才返回稳定阻断。
+      await options.runtime.read(blocking.orderGuid);
+      throw new PaymentCheckoutRuntimeError(
+        blocking.state === "Blocked"
+          ? "TENDER_REVERSAL_BLOCKED"
+          : "TENDER_REVERSAL_RECOVERY_REQUIRED",
+      );
+    }
+  };
+
+  return {
+    listProviderAvailability: () =>
+      options.runtime.listProviderAvailability(),
+    canTakeCash: () => options.runtime.canTakeCash?.() === true,
+    async read(orderGuid) {
+      return projectCurrent(await options.runtime.read(orderGuid));
+    },
+    async findRecoveryRequired() {
+      // 即使普通 payment recovery 误把 Approved source 视为已结清，
+      // M16 action 仍是最终恢复真相。
+      const blocking = await readBlocking();
+      if (blocking) {
+        return persistedVoucherReversalSnapshot(
+          await options.runtime.read(blocking.orderGuid),
+          blocking,
+          options.retryAvailable,
+        );
+      }
+      return options.runtime.findRecoveryRequired();
+    },
+    async resumeCurrent(prepared) {
+      const blocking = await readBlocking();
+      if (blocking) {
+        return persistedVoucherReversalSnapshot(
+          await options.runtime.read(blocking.orderGuid),
+          blocking,
+          options.retryAvailable,
+        );
+      }
+      return options.runtime.resumeCurrent(prepared);
+    },
+    async start(request) {
+      await assertNoScopedBlocking();
+      return options.runtime.start(request);
+    },
+    ...(options.runtime.startCash
+      ? {
+          async startCash(request) {
+            await assertNoScopedBlocking();
+            return options.runtime.startCash!(request);
+          },
+        }
+      : {}),
+    async recover(request) {
+      await assertNoBlocking(request.orderGuid);
+      return options.runtime.recover(request);
+    },
+    async cancel(request) {
+      await assertNoBlocking(request.orderGuid);
+      return options.runtime.cancel(request);
+    },
+    async abandonPrepared(request) {
+      await assertNoBlocking(request.orderGuid);
+      return options.runtime.abandonPrepared(request);
+    },
+    async addCash(request) {
+      await assertNoBlocking(request.orderGuid);
+      return options.runtime.addCash(request);
+    },
+    async removeTender(request) {
+      await assertNoBlocking(request.orderGuid);
+      return projectCurrent(
+        await options.runtime.removeTender(request),
+      );
+    },
+    async retryTenderReversal(request) {
+      // read 先完成可信会话与 View 权限复核；真正 removeTender 仍会复核
+      // RemoveTender 权限并使用下面从私有 durable record 取得的原 actionId。
+      const base = await options.runtime.read(request.orderGuid);
+      const blocking = await readBlocking();
+      if (
+        !blocking ||
+        blocking.orderGuid !== request.orderGuid ||
+        blocking.sourceTenderGuid !== request.tenderGuid
+      ) {
+        throw new PaymentCheckoutRuntimeError(
+          "TENDER_REVERSAL_UNAVAILABLE",
+        );
+      }
+      if (blocking.state === "Blocked" || !options.retryAvailable) {
+        return persistedVoucherReversalSnapshot(
+          base,
+          blocking,
+          options.retryAvailable,
+        );
+      }
+      const result = await options.runtime.removeTender({
+        orderGuid: blocking.orderGuid,
+        actionId: blocking.actionId,
+        tenderGuid: blocking.sourceTenderGuid,
+      });
+      return projectCurrent(result);
+    },
+  };
+}
+
+function persistedVoucherReversalSnapshot(
+  snapshot: PaymentCheckoutPublicSnapshot,
+  record: VoucherTenderReversalRecord,
+  retryAvailable: boolean,
+): PaymentCheckoutPublicSnapshot {
+  const source = snapshot.tenders.find(
+    (tender) => tender.tenderGuid === record.sourceTenderGuid,
+  );
+  if (
+    snapshot.orderGuid !== record.orderGuid ||
+    record.truth.orderGuid !== record.orderGuid ||
+    record.truth.state !== "Completing" ||
+    !source ||
+    source.method !== "voucher" ||
+    source.amount.currency !== "AUD" ||
+    source.amount.cents !== record.amount.cents ||
+    record.amount.currency !== "AUD" ||
+    !Number.isSafeInteger(record.amount.cents) ||
+    record.amount.cents <= 0 ||
+    record.state === "Reversed"
+  ) {
+    throw new PaymentCheckoutRuntimeError(
+      "TENDER_REVERSAL_TRUTH_MISMATCH",
+    );
+  }
+  const recoveryStatus =
+    record.state === "Blocked"
+      ? "blocked"
+      : record.state === "Unknown"
+        ? "unknown"
+        : "pending";
+  const canRetry =
+    retryAvailable && record.state !== "Blocked";
+  return Object.freeze({
+    ...snapshot,
+    tenders: Object.freeze(
+      snapshot.tenders.map((tender) =>
+        Object.freeze({
+          ...tender,
+          amount: copyMoney(tender.amount),
+          reversible: false,
+        }),
+      ),
+    ),
+    status:
+      record.state === "Unknown"
+        ? "unknown"
+        : "recovery-required",
+    errorCode:
+      record.state === "Blocked"
+        ? "TENDER_REVERSAL_BLOCKED"
+        : retryAvailable
+          ? "TENDER_REVERSAL_RECOVERY_REQUIRED"
+          : "TENDER_REVERSAL_UNAVAILABLE",
+    tenderReversalRecovery: Object.freeze({
+      tenderGuid: record.sourceTenderGuid,
+      status: recoveryStatus,
+    }),
+    allowedActions: Object.freeze({
+      start: false,
+      changeProvider: false,
+      recover: canRetry,
+      cancel: false,
+      addCash: false,
+      removeTender: false,
+    }),
+  });
+}
+
+function paymentSessionGuard(
+  lease: TrustedCashierLease,
+  terminal: Pick<HbposAuditMetadata, "storeCode" | "deviceCode">,
+) {
+  return {
+    assertActive(): void {
+      requireScopedLease(lease, terminal);
+    },
+    assert(code: PaymentPermissionCode): void {
+      const session = requireScopedLease(lease, terminal);
+      if (!session.permissionCodes.includes(code)) {
+        throw new PaymentCheckoutRuntimeError(
+          "PAYMENT_CHECKOUT_FAILED",
+        );
+      }
+    },
+    can(code: PaymentPermissionCode): boolean {
+      return requireScopedLease(lease, terminal).permissionCodes.includes(code);
+    },
+  };
+}
+
+function withPostCommitFulfilment(
+  runtime: PaymentCheckoutRuntimePort,
+  drain: () => Promise<unknown>,
+): PaymentCheckoutRuntimePort {
+  const after = async (
+    operation: Promise<PaymentCheckoutPublicSnapshot | null>,
+  ) => {
+    const snapshot = await operation;
+    if (snapshot?.status === "completed") {
+      void drain().catch(() => undefined);
+    }
+    return snapshot;
+  };
+  return {
+    listProviderAvailability: () =>
+      runtime.listProviderAvailability(),
+    canTakeCash: () => runtime.canTakeCash?.() === true,
+    read: (orderGuid) => runtime.read(orderGuid),
+    findRecoveryRequired: () =>
+      runtime.findRecoveryRequired(),
+    resumeCurrent: (prepared) =>
+      after(runtime.resumeCurrent(prepared)),
+    start: (request) => after(runtime.start(request)).then(requireSnapshot),
+    ...(runtime.startCash
+      ? {
+          startCash: (request) =>
+            after(runtime.startCash!(request)).then(requireSnapshot),
+        }
+      : {}),
+    recover: (request) =>
+      after(runtime.recover(request)).then(requireSnapshot),
+    cancel: (request) =>
+      after(runtime.cancel(request)).then(requireSnapshot),
+    abandonPrepared: (request) =>
+      runtime.abandonPrepared(request),
+    addCash: (request) =>
+      after(runtime.addCash(request)).then(requireSnapshot),
+    removeTender: (request) =>
+      after(runtime.removeTender(request))
+        .then(requireSnapshot)
+        .then(hardenUnresolvedReversalSnapshot),
+    ...(runtime.retryTenderReversal
+      ? {
+          retryTenderReversal: (request) =>
+            after(runtime.retryTenderReversal!(request))
+              .then(requireSnapshot)
+              .then(hardenUnresolvedReversalSnapshot),
+        }
+      : {}),
+  };
+}
+
+function hardenUnresolvedReversalSnapshot(
+  snapshot: PaymentCheckoutPublicSnapshot,
+): PaymentCheckoutPublicSnapshot {
+  if (
+    snapshot.status !== "pending" &&
+    snapshot.status !== "unknown" &&
+    snapshot.status !== "declined" &&
+    snapshot.status !== "recovery-required"
+  ) {
+    return snapshot;
+  }
+  // 撤券未形成 Reversed 事实时，页面只能读当前真相；不能换 provider、补现金或再撤。
+  return Object.freeze({
+    ...snapshot,
+    allowedActions: Object.freeze({
+      start: false,
+      changeProvider: false,
+      recover:
+        snapshot.tenderReversalRecovery !== undefined &&
+        snapshot.tenderReversalRecovery.status !== "blocked" &&
+        snapshot.allowedActions.recover,
+      cancel: false,
+      addCash: false,
+      removeTender: false,
+    }),
+  });
+}
+
+function requireSnapshot(
+  snapshot: PaymentCheckoutPublicSnapshot | null,
+): PaymentCheckoutPublicSnapshot {
+  if (!snapshot) {
+    throw new PaymentCheckoutRuntimeError(
+      "PAYMENT_CHECKOUT_FAILED",
+    );
+  }
+  return snapshot;
+}
+
+function requireScopedCurrentCashier(
+  input: Pick<
+    ProductionPaymentRuntimeDependencies,
+    "currentCashier" | "terminal"
+  >,
+): TrustedCashierSession {
+  const session = input.currentCashier.require();
+  assertScope(session, input.terminal);
+  return session;
+}
+
+function requireScopedLease(
+  lease: TrustedCashierLease,
+  terminal: Pick<HbposAuditMetadata, "storeCode" | "deviceCode">,
+): TrustedCashierSession {
+  const session = lease.get();
+  assertScope(session, terminal);
+  return session;
+}
+
+function assertScope(
+  session: Pick<TrustedCashierSession, "storeCode" | "deviceCode">,
+  terminal: Pick<HbposAuditMetadata, "storeCode" | "deviceCode">,
+): void {
+  if (
+    session.storeCode !== terminal.storeCode ||
+    session.deviceCode !== terminal.deviceCode
+  ) {
+    throw new PaymentCheckoutRuntimeError(
+      "PAYMENT_CHECKOUT_FAILED",
+    );
+  }
+}
+
+function normalizeScope(
+  scope: Pick<HbposAuditMetadata, "storeCode" | "deviceCode">,
+): PaymentRecoveryScope {
+  return {
+    storeCode: requiredText(scope.storeCode),
+    deviceCode: requiredText(scope.deviceCode),
+  };
+}
+
+function normalizeEntry(
+  entry: PaymentCheckoutEntryContext | null,
+  activeCart: CartSnapshot,
+): PaymentCheckoutEntryContext | null {
+  if (!entry) return null;
+  const checkoutIntentId = requiredText(entry.checkoutIntentId);
+  if (
+    !Number.isSafeInteger(entry.expectedCartRevision) ||
+    entry.expectedCartRevision < 0 ||
+    entry.total.currency !== "AUD" ||
+    !Number.isSafeInteger(entry.total.cents) ||
+    entry.total.cents <= 0
+  ) {
+    throw new PaymentCheckoutRuntimeError(
+      "PAYMENT_DRAFT_CONFLICT",
+    );
+  }
+  // 路由只携带定位字段；展示明细必须来自组合根当前持有的可信购物车。
+  // revision 或金额已变化时不展示可能过期的行，后续独占 lease 仍会失败关闭。
+  const trustedLines =
+    activeCart.revision === entry.expectedCartRevision &&
+    activeCart.actualAmount.currency === entry.total.currency &&
+    activeCart.actualAmount.cents === entry.total.cents
+      ? activeCart.lines
+      : [];
+  return Object.freeze({
+    checkoutIntentId,
+    expectedCartRevision: entry.expectedCartRevision,
+    total: copyMoney(entry.total),
+    lines: Object.freeze(
+      trustedLines.map((line) =>
+        Object.freeze({
+          lineKey: requiredText(line.lineId),
+          displayName: requiredText(line.displayName),
+          quantity: requiredText(line.quantity),
+          actualAmountCents: line.actualAmount.cents,
+        }),
+      ),
+    ),
+  });
+}
+
+function copyMoney(value: Money): Money {
+  return { currency: value.currency, cents: value.cents };
+}
+
+function requiredText(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new PaymentCheckoutRuntimeError(
+      "PAYMENT_DRAFT_CONFLICT",
+    );
+  }
+  return normalized;
+}

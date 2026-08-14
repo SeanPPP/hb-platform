@@ -224,6 +224,13 @@ public static class ServiceRegistration
             {
                 client.Timeout = TimeSpan.FromSeconds(8);
             });
+        services.AddHttpClient<
+            IPosHandheldUpdateDecisionGateway,
+            HttpPosHandheldUpdateDecisionGateway
+        >(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(8);
+        });
 
         return services;
     }

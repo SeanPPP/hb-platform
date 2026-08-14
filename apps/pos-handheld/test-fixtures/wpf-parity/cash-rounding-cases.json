@@ -1,0 +1,29 @@
+{
+  "source": "apps/pos-wpf/tests/Hbpos.Client.Tests/CashPaymentWorkflowServiceTests.cs",
+  "currency": "AUD",
+  "minorUnit": "cent",
+  "incrementCents": 5,
+  "cases": [
+    {
+      "name": "round-down-7.82",
+      "cartTotalCents": 782,
+      "cashDueCents": 780,
+      "tenderedCents": 800,
+      "changeCents": 20
+    },
+    {
+      "name": "round-up-7.83",
+      "cartTotalCents": 783,
+      "cashDueCents": 785,
+      "tenderedCents": 800,
+      "changeCents": 15
+    },
+    {
+      "name": "exact-five-cents",
+      "cartTotalCents": 785,
+      "cashDueCents": 785,
+      "tenderedCents": 800,
+      "changeCents": 15
+    }
+  ]
+}

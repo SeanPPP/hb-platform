@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Controllers
             var normalizedProfile = NormalizePublicProfile(profile);
             if (normalizedProfile == null)
             {
-                // 匿名自更新只开放已知发布轨道，避免 development/internal 等 APK URL 被公网枚举。
+                // 匿名自更新只开放精确白名单轨道，避免任意 development/internal APK 被公网枚举。
                 return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(null));
             }
 
@@ -125,7 +125,7 @@ namespace BlazorApp.Api.Controllers
             var normalizedProfile = NormalizePublicProfile(profile);
             if (normalizedProfile == null)
             {
-                // 匿名下载入口同样只开放公开发布轨道，不允许探测 development/internal 包。
+                // 匿名下载入口沿用同一精确白名单，不允许探测其他 development/internal 包。
                 return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
             }
 
@@ -170,6 +170,110 @@ namespace BlazorApp.Api.Controllers
 
             // 新安装器绑定到检查时拿到的 buildId，避免最新 APK 后续变化时下载到另一个构建。
             return Redirect(result.Data.ArtifactUrl);
+        }
+
+        [HttpGet("pos-handheld/android-latest")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PosHandheldAndroidLatest(
+            [FromQuery] string profile = "production"
+        )
+        {
+            var normalizedProfile = NormalizePosHandheldPublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(null));
+            }
+
+            var result = await _service.GetLatestAsync(
+                MobileAppKeys.PosHandheld,
+                normalizedProfile
+            );
+            if (!result.Success)
+            {
+                return Ok(
+                    ApiResponse<MobileAppBuildPublicDto?>.Error(
+                        result.Message,
+                        result.ErrorCode,
+                        result.Details
+                    )
+                );
+            }
+
+            var latest = result.Data == null
+                ? null
+                : new MobileAppBuildPublicDto
+                {
+                    EasBuildId = result.Data.EasBuildId,
+                    BuildProfile = result.Data.BuildProfile,
+                    AppVersion = result.Data.AppVersion,
+                    AppBuildVersion = result.Data.AppBuildVersion,
+                    ArtifactUrl = result.Data.ArtifactUrl,
+                    CosArtifactUrl = result.Data.CosArtifactUrl,
+                };
+
+            return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(latest));
+        }
+
+        [HttpGet("pos-handheld/android-latest/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PosHandheldAndroidLatestDownload(
+            [FromQuery] string profile = "production"
+        )
+        {
+            var normalizedProfile = NormalizePosHandheldPublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                return NotFound(
+                    ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND")
+                );
+            }
+
+            var result = await _service.GetLatestAsync(
+                MobileAppKeys.PosHandheld,
+                normalizedProfile
+            );
+            if (!result.Success)
+            {
+                return BadRequest(
+                    ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details)
+                );
+            }
+
+            return string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl)
+                ? NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"))
+                : Redirect(result.Data.ArtifactUrl);
+        }
+
+        [HttpGet("pos-handheld/android/{easBuildId}/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> PosHandheldAndroidBuildDownload(
+            string easBuildId,
+            [FromQuery] string profile = "production"
+        )
+        {
+            var normalizedProfile = NormalizePosHandheldPublicProfile(profile);
+            if (normalizedProfile == null || string.IsNullOrWhiteSpace(easBuildId))
+            {
+                return NotFound(
+                    ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND")
+                );
+            }
+
+            var result = await _service.GetByBuildIdAsync(
+                MobileAppKeys.PosHandheld,
+                easBuildId,
+                normalizedProfile
+            );
+            if (!result.Success)
+            {
+                return BadRequest(
+                    ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details)
+                );
+            }
+
+            return string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl)
+                ? NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"))
+                : Redirect(result.Data.ArtifactUrl);
         }
 
         [HttpGet]
@@ -241,6 +345,18 @@ namespace BlazorApp.Api.Controllers
                 : profile.Trim().ToLowerInvariant();
 
             return normalized is "production" or "preview" ? normalized : null;
+        }
+
+        private static string? NormalizePosHandheldPublicProfile(string? profile)
+        {
+            var normalized = string.IsNullOrWhiteSpace(profile)
+                ? "production"
+                : profile.Trim().ToLowerInvariant();
+
+            // pos-handheld 独立开放内部安装轨道，避免扩大旧 mobile 匿名路由的公开范围。
+            return normalized is "production" or "preview" or "android-internal"
+                ? normalized
+                : null;
         }
     }
 }

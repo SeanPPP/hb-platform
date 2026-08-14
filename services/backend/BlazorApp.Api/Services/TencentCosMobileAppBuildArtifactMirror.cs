@@ -1,5 +1,8 @@
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
+using System.Security.Cryptography;
 
 namespace BlazorApp.Api.Services
 {
@@ -71,14 +74,65 @@ namespace BlazorApp.Api.Services
             }
 
             var objectKey = BuildObjectKey(build);
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var upload = await _uploadService.UploadStreamAsync(
-                objectKey,
-                ApkContentType,
-                stream,
-                contentLength,
-                cancellationToken
+            var tempPath = Path.Combine(
+                Path.GetTempPath(),
+                $"hb-pos-handheld-apk-{Guid.NewGuid():N}.tmp"
             );
+            string sha256;
+            long actualSize;
+            ApiResponse<UploadResult> upload;
+            await using (var tempStream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.DeleteOnClose
+            ))
+            {
+                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[128 * 1024];
+                actualSize = 0;
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer, cancellationToken);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    actualSize += read;
+                    if (actualSize > MaxApkBytes || actualSize > contentLength.Value)
+                    {
+                        throw new MobileAppBuildArtifactMirrorException(
+                            "APK 实际大小超过响应声明或安全上限",
+                            isDownloadUnsafe: true
+                        );
+                    }
+
+                    hash.AppendData(buffer, 0, read);
+                    await tempStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                }
+
+                if (actualSize != contentLength.Value)
+                {
+                    throw new MobileAppBuildArtifactMirrorException(
+                        "APK 实际大小与 Content-Length 不一致",
+                        isDownloadUnsafe: true
+                    );
+                }
+
+                sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+                tempStream.Position = 0;
+                upload = await _uploadService.UploadStreamAsync(
+                    objectKey,
+                    ApkContentType,
+                    tempStream,
+                    actualSize,
+                    cancellationToken
+                );
+            }
 
             if (!upload.Success || upload.Data == null || string.IsNullOrWhiteSpace(upload.Data.DownloadUrl))
             {
@@ -95,6 +149,8 @@ namespace BlazorApp.Api.Services
             {
                 ArtifactUrl = upload.Data.DownloadUrl,
                 ObjectKey = upload.Data.ObjectKey,
+                Sha256 = sha256,
+                FileSize = actualSize,
                 MirroredAt = DateTime.UtcNow,
             };
         }
@@ -183,10 +239,17 @@ namespace BlazorApp.Api.Services
 
         private static string BuildObjectKey(MobileAppBuild build)
         {
-            // COS 对象路径只使用 profile 和 buildId，确保同一 EAS build 重试时幂等覆盖同一个 APK。
+            if (!MobileAppKeys.TryNormalizeOrLegacyMobile(build.AppKey, out var appKey))
+            {
+                throw new InvalidOperationException("移动应用构建缺少受控 AppKey，拒绝镜像以避免对象串包。");
+            }
+
+            // 旧 mobile 保持原 COS 路径；独立应用增加 AppKey 目录，避免相同 profile/buildId 覆盖。
             var profile = NormalizeObjectKeySegment(build.BuildProfile, "production");
             var buildId = NormalizeObjectKeySegment(build.EasBuildId, Guid.NewGuid().ToString("N"));
-            return $"mobile-app-builds/{profile}/{buildId}.apk";
+            return appKey == MobileAppKeys.Mobile
+                ? $"mobile-app-builds/{profile}/{buildId}.apk"
+                : $"mobile-app-builds/{appKey}/{profile}/{buildId}.apk";
         }
 
         private static string NormalizeObjectKeySegment(string? value, string fallback)

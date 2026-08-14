@@ -3,3 +3,10 @@ apps/mobile/ios/Pods/
 apps/pos-ipad/ios/Pods/
 apps/pos-ipad/.expo/
 apps/pos-ipad/dist/
+apps/pos-handheld/ios/Pods/
+apps/pos-handheld/ios/build/
+apps/pos-handheld/android/.gradle/
+apps/pos-handheld/android/app/build/
+apps/pos-handheld/android/build/
+apps/pos-handheld/.expo/
+apps/pos-handheld/dist/

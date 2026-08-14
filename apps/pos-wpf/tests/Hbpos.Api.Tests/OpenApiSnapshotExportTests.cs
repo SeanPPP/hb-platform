@@ -22,6 +22,8 @@ public sealed class OpenApiSnapshotExportTests
         var document = await response.Content.ReadAsStringAsync();
         Assert.Contains("/api/v1/devices/register", document, StringComparison.Ordinal);
         Assert.Contains("/api/v1/app-updates/pos-ipad", document, StringComparison.Ordinal);
+        Assert.Contains("/api/v1/app-updates/pos-handheld", document, StringComparison.Ordinal);
+        Assert.Contains("/api/v1/app-updates/pos-handheld/ota", document, StringComparison.Ordinal);
         Assert.Contains("deviceSystem", document, StringComparison.Ordinal);
         Assert.Contains("catalogVersion", document, StringComparison.Ordinal);
         Assert.Contains("pageChecksum", document, StringComparison.Ordinal);
@@ -103,6 +105,20 @@ public sealed class OpenApiSnapshotExportTests
                 services.AddSingleton<IAdvertisementSchemaInitializer>(new NoOp());
                 services.RemoveAll<ILinklyCloudCredentialSchemaInitializer>();
                 services.AddSingleton<ILinklyCloudCredentialSchemaInitializer>(new NoOp());
+                services.RemoveAll<IOperationAuditSchemaInitializer>();
+                services.AddSingleton<IOperationAuditSchemaInitializer>(new NoOp());
+                services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
+                services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOp());
+                services.RemoveAll<ILinklyCloudBackendAsyncSchemaInitializer>();
+                services.AddSingleton<ILinklyCloudBackendAsyncSchemaInitializer>(new NoOp());
+                services.RemoveAll<ILinklySettlementSchemaInitializer>();
+                services.AddSingleton<ILinklySettlementSchemaInitializer>(new NoOp());
+                services.RemoveAll<IInstallmentRepaymentClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentRepaymentClaimSchemaInitializer>(new NoOp());
+                services.RemoveAll<IInstallmentCancelClaimSchemaInitializer>();
+                services.AddSingleton<IInstallmentCancelClaimSchemaInitializer>(new NoOp());
+                services.RemoveAll<ISquareWebhookSchemaInitializer>();
+                services.AddSingleton<ISquareWebhookSchemaInitializer>(new NoOp());
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton<ISquareTokenSchemaInitializer>(new NoOp());
             });
@@ -113,6 +129,13 @@ public sealed class OpenApiSnapshotExportTests
         IAttendanceQrKeySchemaInitializer,
         IAdvertisementSchemaInitializer,
         ILinklyCloudCredentialSchemaInitializer,
+        IOperationAuditSchemaInitializer,
+        IDeviceRuntimeStatusSchemaInitializer,
+        ILinklyCloudBackendAsyncSchemaInitializer,
+        ILinklySettlementSchemaInitializer,
+        IInstallmentRepaymentClaimSchemaInitializer,
+        IInstallmentCancelClaimSchemaInitializer,
+        ISquareWebhookSchemaInitializer,
         ISquareTokenSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

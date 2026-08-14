@@ -408,8 +408,11 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL", migrator);
         Assert.Contains("ADD [CartOwnerUserGuid] nvarchar(50) NULL", migrator);
         Assert.Contains("CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope]", migrator);
-        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppBuild_EasBuildId]", migrator);
-        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_Group_Platform]", migrator);
+        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppBuild_AppKey_EasBuildId]", migrator);
+        Assert.Contains(
+            "CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_AppKey_Group_Platform]",
+            migrator
+        );
         Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppDeviceStatus_HardwareId]", migrator);
         Assert.Contains("CREATE INDEX [IX_MobileAppDeviceStatus_System_LastSeen]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_ServiceApiToken_TokenHash]", migrator);
@@ -532,6 +535,31 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.True(
             cashierBarcodeUniqueIndex > cashierBarcodeDuplicateCleanupIndex,
             "收银条码 UserBarcode+Status 过滤唯一索引必须晚于重复条码清理 SQL。"
+        );
+    }
+
+    [Fact]
+    public async Task StartupSchemaMigrator_新建Ota表ProjectName默认值与旧表迁移一致()
+    {
+        var migrator = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains(
+            "[ProjectName] nvarchar(120) NOT NULL CONSTRAINT [DF_MobileAppOtaUpdate_ProjectName] DEFAULT('legacy-mobile')",
+            migrator
+        );
+        Assert.Contains("SET [ProjectName] = ''legacy-mobile''", migrator);
+        Assert.Contains(
+            "ADD CONSTRAINT [DF_MobileAppOtaUpdate_ProjectName] DEFAULT('legacy-mobile') FOR [ProjectName]",
+            migrator
+        );
+        Assert.DoesNotContain(
+            "[ProjectName] nvarchar(120) NOT NULL CONSTRAINT [DF_MobileAppOtaUpdate_ProjectName] DEFAULT('')",
+            migrator
         );
     }
 

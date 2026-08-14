@@ -47,7 +47,12 @@ public sealed class PosIpadUpdateDecisionGatewayTests
             {
                 User = new System.Security.Claims.ClaimsPrincipal(
                     new System.Security.Claims.ClaimsIdentity(
-                        [new(DeviceAuthConstants.StoreCodeClaim, "0247")],
+                        [
+                            new(DeviceAuthConstants.StoreCodeClaim, "0247"),
+                            new(
+                                DeviceAuthConstants.DeviceSystemClaim,
+                                DeviceSystems.IpadOs)
+                        ],
                         DeviceAuthConstants.Scheme))
             }
         };
@@ -585,7 +590,10 @@ public sealed class PosIpadUpdateDecisionGatewayTests
                         [
                             new(
                                 DeviceAuthConstants.StoreCodeClaim,
-                                "0247")
+                                "0247"),
+                            new(
+                                DeviceAuthConstants.DeviceSystemClaim,
+                                DeviceSystems.IpadOs)
                         ],
                         DeviceAuthConstants.Scheme))
             }

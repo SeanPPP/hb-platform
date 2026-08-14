@@ -1181,6 +1181,7 @@ IF OBJECT_ID('MobileAppBuild', 'U') IS NULL
 BEGIN
     CREATE TABLE [MobileAppBuild] (
         [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_MobileAppBuild] PRIMARY KEY,
+        [AppKey] nvarchar(80) NOT NULL CONSTRAINT [DF_MobileAppBuild_AppKey] DEFAULT('mobile'),
         [EasBuildId] nvarchar(120) NOT NULL,
         [AccountName] nvarchar(120) NOT NULL,
         [ProjectName] nvarchar(120) NOT NULL,
@@ -1196,6 +1197,8 @@ BEGIN
         [ArtifactUrl] nvarchar(1000) NOT NULL,
         [CosArtifactUrl] nvarchar(1000) NULL,
         [CosObjectKey] nvarchar(500) NULL,
+        [ArtifactSha256] nvarchar(64) NULL,
+        [ArtifactSize] bigint NULL,
         [CosMirroredAt] datetime2 NULL,
         [CosMirrorError] nvarchar(1000) NULL,
         [CosMirrorStatus] nvarchar(32) NOT NULL CONSTRAINT [DF_MobileAppBuild_CosMirrorStatus] DEFAULT('pending'),
@@ -1215,33 +1218,14 @@ BEGIN
     );
 END;
 
-IF NOT EXISTS (
-    SELECT *
-    FROM sys.indexes
-    WHERE name = 'IX_MobileAppBuild_EasBuildId'
-      AND object_id = OBJECT_ID('MobileAppBuild')
-)
-BEGIN
-    CREATE UNIQUE INDEX [IX_MobileAppBuild_EasBuildId]
-    ON [MobileAppBuild]([EasBuildId]);
-END;
-
-IF NOT EXISTS (
-    SELECT *
-    FROM sys.indexes
-    WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt'
-      AND object_id = OBJECT_ID('MobileAppBuild')
-)
-BEGIN
-    CREATE INDEX [IX_MobileAppBuild_Profile_CompletedAt]
-    ON [MobileAppBuild]([BuildProfile], [Platform], [Status], [CompletedAt]);
-END;
-
 IF OBJECT_ID('MobileAppOtaUpdate', 'U') IS NULL
 BEGIN
     CREATE TABLE [MobileAppOtaUpdate] (
         [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_MobileAppOtaUpdate] PRIMARY KEY,
+        [AppKey] nvarchar(80) NOT NULL CONSTRAINT [DF_MobileAppOtaUpdate_AppKey] DEFAULT('mobile'),
+        [ProjectName] nvarchar(120) NOT NULL CONSTRAINT [DF_MobileAppOtaUpdate_ProjectName] DEFAULT('legacy-mobile'),
         [UpdateGroupId] nvarchar(120) NOT NULL,
+        [UpdateId] nvarchar(120) NULL,
         [AndroidUpdateId] nvarchar(120) NULL,
         [Channel] nvarchar(120) NOT NULL,
         [Branch] nvarchar(120) NULL,
@@ -1261,30 +1245,33 @@ BEGIN
     );
 END;
 
-IF NOT EXISTS (
-    SELECT *
-    FROM sys.indexes
-    WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform'
-      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
-)
-BEGIN
-    CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_Group_Platform]
-    ON [MobileAppOtaUpdate]([UpdateGroupId], [Platform]);
-END;
-
-IF NOT EXISTS (
-    SELECT *
-    FROM sys.indexes
-    WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt'
-      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
-)
-BEGIN
-    CREATE INDEX [IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt]
-    ON [MobileAppOtaUpdate]([Channel], [RuntimeVersion], [PublishedAt]);
-END;
-
 IF OBJECT_ID('MobileAppBuild', 'U') IS NOT NULL
 BEGIN
+    IF COL_LENGTH('MobileAppBuild', 'AppKey') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppBuild] ADD [AppKey] nvarchar(80) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppBuild', 'AppKey') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [MobileAppBuild]
+            SET [AppKey] = ''mobile''
+            WHERE [AppKey] IS NULL OR LTRIM(RTRIM([AppKey])) = '''';
+        ');
+
+        IF EXISTS (
+            SELECT 1
+            FROM sys.columns
+            WHERE object_id = OBJECT_ID('MobileAppBuild')
+              AND name = 'AppKey'
+              AND is_nullable = 1
+        )
+        BEGIN
+            ALTER TABLE [MobileAppBuild] ALTER COLUMN [AppKey] nvarchar(80) NOT NULL;
+        END;
+    END;
+
     IF COL_LENGTH('MobileAppBuild', 'CosArtifactUrl') IS NULL
     BEGIN
         ALTER TABLE [MobileAppBuild]
@@ -1295,6 +1282,18 @@ BEGIN
     BEGIN
         ALTER TABLE [MobileAppBuild]
         ADD [CosObjectKey] nvarchar(500) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppBuild', 'ArtifactSha256') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppBuild]
+        ADD [ArtifactSha256] nvarchar(64) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppBuild', 'ArtifactSize') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppBuild]
+        ADD [ArtifactSize] bigint NULL;
     END;
 
     IF COL_LENGTH('MobileAppBuild', 'CosMirroredAt') IS NULL
@@ -1340,6 +1339,192 @@ BEGIN
               AND ([CosMirrorStatus] IS NULL OR [CosMirrorStatus] = ''pending'');
         ');
     END;
+END;
+
+IF OBJECT_ID('MobileAppOtaUpdate', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('MobileAppOtaUpdate', 'AppKey') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppOtaUpdate] ADD [AppKey] nvarchar(80) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppOtaUpdate', 'ProjectName') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppOtaUpdate] ADD [ProjectName] nvarchar(120) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppOtaUpdate', 'UpdateId') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppOtaUpdate] ADD [UpdateId] nvarchar(120) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppOtaUpdate', 'AppKey') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [MobileAppOtaUpdate]
+            SET [AppKey] = ''mobile''
+            WHERE [AppKey] IS NULL OR LTRIM(RTRIM([AppKey])) = '''';
+        ');
+
+        IF EXISTS (
+            SELECT 1
+            FROM sys.columns
+            WHERE object_id = OBJECT_ID('MobileAppOtaUpdate')
+              AND name = 'AppKey'
+              AND is_nullable = 1
+        )
+        BEGIN
+            ALTER TABLE [MobileAppOtaUpdate] ALTER COLUMN [AppKey] nvarchar(80) NOT NULL;
+        END;
+    END;
+
+    IF COL_LENGTH('MobileAppOtaUpdate', 'ProjectName') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [MobileAppOtaUpdate]
+            SET [ProjectName] = ''legacy-mobile''
+            WHERE [ProjectName] IS NULL OR LTRIM(RTRIM([ProjectName])) = '''';
+        ');
+
+        IF EXISTS (
+            SELECT 1
+            FROM sys.columns
+            WHERE object_id = OBJECT_ID('MobileAppOtaUpdate')
+              AND name = 'ProjectName'
+              AND is_nullable = 1
+        )
+        BEGIN
+            ALTER TABLE [MobileAppOtaUpdate] ALTER COLUMN [ProjectName] nvarchar(120) NOT NULL;
+        END;
+    END;
+
+    IF COL_LENGTH('MobileAppOtaUpdate', 'UpdateId') IS NOT NULL
+       AND COL_LENGTH('MobileAppOtaUpdate', 'AndroidUpdateId') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [MobileAppOtaUpdate]
+            SET [UpdateId] = [AndroidUpdateId]
+            WHERE [UpdateId] IS NULL AND [AndroidUpdateId] IS NOT NULL;
+        ');
+    END;
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.default_constraints AS dc
+    INNER JOIN sys.columns AS c
+        ON c.object_id = dc.parent_object_id
+       AND c.column_id = dc.parent_column_id
+    WHERE dc.parent_object_id = OBJECT_ID('MobileAppBuild')
+      AND c.name = 'AppKey'
+)
+BEGIN
+    ALTER TABLE [MobileAppBuild]
+    ADD CONSTRAINT [DF_MobileAppBuild_AppKey] DEFAULT('mobile') FOR [AppKey];
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.default_constraints AS dc
+    INNER JOIN sys.columns AS c
+        ON c.object_id = dc.parent_object_id
+       AND c.column_id = dc.parent_column_id
+    WHERE dc.parent_object_id = OBJECT_ID('MobileAppOtaUpdate')
+      AND c.name = 'AppKey'
+)
+BEGIN
+    ALTER TABLE [MobileAppOtaUpdate]
+    ADD CONSTRAINT [DF_MobileAppOtaUpdate_AppKey] DEFAULT('mobile') FOR [AppKey];
+END;
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.default_constraints AS dc
+    INNER JOIN sys.columns AS c
+        ON c.object_id = dc.parent_object_id
+       AND c.column_id = dc.parent_column_id
+    WHERE dc.parent_object_id = OBJECT_ID('MobileAppOtaUpdate')
+      AND c.name = 'ProjectName'
+)
+BEGIN
+    ALTER TABLE [MobileAppOtaUpdate]
+    ADD CONSTRAINT [DF_MobileAppOtaUpdate_ProjectName] DEFAULT('legacy-mobile') FOR [ProjectName];
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppBuild_EasBuildId'
+      AND object_id = OBJECT_ID('MobileAppBuild')
+)
+BEGIN
+    DROP INDEX [IX_MobileAppBuild_EasBuildId] ON [MobileAppBuild];
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt'
+      AND object_id = OBJECT_ID('MobileAppBuild')
+)
+BEGIN
+    DROP INDEX [IX_MobileAppBuild_Profile_CompletedAt] ON [MobileAppBuild];
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppBuild_AppKey_EasBuildId'
+      AND object_id = OBJECT_ID('MobileAppBuild')
+)
+BEGIN
+    CREATE UNIQUE INDEX [IX_MobileAppBuild_AppKey_EasBuildId]
+    ON [MobileAppBuild]([AppKey], [EasBuildId]);
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppBuild_AppKey_Profile_CompletedAt'
+      AND object_id = OBJECT_ID('MobileAppBuild')
+)
+BEGIN
+    CREATE INDEX [IX_MobileAppBuild_AppKey_Profile_CompletedAt]
+    ON [MobileAppBuild]([AppKey], [BuildProfile], [Platform], [Status], [CompletedAt]);
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform'
+      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
+)
+BEGIN
+    DROP INDEX [IX_MobileAppOtaUpdate_Group_Platform] ON [MobileAppOtaUpdate];
+END;
+
+IF EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt'
+      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
+)
+BEGIN
+    DROP INDEX [IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt] ON [MobileAppOtaUpdate];
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppOtaUpdate_AppKey_Group_Platform'
+      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
+)
+BEGIN
+    CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_AppKey_Group_Platform]
+    ON [MobileAppOtaUpdate]([AppKey], [UpdateGroupId], [Platform]);
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = 'IX_MobileAppOtaUpdate_AppKey_Channel_Runtime_PublishedAt'
+      AND object_id = OBJECT_ID('MobileAppOtaUpdate')
+)
+BEGIN
+    CREATE INDEX [IX_MobileAppOtaUpdate_AppKey_Channel_Runtime_PublishedAt]
+    ON [MobileAppOtaUpdate]([AppKey], [Channel], [RuntimeVersion], [PublishedAt]);
 END;";
 
             // 关键位置：移动端自更新依赖构建表、OTA 表和 COS 状态字段，启动时补齐可降低旧库发布风险。

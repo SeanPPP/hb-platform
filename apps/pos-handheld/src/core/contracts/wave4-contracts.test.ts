@@ -1,0 +1,253 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  deriveNewTransactionGate,
+  normalizePosHandheldUpdatePolicy,
+} from "./app-updates";
+import {
+  AUD_CASH_DENOMINATIONS_CENTS,
+  normalizeDailyCloseCounts,
+} from "./daily-close";
+import { evaluateDeviceReregistrationPreflight } from "./device-reregistration";
+import { canTransitionInstallment } from "./installments";
+import { normalizeRemoteHistoryQuery } from "./remote-history";
+import { normalizeSpecialProductOrder } from "./special-products";
+
+test("远程历史固定当前门店、WPF 首批 100 条并规范化可选筛选", () => {
+  assert.deepEqual(
+    normalizeRemoteHistoryQuery(
+      {
+        storeCode: " OTHER ",
+        deviceCode: " IPAD-1 ",
+        soldFromIso: "2026-07-27T14:00:00.000Z",
+        soldToIso: "2026-07-28T13:59:59.999Z",
+        keyword: " 931234 ",
+        take: 200,
+      },
+      " STORE-1 ",
+    ),
+    {
+      storeCode: "STORE-1",
+      deviceCode: "IPAD-1",
+      soldFromIso: "2026-07-27T14:00:00.000Z",
+      soldToIso: "2026-07-28T13:59:59.999Z",
+      keyword: "931234",
+      take: 100,
+    },
+  );
+  assert.throws(
+    () =>
+      normalizeRemoteHistoryQuery(
+        {
+          storeCode: "STORE-1",
+          deviceCode: null,
+          soldFromIso: "bad",
+          soldToIso: "2026-07-28T13:59:59.999Z",
+          keyword: null,
+        },
+        "STORE-1",
+      ),
+    /date range/i,
+  );
+});
+
+test("特殊商品本机排序必须完整、唯一且只能包含当前列表商品", () => {
+  assert.deepEqual(
+    normalizeSpecialProductOrder(
+      [" P-2 ", "P-1"],
+      new Set(["P-1", "P-2"]),
+    ),
+    ["P-2", "P-1"],
+  );
+  assert.throws(
+    () =>
+      normalizeSpecialProductOrder(
+        ["P-1", "P-1"],
+        new Set(["P-1", "P-2"]),
+      ),
+    /complete unique permutation/i,
+  );
+});
+
+test("日结点钞固定完整 11 种 AUD 面额并使用整数分币汇总", () => {
+  const counts = normalizeDailyCloseCounts([
+    { denominationCents: 10_000, quantity: 2 },
+    { denominationCents: 5, quantity: 3 },
+  ]);
+
+  assert.deepEqual(
+    counts.map((entry) => entry.denominationCents),
+    AUD_CASH_DENOMINATIONS_CENTS,
+  );
+  assert.equal(
+    counts.reduce((total, entry) => total + entry.subtotalCents, 0),
+    20_015,
+  );
+  assert.throws(
+    () =>
+      normalizeDailyCloseCounts([
+        { denominationCents: 500, quantity: 1.5 },
+      ]),
+    /non-negative integer/i,
+  );
+});
+
+test("分期只允许 WPF 的单向业务状态迁移", () => {
+  assert.equal(canTransitionInstallment("Active", "PaidOff"), true);
+  assert.equal(canTransitionInstallment("Active", "Cancelled"), true);
+  assert.equal(canTransitionInstallment("PaidOff", "PickedUp"), true);
+  assert.equal(canTransitionInstallment("PaidOff", "Cancelled"), false);
+  assert.equal(canTransitionInstallment("Cancelled", "Active"), false);
+});
+
+test("手持端更新策略在本地同时门禁离线现金，但始终开放恢复与补传", () => {
+  const policy = normalizePosHandheldUpdatePolicy({
+    state: "required",
+    policyVersion: "ios-required-130",
+    platform: "iOS",
+    required: true,
+    latestVersion: "1.3.0",
+    latestBuild: "130",
+    minimumSupportedVersion: "1.2.0",
+    distribution: "app-store",
+    downloadUrl: "https://apps.apple.com/app/id123456789",
+    fileSize: null,
+    sha256: null,
+    packageName: null,
+    signingCertificateSha256: null,
+    bundleIdentifier: "com.hbweb.poshandheld",
+    appStoreId: "123456789",
+    releaseMessage: "Please update",
+  });
+  assert.deepEqual(deriveNewTransactionGate(policy), {
+    state: "force-update",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
+  assert.throws(
+    () =>
+      normalizePosHandheldUpdatePolicy({
+        ...policy,
+        downloadUrl: "https://example.com/fake-store",
+      }),
+    /iOS update metadata/i,
+  );
+});
+
+test("设备已授权后仅 required 策略阻止新交易", () => {
+  assert.deepEqual(
+    deriveNewTransactionGate({
+      state: "none",
+      policyVersion: "none",
+      platform: "iOS",
+      required: false,
+      latestVersion: null,
+      latestBuild: null,
+      minimumSupportedVersion: null,
+      distribution: null,
+      downloadUrl: null,
+      fileSize: null,
+      sha256: null,
+      packageName: null,
+      signingCertificateSha256: null,
+      bundleIdentifier: null,
+      appStoreId: null,
+      releaseMessage: null,
+    }),
+    {
+      state: "enabled",
+      canStartNewTransaction: true,
+      canContinueRecovery: true,
+    },
+  );
+  assert.deepEqual(deriveNewTransactionGate(null), {
+    state: "unchecked",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
+});
+
+test("手持端更新策略必须显式拥有完整后端字段，none 元数据只能为 null", () => {
+  const complete: Record<string, unknown> = {
+    state: "none",
+    policyVersion: "none",
+    platform: "iOS",
+    required: false,
+    latestVersion: null,
+    latestBuild: null,
+    minimumSupportedVersion: null,
+    distribution: null,
+    downloadUrl: null,
+    fileSize: null,
+    sha256: null,
+    packageName: null,
+    signingCertificateSha256: null,
+    bundleIdentifier: null,
+    appStoreId: null,
+    releaseMessage: null,
+  };
+  for (const field of Object.keys(complete)) {
+    const incomplete = { ...complete };
+    delete incomplete[field];
+    assert.throws(() => normalizePosHandheldUpdatePolicy(incomplete));
+  }
+  assert.throws(() =>
+    normalizePosHandheldUpdatePolicy(Object.create(complete) as unknown),
+  );
+
+  for (const field of [
+    "minimumSupportedVersion",
+    "latestVersion",
+    "latestBuild",
+    "distribution",
+    "downloadUrl",
+    "fileSize",
+    "sha256",
+    "packageName",
+    "signingCertificateSha256",
+    "bundleIdentifier",
+    "appStoreId",
+    "releaseMessage",
+  ]) {
+    assert.throws(() =>
+      normalizePosHandheldUpdatePolicy({ ...complete, [field]: undefined }),
+    );
+    if (field !== "fileSize") {
+      assert.throws(() =>
+        normalizePosHandheldUpdatePolicy({ ...complete, [field]: "   " }),
+      );
+    }
+  }
+  assert.deepEqual(
+    normalizePosHandheldUpdatePolicy(complete),
+    complete,
+  );
+});
+
+test("设备重注册在旧 scope 未决事实归零前失败关闭但不删除本地数据", () => {
+  assert.deepEqual(
+    evaluateDeviceReregistrationPreflight({
+      activeCartLineCount: 0,
+      unresolvedPaymentCount: 0,
+      pendingOrderCount: 2,
+      pendingAuditCount: 0,
+      supportExportReady: true,
+    }),
+    {
+      allowed: false,
+      code: "PENDING_OLD_SCOPE_DATA",
+      preserveLocalDatabase: true,
+    },
+  );
+  assert.equal(
+    evaluateDeviceReregistrationPreflight({
+      activeCartLineCount: 0,
+      unresolvedPaymentCount: 0,
+      pendingOrderCount: 0,
+      pendingAuditCount: 0,
+      supportExportReady: false,
+    }).allowed,
+    true,
+  );
+});

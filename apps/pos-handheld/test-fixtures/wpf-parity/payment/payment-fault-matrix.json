@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "purpose": "WPF-equivalent iPad POS payment and return fault matrix. Provider hardware is never asserted by this fixture.",
+  "cases": [
+    {
+      "id": "PAY-01",
+      "scenario": "known offline before provider submission",
+      "automation": "node-sqlite",
+      "expect": ["no payment_attempt row", "no provider submit", "same action binding remains durable"]
+    },
+    {
+      "id": "PAY-02",
+      "scenario": "provider timeout or response loss",
+      "automation": "node-sqlite",
+      "expect": ["state is Unknown", "new tender and provider switch are blocked", "recovery reuses attemptId and idempotencyKey"]
+    },
+    {
+      "id": "PAY-03",
+      "scenario": "approved then local completion crash",
+      "automation": "node-sqlite",
+      "expect": ["Approved attempt remains bound to same OrderGuid", "a fresh action is blocked", "recovery completes the existing order only"]
+    },
+    {
+      "id": "PAY-04",
+      "scenario": "duplicate tap or action replay after cold restart",
+      "automation": "node-sqlite",
+      "expect": ["one durable action binding", "no duplicate provider submit", "same attempt identity is returned"]
+    },
+    {
+      "id": "PAY-05",
+      "scenario": "cold recovery for Submitted, Pending, and Unknown",
+      "automation": "node-sqlite",
+      "expect": ["no new attempt", "recover on original provider only", "provider references are retained"]
+    },
+    {
+      "id": "PAY-06",
+      "scenario": "explicit Cancelled zero-tender close",
+      "automation": "pending-m12",
+      "expect": ["only an explicit Cancelled terminal result can close", "no tender is written", "cart lease is safely released"]
+    },
+    {
+      "id": "PAY-07",
+      "scenario": "mixed cash, card, and voucher settlement",
+      "automation": "contract",
+      "expect": ["remaining balance is derived from durable tenders", "partial card allows cash or voucher", "Unknown freezes all tender mutations"]
+    },
+    {
+      "id": "PAY-08",
+      "scenario": "trusted-session 401 or 403 during payment and return",
+      "automation": "contract",
+      "expect": ["trusted session invalidates", "durable payment and return ledgers are preserved", "no automatic replay occurs"]
+    },
+    {
+      "id": "RET-01",
+      "scenario": "refund uses original provider capacity and opaque handle",
+      "automation": "contract",
+      "expect": ["original provider reference stays outside public plan", "online refund is tied to original capacity", "cash proof is required offline"]
+    },
+    {
+      "id": "RET-02",
+      "scenario": "unknown original refund action recovery",
+      "automation": "contract",
+      "expect": ["recover original allocation", "never submit a second refund", "completed return writes one return order"]
+    },
+    {
+      "id": "HW-01",
+      "scenario": "Square Terminal sandbox response loss and duplicate tap",
+      "automation": "manual",
+      "expect": ["verify terminal logs and dashboard contain one provider action", "record sandbox transaction identifier"]
+    },
+    {
+      "id": "HW-02",
+      "scenario": "Linkly Cloud terminal timeout and resumable session",
+      "automation": "manual",
+      "expect": ["verify original session recovery", "record terminal and backend evidence"]
+    }
+  ]
+}

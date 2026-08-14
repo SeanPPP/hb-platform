@@ -28,6 +28,10 @@ public static class DeviceSystems
 
     public const string IpadOs = "iPadOS";
 
+    public const string Ios = "iOS";
+
+    public const string Android = "Android";
+
     public static bool TryNormalize(string? value, out string normalized)
     {
         var candidate = (value ?? string.Empty).Trim();
@@ -43,12 +47,29 @@ public static class DeviceSystems
             return true;
         }
 
+        // handheld 平台属于跨端安全合同，必须按原始请求精确匹配，不能接受空白或大小写变体。
+        if (string.Equals(value, Ios, StringComparison.Ordinal))
+        {
+            normalized = Ios;
+            return true;
+        }
+
+        if (string.Equals(value, Android, StringComparison.Ordinal))
+        {
+            normalized = Android;
+            return true;
+        }
+
         normalized = string.Empty;
         return false;
     }
 
     public static bool IsIpadOs(string? value) =>
         string.Equals(value?.Trim(), IpadOs, StringComparison.OrdinalIgnoreCase);
+
+    public static bool RequiresExactHardwareId(string? value) =>
+        TryNormalize(value, out var normalized)
+        && !string.Equals(normalized, Windows, StringComparison.Ordinal);
 }
 
 public sealed record DeviceRegisterResponse(
