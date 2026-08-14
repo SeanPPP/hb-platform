@@ -2046,10 +2046,10 @@ test("本机历史组合只按可信终端读取，并从选中订单账本进�
     (line) => line.kind === "text" && /Order:|#\d+/.test(line.text),
   ), false);
   assert.ok(preview.document.lines.some(
-    (line) => line.kind === "text" && line.text === "Test Store",
+    (line) => line.kind === "text" && line.text === "Brisbane",
   ));
   assert.ok(preview.document.lines.some(
-    (line) => line.kind === "text" && line.text === "Store: Test Store (S001)",
+    (line) => line.kind === "text" && line.text === "Store: Brisbane (S001)",
   ));
   assert.ok(preview.document.lines.some(
     (line) => line.kind === "qr" && line.value === order.orderGuid,
@@ -2508,6 +2508,88 @@ test("Settings 钱箱测试复用受权限、lease 与审计保护的正式开�
   assert.deepEqual(savedPeripheralIds, ["printer-1"]);
   assert.equal(drawerOpens, 1);
   assert.equal(presenter.getState().statusCode, "cash-drawer-test-passed");
+  presenter.destroy();
+});
+
+test("Settings 从可信当前门店端点载入小票资料，确认保存前不写本机", async () => {
+  const requests: HbposTransportRequest[] = [];
+  const saved: ReceiptPrinterSettings[] = [];
+  const services = createTestComposition(
+    databaseFor([], {
+      onReceiptSettingsSave(settings) {
+        saved.push(settings);
+      },
+    }),
+    {
+      cashierPermissions: [
+        SETTINGS_VIEW_PERMISSION,
+        SETTINGS_RECEIPT_PRINTER_PERMISSION,
+      ],
+      settings: settingsRuntimeConfiguration(),
+      transport: {
+        async request<T>(request: HbposTransportRequest) {
+          requests.push(request);
+          if (request.url !== "/api/v1/stores/current/receipt-profile") {
+            throw new Error(`Unexpected URL: ${request.url}`);
+          }
+          return {
+            status: 200,
+            data: {
+              success: true,
+              data: {
+                storeCode: "S001",
+                storeName: "Brisbane Central",
+                brandName: "Hot Bargain",
+                address: "1 Queen St\nBrisbane QLD 4000",
+                phone: "07 3000 0000",
+                abn: "12 345 678 901",
+                returnPolicy: "Refunds within 14 days.",
+              },
+            } as T,
+          };
+        },
+      },
+    },
+  );
+  await services.initialize();
+  await services.cashierSession.signIn("cashier");
+  assert.equal("createPresenter" in services.settings, true);
+  if (!("createPresenter" in services.settings)) return;
+  const presenter = services.settings.createPresenter();
+  await presenter.load();
+
+  await presenter.loadReceiptProfile();
+
+  assert.deepEqual(
+    requests.map(({ method, url }) => ({ method, url })),
+    [{ method: "GET", url: "/api/v1/stores/current/receipt-profile" }],
+  );
+  assert.equal(saved.length, 0);
+  assert.deepEqual(
+    {
+      brandName: presenter.getState().printer.brandName,
+      storeName: presenter.getState().printer.storeName,
+      address: presenter.getState().printer.address,
+      phone: presenter.getState().printer.phone,
+      abn: presenter.getState().printer.abn,
+      returnPolicy: presenter.getState().printer.returnPolicy,
+      profileStoreCode: presenter.getState().printer.profileStoreCode,
+    },
+    {
+      brandName: "Hot Bargain",
+      storeName: "Brisbane Central",
+      address: "1 Queen St\nBrisbane QLD 4000",
+      phone: "07 3000 0000",
+      abn: "12 345 678 901",
+      returnPolicy: "Refunds within 14 days.",
+      profileStoreCode: "S001",
+    },
+  );
+  assert.equal(presenter.getState().statusCode, "receipt-profile-loaded");
+
+  await presenter.savePrinterSettings();
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]?.profileStoreCode, "S001");
   presenter.destroy();
 });
 
@@ -3175,6 +3257,11 @@ test("日结只使用可信收银员作用域，先耐久归档再通过同一�
     () => services.dailyClose.createPresenter(),
     /CURRENT_CASHIER_REQUIRED/,
   );
+  const receiptSettings = await services.receiptSettings.get();
+  await services.receiptSettings.save({
+    ...receiptSettings,
+    returnPolicy: "Refunds within 14 days with proof of purchase.",
+  });
   await services.cashierSession.signIn("cashier");
   const presenter = services.dailyClose.createPresenter();
   await presenter.load();
@@ -3192,6 +3279,10 @@ test("日结只使用可信收银员作用域，先耐久归档再通过同一�
   assert.deepEqual(
     [...(printed[0]?.bytes.slice(-3) ?? [])],
     [0x1d, 0x56, 0x00],
+  );
+  assert.match(
+    new TextDecoder().decode(printed[0]?.bytes),
+    /Refunds and returns[\s\S]*Refunds within 14 days/,
   );
   presenter.destroy();
 });
@@ -3906,6 +3997,8 @@ function databaseFor(
     address: "1 Queen St",
     phone: "0712345678",
     abn: "12 345 678 901",
+    returnPolicy: "",
+    profileStoreCode: "S001",
   };
   const settings = {
     async getReceiptPrinterSettings() {

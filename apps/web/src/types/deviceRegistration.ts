@@ -8,6 +8,7 @@ export interface DeviceRegistrationItem {
   deviceSystem: string
   status: number
   statusDescription: string
+  allowTransactions: boolean
   remark?: string | null
   createdAt?: string
   lastModified?: string | null
@@ -25,12 +26,14 @@ export interface DeviceRegistrationDetail extends DeviceRegistrationItem {}
 export interface UpdateDeviceRegistrationPayload {
   deviceType: string
   deviceSystem: string
+  allowTransactions: boolean
   remark?: string | null
 }
 
 export interface UpdateDeviceRegistrationApiPayload {
   设备类型: string
   设备系统: string
+  是否允许交易: boolean
   备注?: string | null
 }
 

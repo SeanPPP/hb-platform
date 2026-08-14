@@ -25,7 +25,8 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
             [设备硬件识别码] AS HardwareId,
             [设备状态] AS DeviceStatus,
             [设备授权码] AS AuthorizationCode,
-            [设备系统] AS DeviceSystem
+            [设备系统] AS DeviceSystem,
+            [是否允许交易] AS AllowTransactions
         FROM [POSM_设备注册信息表]
         WHERE [设备授权码] = @AuthorizationCode
           AND [系统设备编号] = @DeviceCode
@@ -92,7 +93,8 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
                 device.DeviceCode ?? normalizedDeviceCode,
                 device.StoreCode ?? normalizedStoreCode,
                 device.HardwareId ?? string.Empty,
-                deviceSystem));
+                deviceSystem,
+                device.AllowTransactions));
     }
 
     private static string Normalize(string? value)
@@ -113,6 +115,8 @@ public sealed class DeviceAuthorizationService(HbposSqlSugarContext dbContext) :
         public string? AuthorizationCode { get; set; }
 
         public string? DeviceSystem { get; set; }
+
+        public bool AllowTransactions { get; set; } = true;
     }
 }
 
@@ -120,7 +124,8 @@ public sealed record DeviceAuthorizationResult(
     string DeviceCode,
     string StoreCode,
     string HardwareId,
-    string DeviceSystem = DeviceSystems.Windows);
+    string DeviceSystem = DeviceSystems.Windows,
+    bool AllowTransactions = true);
 
 public static class DeviceAuthorizationFailureCodes
 {

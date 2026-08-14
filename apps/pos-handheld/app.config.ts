@@ -228,7 +228,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const logCenter = buildLogCenterConfiguration(ota.buildProfile);
   return ({
   ...config,
-  name: "HB POS Handheld",
+  name: "HB POS Mobile",
   slug: "hb-pos-handheld",
   version: posHandheldAppVersion,
   icon: "./assets/icon.png",

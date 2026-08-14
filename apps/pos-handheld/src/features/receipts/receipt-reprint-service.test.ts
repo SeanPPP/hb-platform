@@ -71,6 +71,7 @@ const settings: FrozenReceiptReprintSettings = {
     address: "1 Queen St",
     phone: "0712345678",
     abn: "12 345 678 901",
+    returnPolicy: "",
   },
 };
 
@@ -155,7 +156,14 @@ test("没有历史打印作业也能从本地订单账本准备真实重打 ESC/
   const current = order({ orderGuid: "order-without-print-history" });
   const prepared = await service(
     new MemoryOrderSource(new Map([[current.orderGuid, current]]), current),
-    { ...settings, printerId: " xp-q200 " },
+    {
+      ...settings,
+      printerId: " xp-q200 ",
+      store: {
+        ...settings.store,
+        returnPolicy: "Refunds within 14 days with proof of purchase.",
+      },
+    },
   ).prepareCurrent(current.orderGuid);
 
   assert.equal(prepared?.orderGuid, current.orderGuid);
@@ -167,6 +175,8 @@ test("没有历史打印作业也能从本地订单账本准备真实重打 ESC/
   assert.match(encoder.decode(prepared?.receiptBytes), /\*\*\* REPRINT \*\*\*/);
   assert.match(encoder.decode(prepared?.receiptBytes), /123456\s+1\s+\$7\.62/);
   assert.match(encoder.decode(prepared?.receiptBytes), /order-without-print-history\n.*Date:/s);
+  assert.match(encoder.decode(prepared?.receiptBytes), /Refunds and returns/);
+  assert.match(encoder.decode(prepared?.receiptBytes), /Refunds within 14 days/);
   assert.doesNotMatch(encoder.decode(prepared?.receiptBytes), /Order: #100/);
 });
 

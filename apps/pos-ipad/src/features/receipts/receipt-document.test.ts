@@ -16,7 +16,7 @@ import {
 const sale = {
   locale: "en" as const,
   paper: "58mm" as const,
-  store: { brandName: "Hot Bargain", storeName: "Brisbane", address: "1 Queen St", phone: "0712345678", abn: "12 345 678 901" },
+  store: { brandName: "Hot Bargain", storeName: "Brisbane", address: "1 Queen St", phone: "0712345678", abn: "12 345 678 901", returnPolicy: "" },
   orderNumber: "S1-100", soldAtIso: "2026-07-28T10:11:12.000Z", cashierName: "Alice", deviceCode: "IPAD-1",
   lines: [{ name: "Long bottled spring water with a very long name", lookupCode: "930000000001", quantity: "2", discountCents: 50, totalCents: 548 }],
   subtotalCents: 598, discountCents: 50, totalCents: 548, tenders: [{ method: "cash" as const, amountCents: 600 }], cashChangeCents: 52,
@@ -65,6 +65,39 @@ test("58mm 英文销售小票按整数分币输出确定性文档与 ESC/POS 字
     "每个冻结小票作业只在字节尾部切纸一次",
   );
   assert.ok(document.lines.every((line) => line.kind !== "barcode" && line.kind !== "qr"));
+});
+
+test("Payment 后按纸宽换行输出本地化 Return Policy 标题与正文，空值不输出", () => {
+  const policy = "Change of mind returns are accepted within 14 days with proof of purchase.";
+  const en = buildSaleReceiptDocument({
+    ...sale,
+    paper: "58mm",
+    store: { ...sale.store, returnPolicy: policy },
+  });
+  const enText = receiptText(en);
+  assert.match(enText, /Refunds and returns/);
+  assert.ok(enText.indexOf("Payment:") < enText.indexOf("Refunds and returns"));
+  assert.ok(en.lines.every((line) => line.kind !== "text" || displayWidth(line.text) <= 32));
+
+  const zh = buildSaleReceiptDocument({
+    ...sale,
+    locale: "zh-CN",
+    store: { ...sale.store, returnPolicy: "退货政策\r\n14 天内可退货" },
+  });
+  assert.match(receiptText(zh), /退款与退货/);
+
+  const empty = buildSaleReceiptDocument({ ...sale, store: { ...sale.store, returnPolicy: "   " } });
+  assert.doesNotMatch(receiptText(empty), /Refunds and returns/);
+});
+
+test("Return Policy 拒绝除 CR/LF/TAB 外的控制字符", () => {
+  assert.throws(
+    () => buildSaleReceiptDocument({
+      ...sale,
+      store: { ...sale.store, returnPolicy: "Unsafe\u001b@" },
+    }),
+    /control characters/i,
+  );
 });
 
 test("中文销售文本使用 GB18030 双字节并替换 N160 不可靠字形", () => {

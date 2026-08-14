@@ -117,6 +117,7 @@ implements PaymentReceiptRendererPort {
           address: settings.address,
           phone: settings.phone,
           abn: settings.abn,
+          returnPolicy: settings.returnPolicy,
         },
         orderNumber: order.orderGuid,
         orderGuid: order.orderGuid,

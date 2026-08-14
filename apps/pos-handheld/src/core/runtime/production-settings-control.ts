@@ -12,6 +12,7 @@ import {
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
   type SettingsPrinterDevice,
+  type SettingsReceiptProfileDraft,
   type SettingsScannerTestResult,
   type SettingsLinklyPairingPort,
   type SettingsSnapshot,
@@ -52,6 +53,9 @@ export type ProductionSettingsControlDependencies = Readonly<{
     scan(signal: AbortSignal): Promise<readonly SettingsPrinterDevice[]>;
     connect(peripheralId: string, signal: AbortSignal): Promise<void>;
     test(signal: AbortSignal): Promise<void>;
+  }>;
+  receiptProfile: Readonly<{
+    load(signal: AbortSignal): Promise<SettingsReceiptProfileDraft | null>;
   }>;
   scanner: Readonly<{
     test(signal: AbortSignal): Promise<SettingsScannerTestResult>;
@@ -143,6 +147,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
     return abortChecked(signal, () =>
       this.input.printer.saveSettings(settings, signal),
     );
+  }
+
+  public loadReceiptProfile(
+    signal: AbortSignal,
+  ): Promise<SettingsReceiptProfileDraft | null> {
+    return abortChecked(signal, () => this.input.receiptProfile.load(signal));
   }
 
   public scanPrinters(

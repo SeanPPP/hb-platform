@@ -71,7 +71,7 @@ test("启动、前台和联网刷新共享 single-flight，并向订阅者发布
   assert.equal(calls, 1);
   assert.deepEqual(coordinator.getGate(), {
     state: "unchecked",
-    canStartNewTransaction: false,
+    canStartNewTransaction: true,
     canContinueRecovery: true,
   });
   release();
@@ -86,7 +86,7 @@ test("启动、前台和联网刷新共享 single-flight，并向订阅者发布
   unsubscribe();
 });
 
-test("首次策略检查完成前阻止新交易，旧 enabled false 在验证后不再阻止", async () => {
+test("首次策略检查完成前默认允许，enabled false 在验证后阻止新交易", async () => {
   const coordinator = new AppUpdateCoordinator({
     metadata,
     policyStore: new MemoryPolicyStore(),
@@ -99,13 +99,13 @@ test("首次策略检查完成前阻止新交易，旧 enabled false 在验证�
 
   assert.deepEqual(coordinator.getGate(), {
     state: "unchecked",
-    canStartNewTransaction: false,
+    canStartNewTransaction: true,
     canContinueRecovery: true,
   });
   await coordinator.refreshOnStartup();
   assert.deepEqual(coordinator.getGate(), {
-    state: "enabled",
-    canStartNewTransaction: true,
+    state: "disabled",
+    canStartNewTransaction: false,
     canContinueRecovery: true,
   });
 });
@@ -135,7 +135,7 @@ test("网络刷新失败回退合法缓存；无有效缓存时保持未检查�
   await withoutCache.refreshOnStartup();
   assert.deepEqual(withoutCache.getGate(), {
     state: "unchecked",
-    canStartNewTransaction: false,
+    canStartNewTransaction: true,
     canContinueRecovery: true,
   });
 
@@ -159,9 +159,9 @@ test("网络刷新失败回退合法缓存；无有效缓存时保持未检查�
   assert.equal(malformedCache.getGate().state, "unchecked");
 });
 
-test("已验证的内存更新策略优先于旧缓存，只有强制升级继续限制新交易", async () => {
+test("已验证的内存更新策略优先于旧缓存，交易开关和强制升级均继续限制新交易", async () => {
   for (const [remotePolicy, expectedState, canStartNewTransaction] of [
-    [{ ...enabledPolicy, enabled: false }, "enabled", true],
+    [{ ...enabledPolicy, enabled: false }, "disabled", false],
     [{ ...enabledPolicy, forceUpdate: true }, "force-update", false],
   ] as const) {
     let remoteCalls = 0;
@@ -202,9 +202,9 @@ test("已验证的内存更新策略优先于旧缓存，只有强制升级继�
   }
 });
 
-test("旧 enabled false 不再阻止交易，force-update 仍阻止且恢复永远开放", async () => {
+test("enabled false 和 force-update 都阻止新交易且恢复永远开放", async () => {
   for (const [policy, canStartNewTransaction] of [
-    [{ ...enabledPolicy, enabled: false }, true],
+    [{ ...enabledPolicy, enabled: false }, false],
     [{ ...enabledPolicy, forceUpdate: true }, false],
   ] as const) {
     const coordinator = new AppUpdateCoordinator({

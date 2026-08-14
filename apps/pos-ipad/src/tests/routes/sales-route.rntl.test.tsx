@@ -107,25 +107,30 @@ jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
 }));
 
-jest.mock("@/features/cashier-login", () => ({
-  resolveProtectedSalesRouteGate: (
-    runtime: Readonly<{ phase: string; device: string }>,
-    cashier: unknown,
-  ) => {
-    if (
-      !["ready", "ready-offline"].includes(runtime.phase) ||
-      !["authorized-local", "authorized-online"].includes(runtime.device)
-    ) {
-      return "redirect-index";
-    }
-    return cashier ? "check-device-identity" : "redirect-login";
-  },
-  useCashierLoginStore: (selector: (state: unknown) => unknown) =>
-    selector({
-      activeCashier: mockActiveCashier,
-      clearActiveCashier: mockClearActiveCashier,
-    }),
-}));
+jest.mock("@/features/cashier-login", () => {
+  const cashierStoreState = () => ({
+    activeCashier: mockActiveCashier,
+    clearActiveCashier: mockClearActiveCashier,
+  });
+  return {
+    resolveProtectedSalesRouteGate: (
+      runtime: Readonly<{ phase: string; device: string }>,
+      cashier: unknown,
+    ) => {
+      if (
+        !["ready", "ready-offline"].includes(runtime.phase) ||
+        !["authorized-local", "authorized-online"].includes(runtime.device)
+      ) {
+        return "redirect-index";
+      }
+      return cashier ? "check-device-identity" : "redirect-login";
+    },
+    useCashierLoginStore: Object.assign(
+      (selector: (state: unknown) => unknown) => selector(cashierStoreState()),
+      { getState: cashierStoreState },
+    ),
+  };
+});
 
 jest.mock("@/features/sales/ui", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -845,6 +850,72 @@ test("普通支付恢复检查异常保留会话并显示对应的可重试诊�
   );
   expect(mockCreatePresenter).not.toHaveBeenCalled();
   expect(screen.queryByTestId("redirect")).toBeNull();
+});
+
+test("可信收银员已失效时清除残留登录投影并返回登录", async () => {
+  mockHasRecoveryRequired.mockRejectedValueOnce(
+    Object.assign(new Error("CURRENT_CASHIER_REQUIRED"), {
+      code: "CURRENT_CASHIER_REQUIRED",
+    }),
+  );
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(mockClearActiveCashier).toHaveBeenCalledTimes(1);
+  });
+  expect(mockRecordApplicationLog).not.toHaveBeenCalled();
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
+  expect(
+    screen.queryByTestId("sales-bootstrap-failed-payment-recovery"),
+  ).toBeNull();
+});
+
+test("旧会话恢复检查迟到失效时不会清除已建立的新收银员投影", async () => {
+  let rejectOldRecovery!: (reason: unknown) => void;
+  mockHasRecoveryRequired
+    .mockImplementationOnce(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          rejectOldRecovery = reject;
+        }),
+    )
+    .mockResolvedValueOnce(false);
+  const firstCashier = mockActiveCashier;
+  const screen = await render(<SalesRoute />);
+  await waitFor(() => {
+    expect(mockHasRecoveryRequired).toHaveBeenCalledTimes(1);
+  });
+
+  mockActiveCashier = { ...firstCashier, cashierId: "C2", userGuid: "user-2" };
+  await screen.rerender(<SalesRoute />);
+  await waitFor(() => {
+    expect(mockHasRecoveryRequired).toHaveBeenCalledTimes(2);
+  });
+
+  await act(async () => {
+    rejectOldRecovery(
+      Object.assign(new Error("CURRENT_CASHIER_REQUIRED"), {
+        code: "CURRENT_CASHIER_REQUIRED",
+      }),
+    );
+    await Promise.resolve();
+  });
+  expect(mockClearActiveCashier).not.toHaveBeenCalled();
+});
+
+test("分期恢复检查确认当前收银员已失效时清除残留登录投影", async () => {
+  mockInstallmentHasRecoveryRequired.mockRejectedValueOnce(
+    Object.assign(new Error("CURRENT_CASHIER_REQUIRED"), {
+      code: "CURRENT_CASHIER_REQUIRED",
+    }),
+  );
+  await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(mockClearActiveCashier).toHaveBeenCalledTimes(1);
+  });
+  expect(mockRecordApplicationLog).not.toHaveBeenCalled();
+  expect(mockCreatePresenter).not.toHaveBeenCalled();
 });
 
 test("分期恢复检查异常保留会话并显示对应的可重试诊断", async () => {

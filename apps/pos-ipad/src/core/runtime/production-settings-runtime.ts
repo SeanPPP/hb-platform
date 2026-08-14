@@ -217,6 +217,8 @@ function securedSettingsPort(
       ),
     savePrinterSettings: (settings, signal) =>
       run(() => input.control.savePrinterSettings(settings, signal)),
+    loadReceiptProfile: (signal) =>
+      run(() => input.control.loadReceiptProfile(signal)),
     scanPrinters: (signal) =>
       run(() => input.control.scanPrinters(signal)),
     connectPrinter: (peripheralId, signal) =>

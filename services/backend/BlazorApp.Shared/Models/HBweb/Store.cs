@@ -38,6 +38,12 @@ namespace BlazorApp.Shared.Models
         public string? TimeZoneId { get; set; }
 
         /// <summary>
+        /// 退换货政策；可空，最长 500 字符，由 Web 分店维护表单录入。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 500)]
+        public string? ReturnPolicy { get; set; }
+
+        /// <summary>
         /// 联系邮箱
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 100)]

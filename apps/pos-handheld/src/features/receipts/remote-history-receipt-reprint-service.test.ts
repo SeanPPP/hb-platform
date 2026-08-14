@@ -28,6 +28,7 @@ const settings: FrozenReceiptReprintSettings = {
     address: "1 Queen St",
     phone: "0712345678",
     abn: "12 345 678 901",
+    returnPolicy: "Refunds within 14 days with proof of purchase.",
   },
 };
 
@@ -167,6 +168,8 @@ test("prepare 重新读取严格订单，冻结一次设置并生成带完整机
   assert.match(receipt, /12345678-1234-1234-1234-abcdef47\n[\s\S]*c164\n[\s\S]*Date:/u);
   assert.doesNotMatch(receipt, /Order:|#EF47C164/u);
   assert.match(receipt, /Ref: \*\*\*\*4321/u);
+  assert.match(receipt, /Refunds and returns/u);
+  assert.match(receipt, /Refunds within 14 days with[\s\S]*proof of purchase\./u);
   assert.doesNotMatch(receipt, /SECRET-CARD-TYPE|\*\*\*\*9999/u);
 });
 

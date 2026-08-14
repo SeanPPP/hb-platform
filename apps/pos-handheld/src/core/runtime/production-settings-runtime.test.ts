@@ -51,6 +51,8 @@ const SNAPSHOT: SettingsSnapshot = {
     address: "",
     phone: "",
     abn: "",
+    returnPolicy: "",
+    profileStoreCode: "S1",
   },
   square: {
     available: true,
@@ -99,6 +101,50 @@ test("零参数工厂冻结可信权限，并在每次端口调用前后复核 c
   epoch = 2;
   await presenter.load();
   assert.equal(presenter.getState().kind, "failed");
+});
+
+test("门店小票资料读取经可信 session 前后复核并原样进入 presenter 草稿", async () => {
+  const events: string[] = [];
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.ReceiptPrinter",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      loadReceiptProfile: async () => {
+        events.push("profile");
+        return {
+          storeCode: "S1",
+          brandName: "Hot Bargain",
+          storeName: "Store One",
+          address: "1 Queen St",
+          phone: "07 3000 0000",
+          abn: "12 345 678 901",
+          returnPolicy: "Refunds within 14 days.",
+        };
+      },
+    }),
+    runDangerousExclusive: (operation) => operation(),
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  events.length = 0;
+
+  await presenter.loadReceiptProfile();
+
+  assert.equal(presenter.getState().statusCode, "receipt-profile-loaded");
+  assert.equal(presenter.getState().printer.brandName, "Hot Bargain");
+  assert.deepEqual(events, ["lease", "profile", "lease"]);
 });
 
 test("可选 Square setup 端口原样转发 signal，并在每个异步调用前后复核 lease", async () => {
@@ -711,6 +757,7 @@ function fakeControl(
     testApiAddress: unavailable,
     testPaymentProvider: unavailable,
     savePrinterSettings: unavailable,
+    loadReceiptProfile: unavailable,
     scanPrinters: unavailable,
     connectPrinter: unavailable,
     testPrinter: unavailable,

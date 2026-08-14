@@ -140,6 +140,11 @@ namespace BlazorApp.Shared.DTOs
         public string StatusDescription { get; set; } = string.Empty;
 
         /// <summary>
+        /// 是否允许开始新交易
+        /// </summary>
+        public bool AllowTransactions { get; set; }
+
+        /// <summary>
         /// 创建时间
         /// </summary>
         public DateTime CreatedAt { get; set; }

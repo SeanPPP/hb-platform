@@ -58,6 +58,12 @@ namespace BlazorApp.Shared.Models.POSM
         public int 设备状态 { get; set; } = -1;
 
         /// <summary>
+        /// 是否允许该设备开始新交易；恢复和可靠补传不受此字段影响
+        /// </summary>
+        [SugarColumn(IsNullable = false)]
+        public bool 是否允许交易 { get; set; } = true;
+
+        /// <summary>
         /// 设备授权码
         /// 用于设备认证的授权码
         /// </summary>

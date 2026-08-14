@@ -66,6 +66,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
         var legacy = mapper.Map<DeviceListItemDto>(new POSM_设备注册信息表
         {
             设备系统 = " ",
+            是否允许交易 = false,
         });
         var unknown = mapper.Map<DeviceListItemDto>(new POSM_设备注册信息表
         {
@@ -73,7 +74,20 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
         });
 
         Assert.Equal("Windows", legacy.DeviceSystem);
+        Assert.False(legacy.AllowTransactions);
         Assert.Equal("VisionOS", unknown.DeviceSystem);
+    }
+
+    [Fact]
+    public void DeviceRuntimeStatusSchemaMigrator_AddsTransactionPermissionWithAllowedDefault()
+    {
+        var sql = string.Join("\n", DeviceRuntimeStatusSchemaMigrator.SqlScriptsForTests);
+
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否允许交易') IS NULL", sql);
+        Assert.Contains("ADD [是否允许交易] BIT NOT NULL", sql);
+        Assert.Contains("DEFAULT (1) WITH VALUES", sql);
+        Assert.Contains("ERROR_NUMBER() NOT IN (2705, 2714)", sql);
+        Assert.Contains("OR COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否允许交易') IS NULL", sql);
     }
 
     [Fact]
@@ -122,6 +136,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
             设备类型 = "Mobile",
             设备系统 = "Android",
             分店代码 = "1004",
+            是否允许交易 = true,
             备注 = "old remark",
             创建时间 = DateTime.UtcNow,
             创建人 = "creator",
@@ -141,6 +156,7 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
             {
                 设备类型 = "PDA",
                 设备系统 = "Android",
+                是否允许交易 = false,
                 备注 = "new remark",
             },
             "manager"
@@ -150,15 +166,44 @@ public sealed class DeviceRegistrationReactServiceTests : IDisposable
         Assert.NotNull(result.Data);
         Assert.Equal("PDA", result.Data!.设备类型);
         Assert.Equal("Android", result.Data.设备系统);
+        Assert.False(result.Data.是否允许交易);
         Assert.Equal("new remark", result.Data.备注);
         Assert.Equal((int)DeviceStatus.启用, result.Data.设备状态);
 
         var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
             .SingleAsync(device => device.ID == 1);
         Assert.Equal((int)DeviceStatus.启用, saved.设备状态);
+        Assert.False(saved.是否允许交易);
         Assert.Equal("AUTH-SECRET", saved.设备授权码);
         Assert.Equal("manager", saved.最后修改人);
         Assert.NotNull(saved.最后修改时间);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_OmittedTransactionPermissionPreservesExistingValue()
+    {
+        var device = CreateDevice(1, "hardware-transaction-disabled", "iPadOS");
+        device.是否允许交易 = false;
+        await _posmDb.Insertable(device).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.UpdateAsync(
+            1,
+            new UpdateDeviceRegistrationDto
+            {
+                设备类型 = "POS",
+                设备系统 = "iPadOS",
+                备注 = "keep disabled",
+            },
+            "manager"
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data!.是否允许交易);
+        var saved = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .SingleAsync(item => item.ID == 1);
+        Assert.False(saved.是否允许交易);
     }
 
     [Fact]

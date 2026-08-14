@@ -58,9 +58,64 @@ function settings(overrides: Partial<ReceiptPrinterSettings> = {}): ReceiptPrint
     address: "1 Main Street",
     phone: "07 1234 5678",
     abn: "12 345 678 901",
+    returnPolicy: "Change of mind returns within 14 days.",
+    profileStoreCode: "BNE-01",
     ...overrides,
   };
 }
+
+test("旧 receipt_printer_v1 自动补新资料字段且不清空打印/钱箱/外设", async () => {
+  await withDatabase(async (connection) => {
+    const legacy = {
+      printEnabled: true,
+      drawerEnabled: true,
+      peripheralId: "XP-N160I",
+      paper: "58mm",
+      locale: "zh-CN",
+      brandName: "Hot Bargain",
+      storeName: "Legacy Store",
+      address: "1 Old St",
+      phone: "0411 111 111",
+      abn: "99 999 999 999",
+    };
+    await connection.run(
+      "INSERT INTO app_settings (setting_key, setting_value, updated_at_iso) VALUES (?, ?, ?)",
+      ["receipt_printer_v1", JSON.stringify(legacy), "2026-07-28T00:00:00.000Z"],
+    );
+    const repository = new PosSettingsRepository(connection, () => "2026-07-28T00:01:00.000Z");
+    const current = await repository.getReceiptPrinterSettings();
+    assert.equal(current.printEnabled, true);
+    assert.equal(current.drawerEnabled, true);
+    assert.equal(current.peripheralId, "XP-N160I");
+    assert.equal(current.paper, "58mm");
+    assert.equal(current.returnPolicy, "");
+    assert.equal(current.profileStoreCode, "");
+  });
+});
+
+test("returnPolicy 允许 CR/LF/TAB，其余控制字符拒绝；profileStoreCode 拒绝控制字符", async () => {
+  await withDatabase(async (connection) => {
+    const repository = new PosSettingsRepository(connection, () => "2026-07-28T00:00:00.000Z");
+    const saved = await repository.saveReceiptPrinterSettings(
+      settings({ returnPolicy: "Line 1\r\nLine 2\tTabbed" }),
+    );
+    assert.equal(saved.returnPolicy, "Line 1\r\nLine 2\tTabbed");
+    assert.deepEqual(await repository.getReceiptPrinterSettings(), saved);
+
+    await assert.rejects(
+      () => repository.saveReceiptPrinterSettings(settings({ returnPolicy: "Bad\u0007policy" })),
+      /returnPolicy is invalid/,
+    );
+    await assert.rejects(
+      () => repository.saveReceiptPrinterSettings(settings({ returnPolicy: "Bad\u007fpolicy" })),
+      /returnPolicy is invalid/,
+    );
+    await assert.rejects(
+      () => repository.saveReceiptPrinterSettings(settings({ profileStoreCode: "BNE\u001b01" })),
+      /profileStoreCode is invalid/,
+    );
+  });
+});
 
 test("真实 SQLite：首次读取使用禁用打印和钱箱的默认值，完整配置跨重开保留 updated_at", async () => {
   await withDatabase(async (connection) => {

@@ -244,6 +244,7 @@ namespace BlazorApp.Api.Services.React
                         设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(d.设备系统),
                         设备状态 = d.设备状态,
                         设备状态描述 = GetStatusDescription(d.设备状态),
+                        是否允许交易 = d.是否允许交易,
                         备注 = d.备注,
                         创建时间 = d.创建时间,
                         最后修改时间 = d.最后修改时间,
@@ -323,6 +324,7 @@ namespace BlazorApp.Api.Services.React
                     设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(entity.设备系统),
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
+                    是否允许交易 = entity.是否允许交易,
                     备注 = entity.备注,
                     创建时间 = entity.创建时间,
                     最后修改时间 = entity.最后修改时间,
@@ -422,6 +424,10 @@ namespace BlazorApp.Api.Services.React
                 {
                     entity.设备系统 = requestedDeviceSystem;
                 }
+                if (dto.是否允许交易.HasValue)
+                {
+                    entity.是否允许交易 = dto.是否允许交易.Value;
+                }
                 entity.备注 = dto.备注 ?? string.Empty;
                 entity.最后修改人 = updatedBy;
                 entity.最后修改时间 = DateTime.Now;
@@ -449,6 +455,7 @@ namespace BlazorApp.Api.Services.React
                     设备系统 = DeviceRegistrationDeviceSystems.NormalizeForDisplay(entity.设备系统),
                     设备状态 = entity.设备状态,
                     设备状态描述 = GetStatusDescription(entity.设备状态),
+                    是否允许交易 = entity.是否允许交易,
                     备注 = entity.备注,
                     创建时间 = entity.创建时间,
                     最后修改时间 = entity.最后修改时间,

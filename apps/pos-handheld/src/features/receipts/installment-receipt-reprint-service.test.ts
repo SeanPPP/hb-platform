@@ -25,6 +25,7 @@ const settings: FrozenReceiptReprintSettings = {
     address: "1 Queen St",
     phone: "0712345678",
     abn: "12 345 678 901",
+    returnPolicy: "Refunds within 14 days with proof of purchase.",
   },
 };
 
@@ -246,6 +247,8 @@ test("prepare 点击时重读可信分期并按 WPF 字段生成带 REPRINT 的�
   assert.ok(receipt.indexOf("$40.00") < receipt.indexOf("$60.00"));
   assert.match(receipt, /VISA/u);
   assert.match(receipt, /\*\*\*\*4321/u);
+  assert.match(receipt, /Refunds and returns/u);
+  assert.match(receipt, /Refunds within 14 days with proof of[\s\S]*purchase\./u);
   assert.doesNotMatch(receipt, /\*\*\*\*9999/u);
   assert.match(receipt, new RegExp(installmentGuid, "u"));
 });

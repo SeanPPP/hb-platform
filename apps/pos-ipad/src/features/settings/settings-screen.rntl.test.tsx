@@ -22,6 +22,7 @@ import {
   type SettingsDangerousActionResult,
   type SettingsPaymentSettingsInput,
   type SettingsPrinterDevice,
+  type SettingsReceiptProfileDraft,
   type SettingsLinklyHealthSnapshot,
   type SettingsLinklyPairingPort,
   type SettingsLinklyPairResult,
@@ -1494,6 +1495,80 @@ describe("SettingsScreen", () => {
       posColors.green,
     );
   });
+
+  it("小票门店资料卡片提供六字段、44pt 载入按钮且载入只更新草稿", async () => {
+    const port = new ScreenSettingsPort();
+    port.receiptProfileValue = {
+      storeCode: "BNE-01",
+      brandName: "Hot Bargain",
+      storeName: "Brisbane Central",
+      address: "1 Queen St\nBrisbane QLD 4000",
+      phone: "07 3000 0000",
+      abn: "12 345 678 901",
+      returnPolicy: "Refunds within 14 days.",
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await screen.findByTestId("settings-pane-content-peripherals");
+
+    expect(screen.getByText("Receipt store profile")).toBeTruthy();
+
+    const fieldMaxLengths = {
+      "settings-receipt-brand-name": 120,
+      "settings-receipt-store-name": 120,
+      "settings-receipt-address": 240,
+      "settings-receipt-phone": 60,
+      "settings-receipt-abn": 32,
+      "settings-receipt-return-policy": 500,
+    } as const;
+    for (const [testID, maxLength] of Object.entries(fieldMaxLengths)) {
+      expect(screen.getByTestId(testID).props.maxLength).toBe(maxLength);
+    }
+
+    const loadButton = screen.getByTestId("settings-receipt-profile-load");
+    expect(
+      StyleSheet.flatten(loadButton.props.style).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("settings-receipt-brand-name").props.style,
+      ).minHeight,
+    ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+
+    expect(port.savedPrinterSettings).toHaveLength(0);
+
+    await fireEvent.press(loadButton);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("settings-receipt-brand-name").props.value,
+      ).toBe("Hot Bargain"),
+    );
+    expect(
+      screen.getByTestId("settings-receipt-store-name").props.value,
+    ).toBe("Brisbane Central");
+    expect(
+      screen.getByTestId("settings-receipt-address").props.value,
+    ).toBe("1 Queen St\nBrisbane QLD 4000");
+    expect(screen.getByTestId("settings-receipt-phone").props.value).toBe(
+      "07 3000 0000",
+    );
+    expect(screen.getByTestId("settings-receipt-abn").props.value).toBe(
+      "12 345 678 901",
+    );
+    expect(
+      screen.getByTestId("settings-receipt-return-policy").props.value,
+    ).toBe("Refunds within 14 days.");
+    expect(screen.getByText("Loaded. Save to apply.")).toBeTruthy();
+
+    // 载入仅更新草稿，只有 Save 后才写入本机设置。
+    expect(port.savedPrinterSettings).toHaveLength(0);
+  });
 });
 
 function createPresenter(port: ScreenSettingsPort): SettingsPresenter {
@@ -1624,6 +1699,7 @@ class ScreenSettingsPort implements SettingsControlPort {
   public printerSettingsSaveFailure = false;
   public printerTestError: Error | null = null;
   public printerTests = 0;
+  public receiptProfileValue: SettingsReceiptProfileDraft | null = null;
   public scannerTests = 0;
   public displayTests = 0;
   public snapshotValue: SettingsSnapshot | null = null;
@@ -1721,6 +1797,10 @@ class ScreenSettingsPort implements SettingsControlPort {
   public async testPrinter(): Promise<void> {
     this.printerTests += 1;
     if (this.printerTestError) throw this.printerTestError;
+  }
+
+  public async loadReceiptProfile(): Promise<SettingsReceiptProfileDraft | null> {
+    return this.receiptProfileValue;
   }
 
   public async testCashDrawer() {

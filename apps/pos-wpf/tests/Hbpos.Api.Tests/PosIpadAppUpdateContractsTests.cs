@@ -81,13 +81,53 @@ public sealed class PosIpadAppUpdateContractsTests
     }
 
     [Fact]
-    public void Authenticated_device_policy_always_allows_new_transactions()
+    public async Task Missing_transaction_permission_claim_defaults_to_allowed()
     {
-        var controller = CreateController(new PosIpadOptions());
+        var controller = CreateAuthenticatedController(DeviceSystems.IpadOs);
 
-        var response = GetResponse(controller.Check("1.0.0", "1", "1.0.0"));
+        var response = GetResponse(await controller.Check(
+            "1.0.0",
+            "1",
+            "1.0.0",
+            CancellationToken.None));
 
         Assert.True(response.Enabled);
+    }
+
+    [Fact]
+    public async Task Disabled_transaction_permission_is_returned_in_the_existing_enabled_field()
+    {
+        var controller = CreateAuthenticatedController(
+            DeviceSystems.IpadOs,
+            allowTransactions: false);
+
+        var response = GetResponse(await controller.Check(
+            "1.0.0",
+            "1",
+            "1.0.0",
+            CancellationToken.None));
+
+        Assert.False(response.Enabled);
+    }
+
+    [Fact]
+    public async Task Central_native_decision_preserves_disabled_transaction_permission()
+    {
+        var controller = AuthenticateController(
+            new PosIpadAppUpdateController(
+                Options.Create(new PosIpadOptions()),
+                Options.Create(new AppUpdateOptions { CentralPolicyEnabled = true }),
+                new StubUpdateDecisionGateway()),
+            DeviceSystems.IpadOs,
+            allowTransactions: false);
+
+        var response = GetResponse(await controller.Check(
+            "1.0.0",
+            "1",
+            "1.0.0",
+            CancellationToken.None));
+
+        Assert.False(response.Enabled);
     }
 
     [Fact]
@@ -175,7 +215,18 @@ public sealed class PosIpadAppUpdateContractsTests
     private static PosIpadAppUpdateController CreateController(PosIpadOptions configuration)
         => new(Options.Create(configuration));
 
-    private static PosIpadAppUpdateController CreateAuthenticatedController(string? deviceSystem)
+    private static PosIpadAppUpdateController CreateAuthenticatedController(
+        string? deviceSystem,
+        bool? allowTransactions = null)
+        => AuthenticateController(
+            CreateController(new PosIpadOptions()),
+            deviceSystem,
+            allowTransactions);
+
+    private static PosIpadAppUpdateController AuthenticateController(
+        PosIpadAppUpdateController controller,
+        string? deviceSystem,
+        bool? allowTransactions = null)
     {
         var claims = new List<Claim>
         {
@@ -185,8 +236,13 @@ public sealed class PosIpadAppUpdateContractsTests
         {
             claims.Add(new Claim(DeviceAuthConstants.DeviceSystemClaim, deviceSystem));
         }
+        if (allowTransactions.HasValue)
+        {
+            claims.Add(new Claim(
+                DeviceAuthConstants.AllowTransactionsClaim,
+                allowTransactions.Value.ToString()));
+        }
 
-        var controller = CreateController(new PosIpadOptions());
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext
@@ -197,6 +253,29 @@ public sealed class PosIpadAppUpdateContractsTests
             }
         };
         return controller;
+    }
+
+    private sealed class StubUpdateDecisionGateway : IPosIpadUpdateDecisionGateway
+    {
+        public Task<PosIpadNativeUpdateDecision?> GetNativeDecisionAsync(
+            PosIpadNativeUpdateDecisionRequest request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<PosIpadNativeUpdateDecision?>(new(
+                State: "none",
+                PolicyVersion: "policy-1",
+                MinimumSupportedVersion: null,
+                LatestVersion: null,
+                AppStoreUrl: null,
+                ReleaseMessage: null));
+        }
+
+        public Task<PosIpadOtaUpdateResponse?> GetOtaDecisionAsync(
+            PosIpadOtaUpdateDecisionRequest request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<PosIpadOtaUpdateResponse?>(null);
+        }
     }
 
     private static PosIpadAppUpdateResponse GetResponse(

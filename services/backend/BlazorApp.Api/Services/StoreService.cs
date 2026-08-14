@@ -75,6 +75,7 @@ namespace BlazorApp.Api.Services
                         BrandName = s.BrandName,
                         Address = s.Address,
                         TimeZoneId = s.TimeZoneId,
+                        ReturnPolicy = s.ReturnPolicy,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -117,6 +118,7 @@ namespace BlazorApp.Api.Services
                         BrandName = s.BrandName,
                         Address = s.Address,
                         TimeZoneId = s.TimeZoneId,
+                        ReturnPolicy = s.ReturnPolicy,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -268,6 +270,7 @@ namespace BlazorApp.Api.Services
                         Description = null,
                         Address = s.Address,
                         TimeZoneId = s.TimeZoneId,
+                        ReturnPolicy = s.ReturnPolicy,
                         ContactPhone = s.Phone,
                         ContactEmail = s.ContactEmail,
                         IsActive = s.IsActive,
@@ -425,6 +428,7 @@ namespace BlazorApp.Api.Services
                     BrandName = store.BrandName,
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
@@ -532,6 +536,7 @@ namespace BlazorApp.Api.Services
                 store.ABN = dto.ABN;
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
+                store.ReturnPolicy = dto.ReturnPolicy;
                 if (!string.IsNullOrWhiteSpace(dto.TimeZoneId))
                 {
                     store.TimeZoneId = normalizedTimeZoneId;
@@ -553,6 +558,7 @@ namespace BlazorApp.Api.Services
                     Description = null,
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
@@ -1339,6 +1345,7 @@ WHEN NOT MATCHED THEN
                     BrandName = store.BrandName,
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
@@ -1373,6 +1380,7 @@ WHEN NOT MATCHED THEN
                     Description = string.Empty, // Store实体没有Description属性，使用空字符串
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     // 分店详情必须保留数据库状态，避免 DTO 默认值覆盖停用分店。
@@ -1439,6 +1447,7 @@ WHEN NOT MATCHED THEN
                     StoreCode = normalizedStoreCode,
                     Address = dto.Address,
                     TimeZoneId = normalizedTimeZoneId,
+                    ReturnPolicy = dto.ReturnPolicy,
                     ABN = dto.ABN,
                     BrandName = dto.BrandName,
                     StoreGUID = Guid.NewGuid().ToString(),
@@ -1463,6 +1472,7 @@ WHEN NOT MATCHED THEN
                     ContactPhone = string.Empty,
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,
                     CreatedAt = store.CreatedAt,
@@ -1523,6 +1533,7 @@ WHEN NOT MATCHED THEN
                 store.ABN = dto.ABN;
                 store.BrandName = dto.BrandName;
                 store.Address = dto.Address;
+                store.ReturnPolicy = dto.ReturnPolicy;
                 if (!string.IsNullOrWhiteSpace(dto.TimeZoneId))
                 {
                     store.TimeZoneId = normalizedTimeZoneId;
@@ -1544,6 +1555,7 @@ WHEN NOT MATCHED THEN
                     Description = string.Empty,
                     Address = store.Address,
                     TimeZoneId = store.TimeZoneId,
+                    ReturnPolicy = store.ReturnPolicy,
                     ContactPhone = store.Phone,
                     ContactEmail = store.ContactEmail,
                     IsActive = store.IsActive,

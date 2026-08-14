@@ -17,6 +17,7 @@ import {
   Space,
   Spin,
   Statistic,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -117,6 +118,17 @@ function renderDeviceTypeTag(value?: string | null) {
 
 function renderDeviceSystemTag(value?: string | null) {
   return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : EMPTY_VALUE
+}
+
+function supportsIpadTransactionGate(
+  deviceSystem?: string | null,
+  deviceType?: string | null
+) {
+  const normalizedSystem = deviceSystem?.trim().toLowerCase()
+  return (
+    deviceType?.trim().toLowerCase() === 'pos' &&
+    (normalizedSystem === 'ipados' || normalizedSystem === 'ios')
+  )
 }
 
 function getUpdateTail(updateId?: string | null) {
@@ -223,6 +235,12 @@ export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
   const [editForm] = Form.useForm<DeviceEditFormValues>()
+  const editingDeviceType = Form.useWatch('deviceType', editForm)
+  const editingDeviceSystem = Form.useWatch('deviceSystem', editForm)
+  const editingSupportsTransactionGate = supportsIpadTransactionGate(
+    editingDeviceSystem,
+    editingDeviceType
+  )
   const [emergencyForm] = Form.useForm<EmergencyGrantFormValues>()
   const [viewMode, setViewMode] = useState<DeviceRegistrationViewMode>('registered')
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
@@ -383,6 +401,7 @@ export default function DeviceRegistrationPage() {
       editForm.setFieldsValue({
         deviceType: detail.deviceType,
         deviceSystem: detail.deviceSystem,
+        allowTransactions: detail.allowTransactions,
         remark: detail.remark ?? '',
       })
     } catch (error) {
@@ -412,6 +431,7 @@ export default function DeviceRegistrationPage() {
       await updateDeviceRegistration(editingDevice.id, {
         deviceType: values.deviceType,
         deviceSystem: values.deviceSystem,
+        allowTransactions: values.allowTransactions,
         remark: values.remark ?? '',
       })
       message.success(t('posAdmin.devices.updateSuccess'))
@@ -591,6 +611,25 @@ export default function DeviceRegistrationPage() {
             {record.statusDescription || record.status}
           </Tag>
         ),
+      },
+      {
+        title: t('posAdmin.devices.allowTransactions'),
+        dataIndex: 'allowTransactions',
+        width: 120,
+        render: (value: boolean, record) =>
+          supportsIpadTransactionGate(record.deviceSystem, record.deviceType) ? (
+            <Tag color={value ? 'green' : 'red'}>
+              {t(
+                value
+                  ? 'posAdmin.devices.transactionsAllowed'
+                  : 'posAdmin.devices.transactionsBlocked'
+              )}
+            </Tag>
+          ) : (
+            <Typography.Text type="secondary">
+              {t('posAdmin.devices.transactionControlNotApplicable')}
+            </Typography.Text>
+          ),
       },
       {
         title: t('column.createTime'),
@@ -891,7 +930,7 @@ export default function DeviceRegistrationPage() {
               loading={loading}
               columns={columns}
               dataSource={items}
-              scroll={{ x: access.canManageDeviceRegistration ? 1650 : 1350 }}
+              scroll={{ x: access.canManageDeviceRegistration ? 1770 : 1470 }}
               pagination={false}
             />
           </Space>
@@ -982,6 +1021,18 @@ export default function DeviceRegistrationPage() {
                     value: deviceSystem,
                   }))}
                 />
+              </Form.Item>
+              <Form.Item
+                name="allowTransactions"
+                label={t('posAdmin.devices.allowTransactions')}
+                valuePropName="checked"
+                extra={t(
+                  editingSupportsTransactionGate
+                    ? 'posAdmin.devices.allowTransactionsHint'
+                    : 'posAdmin.devices.allowTransactionsUnsupportedHint'
+                )}
+              >
+                <Switch disabled={!editingSupportsTransactionGate} />
               </Form.Item>
               <Form.Item name="remark" label={t('column.remarks')}>
                 <Input.TextArea

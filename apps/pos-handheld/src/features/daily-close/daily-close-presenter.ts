@@ -79,7 +79,9 @@ export type DailyClosePresenterOptions = Readonly<{
   receiptLocale: ReceiptLocale;
   receiptPaper: ReceiptPaper;
   repository: DailyCloseRepositoryPort;
+  brandName?: string;
   storeName: string;
+  returnPolicy?: string;
   historyLimit?: number;
 }>;
 
@@ -403,7 +405,9 @@ export class DailyClosePresenter {
         locale: this.options.receiptLocale,
         paper: this.options.receiptPaper,
         reprint,
+        brandName: this.options.brandName,
         storeName: this.options.storeName,
+        returnPolicy: this.options.returnPolicy,
       }),
       reprint,
     });

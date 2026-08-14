@@ -1,4 +1,4 @@
-# Core contracts v4
+# Core contracts v5
 
 这些 Port 是 iPad POS 各垂直切片与原生适配器的冻结边界。功能代理只能实现或消费接口；任何字段、状态迁移、数据库能力或敏感客显字段变更都必须由主代理评审并提升 `CORE_CONTRACT_VERSION`。
 

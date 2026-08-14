@@ -63,6 +63,7 @@ function service(
   value: LocalOrder | null,
   options: Readonly<{
     brandName?: string;
+    returnPolicy?: string;
     settlement?: number | null;
   }> = {},
 ): LocalHistoryReceiptPreviewService {
@@ -81,6 +82,7 @@ function service(
         address: "1 Queen St",
         phone: "0712345678",
         abn: "12 345 678 901",
+        returnPolicy: options.returnPolicy ?? "",
       },
     }),
   };
@@ -95,7 +97,9 @@ function service(
 
 test("未配置打印机也能预览，并以可信 storeCode 回退空品牌", async () => {
   const current = order();
-  const preview = await service(current).getPreview(current.orderGuid);
+  const preview = await service(current, {
+    returnPolicy: "Refunds within 14 days with proof of purchase.",
+  }).getPreview(current.orderGuid);
 
   assert.equal(preview?.paper, "80mm");
   assert.ok(preview?.lines.some((line) => line.kind === "text" && line.text === "BNE"));
@@ -109,6 +113,12 @@ test("未配置打印机也能预览，并以可信 storeCode 回退空品牌", 
   ), false);
   assert.ok(preview?.lines.some(
     (line) => line.kind === "text" && line.text === "*** REPRINT ***",
+  ));
+  assert.ok(preview?.lines.some(
+    (line) => line.kind === "text" && line.text === "Refunds and returns",
+  ));
+  assert.ok(preview?.lines.some(
+    (line) => line.kind === "text" && line.text.includes("Refunds within 14"),
   ));
 });
 

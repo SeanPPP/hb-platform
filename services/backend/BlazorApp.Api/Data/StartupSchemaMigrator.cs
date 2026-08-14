@@ -25,6 +25,7 @@ namespace BlazorApp.Api.Data
             // 关键位置：统一串起所有启动兜底迁移，避免 Program.cs 只接入其中一条补列链路。
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
             await EnsureStoreTimeZoneSchemaAsync(db, logger);
+            await EnsureStoreReturnPolicySchemaAsync(db, logger);
             await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
             await AppUpdatePolicySchemaMigrator.EnsureAsync(db, logger);
@@ -184,6 +185,41 @@ END CATCH;
 
             await db.Ado.ExecuteCommandAsync(sql);
             logger.LogInformation("门店考勤时区字段检查完成");
+        }
+
+        private static async Task EnsureStoreReturnPolicySchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger)
+        {
+            const string sql = """
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @StoreReturnPolicySchemaLockResult int;
+    EXEC @StoreReturnPolicySchemaLockResult = sys.sp_getapplock
+        @Resource = N'StoreReturnPolicy_Schema_Initialization',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Transaction',
+        @LockTimeout = 30000;
+    IF @StoreReturnPolicySchemaLockResult < 0
+        THROW 51031, 'Unable to acquire store return-policy schema lock.', 1;
+
+    IF OBJECT_ID(N'[dbo].[Store]', N'U') IS NOT NULL
+    BEGIN
+        IF COL_LENGTH('dbo.Store', 'ReturnPolicy') IS NULL
+            ALTER TABLE [dbo].[Store] ADD [ReturnPolicy] nvarchar(500) NULL;
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+""";
+
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("门店退换货政策字段检查完成");
         }
 
         private static async Task EnsureAttendanceWorkSessionSchemaAsync(

@@ -54,6 +54,7 @@ namespace BlazorApp.Api.Mappings
                 .ForMember(dest => dest.StoreCode, opt => opt.MapFrom(src => src.分店代码))
                 .ForMember(dest => dest.Status, opt => opt.MapFrom(src => src.设备状态))
                 .ForMember(dest => dest.StatusDescription, opt => opt.MapFrom(src => GetStatusDescription(src.设备状态)))
+                .ForMember(dest => dest.AllowTransactions, opt => opt.MapFrom(src => src.是否允许交易))
                 .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => src.创建时间))
                 .ForMember(dest => dest.LastModified, opt => opt.MapFrom(src => src.最后修改时间))
                 .ForMember(dest => dest.CreatedBy, opt => opt.MapFrom(src => src.创建人))

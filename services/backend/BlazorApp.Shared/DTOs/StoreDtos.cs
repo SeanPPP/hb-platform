@@ -74,6 +74,12 @@ namespace BlazorApp.Shared.DTOs
         public string? Description { get; set; }
 
         /// <summary>
+        /// 退换货政策
+        /// </summary>
+        [StringLength(500, ErrorMessage = "退换货政策长度不能超过500个字符")]
+        public string? ReturnPolicy { get; set; }
+
+        /// <summary>
         /// 分店地址
         /// </summary>
         [StringLength(200, ErrorMessage = "地址长度不能超过200个字符")]
@@ -142,6 +148,12 @@ namespace BlazorApp.Shared.DTOs
         public string? Description { get; set; }
 
         /// <summary>
+        /// 退换货政策
+        /// </summary>
+        [StringLength(500, ErrorMessage = "退换货政策长度不能超过500个字符")]
+        public string? ReturnPolicy { get; set; }
+
+        /// <summary>
         /// 分店地址
         /// </summary>
         [StringLength(200, ErrorMessage = "地址长度不能超过200个字符")]
@@ -208,6 +220,12 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [StringLength(500, ErrorMessage = "描述长度不能超过500个字符")]
         public string? Description { get; set; }
+
+        /// <summary>
+        /// 退换货政策
+        /// </summary>
+        [StringLength(500, ErrorMessage = "退换货政策长度不能超过500个字符")]
+        public string? ReturnPolicy { get; set; }
 
         /// <summary>
         /// 分店地址
@@ -312,6 +330,12 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [StringLength(500, ErrorMessage = "描述长度不能超过500个字符")]
         public string? Description { get; set; }
+
+        /// <summary>
+        /// 退换货政策
+        /// </summary>
+        [StringLength(500, ErrorMessage = "退换货政策长度不能超过500个字符")]
+        public string? ReturnPolicy { get; set; }
 
         /// <summary>
         /// 分店地址

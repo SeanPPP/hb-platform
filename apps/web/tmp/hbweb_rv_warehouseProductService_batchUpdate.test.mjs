@@ -424,10 +424,104 @@ request.delete = (url, options) => request(url, { ...options, method: "DELETE" }
 var request_default = request;
 
 // src/services/productHqSyncPolling.ts
+var PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2e3;
 var PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1e3;
+var HqProductSyncPollingTimeoutError = class extends Error {
+  constructor(message = "\u5546\u54C1\u540C\u6B65\u4EFB\u52A1\u8F6E\u8BE2\u8D85\u65F6") {
+    super(message);
+    this.name = "HqProductSyncPollingTimeoutError";
+  }
+};
+var HqProductSyncPollingCancelledError = class extends Error {
+  constructor(message = "\u5546\u54C1\u540C\u6B65\u4EFB\u52A1\u8F6E\u8BE2\u5DF2\u53D6\u6D88") {
+    super(message);
+    this.name = "HqProductSyncPollingCancelledError";
+  }
+};
+function isTerminalStatus(status) {
+  return status === "Succeeded" || status === "Failed";
+}
+function createHqSyncJobPoller({
+  jobId,
+  getJob,
+  isTerminalStatus: isTerminalStatusOverride,
+  pollIntervalMs = PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
+  timeoutMs = PRODUCT_HQ_SYNC_TIMEOUT_MS,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout
+}) {
+  let pollingTimer = null;
+  let timeoutTimer = null;
+  let stopped = false;
+  let rejectPromise = null;
+  const isJobTerminalStatus = isTerminalStatusOverride ?? isTerminalStatus;
+  const clearTimers = () => {
+    if (pollingTimer) {
+      clearTimeoutFn(pollingTimer);
+      pollingTimer = null;
+    }
+    if (timeoutTimer) {
+      clearTimeoutFn(timeoutTimer);
+      timeoutTimer = null;
+    }
+  };
+  const promise = new Promise((resolve, reject) => {
+    rejectPromise = reject;
+    const scheduleNextPoll = () => {
+      pollingTimer = setTimeoutFn(async () => {
+        try {
+          const result = await getJob(jobId);
+          if (stopped) {
+            return;
+          }
+          if (isJobTerminalStatus(result.status)) {
+            clearTimers();
+            resolve(result);
+            return;
+          }
+          scheduleNextPoll();
+        } catch (error) {
+          if (stopped) {
+            return;
+          }
+          clearTimers();
+          reject(error);
+        }
+      }, pollIntervalMs);
+    };
+    timeoutTimer = setTimeoutFn(() => {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      clearTimers();
+      reject(new HqProductSyncPollingTimeoutError());
+    }, timeoutMs);
+    scheduleNextPoll();
+  });
+  const stop = () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    clearTimers();
+    rejectPromise?.(new HqProductSyncPollingCancelledError());
+  };
+  return {
+    promise,
+    stop
+  };
+}
 
 // src/services/warehouseProductService.ts
 var API_BASE = "/api/react/v1/product-warehouse";
+var WAREHOUSE_PRODUCT_BATCH_UPDATE_JOB_STATUSES = [
+  "Queued",
+  "Running",
+  "PartiallySucceeded",
+  "Succeeded",
+  "Failed"
+];
 function unwrapResponse(response, emptyData) {
   if (response && typeof response === "object") {
     if ("data" in response && response.data !== void 0) {
@@ -442,24 +536,212 @@ function ensureApiSuccess(success, message, fallback) {
     throw new Error(message || fallback || "\u8BF7\u6C42\u5931\u8D25");
   }
 }
+function toNumber(value) {
+  if (typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? void 0 : parsed;
+  }
+  return void 0;
+}
+function toBoolean(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") {
+      return true;
+    }
+    if (value.toLowerCase() === "false") {
+      return false;
+    }
+  }
+  return fallback;
+}
+function readString(...values) {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+      continue;
+    }
+    if (typeof value === "number") {
+      return String(value);
+    }
+  }
+  return void 0;
+}
+function readRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function readStringArray(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const items = value.map((item) => String(item ?? "").trim()).filter(Boolean);
+      if (items.length) return items;
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return void 0;
+}
+function normalizeWarehouseProductHqImageSync(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return void 0;
+  }
+  const value = raw;
+  const rawItems = Array.isArray(value.items) ? value.items : Array.isArray(value.Items) ? value.Items : void 0;
+  return {
+    requested: value.requested === void 0 && value.Requested === void 0 ? void 0 : toBoolean(value.requested ?? value.Requested),
+    success: value.success === void 0 && value.Success === void 0 ? void 0 : toBoolean(value.success ?? value.Success),
+    updatedCount: toNumber(value.updatedCount ?? value.UpdatedCount),
+    successCount: toNumber(value.successCount ?? value.SuccessCount),
+    failedCount: toNumber(value.failedCount ?? value.FailedCount),
+    totalCount: toNumber(value.totalCount ?? value.TotalCount),
+    errorCode: readString(value.errorCode, value.ErrorCode),
+    errors: readStringArray(value.errors, value.Errors) ?? [],
+    items: Array.isArray(rawItems) ? rawItems.filter((item) => !!item && typeof item === "object").map((item) => ({
+      productCode: readString(item.productCode, item.ProductCode) ?? "",
+      success: toBoolean(item.success ?? item.Success, false),
+      message: readString(item.message, item.Message)
+    })) : void 0
+  };
+}
+function normalizeWarehouseProductBatchUpdateResult(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return void 0;
+  }
+  const value = raw;
+  const successCount = toNumber(value.successCount ?? value.SuccessCount);
+  const failedCount = toNumber(value.failedCount ?? value.FailedCount ?? value.failed ?? value.Failed);
+  const imageUpdatedCount = toNumber(value.imageUpdatedCount ?? value.ImageUpdatedCount);
+  const hqImageSync = normalizeWarehouseProductHqImageSync(value.hqImageSync ?? value.HqImageSync);
+  return {
+    ...value,
+    success: toBoolean(value.success ?? value.Success, false),
+    ...successCount === void 0 ? {} : { successCount },
+    ...failedCount === void 0 ? {} : { failedCount },
+    errors: readStringArray(value.errors, value.Errors) ?? [],
+    ...imageUpdatedCount === void 0 ? {} : { imageUpdatedCount },
+    hqImageSync
+  };
+}
+function normalizeWarehouseProductBatchUpdateJob(raw, fallbackJobId = "") {
+  const value = readRecord(raw);
+  const rawStatus = readString(value.status, value.Status);
+  const rawResult = value.result ?? value.Result;
+  if (!WAREHOUSE_PRODUCT_BATCH_UPDATE_JOB_STATUSES.includes(rawStatus)) {
+    throw new Error(`\u672A\u77E5\u7684\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u4FEE\u6539\u4EFB\u52A1\u72B6\u6001: ${rawStatus ?? ""}`);
+  }
+  return {
+    jobId: readString(value.jobId, value.JobId) ?? fallbackJobId,
+    operationId: readString(value.operationId, value.OperationId),
+    status: rawStatus,
+    isDuplicateRequest: value.isDuplicateRequest === void 0 && value.IsDuplicateRequest === void 0 ? void 0 : toBoolean(value.isDuplicateRequest ?? value.IsDuplicateRequest),
+    createdAt: readString(value.createdAt, value.CreatedAt),
+    startedAt: readString(value.startedAt, value.StartedAt),
+    completedAt: readString(value.completedAt, value.CompletedAt),
+    expiresAt: readString(value.expiresAt, value.ExpiresAt),
+    message: readString(value.message, value.Message),
+    result: normalizeWarehouseProductBatchUpdateResult(rawResult)
+  };
+}
 async function batchUpdateWarehouseProducts(items, options = {}) {
   const response = await request_default(`${API_BASE}/batch-update`, {
     method: "POST",
     data: {
       Items: items,
-      ...options.syncStorePurchasePrice === void 0 ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice }
+      ...options.syncStorePurchasePrice === void 0 ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice },
+      ...options.generateImageUrls === void 0 ? {} : { GenerateImageUrls: options.generateImageUrls },
+      ...options.imageBaseUrl === void 0 ? {} : { ImageBaseUrl: options.imageBaseUrl },
+      ...options.syncImageToHq === void 0 ? {} : { SyncImageToHq: options.syncImageToHq }
     }
   });
   const raw = response;
   ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, "\u4ED3\u5E93\u6279\u91CF\u66F4\u65B0\u5931\u8D25");
   const result = unwrapResponse(response, { success: false });
   ensureApiSuccess(result.success, result.message, "\u4ED3\u5E93\u6279\u91CF\u66F4\u65B0\u5931\u8D25");
-  const failedCount = Number(result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0);
-  const errors = result.errors ?? result.Errors ?? [];
-  if (failedCount > 0) {
-    throw new Error(result.message || errors.join("\uFF1B") || "\u4ED3\u5E93\u6279\u91CF\u66F4\u65B0\u90E8\u5206\u5931\u8D25");
-  }
-  return result;
+  const imageUpdatedCount = toNumber(result.imageUpdatedCount ?? result.ImageUpdatedCount);
+  const hqImageSync = normalizeWarehouseProductHqImageSync(result.hqImageSync ?? result.HqImageSync);
+  return {
+    ...result,
+    ...imageUpdatedCount === void 0 ? {} : { imageUpdatedCount },
+    hqImageSync
+  };
+}
+function createWarehouseProductBatchUpdateJobPoller({
+  jobId,
+  getJob,
+  ...options
+}) {
+  return createHqSyncJobPoller({
+    jobId,
+    getJob,
+    isTerminalStatus: (status) => status === "Succeeded" || status === "PartiallySucceeded" || status === "Failed",
+    ...options
+  });
+}
+async function createWarehouseProductBatchUpdateJob(items, options = {}) {
+  const response = await request_default.post(
+    `${API_BASE}/batch-update/jobs`,
+    {
+      Items: items,
+      ...options.syncStorePurchasePrice === void 0 ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice },
+      ...options.generateImageUrls === void 0 ? {} : { GenerateImageUrls: options.generateImageUrls },
+      ...options.imageBaseUrl === void 0 ? {} : { ImageBaseUrl: options.imageBaseUrl },
+      ...options.syncImageToHq === void 0 ? {} : { SyncImageToHq: options.syncImageToHq }
+    }
+  );
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, "\u521B\u5EFA\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u4FEE\u6539\u4EFB\u52A1\u5931\u8D25");
+  return normalizeWarehouseProductBatchUpdateJob(response.data, "");
+}
+async function getWarehouseProductBatchUpdateJob(jobId) {
+  const response = await request_default.get(
+    `${API_BASE}/batch-update/jobs/${encodeURIComponent(jobId)}`
+  );
+  ensureApiSuccess(response.success ?? response.isSuccess, response.message, "\u67E5\u8BE2\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u4FEE\u6539\u4EFB\u52A1\u5931\u8D25");
+  return normalizeWarehouseProductBatchUpdateJob(response.data, jobId);
+}
+async function updateWarehouseProductFull(productCode, payload) {
+  return request_default(`${API_BASE}/${productCode}/full-update`, {
+    method: "PUT",
+    data: {
+      ProductName: payload.productName,
+      EnglishName: payload.englishName,
+      ProductSpecification: payload.productSpecification,
+      Material: payload.material,
+      Remark: payload.remark,
+      PackingQuantity: payload.packingQuantity,
+      MinOrderQuantity: payload.minOrderQuantity,
+      UnitVolume: payload.unitVolume,
+      GrossWeight: payload.grossWeight,
+      PackingSize: payload.packingSize,
+      DomesticPrice: payload.domesticPrice,
+      OEMPrice: payload.oemPrice,
+      ImportPrice: payload.importPrice,
+      IsActive: payload.isActive,
+      ProductImage: payload.productImage,
+      ProductType: payload.productType,
+      MiddlePackQuantity: payload.middlePackQuantity,
+      IsAutoPricing: payload.isAutoPricing,
+      WarehouseCategoryGUID: payload.warehouseCategoryGUID,
+      SupplierCode: payload.supplierCode,
+      LocalSupplierCode: payload.localSupplierCode
+    }
+  });
+}
+async function patchWarehouseProduct(productCode, payload) {
+  return request_default.patch(`${API_BASE}/${encodeURIComponent(productCode)}`, {
+    ...payload.minOrderQuantity !== void 0 ? { MinOrderQuantity: payload.minOrderQuantity } : {},
+    ...payload.domesticPrice !== void 0 ? { DomesticPrice: payload.domesticPrice } : {},
+    ...payload.importPrice !== void 0 ? { ImportPrice: payload.importPrice } : {},
+    ...payload.oemPrice !== void 0 ? { OEMPrice: payload.oemPrice } : {}
+  });
 }
 
 // src/services/warehouseProductService.batchUpdate.test.ts
@@ -499,6 +781,7 @@ try {
   await batchUpdateWarehouseProducts([
     {
       ProductCode: "P001",
+      SupplierCode: "SUPPLIER-NEW",
       MinOrderQuantity: 0,
       PackingQuantity: 0,
       IsActive: false,
@@ -514,6 +797,7 @@ try {
       Items: [
         {
           ProductCode: "P001",
+          SupplierCode: "SUPPLIER-NEW",
           MinOrderQuantity: 0,
           PackingQuantity: 0,
           IsActive: false
@@ -523,6 +807,148 @@ try {
     },
     "\u6279\u91CF\u66F4\u65B0\u8BF7\u6C42\u4F53\u5E94\u4FDD\u7559\u6570\u91CF\u96F6\u503C\u548C false\uFF0C\u5E76\u5FFD\u7565 undefined \u5B57\u6BB5"
   );
+  globalThis.fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedMethod = init?.method;
+    capturedBody = JSON.parse(String(init?.body ?? "{}"));
+    return new Response(JSON.stringify({
+      success: true,
+      successCount: 1,
+      failedCount: 0,
+      imageUpdatedCount: 1,
+      hqImageSync: {
+        requested: true,
+        success: false,
+        updatedCount: 0,
+        failedCount: 1,
+        errorCode: "HQ_IMAGE_SYNC_ITEM_ERRORS",
+        errors: ["HQ \u5546\u54C1\u4E0D\u5B58\u5728: P001"]
+      }
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  const imageResult = await batchUpdateWarehouseProducts(
+    [{ ProductCode: "P001" }],
+    {
+      generateImageUrls: true,
+      imageBaseUrl: "https://images.example.com/catalog/",
+      syncImageToHq: true
+    }
+  );
+  assertDeepEqual(
+    capturedBody,
+    {
+      Items: [{ ProductCode: "P001" }],
+      GenerateImageUrls: true,
+      ImageBaseUrl: "https://images.example.com/catalog/",
+      SyncImageToHq: true
+    },
+    "\u6279\u91CF\u56FE\u7247\u66F4\u65B0\u5E94\u53D1\u9001\u56FE\u7247\u751F\u6210\u548C HQ \u540C\u6B65\u9009\u9879"
+  );
+  assert(imageResult.imageUpdatedCount === 1, "\u5E94\u5F52\u4E00\u5316\u672C\u5730\u56FE\u7247\u66F4\u65B0\u6570\u91CF");
+  assert(imageResult.hqImageSync?.success === false, "HQ \u9010\u9879\u5931\u8D25\u4E0D\u5E94\u7531\u670D\u52A1\u5C42\u629B\u9519");
+  assert(imageResult.hqImageSync?.failedCount === 1, "\u5E94\u5F52\u4E00\u5316 HQ \u5931\u8D25\u6570\u91CF");
+  assertDeepEqual(
+    imageResult.hqImageSync?.errors,
+    ["HQ \u5546\u54C1\u4E0D\u5B58\u5728: P001"],
+    "\u5E94\u4FDD\u7559 HQ \u540C\u6B65\u9519\u8BEF\u660E\u7EC6"
+  );
+  globalThis.fetch = async (input, init) => {
+    capturedUrl = String(input);
+    capturedMethod = init?.method;
+    capturedBody = JSON.parse(String(init?.body ?? "{}"));
+    const isStatusRequest = capturedMethod === "GET";
+    const data = isStatusRequest ? {
+      jobId: "batch-job-1",
+      operationId: "warehouse-product-batch-update:test",
+      status: "PartiallySucceeded",
+      result: {
+        success: true,
+        successCount: 1,
+        failedCount: 1,
+        imageUpdatedCount: 1,
+        hqImageSync: {
+          requested: true,
+          success: false,
+          failedCount: 1,
+          errors: ["HQ \u5546\u54C1\u4E0D\u5B58\u5728: P001"]
+        }
+      }
+    } : {
+      jobId: "batch-job-1",
+      operationId: "warehouse-product-batch-update:test",
+      status: "Queued",
+      createdAt: "2026-08-13T00:00:00Z"
+    };
+    return new Response(JSON.stringify({ success: true, data }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  const createdJob = await createWarehouseProductBatchUpdateJob(
+    [{ ProductCode: "P001", SupplierCode: "SUPPLIER-NEW" }],
+    {
+      generateImageUrls: true,
+      imageBaseUrl: "https://images.example.com/catalog/",
+      syncImageToHq: true
+    }
+  );
+  assert(capturedUrl.endsWith("/api/react/v1/product-warehouse/batch-update/jobs"), "\u540E\u53F0\u6279\u91CF\u4FEE\u6539\u5E94\u8C03\u7528 jobs \u521B\u5EFA\u63A5\u53E3");
+  assert(capturedMethod === "POST", "\u540E\u53F0\u6279\u91CF\u4FEE\u6539\u4EFB\u52A1\u5E94\u4F7F\u7528 POST \u521B\u5EFA");
+  assert(createdJob.status === "Queued", "\u521B\u5EFA\u4EFB\u52A1\u5E94\u4FDD\u7559 Queued \u72B6\u6001");
+  assertDeepEqual(
+    capturedBody,
+    {
+      Items: [{ ProductCode: "P001", SupplierCode: "SUPPLIER-NEW" }],
+      GenerateImageUrls: true,
+      ImageBaseUrl: "https://images.example.com/catalog/",
+      SyncImageToHq: true
+    },
+    "\u540E\u53F0\u4EFB\u52A1\u8BF7\u6C42\u5E94\u5B8C\u6574\u643A\u5E26\u6279\u91CF\u4FEE\u6539\u4E0E\u56FE\u7247\u540C\u6B65\u9009\u9879"
+  );
+  const completedJob = await getWarehouseProductBatchUpdateJob("batch-job-1");
+  assert(capturedUrl.endsWith("/api/react/v1/product-warehouse/batch-update/jobs/batch-job-1"), "\u5E94\u6309 jobId \u67E5\u8BE2\u540E\u53F0\u6279\u91CF\u4FEE\u6539\u72B6\u6001");
+  assert(String(capturedMethod) === "GET", "\u67E5\u8BE2\u540E\u53F0\u6279\u91CF\u4FEE\u6539\u72B6\u6001\u5E94\u4F7F\u7528 GET");
+  assert(completedJob.status === "PartiallySucceeded", "\u5E94\u4FDD\u7559 PartiallySucceeded \u7EC8\u6001");
+  assert(completedJob.result?.hqImageSync?.failedCount === 1, "\u5E94\u5F52\u4E00\u5316\u540E\u53F0\u4EFB\u52A1\u4E2D\u7684 HQ \u5931\u8D25\u660E\u7EC6");
+  const scheduledCallbacks = [];
+  const poller = createWarehouseProductBatchUpdateJobPoller({
+    jobId: "batch-job-1",
+    getJob: async () => completedJob,
+    setTimeoutFn: (callback) => {
+      scheduledCallbacks.push(callback);
+      return scheduledCallbacks.length;
+    },
+    clearTimeoutFn: () => void 0
+  });
+  assert(scheduledCallbacks.length === 2, "\u540E\u53F0\u4EFB\u52A1\u8F6E\u8BE2\u5E94\u540C\u65F6\u5B89\u6392\u8D85\u65F6\u4E0E\u9996\u6B21\u72B6\u6001\u67E5\u8BE2");
+  scheduledCallbacks[1]?.();
+  const polledJob = await poller.promise;
+  assert(polledJob.status === "PartiallySucceeded", "PartiallySucceeded \u5E94\u4F5C\u4E3A\u6279\u91CF\u4FEE\u6539\u8F6E\u8BE2\u7EC8\u6001");
+  capturedMethod = void 0;
+  capturedBody = void 0;
+  await patchWarehouseProduct("HB 001", { oemPrice: 0 });
+  assert(capturedBody, "\u5E94\u6355\u83B7\u4ED3\u5E93\u5546\u54C1\u5355\u5B57\u6BB5\u66F4\u65B0\u8BF7\u6C42\u4F53");
+  assert(capturedUrl.endsWith("/api/react/v1/product-warehouse/HB%20001"), "\u5355\u5B57\u6BB5\u66F4\u65B0\u5E94\u7F16\u7801\u5546\u54C1\u8D27\u53F7\u5E76\u8C03\u7528\u4ED3\u5E93\u5546\u54C1\u6839 PATCH \u63A5\u53E3");
+  assert(capturedMethod === "PATCH", "\u5355\u5B57\u6BB5\u66F4\u65B0\u5E94\u4F7F\u7528 PATCH \u65B9\u6CD5");
+  assertDeepEqual(
+    capturedBody,
+    { OEMPrice: 0 },
+    "\u5355\u5B57\u6BB5\u66F4\u65B0\u5E94\u53EA\u53D1\u9001\u4E00\u4E2A PascalCase \u5B57\u6BB5\u5E76\u4FDD\u7559\u96F6\u503C"
+  );
+  capturedMethod = void 0;
+  capturedBody = void 0;
+  await updateWarehouseProductFull("P001", {
+    minOrderQuantity: 0,
+    isActive: true
+  });
+  const fullUpdateBody = capturedBody;
+  assert(fullUpdateBody, "\u5E94\u6355\u83B7\u4ED3\u5E93\u5546\u54C1\u5B8C\u6574\u66F4\u65B0\u8BF7\u6C42\u4F53");
+  assert(capturedMethod === "PUT", "\u5B8C\u6574\u66F4\u65B0\u5E94\u7EE7\u7EED\u4F7F\u7528 PUT \u65B9\u6CD5");
+  assert(fullUpdateBody.MinOrderQuantity === 0, "\u7F16\u8F91\u5F39\u7A97\u5B8C\u6574\u66F4\u65B0\u5E94\u53D1\u9001 MinOrderQuantity \u5E76\u4FDD\u7559\u96F6\u503C");
+  assert(!("MiddlePackQuantity" in fullUpdateBody), "\u7F16\u8F91\u5F39\u7A97\u4E0D\u5E94\u518D\u628A\u4E2D\u5305\u6570\u53D1\u9001\u4E3A Product.MiddlePackageQuantity \u5BF9\u5E94\u5B57\u6BB5");
 } finally {
   globalThis.fetch = originalFetch;
 }

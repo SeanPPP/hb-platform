@@ -43,11 +43,13 @@ test("外接客显固定使用英文且整个 surface 永远不接收触摸", as
   expect(screen.getByTestId("external-display-surface").props.accessible).toBe(
     false,
   );
+  expect(screen.getByText("Customer Display")).toBeTruthy();
+  expect(screen.getByText("Your order")).toBeTruthy();
   expect(screen.getByText("Your change")).toBeTruthy();
-  expect(screen.getByText("CHANGE")).toBeTruthy();
-  expect(screen.getByText("1 item")).toBeTruthy();
+  expect(screen.getByText("2 items · 1 SKU")).toBeTruthy();
+  expect(screen.queryByText("客显")).toBeNull();
+  expect(screen.queryByText("您的订单")).toBeNull();
   expect(screen.queryByText("找零")).toBeNull();
-  expect(screen.queryByText("1 件商品")).toBeNull();
   expect(screen.getByText("Tea")).toBeTruthy();
   expect(screen.queryAllByRole("button")).toHaveLength(0);
   screen.unmount();
@@ -62,13 +64,86 @@ test("外接客显固定使用英文且整个 surface 永远不接收触摸", as
     </I18nextProvider>,
   );
   expect(englishScreen.getByText("Your order")).toBeTruthy();
-  expect(englishScreen.getByText("1 item")).toBeTruthy();
+  expect(englishScreen.getByText("2 items · 1 SKU")).toBeTruthy();
+  expect(englishScreen.getByText("Ready to pay")).toBeTruthy();
   expect(englishScreen.getByText("Discount")).toBeTruthy();
   expect(englishScreen.getByText("−$1.00")).toBeTruthy();
   expect(
     englishScreen.queryByText("customerDisplay.items"),
   ).toBeNull();
 });
+
+test("交易客显按参考图显示标题、四列表格、等宽广告和全宽汇总栏", async () => {
+  const screen = await renderSurface(designedSnapshot("cart"));
+
+  expect(screen.getByText("Customer Display")).toBeTruthy();
+  expect(screen.queryByTestId("external-display-close")).toBeNull();
+  expect(screen.getByText("Your order")).toBeTruthy();
+  expect(screen.getByText("Product")).toBeTruthy();
+  expect(screen.getByText("Qty")).toBeTruthy();
+  expect(screen.getByText("Unit price")).toBeTruthy();
+  expect(screen.getByText("Amount")).toBeTruthy();
+  expect(screen.getByText("$6.67")).toBeTruthy();
+  expect(screen.getByText("$13.34")).toBeTruthy();
+  expect(screen.getByText("2 items · 1 SKU")).toBeTruthy();
+  expect(screen.getByTestId("external-display-summary-panel")).toBeTruthy();
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-title-bar").props.style,
+    ),
+  ).toMatchObject({ height: 48 });
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-summary-panel").props.style,
+    ),
+  ).toMatchObject({ height: 132 });
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-summary-metrics").props.style,
+    ),
+  ).toMatchObject({ flex: 47 });
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-amount-due").props.style,
+    ),
+  ).toMatchObject({ flex: 26 });
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-status-region").props.style,
+    ),
+  ).toMatchObject({ flex: 27 });
+
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-transaction-panel").props.style,
+    ),
+  ).toMatchObject({ flex: 1 });
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-advert-window").props.style,
+    ),
+  ).toMatchObject({ flex: 1 });
+});
+
+test.each([
+  ["idle", "Ready when you are", "Scan an item to begin"],
+  ["cart", "Ready to pay", "Please follow the cashier's instructions"],
+  ["payment", "Payment in progress", "Please follow the terminal prompts"],
+  ["change", "Your change", "$5.00"],
+  ["success", "Payment complete", "Change $5.00"],
+] as const)(
+  "%s 状态使用独立状态卡且不改变订单区标题",
+  async (mode, title, subtitle) => {
+    const screen = await renderSurface(
+      designedSnapshot(mode, { change: { currency: "AUD", cents: 500 } }),
+    );
+
+    expect(screen.getByText("Your order")).toBeTruthy();
+    expect(screen.getByTestId("external-display-status-card")).toBeTruthy();
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(screen.getByText(subtitle)).toBeTruthy();
+  },
+);
 
 test("idle 空购物篮且有广告时 RN surface 全屏透明且不渲染交易面板", async () => {
   const screen = await renderSurface(
@@ -102,7 +177,7 @@ test("idle 空购物篮且有广告时 RN surface 全屏透明且不渲染交易
   expect(screen.queryByText("Welcome")).toBeNull();
 });
 
-test("idle 无广告时保留安全双栏占位", async () => {
+test("idle 无广告时保留标题、等宽双栏和结算占位", async () => {
   const screen = await renderSurface(
     snapshot("idle", { advert: null, items: [] }),
   );
@@ -113,24 +188,20 @@ test("idle 无广告时保留安全双栏占位", async () => {
     screen.getByTestId("external-display-transaction-panel").props.style,
   );
 
-  expect(screen.getByText("Welcome")).toBeTruthy();
+  expect(screen.getByText("Customer Display")).toBeTruthy();
+  expect(screen.getByText("Your order")).toBeTruthy();
   expect(screen.getByText("Your basket is empty")).toBeTruthy();
-  expect(surfaceStyle).toMatchObject({
-    gap: 32,
-    paddingHorizontal: 34,
-    paddingVertical: 28,
-  });
-  expect(transactionPanelStyle).toMatchObject({ flex: 3 });
-  expect(transactionPanelStyle).not.toHaveProperty("paddingHorizontal");
-  expect(transactionPanelStyle).not.toHaveProperty("paddingVertical");
+  expect(screen.getByText("Ready when you are")).toBeTruthy();
+  expect(surfaceStyle).toMatchObject({ flex: 1, flexDirection: "column" });
+  expect(transactionPanelStyle).toMatchObject({ flex: 1 });
   expect(
     StyleSheet.flatten(
       screen.getByTestId("external-display-advert-window").props.style,
     ),
-  ).toMatchObject({ flex: 2 });
+  ).toMatchObject({ flex: 1 });
 });
 
-test("idle 有商品时即使有广告也保留 3:2 交易布局", async () => {
+test("idle 有商品时即使有广告也保留左右等宽交易布局", async () => {
   const screen = await renderSurface(snapshot("idle", { advert }));
 
   expect(screen.getByText("Tea")).toBeTruthy();
@@ -138,16 +209,16 @@ test("idle 有商品时即使有广告也保留 3:2 交易布局", async () => {
     StyleSheet.flatten(
       screen.getByTestId("external-display-transaction-panel").props.style,
     ),
-  ).toMatchObject({ flex: 3 });
+  ).toMatchObject({ flex: 1 });
   expect(
     StyleSheet.flatten(
       screen.getByTestId("external-display-advert-window").props.style,
     ),
-  ).toMatchObject({ flex: 2 });
+  ).toMatchObject({ flex: 1 });
 });
 
 test.each(["cart", "payment", "change", "success"] as const)(
-  "%s 模式即使有广告也保留 3:2 交易布局",
+  "%s 模式即使有广告也保留左右等宽交易布局",
   async (mode) => {
     const screen = await renderSurface(snapshot(mode, { advert }));
 
@@ -156,14 +227,94 @@ test.each(["cart", "payment", "change", "success"] as const)(
       StyleSheet.flatten(
         screen.getByTestId("external-display-transaction-panel").props.style,
       ),
-    ).toMatchObject({ flex: 3 });
+    ).toMatchObject({ flex: 1 });
     expect(
       StyleSheet.flatten(
         screen.getByTestId("external-display-advert-window").props.style,
       ),
-    ).toMatchObject({ flex: 2 });
+    ).toMatchObject({ flex: 1 });
   },
 );
+
+test("旧快照默认显示末尾 12 行，商品行固定 32pt 并从顶部依次排列", async () => {
+  const items = Array.from({ length: 14 }, (_, index) =>
+    item(`Item ${index + 1}`),
+  );
+  const screen = await renderSurface(snapshot("cart", { items }));
+
+  expect(screen.queryByText("Item 1")).toBeNull();
+  expect(screen.queryByText("Item 2")).toBeNull();
+  expect(screen.getByText("Item 3")).toBeTruthy();
+  expect(screen.getByText("Item 14")).toBeTruthy();
+  expect(screen.getByText("2 earlier")).toBeTruthy();
+  expect(screen.getAllByText("—")).toHaveLength(12);
+  const rows = screen.getAllByTestId("external-display-item-row");
+  expect(rows).toHaveLength(12);
+  for (const row of rows) {
+    const style = StyleSheet.flatten(row.props.style);
+    expect(style).toMatchObject({
+      height: 32,
+      flexGrow: 0,
+      flexShrink: 0,
+      borderBottomWidth: 1,
+    });
+    expect(style).not.toHaveProperty("flex");
+  }
+});
+
+test("显式窗口保持原顺序，并在订单标题右侧显示上下隐藏数量", async () => {
+  const items = Array.from({ length: 20 }, (_, index) =>
+    item(`Item ${index + 1}`),
+  );
+  const screen = await renderSurface(
+    snapshot("cart", { items, visibleItemStart: 4 }),
+  );
+
+  expect(screen.queryByText("Item 4")).toBeNull();
+  expect(screen.getByText("Item 5")).toBeTruthy();
+  expect(screen.getByText("Item 16")).toBeTruthy();
+  expect(screen.queryByText("Item 17")).toBeNull();
+  expect(screen.getByText("4 earlier · 4 later")).toBeTruthy();
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("external-display-order-heading").props.style,
+    ),
+  ).toMatchObject({ flexDirection: "row" });
+  expect(
+    screen.getByTestId("external-display-hidden-items").parent?.props.testID,
+  ).toBe("external-display-order-heading");
+});
+
+test("中文主界面下客显窗口提示仍固定为英文", async () => {
+  const chinese = await createTestI18n("zh");
+  const items = Array.from({ length: 15 }, (_, index) =>
+    item(`商品 ${index + 1}`),
+  );
+  const screen = await render(
+    <I18nextProvider i18n={chinese}>
+      <ExternalDisplaySurface
+        snapshot={snapshot("cart", { items, visibleItemStart: 2 })}
+        surfaceId="external-zh-window"
+      />
+    </I18nextProvider>,
+  );
+
+  expect(screen.getByText("商品 3")).toBeTruthy();
+  expect(screen.getByText("商品 14")).toBeTruthy();
+  expect(screen.getByText("2 earlier · 1 later")).toBeTruthy();
+  expect(screen.queryByText("上方 2 件 · 下方 1 件")).toBeNull();
+});
+
+test("成功且无需找零时状态卡显示感谢语", async () => {
+  const screen = await renderSurface(
+    designedSnapshot("success", {
+      change: { currency: "AUD", cents: 0 },
+    }),
+  );
+
+  expect(screen.getByText("Payment complete")).toBeTruthy();
+  expect(screen.getByText("Thank you for shopping with us")).toBeTruthy();
+});
 
 test("快照事件只接受严格更高 revision 并忽略相同或迟到结果", async () => {
   const nativeModule = installNativeModule();
@@ -180,7 +331,7 @@ test("快照事件只接受严格更高 revision 并忽略相同或迟到结果"
       revision: 7,
     }),
   );
-  expect(screen.getByText("Thank you")).toBeTruthy();
+  expect(screen.getByText("Payment complete")).toBeTruthy();
   expect(screen.getByText("Latest")).toBeTruthy();
 
   await nativeModule.emit(
@@ -196,9 +347,9 @@ test("快照事件只接受严格更高 revision 并忽略相同或迟到结果"
     }),
   );
 
-  expect(screen.getByText("Thank you")).toBeTruthy();
+  expect(screen.getByText("Payment complete")).toBeTruthy();
   expect(screen.getByText("Latest")).toBeTruthy();
-  expect(screen.queryByText("Payment")).toBeNull();
+  expect(screen.queryByText("Payment in progress")).toBeNull();
   expect(screen.queryByText("Same revision")).toBeNull();
   expect(screen.queryByText("Late")).toBeNull();
 });
@@ -244,6 +395,25 @@ function snapshot(
     change: { currency: "AUD", cents: 500 },
     advert: null,
     ...overrides,
+  };
+}
+
+function designedSnapshot(
+  mode: CustomerDisplaySnapshot["mode"],
+  overrides: Partial<CustomerDisplaySnapshot> = {},
+): CustomerDisplaySnapshot {
+  const current = snapshot(mode, overrides);
+  return {
+    ...current,
+    items: current.items.map((value) => ({
+      ...value,
+      unitPrice: { currency: "AUD", cents: 667 },
+    })),
+    summary: {
+      itemQuantity: "2",
+      skuCount: 1,
+      subtotal: { currency: "AUD", cents: 1_334 },
+    },
   };
 }
 

@@ -33,6 +33,22 @@ test("Xcode 26 fmt 补丁插入 post_install 且重复执行保持幂等", () =>
   assert.match(once, /File\.chmod\(0644, fmt_base\)/);
 });
 
+test("Xcode 26 仅为 ExpoSQLite 关闭 Swift 显式模块且重复执行保持幂等", () => {
+  const once = applyRnFmtXcode26Podfile(expoSdk54Podfile);
+  const twice = applyRnFmtXcode26Podfile(once);
+
+  assert.equal(twice, once);
+  assert.match(
+    once,
+    /HB POS Xcode 26 ExpoSQLite explicit modules workaround/,
+  );
+  assert.match(once, /next unless pod_target\.name == 'ExpoSQLite'/);
+  assert.match(
+    once,
+    /build_settings\['SWIFT_ENABLE_EXPLICIT_MODULES'\] = 'NO'/,
+  );
+});
+
 test("已有 v1 补丁升级到可写安全的 v2，且不重复插入 post_install 块", () => {
   const v2 = applyRnFmtXcode26Podfile(expoSdk54Podfile);
   const v1 = v2

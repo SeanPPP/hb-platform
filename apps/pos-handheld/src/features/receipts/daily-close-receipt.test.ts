@@ -9,12 +9,13 @@ import {
 
 import type { DailyCloseArchive } from "@/core/contracts";
 
-test("58/80mm 使用等价 42 列文本，完整列出三类收退款净额和 11 种面额", () => {
+test("58/80mm 按各自纸宽完整列出三类收退款净额和 11 种面额", () => {
   const narrow = buildDailyCloseReceipt({
     archive: createArchive(),
     locale: "en",
     paper: "58mm",
     reprint: false,
+    brandName: "Hot Bargain",
     storeName: "Sunnybank Plaza",
   });
   const wide = buildDailyCloseReceipt({
@@ -22,14 +23,21 @@ test("58/80mm 使用等价 42 列文本，完整列出三类收退款净额和 1
     locale: "en",
     paper: "80mm",
     reprint: false,
+    brandName: "Hot Bargain",
     storeName: "Sunnybank Plaza",
   });
 
-  assert.equal(narrow.width, 42);
+  assert.equal(narrow.width, 32);
   assert.equal(wide.width, 42);
-  assert.deepEqual(narrow.lines, wide.lines);
+  assert.equal(narrow.lines[0]?.trim(), "Hot Bargain");
+  assert.equal(wide.lines[0]?.trim(), "Hot Bargain");
   assert.ok(
     narrow.lines.every(
+      (line) => dailyCloseReceiptDisplayWidth(line) <= 32,
+    ),
+  );
+  assert.ok(
+    wide.lines.every(
       (line) => dailyCloseReceiptDisplayWidth(line) <= 42,
     ),
   );
@@ -82,6 +90,56 @@ test("中文票据和补打票据明确标记，长门店名称按 CJK 宽度安
       (line) => dailyCloseReceiptDisplayWidth(line) <= 42,
     ),
   );
+});
+
+test("日结打印贯穿当前门店 Return Policy 并按纸宽安全换行", () => {
+  const receipt = buildDailyCloseReceipt({
+    archive: createArchive(),
+    locale: "en",
+    paper: "58mm",
+    reprint: false,
+    storeName: "Sunnybank Plaza",
+    returnPolicy:
+      "Refunds and returns are accepted within fourteen days with proof of purchase.",
+  });
+  const text = receipt.lines.join("\n");
+
+  assert.match(text, /Refunds and returns/);
+  assert.match(text.replaceAll("\n", ""), /within fourteen days/);
+  assert.ok(
+    receipt.lines.every(
+      (line) => dailyCloseReceiptDisplayWidth(line) <= 32,
+    ),
+  );
+});
+
+test("日结抬头依次回退 Brand、Store、Store Code", () => {
+  const input = {
+    archive: createArchive(),
+    locale: "en" as const,
+    paper: "80mm" as const,
+    reprint: false,
+  };
+
+  const branded = buildDailyCloseReceipt({
+    ...input,
+    brandName: "Hot Bargain",
+    storeName: "Sunnybank Plaza",
+  });
+  const storeOnly = buildDailyCloseReceipt({
+    ...input,
+    brandName: "",
+    storeName: "Sunnybank Plaza",
+  });
+  const codeOnly = buildDailyCloseReceipt({
+    ...input,
+    brandName: "",
+    storeName: "",
+  });
+
+  assert.equal(branded.lines[0]?.trim(), "Hot Bargain");
+  assert.equal(storeOnly.lines[0]?.trim(), "Sunnybank Plaza");
+  assert.equal(codeOnly.lines[0]?.trim(), "S1");
 });
 
 test("日结文本编码为完整 ESC/POS 作业并在末尾切纸", () => {

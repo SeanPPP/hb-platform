@@ -53,6 +53,11 @@ namespace BlazorApp.Shared.DTOs
         public string 设备状态描述 { get; set; } = string.Empty;
 
         /// <summary>
+        /// 是否允许开始新交易
+        /// </summary>
+        public bool 是否允许交易 { get; set; }
+
+        /// <summary>
         /// 备注
         /// </summary>
         public string? 备注 { get; set; }
@@ -124,6 +129,11 @@ namespace BlazorApp.Shared.DTOs
         public string 设备状态描述 { get; set; } = string.Empty;
 
         /// <summary>
+        /// 是否允许开始新交易
+        /// </summary>
+        public bool 是否允许交易 { get; set; }
+
+        /// <summary>
         /// 备注
         /// </summary>
         public string? 备注 { get; set; }
@@ -163,6 +173,11 @@ namespace BlazorApp.Shared.DTOs
         /// 设备系统：Android/iOS/iPadOS/Mac/Windows
         /// </summary>
         public string? 设备系统 { get; set; }
+
+        /// <summary>
+        /// 是否允许开始新交易；缺失时保留原值
+        /// </summary>
+        public bool? 是否允许交易 { get; set; }
 
         /// <summary>
         /// 备注

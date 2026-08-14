@@ -417,6 +417,8 @@ test("设置页测试打印只要求已保存 peripheralId，不受自动打印�
           address: "",
           phone: "",
           abn: "",
+          returnPolicy: "",
+          profileStoreCode: "S1",
         }),
         save: async () => undefined,
       },
@@ -443,6 +445,61 @@ test("设置页测试打印只要求已保存 peripheralId，不受自动打印�
 
   assert.deepEqual(events, ["connect:printer-saved", "print"]);
   assert.equal(presenter.getState().statusCode, "printer-test-passed");
+});
+
+test("测试打印用正式销售票据构造 TEST/NOT A SALE 样例且包含政策与机读编码", async () => {
+  const prints: Uint8Array[] = [];
+  const runtime = createProductionSettingsComposition(
+    dependencies({
+      receiptSettings: {
+        get: async () => ({
+          printEnabled: true,
+          drawerEnabled: true,
+          peripheralId: "printer-saved",
+          paper: "80mm",
+          locale: "en",
+          brandName: "Hot Bargain",
+          storeName: "Brisbane",
+          address: "1 Queen St",
+          phone: "0712345678",
+          abn: "12 345 678 901",
+          returnPolicy: "Refunds within 14 days.",
+          profileStoreCode: "S1",
+        }),
+        save: async () => undefined,
+      },
+      printer: {
+        getStatus: async () => "ready",
+        scan: async () => [],
+        connect: async () => undefined,
+        disconnect: async () => undefined,
+        print: async (id, bytes) => {
+          prints.push(bytes);
+          return { status: "printed", errorCode: null };
+        },
+        subscribe: () => () => undefined,
+        open: async () => ({ status: "completed", errorCode: null }),
+      },
+    }),
+  );
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+
+  await presenter.testPrinter();
+
+  assert.equal(presenter.getState().statusCode, "printer-test-passed");
+  assert.equal(prints.length, 1);
+  const bytes = prints[0]!;
+  const text = new TextDecoder().decode(bytes);
+  assert.match(text, /===== TEST =====/);
+  assert.match(text, /\*\*\* NOT A SALE \*\*\*/);
+  assert.doesNotMatch(text, /Paid/);
+  assert.match(text, /Printer test item/);
+  assert.match(text, /Payment:/);
+  assert.match(text, /Refunds within 14 days\./);
+  const raw = Array.from(bytes);
+  assert.ok(raw.includes(0x1b));
+  assert.ok(raw.includes(0x1d));
 });
 
 test("设置页打印结果 unknown 时明确提示且不自动重试", async () => {
@@ -488,6 +545,8 @@ test("设置页钱箱测试先保存 draft，再只调用受控动作且不直�
     address: "",
     phone: "",
     abn: "",
+    returnPolicy: "",
+    profileStoreCode: "S1",
   };
   const runtime = createProductionSettingsComposition(
     dependencies({
@@ -591,6 +650,8 @@ test("清除打印机只持久化 null，不绕过 fulfilment hardware tail 主�
     address: "",
     phone: "",
     abn: "",
+    returnPolicy: "",
+    profileStoreCode: "S1",
   };
   const runtime = createProductionSettingsComposition(
     dependencies({
@@ -641,6 +702,8 @@ test("清除打印机持久化失败时不应断开或清空 UI draft", async ()
           address: "",
           phone: "",
           abn: "",
+          returnPolicy: "",
+          profileStoreCode: "S1",
         }),
         save: async () => {
           throw new Error("save failed");
@@ -702,6 +765,8 @@ test("清除打印机在读取后保存前复核 lease，失效时不保存也�
             address: "",
             phone: "",
             abn: "",
+            returnPolicy: "",
+            profileStoreCode: "S1",
           };
         },
         save: async () => {
@@ -764,6 +829,8 @@ test("清除打印机保存生效后 session 变化仍返回完成且不主动�
           address: "",
           phone: "",
           abn: "",
+          returnPolicy: "",
+          profileStoreCode: "S1",
         }),
         save: async (settings) => {
           savedPeripheralId = settings.peripheralId;
@@ -928,8 +995,13 @@ function dependencies(
         address: "",
         phone: "",
         abn: "",
+        returnPolicy: "",
+        profileStoreCode: "S1",
       }),
       save: async () => undefined,
+    },
+    receiptProfile: {
+      load: async () => null,
     },
     paymentConfiguration: {
       current: {

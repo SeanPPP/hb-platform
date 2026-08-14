@@ -269,7 +269,8 @@ function isStoreHeading(value: unknown): value is ReceiptStoreHeading {
     && typeof heading.storeName === "string"
     && typeof heading.address === "string"
     && typeof heading.phone === "string"
-    && typeof heading.abn === "string";
+    && typeof heading.abn === "string"
+    && typeof heading.returnPolicy === "string";
 }
 
 function isAudCents(value: unknown): value is Readonly<{ currency: "AUD"; cents: number }> {

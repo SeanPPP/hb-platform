@@ -13,6 +13,15 @@ public sealed class DeviceAuthorizationPlatformPolicyTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Authorization_query_reads_the_transaction_permission()
+    {
+        Assert.Contains(
+            "[是否允许交易] AS AllowTransactions",
+            DeviceAuthorizationService.AuthorizationSql,
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("Windows", "HW-001", "", true)]
     [InlineData("iPadOS", "HW-001", "", false)]

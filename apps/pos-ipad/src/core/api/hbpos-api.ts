@@ -175,3 +175,41 @@ export class HbposCashierApi {
     return unwrapHbposEnvelope(response.data);
   }
 }
+
+
+export type StoreReceiptProfile = Readonly<{
+  storeCode: string;
+  storeName: string;
+  brandName: string;
+  address: string;
+  phone: string;
+  abn: string;
+  returnPolicy: string;
+}>;
+
+export class HbposStoreApi {
+  public constructor(private readonly transport: HbposTransport) {}
+
+  public async getCurrentReceiptProfile(
+    signal: AbortSignal,
+  ): Promise<StoreReceiptProfile | null> {
+    const response = await this.transport.request<
+      HbposEnvelope<components["schemas"]["StoreReceiptProfileDto"]>
+    >({
+      method: "GET",
+      url: "/api/v1/stores/current/receipt-profile",
+      signal,
+    });
+    const data = unwrapHbposEnvelope(response.data);
+    if (!data) return null;
+    return Object.freeze({
+      storeCode: data.storeCode ?? "",
+      storeName: data.storeName ?? "",
+      brandName: data.brandName ?? "",
+      address: data.address ?? "",
+      phone: data.phone ?? "",
+      abn: data.abn ?? "",
+      returnPolicy: data.returnPolicy ?? "",
+    });
+  }
+}

@@ -1,6 +1,7 @@
 ﻿using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Contracts.Stores;
 
 namespace Hbpos.Client.Tests;
 
@@ -2327,6 +2328,101 @@ public sealed class SettingsViewModelTests
         {
             RequestedDialogs.Add(dialog);
             DialogRequested?.Invoke(this, dialog);
+        }
+    }
+
+    [Fact]
+    public async Task Load_receipt_profile_replaces_six_fields_without_saving()
+    {
+        var apiClient = new FakeStoreReceiptProfileApiClient(new StoreReceiptProfileDto(
+            "S001", "Sunnybank", "HB", "Shop 1\nBrisbane", "07 1234", "ABN 1", "Return within 7 days"));
+        var settingsStore = new FakeReceiptPrinterSettingsStore();
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            receiptPrinterSettingsStore: settingsStore,
+            storeReceiptProfileApiClient: apiClient);
+
+        await viewModel.LoadReceiptProfileCommand.ExecuteAsync(null);
+
+        Assert.Equal("HB", viewModel.ReceiptBrandNameText);
+        Assert.Equal("Sunnybank", viewModel.ReceiptStoreNameText);
+        Assert.Equal("Shop 1\nBrisbane", viewModel.ReceiptStoreAddressText);
+        Assert.Equal("07 1234", viewModel.ReceiptStorePhoneText);
+        Assert.Equal("ABN 1", viewModel.ReceiptAbnText);
+        Assert.Equal("Return within 7 days", viewModel.ReceiptReturnPolicyText);
+        Assert.Equal(ReceiptPrinterSettings.Default.PrinterPort, viewModel.ReceiptPrinterPortText);
+        Assert.Null(settingsStore.SavedSettings);
+        Assert.Equal("Loaded — save to apply", viewModel.ReceiptPrinterTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task Load_receipt_profile_failure_keeps_draft_unchanged()
+    {
+        var apiClient = new FakeStoreReceiptProfileApiClient(exception: new InvalidOperationException("boom"));
+        var settingsStore = new FakeReceiptPrinterSettingsStore();
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            receiptPrinterSettingsStore: settingsStore,
+            storeReceiptProfileApiClient: apiClient);
+
+        viewModel.ReceiptBrandNameText = "Draft Brand";
+        await viewModel.LoadReceiptProfileCommand.ExecuteAsync(null);
+
+        Assert.Equal("Draft Brand", viewModel.ReceiptBrandNameText);
+        Assert.Null(settingsStore.SavedSettings);
+    }
+
+    [Fact]
+    public async Task Load_receipt_profile_rejects_control_characters_and_keeps_draft()
+    {
+        var apiClient = new FakeStoreReceiptProfileApiClient(new StoreReceiptProfileDto(
+            "S001", "Sunnybank", "HB", "Bad\u0001Address", "07", "ABN", null));
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            storeReceiptProfileApiClient: apiClient);
+
+        viewModel.ReceiptStoreAddressText = "Draft Address";
+        await viewModel.LoadReceiptProfileCommand.ExecuteAsync(null);
+
+        Assert.Equal("Draft Address", viewModel.ReceiptStoreAddressText);
+        Assert.NotEqual("Loaded — save to apply", viewModel.ReceiptPrinterTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task Load_receipt_profile_explicit_empty_overwrites_draft()
+    {
+        var apiClient = new FakeStoreReceiptProfileApiClient(new StoreReceiptProfileDto(
+            "S001", "Sunnybank", null, null, null, null, null));
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            storeReceiptProfileApiClient: apiClient);
+
+        viewModel.ReceiptBrandNameText = "Draft Brand";
+        await viewModel.LoadReceiptProfileCommand.ExecuteAsync(null);
+
+        Assert.Equal(string.Empty, viewModel.ReceiptBrandNameText);
+        Assert.Equal("Sunnybank", viewModel.ReceiptStoreNameText);
+    }
+
+    private sealed class FakeStoreReceiptProfileApiClient : IStoreReceiptProfileApiClient
+    {
+        private readonly StoreReceiptProfileDto? _profile;
+        private readonly Exception? _exception;
+
+        public FakeStoreReceiptProfileApiClient(StoreReceiptProfileDto? profile = null, Exception? exception = null)
+        {
+            _profile = profile;
+            _exception = exception;
+        }
+
+        public Task<StoreReceiptProfileDto> GetCurrentAsync(CancellationToken cancellationToken = default)
+        {
+            if (_exception is not null)
+            {
+                return Task.FromException<StoreReceiptProfileDto>(_exception);
+            }
+
+            return Task.FromResult(_profile ?? throw new InvalidOperationException("No profile configured."));
         }
     }
 

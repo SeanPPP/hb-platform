@@ -2,6 +2,7 @@ import {
   appendEscPosInitialize,
   encodeEscPosText,
 } from "./esc-pos-text-encoding";
+import { receiptStoreHeading } from "./receipt-document";
 import type {
   FrozenReturnReceiptSettings,
   RenderedReturnReceipt,
@@ -426,7 +427,9 @@ function validSettings(
     settings &&
       /^[A-Za-z0-9._:-]{1,128}$/u.test(settings.printerId) &&
       (settings.paper === "58mm" || settings.paper === "80mm") &&
-      (settings.locale === "en" || settings.locale === "zh-CN"),
+      (settings.locale === "en" || settings.locale === "zh-CN") &&
+      settings.store &&
+      validReturnPolicy(settings.store.returnPolicy),
   );
 }
 
@@ -438,6 +441,18 @@ function encodeVoucherBalanceReceipt(
   appendEscPosInitialize(output);
   const width = settings.paper === "58mm" ? 32 : 48;
   const zh = settings.locale === "zh-CN";
+  appendWrappedText(
+    output,
+    receiptStoreHeading(
+      settings.store.brandName,
+      settings.store.storeName,
+      material.storeCode,
+    ),
+    width,
+    "center",
+    true,
+  );
+  appendText(output, "", "left", false);
   appendText(
     output,
     zh ? "===== 礼券余额 =====" : "===== VOUCHER BALANCE =====",
@@ -473,6 +488,12 @@ function encodeVoucherBalanceReceipt(
     "left",
     false,
   );
+  appendReturnPolicy(
+    output,
+    normalizedReturnPolicy(settings.store.returnPolicy),
+    width,
+    settings.locale,
+  );
   appendCode128(output, material.voucherCode);
   appendQrCode(output, material.voucherCode);
   output.push(0x1b, 0x64, 0x03, 0x1d, 0x56, 0x00);
@@ -506,6 +527,74 @@ function appendWrappedText(
     line += character;
   }
   appendText(output, line, alignment, bold);
+}
+
+function appendReturnPolicy(
+  output: number[],
+  returnPolicy: string | null,
+  width: number,
+  locale: "en" | "zh-CN",
+): void {
+  if (!returnPolicy) return;
+  appendText(output, "-".repeat(width), "left", false);
+  appendText(
+    output,
+    locale === "zh-CN" ? "退款与退货" : "Refunds and returns",
+    "left",
+    true,
+  );
+  for (const sourceLine of returnPolicy.split("\n")) {
+    appendReceiptWrappedText(
+      output,
+      sourceLine.replaceAll("\t", " "),
+      width,
+      "left",
+      false,
+    );
+  }
+}
+
+function appendReceiptWrappedText(
+  output: number[],
+  value: string,
+  width: number,
+  alignment: "left" | "center" | "right",
+  bold: boolean,
+): void {
+  let line = "";
+  let lineWidth = 0;
+  for (const character of [...value]) {
+    const characterWidth = receiptCharacterWidth(character);
+    if (line && lineWidth + characterWidth > width) {
+      appendText(output, line, alignment, bold);
+      line = "";
+      lineWidth = 0;
+    }
+    line += character;
+    lineWidth += characterWidth;
+  }
+  appendText(output, line, alignment, bold);
+}
+
+function receiptCharacterWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0x1100 &&
+    (codePoint <= 0x115f || codePoint >= 0x2e80 || codePoint >= 0x1f300)
+    ? 2
+    : 1;
+}
+
+function validReturnPolicy(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 500 &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)
+  );
+}
+
+function normalizedReturnPolicy(value: string): string | null {
+  const normalized = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  return normalized || null;
 }
 
 function appendCode128(output: number[], voucherCode: string): void {

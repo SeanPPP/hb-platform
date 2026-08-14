@@ -98,6 +98,26 @@ test("后端恢复（health 2xx）后，收银页 connectivity 翻转为 online"
   });
 });
 
+test("设备已连局域网但系统判定无公网时，仍探测后端并显示 online", async () => {
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
+    isConnected: true,
+    isInternetReachable: false,
+  });
+  const fetchMock = jest.fn(
+    async () => ({ ok: true }),
+  ) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+});
+
 test("App 回到前台时立即重新探测后端", async () => {
   // 第一次探测失败（后端停止），前台恢复后探测成功（后端已恢复）。
   let reachable = false;

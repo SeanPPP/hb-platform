@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Stores;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
@@ -71,6 +72,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly Action? _returnToPos;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptPrintService? _receiptPrintService;
+    private readonly IStoreReceiptProfileApiClient? _storeReceiptProfileApiClient;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
@@ -202,6 +204,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Action? returnToPos = null,
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
         IReceiptPrintService? receiptPrintService = null,
+        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
         Func<Task<bool>>? confirmResetTestSalesDataAsync = null,
         ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
@@ -225,6 +228,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _returnToPos = returnToPos;
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         _receiptPrintService = receiptPrintService;
+        _storeReceiptProfileApiClient = storeReceiptProfileApiClient;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
@@ -309,6 +313,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SelectLinklyPriorityModeCommand = new RelayCommand<LinklyModePriorityItem>(SelectLinklyPriorityMode);
         SaveReceiptPrinterCommand = new AsyncRelayCommand(SaveReceiptPrinterAsync, CanSaveReceiptPrinter);
         TestReceiptPrinterCommand = new AsyncRelayCommand(TestReceiptPrinterAsync, CanTestReceiptPrinter);
+        LoadReceiptProfileCommand = new AsyncRelayCommand(LoadReceiptProfileAsync);
         DownloadCatalogCommand = new AsyncRelayCommand(DownloadCatalogAsync, CanDownloadCatalog);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync, CanResetCatalog);
         ResetTestSalesDataCommand = new AsyncRelayCommand(ResetTestSalesDataAsync, CanResetTestSalesData);
@@ -402,6 +407,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand SaveReceiptPrinterCommand { get; }
 
     public IAsyncRelayCommand TestReceiptPrinterCommand { get; }
+
+    public IAsyncRelayCommand LoadReceiptProfileCommand { get; }
 
     public IAsyncRelayCommand DownloadCatalogCommand { get; }
 
@@ -897,6 +904,98 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
         using var authorizationActivation = permissionGrant.Activate();
         await _receiptPrinterSection.TestAsync();
+    }
+
+    private async Task LoadReceiptProfileAsync()
+    {
+        using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Settings.ReceiptPrinter, "load-receipt-profile");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+
+        if (_storeReceiptProfileApiClient is null)
+        {
+            ReceiptPrinterTestStatusMessage = "Store receipt profile is not configured.";
+            return;
+        }
+
+        try
+        {
+            var profile = await _storeReceiptProfileApiClient.GetCurrentAsync();
+            var validationError = ValidateStoreReceiptProfile(profile);
+            if (validationError is not null)
+            {
+                ReceiptPrinterTestStatusMessage = validationError;
+                return;
+            }
+
+            // 中文注释：仅完整替换六个资料字段，不自动保存，也不改动打印机端口/纸宽/语言/切纸等硬件设置。
+            ReceiptBrandNameText = profile.BrandName ?? string.Empty;
+            ReceiptStoreNameText = profile.StoreName ?? string.Empty;
+            ReceiptStoreAddressText = profile.Address ?? string.Empty;
+            ReceiptStorePhoneText = profile.Phone ?? string.Empty;
+            ReceiptAbnText = profile.Abn ?? string.Empty;
+            ReceiptReturnPolicyText = profile.ReturnPolicy ?? string.Empty;
+            ReceiptPrinterTestStatusMessage = T("settings.status.receiptProfileLoaded");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 中文注释：网络失败或契约异常不改动任何草稿字段，仅回写错误状态。
+            ReceiptPrinterTestStatusMessage = ex.Message;
+        }
+    }
+
+    private static string? ValidateStoreReceiptProfile(StoreReceiptProfileDto profile)
+    {
+        // 中文注释：仅地址/退货政策允许 CR、LF、TAB；其余资料字段拒绝任何控制字符（含 DEL）。
+        if (ContainsRejectedControlCharacter(profile.StoreCode, allowLineBreaksAndTabs: false) ||
+            ContainsRejectedControlCharacter(profile.StoreName, allowLineBreaksAndTabs: false) ||
+            ContainsRejectedControlCharacter(profile.BrandName, allowLineBreaksAndTabs: false) ||
+            ContainsRejectedControlCharacter(profile.Phone, allowLineBreaksAndTabs: false) ||
+            ContainsRejectedControlCharacter(profile.Abn, allowLineBreaksAndTabs: false) ||
+            ContainsRejectedControlCharacter(profile.Address, allowLineBreaksAndTabs: true) ||
+            ContainsRejectedControlCharacter(profile.ReturnPolicy, allowLineBreaksAndTabs: true))
+        {
+            return "Store receipt profile contains invalid control characters.";
+        }
+
+        if (profile.ReturnPolicy is { Length: > 500 })
+        {
+            return "Return policy exceeds the maximum length of 500 characters.";
+        }
+
+        return null;
+    }
+
+    private static bool ContainsRejectedControlCharacter(string? value, bool allowLineBreaksAndTabs)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (ch is '\r' or '\n' or '\t')
+            {
+                if (!allowLineBreaksAndTabs)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (char.IsControl(ch))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task DownloadCatalogAsync(CancellationToken cancellationToken)

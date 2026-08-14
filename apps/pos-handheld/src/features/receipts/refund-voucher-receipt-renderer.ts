@@ -2,6 +2,7 @@ import {
   appendEscPosInitialize,
   encodeEscPosText,
 } from "./esc-pos-text-encoding";
+import { receiptStoreHeading } from "./receipt-document";
 import type {
   FrozenReturnReceiptSettings,
   RenderedReturnReceipt,
@@ -79,6 +80,14 @@ export class ProtectedRefundVoucherReceiptRenderer {
         voucherCode: normalizedMaterial.voucherCode,
         amountCents: normalizedMaterial.refundAmountCents,
         printedAt: formatLocalDateTime(this.now()),
+        heading: receiptStoreHeading(
+          normalizedSettings.store.brandName,
+          normalizedSettings.store.storeName,
+          order.storeCode,
+        ),
+        returnPolicy: normalizedReturnPolicy(
+          normalizedSettings.store.returnPolicy,
+        ),
       }),
     };
   }
@@ -153,10 +162,12 @@ function normalizeSettings(
     !settings ||
     !/^[A-Za-z0-9._:-]{1,128}$/u.test(settings.printerId) ||
     (settings.paper !== "58mm" && settings.paper !== "80mm") ||
-    (settings.locale !== "en" && settings.locale !== "zh-CN")
+    (settings.locale !== "en" && settings.locale !== "zh-CN") ||
+    !settings.store
   ) {
     throw new Error("REFUND_VOUCHER_SETTINGS_MISSING");
   }
+  normalizedReturnPolicy(settings.store.returnPolicy);
   return settings;
 }
 
@@ -167,12 +178,15 @@ function encodeRefundVoucher(input: Readonly<{
   voucherCode: string;
   amountCents: number;
   printedAt: string;
+  heading: string;
+  returnPolicy: string | null;
 }>): Uint8Array {
   const bytes: number[] = [];
   appendEscPosInitialize(bytes);
   const width = input.paper === "58mm" ? 32 : 48;
   const title =
     input.locale === "zh-CN" ? "===== 退款券 =====" : "===== REFUND VOUCHER =====";
+  appendWrappedText(bytes, input.heading, width, "center", true);
   appendText(bytes, "", "left", false);
   appendText(bytes, title, "center", true);
   appendText(bytes, "", "left", false);
@@ -202,6 +216,12 @@ function encodeRefundVoucher(input: Readonly<{
     `${input.locale === "zh-CN" ? "打印时间" : "Print Time"}: ${input.printedAt}`,
     "left",
     false,
+  );
+  appendReturnPolicy(
+    bytes,
+    input.returnPolicy,
+    width,
+    input.locale,
   );
   appendCode128(bytes, input.voucherCode);
   appendQrCode(bytes, input.voucherCode);
@@ -238,6 +258,73 @@ function appendWrappedText(
     line += character;
   }
   appendText(output, line, alignment, bold);
+}
+
+function appendReturnPolicy(
+  output: number[],
+  returnPolicy: string | null,
+  width: number,
+  locale: "en" | "zh-CN",
+): void {
+  if (!returnPolicy) return;
+  appendText(output, "-".repeat(width), "left", false);
+  appendText(
+    output,
+    locale === "zh-CN" ? "退款与退货" : "Refunds and returns",
+    "left",
+    true,
+  );
+  for (const sourceLine of returnPolicy.split("\n")) {
+    appendReceiptWrappedText(
+      output,
+      sourceLine.replaceAll("\t", " "),
+      width,
+      "left",
+      false,
+    );
+  }
+}
+
+function appendReceiptWrappedText(
+  output: number[],
+  value: string,
+  width: number,
+  alignment: "left" | "center" | "right",
+  bold: boolean,
+): void {
+  let line = "";
+  let lineWidth = 0;
+  for (const character of [...value]) {
+    const characterWidth = receiptCharacterWidth(character);
+    if (line && lineWidth + characterWidth > width) {
+      appendText(output, line, alignment, bold);
+      line = "";
+      lineWidth = 0;
+    }
+    line += character;
+    lineWidth += characterWidth;
+  }
+  appendText(output, line, alignment, bold);
+}
+
+function receiptCharacterWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return codePoint >= 0x1100 &&
+    (codePoint <= 0x115f || codePoint >= 0x2e80 || codePoint >= 0x1f300)
+    ? 2
+    : 1;
+}
+
+function normalizedReturnPolicy(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length > 500 ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)
+  ) {
+    throw new Error("REFUND_VOUCHER_SETTINGS_MISSING");
+  }
+  const normalized = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  return normalized || null;
 }
 
 function appendCode128(output: number[], voucherCode: string): void {

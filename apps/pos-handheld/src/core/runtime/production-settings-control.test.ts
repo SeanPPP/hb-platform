@@ -22,6 +22,43 @@ const CLEAR: SettingsPendingDataSnapshot = {
   unresolvedPaymentCount: 0,
 };
 
+test("当前门店小票资料载入透传 signal，已中止请求不会触达 API", async () => {
+  const signals: AbortSignal[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      receiptProfile: {
+        load: async (signal) => {
+          signals.push(signal);
+          return {
+            storeCode: "S1",
+            brandName: "Hot Bargain",
+            storeName: "Store One",
+            address: "1 Queen St",
+            phone: "07 3000 0000",
+            abn: "12 345 678 901",
+            returnPolicy: "Refunds within 14 days.",
+          };
+        },
+      },
+    }),
+  );
+  const active = new AbortController();
+
+  assert.equal(
+    (await subject.loadReceiptProfile(active.signal))?.storeCode,
+    "S1",
+  );
+  assert.deepEqual(signals, [active.signal]);
+
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(
+    () => subject.loadReceiptProfile(aborted.signal),
+    /Settings operation aborted/,
+  );
+  assert.equal(signals.length, 1);
+});
+
 test("测试 API 连接只探测候选 health，不保存、不重载", async () => {
   const events: string[] = [];
   const subject = new ProductionSettingsControl(
@@ -1144,6 +1181,9 @@ function deps(
       scan: unavailable,
       connect: unavailable,
       test: unavailable,
+    },
+    receiptProfile: {
+      load: unavailable,
     },
     scanner: {
       test: unavailable,

@@ -854,6 +854,53 @@ try {
     ],
     "\u4ED3\u5E93\u5546\u54C1\u5217\u8868\u5E94\u4FDD\u7559\u5206\u7C7B\u4E0E\u4F9B\u5E94\u5546\u5B57\u6BB5\uFF0C\u5E76\u517C\u5BB9\u6FB3\u6D32\u4F9B\u5E94\u5546\u5927\u5C0F\u5199\u548C\u5D4C\u5957\u5B57\u6BB5"
   );
+  for (const testCase of [
+    {
+      name: "PascalCase UpdatedBy",
+      raw: {
+        ProductCode: "P003",
+        ProductName: "PascalCase \u66F4\u65B0\u4EBA",
+        ItemNumber: "HB-003",
+        UpdatedBy: "pascal-editor"
+      },
+      expectedUpdatedBy: "pascal-editor"
+    },
+    {
+      name: "camelCase updatedBy",
+      raw: {
+        ProductCode: "P004",
+        ProductName: "camelCase \u66F4\u65B0\u4EBA",
+        ItemNumber: "HB-004",
+        updatedBy: "camel-editor"
+      },
+      expectedUpdatedBy: "camel-editor"
+    },
+    {
+      name: "\u7F3A\u5931 updatedBy",
+      raw: {
+        ProductCode: "P005",
+        ProductName: "\u65E0\u66F4\u65B0\u4EBA",
+        ItemNumber: "HB-005"
+      },
+      expectedUpdatedBy: void 0
+    }
+  ]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      success: true,
+      data: [testCase.raw],
+      total: 1
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+    const updatedByResult = await getWarehouseProductsTable({ page: 1, pageSize: 20 });
+    assert(updatedByResult.items.length === 1, `${testCase.name} \u54CD\u5E94\u5E94\u8F6C\u6362\u4E3A\u4E00\u6761\u4ED3\u5E93\u5546\u54C1`);
+    assertDeepEqual(
+      updatedByResult.items[0].updatedBy,
+      testCase.expectedUpdatedBy,
+      `${testCase.name} \u5E94\u6620\u5C04\u5230 items[0].updatedBy`
+    );
+  }
 } finally {
   globalThis.fetch = originalFetch;
 }

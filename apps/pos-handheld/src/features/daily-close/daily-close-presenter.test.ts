@@ -138,6 +138,10 @@ test("保存失败保留点钞；补打只打印已选归档并带 reprint 标�
     reprint.printer.jobs.at(-1)?.document.lines.join("\n") ?? "",
     /REPRINT|补打/,
   );
+  assert.match(
+    reprint.printer.jobs.at(-1)?.document.lines.join("\n") ?? "",
+    /Refunds and returns/,
+  );
 });
 
 test("日结补打无论成功或失败都记录冻结员工身份", async () => {
@@ -238,6 +242,7 @@ function createHarness(
     receiptPaper: "58mm",
     repository,
     storeName: "Sunnybank",
+    returnPolicy: "Refunds and returns are accepted within fourteen days.",
   });
   return { audit, events, presenter, printer, repository };
 }

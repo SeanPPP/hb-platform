@@ -9,6 +9,7 @@ export interface StoreDto {
   abn?: string
   brandName?: string
   timeZoneId?: string
+  returnPolicy?: string
   isActive: boolean
   createdAt: string
   updatedAt: string
@@ -37,6 +38,7 @@ export interface CreateStoreDto {
   abn?: string
   brandName?: string
   timeZoneId?: string
+  returnPolicy?: string
   isActive?: boolean
 }
 
@@ -50,6 +52,7 @@ export interface UpdateStoreDto {
   abn?: string
   brandName?: string
   timeZoneId?: string
+  returnPolicy?: string
   isActive?: boolean
 }
 

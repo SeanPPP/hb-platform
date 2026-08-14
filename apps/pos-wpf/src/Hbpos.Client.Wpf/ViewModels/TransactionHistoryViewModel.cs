@@ -1999,7 +1999,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                     holdGuid,
                     Session.StoreCode,
                     Session.DeviceCode,
-                    SharedHeldOrderContractMapper.ToContract(payload),
+                    SharedHeldOrderContractMapper.ToContract(payload, payload.Version),
                     holdGuid.ToString("D")),
                 cancellationToken);
             if (published.HoldGuid != holdGuid)

@@ -10,9 +10,10 @@ import {
   UpdateTransitionLeaseCoordinator,
 } from "./update-transition-lease-coordinator";
 
-import type {
-  NewTransactionGate,
-  PosIpadUpdatePolicy,
+import {
+  deriveNewTransactionGate,
+  type NewTransactionGate,
+  type PosIpadUpdatePolicy,
 } from "@/core/contracts/app-updates";
 import type { PosIpadOtaUpdatePolicy } from "@/core/contracts/ota-app-updates";
 
@@ -31,6 +32,10 @@ const nativeOptional = Object.freeze({
 const nativeRequired = Object.freeze({
   ...nativeOptional,
   forceUpdate: true,
+});
+const nativeDisabled = Object.freeze({
+  ...nativeEnabled,
+  enabled: false,
 });
 const otaOptional: PosIpadOtaUpdatePolicy = Object.freeze({
   state: "optional",
@@ -131,6 +136,24 @@ test("两种策略分别刷新；optional 主动提示但绝不阻止业务页�
   assert.ok(observed.length >= 1);
 });
 
+test("设备交易开关关闭时即使 OTA 策略缺失也必须阻止新交易", () => {
+  const orchestrator = new AppUpdateOrchestrator({
+    installedVersion: "1.0.0",
+    native: new FakeNative(nativeDisabled),
+    ota: new FakeOta(null),
+    ...transitionDependencies(),
+    safety: {
+      getSafetySnapshot: () => safeSnapshot(),
+    },
+  });
+
+  assert.deepEqual(orchestrator.getGate(), {
+    state: "disabled",
+    canStartNewTransaction: false,
+    canContinueRecovery: true,
+  });
+});
+
 test("交易门禁快照在语义未变时保持身份，并与订阅者共享同一对象", () => {
   const native = new FakeNative(nativeEnabled);
   const ota = new FakeOta(otaOptional);
@@ -166,6 +189,7 @@ test("四种门禁语义的重复 getGate 均复用同一快照", () => {
     { native: null, ota: null, state: "unchecked" },
     { native: nativeRequired, ota: otaOptional, state: "force-update" },
     { native: nativeEnabled, ota: otaRequired, state: "ota-update" },
+    { native: nativeDisabled, ota: null, state: "disabled" },
     { native: nativeEnabled, ota: otaOptional, state: "enabled" },
   ] as const;
 
@@ -399,11 +423,7 @@ class FakeNative {
   }
 
   public getGate(): NewTransactionGate {
-    return {
-      state: this.policy === null ? "unchecked" : "enabled",
-      canStartNewTransaction: this.policy !== null,
-      canContinueRecovery: true,
-    };
+    return deriveNewTransactionGate(this.policy);
   }
 
   public subscribe(listener: (gate: NewTransactionGate) => void) {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   HbposApiError,
   HbposDeviceApi,
+  HbposStoreApi,
   resolveHbposDeviceSystem,
   unwrapHbposEnvelope,
   type HbposTransport,
@@ -129,6 +130,50 @@ test("注册分店列表使用匿名 catalog 路径，并只返回有效活动�
     { storeCode: "1002", storeName: "Aspley" },
     { storeCode: "1003", storeName: "Chermside" }
   ]);
+});
+
+test("当前门店小票资料使用认证 transport 的固定 GET 路径并完整保留空值", async () => {
+  const calls: HbposTransportRequest[] = [];
+  const transport: HbposTransport = {
+    async request<T>(config: HbposTransportRequest) {
+      calls.push(config);
+      return {
+        status: 200,
+        data: {
+          success: true,
+          data: {
+            storeCode: "BNE-01",
+            storeName: "Brisbane",
+            brandName: "Hot Bargain",
+            address: "",
+            phone: "07 3000 0000",
+            abn: "",
+            returnPolicy: "Refunds within 14 days.",
+          },
+        } as T,
+      };
+    },
+  };
+  const controller = new AbortController();
+
+  const profile = await new HbposStoreApi(transport).getCurrentReceiptProfile(
+    controller.signal,
+  );
+
+  assert.deepEqual(calls, [{
+    method: "GET",
+    url: "/api/v1/stores/current/receipt-profile",
+    signal: controller.signal,
+  }]);
+  assert.deepEqual(profile, {
+    storeCode: "BNE-01",
+    storeName: "Brisbane",
+    brandName: "Hot Bargain",
+    address: "",
+    phone: "07 3000 0000",
+    abn: "",
+    returnPolicy: "Refunds within 14 days.",
+  });
 });
 
 test("业务 envelope 失败以非传输错误抛出，不能被离线回退吞掉", () => {

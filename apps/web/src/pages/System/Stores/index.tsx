@@ -248,6 +248,7 @@ export default function SystemStoresPage() {
         abn: detail.abn,
         brandName: detail.brandName,
         timeZoneId: detail.timeZoneId,
+        returnPolicy: detail.returnPolicy,
         isActive: detail.isActive,
       })
     } catch (error) {
@@ -592,6 +593,9 @@ export default function SystemStoresPage() {
               <Descriptions.Item label={t('column.description')} span={2}>
                 {detailStore.description || '--'}
               </Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.returnPolicy')} span={2}>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{detailStore.returnPolicy || '--'}</div>
+              </Descriptions.Item>
               <Descriptions.Item label={t('column.createTime')}>{detailStore.createdAt}</Descriptions.Item>
               <Descriptions.Item label={t('system.users.updatedAt')}>{detailStore.updatedAt}</Descriptions.Item>
             </Descriptions>
@@ -671,6 +675,9 @@ export default function SystemStoresPage() {
           <Form.Item label={t('column.description')} name="description" rules={[{ max: 500, message: t('system.stores.descriptionMaxLength') }]}>
             <Input.TextArea rows={4} autoComplete="off" />
           </Form.Item>
+          <Form.Item label={t('system.stores.returnPolicy')} name="returnPolicy" rules={[{ max: 500, message: t('system.stores.returnPolicyMaxLength') }]}>
+            <Input.TextArea rows={4} autoComplete="off" />
+          </Form.Item>
           <Form.Item label={t('system.stores.cashRegisterEnabled')} name="isActive" valuePropName="checked">
             <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
           </Form.Item>
@@ -735,6 +742,9 @@ export default function SystemStoresPage() {
             <Input />
           </Form.Item>
           <Form.Item label={t('column.description')} name="description" rules={[{ max: 500, message: t('system.stores.descriptionMaxLength') }]}>
+            <Input.TextArea rows={4} />
+          </Form.Item>
+          <Form.Item label={t('system.stores.returnPolicy')} name="returnPolicy" rules={[{ max: 500, message: t('system.stores.returnPolicyMaxLength') }]}>
             <Input.TextArea rows={4} />
           </Form.Item>
           <Form.Item label={t('system.stores.cashRegisterEnabled')} name="isActive" valuePropName="checked">

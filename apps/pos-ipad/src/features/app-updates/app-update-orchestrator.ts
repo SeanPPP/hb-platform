@@ -165,13 +165,20 @@ export class AppUpdateOrchestrator {
     ) {
       return requiredGate("ota-update");
     }
+    if (nativeGate.state === "disabled") {
+      return Object.freeze({
+        state: nativeGate.state,
+        canStartNewTransaction: nativeGate.canStartNewTransaction,
+        canContinueRecovery: nativeGate.canContinueRecovery,
+      });
+    }
     if (
       nativeGate.state === "unchecked" ||
       this.options.ota.getPolicy() === null
     ) {
       return Object.freeze({
         state: "unchecked",
-        canStartNewTransaction: false,
+        canStartNewTransaction: true,
         canContinueRecovery: true,
       });
     }

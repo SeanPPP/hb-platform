@@ -30,7 +30,14 @@ test("单一券退款只在打印瞬间解析受保护券码，并生成独立 C
     },
     {
       async getFrozenReturnReceiptSettings() {
-        return settings();
+        const current = settings();
+        return {
+          ...current,
+          store: {
+            ...current.store,
+            returnPolicy: "Refunds within 14 days with proof of purchase.",
+          },
+        };
       },
     },
     () => new Date(2026, 6, 10, 9, 30, 0),
@@ -48,11 +55,14 @@ test("单一券退款只在打印瞬间解析受保护券码，并生成独立 C
     actionId: "return-action-1",
     returnOrderGuid: "return-order-1",
   }]);
+  assert.match(text, /Hot Bargain/u);
   assert.match(text, /REFUND VOUCHER/);
   assert.match(text, /Voucher: RF123/);
   assert.match(text, /Amount: \$8\.00/);
   assert.match(text, /Order: return-order-1/);
   assert.match(text, /Print Time: 2026-07-10 09:30:00/);
+  assert.match(text, /Refunds and returns/);
+  assert.match(text, /Refunds within 14 days with proof of purchase\./);
   assert.doesNotMatch(text, /TAX INVOICE|Secret product|Payment:/);
   assert.doesNotMatch(text, /return-action-1/);
   assert.equal(
@@ -71,6 +81,36 @@ test("单一券退款只在打印瞬间解析受保护券码，并生成独立 C
     "必须包含 QR 指令",
   );
   assert.deepEqual(bytes.slice(-3), [0x1d, 0x56, 0x00]);
+});
+
+test("退款券抬头依次回退 Brand、Store、Store Code", async () => {
+  const render = async (store: FrozenReturnReceiptSettings["store"]) => {
+    const renderer = new ProtectedRefundVoucherReceiptRenderer(
+      { async getByGuid() { return pureVoucherReturn(); } },
+      { async resolveApprovedRefundVoucher() { return protectedMaterial(); } },
+      {
+        async getFrozenReturnReceiptSettings() {
+          return { ...settings(), store };
+        },
+      },
+      () => new Date(2026, 6, 10, 9, 30, 0),
+    );
+    return encoder.decode((await renderer.render(
+      "return-action-1",
+      "return-order-1",
+    )).receiptBytes);
+  };
+  const base = settings().store;
+
+  assert.match(await render(base), /Hot Bargain/u);
+  assert.match(
+    await render({ ...base, brandName: "", storeName: "Brisbane" }),
+    /Brisbane/u,
+  );
+  assert.match(
+    await render({ ...base, brandName: "", storeName: "" }),
+    /S001/u,
+  );
 });
 
 test("zh-CN 退款券启用中文模式并使用 GB18030 文本字节", async () => {
@@ -328,6 +368,7 @@ function settings(): FrozenReturnReceiptSettings {
       address: "1 Queen St",
       phone: "0712345678",
       abn: "12 345 678 901",
+      returnPolicy: "",
     },
   };
 }

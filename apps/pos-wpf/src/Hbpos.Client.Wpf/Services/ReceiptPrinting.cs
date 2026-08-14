@@ -195,7 +195,7 @@ public interface ICashDrawerService
     Task<ReceiptPrintResult> OpenAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class ReceiptPrinterSettingsStore(ILocalAppSettingsRepository settingsRepository) : IReceiptPrinterSettingsStore
+public sealed class ReceiptPrinterSettingsStore : IReceiptPrinterSettingsStore
 {
     private const string Prefix = "ReceiptPrinter:";
     private const string PrinterPortKey = Prefix + "Port";
@@ -206,36 +206,196 @@ public sealed class ReceiptPrinterSettingsStore(ILocalAppSettingsRepository sett
     private const string AbnKey = Prefix + "Abn";
     private const string ReturnPolicyKey = Prefix + "ReturnPolicy";
     private const string CutDistanceKey = Prefix + "CutDistance";
+    private const string ProfileStoreCodeKey = Prefix + "ProfileStoreCode";
+
+    private readonly ILocalAppSettingsRepository _settingsRepository;
+    private readonly DeviceAuthorizationState? _deviceAuthorizationState;
+    private readonly ILocalDeviceRepository? _localDeviceRepository;
+
+    public ReceiptPrinterSettingsStore(
+        ILocalAppSettingsRepository settingsRepository,
+        DeviceAuthorizationState? deviceAuthorizationState = null,
+        ILocalDeviceRepository? localDeviceRepository = null)
+    {
+        _settingsRepository = settingsRepository;
+        _deviceAuthorizationState = deviceAuthorizationState;
+        _localDeviceRepository = localDeviceRepository;
+    }
 
     public async Task<ReceiptPrinterSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
-        var fallback = ReceiptPrinterSettings.Default;
-        return new ReceiptPrinterSettings(
-            NormalizePort(await settingsRepository.GetValueAsync(PrinterPortKey, cancellationToken)),
-            NormalizeText(await settingsRepository.GetValueAsync(BrandNameKey, cancellationToken), fallback.BrandName),
-            NormalizeText(await settingsRepository.GetValueAsync(StoreNameKey, cancellationToken), fallback.StoreName),
-            NormalizeText(await settingsRepository.GetValueAsync(StoreAddressKey, cancellationToken), fallback.StoreAddress),
-            NormalizeText(await settingsRepository.GetValueAsync(StorePhoneKey, cancellationToken), fallback.StorePhone),
-            NormalizeText(await settingsRepository.GetValueAsync(AbnKey, cancellationToken), fallback.Abn),
-            NormalizeText(await settingsRepository.GetValueAsync(ReturnPolicyKey, cancellationToken), fallback.ReturnPolicy),
-            NormalizeCutDistance(await settingsRepository.GetValueAsync(CutDistanceKey, cancellationToken), fallback.CutDistance));
+        var port = NormalizePort(await _settingsRepository.GetValueAsync(PrinterPortKey, cancellationToken));
+        var cutDistance = NormalizeCutDistance(
+            await _settingsRepository.GetValueAsync(CutDistanceKey, cancellationToken),
+            ReceiptPrinterSettings.Default.CutDistance);
+
+        var storeCode = CurrentStoreCode;
+        return storeCode is null
+            ? await LoadLegacyUnscopedAsync(port, cutDistance, cancellationToken)
+            : await LoadScopedAsync(storeCode, port, cutDistance, cancellationToken);
     }
 
     public async Task SaveAsync(ReceiptPrinterSettings settings, CancellationToken cancellationToken = default)
     {
-        await settingsRepository.SetValuesAsync(
-            new Dictionary<string, string>(StringComparer.Ordinal)
+        var storeCode = CurrentStoreCode;
+        var values = storeCode is null
+            ? BuildLegacyWrite(settings)
+            : BuildScopedWrite(storeCode, settings);
+        await _settingsRepository.SetValuesAsync(values, cancellationToken);
+    }
+
+    private string? CurrentStoreCode =>
+        _deviceAuthorizationState?.Current?.StoreCode is { Length: > 0 } code ? code : null;
+
+    private async Task<ReceiptPrinterSettings> LoadLegacyUnscopedAsync(
+        string port,
+        int cutDistance,
+        CancellationToken cancellationToken)
+    {
+        // 无设备授权上下文时保持旧版无作用域读取行为，避免启动早期破坏既有配置。
+        var fallback = ReceiptPrinterSettings.Default;
+        return new ReceiptPrinterSettings(
+            port,
+            NormalizeText(await _settingsRepository.GetValueAsync(BrandNameKey, cancellationToken), fallback.BrandName),
+            NormalizeText(await _settingsRepository.GetValueAsync(StoreNameKey, cancellationToken), fallback.StoreName),
+            NormalizeText(await _settingsRepository.GetValueAsync(StoreAddressKey, cancellationToken), fallback.StoreAddress),
+            NormalizeText(await _settingsRepository.GetValueAsync(StorePhoneKey, cancellationToken), fallback.StorePhone),
+            NormalizeText(await _settingsRepository.GetValueAsync(AbnKey, cancellationToken), fallback.Abn),
+            NormalizeText(await _settingsRepository.GetValueAsync(ReturnPolicyKey, cancellationToken), fallback.ReturnPolicy),
+            cutDistance);
+    }
+
+    private async Task<ReceiptPrinterSettings> LoadScopedAsync(
+        string storeCode,
+        string port,
+        int cutDistance,
+        CancellationToken cancellationToken)
+    {
+        var boundCode = await _settingsRepository.GetValueAsync(ProfileStoreCodeKey, cancellationToken);
+
+        if (boundCode is null)
+        {
+            // 首次升级：仅有旧的、无作用域 profile 值时才绑定当前店，避免把纯硬件配置误判为 profile。
+            var legacy = await ReadProfileAsync(null, cancellationToken);
+            if (!legacy.HasAnyValue)
             {
-                [PrinterPortKey] = NormalizePort(settings.PrinterPort),
-                [BrandNameKey] = NormalizeText(settings.BrandName, string.Empty),
-                [StoreNameKey] = NormalizeText(settings.StoreName, string.Empty),
-                [StoreAddressKey] = NormalizeText(settings.StoreAddress, string.Empty),
-                [StorePhoneKey] = NormalizeText(settings.StorePhone, string.Empty),
-                [AbnKey] = NormalizeText(settings.Abn, string.Empty),
-                [ReturnPolicyKey] = NormalizeText(settings.ReturnPolicy, string.Empty),
-                [CutDistanceKey] = Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture),
-            },
-            cancellationToken);
+                return CreateScopedSettings(port, cutDistance, legacy, await ResolveCurrentStoreNameAsync(storeCode, cancellationToken));
+            }
+
+            await _settingsRepository.SetValuesAsync(BuildMigrationWrite(storeCode, legacy), cancellationToken);
+            return CreateScopedSettings(port, cutDistance, legacy, await ResolveCurrentStoreNameAsync(storeCode, cancellationToken));
+        }
+
+        if (!string.Equals(boundCode, storeCode, StringComparison.Ordinal))
+        {
+            // 设备改店：旧店资料不得用于打印，仅保留硬件设置并安全回退当前店名/店号。
+            var empty = new ProfileSnapshot(null, null, null, null, null, null);
+            return CreateScopedSettings(port, cutDistance, empty, await ResolveCurrentStoreNameAsync(storeCode, cancellationToken));
+        }
+
+        var scoped = await ReadProfileAsync(storeCode, cancellationToken);
+        return CreateScopedSettings(port, cutDistance, scoped, await ResolveCurrentStoreNameAsync(storeCode, cancellationToken));
+    }
+
+    private static ReceiptPrinterSettings CreateScopedSettings(
+        string port,
+        int cutDistance,
+        ProfileSnapshot snapshot,
+        string storeNameFallback)
+    {
+        return new ReceiptPrinterSettings(
+            port,
+            NormalizeStored(snapshot.BrandName, string.Empty),
+            NormalizeStored(snapshot.StoreName, storeNameFallback),
+            NormalizeStored(snapshot.StoreAddress, string.Empty),
+            NormalizeStored(snapshot.StorePhone, string.Empty),
+            NormalizeStored(snapshot.Abn, string.Empty),
+            NormalizeStored(snapshot.ReturnPolicy, string.Empty),
+            cutDistance);
+    }
+
+    private async Task<ProfileSnapshot> ReadProfileAsync(string? storeCode, CancellationToken cancellationToken)
+    {
+        return new ProfileSnapshot(
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "BrandName"), cancellationToken),
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "StoreName"), cancellationToken),
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "StoreAddress"), cancellationToken),
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "StorePhone"), cancellationToken),
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "Abn"), cancellationToken),
+            await _settingsRepository.GetValueAsync(ProfileKey(storeCode, "ReturnPolicy"), cancellationToken));
+    }
+
+    private async Task<string> ResolveCurrentStoreNameAsync(string storeCode, CancellationToken cancellationToken)
+    {
+        if (_localDeviceRepository is not null)
+        {
+            try
+            {
+                var device = await _localDeviceRepository.GetLatestAsync(cancellationToken);
+                if (device is not null &&
+                    string.Equals(device.StoreCode?.Trim(), storeCode, StringComparison.Ordinal) &&
+                    !string.IsNullOrWhiteSpace(device.StoreName))
+                {
+                    return device.StoreName.Trim();
+                }
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested is false)
+            {
+                // 本地设备缓存读取失败时退化为店号，避免阻塞小票设置加载。
+            }
+        }
+
+        return storeCode;
+    }
+
+    private static Dictionary<string, string> BuildLegacyWrite(ReceiptPrinterSettings settings)
+    {
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [PrinterPortKey] = NormalizePort(settings.PrinterPort),
+            [BrandNameKey] = NormalizeText(settings.BrandName, string.Empty),
+            [StoreNameKey] = NormalizeText(settings.StoreName, string.Empty),
+            [StoreAddressKey] = NormalizeText(settings.StoreAddress, string.Empty),
+            [StorePhoneKey] = NormalizeText(settings.StorePhone, string.Empty),
+            [AbnKey] = NormalizeText(settings.Abn, string.Empty),
+            [ReturnPolicyKey] = NormalizeText(settings.ReturnPolicy, string.Empty),
+            [CutDistanceKey] = Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture),
+        };
+    }
+
+    private static Dictionary<string, string> BuildScopedWrite(string storeCode, ReceiptPrinterSettings settings)
+    {
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [PrinterPortKey] = NormalizePort(settings.PrinterPort),
+            [CutDistanceKey] = Math.Max(1, settings.CutDistance).ToString(CultureInfo.InvariantCulture),
+            [ProfileStoreCodeKey] = storeCode,
+            [ProfileKey(storeCode, "BrandName")] = NormalizeText(settings.BrandName, string.Empty),
+            [ProfileKey(storeCode, "StoreName")] = NormalizeText(settings.StoreName, string.Empty),
+            [ProfileKey(storeCode, "StoreAddress")] = NormalizeText(settings.StoreAddress, string.Empty),
+            [ProfileKey(storeCode, "StorePhone")] = NormalizeText(settings.StorePhone, string.Empty),
+            [ProfileKey(storeCode, "Abn")] = NormalizeText(settings.Abn, string.Empty),
+            [ProfileKey(storeCode, "ReturnPolicy")] = NormalizeText(settings.ReturnPolicy, string.Empty),
+        };
+    }
+
+    private static Dictionary<string, string> BuildMigrationWrite(string storeCode, ProfileSnapshot snapshot)
+    {
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ProfileStoreCodeKey] = storeCode,
+            [ProfileKey(storeCode, "BrandName")] = NormalizeStored(snapshot.BrandName, string.Empty),
+            [ProfileKey(storeCode, "StoreName")] = NormalizeStored(snapshot.StoreName, string.Empty),
+            [ProfileKey(storeCode, "StoreAddress")] = NormalizeStored(snapshot.StoreAddress, string.Empty),
+            [ProfileKey(storeCode, "StorePhone")] = NormalizeStored(snapshot.StorePhone, string.Empty),
+            [ProfileKey(storeCode, "Abn")] = NormalizeStored(snapshot.Abn, string.Empty),
+            [ProfileKey(storeCode, "ReturnPolicy")] = NormalizeStored(snapshot.ReturnPolicy, string.Empty),
+        };
+    }
+
+    private static string ProfileKey(string? storeCode, string suffix)
+    {
+        return storeCode is null ? Prefix + suffix : $"{Prefix}{storeCode}:{suffix}";
     }
 
     private static string NormalizePort(string? value)
@@ -248,11 +408,34 @@ public sealed class ReceiptPrinterSettingsStore(ILocalAppSettingsRepository sett
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
 
+    private static string NormalizeStored(string? value, string fallback)
+    {
+        // 区分 key 缺失（null）与显式空串：显式空串必须原样保留，不得被默认值覆盖。
+        return value is null ? fallback : value.Trim();
+    }
+
     private static int NormalizeCutDistance(string? value, int fallback)
     {
         return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var distance) && distance > 0
             ? distance
             : fallback;
+    }
+
+    private sealed record ProfileSnapshot(
+        string? BrandName,
+        string? StoreName,
+        string? StoreAddress,
+        string? StorePhone,
+        string? Abn,
+        string? ReturnPolicy)
+    {
+        public bool HasAnyValue =>
+            BrandName is not null ||
+            StoreName is not null ||
+            StoreAddress is not null ||
+            StorePhone is not null ||
+            Abn is not null ||
+            ReturnPolicy is not null;
     }
 }
 
@@ -270,7 +453,7 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         var printedAt = printTime ?? DateTimeOffset.Now;
         var orderId = receipt.OrderGuid.ToString();
 
-        var brandName = FirstNonBlank(settings.BrandName, receipt.StoreCode);
+        var brandName = FirstNonBlank(settings.BrandName, settings.StoreName, receipt.StoreCode);
         builder.Text(brandName, ReceiptPrintAlignment.Center, isEmphasized: true);
         if (!string.IsNullOrWhiteSpace(settings.StoreName) &&
             !string.Equals(settings.StoreName.Trim(), brandName, StringComparison.OrdinalIgnoreCase))
@@ -393,16 +576,6 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(settings.ReturnPolicy))
-        {
-            builder.Separator();
-            builder.Text("Refunds and returns", ReceiptPrintAlignment.Center, isEmphasized: true);
-            foreach (var line in WrapByWord(settings.ReturnPolicy, LineWidth))
-            {
-                builder.Text(line, ReceiptPrintAlignment.Center);
-            }
-        }
-
         var receiptTexts = receipt.Payments
             .Select(payment => payment.ReceiptText)
             .Where(text => !string.IsNullOrWhiteSpace(text))
@@ -418,6 +591,16 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
                     builder.Text(LinklyBankReceiptTextSanitizer.Sanitize(line));
                 }
                 builder.Blank();
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.ReturnPolicy))
+        {
+            builder.Separator();
+            builder.Text("Refunds and returns", ReceiptPrintAlignment.Center, isEmphasized: true);
+            foreach (var line in WrapByDisplayWidth(settings.ReturnPolicy, LineWidth))
+            {
+                builder.Text(line, ReceiptPrintAlignment.Center);
             }
         }
 
@@ -576,6 +759,97 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         return lines;
     }
 
+    private static IReadOnlyList<string> WrapByDisplayWidth(string? text, int maxColumns)
+    {
+        if (string.IsNullOrWhiteSpace(text) || maxColumns <= 0)
+        {
+            return [];
+        }
+
+        var lines = new List<string>();
+        var normalized = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace('\t', ' ');
+        foreach (var paragraph in normalized.Split('\n'))
+        {
+            var words = paragraph.Split(
+                ' ',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var current = new StringBuilder();
+            var currentWidth = 0;
+
+            foreach (var word in words)
+            {
+                var wordWidth = ReceiptDisplayWidth(word);
+                if (currentWidth > 0 && currentWidth + 1 + wordWidth <= maxColumns)
+                {
+                    current.Append(' ').Append(word);
+                    currentWidth += 1 + wordWidth;
+                    continue;
+                }
+
+                if (currentWidth > 0)
+                {
+                    lines.Add(current.ToString());
+                    current.Clear();
+                    currentWidth = 0;
+                }
+
+                if (wordWidth <= maxColumns)
+                {
+                    current.Append(word);
+                    currentWidth = wordWidth;
+                    continue;
+                }
+
+                foreach (var rune in word.EnumerateRunes())
+                {
+                    var runeWidth = ReceiptDisplayWidth(rune);
+                    if (currentWidth > 0 && currentWidth + runeWidth > maxColumns)
+                    {
+                        lines.Add(current.ToString());
+                        current.Clear();
+                        currentWidth = 0;
+                    }
+
+                    current.Append(rune.ToString());
+                    currentWidth += runeWidth;
+                }
+            }
+
+            if (currentWidth > 0)
+            {
+                lines.Add(current.ToString());
+            }
+        }
+
+        return lines;
+    }
+
+    private static int ReceiptDisplayWidth(string value)
+    {
+        return value.EnumerateRunes().Sum(ReceiptDisplayWidth);
+    }
+
+    private static int ReceiptDisplayWidth(Rune rune)
+    {
+        var value = rune.Value;
+        return value is >= 0x1100 and <= 0x115F
+            or 0x2329 or 0x232A
+            or >= 0x2E80 and <= 0xA4CF
+            or >= 0xAC00 and <= 0xD7A3
+            or >= 0xF900 and <= 0xFAFF
+            or >= 0xFE10 and <= 0xFE19
+            or >= 0xFE30 and <= 0xFE6F
+            or >= 0xFF00 and <= 0xFF60
+            or >= 0xFFE0 and <= 0xFFE6
+            or >= 0x1F300 and <= 0x1FAFF
+            or >= 0x20000 and <= 0x3FFFD
+            ? 2
+            : 1;
+    }
+
     private static string Money(decimal amount)
     {
         return string.Create(CultureInfo.InvariantCulture, $"${amount:0.00}");
@@ -663,7 +937,8 @@ public sealed class ReceiptPrintService(
     IReceiptTextFormatter formatter,
     IReceiptPrinterDriver driver,
     IEnumerable<ICardReceiptPrintedNotifier>? cardReceiptPrintedNotifiers = null,
-    ILocalizationService? localization = null) : IReceiptPrintService, IDisposable
+    ILocalizationService? localization = null,
+    DeviceAuthorizationState? deviceAuthorizationState = null) : IReceiptPrintService, IDisposable
 {
     private readonly SemaphoreSlim _printLock = new(1, 1);
     private readonly IReadOnlyList<ICardReceiptPrintedNotifier> _cardReceiptPrintedNotifiers =
@@ -770,7 +1045,12 @@ public sealed class ReceiptPrintService(
         try
         {
             var settings = await settingsStore.LoadAsync(cancellationToken);
-            var result = await driver.TestAsync(settings, cancellationToken);
+            // 中文注释：测试打印复用正式格式器与驱动，仅构造样例小票；不建订单、不触发支付通知或业务审计。
+            var storeCode = deviceAuthorizationState?.Current?.StoreCode?.Trim();
+            var receipt = CreateTestReceipt(
+                string.IsNullOrWhiteSpace(storeCode) ? "TEST" : storeCode);
+            var document = formatter.Build(receipt, settings);
+            var result = await driver.PrintAsync(document, settings, cancellationToken);
             return new ReceiptPrintResult(result.Succeeded, result.Message);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -781,6 +1061,23 @@ public sealed class ReceiptPrintService(
         {
             _printLock.Release();
         }
+    }
+
+    private static ReceiptDetails CreateTestReceipt(string storeCode)
+    {
+        return new ReceiptDetails(
+            Guid.Empty,
+            storeCode,
+            "POS-01",
+            "Test",
+            DateTimeOffset.Now,
+            9.20m,
+            0.20m,
+            9.00m,
+            [new ReceiptPreviewLine("Test Item", "TEST-001", 1m, 9.00m, 0m, 9.00m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 9.00m, null)],
+            DocumentTitle: "===== TEST =====",
+            StatusText: "*** NOT A SALE ***");
     }
 
     public void Dispose()

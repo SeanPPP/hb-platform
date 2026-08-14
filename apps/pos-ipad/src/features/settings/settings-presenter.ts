@@ -140,6 +140,16 @@ export type SettingsSnapshot = Readonly<{
   square: SettingsSquareSnapshot;
 }>;
 
+export type SettingsReceiptProfileDraft = Readonly<{
+  storeCode: string;
+  brandName: string;
+  storeName: string;
+  address: string;
+  phone: string;
+  abn: string;
+  returnPolicy: string;
+}>;
+
 export type SettingsPaymentDraft = Readonly<{
   square: Readonly<{
     environment: PaymentEnvironment;
@@ -314,6 +324,7 @@ export interface SettingsControlPort {
     settings: ReceiptPrinterSettings,
     signal: AbortSignal,
   ): Promise<void>;
+  loadReceiptProfile(signal: AbortSignal): Promise<SettingsReceiptProfileDraft | null>;
   scanPrinters(signal: AbortSignal): Promise<readonly SettingsPrinterDevice[]>;
   connectPrinter(peripheralId: string, signal: AbortSignal): Promise<void>;
   testPrinter(signal: AbortSignal): Promise<void>;
@@ -399,6 +410,8 @@ export type SettingsStatusCode =
   | "printer-test-failed"
   | "printer-test-passed"
   | "printer-test-unknown"
+  | "receipt-profile-load-failed"
+  | "receipt-profile-loaded"
   | "restart-failed"
   | "safety-check-failed"
   | "scanner-test-failed"
@@ -1268,6 +1281,96 @@ export class SettingsPresenter {
     });
   }
 
+  public setReceiptBrandName(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, brandName: value },
+      statusCode: null,
+    });
+  }
+
+  public setReceiptStoreName(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, storeName: value },
+      statusCode: null,
+    });
+  }
+
+  public setReceiptAddress(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, address: value },
+      statusCode: null,
+    });
+  }
+
+  public setReceiptPhone(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, phone: value },
+      statusCode: null,
+    });
+  }
+
+  public setReceiptAbn(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, abn: value },
+      statusCode: null,
+    });
+  }
+
+  public setReceiptReturnPolicy(value: string): void {
+    if (!this.canEditPrinter()) return;
+    this.patch({
+      printer: { ...this.state.printer, returnPolicy: value },
+      statusCode: null,
+    });
+  }
+
+  public loadReceiptProfile(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      let profile: SettingsReceiptProfileDraft | null;
+      try {
+        profile = await this.options.port.loadReceiptProfile(
+          this.lifetime.signal,
+        );
+      } catch {
+        this.patch({ statusCode: "receipt-profile-load-failed" });
+        return;
+      }
+      if (!profile) {
+        this.patch({ statusCode: "receipt-profile-load-failed" });
+        return;
+      }
+      try {
+        const normalized = normalizeReceiptProfileDraft(
+          profile,
+          this.state.device.storeCode,
+        );
+        this.patch({
+          printer: {
+            ...this.state.printer,
+            profileStoreCode: normalized.storeCode,
+            brandName: normalized.brandName,
+            storeName: normalized.storeName,
+            address: normalized.address,
+            phone: normalized.phone,
+            abn: normalized.abn,
+            returnPolicy: normalized.returnPolicy,
+          },
+          statusCode: "receipt-profile-loaded",
+        });
+      } catch {
+        this.patch({ statusCode: "receipt-profile-load-failed" });
+      }
+    });
+  }
+
   public setReregisterStoreCode(value: string): void {
     if (!this.canEdit()) return;
     this.patch({ reregisterStoreCode: value, statusCode: null });
@@ -1432,7 +1535,10 @@ export class SettingsPresenter {
     if (!this.requirePermission(this.state.access.canConfigurePrinter)) {
       return Promise.resolve();
     }
-    const settings = normalizePrinterSettings(this.state.printer);
+    const settings = bindPrinterSettingsToCurrentStore(
+      normalizePrinterSettings(this.state.printer),
+      this.state.device.storeCode,
+    );
     return this.runAction(async () => {
       try {
         await this.options.port.savePrinterSettings(
@@ -1494,10 +1600,13 @@ export class SettingsPresenter {
         return;
       }
 
-      const settings = normalizePrinterSettings({
-        ...this.state.printer,
-        peripheralId: normalizedId,
-      });
+      const settings = bindPrinterSettingsToCurrentStore(
+        normalizePrinterSettings({
+          ...this.state.printer,
+          peripheralId: normalizedId,
+        }),
+        this.state.device.storeCode,
+      );
       this.patch({
         hardware: {
           ...this.state.hardware,
@@ -1524,6 +1633,18 @@ export class SettingsPresenter {
     }
     return this.runAction(async () => {
       try {
+        await this.options.port.savePrinterSettings(
+          bindPrinterSettingsToCurrentStore(
+            normalizePrinterSettings(this.state.printer),
+            this.state.device.storeCode,
+          ),
+          this.lifetime.signal,
+        );
+      } catch {
+        this.patch({ statusCode: "printer-test-failed" });
+        return;
+      }
+      try {
         await this.options.port.testPrinter(this.lifetime.signal);
         this.patch({ statusCode: "printer-test-passed" });
       } catch (error) {
@@ -1549,7 +1670,10 @@ export class SettingsPresenter {
       try {
         // 测试必须先保存当前 draft；正式受控动作随后只读取持久设置，不能误用旧外设。
         await this.options.port.savePrinterSettings(
-          normalizePrinterSettings(this.state.printer),
+          bindPrinterSettingsToCurrentStore(
+            normalizePrinterSettings(this.state.printer),
+            this.state.device.storeCode,
+          ),
           this.lifetime.signal,
         );
       } catch {
@@ -1583,10 +1707,13 @@ export class SettingsPresenter {
           this.options.port,
           this.lifetime.signal,
         );
-        const printer = normalizePrinterSettings({
-          ...this.state.printer,
-          peripheralId: null,
-        });
+        const printer = bindPrinterSettingsToCurrentStore(
+          normalizePrinterSettings({
+            ...this.state.printer,
+            peripheralId: null,
+          }),
+          this.state.device.storeCode,
+        );
         if (result.status === "completed") {
           this.patch({
             printer,
@@ -2608,9 +2735,40 @@ function normalizePrinterSettings(
     locale: settings.locale === "zh-CN" ? "zh-CN" : "en",
     brandName: boundedPublicText(settings.brandName, 120),
     storeName: boundedPublicText(settings.storeName, 120),
-    address: boundedPublicText(settings.address, 240),
+    address: boundedPublicMultilineText(settings.address, 240),
     phone: boundedPublicText(settings.phone, 60),
     abn: boundedPublicText(settings.abn, 32),
+    returnPolicy: boundedPublicMultilineText(settings.returnPolicy, 500),
+    profileStoreCode: boundedPublicText(settings.profileStoreCode, 128),
+  });
+}
+
+function bindPrinterSettingsToCurrentStore(
+  settings: ReceiptPrinterSettings,
+  storeCode: string,
+): ReceiptPrinterSettings {
+  return Object.freeze({
+    ...settings,
+    profileStoreCode: boundedPublicText(storeCode, 128),
+  });
+}
+
+function normalizeReceiptProfileDraft(
+  profile: SettingsReceiptProfileDraft,
+  currentStoreCode: string,
+): SettingsReceiptProfileDraft {
+  const storeCode = boundedPublicText(profile.storeCode, 128);
+  if (storeCode !== currentStoreCode.trim()) {
+    throw new Error("receipt profile store code mismatch");
+  }
+  return Object.freeze({
+    storeCode,
+    brandName: boundedPublicText(profile.brandName, 120),
+    storeName: boundedPublicText(profile.storeName, 120),
+    address: boundedPublicMultilineText(profile.address, 240),
+    phone: boundedPublicText(profile.phone, 60),
+    abn: boundedPublicText(profile.abn, 32),
+    returnPolicy: boundedPublicMultilineText(profile.returnPolicy, 500),
   });
 }
 
@@ -2977,7 +3135,7 @@ function boundedPublicIdentifier(value: unknown): string {
   if (
     typeof value !== "string" ||
     value.length > 128 ||
-    /[\u0000-\u001F\u007F]/u.test(value)
+    /[\u0000-\u001F\u007F-\u009F]/u.test(value)
   ) {
     throw new Error("invalid public identifier");
   }
@@ -2988,11 +3146,23 @@ function boundedPublicText(value: unknown, maxLength: number): string {
   if (
     typeof value !== "string" ||
     value.length > maxLength ||
-    /[\u0000-\u001F\u007F]/u.test(value)
+    /[\u0000-\u001F\u007F-\u009F]/u.test(value)
   ) {
     throw new Error("invalid public text");
   }
   return value.trim();
+}
+
+/** 地址与退货政策需要换行排版，仅放行 CR/LF/TAB，其余控制字符（含 C1）拒绝。 */
+function boundedPublicMultilineText(value: unknown, maxLength: number): string {
+  if (
+    typeof value !== "string" ||
+    value.length > maxLength ||
+    /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(value)
+  ) {
+    throw new Error("invalid public text");
+  }
+  return value;
 }
 
 function safeMaskedScannerValue(value: unknown): string | null {

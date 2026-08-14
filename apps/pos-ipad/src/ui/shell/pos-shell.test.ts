@@ -25,6 +25,16 @@ test("network state distinguishes known offline from unresolved reachability", (
   assert.equal(mapReachabilityToConnectivity({}), "checking");
 });
 
+test("已连接局域网但无公网时仍允许探测 POS 后端", () => {
+  assert.equal(
+    mapReachabilityToConnectivity({
+      isConnected: true,
+      isInternetReachable: false,
+    }),
+    "online",
+  );
+});
+
 test("backend-aware connectivity: 设备在线但后端停止时判定为离线", () => {
   // 后端停止（health 探测失败）：设备在线也应显示离线。
   assert.equal(resolveBackendAwareConnectivity("online", false), "offline");

@@ -4132,6 +4132,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stores/current/receipt-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["StoreReceiptProfileDtoApiResult"];
+                        "application/json": components["schemas"]["StoreReceiptProfileDtoApiResult"];
+                        "text/json": components["schemas"]["StoreReceiptProfileDtoApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vouchers/{voucherCode}": {
         parameters: {
             query?: never;
@@ -6499,6 +6536,21 @@ export interface components {
         StoreDtoIReadOnlyListApiResult: {
             success?: boolean;
             data?: components["schemas"]["StoreDto"][] | null;
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        StoreReceiptProfileDto: {
+            storeCode?: string | null;
+            storeName?: string | null;
+            brandName?: string | null;
+            address?: string | null;
+            phone?: string | null;
+            abn?: string | null;
+            returnPolicy?: string | null;
+        };
+        StoreReceiptProfileDtoApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["StoreReceiptProfileDto"];
             errorCode?: string | null;
             message?: string | null;
         };

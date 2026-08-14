@@ -10,36 +10,119 @@ export type TrustedReceiptStorePresentation = Readonly<{
 export type TrustedReceiptStorePresentationSource =
   () => Promise<TrustedReceiptStorePresentation>;
 
+export type TrustedReceiptSettingsPersister =
+  (settings: ReceiptPrinterSettings) => Promise<void>;
+
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 const MAX_STORE_NAME_CHARACTERS = 120;
 
 /**
- * 设备注册展示缓存只在门店 scope 完全一致时覆盖票据设置；读取失败不能阻断打印。
+ * 当前分店本机保存资料优先，设备展示名仅在本机为空时兜底。
+ * scope 不匹配时只清资料、保留 peripheral/开关，并把当前店号持久化绑定，
+ * 避免旧店资料在下一次读取时被再次当作 legacy 采用。
  */
 export async function resolveTrustedReceiptPrinterSettings(
   current: ReceiptPrinterSettings,
   expectedStoreCode: string,
   readPresentation?: TrustedReceiptStorePresentationSource,
+  save?: TrustedReceiptSettingsPersister,
 ): Promise<ReceiptPrinterSettings> {
   const storeCode = expectedStoreCode.trim();
+  const savedStoreCode = current.profileStoreCode.trim();
   const savedStoreName = safeStoreName(current.storeName);
-  let trustedStoreName: string | null = null;
+  const deviceStoreName = await readTrustedStoreName(
+    readPresentation,
+    storeCode,
+  );
 
-  if (readPresentation) {
-    try {
-      const presentation = await readPresentation();
-      if (presentation.storeCode.trim() === storeCode) {
-        trustedStoreName = safeStoreName(presentation.storeName);
-      }
-    } catch {
-      // 中文注释：展示缓存是可选增强，失败时继续使用持久设置或可信门店编码。
+  if (savedStoreCode !== "" && savedStoreCode !== storeCode) {
+    // 临时兜底店名不能当作本机资料持久化，否则会阻止后续设备展示名兜底。
+    const persisted = Object.freeze({
+      ...current,
+      profileStoreCode: storeCode,
+      brandName: "",
+      storeName: "",
+      address: "",
+      phone: "",
+      abn: "",
+      returnPolicy: "",
+    });
+    await persist(save, persisted);
+    return Object.freeze({
+      ...persisted,
+      storeName: deviceStoreName ?? storeCode,
+    });
+  }
+
+  const storeName = savedStoreName ?? deviceStoreName ?? storeCode;
+
+  if (savedStoreCode === "" && hasProfileData(current)) {
+    const bound = Object.freeze({ ...current, profileStoreCode: storeCode });
+    if (!(await persist(save, bound))) {
+      // 无 scope 旧资料绑定失败时本次不得继续使用，硬件配置仍原样保留。
+      const cleared = Object.freeze({
+        ...current,
+        profileStoreCode: storeCode,
+        brandName: "",
+        storeName: "",
+        address: "",
+        phone: "",
+        abn: "",
+        returnPolicy: "",
+      });
+      return Object.freeze({
+        ...cleared,
+        storeName: deviceStoreName ?? storeCode,
+      });
     }
+    return Object.freeze({ ...current, profileStoreCode: storeCode, storeName });
   }
 
   return Object.freeze({
     ...current,
-    storeName: trustedStoreName ?? savedStoreName ?? storeCode,
+    storeName,
   });
+}
+
+function hasProfileData(settings: ReceiptPrinterSettings): boolean {
+  return (
+    settings.brandName.trim() !== "" ||
+    settings.storeName.trim() !== "" ||
+    settings.address.trim() !== "" ||
+    settings.phone.trim() !== "" ||
+    settings.abn.trim() !== "" ||
+    settings.returnPolicy.trim() !== ""
+  );
+}
+
+async function readTrustedStoreName(
+  readPresentation: TrustedReceiptStorePresentationSource | undefined,
+  storeCode: string,
+): Promise<string | null> {
+  if (!readPresentation) return null;
+  try {
+    const presentation = await readPresentation();
+    if (presentation.storeCode.trim() === storeCode) {
+      return safeStoreName(presentation.storeName);
+    }
+  } catch {
+    // 中文注释：展示缓存是可选增强，失败时继续使用本机设置或可信门店编码。
+  }
+  return null;
+}
+
+async function persist(
+  save: TrustedReceiptSettingsPersister | undefined,
+  settings: ReceiptPrinterSettings,
+): Promise<boolean> {
+  if (!save) return true;
+  try {
+    await save(settings);
+    return true;
+  } catch {
+    // 中文注释：绑定/清理落盘失败不阻断打印，下一次读取会安全重试。
+    return false;
+  }
 }
 
 function safeStoreName(value: string): string | null {

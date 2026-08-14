@@ -16,10 +16,12 @@ const settings: ReceiptPrinterSettings = {
   address: "1 Queen St",
   phone: "0712345678",
   abn: "12 345 678 901",
+  returnPolicy: "Refunds within 14 days.",
+  profileStoreCode: "1042",
 };
 
-test("可信设备分店名称仅在门店编码完全匹配时覆盖保存设置", async () => {
-  const matched = await resolveTrustedReceiptPrinterSettings(
+test("当前店本机保存店名优先，设备展示名仅在本机为空时兜底", async () => {
+  const localWins = await resolveTrustedReceiptPrinterSettings(
     settings,
     "1042",
     async () => ({
@@ -29,21 +31,21 @@ test("可信设备分店名称仅在门店编码完全匹配时覆盖保存设�
       terminalName: "",
     }),
   );
-  const mismatched = await resolveTrustedReceiptPrinterSettings(
-    settings,
+  const deviceFallback = await resolveTrustedReceiptPrinterSettings(
+    { ...settings, storeName: "" },
     "1042",
     async () => ({
-      deviceCode: "POS_9999_0001",
-      storeCode: "9999",
-      storeName: "Another Store",
+      deviceCode: "POS_1042_1155",
+      storeCode: "1042",
+      storeName: "Redbank Plaza",
       terminalName: "",
     }),
   );
 
-  assert.equal(matched.storeName, "Redbank Plaza");
-  assert.equal(mismatched.storeName, "Saved Store");
-  assert.equal(matched.address, settings.address);
-  assert.equal(matched.peripheralId, settings.peripheralId);
+  assert.equal(localWins.storeName, "Saved Store");
+  assert.equal(localWins.address, settings.address);
+  assert.equal(localWins.peripheralId, settings.peripheralId);
+  assert.equal(deviceFallback.storeName, "Redbank Plaza");
 });
 
 test("可信名称缺失或读取失败时依次回退保存名称和门店编码", async () => {
@@ -82,4 +84,119 @@ test("包含控制字符的设备展示名称不能进入小票设置", async ()
   );
 
   assert.equal(resolved.storeName, "Saved Store");
+});
+
+test("旧有资料首次读取当前分店时持久化绑定 profileStoreCode", async () => {
+  const persisted: { value: ReceiptPrinterSettings | null } = { value: null };
+  const resolved = await resolveTrustedReceiptPrinterSettings(
+    { ...settings, profileStoreCode: "" },
+    "1042",
+    async () => ({
+      deviceCode: "POS_1042_1155",
+      storeCode: "1042",
+      storeName: "Redbank Plaza",
+      terminalName: "",
+    }),
+    async (next) => { persisted.value = next; },
+  );
+
+  assert.equal(resolved.profileStoreCode, "1042");
+  assert.equal(persisted.value?.profileStoreCode, "1042");
+  assert.equal(persisted.value?.peripheralId, settings.peripheralId);
+  assert.equal(persisted.value?.printEnabled, settings.printEnabled);
+  assert.equal(persisted.value?.drawerEnabled, settings.drawerEnabled);
+});
+
+test("legacy 绑定落盘失败时不采用无 scope 旧资料，返回保留硬件的安全 fallback", async () => {
+  const resolved = await resolveTrustedReceiptPrinterSettings(
+    { ...settings, profileStoreCode: "" },
+    "1042",
+    undefined,
+    async () => { throw new Error("save failed"); },
+  );
+
+  assert.equal(resolved.profileStoreCode, "1042");
+  assert.equal(resolved.brandName, "");
+  assert.equal(resolved.storeName, "1042");
+  assert.equal(resolved.address, "");
+  assert.equal(resolved.phone, "");
+  assert.equal(resolved.abn, "");
+  assert.equal(resolved.returnPolicy, "");
+  assert.equal(resolved.peripheralId, settings.peripheralId);
+  assert.equal(resolved.printEnabled, settings.printEnabled);
+  assert.equal(resolved.drawerEnabled, settings.drawerEnabled);
+  assert.equal(resolved.paper, settings.paper);
+  assert.equal(resolved.locale, settings.locale);
+});
+
+test("profileStoreCode 与当前店不匹配时清空资料但保留硬件设置", async () => {
+  const persisted: { value: ReceiptPrinterSettings | null } = { value: null };
+  const resolved = await resolveTrustedReceiptPrinterSettings(
+    { ...settings, profileStoreCode: "9999" },
+    "1042",
+    undefined,
+    async (next) => { persisted.value = next; },
+  );
+
+  assert.equal(resolved.profileStoreCode, "1042");
+  assert.equal(resolved.brandName, "");
+  assert.equal(resolved.storeName, "1042");
+  assert.equal(resolved.address, "");
+  assert.equal(resolved.phone, "");
+  assert.equal(resolved.abn, "");
+  assert.equal(resolved.returnPolicy, "");
+  assert.equal(resolved.peripheralId, settings.peripheralId);
+  assert.equal(resolved.printEnabled, settings.printEnabled);
+  assert.equal(resolved.drawerEnabled, settings.drawerEnabled);
+  assert.equal(persisted.value?.peripheralId, settings.peripheralId);
+  assert.equal(persisted.value?.printEnabled, settings.printEnabled);
+  assert.equal(persisted.value?.drawerEnabled, settings.drawerEnabled);
+  assert.equal(persisted.value?.profileStoreCode, "1042");
+  assert.equal(persisted.value?.brandName, "");
+  assert.equal(persisted.value?.storeName, "");
+  assert.equal(persisted.value?.address, "");
+  assert.equal(persisted.value?.phone, "");
+  assert.equal(persisted.value?.abn, "");
+  assert.equal(persisted.value?.returnPolicy, "");
+});
+
+test("全新空 profile 不误绑定 legacy，设备店名仅在本机为空时兜底", async () => {
+  let persistCalls = 0;
+  const emptyProfile: ReceiptPrinterSettings = {
+    ...settings,
+    brandName: "",
+    storeName: "",
+    address: "",
+    phone: "",
+    abn: "",
+    returnPolicy: "",
+    profileStoreCode: "",
+  };
+  const fresh = await resolveTrustedReceiptPrinterSettings(
+    emptyProfile,
+    "1042",
+    async () => ({
+      deviceCode: "POS_1042_1155",
+      storeCode: "1042",
+      storeName: "Redbank Plaza",
+      terminalName: "",
+    }),
+    async () => { persistCalls += 1; },
+  );
+
+  assert.equal(fresh.profileStoreCode, "");
+  assert.equal(fresh.storeName, "Redbank Plaza");
+  assert.equal(persistCalls, 0);
+
+  const localWins = await resolveTrustedReceiptPrinterSettings(
+    { ...emptyProfile, storeName: "Local Store" },
+    "1042",
+    async () => ({
+      deviceCode: "POS_1042_1155",
+      storeCode: "1042",
+      storeName: "Redbank Plaza",
+      terminalName: "",
+    }),
+  );
+  assert.equal(localWins.storeName, "Local Store");
 });

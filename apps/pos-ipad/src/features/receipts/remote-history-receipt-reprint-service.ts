@@ -193,6 +193,7 @@ function isValidSettings(
       && typeof store.storeName === "string"
       && typeof store.address === "string"
       && typeof store.phone === "string"
-      && typeof store.abn === "string",
+      && typeof store.abn === "string"
+      && typeof store.returnPolicy === "string",
   );
 }

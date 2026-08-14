@@ -2,8 +2,190 @@
 var define_import_meta_env_default = {};
 
 // src/pages/Warehouse/Products/WarehouseProducts.hqSync.logic.test.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import path2 from "node:path";
+
+// src/pages/Warehouse/Products/WarehouseProducts.batchImageUrl.uiContract.test.ts
 import { readFileSync } from "node:fs";
 import path from "node:path";
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+function extractSection(source, startText, endText) {
+  const startIndex = source.indexOf(startText);
+  assert(startIndex >= 0, `\u672A\u627E\u5230\u4EE3\u7801\u7247\u6BB5\uFF1A${startText}`);
+  const endIndex = source.indexOf(endText, startIndex);
+  assert(endIndex >= 0, `\u672A\u627E\u5230\u7ED3\u675F\u7247\u6BB5\uFF1A${endText}`);
+  return source.slice(startIndex, endIndex);
+}
+var pageSource = readFileSync(path.resolve(process.cwd(), "src/pages/Warehouse/Products/index.tsx"), "utf8");
+var serviceSource = readFileSync(path.resolve(process.cwd(), "src/services/warehouseProductService.ts"), "utf8");
+var en = JSON.parse(readFileSync(path.resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8"));
+var zh = JSON.parse(readFileSync(path.resolve(process.cwd(), "src/i18n/locales/zh.json"), "utf8"));
+var DEFAULT_BASE_URL = "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/";
+assert(
+  pageSource.includes(`const WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL = '${DEFAULT_BASE_URL}'`) && pageSource.includes("const WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE = 'MC164-3.jpg'"),
+  "\u6279\u91CF\u56FE\u7247\u5F39\u7A97\u5E94\u58F0\u660E\u9ED8\u8BA4\u57FA\u7840\u5730\u5740\u5E38\u91CF\u4E0E\u793A\u4F8B\u6587\u4EF6\u540D\u5E38\u91CF"
+);
+var openBatchEditSection = extractSection(
+  pageSource,
+  "const openBatchEdit = () => {",
+  "const handleCategoryMutationCommitted"
+);
+assert(
+  openBatchEditSection.includes("generateImageUrls: false") && openBatchEditSection.includes("imageBaseUrl: WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL") && openBatchEditSection.includes("syncImageToHq: false"),
+  "\u6BCF\u6B21\u6253\u5F00\u6279\u91CF\u4FEE\u6539\u90FD\u5E94\u91CD\u7F6E\u56FE\u7247\u751F\u6210\u4E3A\u5173\u95ED\u3001\u57FA\u7840\u5730\u5740\u4E3A\u9ED8\u8BA4\u503C\u3001HQ \u540C\u6B65\u4E3A\u5173\u95ED"
+);
+assert(
+  pageSource.includes("const batchGenerateImageUrls = Form.useWatch('generateImageUrls', batchEditForm)"),
+  "\u6279\u91CF\u4FEE\u6539\u5F39\u7A97\u5E94\u4F7F\u7528 Form.useWatch \u76D1\u542C\u56FE\u7247\u751F\u6210\u5F00\u5173"
+);
+var batchEditModalSection = extractSection(
+  pageSource,
+  "t('warehouse.batchEditTitle'",
+  "</Form>"
+);
+assert(
+  batchEditModalSection.includes('name="generateImageUrls"') && batchEditModalSection.includes('valuePropName="checked"') && batchEditModalSection.includes("batchImageGenerate"),
+  "\u6279\u91CF\u4FEE\u6539\u5F39\u7A97\u5E94\u63D0\u4F9B\u9ED8\u8BA4\u5173\u95ED\u7684\u6309\u8D27\u53F7\u751F\u6210\u56FE\u7247\u5730\u5740\u5F00\u5173"
+);
+assert(
+  batchEditModalSection.includes('name="imageBaseUrl"') && batchEditModalSection.includes("batchImageBaseUrl") && batchEditModalSection.includes("batchImageExample") && batchEditModalSection.includes("batchImageOverwriteWarning") && batchEditModalSection.includes("WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE"),
+  "\u751F\u6210\u56FE\u7247\u5730\u5740\u5F00\u542F\u540E\u5E94\u663E\u793A\u53EF\u7F16\u8F91\u57FA\u7840\u5730\u5740\u3001\u793A\u4F8B\u6587\u4EF6\u4E0E\u8986\u76D6\u8B66\u544A"
+);
+assert(
+  batchEditModalSection.includes("access.isAdmin || access.isWarehouseManager") && batchEditModalSection.includes('name="syncImageToHq"') && batchEditModalSection.includes("batchImageSyncHq") && batchEditModalSection.includes("disabled={!batchGenerateImageUrls}"),
+  "\u540C\u6B65 HQ \u6570\u636E\u5E93\u5F00\u5173\u53EA\u5BF9 Admin/WarehouseManager \u663E\u793A\uFF0C\u4E14\u4EC5\u5728\u56FE\u7247\u751F\u6210\u5F00\u542F\u65F6\u53EF\u9009\u62E9"
+);
+var batchEditSaveSection = extractSection(
+  pageSource,
+  "const submitBatchEdit = async",
+  "const handleToggleSingleActive = async"
+);
+assert(
+  batchEditSaveSection.includes("isWarehouseProductBatchImageField") && batchEditSaveSection.includes("\u56FE\u7247\u5173\u95ED\u65F6\u9ED8\u8BA4\u57FA\u7840\u5730\u5740\u4E0D\u7B97\u53D8\u66F4"),
+  "\u56FE\u7247\u751F\u6210\u5173\u95ED\u65F6\u9ED8\u8BA4\u57FA\u7840\u5730\u5740\u4E0D\u5F97\u8BA1\u5165\u53D8\u66F4"
+);
+assert(
+  batchEditSaveSection.includes("normalizeWarehouseProductImageBaseUrl") && batchEditSaveSection.includes("isValidWarehouseProductImageBaseUrl") && batchEditSaveSection.includes("t('warehouse.batchImageBaseUrlRequired'") && batchEditSaveSection.includes("t('warehouse.batchImageBaseUrlInvalid'"),
+  "\u4FDD\u5B58\u524D\u5E94\u89C4\u8303\u5316\u57FA\u7840\u5730\u5740\uFF0C\u5E76\u6821\u9A8C\u5FC5\u586B\u3001HTTP(S) \u76EE\u5F55\u683C\u5F0F\u4E0E\u67E5\u8BE2\u53C2\u6570"
+);
+assert(
+  batchEditSaveSection.includes("Modal.confirm({") && batchEditSaveSection.includes("batchImageConfirmCount") && batchEditSaveSection.includes("batchImageConfirmBaseUrl") && batchEditSaveSection.includes("batchImageConfirmOverwrite") && batchEditSaveSection.includes("batchImageConfirmHq"),
+  "\u4FDD\u5B58\u524D\u5E94\u4E8C\u6B21\u786E\u8BA4\u5546\u54C1\u6570\u91CF\u3001\u89C4\u8303\u5316\u57FA\u7840\u5730\u5740\u3001\u672C\u5730\u8986\u76D6\u4E0E HQ \u9009\u62E9"
+);
+assert(
+  batchEditSaveSection.includes("createWarehouseProductBatchUpdateJob(items, options)") && batchEditSaveSection.includes("startBatchUpdateJobPolling(activeJob)") && !batchEditSaveSection.includes("await batchUpdateWarehouseProducts(items, options)"),
+  "\u4ED3\u5E93\u5546\u54C1\u9875\u6279\u91CF\u4FEE\u6539\u5E94\u63D0\u4EA4\u540E\u53F0 job\uFF0C\u4E0D\u5F97\u7EE7\u7EED\u7B49\u5F85\u540C\u6B65 batch-update \u8BF7\u6C42"
+);
+assert(
+  pageSource.includes("readActiveWarehouseProductBatchUpdateJob") && pageSource.includes("saveActiveWarehouseProductBatchUpdateJob") && pageSource.includes("createWarehouseProductBatchUpdateJobPoller") && pageSource.includes("getWarehouseProductBatchUpdateJob"),
+  "\u540E\u53F0\u6279\u91CF\u4FEE\u6539\u5E94\u6301\u4E45\u5316\u6D3B\u52A8 job\uFF0C\u5E76\u652F\u6301\u9875\u9762\u5237\u65B0\u540E\u6062\u590D\u8F6E\u8BE2"
+);
+assert(
+  pageSource.includes("result.status === 'PartiallySucceeded'") && pageSource.includes("setHqImageSyncFailDetail") && pageSource.includes("submittedProductCodes"),
+  "\u540E\u53F0\u4EFB\u52A1\u90E8\u5206\u5931\u8D25\u65F6\u5E94\u5C55\u793A\u672C\u5730/HQ \u660E\u7EC6\u5E76\u4FDD\u7559\u5DF2\u63D0\u4EA4\u5546\u54C1\u9009\u62E9"
+);
+var batchUpdatePollingSection = extractSection(
+  pageSource,
+  "const startBatchUpdateJobPolling = useCallback",
+  "const showActiveBatchUpdateJobStatus = useCallback"
+);
+assert(
+  batchUpdatePollingSection.includes("error instanceof RequestError && error.status === 404") && batchUpdatePollingSection.includes("clearActiveBatchUpdateJob();") && batchUpdatePollingSection.includes("saveActiveBatchUpdateJob(job);"),
+  "\u8F6E\u8BE2\u4EC5\u5728\u660E\u786E 404 \u65F6\u6E05\u7406\u6D3B\u52A8\u4EFB\u52A1\uFF1B\u8D85\u65F6\u3001\u7F51\u7EDC\u9519\u8BEF\u548C 5xx \u5E94\u4FDD\u7559 job \u4F9B\u5237\u65B0\u6062\u590D"
+);
+var batchUpdateStorageSection = extractSection(
+  pageSource,
+  "function saveActiveWarehouseProductBatchUpdateJob",
+  "function buildSupplierOptions"
+);
+assert(
+  batchUpdateStorageSection.includes("try {") && batchUpdateStorageSection.includes("return false;") && batchUpdatePollingSection.includes("batchUpdateJobStorageUnavailable"),
+  "localStorage \u5199\u5165\u5931\u8D25\u4E0D\u5F97\u4E2D\u65AD\u5DF2\u7ECF\u521B\u5EFA\u7684\u540E\u53F0\u4EFB\u52A1\u4E0E\u5F53\u524D\u9875\u9762\u8F6E\u8BE2"
+);
+assert(
+  pageSource.includes("clearSubmittedBatchUpdateSelection") && pageSource.includes("void refreshCurrentList()"),
+  "\u540E\u53F0\u4EFB\u52A1\u5168\u90E8\u6210\u529F\u65F6\u5E94\u53EA\u6E05\u9664\u8BE5\u4EFB\u52A1\u63D0\u4EA4\u7684\u9009\u62E9\u5E76\u5237\u65B0\u5217\u8868"
+);
+assert(
+  pageSource.includes("t('warehouse.batchImageHqFailTitle'") && pageSource.includes("hqImageSyncFailDetail.errors") && pageSource.includes("hqImageSyncFailDetail.items") && pageSource.includes("hqImageSyncFailOpen"),
+  "HQ \u540C\u6B65\u5931\u8D25\u5F39\u7A97\u5E94\u5C55\u793A\u9519\u8BEF\u660E\u7EC6\u4E0E\u5355\u9879\u5931\u8D25\u660E\u7EC6"
+);
+var batchUpdateSection = extractSection(
+  serviceSource,
+  "export async function batchUpdateWarehouseProducts(",
+  "export async function getWarehouseProductsTable("
+);
+assert(
+  serviceSource.includes("generateImageUrls?: boolean") && serviceSource.includes("imageBaseUrl?: string") && serviceSource.includes("syncImageToHq?: boolean"),
+  "\u6279\u91CF\u66F4\u65B0\u9009\u9879\u5E94\u58F0\u660E generateImageUrls/imageBaseUrl/syncImageToHq"
+);
+assert(
+  batchUpdateSection.includes("GenerateImageUrls:") && batchUpdateSection.includes("ImageBaseUrl:") && batchUpdateSection.includes("SyncImageToHq:"),
+  "\u6279\u91CF\u66F4\u65B0\u8BF7\u6C42\u5E94\u53D1\u9001 GenerateImageUrls/ImageBaseUrl/SyncImageToHq"
+);
+assert(
+  serviceSource.includes("imageUpdatedCount") && serviceSource.includes("hqImageSync") && serviceSource.includes("normalizeWarehouseProductHqImageSync"),
+  "\u6279\u91CF\u66F4\u65B0\u54CD\u5E94\u5E94\u652F\u6301 imageUpdatedCount \u4E0E hqImageSync \u660E\u7EC6"
+);
+assert(
+  !batchUpdateSection.includes("\u4ED3\u5E93\u6279\u91CF\u66F4\u65B0\u90E8\u5206\u5931\u8D25"),
+  "\u9010\u9879/HQ \u5931\u8D25\u4E0D\u5F97\u7531 service helper \u629B\u51FA\uFF0C\u4EC5 HTTP/\u6574\u6279\u5931\u8D25\u629B\u9519"
+);
+for (const locale of [en, zh]) {
+  for (const key of [
+    "batchImageGenerate",
+    "batchImageBaseUrl",
+    "batchImageExample",
+    "batchImageOverwriteWarning",
+    "batchImageSyncHq",
+    "batchImageBaseUrlRequired",
+    "batchImageBaseUrlInvalid",
+    "batchEditConfirmTitle",
+    "batchEditConfirmOk",
+    "batchImageConfirmCount",
+    "batchImageConfirmBaseUrl",
+    "batchImageConfirmOverwrite",
+    "batchImageConfirmHq",
+    "batchImageHqFailTitle",
+    "batchUpdateFailDetailTitle",
+    "batchImageHqFailMessage",
+    "batchImageHqFailNoItems",
+    "batchImageUpdatedCount",
+    "batchUpdateJobCreateFailed",
+    "batchUpdateJobSubmitted",
+    "batchUpdateJobSubmittedDescription",
+    "batchUpdateJobDuplicate",
+    "batchUpdateJobSucceeded",
+    "batchUpdateJobPartialSucceeded",
+    "batchUpdateJobFailed",
+    "batchUpdateJobRetryHint",
+    "batchUpdateJobTimeoutTitle",
+    "batchUpdateJobTimeout",
+    "batchUpdateJobQueryFailed",
+    "batchUpdateJobMissing",
+    "batchUpdateJobStatusTitle",
+    "batchUpdateJobId",
+    "batchUpdateJobStatus",
+    "batchUpdateJobStartedAt",
+    "batchUpdateJobProductCount",
+    "batchUpdateJobStorageUnavailable",
+    "batchUpdateJobStorageUnavailableDescription",
+    "batchUpdateJobQueryInterrupted"
+  ]) {
+    assert(locale.warehouse?.[key], `warehouse.${key} \u5FC5\u987B\u63D0\u4F9B\u4E2D\u82F1\u6587\u7FFB\u8BD1`);
+  }
+}
+assert(
+  zh.warehouse?.batchImageOverwriteWarning.includes("\u8986\u76D6") && zh.warehouse?.batchImageOverwriteWarning.includes("\u8D27\u53F7") && en.warehouse?.batchImageOverwriteWarning.includes("overwritten"),
+  "\u8986\u76D6\u8B66\u544A\u5E94\u540C\u65F6\u8BF4\u660E\u672C\u5730\u8986\u76D6\u4E0E\u6309\u8D27\u53F7\u62FC\u63A5"
+);
+assert(
+  zh.warehouse?.batchImageSyncHq.includes("H\u5546\u54C1") && en.warehouse?.batchImageSyncHq.includes("H-product"),
+  "\u540C\u6B65 HQ \u5F00\u5173\u5E94\u9650\u5B9A\u4EC5 H \u5546\u54C1\u56FE\u7247"
+);
+console.log("WarehouseProducts.batchImageUrl.uiContract.test: ok");
 
 // src/utils/clientPublicIp.ts
 var CLIENT_PUBLIC_IP_HEADER = "X-Client-Public-IP";
@@ -112,8 +294,8 @@ function trimText(value, maxLength) {
   }
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 }
-function buildApiUrl(path2) {
-  return `${API_BASE_URL}${path2}`.replace(/([^:]\/)\/+/g, "$1");
+function buildApiUrl(path3) {
+  return `${API_BASE_URL}${path3}`.replace(/([^:]\/)\/+/g, "$1");
 }
 function getRequestPath(url, options) {
   if (!url) {
@@ -1191,6 +1373,12 @@ function normalizeTableFilters(filters) {
     return setFilterValues(current, mappedFilterKey, normalizedValues);
   }, {});
 }
+function normalizeWarehouseProductSortField(field, fallback) {
+  if (typeof field !== "string") {
+    return fallback;
+  }
+  return field === "labelPrice" ? "oemPrice" : field;
+}
 function resolveCategoryFilterValueFromTableFilters(filters) {
   const categoryValues = filters.categoryName?.map((value) => String(value).trim()).filter(Boolean) ?? [];
   return categoryValues[0] || ALL_PRODUCTS_FILTER_KEY;
@@ -1257,7 +1445,7 @@ function createCurrentUser(overrides = {}) {
     ...overrides
   };
 }
-function assert(condition, message) {
+function assert2(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
@@ -1296,21 +1484,21 @@ async function runTest(name, execute) {
     return `${name}: ${reason}`;
   }
 }
-function extractSection(source, startText, endText) {
+function extractSection2(source, startText, endText) {
   const startIndex = source.indexOf(startText);
-  assert(startIndex >= 0, `\u672A\u627E\u5230\u4EE3\u7801\u7247\u6BB5\uFF1A${startText}`);
+  assert2(startIndex >= 0, `\u672A\u627E\u5230\u4EE3\u7801\u7247\u6BB5\uFF1A${startText}`);
   const endIndex = source.indexOf(endText, startIndex);
-  assert(endIndex >= 0, `\u672A\u627E\u5230\u7ED3\u675F\u7247\u6BB5\uFF1A${endText}`);
+  assert2(endIndex >= 0, `\u672A\u627E\u5230\u7ED3\u675F\u7247\u6BB5\uFF1A${endText}`);
   return source.slice(startIndex, endIndex);
 }
-var pageFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/index.tsx");
-var pageSource = readFileSync(pageFile, "utf8");
-var zhLocaleSource = readFileSync(path.resolve(process.cwd(), "src/i18n/locales/zh.json"), "utf8");
-var enLocaleSource = readFileSync(path.resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8");
-var columnFiltersFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/columnFilters.ts");
-var columnFiltersSource = readFileSync(columnFiltersFile, "utf8");
-var categoryTreePickerFile = path.resolve(process.cwd(), "src/pages/Warehouse/Products/CategoryTreePicker.tsx");
-var categoryTreePickerSource = readFileSync(categoryTreePickerFile, "utf8");
+var pageFile = path2.resolve(process.cwd(), "src/pages/Warehouse/Products/index.tsx");
+var pageSource2 = readFileSync2(pageFile, "utf8");
+var zhLocaleSource = readFileSync2(path2.resolve(process.cwd(), "src/i18n/locales/zh.json"), "utf8");
+var enLocaleSource = readFileSync2(path2.resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8");
+var columnFiltersFile = path2.resolve(process.cwd(), "src/pages/Warehouse/Products/columnFilters.ts");
+var columnFiltersSource = readFileSync2(columnFiltersFile, "utf8");
+var categoryTreePickerFile = path2.resolve(process.cwd(), "src/pages/Warehouse/Products/CategoryTreePicker.tsx");
+var categoryTreePickerSource = readFileSync2(categoryTreePickerFile, "utf8");
 async function main() {
   const failures = [];
   const pushPayloadFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u53D1\u9001 HQ \u5E94\u643A\u5E26\u9875\u9762\u5546\u54C1\u8D44\u6599\u4E0E\u5E93\u5B58\u4E09\u4EF7", () => {
@@ -1385,82 +1573,82 @@ async function main() {
   });
   if (pushPermissionFailure) failures.push(pushPermissionFailure);
   const pushToHqUiFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u6309 POS \u5546\u54C1\u7BA1\u7406\u6743\u9650\u63D0\u4F9B\u53D1\u9001 HQ \u5B8C\u6574\u4EA4\u4E92", () => {
-    assert(
-      pageSource.includes("CloudUploadOutlined") && pageSource.includes("pushProductsToHq") && pageSource.includes("buildWarehouseProductHqPushPayload") && pageSource.includes("PosHqPushModal") && pageSource.includes("getPushToHqStoreOptions"),
+    assert2(
+      pageSource2.includes("CloudUploadOutlined") && pageSource2.includes("pushProductsToHq") && pageSource2.includes("buildWarehouseProductHqPushPayload") && pageSource2.includes("PosHqPushModal") && pageSource2.includes("getPushToHqStoreOptions"),
       "\u9875\u9762\u5E94\u5F15\u5165\u53D1\u9001 HQ \u56FE\u6807\u3001\u670D\u52A1\u3001\u4ED3\u5E93 payload \u6620\u5C04\u3001\u5171\u4EAB\u5F39\u7A97\u548C\u5206\u5E97\u9009\u9879\u670D\u52A1"
     );
-    assert(
-      pageSource.includes("const [pushToHqLoading, setPushToHqLoading] = useState(false);") && pageSource.includes("const pushToHqLoadingRef = useRef(false);") && pageSource.includes("const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);") && pageSource.includes("const [pushToHqStoreOptions, setPushToHqStoreOptions]"),
+    assert2(
+      pageSource2.includes("const [pushToHqLoading, setPushToHqLoading] = useState(false);") && pageSource2.includes("const pushToHqLoadingRef = useRef(false);") && pageSource2.includes("const [pushToHqModalOpen, setPushToHqModalOpen] = useState(false);") && pageSource2.includes("const [pushToHqStoreOptions, setPushToHqStoreOptions]"),
       "\u9875\u9762\u5E94\u7EF4\u62A4\u53D1\u9001 loading\u3001\u5373\u65F6\u9501\u3001\u5F39\u7A97\u53EF\u89C1\u6027\u548C\u72EC\u7ACB HQ \u5206\u5E97\u9009\u9879"
     );
-    const loadSection = extractSection(
-      pageSource,
+    const loadSection = extractSection2(
+      pageSource2,
       "const loadPushToHqStoreOptions",
       "const handlePushToHq = async"
     );
-    assert(
+    assert2(
       loadSection.includes("await getPushToHqStoreOptions()") && loadSection.includes("setPushToHqStoreOptionsError(") && loadSection.includes("t('posAdmin.products.pushToHqStoreOptionsLoadFailed'") && loadSection.includes("pushToHqStoreOptionsGuardRef.current") && loadSection.includes("guard.begin()") && loadSection.includes("requestId < 0") && loadSection.includes("guard.isLatest(requestId)") && loadSection.includes("guard.complete(requestId)"),
       "\u6BCF\u6B21\u6253\u5F00\u5F39\u7A97\u5E94\u91CD\u53D6\u6700\u65B0 HQ \u5206\u5E97\u9009\u9879\uFF0C\u5E76\u4F7F\u7528\u5355\u98DE\u52A0\u6700\u65B0\u8BF7\u6C42\u5B88\u536B\u5FFD\u7565\u8FC7\u671F\u54CD\u5E94"
     );
-    const openHandlerSection = extractSection(
-      pageSource,
+    const openHandlerSection = extractSection2(
+      pageSource2,
       "const handlePushToHq = async",
       "const handlePushToHqConfirm"
     );
-    assert(
+    assert2(
       openHandlerSection.includes("if (!access.canManagePosProducts)") && openHandlerSection.includes("if (!selectedRowKeys.length)") && openHandlerSection.includes("if (pushToHqLoadingRef.current || pushToHqModalOpen) return;") && openHandlerSection.includes("pushToHqLoadingRef.current = true;") && openHandlerSection.includes("setPushToHqModalOpen(true);") && openHandlerSection.includes("await loadPushToHqStoreOptions();") && openHandlerSection.indexOf("pushToHqLoadingRef.current = true;") < openHandlerSection.indexOf("await loadPushToHqStoreOptions();"),
       "\u53D1\u9001\u5904\u7406\u5E94\u5728\u5373\u65F6\u9501\u5185\u6253\u5F00\u5F39\u7A97\u5E76\u83B7\u53D6\u6700\u65B0 HQ \u5206\u5E97\u9009\u9879\uFF0C\u907F\u514D\u91CD\u590D\u6253\u5F00"
     );
-    const confirmSection = extractSection(
-      pageSource,
+    const confirmSection = extractSection2(
+      pageSource2,
       "const handlePushToHqConfirm",
       "const handlePushToHqCancel"
     );
-    assert(
+    assert2(
       confirmSection.indexOf("if (pushToHqLoadingRef.current || pushToHqConfirmLoadingRef.current) return;") < confirmSection.indexOf("pushToHqConfirmLoadingRef.current = true;") && confirmSection.indexOf("pushToHqConfirmLoadingRef.current = true;") < confirmSection.indexOf("await pushProductsToHq(payload)") && confirmSection.includes("pushToHqConfirmLoadingRef.current = false;") && confirmSection.includes("if (!isMountedRef.current) return;") && confirmSection.includes("selectedRowKeysRef.current.map(String)") && confirmSection.includes("areWarehouseProductCodeSelectionsEqual(productCodes, currentProductCodes)") && confirmSection.includes("buildWarehouseProductHqPushPayload(dataRef.current, currentProductCodes, updateFields, targetStoreCodes)") && confirmSection.includes("await pushProductsToHq(payload)") && confirmSection.includes("if (!showPushToHqResult(result)) return;") && confirmSection.includes("setPushToHqModalOpen(false);") && confirmSection.includes("setSelectedRowKeys([]);") && confirmSection.includes("await refreshCurrentList();"),
       "\u786E\u8BA4\u63D0\u4EA4\u5E94\u590D\u6838\u6700\u65B0\u9009\u62E9\u3001\u53D1\u9001\u542B\u76EE\u6807\u5206\u5E97\u7684\u4ED3\u5E93 payload\uFF0C\u5E76\u4EC5\u5728\u6210\u529F\u540E\u5173\u95ED\u3001\u6E05\u9009\u3001\u5237\u65B0"
     );
-    assert(
+    assert2(
       confirmSection.lastIndexOf("if (isMountedRef.current)") < confirmSection.indexOf("setPushToHqConfirmLoading(false);") && confirmSection.lastIndexOf("if (isMountedRef.current)") < confirmSection.indexOf("setPushToHqLoading(false);"),
       "\u63D0\u4EA4 finally \u91CA\u653E loading \u72B6\u6001\u524D\u5FC5\u987B\u68C0\u67E5\u7EC4\u4EF6\u662F\u5426\u5DF2\u5378\u8F7D"
     );
-    const failureSection = extractSection(confirmSection, "catch (error)", "finally");
-    assert(
+    const failureSection = extractSection2(confirmSection, "catch (error)", "finally");
+    assert2(
       failureSection.includes("const errorResult = extractPushToHqErrorResult(error)") && failureSection.includes("Modal.error({") && !failureSection.includes("setSelectedRowKeys([])"),
       "\u5931\u8D25\u65F6\u5E94\u4FDD\u7559\u5546\u54C1\u3001\u5B57\u6BB5\u548C\u5206\u5E97\u9009\u62E9\uFF0C\u5E76\u663E\u793A\u540E\u7AEF\u8FD4\u56DE\u7684\u9519\u8BEF\u660E\u7EC6"
     );
-    const cancelSection = extractSection(
-      pageSource,
+    const cancelSection = extractSection2(
+      pageSource2,
       "const handlePushToHqCancel",
       "const handleBatchToggleActive"
     );
-    assert(
+    assert2(
       cancelSection.includes("setPushToHqModalOpen(false);") && cancelSection.includes("pushToHqLoadingRef.current = false;") && cancelSection.includes("pushToHqStoreOptionsGuardRef.current.invalidate();") && cancelSection.indexOf("if (pushToHqConfirmLoadingRef.current) return") < cancelSection.indexOf("pushToHqLoadingRef.current = false;") && !cancelSection.includes("pushProductsToHq("),
       "\u53D6\u6D88\u53EA\u5173\u95ED\u5F39\u7A97\u3001\u4F7F\u8FC7\u671F\u9009\u9879\u54CD\u5E94\u5931\u6548\u5E76\u91CA\u653E\u9501\uFF0C\u4E14\u63D0\u4EA4\u8FDB\u884C\u4E2D\u4E0D\u5F97\u91CA\u653E\u9501"
     );
-    const toolbarSection = extractSection(
-      pageSource,
+    const toolbarSection = extractSection2(
+      pageSource2,
       "<PageContainer title={t('warehouse.productManagement')}",
       "<Card>"
     );
-    assert(
+    assert2(
       toolbarSection.includes("access.canManagePosProducts ?") && toolbarSection.includes("icon={<CloudUploadOutlined />}") && toolbarSection.includes("loading={pushToHqLoading}") && toolbarSection.includes("disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}") && toolbarSection.includes("onClick={() => void handlePushToHq()}") && toolbarSection.includes("t('posAdmin.products.pushToHq', '\u53D1\u9001\u5230HQ')"),
       "\u5DE5\u5177\u680F\u53D1\u9001\u6309\u94AE\u5E94\u53EA\u5BF9 POS \u5546\u54C1\u7BA1\u7406\u5458\u663E\u793A\uFF0C\u5E76\u6B63\u786E\u7ED1\u5B9A\u9009\u62E9\u3001loading \u4E0E\u70B9\u51FB\u884C\u4E3A"
     );
-    const resultSection = extractSection(
-      pageSource,
+    const resultSection = extractSection2(
+      pageSource2,
       "const showPushToHqResult = useCallback",
       "const loadPushToHqStoreOptions"
     );
-    assert(
+    assert2(
       resultSection.includes("if (errors.length || (result.failedCount ?? 0) > 0)") && resultSection.includes("Modal.warning({") && resultSection.includes("return false;") && resultSection.includes("Modal.success({") && resultSection.includes("return true;") && resultSection.includes("t('posAdmin.products.pushToHqAffectedRows', 'HQ\u5F71\u54CD\u8BB0\u5F55')") && resultSection.includes("errors.join('\\n')"),
       "\u53D1\u9001\u7ED3\u679C\u5E94\u590D\u7528\u5546\u54C1\u7BA1\u7406\u9875\u7684\u6210\u529F\u3001\u90E8\u5206\u6210\u529F\u548C HQ \u5F71\u54CD\u7EDF\u8BA1\u53CD\u9988"
     );
-    assert(
-      pageSource.includes("<PosHqPushModal") && pageSource.includes("storeOptions={pushToHqStoreOptions}") && pageSource.includes("onConfirm={handlePushToHqConfirm}") && pageSource.includes("onCancel={handlePushToHqCancel}"),
+    assert2(
+      pageSource2.includes("<PosHqPushModal") && pageSource2.includes("storeOptions={pushToHqStoreOptions}") && pageSource2.includes("onConfirm={handlePushToHqConfirm}") && pageSource2.includes("onCancel={handlePushToHqCancel}"),
       "\u9875\u9762\u5E94\u6E32\u67D3\u5171\u4EAB\u5F39\u7A97\u5E76\u7ED1\u5B9A HQ \u9009\u9879\u3001\u786E\u8BA4\u4E0E\u53D6\u6D88"
     );
-    assert(
+    assert2(
       zhLocaleSource.includes('"pushToHqSelectionChanged": "\u9009\u4E2D\u5546\u54C1\u6570\u636E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u540E\u518D\u8BD5"') && enLocaleSource.includes('"pushToHqSelectionChanged": "The selected product data changed. Please select the products again and retry."'),
       "\u9009\u62E9\u53D8\u5316\u63D0\u793A\u5E94\u540C\u65F6\u63D0\u4F9B\u4E2D\u82F1\u6587\u7FFB\u8BD1\uFF0C\u4E0D\u80FD\u8BA9\u82F1\u6587\u754C\u9762\u56DE\u9000\u5230\u4E2D\u6587"
     );
@@ -1485,219 +1673,219 @@ async function main() {
   });
   if (nonAdminAccessFailure) failures.push(nonAdminAccessFailure);
   const shelfStatusTextFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u72B6\u6001\u6587\u6848\u5E94\u4F7F\u7528\u4E0A\u67B6\u548C\u4E0B\u67B6", () => {
-    assert(
-      pageSource.includes("function getShelfStatusLabel(isActive: boolean") && pageSource.includes("t('warehouse.onShelf', '\u4E0A\u67B6')") && pageSource.includes("t('warehouse.offShelf', '\u4E0B\u67B6')"),
+    assert2(
+      pageSource2.includes("function getShelfStatusLabel(isActive: boolean") && pageSource2.includes("t('warehouse.onShelf', '\u4E0A\u67B6')") && pageSource2.includes("t('warehouse.offShelf', '\u4E0B\u67B6')"),
       "\u9875\u9762\u5E94\u901A\u8FC7 getShelfStatusLabel \u7EDF\u4E00\u4ED3\u5E93\u5546\u54C1\u4E0A\u4E0B\u67B6\u6587\u6848"
     );
-    const formModalSection = extractSection(
-      pageSource,
+    const formModalSection = extractSection2(
+      pageSource2,
       "function ProductFormModal",
       "function SetItemsModal"
     );
-    assert(
+    assert2(
       formModalSection.includes("label={t('warehouse.isListed')}") && formModalSection.includes("checkedChildren={getShelfStatusLabel(true, t)}") && formModalSection.includes("unCheckedChildren={getShelfStatusLabel(false, t)}"),
       "\u7F16\u8F91\u5F39\u7A97\u72B6\u6001\u5B57\u6BB5\u5E94\u663E\u793A\u662F\u5426\u4E0A\u67B6\u548C\u4E0A\u67B6/\u4E0B\u67B6 Switch \u6587\u6848"
     );
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "return (<>"
     );
-    assert(
+    assert2(
       columnsSection.includes("checkedChildren={getShelfStatusLabel(true, t)}") && columnsSection.includes("unCheckedChildren={getShelfStatusLabel(false, t)}") && !columnsSection.includes("t('warehouse.active')") && !columnsSection.includes("t('warehouse.inactive')"),
       "\u4E3B\u8868\u72B6\u6001\u5217\u5E94\u663E\u793A\u4E0A\u67B6/\u4E0B\u67B6\uFF0C\u4E0D\u80FD\u7EE7\u7EED\u4F7F\u7528\u542F\u7528/\u505C\u7528\u6587\u6848"
     );
-    const batchSection = extractSection(
-      pageSource,
+    const batchSection = extractSection2(
+      pageSource2,
       "const handleBatchToggleActive = async",
       "const handleToggleSingleActive"
     );
-    const singleSection = extractSection(
-      pageSource,
+    const singleSection = extractSection2(
+      pageSource2,
       "const handleToggleSingleActive = async",
       "const handleOpenSetItems"
     );
-    assert(
+    assert2(
       batchSection.includes("status: getShelfStatusLabel(nextIsActive, t)") && singleSection.includes("status: getShelfStatusLabel(nextIsActive, t)"),
       "\u6279\u91CF\u548C\u5355\u6761\u72B6\u6001\u6210\u529F\u63D0\u793A\u5E94\u7EDF\u4E00\u4F7F\u7528\u4E0A\u67B6/\u4E0B\u67B6\u6587\u6848"
     );
   });
   if (shelfStatusTextFailure) failures.push(shelfStatusTextFailure);
   const productTypeAndActionFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u7C7B\u578B\u5217\u548C\u64CD\u4F5C\u5165\u53E3\u5E94\u533A\u5206\u666E\u901A\u5957\u88C5\u591A\u7801", () => {
-    assert(
-      pageSource.includes("function getProductTypeTagColor(value: ProductType)") && pageSource.includes("if (value === ProductType.SET) return") && pageSource.includes("if (value === ProductType.MULTICODE) return") && pageSource.includes("function canManageProductDetails(productType: ProductType)"),
+    assert2(
+      pageSource2.includes("function getProductTypeTagColor(value: ProductType)") && pageSource2.includes("if (value === ProductType.SET) return") && pageSource2.includes("if (value === ProductType.MULTICODE) return") && pageSource2.includes("function canManageProductDetails(productType: ProductType)"),
       "\u9875\u9762\u5E94\u58F0\u660E\u5546\u54C1\u7C7B\u578B\u989C\u8272\u548C\u53EF\u7BA1\u7406\u7C7B\u578B\u5224\u65AD"
     );
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "return (<>"
     );
-    assert(
+    assert2(
       columnsSection.includes("title: t('column.productType')") && columnsSection.includes("dataIndex: 'productType'") && columnsSection.includes("<Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>"),
       "\u5546\u54C1\u7C7B\u578B\u5217\u5E94\u4EE5 Tag \u663E\u793A\u666E\u901A\u3001\u5957\u88C5\u548C\u591A\u7801"
     );
-    assert(
+    assert2(
       columnsSection.includes("canManageProductDetails(record.productType)") && columnsSection.includes("getProductDetailsActionLabel(record.productType, t)") && columnsSection.includes("getProductDetailsDisabledHint(t)") && !columnsSection.includes("record.productType === 1 ?"),
       "\u64CD\u4F5C\u5217\u5E94\u5141\u8BB8\u5957\u88C5\u548C\u591A\u7801\u8FDB\u5165\u7BA1\u7406\u5165\u53E3\uFF0C\u4E0D\u80FD\u518D\u53EA\u5224\u65AD productType === 1"
     );
-    assert(
-      pageSource.includes("t('warehouse.multiCodeManagement', '\u591A\u7801\u7BA1\u7406')") && pageSource.includes("t('warehouse.normalProductNoDetails', '\u666E\u901A\u5546\u54C1\u6CA1\u6709\u5957\u88C5\u6216\u591A\u7801\u660E\u7EC6')"),
+    assert2(
+      pageSource2.includes("t('warehouse.multiCodeManagement', '\u591A\u7801\u7BA1\u7406')") && pageSource2.includes("t('warehouse.normalProductNoDetails', '\u666E\u901A\u5546\u54C1\u6CA1\u6709\u5957\u88C5\u6216\u591A\u7801\u660E\u7EC6')"),
       "\u591A\u7801\u5546\u54C1\u548C\u666E\u901A\u5546\u54C1\u5E94\u6709\u660E\u786E\u64CD\u4F5C\u6587\u6848"
     );
   });
   if (productTypeAndActionFailure) failures.push(productTypeAndActionFailure);
   const productDetailsModalFailure = await runTest("\u5957\u88C5\u548C\u591A\u7801\u5E94\u590D\u7528\u660E\u7EC6\u5F39\u7A97\u4F46\u6309\u7C7B\u578B\u663E\u793A\u6807\u9898\u548C\u63D0\u793A", () => {
-    const modalSection = extractSection(
-      pageSource,
+    const modalSection = extractSection2(
+      pageSource2,
       "function SetItemsModal",
       "export default function WarehouseProductsPage"
     );
-    assert(
+    assert2(
       modalSection.includes("title={getProductDetailsModalTitle(product, t)}") && modalSection.includes("getProductDetailsHint(product?.productType, t)") && modalSection.includes("t('warehouse.addMultiCodeDetail', '\u65B0\u589E\u591A\u7801')"),
       "\u660E\u7EC6\u5F39\u7A97\u5E94\u6309\u5546\u54C1\u7C7B\u578B\u5C55\u793A\u5957\u88C5\u6216\u591A\u7801\u6807\u9898\u3001\u63D0\u793A\u548C\u65B0\u589E\u6309\u94AE"
     );
-    assert(
-      pageSource.includes("t('warehouse.multiCodeDetailsTitle', '\u591A\u7801\u7BA1\u7406 - {{name}}'") && pageSource.includes("t('warehouse.multiCodeEditHint', '\u591A\u7801\u5546\u54C1\u53EF\u7EF4\u62A4\u591A\u7801\u6761\u7801\u3001\u4EF7\u683C\u548C\u5206\u5E97\u540C\u6B65\u4F7F\u7528\u7684\u660E\u7EC6\u3002')"),
+    assert2(
+      pageSource2.includes("t('warehouse.multiCodeDetailsTitle', '\u591A\u7801\u7BA1\u7406 - {{name}}'") && pageSource2.includes("t('warehouse.multiCodeEditHint', '\u591A\u7801\u5546\u54C1\u53EF\u7EF4\u62A4\u591A\u7801\u6761\u7801\u3001\u4EF7\u683C\u548C\u5206\u5E97\u540C\u6B65\u4F7F\u7528\u7684\u660E\u7EC6\u3002')"),
       "\u591A\u7801\u660E\u7EC6\u5F39\u7A97\u5E94\u6709\u72EC\u7ACB\u6807\u9898\u548C\u8BF4\u660E\u6587\u6848"
     );
   });
   if (productDetailsModalFailure) failures.push(productDetailsModalFailure);
   const warehouseProductSetCodesFailure = await runTest("\u4ED3\u5E93\u5957\u88C5\u660E\u7EC6\u5F39\u7A97\u5E94\u8BFB\u53D6\u5E76\u4FDD\u5B58 product-set-codes \u660E\u7EC6", () => {
-    assert(
-      pageSource.includes("from '../../../services/multiCodeSetService'") && pageSource.includes("getGridData as getSetCodeGridData") && pageSource.includes("batchCreateSetCodes") && pageSource.includes("batchUpdateBarcodes as batchUpdateSetBarcodes") && pageSource.includes("batchUpdatePrices as batchUpdateSetPrices") && pageSource.includes("batchDelete as batchDeleteSetCodes"),
+    assert2(
+      pageSource2.includes("from '../../../services/multiCodeSetService'") && pageSource2.includes("getGridData as getSetCodeGridData") && pageSource2.includes("batchCreateSetCodes") && pageSource2.includes("batchUpdateBarcodes as batchUpdateSetBarcodes") && pageSource2.includes("batchUpdatePrices as batchUpdateSetPrices") && pageSource2.includes("batchDelete as batchDeleteSetCodes"),
       "\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u4F7F\u7528 product-set-codes \u670D\u52A1\u7EF4\u62A4\u5957\u88C5/\u591A\u7801\u660E\u7EC6"
     );
-    assert(
-      !pageSource.includes("getDomesticProductSetItems") && !pageSource.includes("updateDomesticProductSetItems") && !pageSource.includes("DomesticProductSetItem"),
+    assert2(
+      !pageSource2.includes("getDomesticProductSetItems") && !pageSource2.includes("updateDomesticProductSetItems") && !pageSource2.includes("DomesticProductSetItem"),
       "\u4ED3\u5E93\u5546\u54C1\u9875\u4E0D\u80FD\u7EE7\u7EED\u5F15\u7528\u56FD\u5185\u91C7\u8D2D set-items \u670D\u52A1\u548C\u7C7B\u578B"
     );
-    const modalSection = extractSection(
-      pageSource,
+    const modalSection = extractSection2(
+      pageSource2,
       "function SetItemsModal",
       "export default function WarehouseProductsPage"
     );
-    assert(
+    assert2(
       modalSection.includes("items: MulticodeSetItem[]") && modalSection.includes("dataIndex: 'setItemNumber'") && modalSection.includes("dataIndex: 'setBarcode'") && modalSection.includes("dataIndex: 'setPurchasePrice'") && modalSection.includes("dataIndex: 'setRetailPrice'") && modalSection.includes("dataIndex: 'isActive'"),
       "\u5F39\u7A97\u5217\u5E94\u4F7F\u7528 product-set-codes \u7684\u8D27\u53F7\u3001\u6761\u7801\u3001\u8FDB\u8D27\u4EF7\u3001\u96F6\u552E\u4EF7\u548C\u72B6\u6001\u5B57\u6BB5"
     );
-    const openSection = extractSection(
-      pageSource,
+    const openSection = extractSection2(
+      pageSource2,
       "const handleOpenSetItems = async (record: WarehouseProductListItem) => {",
       "const handleSaveSetItems = async () => {"
     );
-    assert(
+    assert2(
       openSection.includes("getSetCodeGridData({ productCode: record.productCode") && openSection.includes("setSetItemsDraft(result.items ?? [])"),
       "\u6253\u5F00\u4ED3\u5E93\u5957\u88C5\u5F39\u7A97\u65F6\u5E94\u6309\u5F53\u524D\u4ED3\u5E93\u5546\u54C1 productCode \u8BFB\u53D6 product-set-codes grid"
     );
-    const saveSection = extractSection(
-      pageSource,
+    const saveSection = extractSection2(
+      pageSource2,
       "const handleSaveSetItems = async () => {",
       "const handleExport = async () => {"
     );
-    assert(
+    assert2(
       saveSection.includes("batchCreateSetCodes({") && saveSection.includes("batchUpdateSetBarcodes({") && saveSection.includes("batchUpdateSetPrices({") && saveSection.includes("batchDeleteSetCodes({ ids: deletedSetCodeIds })"),
       "\u4FDD\u5B58\u4ED3\u5E93\u5957\u88C5\u5F39\u7A97\u65F6\u5E94\u5206\u522B\u5904\u7406\u65B0\u589E\u3001\u5DF2\u6709\u66F4\u65B0\u548C\u5220\u9664\u7684 product-set-codes \u660E\u7EC6"
     );
-    assert(
+    assert2(
       saveSection.includes("invalidSetCodeItem") && saveSection.includes("message.error(t('warehouse.invalidSetCodeDetail'") && saveSection.includes("item.setBarcode?.trim()") && saveSection.includes("item.setPurchasePrice === undefined") && saveSection.includes("item.setRetailPrice === undefined"),
       "\u4FDD\u5B58\u524D\u5E94\u6821\u9A8C\u5957\u88C5\u660E\u7EC6\u6761\u7801\u3001\u8FDB\u8D27\u4EF7\u548C\u96F6\u552E\u4EF7\uFF0C\u907F\u514D\u7A7A\u65B0\u589E\u6216\u6E05\u7A7A\u5B57\u6BB5\u9759\u9ED8\u5931\u8D25"
     );
-    assert(
+    assert2(
       saveSection.indexOf("batchDeleteSetCodes({ ids: deletedSetCodeIds })") > saveSection.indexOf("batchUpdateSetStatus({"),
       "\u5220\u9664\u5DF2\u6709\u660E\u7EC6\u5FC5\u987B\u653E\u5728\u65B0\u589E\u548C\u66F4\u65B0\u4E4B\u540E\uFF0C\u907F\u514D\u540E\u7EED\u63A5\u53E3\u5931\u8D25\u65F6\u5148\u5220\u6570\u636E"
     );
   });
   if (warehouseProductSetCodesFailure) failures.push(warehouseProductSetCodesFailure);
   const minOrderQuantityColumnFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u5217\u8868\u5E94\u4EE5 MinOrderQuantity \u4F5C\u4E3A\u4E2D\u5305\u6570\u5217\u6765\u6E90", () => {
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "return (<>"
     );
-    assert(
+    assert2(
       columnsSection.includes("title: t('warehouse.middlePackQuantity', '\u4E2D\u5305\u6570')") && columnsSection.includes("dataIndex: 'minOrderQuantity'"),
       "\u4E3B\u8868\u5E94\u65B0\u589E\u4E2D\u5305\u6570\u5217\uFF0C\u5E76\u7ED1\u5B9A WarehouseProduct.MinOrderQuantity \u5F52\u4E00\u540E\u7684 minOrderQuantity"
     );
-    assert(
+    assert2(
       !columnsSection.includes("dataIndex: 'middlePackQty'"),
       "\u4E3B\u8868\u4E2D\u5305\u6570\u5217\u4E0D\u80FD\u7ED1\u5B9A middlePackQty\uFF0C\u907F\u514D\u4E0E MiddlePackQuantity \u6765\u6E90\u6DF7\u6DC6"
     );
-    const packingColumnSection = extractSection(
+    const packingColumnSection = extractSection2(
       columnsSection,
       "key: 'packingQty'",
       "key: 'volume'"
     );
-    assert(
+    assert2(
       packingColumnSection.includes(`record.isPackingQtyFallback ? <Tag color="green">{t('warehouse.warehouse')}</Tag> : <Tag color="gold">{t('warehouse.domestic')}</Tag>`),
       "\u88C5\u7BB1\u6570\u4F7F\u7528\u4ED3\u5E93\u56DE\u9000\u503C\u65F6\u5E94\u663E\u793A\u4ED3\u5E93\u6765\u6E90\uFF0C\u5426\u5219\u663E\u793A\u56FD\u5185\u6765\u6E90"
     );
   });
   if (minOrderQuantityColumnFailure) failures.push(minOrderQuantityColumnFailure);
   const batchEditFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u652F\u6301\u6309\u9009\u4E2D\u5546\u54C1\u6279\u91CF\u4FEE\u6539\u5E38\u7528\u5B57\u6BB5", () => {
-    assert(
-      pageSource.includes("batchUpdateWarehouseProducts"),
-      "\u9875\u9762\u5E94\u5F15\u5165\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0\u670D\u52A1"
+    assert2(
+      pageSource2.includes("createWarehouseProductBatchUpdateJob") && pageSource2.includes("createWarehouseProductBatchUpdateJobPoller"),
+      "\u9875\u9762\u5E94\u5F15\u5165\u4ED3\u5E93\u5546\u54C1\u540E\u53F0\u6279\u91CF\u66F4\u65B0\u670D\u52A1\u4E0E\u8F6E\u8BE2\u5668"
     );
-    assert(
-      pageSource.includes("interface BatchEditFormValues") && pageSource.includes("minOrderQuantity?: number"),
+    assert2(
+      pageSource2.includes("interface BatchEditFormValues") && pageSource2.includes("minOrderQuantity?: number"),
       "\u9875\u9762\u5E94\u58F0\u660E\u6279\u91CF\u7F16\u8F91\u8868\u5355\uFF0C\u5E76\u4F7F\u7528 minOrderQuantity \u8868\u793A\u4E2D\u5305\u6570"
     );
-    const saveSection = extractSection(
-      pageSource,
-      "const handleBatchEditSave = async () => {",
+    const saveSection = extractSection2(
+      pageSource2,
+      "const submitBatchEdit = async",
       "const handleToggleSingleActive"
     );
-    assert(
-      saveSection.includes("MinOrderQuantity: values.minOrderQuantity") && saveSection.includes("PackingQuantity: values.packingQuantity") && saveSection.includes("batchUpdateWarehouseProducts(items)"),
-      "\u6279\u91CF\u4FDD\u5B58\u5E94\u628A\u4E2D\u5305\u6570\u63D0\u4EA4\u4E3A MinOrderQuantity\uFF0C\u5E76\u590D\u7528\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0\u670D\u52A1"
+    assert2(
+      saveSection.includes("MinOrderQuantity: values.minOrderQuantity") && saveSection.includes("PackingQuantity: values.packingQuantity") && saveSection.includes("createWarehouseProductBatchUpdateJob(items, options)") && saveSection.includes("startBatchUpdateJobPolling(activeJob)"),
+      "\u6279\u91CF\u4FDD\u5B58\u5E94\u628A\u4E2D\u5305\u6570\u63D0\u4EA4\u4E3A MinOrderQuantity\uFF0C\u5E76\u901A\u8FC7\u540E\u53F0\u4EFB\u52A1\u6267\u884C\u4E0E\u8F6E\u8BE2"
     );
-    assert(
+    assert2(
       saveSection.includes("\u53EA\u4F20\u7528\u6237\u586B\u5199\u7684\u5B57\u6BB5") && saveSection.includes("WarehouseProduct.MinOrderQuantity"),
       "\u6279\u91CF payload \u6784\u9020\u5904\u5E94\u6709\u4E2D\u6587\u6CE8\u91CA\u8BF4\u660E\u4E2D\u5305\u6570\u5B57\u6BB5\u6765\u6E90\u548C\u907F\u514D\u8BEF\u8986\u76D6"
     );
-    const toolbarSection = extractSection(
-      pageSource,
+    const toolbarSection = extractSection2(
+      pageSource2,
       "<PageContainer title={t('warehouse.productManagement')}",
       "<Card>"
     );
-    assert(
+    assert2(
       toolbarSection.includes("t('warehouse.batchEdit', '\u6279\u91CF\u4FEE\u6539')") && toolbarSection.includes("onClick={openBatchEdit}"),
       "\u5DE5\u5177\u680F\u5E94\u63D0\u4F9B\u6279\u91CF\u4FEE\u6539\u6309\u94AE"
     );
-    const modalSection = extractSection(
-      pageSource,
+    const modalSection = extractSection2(
+      pageSource2,
       "<Modal title={t('warehouse.batchEditTitle'",
       "<ImportFromDomesticModal"
     );
-    assert(
+    assert2(
       modalSection.includes('name="domesticPrice"') && modalSection.includes('name="oemPrice"') && modalSection.includes('name="importPrice"') && modalSection.includes('name="packingQuantity"') && modalSection.includes('name="minOrderQuantity"') && modalSection.includes('name="unitVolume"') && modalSection.includes('name="isActive"'),
       "\u6279\u91CF\u4FEE\u6539\u5F39\u7A97\u5E94\u5305\u542B\u4EF7\u683C\u3001\u88C5\u7BB1\u6570\u3001\u4E2D\u5305\u6570\u3001\u4F53\u79EF\u548C\u4E0A\u4E0B\u67B6\u5B57\u6BB5"
     );
   });
   if (batchEditFailure) failures.push(batchEditFailure);
   const draggableColumnsFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u8868\u683C\u5E94\u652F\u6301\u62D6\u62FD\u5217\u5934\u5E76\u6301\u4E45\u5316\u5217\u987A\u5E8F", () => {
-    assert(
-      pageSource.includes("DndContext") && pageSource.includes("SortableContext") && pageSource.includes("useSortable") && pageSource.includes("horizontalListSortingStrategy"),
+    assert2(
+      pageSource2.includes("DndContext") && pageSource2.includes("SortableContext") && pageSource2.includes("useSortable") && pageSource2.includes("horizontalListSortingStrategy"),
       "\u5546\u54C1\u7BA1\u7406\u8868\u5934\u5217\u62D6\u62FD\u5E94\u590D\u7528 @dnd-kit \u6A2A\u5411\u6392\u5E8F\u80FD\u529B"
     );
-    assert(
-      pageSource.includes("const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1'") && pageSource.includes("localStorage.setItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY") && pageSource.includes("mergeWarehouseProductColumnOrder("),
+    assert2(
+      pageSource2.includes("const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1'") && pageSource2.includes("localStorage.setItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY") && pageSource2.includes("mergeWarehouseProductColumnOrder("),
       "\u5546\u54C1\u7BA1\u7406\u5217\u987A\u5E8F\u5E94\u4FDD\u5B58\u5230\u72EC\u7ACB localStorage key\uFF0C\u5E76\u517C\u5BB9\u5217\u589E\u5220"
     );
-    assert(
-      pageSource.includes("components={{ header: { cell: DraggableHeaderCell } }}") && pageSource.includes("<SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>") && pageSource.includes("<DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>"),
+    assert2(
+      pageSource2.includes("components={{ header: { cell: DraggableHeaderCell } }}") && pageSource2.includes("<SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>") && pageSource2.includes("<DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>"),
       "\u5546\u54C1\u7BA1\u7406\u8868\u683C\u5E94\u63A5\u5165\u53EF\u62D6\u62FD\u8868\u5934 cell \u4E0E\u6A2A\u5411 SortableContext"
     );
-    assert(
-      pageSource.includes("const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]") && pageSource.includes("rowSelection={{") && !pageSource.includes("columnOrder.includes('selection')"),
+    assert2(
+      pageSource2.includes("const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]") && pageSource2.includes("rowSelection={{") && !pageSource2.includes("columnOrder.includes('selection')"),
       "\u5546\u54C1\u7BA1\u7406\u9009\u62E9\u5217\u4ECD\u5E94\u7531 rowSelection \u7BA1\u7406\uFF0C\u4E0D\u80FD\u8FDB\u5165\u4E1A\u52A1\u5217\u62D6\u62FD\u987A\u5E8F"
     );
   });
   if (draggableColumnsFailure) failures.push(draggableColumnsFailure);
   const defaultColumnOrderFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u8868\u683C\u9ED8\u8BA4\u5217\u987A\u5E8F\u5E94\u6309\u622A\u56FE\u5E76\u652F\u6301\u91CD\u7F6E\u5217", () => {
-    const defaultOrderSection = extractSection(
-      pageSource,
+    const defaultOrderSection = extractSection2(
+      pageSource2,
       "const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER",
       "] as const"
     );
@@ -1727,349 +1915,349 @@ async function main() {
     let lastIndex = -1;
     for (const key of expectedOrder) {
       const nextIndex = defaultOrderSection.indexOf(key);
-      assert(nextIndex > lastIndex, `\u9ED8\u8BA4\u5217\u987A\u5E8F\u5E94\u5305\u542B\u5E76\u6309\u622A\u56FE\u6392\u5217 ${key}`);
+      assert2(nextIndex > lastIndex, `\u9ED8\u8BA4\u5217\u987A\u5E8F\u5E94\u5305\u542B\u5E76\u6309\u622A\u56FE\u6392\u5217 ${key}`);
       lastIndex = nextIndex;
     }
-    assert(
+    assert2(
       !defaultOrderSection.includes("'selection'"),
       "\u9ED8\u8BA4\u5217\u987A\u5E8F\u4E0D\u80FD\u5305\u542B selection\uFF0C\u9009\u62E9\u5217\u4ECD\u7531 rowSelection \u7BA1\u7406"
     );
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "const draggableColumnKeys"
     );
-    assert(
+    assert2(
       columnsSection.indexOf("key: 'domesticSupplierCode'") < columnsSection.indexOf("key: 'categoryName'") && columnsSection.indexOf("key: 'categoryName'") < columnsSection.indexOf("key: 'nameEn'") && columnsSection.indexOf("key: 'nameEn'") < columnsSection.indexOf("key: 'minOrderQuantity'") && columnsSection.indexOf("key: 'minOrderQuantity'") < columnsSection.indexOf("key: 'domesticPrice'") && columnsSection.indexOf("key: 'barcode'") < columnsSection.indexOf("key: 'locationCodes'") && columnsSection.indexOf("key: 'locationCodes'") < columnsSection.indexOf("key: 'name'"),
       "baseColumns \u5E94\u6309\u622A\u56FE\u9ED8\u8BA4\u987A\u5E8F\u6392\u5217\uFF0C\u907F\u514D\u9ED8\u8BA4\u987A\u5E8F\u4F9D\u8D56\u5386\u53F2\u4EE3\u7801\u987A\u5E8F"
     );
-    assert(
-      pageSource.includes("const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]") && pageSource.includes("mergeWarehouseProductColumnOrder(current.length ? current : savedOrder, WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER)"),
+    assert2(
+      pageSource2.includes("const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]") && pageSource2.includes("mergeWarehouseProductColumnOrder(current.length ? current : savedOrder, WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER)"),
       "\u5217\u987A\u5E8F\u521D\u59CB\u5316\u5E94\u4EE5\u663E\u5F0F\u9ED8\u8BA4\u987A\u5E8F\u4E3A\u51C6\uFF0C\u5E76\u517C\u5BB9 localStorage \u65E7\u7F13\u5B58"
     );
-    const resetSection = extractSection(
-      pageSource,
+    const resetSection = extractSection2(
+      pageSource2,
       "const handleResetColumnOrder = () => {",
       "const orderedColumns = useMemo"
     );
-    assert(
+    assert2(
       resetSection.includes("localStorage.removeItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY)") && resetSection.includes("setColumnOrder([...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER])") && resetSection.includes("\u9009\u62E9\u5217\u4ECD\u7531 Ant Design rowSelection \u7BA1\u7406"),
       "\u91CD\u7F6E\u5217\u903B\u8F91\u5E94\u6E05\u9664\u5217\u987A\u5E8F\u7F13\u5B58\uFF0C\u6062\u590D\u9ED8\u8BA4\u4E1A\u52A1\u5217\u987A\u5E8F\uFF0C\u5E76\u4FDD\u7559\u4E2D\u6587\u6CE8\u91CA\u8BF4\u660E\u9009\u62E9\u5217\u8FB9\u754C"
     );
-    assert(
-      pageSource.includes("t('warehouse.resetColumns', '\u91CD\u7F6E\u5217')") && pageSource.includes("onClick={handleResetColumnOrder}") && pageSource.includes("disabled={!isColumnOrderCustomized}"),
+    assert2(
+      pageSource2.includes("t('warehouse.resetColumns', '\u91CD\u7F6E\u5217')") && pageSource2.includes("onClick={handleResetColumnOrder}") && pageSource2.includes("disabled={!isColumnOrderCustomized}"),
       "\u7B5B\u9009\u5DE5\u5177\u680F\u5E94\u63D0\u4F9B\u91CD\u7F6E\u5217\u6309\u94AE\uFF0C\u5E76\u4EC5\u5728\u5217\u987A\u5E8F\u81EA\u5B9A\u4E49\u540E\u542F\u7528"
     );
-    assert(
-      pageSource.includes("rowSelection={{") && !pageSource.includes("WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = ['selection'"),
+    assert2(
+      pageSource2.includes("rowSelection={{") && !pageSource2.includes("WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = ['selection'"),
       "\u91CD\u7F6E\u5217\u529F\u80FD\u4E0D\u80FD\u6539\u53D8 rowSelection \u7BA1\u7406\u9009\u62E9\u5217\u7684\u65B9\u5F0F"
     );
   });
   if (defaultColumnOrderFailure) failures.push(defaultColumnOrderFailure);
   const supplierColumnDisplayFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u4F9B\u5E94\u5546\u5217\u5E94\u533A\u5206\u56FD\u5185\u4F9B\u5E94\u5546\u548C\u6FB3\u6D32\u4F9B\u5E94\u5546\u540D\u79F0\u663E\u793A", () => {
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "const draggableColumnKeys"
     );
-    const domesticSupplierSection = extractSection(
+    const domesticSupplierSection = extractSection2(
       columnsSection,
       "key: 'domesticSupplierCode'",
       "key: 'categoryName'"
     );
-    const australianSupplierSection = extractSection(
+    const australianSupplierSection = extractSection2(
       columnsSection,
       "key: 'localSupplierCode'",
       "key: 'updatedAt'"
     );
-    assert(
+    assert2(
       domesticSupplierSection.includes("title: t('warehouse.domesticSupplier', '\u56FD\u5185\u4F9B\u5E94\u5546')") && domesticSupplierSection.includes("dataIndex: 'domesticSupplierCode'") && domesticSupplierSection.includes("sorter: true"),
       "\u56FD\u5185\u4F9B\u5E94\u5546\u5217\u5E94\u7ED1\u5B9A domesticSupplierCode\uFF0C\u4E0D\u80FD\u663E\u793A\u6FB3\u6D32\u4F9B\u5E94\u5546\u5B57\u6BB5"
     );
-    assert(
+    assert2(
       australianSupplierSection.includes("title: t('column.australianSupplier', '\u6FB3\u6D32\u4F9B\u5E94\u5546')") && australianSupplierSection.includes("dataIndex: 'localSupplierCode'") && australianSupplierSection.includes("sorter: true"),
       "\u6FB3\u6D32\u4F9B\u5E94\u5546\u5217\u5E94\u7ED1\u5B9A localSupplierCode\uFF0C\u4E0D\u80FD\u663E\u793A\u56FD\u5185\u4F9B\u5E94\u5546\u5B57\u6BB5"
     );
-    assert(
+    assert2(
       domesticSupplierSection.includes("record.domesticSupplierName || record.domesticSupplierCode") && australianSupplierSection.includes("record.localSupplierName || localSupplierNameMap[record.localSupplierCode || ''] || record.localSupplierCode"),
       "\u56FD\u5185\u4F9B\u5E94\u5546\u5217\u5E94\u4F18\u5148\u663E\u793A\u540D\u79F0\uFF1B\u6FB3\u6D32\u4F9B\u5E94\u5546\u5217\u5E94\u4F18\u5148\u663E\u793A\u540D\u79F0\uFF0C\u5E76\u5728\u884C\u6570\u636E\u7F3A\u540D\u79F0\u65F6\u7528\u6D3B\u8DC3\u4F9B\u5E94\u5546\u6620\u5C04\u515C\u5E95"
     );
   });
   if (supplierColumnDisplayFailure) failures.push(supplierColumnDisplayFailure);
   const localSupplierFallbackFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u6FB3\u6D32\u4F9B\u5E94\u5546\u5217\u5E94\u4F7F\u7528\u6D3B\u8DC3\u4F9B\u5E94\u5546\u540D\u79F0\u515C\u5E95", () => {
-    assert(
-      pageSource.includes("import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService'"),
+    assert2(
+      pageSource2.includes("import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService'"),
       "\u9875\u9762\u5E94\u4ECE\u6FB3\u6D32\u4F9B\u5E94\u5546\u670D\u52A1\u5BFC\u5165\u6D3B\u8DC3\u4F9B\u5E94\u5546\u5217\u8868\uFF0C\u5E76\u4F7F\u7528\u522B\u540D\u907F\u514D\u548C\u56FD\u5185\u4F9B\u5E94\u5546\u6DF7\u6DC6"
     );
-    assert(
-      pageSource.includes("const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({})"),
+    assert2(
+      pageSource2.includes("const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({})"),
       "\u9875\u9762\u5E94\u7EF4\u62A4\u6FB3\u6D32\u4F9B\u5E94\u5546\u4EE3\u7801\u5230\u540D\u79F0\u7684\u515C\u5E95\u6620\u5C04"
     );
-    assert(
-      pageSource.includes("getActiveAustralianSuppliers()") && pageSource.includes("setLocalSupplierNameMap(") && pageSource.includes("map[item.localSupplierCode] = item.name"),
+    assert2(
+      pageSource2.includes("getActiveAustralianSuppliers()") && pageSource2.includes("setLocalSupplierNameMap(") && pageSource2.includes("map[item.localSupplierCode] = item.name"),
       "\u9875\u9762\u52A0\u8F7D\u65F6\u5E94\u8BFB\u53D6\u6D3B\u8DC3\u6FB3\u6D32\u4F9B\u5E94\u5546\u5E76\u5EFA\u7ACB\u4EE3\u7801\u5230\u540D\u79F0\u6620\u5C04"
     );
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "const draggableColumnKeys"
     );
-    const australianSupplierSection = extractSection(
+    const australianSupplierSection = extractSection2(
       columnsSection,
       "key: 'localSupplierCode'",
       "key: 'updatedAt'"
     );
-    assert(
+    assert2(
       australianSupplierSection.includes("record.localSupplierName || localSupplierNameMap[record.localSupplierCode || ''] || record.localSupplierCode"),
       "\u6FB3\u6D32\u4F9B\u5E94\u5546\u5217\u5E94\u6309\u884C\u5185\u540D\u79F0\u3001\u6D3B\u8DC3\u4F9B\u5E94\u5546\u540D\u79F0\u6620\u5C04\u3001\u4F9B\u5E94\u5546\u4EE3\u7801\u7684\u987A\u5E8F\u663E\u793A"
     );
-    assert(
-      pageSource.includes("\u8868\u683C\u63A5\u53E3\u53EA\u8FD4\u56DE\u6FB3\u6D32\u4F9B\u5E94\u5546\u4EE3\u7801\u65F6\uFF0C\u7528\u6D3B\u8DC3\u4F9B\u5E94\u5546\u5217\u8868\u8865\u9F50\u540D\u79F0"),
+    assert2(
+      pageSource2.includes("\u8868\u683C\u63A5\u53E3\u53EA\u8FD4\u56DE\u6FB3\u6D32\u4F9B\u5E94\u5546\u4EE3\u7801\u65F6\uFF0C\u7528\u6D3B\u8DC3\u4F9B\u5E94\u5546\u5217\u8868\u8865\u9F50\u540D\u79F0"),
       "\u515C\u5E95\u903B\u8F91\u5E94\u6709\u4E2D\u6587\u6CE8\u91CA\u8BF4\u660E\u539F\u56E0"
     );
   });
   if (localSupplierFallbackFailure) failures.push(localSupplierFallbackFailure);
   const categoryColumnFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u8868\u683C\u5E94\u663E\u793A\u5206\u7C7B\u540D\u79F0\u5E76\u60AC\u6D6E\u5C55\u793A\u5B8C\u6574\u8DEF\u5F84", () => {
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "const draggableColumnKeys"
     );
-    const categoryColumn = extractSection(
+    const categoryColumn = extractSection2(
       columnsSection,
       "key: 'categoryName'",
       "key: 'minOrderQuantity'"
     );
-    assert(categoryColumn.includes("title: t('column.category')"), "\u5206\u7C7B\u5217\u5E94\u4F7F\u7528 column.category \u6587\u6848");
-    assert(categoryColumn.includes("dataIndex: 'categoryName'"), "\u5206\u7C7B\u5217\u5E94\u7ED1\u5B9A categoryName");
-    assert(categoryColumn.includes("renderWarehouseProductCategoryCell(record, categoryLookup, i18n.language)"), "\u5206\u7C7B\u5217\u5E94\u4F7F\u7528\u5206\u7C7B\u5C55\u793A helper");
-    assert(pageSource.includes("function renderWarehouseProductCategoryCell"), "\u9875\u9762\u5E94\u63D0\u4F9B\u5206\u7C7B\u5355\u5143\u683C helper");
-    assert(pageSource.includes("getWarehouseProductCategoryTooltip(record, categoryLookup, language)"), "\u5206\u7C7B Tooltip \u5E94\u4F18\u5148\u8BFB\u53D6\u5B8C\u6574\u8DEF\u5F84 helper");
-    assert(pageSource.includes("const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])"), "\u9875\u9762\u5E94\u57FA\u4E8E\u5206\u7C7B\u6811\u5EFA\u7ACB GUID \u548C\u5206\u7C7B\u540D\u5230\u5B8C\u6574\u8DEF\u5F84\u7684\u6620\u5C04");
-    assert(pageSource.includes("buildWarehouseCategoryLookup") && pageSource.includes("WarehouseCategoryLookup"), "\u9875\u9762\u5E94\u590D\u7528\u53EF\u6D4B\u8BD5\u7684\u5206\u7C7B\u8DEF\u5F84 lookup helper");
-    assert(categoryTreePickerSource.includes("formatWarehouseCategoryNodeName(node, language)"), "\u5206\u7C7B\u6811\u8282\u70B9\u5E94\u6309\u5F53\u524D\u8BED\u8A00\u663E\u793A\u540D\u79F0");
-    assert(pageSource.includes("buildFilterCategoryOptions(categories, t, i18n.language)"), "\u5206\u7C7B\u7B5B\u9009\u4E0B\u62C9\u5E94\u4F7F\u7528\u5F53\u524D\u8BED\u8A00\u663E\u793A\u5206\u7C7B\u540D");
-    assert(pageSource.includes("import CategoryTreePicker from './CategoryTreePicker'"), "\u6279\u91CF\u5206\u7C7B\u5F39\u7A97\u5E94\u590D\u7528\u5E26\u67E5\u8BE2\u7684\u5206\u7C7B\u6811\u7EC4\u4EF6");
-    assert(pageSource.includes("setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1));"), "\u6279\u91CF\u5206\u7C7B\u5F39\u7A97\u6BCF\u6B21\u6253\u5F00\u5E94\u9ED8\u8BA4\u5C55\u5F00\u5230\u4E00\u7EA7\u5206\u7C7B");
-    assert(pageSource.includes("<CategoryTreePicker categories={categories}") && pageSource.includes("maxHeight={420}"), "\u6279\u91CF\u5206\u7C7B\u6811\u5E94\u4F7F\u7528\u5F53\u524D\u8BED\u8A00\u67E5\u8BE2\u7EC4\u4EF6\u6784\u5EFA");
-    assert(pageSource.includes("selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)"), "\u6279\u91CF\u5206\u7C7B\u76EE\u6807\u63D0\u793A\u5E94\u663E\u793A\u5F53\u524D\u8BED\u8A00\u5B8C\u6574\u8DEF\u5F84");
-    assert(pageSource.includes("<Tooltip title={tooltipTitle}"), "\u5206\u7C7B\u540D\u79F0\u5E94\u901A\u8FC7 Tooltip \u5C55\u793A\u5B8C\u6574\u8DEF\u5F84");
-    assert(pageSource.includes('className="warehouse-products-category-cell"'), "\u5206\u7C7B\u540D\u79F0\u5E94\u6302\u8F7D\u7D27\u51D1\u6837\u5F0F class");
-    assert(pageSource.includes("record.categoryName ||") && pageSource.includes("'--'"), "\u5206\u7C7B\u5217\u7F3A\u5931\u540D\u79F0\u65F6\u5E94\u663E\u793A --");
-    const batchCategorySaveSection = extractSection(
-      pageSource,
+    assert2(categoryColumn.includes("title: t('column.category')"), "\u5206\u7C7B\u5217\u5E94\u4F7F\u7528 column.category \u6587\u6848");
+    assert2(categoryColumn.includes("dataIndex: 'categoryName'"), "\u5206\u7C7B\u5217\u5E94\u7ED1\u5B9A categoryName");
+    assert2(categoryColumn.includes("renderWarehouseProductCategoryCell(record, categoryLookup, i18n.language)"), "\u5206\u7C7B\u5217\u5E94\u4F7F\u7528\u5206\u7C7B\u5C55\u793A helper");
+    assert2(pageSource2.includes("function renderWarehouseProductCategoryCell"), "\u9875\u9762\u5E94\u63D0\u4F9B\u5206\u7C7B\u5355\u5143\u683C helper");
+    assert2(pageSource2.includes("getWarehouseProductCategoryTooltip(record, categoryLookup, language)"), "\u5206\u7C7B Tooltip \u5E94\u4F18\u5148\u8BFB\u53D6\u5B8C\u6574\u8DEF\u5F84 helper");
+    assert2(pageSource2.includes("const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])"), "\u9875\u9762\u5E94\u57FA\u4E8E\u5206\u7C7B\u6811\u5EFA\u7ACB GUID \u548C\u5206\u7C7B\u540D\u5230\u5B8C\u6574\u8DEF\u5F84\u7684\u6620\u5C04");
+    assert2(pageSource2.includes("buildWarehouseCategoryLookup") && pageSource2.includes("WarehouseCategoryLookup"), "\u9875\u9762\u5E94\u590D\u7528\u53EF\u6D4B\u8BD5\u7684\u5206\u7C7B\u8DEF\u5F84 lookup helper");
+    assert2(categoryTreePickerSource.includes("formatWarehouseCategoryNodeName(node, language)"), "\u5206\u7C7B\u6811\u8282\u70B9\u5E94\u6309\u5F53\u524D\u8BED\u8A00\u663E\u793A\u540D\u79F0");
+    assert2(pageSource2.includes("buildFilterCategoryOptions(categories, t, i18n.language)"), "\u5206\u7C7B\u7B5B\u9009\u4E0B\u62C9\u5E94\u4F7F\u7528\u5F53\u524D\u8BED\u8A00\u663E\u793A\u5206\u7C7B\u540D");
+    assert2(pageSource2.includes("import CategoryTreePicker from './CategoryTreePicker'"), "\u6279\u91CF\u5206\u7C7B\u5F39\u7A97\u5E94\u590D\u7528\u5E26\u67E5\u8BE2\u7684\u5206\u7C7B\u6811\u7EC4\u4EF6");
+    assert2(pageSource2.includes("setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1));"), "\u6279\u91CF\u5206\u7C7B\u5F39\u7A97\u6BCF\u6B21\u6253\u5F00\u5E94\u9ED8\u8BA4\u5C55\u5F00\u5230\u4E00\u7EA7\u5206\u7C7B");
+    assert2(pageSource2.includes("<CategoryTreePicker categories={categories}") && pageSource2.includes("maxHeight={420}"), "\u6279\u91CF\u5206\u7C7B\u6811\u5E94\u4F7F\u7528\u5F53\u524D\u8BED\u8A00\u67E5\u8BE2\u7EC4\u4EF6\u6784\u5EFA");
+    assert2(pageSource2.includes("selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)"), "\u6279\u91CF\u5206\u7C7B\u76EE\u6807\u63D0\u793A\u5E94\u663E\u793A\u5F53\u524D\u8BED\u8A00\u5B8C\u6574\u8DEF\u5F84");
+    assert2(pageSource2.includes("<Tooltip title={tooltipTitle}"), "\u5206\u7C7B\u540D\u79F0\u5E94\u901A\u8FC7 Tooltip \u5C55\u793A\u5B8C\u6574\u8DEF\u5F84");
+    assert2(pageSource2.includes('className="warehouse-products-category-cell"'), "\u5206\u7C7B\u540D\u79F0\u5E94\u6302\u8F7D\u7D27\u51D1\u6837\u5F0F class");
+    assert2(pageSource2.includes("record.categoryName ||") && pageSource2.includes("'--'"), "\u5206\u7C7B\u5217\u7F3A\u5931\u540D\u79F0\u65F6\u5E94\u663E\u793A --");
+    const batchCategorySaveSection = extractSection2(
+      pageSource2,
       "const handleBatchCategorySave = async () => {",
       "const handleBatchEditSave = async () => {"
     );
-    assert(
+    assert2(
       batchCategorySaveSection.includes("await batchAssignProducts(targetCategoryGuid, selectedProductCodes)") && batchCategorySaveSection.includes("setData((items) =>") && batchCategorySaveSection.includes("selectedProductCodeSet.has(item.productCode)") && batchCategorySaveSection.includes("warehouseCategoryGUID: targetCategoryGuid") && batchCategorySaveSection.includes("categoryName: selectedTargetCategory") && batchCategorySaveSection.includes("formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)") && !batchCategorySaveSection.includes("void loadData({ page })"),
       "\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u5206\u7C7B\u4FDD\u5B58\u6210\u529F\u540E\u5E94\u672C\u5730\u66F4\u65B0\u5F53\u524D\u9875\u5206\u7C7B\uFF0C\u4E0D\u5E94\u91CD\u65B0\u67E5\u8BE2\u5546\u54C1\u8868\u683C"
     );
-    assert(
+    assert2(
       categoryTreePickerSource.includes("function filterCategoryTree") && categoryTreePickerSource.includes("buildSearchText(node, language, parentPath).includes(keyword)") && categoryTreePickerSource.includes("children: childResult.nodes") && categoryTreePickerSource.includes("const visibleExpandedKeys = keyword ? searchResult.expandedKeys : expandedKeys") && categoryTreePickerSource.includes("placeholder={t('warehouse.categories.searchPlaceholder'"),
       "\u5171\u4EAB\u5206\u7C7B\u6811\u7EC4\u4EF6\u5E94\u652F\u6301\u67E5\u8BE2\u5206\u7C7B\u540D\u548C\u7236\u7EA7\u8DEF\u5F84\uFF0C\u5E76\u5728\u641C\u7D22\u65F6\u81EA\u52A8\u5C55\u5F00\u547D\u4E2D\u8DEF\u5F84"
     );
   });
   if (categoryColumnFailure) failures.push(categoryColumnFailure);
   const categoryManagementFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u590D\u7528\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E76\u8054\u52A8\u6279\u91CF\u5206\u7C7B\u76EE\u6807", () => {
-    assert(
-      pageSource.includes("import ContainerCategoryManageModal from '../ContainerDetail/ContainerCategoryManageModal'") && pageSource.includes("resolveContainerCategorySelectionAfterRefresh") && pageSource.includes("resolveContainerCategoryTargetAfterMutation"),
+    assert2(
+      pageSource2.includes("import ContainerCategoryManageModal from '../ContainerDetail/ContainerCategoryManageModal'") && pageSource2.includes("resolveContainerCategorySelectionAfterRefresh") && pageSource2.includes("resolveContainerCategoryTargetAfterMutation"),
       "\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u590D\u7528\u8D27\u67DC\u660E\u7EC6\u7684\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u548C\u76EE\u6807\u8054\u52A8\u903B\u8F91"
     );
-    assert(
-      pageSource.includes("const [categoryManageOpen, setCategoryManageOpen] = useState(false);"),
+    assert2(
+      pageSource2.includes("const [categoryManageOpen, setCategoryManageOpen] = useState(false);"),
       "\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u7EF4\u62A4\u72EC\u7ACB\u7684\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5F00\u5173"
     );
-    const openBatchCategorySection = extractSection(
-      pageSource,
+    const openBatchCategorySection = extractSection2(
+      pageSource2,
       "const openBatchCategory = () => {",
       "const handleBatchCategorySave = async () => {"
     );
-    assert(
+    assert2(
       openBatchCategorySection.includes("setTargetCategoryGuid((current) => findWarehouseCategory(categories, current)?.categoryGUID);") && !openBatchCategorySection.includes("setTargetCategoryGuid(undefined);"),
       "\u6253\u5F00\u6279\u91CF\u5206\u7C7B\u65F6\u5E94\u4FDD\u7559\u5206\u7C7B\u6811\u4E2D\u4ECD\u5B58\u5728\u7684\u7BA1\u7406\u5F39\u7A97\u76EE\u6807"
     );
-    const categoryMutationSection = extractSection(
-      pageSource,
+    const categoryMutationSection = extractSection2(
+      pageSource2,
       "const handleCategoryMutationCommitted = (change: ContainerCategoryChange) => {",
       "const openBatchCategory = () => {"
     );
-    assert(
+    assert2(
       categoryMutationSection.includes("resolveContainerCategoryTargetAfterMutation(current, change)") && categoryMutationSection.includes("setCategories(tree);") && categoryMutationSection.includes("setCategoryExpandedKeys(firstLevelExpandedKeys);") && categoryMutationSection.includes("setCategoryFilterExpandedKeys(firstLevelExpandedKeys);") && categoryMutationSection.includes("resolveContainerCategorySelectionAfterRefresh("),
       "\u5206\u7C7B\u5199\u5165\u53CA\u5237\u65B0\u540E\u5E94\u540C\u6B65\u6279\u91CF\u76EE\u6807\u3001\u6279\u91CF\u5206\u7C7B\u6811\u548C\u9876\u90E8\u7B5B\u9009\u6811"
     );
-    const manageButtonSection = extractSection(
-      pageSource,
+    const manageButtonSection = extractSection2(
+      pageSource2,
       "{access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />}",
       '{access.canWriteProduct ? (<Button type="primary"'
     );
-    assert(
+    assert2(
       manageButtonSection.includes("onClick={() => setCategoryManageOpen(true)}") && manageButtonSection.includes("t('containers.actions.manageCategories', '\u7BA1\u7406\u5206\u7C7B')") && !manageButtonSection.includes("selectedRowKeys") && !manageButtonSection.includes("disabled="),
       "\u7BA1\u7406\u5206\u7C7B\u5165\u53E3\u5E94\u4EC5\u53D7\u5206\u7C7B\u7BA1\u7406\u6743\u9650\u63A7\u5236\uFF0C\u4E14\u65E0\u9700\u52FE\u9009\u5546\u54C1"
     );
-    const categoryManageModalSection = extractSection(
-      pageSource,
+    const categoryManageModalSection = extractSection2(
+      pageSource2,
       "{access.canManageWarehouseCategories ? (<ContainerCategoryManageModal",
       "<ImportFromDomesticModal"
     );
-    assert(
+    assert2(
       categoryManageModalSection.includes("open={categoryManageOpen}") && categoryManageModalSection.includes("activeTargetCategoryGuid={targetCategoryGuid}") && categoryManageModalSection.includes("onMutationCommitted={handleCategoryMutationCommitted}") && categoryManageModalSection.includes("onCategoriesChanged={handleCategoriesChanged}"),
       "\u5206\u7C7B\u7BA1\u7406\u5F39\u7A97\u5E94\u6536\u5230\u5F53\u524D\u6279\u91CF\u76EE\u6807\u53CA\u4E24\u4E2A\u8054\u52A8\u56DE\u8C03"
     );
   });
   if (categoryManagementFailure) failures.push(categoryManagementFailure);
   const compactTableFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868\u5E94\u4F7F\u7528\u7D27\u51D1\u884C\u9AD8\u3001\u5A92\u4F53\u5C3A\u5BF8\u548C\u5217\u5BBD", () => {
-    assert(
-      pageSource.includes("const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60"),
+    assert2(
+      pageSource2.includes("const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60"),
       "\u5546\u54C1\u7BA1\u7406\u4E3B\u8868\u884C\u9AD8\u5E94\u538B\u7F29\u5230\u7D27\u51D1\u503C 60px"
     );
-    assert(
-      pageSource.includes(".warehouse-products-table .ant-table-thead > tr > th,") && pageSource.includes("padding: 4px 6px !important") && pageSource.includes(".warehouse-products-table .ant-table-column-title") && pageSource.includes("-webkit-line-clamp: 2") && pageSource.includes(".warehouse-products-table .ant-table-filter-column") && pageSource.includes(".warehouse-products-table .ant-table-filter-trigger"),
+    assert2(
+      pageSource2.includes(".warehouse-products-table .ant-table-thead > tr > th,") && pageSource2.includes("padding: 4px 6px !important") && pageSource2.includes(".warehouse-products-table .ant-table-column-title") && pageSource2.includes("-webkit-line-clamp: 2") && pageSource2.includes(".warehouse-products-table .ant-table-filter-column") && pageSource2.includes(".warehouse-products-table .ant-table-filter-trigger"),
       "\u5546\u54C1\u7BA1\u7406\u4E3B\u8868\u5E94\u4F7F\u7528\u7D27\u51D1\u5355\u5143\u683C padding\uFF0C\u4E14\u8868\u5934\u6807\u9898\u3001\u6392\u5E8F\u548C\u7B5B\u9009\u56FE\u6807\u5E94\u7A33\u5B9A\u6392\u5217"
     );
-    assert(
-      pageSource.includes("min-height: 48px") && pageSource.includes("max-height: 48px") && pageSource.includes("width: 36px") && pageSource.includes("height: 36px") && pageSource.includes("max-height: 42px !important"),
+    assert2(
+      pageSource2.includes("min-height: 48px") && pageSource2.includes("max-height: 48px") && pageSource2.includes("width: 36px") && pageSource2.includes("height: 36px") && pageSource2.includes("max-height: 42px !important"),
       "\u5546\u54C1\u56FE\u7247\u548C\u6761\u7801\u9884\u89C8\u5E94\u4F7F\u7528\u7D27\u51D1\u5C3A\u5BF8\uFF0C\u51CF\u5C11\u884C\u5185\u5360\u7528\u7A7A\u95F4"
     );
-    const columnsSection = extractSection(
-      pageSource,
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "return (<>"
     );
-    assert(
+    assert2(
       columnsSection.includes("key: 'productImage'") && columnsSection.includes("width: 64") && columnsSection.includes('<Image src={value} alt="" width={36} height={36}') && columnsSection.includes("key: 'itemNumber'") && columnsSection.includes("width: 122") && columnsSection.includes("key: 'isActive'") && columnsSection.includes("width: 104") && columnsSection.includes("key: 'productType'") && columnsSection.includes("key: 'domesticPrice'") && columnsSection.includes("width: 96") && columnsSection.includes("key: 'packingQty'") && columnsSection.includes("width: 108") && columnsSection.includes("key: 'minOrderQuantity'") && columnsSection.includes("dataIndex: 'minOrderQuantity'") && columnsSection.includes("width: 96") && columnsSection.includes("key: 'updatedAt'") && columnsSection.includes("width: 164"),
       "\u56FE\u7247\u3001\u72B6\u6001\u3001\u5546\u54C1\u7C7B\u578B\u3001\u4EF7\u683C\u3001\u88C5\u7BB1\u6570\u3001\u4E2D\u5305\u6570\u548C\u66F4\u65B0\u65F6\u95F4\u7B49\u5173\u952E\u5217\u5E94\u4F7F\u7528\u7B5B\u9009\u53CB\u597D\u5217\u5BBD\uFF0C\u4E14\u4E2D\u5305\u6570\u4ECD\u7ED1\u5B9A minOrderQuantity"
     );
-    assert(
-      columnsSection.includes("BarcodePreview value={value} textMaxWidth={150} compactCopy") && pageSource.includes("scroll={{ x: 2390, y: 620 }}"),
+    assert2(
+      columnsSection.includes("BarcodePreview value={value} textMaxWidth={150} compactCopy") && pageSource2.includes("scroll={{ x: 2390, y: 620 }}"),
       "\u6761\u7801\u5217\u548C\u8868\u683C\u6A2A\u5411\u6EDA\u52A8\u5BBD\u5EA6\u5E94\u6309\u7D27\u51D1\u5E03\u5C40\u66F4\u65B0"
     );
-    assert(
-      pageSource.includes("components={{ header: { cell: DraggableHeaderCell } }}") && pageSource.includes("rowSelection={{") && pageSource.includes("const orderedColumns = useMemo"),
+    assert2(
+      pageSource2.includes("components={{ header: { cell: DraggableHeaderCell } }}") && pageSource2.includes("rowSelection={{") && pageSource2.includes("const orderedColumns = useMemo"),
       "\u7D27\u51D1\u663E\u793A\u4E0D\u80FD\u79FB\u9664\u62D6\u62FD\u5217\u5934\u3001rowSelection \u6216 orderedColumns"
     );
   });
   if (compactTableFailure) failures.push(compactTableFailure);
   const mainTablePaginationFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868\u9ED8\u8BA4\u6BCF\u9875 100 \u4E14\u4EC5\u63D0\u4F9B\u5927\u5206\u9875\u9009\u9879", () => {
-    const tableSection = extractSection(
-      pageSource,
+    const tableSection = extractSection2(
+      pageSource2,
       "pagination={{",
       "}} onChange={(pagination: TablePaginationConfig"
     );
-    assert(
-      pageSource.includes("const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100") && pageSource.includes("const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']"),
+    assert2(
+      pageSource2.includes("const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100") && pageSource2.includes("const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']"),
       "\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868\u5E94\u96C6\u4E2D\u58F0\u660E\u9ED8\u8BA4\u5206\u9875 100 \u548C 50/100/200/500/1000 \u5206\u9875\u9009\u9879"
     );
-    assert(
-      pageSource.includes("const [pageSize, setPageSize] = useState(WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE);"),
+    assert2(
+      pageSource2.includes("const [pageSize, setPageSize] = useState(WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE);"),
       "\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868 pageSize \u521D\u59CB\u503C\u5E94\u4F7F\u7528\u9ED8\u8BA4\u5206\u9875\u5E38\u91CF 100"
     );
-    assert(
+    assert2(
       tableSection.includes("pageSizeOptions: WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS") && tableSection.includes("showSizeChanger: true,"),
       "\u4ED3\u5E93\u5546\u54C1\u4E3B\u8868\u5206\u9875\u4E0B\u62C9\u5E94\u53EA\u4F7F\u7528 50/100/200/500/1000 \u8FD9\u4E9B\u9009\u9879\uFF0C\u5E76\u4FDD\u7559\u5207\u6362\u5165\u53E3"
     );
-    assert(
-      pageSource.includes("virtual") && pageSource.includes("scroll={{ x: 2390, y: 620 }}") && pageSource.includes("const result = await getWarehouseProductsTable(query);"),
+    assert2(
+      pageSource2.includes("virtual") && pageSource2.includes("scroll={{ x: 2390, y: 620 }}") && pageSource2.includes("const result = await getWarehouseProductsTable(query);"),
       "\u5206\u9875\u8C03\u6574\u5E94\u4FDD\u7559\u73B0\u6709\u865A\u62DF\u8868\u683C\u3001\u56FA\u5B9A\u6EDA\u52A8\u9AD8\u5EA6\u548C\u5F02\u6B65\u670D\u52A1\u7AEF\u5206\u9875\u8BF7\u6C42"
     );
   });
   if (mainTablePaginationFailure) failures.push(mainTablePaginationFailure);
   const adminOnlyButtonFailure = await runTest("\u9875\u9762\u5E94\u4EC5\u5BF9 Admin \u6E32\u67D3\u4ECE HQ \u540C\u6B65\u6309\u94AE", () => {
-    assert(
-      pageSource.includes("CloudSyncOutlined"),
+    assert2(
+      pageSource2.includes("CloudSyncOutlined"),
       "\u9875\u9762\u5E94\u5F15\u5165 CloudSyncOutlined \u56FE\u6807"
     );
-    assert(
-      pageSource.includes("access.isAdmin") && pageSource.includes("t('warehouse.hqSync', '\u4ECEHQ\u540C\u6B65\u5E93\u5B58')"),
+    assert2(
+      pageSource2.includes("access.isAdmin") && pageSource2.includes("t('warehouse.hqSync', '\u4ECEHQ\u540C\u6B65\u5E93\u5B58')"),
       "\u9875\u9762\u5E94\u57FA\u4E8E access.isAdmin \u63A7\u5236\u201C\u4ECEHQ\u540C\u6B65\u5E93\u5B58\u201D\u6309\u94AE\u53EF\u89C1\u6027"
     );
   });
   if (adminOnlyButtonFailure) failures.push(adminOnlyButtonFailure);
   const modalConfirmFailure = await runTest("\u70B9\u51FB\u540C\u6B65\u6309\u94AE\u524D\u5E94\u5F39\u51FA\u660E\u786E\u63D0\u793A\u6309\u5546\u54C1\u7F16\u7801\u65B0\u589E\u66F4\u65B0\u7684\u786E\u8BA4\u6846", () => {
-    const syncSection = extractSection(
-      pageSource,
+    const syncSection = extractSection2(
+      pageSource2,
       "const handleSyncWarehouseProductsFromHq = () => {",
       "const baseColumns = useMemo"
     );
-    assert(
+    assert2(
       syncSection.includes("Modal.confirm({") && syncSection.includes("t('warehouse.hqSyncTitle', '\u4ECEHQ\u540C\u6B65\u5E93\u5B58')") && syncSection.includes("\u6309\u5546\u54C1\u7F16\u7801\u5339\u914D") && syncSection.includes("\u4E0D\u4F1A\u5220\u9664\u672C\u5730\u7F3A\u5931\u5546\u54C1"),
       "\u540C\u6B65\u524D\u5E94\u5F39\u51FA\u660E\u786E\u63D0\u793A\u201C\u6309\u5546\u54C1\u7F16\u7801\u5339\u914D\u65B0\u589E/\u66F4\u65B0\u4E14\u4E0D\u5220\u9664\u672C\u5730\u7F3A\u5931\u5546\u54C1\u201D\u7684\u786E\u8BA4\u6846"
     );
   });
   if (modalConfirmFailure) failures.push(modalConfirmFailure);
   const loadingFailure = await runTest("\u540C\u6B65\u6309\u94AE\u5E94\u5728\u540E\u53F0\u4EFB\u52A1\u63D0\u4EA4\u4E2D\u6216\u8FD0\u884C\u4E2D\u5C55\u793A loading\uFF0C\u63D0\u4EA4\u8BF7\u6C42\u4E2D disabled", () => {
-    assert(
-      pageSource.includes("loading={syncingFromHq || Boolean(activeHqSyncJob)}") && pageSource.includes("disabled={syncingFromHq}"),
+    assert2(
+      pageSource2.includes("loading={syncingFromHq || Boolean(activeHqSyncJob)}") && pageSource2.includes("disabled={syncingFromHq}"),
       "\u540C\u6B65\u6309\u94AE\u5E94\u7ED1\u5B9A\u63D0\u4EA4\u4E2D\u548C\u540E\u53F0\u8FD0\u884C\u4E2D\u72B6\u6001\uFF0C\u5E76\u5141\u8BB8\u8FD0\u884C\u4E2D\u70B9\u51FB\u67E5\u770B\u72B6\u6001"
     );
   });
   if (loadingFailure) failures.push(loadingFailure);
   const jobApiFailure = await runTest("\u9875\u9762\u5E94\u63D0\u4EA4\u540E\u53F0 job \u5E76\u8F6E\u8BE2\u67E5\u8BE2 job \u72B6\u6001", () => {
-    const syncSection = extractSection(
-      pageSource,
+    const syncSection = extractSection2(
+      pageSource2,
       "const handleSyncWarehouseProductsFromHq = () => {",
       "const baseColumns = useMemo"
     );
-    assert(
-      pageSource.includes("createWarehouseProductHqSyncJob") && pageSource.includes("getWarehouseProductHqSyncJob") && pageSource.includes("createWarehouseProductHqSyncJobPoller"),
+    assert2(
+      pageSource2.includes("createWarehouseProductHqSyncJob") && pageSource2.includes("getWarehouseProductHqSyncJob") && pageSource2.includes("createWarehouseProductHqSyncJobPoller"),
       "\u9875\u9762\u5E94\u4F7F\u7528\u540E\u53F0 job \u521B\u5EFA\u63A5\u53E3\u3001\u67E5\u8BE2\u63A5\u53E3\u548C\u8F6E\u8BE2\u5668"
     );
-    assert(
+    assert2(
       syncSection.includes("createWarehouseProductHqSyncJob") && !syncSection.includes("syncWarehouseProductsFromHq()"),
       "\u6309\u94AE\u786E\u8BA4\u540E\u4E0D\u5E94\u518D\u76F4\u63A5\u7B49\u5F85\u65E7\u540C\u6B65\u63A5\u53E3\u5B8C\u6210"
     );
   });
   if (jobApiFailure) failures.push(jobApiFailure);
   const notificationFailure = await runTest("\u540C\u6B65\u63D0\u4EA4\u548C\u5B8C\u6210\u7ED3\u679C\u5E94\u901A\u8FC7\u53F3\u4E0A\u89D2 notification \u8FD4\u56DE", () => {
-    const syncSection = extractSection(
-      pageSource,
+    const syncSection = extractSection2(
+      pageSource2,
       "const handleSyncWarehouseProductsFromHq = () => {",
       "const baseColumns = useMemo"
     );
-    assert(
-      pageSource.includes("notification") && pageSource.includes("notification.info") && pageSource.includes("notification.success") && pageSource.includes("notification.error") && pageSource.includes("notification.warning"),
+    assert2(
+      pageSource2.includes("notification") && pageSource2.includes("notification.info") && pageSource2.includes("notification.success") && pageSource2.includes("notification.error") && pageSource2.includes("notification.warning"),
       "\u9875\u9762\u5E94\u4F7F\u7528 notification \u5C55\u793A\u63D0\u4EA4\u3001\u6210\u529F\u3001\u5931\u8D25\u548C\u8D85\u65F6\u4FE1\u606F"
     );
-    assert(
+    assert2(
       syncSection.includes("t('warehouse.hqSyncJobSubmitted") && syncSection.includes("startHqSyncJobPolling"),
       "\u63D0\u4EA4\u6210\u529F\u540E\u5E94\u63D0\u793A\u540E\u53F0\u6267\u884C\u5E76\u542F\u52A8\u8F6E\u8BE2"
     );
   });
   if (notificationFailure) failures.push(notificationFailure);
   const successRefreshFailure = await runTest("\u540E\u53F0\u540C\u6B65\u6210\u529F\u540E\u53F3\u4E0A\u89D2\u63D0\u793A\u7ED3\u679C\u5E76\u5237\u65B0\u7B2C\u4E00\u9875", () => {
-    const descriptionSection = extractSection(
-      pageSource,
+    const descriptionSection = extractSection2(
+      pageSource2,
       "const buildHqSyncResultDescription",
       "const showHqSyncJobResult"
     );
-    const resultSection = extractSection(
-      pageSource,
+    const resultSection = extractSection2(
+      pageSource2,
       "const showHqSyncJobResult",
       "const startHqSyncJobPolling"
     );
-    const refreshSection = extractSection(
-      pageSource,
+    const refreshSection = extractSection2(
+      pageSource2,
       "const refreshCurrentList",
       "const stopHqSyncJobPolling"
     );
-    assert(
+    assert2(
       resultSection.includes("notification.success") && descriptionSection.includes("addedCount") && descriptionSection.includes("updatedCount") && descriptionSection.includes("errorCount") && resultSection.includes("void refreshCurrentList({ page: 1 })") && refreshSection.includes("if (!isMountedRef.current) {") && refreshSection.includes("loadDataRef.current?.(overrides)"),
       "\u540E\u53F0\u540C\u6B65\u6210\u529F\u5E94\u5C55\u793A\u7ED3\u679C\uFF0C\u5E76\u5728 mounted gate \u540E\u901A\u8FC7 current loader \u5237\u65B0\u7B2C\u4E00\u9875"
     );
   });
   if (successRefreshFailure) failures.push(successRefreshFailure);
   const failureNoRefreshFailure = await runTest("\u540E\u53F0\u540C\u6B65\u5931\u8D25\u65F6\u53EA\u63D0\u793A\u5931\u8D25\u4E14\u4E0D\u5237\u65B0\u7B2C\u4E00\u9875", () => {
-    const resultSection = extractSection(
-      pageSource,
+    const resultSection = extractSection2(
+      pageSource2,
       "const showHqSyncJobResult",
       "const startHqSyncJobPolling"
     );
-    assert(
+    assert2(
       resultSection.includes("notification.error"),
       "\u540E\u53F0\u540C\u6B65\u5931\u8D25\u65F6\u5E94\u4F7F\u7528 notification.error"
     );
-    assert(
-      !extractSection(resultSection, "if (!success) {", "const errorCount").includes("refreshCurrentList("),
+    assert2(
+      !extractSection2(resultSection, "if (!success) {", "const errorCount").includes("refreshCurrentList("),
       "\u540E\u53F0\u540C\u6B65\u5931\u8D25\u5206\u652F\u4E0D\u5E94\u5237\u65B0\u7B2C\u4E00\u9875"
     );
   });
@@ -2237,112 +2425,240 @@ async function main() {
   });
   if (columnFilterHelperFailure) failures.push(columnFilterHelperFailure);
   const columnFilterStateFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u5E94\u7EF4\u62A4\u5217\u5934\u540E\u7AEF\u7B5B\u9009\u72B6\u6001\u5E76\u533A\u5206\u5206\u7C7B\u9876\u5C42\u5B57\u6BB5", () => {
-    assert(
-      pageSource.includes("const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({})") && pageSource.includes("const mergedFilters = overrides.filters ?? columnFilters;") && pageSource.includes("filters: Object.keys(mergedFilters).length ? mergedFilters : undefined") && pageSource.includes("\u5217\u5934\u7B5B\u9009\u8D70\u540E\u7AEF Filters\uFF0C\u5206\u7C7B\u4ECD\u8D70\u9876\u5C42\u5B57\u6BB5"),
+    assert2(
+      pageSource2.includes("const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({})") && pageSource2.includes("const mergedFilters = overrides.filters ?? columnFilters;") && pageSource2.includes("filters: Object.keys(mergedFilters).length ? mergedFilters : undefined") && pageSource2.includes("\u5217\u5934\u7B5B\u9009\u8D70\u540E\u7AEF Filters\uFF0C\u5206\u7C7B\u4ECD\u8D70\u9876\u5C42\u5B57\u6BB5"),
       "\u9875\u9762\u5E94\u7EF4\u62A4 columnFilters \u72B6\u6001\uFF0C\u5E76\u5728 buildGridQuery \u4E2D\u628A\u666E\u901A\u5217\u5934\u7B5B\u9009\u53D1\u5230\u540E\u7AEF Filters"
     );
-    assert(
-      pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode'") && pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'productType'") && pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'isActive'"),
+    assert2(
+      pageSource2.includes("setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode'") && pageSource2.includes("setColumnFilters((current) => setFilterValues(current, 'productType'") && pageSource2.includes("setColumnFilters((current) => setFilterValues(current, 'isActive'"),
       "\u9876\u90E8\u4F9B\u5E94\u5546\u3001\u5546\u54C1\u7C7B\u578B\u548C\u72B6\u6001\u7B5B\u9009\u53D8\u5316\u65F6\u5E94\u540C\u6B65 columnFilters\uFF0C\u907F\u514D\u65E7\u5217\u5934\u503C\u6B8B\u7559"
     );
   });
   if (columnFilterStateFailure) failures.push(columnFilterStateFailure);
   const topCategoryTreeFilterFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u9875\u9876\u90E8\u5206\u7C7B\u7B5B\u9009\u5E94\u4F7F\u7528\u53EF\u6298\u53E0\u5206\u7C7B\u6811", () => {
-    const topFilterSection = extractSection(
-      pageSource,
+    const topFilterSection = extractSection2(
+      pageSource2,
       "<Input value={searchText}",
       "<Select value={productType}"
     );
-    assert(
-      pageSource.includes("TreeSelect") && pageSource.includes("buildFilterCategoryTreeOptions") && pageSource.includes("const [categoryFilterExpandedKeys, setCategoryFilterExpandedKeys] = useState<string[]>([])") && pageSource.includes("const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('')") && pageSource.includes("const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;") && pageSource.includes("const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language)"),
+    assert2(
+      pageSource2.includes("TreeSelect") && pageSource2.includes("buildFilterCategoryTreeOptions") && pageSource2.includes("const [categoryFilterExpandedKeys, setCategoryFilterExpandedKeys] = useState<string[]>([])") && pageSource2.includes("const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('')") && pageSource2.includes("const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;") && pageSource2.includes("const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language)"),
       "\u9876\u90E8\u5206\u7C7B\u7B5B\u9009\u5E94\u5F15\u5165 TreeSelect\uFF0C\u5E76\u4F7F\u7528\u6811\u5F62\u5206\u7C7B options\u3001\u641C\u7D22\u72B6\u6001\u4E0E\u72EC\u7ACB\u5C55\u5F00\u72B6\u6001"
     );
-    assert(
-      pageSource.includes("const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);") && pageSource.includes("setCategoryExpandedKeys(firstLevelExpandedKeys);") && pageSource.includes("setCategoryFilterExpandedKeys(firstLevelExpandedKeys);"),
+    assert2(
+      pageSource2.includes("const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);") && pageSource2.includes("setCategoryExpandedKeys(firstLevelExpandedKeys);") && pageSource2.includes("setCategoryFilterExpandedKeys(firstLevelExpandedKeys);"),
       "\u52A0\u8F7D\u5206\u7C7B\u6811\u540E\u5E94\u540C\u65F6\u521D\u59CB\u5316\u6279\u91CF\u5206\u7C7B\u6811\u548C\u9876\u90E8\u7B5B\u9009\u6811\u7684\u4E00\u7EA7\u5C55\u5F00\u72B6\u6001"
     );
-    assert(
+    assert2(
       topFilterSection.includes("<TreeSelect") && topFilterSection.includes("treeData={categoryFilterTreeOptions}") && topFilterSection.includes("searchValue={categoryFilterSearchText}") && topFilterSection.includes("onSearch={setCategoryFilterSearchText}") && topFilterSection.includes("treeExpandedKeys={hasCategoryFilterSearchText ? undefined : categoryFilterExpandedKeys}") && topFilterSection.includes("if (!hasCategoryFilterSearchText)") && topFilterSection.includes('treeNodeFilterProp="searchText"'),
       "\u9876\u90E8\u5206\u7C7B\u63A7\u4EF6\u5E94\u7ED1\u5B9A treeData\u3001\u641C\u7D22\u5B57\u6BB5\uFF0C\u5E76\u5728\u641C\u7D22\u65F6\u8BA9 TreeSelect \u81EA\u52A8\u5C55\u5F00\u547D\u4E2D\u8DEF\u5F84"
     );
-    assert(
-      topFilterSection.includes("allowClear") && topFilterSection.includes("setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);") && topFilterSection.includes("setCategoryFilterSearchText('');") && pageSource.includes("setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);") && pageSource.includes("uncategorizedOnly: true,"),
+    assert2(
+      topFilterSection.includes("allowClear") && topFilterSection.includes("setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);") && topFilterSection.includes("setCategoryFilterSearchText('');") && pageSource2.includes("setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);") && pageSource2.includes("uncategorizedOnly: true,"),
       "\u9876\u90E8\u5206\u7C7B\u6811\u6E05\u7A7A\u540E\u5E94\u56DE\u5230\u5168\u90E8\u5546\u54C1\u5E76\u6E05\u7A7A\u641C\u7D22\u8BCD\uFF0C\u672A\u5206\u7C7B\u5FEB\u6377\u6309\u94AE\u4ECD\u5E94\u67E5\u8BE2 UncategorizedOnly"
     );
   });
   if (topCategoryTreeFilterFailure) failures.push(topCategoryTreeFilterFailure);
   const tableChangeColumnFilterFailure = await runTest("\u8868\u683C onChange \u5E94\u8BFB\u53D6\u5217\u5934 filters \u5E76\u91CD\u67E5\u7B2C\u4E00\u9875", () => {
-    const tableSection = extractSection(
-      pageSource,
+    const tableSection = extractSection2(
+      pageSource2,
       "onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter:",
       "}/>"
     );
-    assert(
+    assert2(
       tableSection.includes("const nextColumnFilters = normalizeTableFilters(filters);") && tableSection.includes("const nextCategoryFilterValue = resolveCategoryFilterValueFromTableFilters(filters);") && tableSection.includes("setColumnFilters(nextColumnFilters);"),
       "\u8868\u683C onChange \u5E94\u63A5\u6536 AntD filters\uFF0C\u5E76\u8F6C\u6362\u540E\u56DE\u5199 columnFilters"
     );
-    assert(
+    assert2(
       tableSection.includes("page: extra.action === 'paginate' ? pagination.current || 1 : 1,") && tableSection.includes("filters: nextColumnFilters,") && tableSection.includes("...categoryQuery,"),
       "\u5217\u5934\u7B5B\u9009\u6216\u6392\u5E8F\u53D8\u5316\u540E\u5E94\u5E26 filters \u91CD\u67E5\u6570\u636E\uFF0C\u5E76\u5728\u975E\u5206\u9875\u573A\u666F\u56DE\u5230\u7B2C\u4E00\u9875"
     );
-    assert(
+    assert2(
       tableSection.includes("const categoryQuery = buildCategoryQueryValue(nextCategoryFilterValue);") && tableSection.includes("setCategoryFilterValue(nextCategoryFilterValue);"),
       "\u5206\u7C7B\u5217\u5934\u53D8\u5316\u65F6\u5E94\u8F6C\u6210\u9876\u5C42\u5206\u7C7B\u67E5\u8BE2\u5B57\u6BB5\uFF0C\u800C\u4E0D\u662F\u6DF7\u5165\u666E\u901A Filters"
     );
   });
   if (tableChangeColumnFilterFailure) failures.push(tableChangeColumnFilterFailure);
-  const columnFilterUiFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u8868\u683C\u5E94\u4E3A\u6587\u672C\u6570\u5B57\u65E5\u671F\u679A\u4E3E\u5217\u63A5\u5165\u5217\u5934\u8FC7\u6EE4 UI", () => {
-    const columnsSection = extractSection(
-      pageSource,
+  const priceColumnSortFailure = await runTest("\u96F6\u552E\u4EF7\u548C\u8FDB\u53E3\u4EF7\u5217\u5E94\u4F7F\u7528\u540E\u7AEF\u4EF7\u683C\u5B57\u6BB5\u6392\u5E8F", () => {
+    const columnsSection = extractSection2(
+      pageSource2,
       "const baseColumns = useMemo",
       "const draggableColumnKeys"
     );
-    assert(
-      pageSource.includes("const renderColumnFilterPanel = (content: ReactNode, onApply: () => void, onReset: () => void) =>") && pageSource.includes("\u7EDF\u4E00\u5217\u5934\u7B5B\u9009\u9762\u677F\u9AA8\u67B6") && pageSource.includes("warehouse-products-column-filter-panel") && pageSource.includes("warehouse-products-column-filter-body") && pageSource.includes("warehouse-products-column-filter-actions") && !pageSource.includes("style={{ width: 112 }}"),
+    const importPriceSection = extractSection2(
+      columnsSection,
+      "key: 'importPrice'",
+      "key: 'labelPrice'"
+    );
+    const labelPriceSection = extractSection2(
+      columnsSection,
+      "key: 'labelPrice'",
+      "key: 'isActive'"
+    );
+    const tableSection = extractSection2(
+      pageSource2,
+      "onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter:",
+      "}/>"
+    );
+    assert2(
+      importPriceSection.includes("sorter: true") && labelPriceSection.includes("sorter: true"),
+      "\u8FDB\u53E3\u4EF7\u548C\u96F6\u552E\u4EF7\u5217\u5747\u5E94\u542F\u7528 AntD \u670D\u52A1\u7AEF\u6392\u5E8F\u5165\u53E3"
+    );
+    assert2(
+      columnFiltersSource.includes("export function normalizeWarehouseProductSortField(") && tableSection.includes("normalizeWarehouseProductSortField(nextSorter?.field, sortField)"),
+      "\u8868\u683C\u6392\u5E8F\u5E94\u5728\u8BF7\u6C42\u524D\u628A labelPrice \u89C4\u8303\u4E3A\u540E\u7AEF oemPrice \u5B57\u6BB5"
+    );
+    assertEqual(
+      normalizeWarehouseProductSortField("labelPrice", "createdAt"),
+      "oemPrice",
+      "\u96F6\u552E\u4EF7\u6392\u5E8F\u5B57\u6BB5\u5E94\u6620\u5C04\u4E3A\u540E\u7AEF OEMPrice \u5B57\u6BB5"
+    );
+    assertEqual(
+      normalizeWarehouseProductSortField("importPrice", "createdAt"),
+      "importPrice",
+      "\u8FDB\u53E3\u4EF7\u6392\u5E8F\u5B57\u6BB5\u5E94\u4FDD\u6301\u4E0D\u53D8"
+    );
+    assertEqual(
+      normalizeWarehouseProductSortField(void 0, "createdAt"),
+      "createdAt",
+      "AntD \u672A\u8FD4\u56DE\u5B57\u6BB5\u65F6\u5E94\u4FDD\u7559\u5F53\u524D\u6392\u5E8F\u5B57\u6BB5"
+    );
+  });
+  if (priceColumnSortFailure) failures.push(priceColumnSortFailure);
+  const columnFilterUiFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u8868\u683C\u5E94\u4E3A\u6587\u672C\u6570\u5B57\u65E5\u671F\u679A\u4E3E\u5217\u63A5\u5165\u5217\u5934\u8FC7\u6EE4 UI", () => {
+    const columnsSection = extractSection2(
+      pageSource2,
+      "const baseColumns = useMemo",
+      "const draggableColumnKeys"
+    );
+    assert2(
+      pageSource2.includes("const renderColumnFilterPanel = (content: ReactNode, onApply: () => void, onReset: () => void) =>") && pageSource2.includes("\u7EDF\u4E00\u5217\u5934\u7B5B\u9009\u9762\u677F\u9AA8\u67B6") && pageSource2.includes("warehouse-products-column-filter-panel") && pageSource2.includes("warehouse-products-column-filter-body") && pageSource2.includes("warehouse-products-column-filter-actions") && !pageSource2.includes("style={{ width: 112 }}"),
       "\u6587\u672C\u3001\u6570\u5B57\u548C\u65E5\u671F\u5217\u5934\u7B5B\u9009\u5E94\u590D\u7528\u7EDF\u4E00\u9762\u677F\uFF0C\u4E0D\u80FD\u56DE\u9000\u5230\u7A84 Select \u4E0B\u62C9"
     );
-    assert(
-      pageSource.includes("const buildTextFilterDropdown = (filterKey: string, placeholder: string) =>") && pageSource.includes("const buildNumberRangeFilterDropdown = (filterKey: string) =>") && pageSource.includes("const buildDateRangeFilterDropdown = (filterKey: string) =>") && pageSource.includes("textFilterModeOptions") && pageSource.includes("comparableFilterModeOptions"),
+    assert2(
+      pageSource2.includes("const buildTextFilterDropdown = (filterKey: string, placeholder: string) =>") && pageSource2.includes("const buildNumberRangeFilterDropdown = (filterKey: string) =>") && pageSource2.includes("const buildDateRangeFilterDropdown = (filterKey: string) =>") && pageSource2.includes("textFilterModeOptions") && pageSource2.includes("comparableFilterModeOptions"),
       "\u9875\u9762\u5E94\u63D0\u4F9B\u6587\u672C\u3001\u6570\u5B57\u548C\u65E5\u671F\u5217\u5934\u7B5B\u9009 helper\uFF0C\u5E76\u663E\u793A\u5339\u914D\u65B9\u5F0F\u9009\u62E9"
     );
-    assert(
+    assert2(
       columnFiltersSource.includes("const filterKeyMap: Record<string, string> = {") && columnFiltersSource.includes("name: 'productName'") && columnFiltersSource.includes("labelPrice: 'oemPrice'"),
       "normalizeTableFilters \u5E94\u663E\u5F0F\u7EF4\u62A4\u5217 key \u5230\u540E\u7AEF filter key \u7684\u6620\u5C04"
     );
-    assert(
+    assert2(
       columnsSection.includes("...textFilterProps('itemNumber'") && columnsSection.includes("...textFilterProps('productName'") && columnsSection.includes("...textFilterProps('nameEn'") && columnsSection.includes("...textFilterProps('barcode'") && columnsSection.includes("...textFilterProps('locationCodes'"),
       "\u8D27\u53F7\u3001\u5546\u54C1\u540D\u3001\u82F1\u6587\u540D\u3001\u6761\u7801\u548C\u8D27\u4F4D\u5217\u5E94\u63A5\u5165\u6587\u672C\u5217\u5934\u7B5B\u9009"
     );
-    assert(
+    assert2(
       columnsSection.includes("...numberRangeFilterProps('minOrderQuantity')") && columnsSection.includes("...numberRangeFilterProps('domesticPrice')") && columnsSection.includes("...numberRangeFilterProps('importPrice')") && columnsSection.includes("...numberRangeFilterProps('oemPrice')") && columnsSection.includes("...numberRangeFilterProps('packingQty')") && columnsSection.includes("...numberRangeFilterProps('volume')") && columnsSection.includes("...dateRangeFilterProps('updatedAt')"),
       "\u4E2D\u5305\u6570\u3001\u4EF7\u683C\u3001\u88C5\u7BB1\u6570\u3001\u4F53\u79EF\u548C\u66F4\u65B0\u65F6\u95F4\u5217\u5E94\u63A5\u5165\u6570\u5B57/\u65E5\u671F\u5217\u5934\u7B5B\u9009"
     );
-    assert(
+    assert2(
       columnsSection.includes("...enumFilterProps('domesticSupplierCode'") && columnsSection.includes("...enumFilterProps('localSupplierCode'") && columnsSection.includes("...enumFilterProps('isActive'") && columnsSection.includes("...enumFilterProps('productType'") && columnsSection.includes("filters: categoryColumnFilterOptions") && columnsSection.includes("filteredValue: categoryFilterValue === ALL_PRODUCTS_FILTER_KEY ? null : [categoryFilterValue]"),
       "\u4F9B\u5E94\u5546\u3001\u72B6\u6001\u3001\u5546\u54C1\u7C7B\u578B\u548C\u5206\u7C7B\u5217\u5E94\u66B4\u9732 filters / filteredValue \u5F62\u5F0F\u7684\u5217\u5934\u8FC7\u6EE4 UI"
     );
-    assert(
+    assert2(
       columnsSection.includes("key: 'name'") && columnsSection.includes("dataIndex: 'name'") && columnsSection.includes("...textFilterProps('productName'") && columnsSection.includes("key: 'labelPrice'") && columnsSection.includes("dataIndex: 'labelPrice'") && columnsSection.includes("...numberRangeFilterProps('oemPrice')"),
       "\u5546\u54C1\u540D\u548C OEM \u5217\u5E94\u4FDD\u7559\u539F\u5217 key\uFF0C\u540C\u65F6\u7EE7\u7EED\u4F7F\u7528\u540E\u7AEF productName / oemPrice filter key"
     );
-    assert(
+    assert2(
       columnsSection.includes("key: 'locationCodes'") && columnsSection.includes("dataIndex: 'locationCodes'") && columnsSection.includes("t('location.location', '\u8D27\u4F4D')"),
       "\u8D27\u4F4D\u5217\u5E94\u4F7F\u7528 locationCodes \u4F5C\u4E3A\u5217 key/dataIndex\uFF0C\u5E76\u590D\u7528\u8D27\u4F4D\u7FFB\u8BD1\u6587\u6848"
     );
   });
   if (columnFilterUiFailure) failures.push(columnFilterUiFailure);
   const resetColumnFilterFailure = await runTest("\u91CD\u7F6E\u67E5\u8BE2\u5E94\u6E05\u7A7A\u5217\u5934\u7B5B\u9009\u72B6\u6001", () => {
-    const resetSection = extractSection(
-      pageSource,
+    const resetSection = extractSection2(
+      pageSource2,
       "<Button icon={<ReloadOutlined />} onClick={() => {",
       "{t('common.reset')}"
     );
-    assert(
+    assert2(
       resetSection.includes("setColumnFilters({});") && resetSection.includes("filters: {},"),
       "\u70B9\u51FB\u91CD\u7F6E\u65F6\u5E94\u6E05\u7A7A columnFilters\uFF0C\u5E76\u6309\u7A7A Filters \u91CD\u67E5\u5217\u8868"
     );
   });
   if (resetColumnFilterFailure) failures.push(resetColumnFilterFailure);
+  const priceCurrencyFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u56FD\u5185\u4EF7\u663E\u793A \xA5 \u4E14\u5176\u4ED6\u4EF7\u683C\u663E\u793A $", () => {
+    const currencyHelper = extractSection2(
+      pageSource2,
+      "function getWarehouseProductPricePrefix",
+      "type SupplierSelectOption"
+    );
+    assert2(
+      currencyHelper.includes("field === 'minOrderQuantity'") && currencyHelper.includes("return field === 'domesticPrice' ? '\xA5' : '$'"),
+      "\u4E2D\u5305\u6570\u91CF\u4E0D\u5E94\u663E\u793A\u8D27\u5E01\u7B26\u53F7\uFF1B\u56FD\u5185\u4EF7\u5E94\u4F7F\u7528 \xA5\uFF0C\u8FDB\u53E3\u4EF7\u548C\u96F6\u552E\u4EF7\u5E94\u4F7F\u7528 $"
+    );
+    const inlineHandlers = extractSection2(
+      pageSource2,
+      "const handleStartInlineEdit",
+      "const showPushToHqResult"
+    );
+    assert2(
+      inlineHandlers.includes("const pricePrefix = getWarehouseProductPricePrefix(field);") && inlineHandlers.includes("prefix={pricePrefix}") && inlineHandlers.includes("formatPrice(value, pricePrefix ?? '$')"),
+      "\u4EF7\u683C\u5355\u5143\u683C\u7684\u53EA\u8BFB\u6587\u672C\u4E0E\u53CC\u51FB\u7F16\u8F91\u5668\u5E94\u4F7F\u7528\u540C\u4E00\u8D27\u5E01\u7B26\u53F7"
+    );
+  });
+  if (priceCurrencyFailure) failures.push(priceCurrencyFailure);
+  const inlineEditFailure = await runTest("\u4ED3\u5E93\u5546\u54C1\u56DB\u5217\u5E94\u652F\u6301\u65E0\u786E\u8BA4\u5F39\u7A97\u7684\u53CC\u51FB\u5355\u5B57\u6BB5\u4FDD\u5B58", () => {
+    assert2(
+      pageSource2.includes("patchWarehouseProduct") && pageSource2.includes("type WarehouseProductInlineEditField = 'minOrderQuantity' | 'domesticPrice' | 'importPrice' | 'labelPrice'"),
+      "\u9875\u9762\u5E94\u5F15\u5165\u5355\u5B57\u6BB5 PATCH \u670D\u52A1\u5E76\u9650\u5B9A\u56DB\u4E2A\u53EF\u7F16\u8F91\u5B57\u6BB5"
+    );
+    const productEditorOnlyAccess = buildAccess(createCurrentUser({ permissions: ["Products.Edit"] }));
+    assertEqual(productEditorOnlyAccess.canWriteProduct, true, "Products.Edit \u4ECD\u53EF\u7528\u4E8E\u65E2\u6709\u5546\u54C1\u7F16\u8F91\u529F\u80FD");
+    assertEqual(productEditorOnlyAccess.isAdmin || productEditorOnlyAccess.isWarehouseManager, false, "\u666E\u901A\u5546\u54C1\u7F16\u8F91\u6743\u9650\u4E0D\u6EE1\u8DB3 PATCH \u89D2\u8272\u7EA6\u675F");
+    assert2(
+      pageSource2.includes("const { access, currentUser } = useAuthStore();") && pageSource2.includes("roleName === 'Admin' || roleName === 'WarehouseManager'") && pageSource2.includes("if (!canInlineEditWarehouseProduct || inlineSaveLockRef.current) return;") && pageSource2.includes("className={`warehouse-products-inline-value${canInlineEditWarehouseProduct ? ' is-editable' : ''}`}") && pageSource2.includes("title={canInlineEditWarehouseProduct ? t('warehouse.doubleClickToEdit', '\u53CC\u51FB\u7F16\u8F91') : undefined}"),
+      "\u5185\u8054\u7F16\u8F91\u5165\u53E3\u5FC5\u987B\u4E0E\u540E\u7AEF Admin/WarehouseManager \u89D2\u8272\u4FDD\u6301\u4E00\u81F4"
+    );
+    assert2(
+      pageSource2.includes("const inlineSaveLockRef = useRef<string | null>(null);") && pageSource2.includes("if (inlineSaveLockRef.current) return;") && pageSource2.includes("inlineSaveLockRef.current = cellKey;") && pageSource2.includes("inlineSaveLockRef.current = null;"),
+      "Enter \u4E0E\u5931\u7126\u5FC5\u987B\u5171\u4EAB\u5373\u65F6\u63D0\u4EA4\u9501\uFF0C\u907F\u514D\u540C\u4E00\u5355\u5143\u683C\u91CD\u590D\u8BF7\u6C42"
+    );
+    const inlineHandlers = extractSection2(
+      pageSource2,
+      "const handleStartInlineEdit",
+      "const showPushToHqResult"
+    );
+    assert2(
+      inlineHandlers.includes("value === null || value === undefined") && inlineHandlers.includes("value < 0") && inlineHandlers.includes("patchWarehouseProduct(cell.productCode") && inlineHandlers.includes("await refreshCurrentList();"),
+      "\u5171\u4EAB\u4FDD\u5B58\u51FD\u6570\u5E94\u5FFD\u7565\u7A7A\u503C\u3001\u963B\u6B62\u8D1F\u6570\u3001\u8C03\u7528 PATCH\uFF0C\u5E76\u5728\u6210\u529F\u540E\u5237\u65B0\u5F53\u524D\u5206\u9875"
+    );
+    assert2(
+      inlineHandlers.includes("message.success(t('common.saveSuccess', '\u4FDD\u5B58\u6210\u529F'))") && inlineHandlers.includes("message.error(") && !inlineHandlers.includes("Modal.confirm") && !inlineHandlers.includes("Popconfirm"),
+      "\u5355\u5143\u683C\u4FDD\u5B58\u53EA\u80FD\u4F7F\u7528 success/error \u8F7B\u63D0\u793A\uFF0C\u4E0D\u80FD\u663E\u793A\u786E\u8BA4\u5F39\u7A97"
+    );
+    const inlineFailureSection = extractSection2(inlineHandlers, "catch (error)", "finally");
+    assert2(
+      inlineFailureSection.indexOf("inlineCancelledCellRef.current = cellKey;") < inlineFailureSection.indexOf("setInlineEditingCell(null);"),
+      "\u5931\u8D25\u5173\u95ED\u7F16\u8F91\u5668\u524D\u5E94\u6807\u8BB0\u5F53\u524D\u5355\u5143\u683C\u5DF2\u53D6\u6D88\uFF0C\u9632\u6B62\u5378\u8F7D\u5931\u7126\u518D\u6B21\u63D0\u4EA4"
+    );
+    assert2(
+      inlineHandlers.includes("event.key === 'Enter'") && inlineHandlers.includes("event.key === 'Escape'") && inlineHandlers.includes("void handleInlineSave(cell);"),
+      "Enter \u5E94\u89E6\u53D1\u5171\u4EAB\u4FDD\u5B58\u51FD\u6570\uFF0CEsc \u5E94\u53D6\u6D88\u5F53\u524D\u7F16\u8F91"
+    );
+    const columnsSection = extractSection2(
+      pageSource2,
+      "const baseColumns = useMemo",
+      "const draggableColumnKeys"
+    );
+    for (const field of ["minOrderQuantity", "domesticPrice", "importPrice", "labelPrice"]) {
+      assert2(
+        columnsSection.includes(`renderInlineEditableNumberCell(record, '${field}')`),
+        `${field} \u5217\u5E94\u590D\u7528\u53CC\u51FB\u7F16\u8F91\u5355\u5143\u683C`
+      );
+    }
+    assert2(
+      pageSource2.includes("onDoubleClick={canInlineEditWarehouseProduct ? () => handleStartInlineEdit(record, field) : undefined}") && pageSource2.includes("onBlur={() => void handleInlineSave(cell)}") && pageSource2.includes("disabled={isSaving}") && pageSource2.includes("warehouse-products-inline-editor"),
+      "\u5355\u5143\u683C\u5E94\u53CC\u51FB\u8FDB\u5165\u7F16\u8F91\uFF0C\u5931\u7126\u4FDD\u5B58\uFF0C\u4FDD\u5B58\u4E2D\u7981\u7528\u8F93\u5165\u4E14\u4FDD\u6301\u7D27\u51D1\u6837\u5F0F"
+    );
+    const openEditSection = extractSection2(pageSource2, "const handleOpenEdit", "const handleCloseModal");
+    const modalSaveSection = extractSection2(pageSource2, "const handleSave = async", "const handleStartInlineEdit");
+    assert2(
+      openEditSection.includes("middlePackQuantity: record.minOrderQuantity") && modalSaveSection.includes("minOrderQuantity: values.middlePackQuantity") && !modalSaveSection.includes("middlePackQuantity: values.middlePackQuantity"),
+      "\u7F16\u8F91\u5F39\u7A97\u5E94\u4ECE\u5217\u8868 MinOrderQuantity \u521D\u59CB\u5316\uFF0C\u5E76\u4ECD\u4EE5 MinOrderQuantity \u4FDD\u5B58"
+    );
+  });
+  if (inlineEditFailure) failures.push(inlineEditFailure);
   if (failures.length > 0) {
     throw new Error(`\u5171\u6709 ${failures.length} \u4E2A\u6D4B\u8BD5\u5931\u8D25
 - ${failures.join("\n- ")}`);

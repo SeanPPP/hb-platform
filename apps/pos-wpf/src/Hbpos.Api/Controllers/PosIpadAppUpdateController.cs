@@ -152,8 +152,8 @@ public sealed class PosIpadAppUpdateController : ControllerBase
     {
         var configuration = _options.Value;
         return new PosIpadAppUpdateResponse(
-            // 兼容仍读取 enabled 的旧客户端；设备鉴权成功后即可交易。
-            Enabled: true,
+            // 复用既有六字段合同；enabled 只控制开始新交易，不影响恢复和补传。
+            Enabled: AllowsTransactions(),
             configuration.MinimumSupportedVersion,
             configuration.LatestVersion,
             PosIpadAppVersionPolicy.IsForceUpdateRequired(
@@ -165,10 +165,10 @@ public sealed class PosIpadAppUpdateController : ControllerBase
             configuration.ReleaseMessage);
     }
 
-    private static PosIpadAppUpdateResponse MapNativeDecision(
+    private PosIpadAppUpdateResponse MapNativeDecision(
         PosIpadNativeUpdateDecision decision) =>
         new(
-            Enabled: true,
+            Enabled: AllowsTransactions(),
             decision.MinimumSupportedVersion,
             decision.LatestVersion,
             ForceUpdate: string.Equals(
@@ -177,4 +177,12 @@ public sealed class PosIpadAppUpdateController : ControllerBase
                 StringComparison.Ordinal),
             decision.AppStoreUrl,
             decision.ReleaseMessage);
+
+    private bool AllowsTransactions()
+    {
+        var claimValue = HttpContext?.User.FindFirstValue(
+            DeviceAuthConstants.AllowTransactionsClaim);
+        // 旧认证票据没有该 claim 时默认允许，避免升级窗口误禁用新交易。
+        return !bool.TryParse(claimValue, out var allowed) || allowed;
+    }
 }

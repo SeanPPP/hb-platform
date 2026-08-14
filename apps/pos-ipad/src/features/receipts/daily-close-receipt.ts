@@ -2,16 +2,25 @@ import {
   appendEscPosInitialize,
   encodeEscPosText,
 } from "./esc-pos-text-encoding";
-import type { ReceiptLocale, ReceiptPaper } from "./receipt-document";
+import {
+  receiptStoreHeading,
+  type ReceiptLocale,
+  type ReceiptPaper,
+} from "./receipt-document";
 
 import type { DailyCloseArchive } from "@/core/contracts";
 
 export const DAILY_CLOSE_RECEIPT_WIDTH = 42;
+export const DAILY_CLOSE_RECEIPT_NARROW_WIDTH = 32;
+
+type DailyCloseReceiptWidth =
+  | typeof DAILY_CLOSE_RECEIPT_NARROW_WIDTH
+  | typeof DAILY_CLOSE_RECEIPT_WIDTH;
 
 export type DailyCloseReceiptDocument = Readonly<{
   lines: readonly string[];
   paper: ReceiptPaper;
-  width: typeof DAILY_CLOSE_RECEIPT_WIDTH;
+  width: DailyCloseReceiptWidth;
 }>;
 
 export type DailyCloseReceiptInput = Readonly<{
@@ -19,7 +28,9 @@ export type DailyCloseReceiptInput = Readonly<{
   locale: ReceiptLocale;
   paper: ReceiptPaper;
   reprint: boolean;
+  brandName?: string | undefined;
   storeName: string;
+  returnPolicy?: string | undefined;
 }>;
 
 const DENOMINATION_LABELS = new Map<number, string>([
@@ -40,12 +51,27 @@ export function buildDailyCloseReceipt(
   input: DailyCloseReceiptInput,
 ): DailyCloseReceiptDocument {
   const zh = input.locale === "zh-CN";
+  const width = receiptWidth(input.paper);
   const lines: string[] = [];
-  appendCentered(lines, zh ? "日结 / DAILY CLOSE" : "DAILY CLOSE / 日结");
+  appendCentered(
+    lines,
+    receiptStoreHeading(
+      input.brandName ?? "",
+      input.storeName,
+      input.archive.storeCode,
+    ),
+    width,
+  );
+  appendCentered(
+    lines,
+    zh ? "日结 / DAILY CLOSE" : "DAILY CLOSE / 日结",
+    width,
+  );
   if (input.reprint) {
     appendCentered(
       lines,
       zh ? "*** 补打 / REPRINT ***" : "*** REPRINT / 补打 ***",
+      width,
     );
   }
   appendWrapped(
@@ -54,20 +80,27 @@ export function buildDailyCloseReceipt(
       input.storeName,
       input.archive.storeCode,
     )}`,
+    width,
   );
   appendWrapped(
     lines,
     `${zh ? "终端/Terminal" : "Terminal"}: ${cleanText(input.archive.deviceCode)}`,
+    width,
   );
   appendWrapped(
     lines,
     `${zh ? "收银员/Cashier" : "Cashier"}: ${cleanText(input.archive.savedCashierName)}`,
+    width,
   );
   appendWrapped(
     lines,
     `${zh ? "营业日/Date" : "Business Date"}: ${input.archive.businessDate}`,
+    width,
   );
-  lines.push(separator());
+  lines.push(separator(width));
+  const tenderWidths = width === DAILY_CLOSE_RECEIPT_NARROW_WIDTH
+    ? [8, 8, 8, 8]
+    : [12, 10, 10, 10];
   lines.push(
     columns(
       [
@@ -76,7 +109,7 @@ export function buildDailyCloseReceipt(
         zh ? "退款" : "REFUND",
         zh ? "净额" : "NET",
       ],
-      [12, 10, 10, 10],
+      tenderWidths,
     ),
   );
   for (const method of ["cash", "card", "voucher"] as const) {
@@ -94,52 +127,65 @@ export function buildDailyCloseReceipt(
           money(tender.refundCents),
           money(tender.netCents),
         ],
-        [12, 10, 10, 10],
+        tenderWidths,
       ),
     );
   }
-  lines.push(separator());
+  lines.push(separator(width));
   lines.push(
-    twoColumns(zh ? "订单数/Orders" : "Orders", String(input.archive.orderCount)),
+    twoColumns(
+      zh ? "订单数/Orders" : "Orders",
+      String(input.archive.orderCount),
+      width,
+    ),
   );
   lines.push(
     twoColumns(
       zh ? "退货数量/Return Qty" : "Return Qty",
       input.archive.returnQuantity,
+      width,
     ),
   );
   lines.push(
     twoColumns(
       zh ? "应有现金/Expected" : "Expected Cash",
       money(input.archive.expectedCashCents),
+      width,
     ),
   );
   lines.push(
     twoColumns(
       zh ? "实点现金/Counted" : "Counted Cash",
       money(input.archive.countedCashCents),
+      width,
     ),
   );
   lines.push(
     twoColumns(
       zh ? "差额/Variance" : "Variance",
       signedMoney(input.archive.varianceCents),
+      width,
     ),
   );
   lines.push(
     twoColumns(
       zh ? "纸币/Notes" : "Notes",
       money(input.archive.notesSubtotalCents),
+      width,
     ),
   );
   lines.push(
     twoColumns(
       zh ? "硬币/Coins" : "Coins",
       money(input.archive.coinsSubtotalCents),
+      width,
     ),
   );
-  lines.push(separator());
+  lines.push(separator(width));
   lines.push(zh ? "面额明细 / DENOMINATIONS" : "DENOMINATIONS / 面额明细");
+  const denominationWidths = width === DAILY_CLOSE_RECEIPT_NARROW_WIDTH
+    ? [8, 8, 16]
+    : [12, 10, 20];
   for (const denomination of input.archive.denominations) {
     const label = DENOMINATION_LABELS.get(
       denomination.denominationCents,
@@ -154,28 +200,38 @@ export function buildDailyCloseReceipt(
           `x${denomination.quantity}`,
           money(denomination.subtotalCents),
         ],
-        [12, 10, 20],
+        denominationWidths,
       ),
     );
   }
-  lines.push(separator());
+  lines.push(separator(width));
   appendWrapped(
     lines,
     `${zh ? "归档/Archive" : "Archive"}: ${cleanText(input.archive.closeId)}`,
+    width,
   );
+  const returnPolicy = normalizedReturnPolicy(input.returnPolicy);
+  if (returnPolicy) {
+    lines.push(separator(width));
+    lines.push(zh ? "退款与退货" : "Refunds and returns");
+    for (const policyLine of returnPolicy.split("\n")) {
+      appendWrapped(lines, policyLine.replaceAll("\t", " "), width);
+    }
+  }
 
   return Object.freeze({
     lines: Object.freeze(lines),
     paper: input.paper,
-    width: DAILY_CLOSE_RECEIPT_WIDTH,
+    width,
   });
 }
 
 export function dailyCloseReceiptToEscPosBytes(
   document: DailyCloseReceiptDocument,
 ): Uint8Array {
+  const expectedWidth = receiptWidth(document.paper);
   if (
-    document.width !== DAILY_CLOSE_RECEIPT_WIDTH ||
+    document.width !== expectedWidth ||
     (document.paper !== "58mm" && document.paper !== "80mm") ||
     document.lines.length === 0 ||
     document.lines.length > 1_000
@@ -188,8 +244,7 @@ export function dailyCloseReceiptToEscPosBytes(
     if (
       typeof line !== "string" ||
       /[\u0000-\u0009\u000b-\u001f\u007f]/u.test(line) ||
-      dailyCloseReceiptDisplayWidth(line) >
-        DAILY_CLOSE_RECEIPT_WIDTH
+      dailyCloseReceiptDisplayWidth(line) > document.width
     ) {
       throw new TypeError("Daily close receipt line is invalid.");
     }
@@ -209,32 +264,41 @@ export function dailyCloseReceiptDisplayWidth(value: string): number {
   );
 }
 
-function appendCentered(lines: string[], value: string): void {
-  for (const line of wrap(value)) {
+function appendCentered(
+  lines: string[],
+  value: string,
+  width: DailyCloseReceiptWidth,
+): void {
+  for (const line of wrap(value, width)) {
     const padding = Math.max(
       0,
       Math.floor(
-        (DAILY_CLOSE_RECEIPT_WIDTH -
-          dailyCloseReceiptDisplayWidth(line)) /
-          2,
+        (width - dailyCloseReceiptDisplayWidth(line)) / 2,
       ),
     );
     lines.push(`${" ".repeat(padding)}${line}`);
   }
 }
 
-function appendWrapped(lines: string[], value: string): void {
-  lines.push(...wrap(value));
+function appendWrapped(
+  lines: string[],
+  value: string,
+  width: DailyCloseReceiptWidth,
+): void {
+  lines.push(...wrap(value, width));
 }
 
-function wrap(value: string): readonly string[] {
+function wrap(
+  value: string,
+  width: DailyCloseReceiptWidth,
+): readonly string[] {
   const result: string[] = [];
   let current = "";
   for (const character of [...cleanText(value)]) {
     if (
       dailyCloseReceiptDisplayWidth(current) +
         dailyCloseReceiptDisplayWidth(character) >
-      DAILY_CLOSE_RECEIPT_WIDTH
+      width
     ) {
       result.push(current);
       current = "";
@@ -260,15 +324,22 @@ function columns(values: readonly string[], widths: readonly number[]): string {
     .join("");
 }
 
-function twoColumns(left: string, right: string): string {
-  const fittedRight = trimToWidth(right, 14);
+function twoColumns(
+  left: string,
+  right: string,
+  width: DailyCloseReceiptWidth,
+): string {
+  const fittedRight = trimToWidth(
+    right,
+    width === DAILY_CLOSE_RECEIPT_NARROW_WIDTH ? 10 : 14,
+  );
   const leftWidth =
-    DAILY_CLOSE_RECEIPT_WIDTH -
+    width -
     dailyCloseReceiptDisplayWidth(fittedRight) -
     1;
   const fittedLeft = trimToWidth(left, leftWidth);
   return `${fittedLeft}${" ".repeat(
-    DAILY_CLOSE_RECEIPT_WIDTH -
+    width -
       dailyCloseReceiptDisplayWidth(fittedLeft) -
       dailyCloseReceiptDisplayWidth(fittedRight),
   )}${fittedRight}`;
@@ -305,6 +376,18 @@ function cleanText(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
 }
 
+function normalizedReturnPolicy(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  if (
+    value.length > 500 ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)
+  ) {
+    throw new TypeError("Daily close return policy is invalid.");
+  }
+  const normalized = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  return normalized || null;
+}
+
 function storeDisplay(storeName: string, storeCode: string): string {
   const name = cleanText(storeName);
   const code = cleanText(storeCode);
@@ -313,8 +396,14 @@ function storeDisplay(storeName: string, storeCode: string): string {
     : `${name} (${code})`;
 }
 
-function separator(): string {
-  return "-".repeat(DAILY_CLOSE_RECEIPT_WIDTH);
+function separator(width: DailyCloseReceiptWidth): string {
+  return "-".repeat(width);
+}
+
+function receiptWidth(paper: ReceiptPaper): DailyCloseReceiptWidth {
+  return paper === "58mm"
+    ? DAILY_CLOSE_RECEIPT_NARROW_WIDTH
+    : DAILY_CLOSE_RECEIPT_WIDTH;
 }
 
 function tenderLabel(

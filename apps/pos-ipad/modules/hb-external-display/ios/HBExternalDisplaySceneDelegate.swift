@@ -20,6 +20,15 @@ public final class HBExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDel
       return
     }
 
+    if let displayMode = windowScene.screen.availableModes.max(by: {
+      let leftPixels = $0.size.width * $0.size.height
+      let rightPixels = $1.size.width * $1.size.height
+      return leftPixels < rightPixels
+    }) {
+      // HDMI 可能先选中低分辨率兼容模式；窗口创建前请求完整画布。
+      windowScene.screen.currentMode = displayMode
+    }
+
     let controller = HBExternalDisplayViewController()
     controller.view.isUserInteractionEnabled = false
 

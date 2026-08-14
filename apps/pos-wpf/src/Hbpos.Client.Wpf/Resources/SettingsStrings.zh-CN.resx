@@ -162,6 +162,8 @@
   <data name="settings.receiptPrinter.returnPolicy" xml:space="preserve"><value>&#x9000;&#x6362;&#x8D27;&#x653F;&#x7B56;</value></data>
   <data name="settings.receiptPrinter.save" xml:space="preserve"><value>&#x4FDD;&#x5B58;&#x5C0F;&#x7968;&#x6253;&#x5370;&#x673A;</value></data>
   <data name="settings.receiptPrinter.test" xml:space="preserve"><value>&#x6D4B;&#x8BD5;&#x6253;&#x5370;</value></data>
+  <data name="settings.receiptPrinter.loadFromStore" xml:space="preserve"><value>&#x4ECE;&#x5206;&#x5E97;&#x8D44;&#x6599;&#x8F7D;&#x5165;</value></data>
+  <data name="settings.status.receiptProfileLoaded" xml:space="preserve"><value>&#x5DF2;&#x8F7D;&#x5165;&#xFF0C;&#x4FDD;&#x5B58;&#x540E;&#x751F;&#x6548;</value></data>
   <data name="settings.deviceRegistration.description" xml:space="preserve"><value>选择其他分店，为当前收银设备提交授权重新注册请求。提交前会继续检查购物车和待同步、失败、同步中的订单。</value></data>
   <data name="settings.deviceRegistration.action" xml:space="preserve"><value>更换分店重新注册</value></data>
   <data name="settings.status.ready" xml:space="preserve"><value>&#x5C31;&#x7EEA;&#x3002;</value></data>

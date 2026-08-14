@@ -66,7 +66,7 @@ type SalesBootstrapFailureStage =
 
 const UNCHECKED_UPDATE_GATE: NewTransactionGate = Object.freeze({
   state: "unchecked",
-  canStartNewTransaction: false,
+  canStartNewTransaction: true,
   canContinueRecovery: true,
 });
 
@@ -76,6 +76,9 @@ export default function SalesRoute() {
   const runtime = usePosRuntime();
   const { i18n } = useTranslation();
   const activeCashier = useCashierLoginStore((state) => state.activeCashier);
+  const clearActiveCashier = useCashierLoginStore(
+    (state) => state.clearActiveCashier,
+  );
   const gate = resolveProtectedSalesRouteGate(runtime.state, activeCashier);
   const subscribeUpdateGate = useCallback(
     (listener: () => void) =>
@@ -258,6 +261,17 @@ export default function SalesRoute() {
     let createdPresenter: SalesPresenter | null = null;
     const services = runtime.services;
     const cashier = activeCashier;
+    const handleCurrentCashierRequired = (error: unknown): boolean => {
+      if (!isCurrentCashierRequired(error)) return false;
+      // HMR/换班可能让旧恢复 Promise 迟到；只允许清除启动本次检查的同一投影。
+      if (
+        !cancelled &&
+        useCashierLoginStore.getState().activeCashier === cashier
+      ) {
+        clearActiveCashier();
+      }
+      return true;
+    };
     setBinding(null);
     setBootstrapFailure(null);
     const failBootstrap = (
@@ -311,6 +325,7 @@ export default function SalesRoute() {
             return;
           }
         } catch (error: unknown) {
+          if (handleCurrentCashierRequired(error)) return;
           failBootstrap("payment-recovery", error);
           return;
         }
@@ -326,6 +341,7 @@ export default function SalesRoute() {
           return;
         }
       } catch (error: unknown) {
+        if (handleCurrentCashierRequired(error)) return;
         failBootstrap("installment-recovery", error);
         return;
       }
@@ -339,6 +355,7 @@ export default function SalesRoute() {
   }, [
     activeCashier,
     bootstrapAttempt,
+    clearActiveCashier,
     gate,
     replace,
     runtime.services,
@@ -547,6 +564,14 @@ function bootstrapFailureCode(stage: SalesBootstrapFailureStage): string {
     case "presenter":
       return "SALES_PRESENTER_INITIALIZATION_FAILED";
   }
+}
+
+function isCurrentCashierRequired(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "CURRENT_CASHIER_REQUIRED"
+  );
 }
 
 function SalesSoundBridge({ presenter }: Readonly<{ presenter: SalesPresenter }>) {

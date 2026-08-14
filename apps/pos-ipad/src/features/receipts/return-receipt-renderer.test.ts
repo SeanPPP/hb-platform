@@ -41,6 +41,40 @@ test("no-receipt 退货允许 originalOrderGuid 为 null，并使用 80mm 中文
   assert.equal(decode(rendered.receiptBytes).includes("REPRINT"), false);
 });
 
+test("改店后品牌为空时仍用当前店名安全打印退货小票", async () => {
+  const rendered = await createRenderer(
+    order(),
+    settings({
+      store: {
+        brandName: "",
+        storeName: "S01",
+        address: "",
+        phone: "",
+        abn: "",
+        returnPolicy: "",
+      },
+    }),
+  ).render(returnOrderGuid);
+
+  assert.match(decode(rendered.receiptBytes), /S01\n[\s\S]*REFUND RECEIPT/u);
+});
+
+test("退货小票接受本机设置允许的多行地址与制表符", async () => {
+  const rendered = await createRenderer(
+    order(),
+    settings({
+      store: {
+        ...settings().store,
+        address: "Shop 1\nQueen St\tBrisbane",
+      },
+    }),
+  ).render(returnOrderGuid);
+
+  const text = decode(rendered.receiptBytes);
+  assert.match(text, /Shop 1/u);
+  assert.match(text, /Queen St Brisbane/u);
+});
+
 test("账本金额不闭合、混杂 sale、Draft、正 tender 或缺失冻结设置均 fail closed", async () => {
   await assert.rejects(() => createRenderer(order({ actualAmount: money(-400) }), settings()).render(returnOrderGuid));
   await assert.rejects(() => createRenderer(order({ lines: [{ ...order().lines[0]!, kind: "sale" }] }), settings()).render(returnOrderGuid));
@@ -86,7 +120,7 @@ function order(overrides: Partial<LocalOrder> = {}): LocalOrder {
 function settings(overrides: Partial<FrozenReturnReceiptSettings> = {}): FrozenReturnReceiptSettings {
   return {
     printerId: "printer-1", paper: "58mm", locale: "en",
-    store: { brandName: "Hot Bargain", storeName: "Store", address: "1 Test St", phone: "123", abn: "ABN" },
+    store: { brandName: "Hot Bargain", storeName: "Store", address: "1 Test St", phone: "123", abn: "ABN", returnPolicy: "" },
     ...overrides,
   };
 }

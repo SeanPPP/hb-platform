@@ -8,15 +8,17 @@ type Reachability = Readonly<{
 export function mapReachabilityToConnectivity(
   state: Reachability,
 ): ConnectivityStatus {
-  if (
-    state.isConnected === false ||
-    state.isInternetReachable === false
-  ) {
+  if (state.isConnected === false) {
     return "offline";
   }
 
   if (state.isConnected === true) {
+    // POS 后端可能位于可达的局域网；无公网不等于后端离线，交给 health 探测判定。
     return "online";
+  }
+
+  if (state.isInternetReachable === false) {
+    return "offline";
   }
 
   return "checking";

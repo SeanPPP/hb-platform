@@ -2537,10 +2537,10 @@ test("本机历史组合只按可信终端读取，并从选中订单账本进�
     (line) => line.kind === "text" && /Order:|#\d+/.test(line.text),
   ), false);
   assert.ok(preview.document.lines.some(
-    (line) => line.kind === "text" && line.text === "Test Store",
+    (line) => line.kind === "text" && line.text === "Brisbane",
   ));
   assert.ok(preview.document.lines.some(
-    (line) => line.kind === "text" && line.text === "Store: Test Store (S001)",
+    (line) => line.kind === "text" && line.text === "Store: Brisbane (S001)",
   ));
   assert.ok(preview.document.lines.some(
     (line) => line.kind === "qr" && line.value === order.orderGuid,
@@ -4727,6 +4727,8 @@ function databaseFor(
     address: "1 Queen St",
     phone: "0712345678",
     abn: "12 345 678 901",
+    returnPolicy: "",
+    profileStoreCode: "S001",
   };
   const settings = {
     async getReceiptPrinterSettings() {

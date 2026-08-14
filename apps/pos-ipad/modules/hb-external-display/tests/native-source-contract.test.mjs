@@ -26,6 +26,37 @@ test("scene delegate uses the iPadOS noninteractive scene lifecycle", async () =
   assert.doesNotMatch(source, /UIScreen\.screens/);
 });
 
+test("scene delegate selects the highest external screen mode before creating its window", async () => {
+  const source = await read("ios/HBExternalDisplaySceneDelegate.swift");
+
+  assert.match(source, /windowScene\.screen\.availableModes/);
+  assert.match(
+    source,
+    /\$0\.size\.width\s*\*\s*\$0\.size\.height/,
+  );
+  assert.match(source, /windowScene\.screen\.currentMode\s*=\s*displayMode/);
+  assert.match(
+    source,
+    /currentMode\s*=\s*displayMode[\s\S]*UIWindow\(windowScene:\s*windowScene\)/,
+  );
+});
+
+test("app delegate subscriber selects the highest mode as an external screen connects", async () => {
+  const [source, config] = await Promise.all([
+    read("ios/HBExternalDisplayAppDelegateSubscriber.swift"),
+    read("expo-module.config.json"),
+  ]);
+
+  assert.match(
+    config,
+    /"appDelegateSubscribers"\s*:\s*\["HBExternalDisplayAppDelegateSubscriber"\]/,
+  );
+  assert.match(source, /UIScreen\.didConnectNotification/);
+  assert.match(source, /notification\.object\s+as\?\s+UIScreen/);
+  assert.match(source, /screen\.availableModes\.max/);
+  assert.match(source, /screen\.currentMode\s*=\s*displayMode/);
+});
+
 test("primary scene delegate adopts the AppDelegate main window without restarting the Expo root", async () => {
   const source = await read("ios/HBPrimarySceneDelegate.swift");
 
@@ -157,21 +188,71 @@ test("native snapshot is allowlisted and advertisements are local files only", a
   );
 });
 
-test("UIKit fallback switches exactly between transaction columns and full-screen idle advert", async () => {
+test("native snapshot accepts optional unit price and summary without breaking legacy fields", async () => {
+  const source = await read("ios/HBExternalDisplayModels.swift");
+
+  assert.match(source, /var unitPrice: HBExternalDisplayMoneyRecord\?/);
+  assert.match(source, /let unitPrice: HBExternalDisplayMoney\?/);
+  assert.match(source, /payload\["unitPrice"\]\s*=\s*unitPrice\.dictionary/);
+  assert.match(source, /var summary: HBExternalDisplaySummaryRecord\?/);
+  assert.match(source, /let summary: HBExternalDisplaySummary\?/);
+  assert.match(source, /payload\["summary"\]\s*=\s*summary\.dictionary/);
+  assert.match(source, /struct HBExternalDisplaySummary/);
+  assert.match(source, /let itemQuantity: String/);
+  assert.match(source, /let skuCount: Int/);
+  assert.match(source, /let subtotal: HBExternalDisplayMoney/);
+  assert.match(source, /"itemQuantity": itemQuantity/);
+  assert.match(source, /"skuCount": skuCount/);
+  assert.match(source, /"subtotal": subtotal\.dictionary/);
+  assert.match(
+    source,
+    /unitPrice == nil[\s\S]*\? nil[\s\S]*: try unitPrice\?\.validated/,
+  );
+  assert.match(
+    source,
+    /summary == nil \? nil : try summary\?\.validated/,
+  );
+  assert.match(source, /var visibleItemStart: Int\?/);
+  assert.match(source, /let visibleItemStart: Int\?/);
+  assert.match(source, /payload\["visibleItemStart"\]\s*=\s*visibleItemStart/);
+  assert.match(
+    source,
+    /let maximumVisibleItemStart = max\(0, items\.count - 12\)/,
+  );
+  assert.match(source, /visibleItemStart\s*<=\s*maximumVisibleItemStart/);
+  assert.match(
+    source,
+    /throw HBExternalDisplayValidationError\.invalid\("visibleItemStart"\)/,
+  );
+});
+
+test("UIKit fallback matches reference design and keeps idle advert full-screen", async () => {
   const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  // 48pt title bar without any close control.
+  assert.match(
+    source,
+    /windowTitleLabel\.text\s*=\s*localizedText\(english:\s*"Customer Display",\s*chinese:\s*"客显"\)/,
+  );
+  assert.match(
+    source,
+    /windowTitleLabel\.font\s*=\s*\.systemFont\(ofSize:\s*21,\s*weight:\s*\.bold\)/,
+  );
+  assert.match(source, /titleBar\.heightAnchor\.constraint\(equalToConstant:\s*48\)/);
+  assert.doesNotMatch(source, /closeButton|dismissButton|UIButton/);
 
   assert.match(
     source,
     /snapshot\.mode\s*==\s*\.idle\s*&&\s*snapshot\.items\.isEmpty\s*&&\s*snapshot\.advert\s*!=\s*nil/,
   );
-  assert.match(source, /checkoutPanel\.isHidden\s*=\s*fullScreenAdvert/);
+  assert.match(source, /orderPanel\.isHidden\s*=\s*fullScreenAdvert/);
   assert.match(
     source,
-    /advertContainer\.layer\.cornerRadius\s*=\s*fullScreenAdvert\s*\?\s*0\s*:\s*24/,
+    /advertContainer\.layer\.cornerRadius\s*=\s*fullScreenAdvert\s*\?\s*0\s*:\s*12/,
   );
   assert.match(
     source,
-    /advertContainer\.backgroundColor\s*=\s*fullScreenAdvert\s*\?\s*\.clear\s*:\s*UIColor\.white\.withAlphaComponent\(0\.055\)/,
+    /advertContainer\.backgroundColor\s*=\s*fullScreenAdvert\s*\?\s*\.clear\s*:\s*UIColor\.white\.withAlphaComponent\(0\.035\)/,
   );
   assert.match(source, /UIView\.performWithoutAnimation/);
 
@@ -186,27 +267,167 @@ test("UIKit fallback switches exactly between transaction columns and full-scree
 
   assert.match(
     source,
-    /checkoutPanel\.leadingAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.leadingAnchor,[\s\S]*constant:\s*34/,
+    /orderPanel\.leadingAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.leadingAnchor,[\s\S]*constant:\s*24/,
   );
   assert.match(
     source,
-    /advertContainer\.trailingAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.trailingAnchor,[\s\S]*constant:\s*-34/,
+    /advertContainer\.trailingAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.trailingAnchor,[\s\S]*constant:\s*-24/,
   );
   assert.match(
     source,
-    /checkoutPanel\.topAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.topAnchor,[\s\S]*constant:\s*28/,
+    /summaryPanel\.bottomAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.bottomAnchor,[\s\S]*constant:\s*-24/,
   );
   assert.match(
     source,
-    /advertContainer\.bottomAnchor\.constraint\([\s\S]*view\.safeAreaLayoutGuide\.bottomAnchor,[\s\S]*constant:\s*-28/,
+    /advertContainer\.leadingAnchor\.constraint\(\s*equalTo:\s*orderPanel\.trailingAnchor,\s*constant:\s*18\s*\)/,
   );
   assert.match(
     source,
-    /advertContainer\.leadingAnchor\.constraint\(\s*equalTo:\s*checkoutPanel\.trailingAnchor,\s*constant:\s*32\s*\)/,
+    /advertContainer\.widthAnchor\.constraint\(\s*equalTo:\s*orderPanel\.widthAnchor\s*\)/,
   );
   assert.match(
     source,
-    /checkoutPanel\.widthAnchor\.constraint\(\s*equalTo:\s*advertContainer\.widthAnchor,\s*multiplier:\s*1\.5\s*\)/,
+    /summaryPanel\.heightAnchor\.constraint\(equalToConstant:\s*132\)/,
+  );
+  assert.match(
+    source,
+    /summaryMetricsContainer\.widthAnchor\.constraint\([\s\S]*multiplier:\s*0\.47/,
+  );
+  assert.match(
+    source,
+    /amountDueContainer\.widthAnchor\.constraint\([\s\S]*multiplier:\s*0\.26/,
+  );
+  assert.match(
+    source,
+    /summarySections\.addArrangedSubview\(statusRegion\)/,
+  );
+});
+
+test("UIKit fallback renders four-column order table and a full-width summary", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  assert.match(source, /orderTitleLabel\.text\s*=\s*localizedText\(english:\s*"Your order",\s*chinese:\s*"您的订单"\)/);
+  for (const title of ["Product", "Qty", "Unit price", "Amount"]) {
+    assert.match(source, new RegExp(`english:\\s*"${title}"`));
+  }
+  assert.match(source, /label\.font\s*=\s*\.systemFont\(ofSize:\s*16,\s*weight:\s*\.semibold\)/);
+  assert.match(source, /label\.textColor\s*=\s*UIColor\.white\.withAlphaComponent\(0\.88\)/);
+  assert.match(source, /unitPriceLabel\.text\s*=\s*unitPriceText\(for:\s*item\)/);
+  assert.match(source, /unitPriceLabel\.textColor\s*=\s*\.white/);
+  assert.match(source, /quantityLabel\.textColor\s*=\s*UIColor\.white\.withAlphaComponent\(0\.66\)/);
+  assert.match(source, /subtotalValueLabel\.text\s*=\s*format\(summary\.subtotal\)/);
+  assert.match(
+    source,
+    /amountDueLabel\.text\s*=\s*localizedText\(english:\s*"Amount due",\s*chinese:\s*"应付总额"\)/,
+  );
+  assert.match(source, /totalValueLabel\.font\s*=\s*\.monospacedDigitSystemFont\(\s*ofSize:\s*42/);
+  assert.match(
+    source,
+    /private func visibleItemWindow\([\s\S]*for snapshot: HBExternalDisplaySnapshot[\s\S]*-> HBExternalDisplayItemWindow/,
+  );
+  assert.match(source, /replaceItemRows\(with:\s*window\.items\)/);
+  assert.match(source, /moreItemsLabel\.text\s*=\s*moreItemsText\(/);
+});
+
+test("UIKit fallback keeps the order heading and empty message at the top", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  assert.match(
+    source,
+    /orderTitleLabel\.setContentHuggingPriority\(\.required,\s*for:\s*\.vertical\)/,
+  );
+  assert.match(
+    source,
+    /if items\.isEmpty \{[\s\S]*itemStack\.distribution\s*=\s*\.fill[\s\S]*emptyTopSpacer\.heightAnchor\.constraint\(equalToConstant:\s*22\)/,
+  );
+  assert.match(
+    source,
+    /itemStack\.distribution\s*=\s*\.fill[\s\S]*for item in items[\s\S]*cell\.heightAnchor\.constraint\(equalToConstant:\s*32\)/,
+  );
+  assert.match(
+    source,
+    /flexibleSpacer\.setContentHuggingPriority\(\.defaultLow,\s*for:\s*\.vertical\)[\s\S]*itemStack\.addArrangedSubview\(flexibleSpacer\)/,
+  );
+});
+
+test("UIKit fallback slices from visibleItemStart and shows window overflow beside the title", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  assert.match(source, /start = max\(itemCount - 12, 0\)/);
+  assert.match(source, /Array\(snapshot\.items\[start\.\.<end\]\)/);
+  assert.match(source, /hiddenAbove:\s*start/);
+  assert.match(source, /hiddenBelow:\s*max\(itemCount - end, 0\)/);
+  assert.match(
+    source,
+    /private func moreItemsText\(hiddenAbove: Int, hiddenBelow: Int\) -> String\?/,
+  );
+  assert.match(source, /hiddenAbove > 0 && hiddenBelow > 0/);
+  assert.match(source, /hiddenAbove > 0/);
+  assert.match(source, /hiddenBelow > 0/);
+  assert.match(source, /return nil/);
+  assert.match(source, /orderTitleRow\.addArrangedSubview\(moreItemsLabel\)/);
+  assert.doesNotMatch(source, /orderPanel\.addArrangedSubview\(moreItemsLabel\)/);
+  assert.match(source, /english:\s*"\\\(hiddenAbove\) earlier · \\\(hiddenBelow\) later"/);
+  assert.match(source, /chinese:\s*"上方 \\\(hiddenAbove\) 件 · 下方 \\\(hiddenBelow\) 件"/);
+  assert.match(source, /english:\s*"\\\(hiddenAbove\) earlier"/);
+  assert.match(source, /chinese:\s*"前面还有 \\\(hiddenAbove\) 件"/);
+  assert.match(source, /english:\s*"\\\(hiddenBelow\) later"/);
+  assert.match(source, /chinese:\s*"后面还有 \\\(hiddenBelow\) 件"/);
+});
+
+test("UIKit fallback renders a localized status card per mode with change on success", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  for (const copy of [
+    "Ready when you are",
+    "Scan an item to begin",
+    "Ready to pay",
+    "Please follow the cashier's instructions",
+    "Payment in progress",
+    "Please follow the terminal prompts",
+    "Your change",
+    "Payment complete",
+  ]) {
+    assert.match(source, new RegExp(`english:\\s*"${copy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  }
+  assert.match(source, /statusSubtitleLabel\.text\s*=\s*format\(change\)/);
+  assert.match(source, /change\.cents\s*!=\s*0/);
+  assert.match(source, /english:\s*"Change \\\(format\(change\)\)"/);
+  assert.match(source, /chinese:\s*"找零 \\\(format\(change\)\)"/);
+});
+
+test("UIKit fallback always selects English copy regardless of iPad language", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  assert.match(
+    source,
+    /private func localizedText\(english: String, chinese _: String\) -> String \{\s*english\s*\}/,
+  );
+  assert.doesNotMatch(source, /Locale\.preferredLanguages/);
+});
+
+test("UIKit fallback safely derives summary and unit price when optional fields are missing", async () => {
+  const source = await read("ios/HBExternalDisplayViewController.swift");
+
+  assert.match(
+    source,
+    /private func resolvedSummary\([\s\S]*for snapshot: HBExternalDisplaySnapshot[\s\S]*-> HBExternalDisplaySummary/,
+  );
+  assert.match(source, /if let summary = snapshot\.summary \{[\s\S]*return summary/);
+  assert.match(
+    source,
+    /subtotal:\s*HBExternalDisplayMoney\(\s*cents:\s*snapshot\.total\.cents\s*\+\s*snapshot\.discount\.cents\s*\)/,
+  );
+  assert.match(
+    source,
+    /private func unitPriceText\(for item: HBExternalDisplayItem\) -> String/,
+  );
+  assert.match(source, /if let unitPrice = item\.unitPrice \{[\s\S]*return format\(unitPrice\)/);
+  assert.match(source, /private func unitPriceText[\s\S]*return "—"/);
+  assert.doesNotMatch(source, /Double\(item\.quantity\)/);
+  assert.match(
+    source,
+    /private func formattedItemCount\([\s\S]*itemQuantity:\s*String,[\s\S]*skuCount:\s*Int[\s\S]*-> String/,
   );
 });
 
@@ -248,7 +469,7 @@ test("UIKit fallback fits media without cropping, reuses identical adverts, and 
   );
   assert.match(
     source,
-    /guard asset\.isPlayable else \{[\s\S]*showBrandPlaceholder\(\)[\s\S]*return "advert-video-unavailable"/,
+    /guard asset\.isPlayable else \{[\s\S]*clearAdvert\(\)[\s\S]*return "advert-video-unavailable"/,
   );
 });
 
@@ -283,7 +504,7 @@ test("video advert becomes reusable only when healthy and tears down runtime fai
   );
   assert.match(
     source,
-    /private func handleVideoPlaybackFailure[\s\S]*guard[\s\S]*!isHandlingVideoFailure[\s\S]*videoPlayerItem === item \|\| videoPlayer\?\.currentItem === item[\s\S]*recordVideoFailure\(for:\s*identity\)[\s\S]*showBrandPlaceholder\(\)[\s\S]*HBExternalDisplayCoordinator\.shared\.reportFailure\("advert-video-playback-failed"\)[\s\S]*scheduleVideoRetry\(advert:\s*advert,\s*identity:\s*identity\)/,
+    /private func handleVideoPlaybackFailure[\s\S]*guard[\s\S]*!isHandlingVideoFailure[\s\S]*videoPlayerItem === item \|\| videoPlayer\?\.currentItem === item[\s\S]*recordVideoFailure\(for:\s*identity\)[\s\S]*clearAdvert\(\)[\s\S]*HBExternalDisplayCoordinator\.shared\.reportFailure\("advert-video-playback-failed"\)[\s\S]*scheduleVideoRetry\(advert:\s*advert,\s*identity:\s*identity\)/,
   );
   assert.match(
     source,

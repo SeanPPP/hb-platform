@@ -240,6 +240,13 @@ public static class ServiceRegistration
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IStoreReceiptProfileApiClient, StoreReceiptProfileApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(15);
+        })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IOrderSyncApiClient, OrderSyncApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -540,7 +547,8 @@ public static class ServiceRegistration
                 sharedHeldOrderCoordinator: sp.GetRequiredService<ISharedHeldOrderCoordinator>(),
                 sharedHeldOrderApiClient: sp.GetRequiredService<ISharedHeldOrderApiClient>(),
                 sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>(),
-                sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>());
+                sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>(),
+                storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),

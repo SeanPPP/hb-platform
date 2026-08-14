@@ -23,6 +23,7 @@ function settings(overrides: Partial<ReceiptFulfilmentSettings> = {}): ReceiptFu
       address: "1 Queen St",
       phone: "0712345678",
       abn: "12 345 678 901",
+      returnPolicy: "",
     },
     ...overrides,
   };

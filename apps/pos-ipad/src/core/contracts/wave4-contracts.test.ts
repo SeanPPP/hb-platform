@@ -125,7 +125,7 @@ test("iPad 更新策略在本地同时门禁离线现金，但始终开放恢复
   );
 });
 
-test("设备已授权后忽略旧 enabled 开关，仅强制升级可以阻止新交易", () => {
+test("enabled 关闭时阻止新交易，未完成检查时默认允许", () => {
   assert.deepEqual(
     deriveNewTransactionGate({
       enabled: false,
@@ -136,14 +136,14 @@ test("设备已授权后忽略旧 enabled 开关，仅强制升级可以阻止�
       releaseMessage: null,
     }),
     {
-      state: "enabled",
-      canStartNewTransaction: true,
+      state: "disabled",
+      canStartNewTransaction: false,
       canContinueRecovery: true,
     },
   );
   assert.deepEqual(deriveNewTransactionGate(null), {
     state: "unchecked",
-    canStartNewTransaction: false,
+    canStartNewTransaction: true,
     canContinueRecovery: true,
   });
 });

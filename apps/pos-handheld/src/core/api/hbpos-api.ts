@@ -1,9 +1,9 @@
-import type { components } from "@/generated/hbpos/schema";
 import {
   DEVICE_SYSTEM_ANDROID,
   DEVICE_SYSTEM_IOS,
   type DeviceSystem,
 } from "@/core/contracts/security";
+import type { components } from "@/generated/hbpos/schema";
 
 export function resolveHbposDeviceSystem(
   expoOs: string | undefined = process.env.EXPO_OS,
@@ -187,5 +187,43 @@ export class HbposCashierApi {
       authenticationFailurePolicy: "suppress-unauthorized",
     });
     return unwrapHbposEnvelope(response.data);
+  }
+}
+
+export type StoreReceiptProfile = Readonly<{
+  storeCode: string;
+  storeName: string;
+  brandName: string;
+  address: string;
+  phone: string;
+  abn: string;
+  returnPolicy: string;
+}>;
+
+/** 使用既有认证 transport 读取当前设备门店的小票公开资料。 */
+export class HbposStoreApi {
+  public constructor(private readonly transport: HbposTransport) {}
+
+  public async getCurrentReceiptProfile(
+    signal: AbortSignal,
+  ): Promise<StoreReceiptProfile | null> {
+    const response = await this.transport.request<
+      HbposEnvelope<components["schemas"]["StoreReceiptProfileDto"]>
+    >({
+      method: "GET",
+      url: "/api/v1/stores/current/receipt-profile",
+      signal,
+    });
+    const data = unwrapHbposEnvelope(response.data);
+    if (!data) return null;
+    return Object.freeze({
+      storeCode: data.storeCode ?? "",
+      storeName: data.storeName ?? "",
+      brandName: data.brandName ?? "",
+      address: data.address ?? "",
+      phone: data.phone ?? "",
+      abn: data.abn ?? "",
+      returnPolicy: data.returnPolicy ?? "",
+    });
   }
 }

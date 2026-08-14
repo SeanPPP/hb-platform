@@ -18,6 +18,7 @@ export type FrozenReturnReceiptSettings = Readonly<{
     address: string;
     phone: string;
     abn: string;
+    returnPolicy: string;
   }>;
 }>;
 
@@ -182,11 +183,12 @@ function isValidSettings(
       hasText(value.printerId) &&
       (value.paper === "58mm" || value.paper === "80mm") &&
       (value.locale === "en" || value.locale === "zh-CN") &&
-      hasText(value.store.brandName) &&
+      isSafeReceiptText(value.store.brandName) &&
       isSafeReceiptText(value.store.storeName) &&
-      isSafeReceiptText(value.store.address) &&
+      isSafeReceiptMultilineText(value.store.address) &&
       isSafeReceiptText(value.store.phone) &&
-      isSafeReceiptText(value.store.abn),
+      isSafeReceiptText(value.store.abn) &&
+      isSafeReceiptMultilineText(value.store.returnPolicy),
   );
 }
 
@@ -232,6 +234,13 @@ function isTenderMethod(value: string): boolean {
 
 function isSafeReceiptText(value: unknown): value is string {
   return typeof value === "string" && !/[\u0000-\u001F\u007F]/u.test(value);
+}
+
+function isSafeReceiptMultilineText(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(value)
+  );
 }
 
 function hasText(value: unknown): value is string {

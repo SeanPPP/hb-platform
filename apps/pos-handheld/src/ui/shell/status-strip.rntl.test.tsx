@@ -13,6 +13,16 @@ import { usePosSound } from "@/ui/feedback/pos-sound-context";
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
 
+jest.mock("@expo/vector-icons", () => ({
+  MaterialCommunityIcons: ({ name }: { name: string }) => {
+    const { Text } = jest.requireActual<typeof import("react-native")>(
+      "react-native",
+    );
+
+    return <Text>{name}</Text>;
+  },
+}));
+
 const mockUsePosSound = jest.mocked(usePosSound);
 const play = jest.fn();
 
@@ -26,7 +36,15 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.device": "Device",
       "status.device.authorized": "Authorized",
       "status.deviceCode": "Device code",
+      "status.network": "Network",
+      "status.network.online": "Online",
+      "status.peripheral.disconnected": "Disconnected",
+      "status.printer": "Printer",
+      "status.scanner": "Scanner",
+      "status.scanner.inactive": "Unfocused",
       "status.storeName": "Branch name",
+      "status.sync": "Sync",
+      "status.sync.pending": "0 pending",
     },
     zh: {
       "status.languageSwitchHint": "将所有界面文字显示为英文。",
@@ -142,6 +160,50 @@ test("终端身份空值显示破折号，且绝不以 storeCode 冒充分店名
   expect(screen.getByLabelText("设备代码: —")).toBeTruthy();
 });
 
+test("英文状态栏用适配手持设备的语义图标替代分类标签，并保留完整无障碍文案", async () => {
+  mockLanguage = "en";
+  const shell = usePosShellStore.getState();
+  shell.setConnectivity("online");
+  shell.setDeviceGate("authorized");
+  shell.setPrinter("disconnected");
+  shell.setScanner("inactive");
+  shell.setTerminalPresentation({
+    storeName: "Brisbane Central Superstore",
+    deviceCode: "HANDHELD-07",
+  });
+
+  const screen = await render(
+    <PosStatusStrip language="en" showTerminalIdentity />,
+  );
+
+  for (const icon of [
+    "cellphone",
+    "store-outline",
+    "identifier",
+    "wifi",
+    "sync",
+    "printer-outline",
+    "barcode-scan",
+  ]) {
+    expect(screen.getByText(icon)).toBeTruthy();
+  }
+  for (const label of [
+    "Device",
+    "Branch name",
+    "Device code",
+    "Network",
+    "Sync",
+    "Printer",
+    "Scanner",
+  ]) {
+    expect(screen.queryByText(label)).toBeNull();
+  }
+  expect(
+    screen.getByLabelText("Branch name: Brisbane Central Superstore"),
+  ).toBeTruthy();
+  expect(screen.getByLabelText("Network: Online")).toBeTruthy();
+});
+
 test("中文界面显示目标 EN 图标，并保留完整无障碍文案和 48pt 触控目标", async () => {
   const onSwitchLanguage = jest.fn();
   const screen = await render(
@@ -190,7 +252,7 @@ test("英文界面显示目标中文字形图标，并使用英文无障碍文�
 });
 
 test.each([320, 375])(
-  "%ipx 小屏状态条横向滚动且每个真实状态保持单行、不收缩、不覆盖",
+  "%ipx 小屏状态条横向滚动且每个图标状态保持单行、不收缩、不覆盖",
   async (width) => {
     const screen = await render(
       <View style={{ width }}>
@@ -218,9 +280,8 @@ test.each([320, 375])(
         ).flexShrink,
       ).toBe(0);
       expect(
-        screen.getByTestId(`status-strip-indicator-${id}-label`).props
-          .numberOfLines,
-      ).toBe(1);
+        screen.queryByTestId(`status-strip-indicator-${id}-label`),
+      ).toBeNull();
       expect(
         screen.getByTestId(`status-strip-indicator-${id}-value`).props
           .numberOfLines,

@@ -32,7 +32,7 @@ export type EscPosDocument = Readonly<{ paper: ReceiptPaper; lines: readonly Rec
 export type SaleInput = Readonly<{
   locale: ReceiptLocale;
   paper: ReceiptPaper;
-  store: Readonly<{ brandName: string; storeName: string; address: string; phone: string; abn: string }>;
+  store: Readonly<{ brandName: string; storeName: string; address: string; phone: string; abn: string; returnPolicy: string }>;
   orderNumber: string;
   soldAtIso: string;
   cashierName: string;
@@ -67,9 +67,12 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
   const zh = input.locale === "zh-CN";
   const b = new Builder(input.paper, width);
   const orderGuid = nonBlank(input.orderGuid);
-  const configuredBrandName = nonBlank(input.store.brandName);
   const storeName = nonBlank(input.store.storeName);
-  const brandName = configuredBrandName ?? storeName ?? nonBlank(input.storeCode) ?? "-";
+  const brandName = receiptStoreHeading(
+    input.store.brandName,
+    input.store.storeName,
+    input.storeCode,
+  );
   const phone = nonBlank(input.store.phone);
   const abn = nonBlank(input.store.abn);
   const title = nonBlank(input.title) ?? (zh ? "===== 税务发票 =====" : "===== TAX INVOICE =====");
@@ -145,6 +148,15 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
     if (tender.reference) b.text(`  Ref: ${maskReference(tender.reference)}`);
   }
 
+  const returnPolicy = nonBlank(input.store.returnPolicy);
+  if (returnPolicy) {
+    b.separator();
+    b.text(zh ? "退款与退货" : "Refunds and returns", "left", true);
+    for (const policyLine of wrapByWord(returnPolicy, width)) {
+      b.text(policyLine);
+    }
+  }
+
   b.separator();
   // 中文注释：顾客看到本机序号，机读码仍固定使用完整 orderGuid，二者不得混用。
   if (input.includeMachineCodes && orderGuid) {
@@ -162,6 +174,18 @@ export function buildSaleReceiptDocument(input: SaleInput): EscPosDocument {
   b.blank();
   b.feed();
   return b.build();
+}
+
+/** 所有票据共用同一抬头回退顺序，并拒绝可注入打印指令的控制字符。 */
+export function receiptStoreHeading(
+  brandName: string,
+  storeName: string,
+  storeCode?: string,
+): string {
+  assertSafeText(brandName, "store.brandName", false);
+  assertSafeText(storeName, "store.storeName", false);
+  assertSafeText(storeCode, "storeCode", false);
+  return nonBlank(brandName) ?? nonBlank(storeName) ?? nonBlank(storeCode) ?? "-";
 }
 
 export function buildDailyCloseDocument(input: DailyInput): EscPosDocument {
@@ -361,7 +385,8 @@ function assertSafeSaleText(input: SaleInput): void {
   for (const [fieldName, value] of strictFields) {
     assertSafeText(value, fieldName, false);
   }
-  assertSafeText(input.store.address, "store.address", true);
+  assertSafeMultilineText(input.store.address, "store.address");
+  assertSafeMultilineText(input.store.returnPolicy, "store.returnPolicy");
   input.lines.forEach((line, index) => {
     assertSafeText(line.name, `lines[${index}].name`, true);
     assertSafeText(line.lookupCode, `lines[${index}].lookupCode`, false);
@@ -382,6 +407,15 @@ function assertSafeText(
 ): void {
   if (value === undefined) return;
   const candidate = allowLineBreaks ? value.replace(/[\r\n]/g, "") : value;
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(candidate)) {
+    throw new TypeError(`${fieldName} contains unsafe control characters.`);
+  }
+}
+
+/** 地址与退货政策需要换行/制表排版，仅放行 CR/LF/TAB。 */
+function assertSafeMultilineText(value: string | undefined, fieldName: string): void {
+  if (value === undefined) return;
+  const candidate = value.replace(/[\r\n\t]/g, "");
   if (/[\u0000-\u001f\u007f-\u009f]/u.test(candidate)) {
     throw new TypeError(`${fieldName} contains unsafe control characters.`);
   }

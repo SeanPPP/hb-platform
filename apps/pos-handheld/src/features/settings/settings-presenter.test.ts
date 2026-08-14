@@ -23,6 +23,7 @@ import {
   type SettingsLinklySetupControlPort,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
+  type SettingsReceiptProfileDraft,
   type SettingsSnapshot,
 } from "./settings-presenter";
 
@@ -895,9 +896,176 @@ test("Square/Linkly 与打印机保存按精确权限执行并使用稳定状态
       peripheralId: "printer-2",
       paper: "58mm",
       locale: "zh-CN",
+      profileStoreCode: "BNE-01",
     },
   ]);
   assert.equal(presenter.getState().statusCode, "printer-settings-saved");
+});
+
+test("手动载入门店资料成功时只替换六字段并保留硬件，失败/控制字符/店号不一致均不改草稿", async () => {
+  const port = new FakeSettingsPort();
+  port.snapshotValue = {
+    ...snapshot(),
+    printer: {
+      ...DEFAULT_RECEIPT_PRINTER_SETTINGS,
+      printEnabled: true,
+      drawerEnabled: true,
+      peripheralId: "XP-N160I",
+      paper: "58mm",
+      locale: "zh-CN",
+    },
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  port.receiptProfileValue = {
+    storeCode: "BNE-01",
+    brandName: "Hot Bargain",
+    storeName: "Brisbane",
+    address: "1 Queen St",
+    phone: "07 1234 5678",
+    abn: "12 345 678 901",
+    returnPolicy: "Refunds within 14 days.",
+  };
+  await presenter.loadReceiptProfile();
+
+  const loaded = presenter.getState().printer;
+  assert.deepEqual(
+    {
+      brandName: loaded.brandName,
+      storeName: loaded.storeName,
+      address: loaded.address,
+      phone: loaded.phone,
+      abn: loaded.abn,
+      returnPolicy: loaded.returnPolicy,
+      profileStoreCode: loaded.profileStoreCode,
+    },
+    {
+      brandName: "Hot Bargain",
+      storeName: "Brisbane",
+      address: "1 Queen St",
+      phone: "07 1234 5678",
+      abn: "12 345 678 901",
+      returnPolicy: "Refunds within 14 days.",
+      profileStoreCode: "BNE-01",
+    },
+  );
+  assert.equal(loaded.printEnabled, true);
+  assert.equal(loaded.drawerEnabled, true);
+  assert.equal(loaded.peripheralId, "XP-N160I");
+  assert.equal(loaded.paper, "58mm");
+  assert.equal(loaded.locale, "zh-CN");
+  assert.equal(presenter.getState().statusCode, "receipt-profile-loaded");
+
+  port.receiptProfileValue = {
+    storeCode: "BNE-01",
+    brandName: "",
+    storeName: "",
+    address: "",
+    phone: "",
+    abn: "",
+    returnPolicy: "",
+  };
+  await presenter.loadReceiptProfile();
+  const empty = presenter.getState().printer;
+  assert.equal(empty.brandName, "");
+  assert.equal(empty.storeName, "");
+  assert.equal(empty.address, "");
+  assert.equal(empty.phone, "");
+  assert.equal(empty.abn, "");
+  assert.equal(empty.returnPolicy, "");
+  assert.equal(empty.profileStoreCode, "BNE-01");
+  assert.equal(empty.peripheralId, "XP-N160I");
+
+  const failedBefore = presenter.getState().printer;
+  port.failReceiptProfile = true;
+  await presenter.loadReceiptProfile();
+  assert.equal(presenter.getState().statusCode, "receipt-profile-load-failed");
+  assert.deepEqual(presenter.getState().printer, failedBefore);
+
+  port.failReceiptProfile = false;
+  port.receiptProfileValue = {
+    storeCode: "BNE-01",
+    brandName: "Hot Bargain",
+    storeName: "Brisbane",
+    address: "1 Queen St",
+    phone: "07 1234 5678",
+    abn: "12 345 678 901",
+    returnPolicy: "Unsafe\u001b@",
+  };
+  await presenter.loadReceiptProfile();
+  assert.equal(presenter.getState().statusCode, "receipt-profile-load-failed");
+  assert.deepEqual(presenter.getState().printer, failedBefore);
+
+  port.receiptProfileValue = {
+    storeCode: "OTHER-01",
+    brandName: "Hot Bargain",
+    storeName: "Brisbane",
+    address: "1 Queen St",
+    phone: "07 1234 5678",
+    abn: "12 345 678 901",
+    returnPolicy: "Refunds within 14 days.",
+  };
+  await presenter.loadReceiptProfile();
+  assert.equal(presenter.getState().statusCode, "receipt-profile-load-failed");
+  assert.deepEqual(presenter.getState().printer, failedBefore);
+
+  port.receiptProfileValue = null;
+  await presenter.loadReceiptProfile();
+  assert.equal(presenter.getState().statusCode, "receipt-profile-load-failed");
+  assert.deepEqual(presenter.getState().printer, failedBefore);
+});
+
+test("载入门店资料只在 Save 后落本机", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  port.receiptProfileValue = {
+    storeCode: "BNE-01",
+    brandName: "Hot Bargain",
+    storeName: "Brisbane",
+    address: "1 Queen St",
+    phone: "07 1234 5678",
+    abn: "12 345 678 901",
+    returnPolicy: "Refunds within 14 days.",
+  };
+  await presenter.loadReceiptProfile();
+  assert.equal(port.savedPrinters.length, 0);
+
+  await presenter.savePrinterSettings();
+  assert.equal(port.savedPrinters.length, 1);
+  assert.equal(port.savedPrinters[0]?.brandName, "Hot Bargain");
+  assert.equal(port.savedPrinters[0]?.returnPolicy, "Refunds within 14 days.");
+  assert.equal(port.savedPrinters[0]?.profileStoreCode, "BNE-01");
+  assert.equal(presenter.getState().statusCode, "printer-settings-saved");
+});
+
+test("测试打印先保存当前分店 draft，保存失败时不触发硬件", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setPrinterPeripheralId(" printer-current ");
+  presenter.setReceiptBrandName("Current Brand");
+
+  await presenter.testPrinter();
+
+  assert.equal(port.savedPrinters.length, 1);
+  assert.equal(port.savedPrinters[0]?.peripheralId, "printer-current");
+  assert.equal(port.savedPrinters[0]?.brandName, "Current Brand");
+  assert.equal(port.savedPrinters[0]?.profileStoreCode, "BNE-01");
+  assert.equal(port.printerTestCalls, 1);
+  assert.equal(presenter.getState().statusCode, "printer-test-passed");
+
+  const failedPort = new FakeSettingsPort();
+  failedPort.failPrinterSave = true;
+  const failedPresenter = createPresenter(failedPort);
+  await failedPresenter.load();
+
+  await failedPresenter.testPrinter();
+
+  assert.equal(failedPort.printerTestCalls, 0);
+  assert.equal(failedPresenter.getState().statusCode, "printer-test-failed");
 });
 
 test("钱箱测试先保存当前 draft，再单次执行受控动作并区分三种结果", async () => {
@@ -920,6 +1088,7 @@ test("钱箱测试先保存当前 draft，再单次执行受控动作并区分�
       "test-cash-drawer",
     ]);
     assert.equal(port.cashDrawerTestCalls, 1);
+    assert.equal(port.savedPrinters[0]?.profileStoreCode, "BNE-01");
     assert.equal(presenter.getState().statusCode, expectedStatus);
   }
 });
@@ -1116,6 +1285,7 @@ test("连接打印机成功后保存当前 draft 与 UUID", async () => {
       peripheralId: "printer-2",
       paper: "58mm",
       locale: "zh-CN",
+      profileStoreCode: "BNE-01",
     },
   ]);
   assert.equal(presenter.getState().printer.peripheralId, "printer-2");
@@ -2008,6 +2178,9 @@ class FakeSettingsPort implements SettingsControlPort {
   public failPrinterConnect = false;
   public failPrinterSave = false;
   public failClearSavedPrinter = false;
+  public failReceiptProfile = false;
+  public receiptProfileValue: SettingsReceiptProfileDraft | null = null;
+  public receiptProfileCalls = 0;
   public printerScanError: unknown = null;
   public cashDrawerTestResult: SettingsCashDrawerTestResult = {
     status: "completed",
@@ -2183,6 +2356,12 @@ class FakeSettingsPort implements SettingsControlPort {
 
   public async testPrinter(): Promise<void> {
     this.printerTestCalls += 1;
+  }
+
+  public async loadReceiptProfile(): Promise<SettingsReceiptProfileDraft | null> {
+    this.receiptProfileCalls += 1;
+    if (this.failReceiptProfile) throw new Error("receipt profile load failed");
+    return this.receiptProfileValue;
   }
 
   public testCashDrawer: SettingsControlPort["testCashDrawer"] = async () => {

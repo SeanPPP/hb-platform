@@ -1087,6 +1087,77 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateStoreAsync_PersistsReturnPolicy()
+        {
+            var service = CreateStoreService();
+
+            var result = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Return Policy Store",
+                StoreCode = "1887",
+                IsActive = true,
+                ReturnPolicy = "7 天内可退换，凭小票。",
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("7 天内可退换，凭小票。", result.Data!.ReturnPolicy);
+            var createdStore = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreCode == "1887");
+            Assert.NotNull(createdStore);
+            Assert.Equal("7 天内可退换，凭小票。", createdStore!.ReturnPolicy);
+        }
+
+        [Fact]
+        public async Task UpdateStoreByGuidAsync_PersistsReturnPolicy()
+        {
+            var store = new Store
+            {
+                StoreGUID = "store-return-policy-update",
+                StoreName = "Existing Store",
+                StoreCode = "1886",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+            };
+            await _db.Insertable(store).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().UpdateStoreByGuidAsync(
+                store.StoreGUID,
+                new UpdateStoreDto
+                {
+                    StoreName = "Updated Store",
+                    StoreCode = "1886",
+                    IsActive = true,
+                    ReturnPolicy = "无质量问题不退不换。",
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("无质量问题不退不换。", result.Data!.ReturnPolicy);
+            var updated = await _db.Queryable<Store>()
+                .FirstAsync(item => item.StoreGUID == store.StoreGUID);
+            Assert.Equal("无质量问题不退不换。", updated!.ReturnPolicy);
+        }
+
+        [Fact]
+        public async Task GetStoreByGuidAsync_ReturnsReturnPolicy()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-return-policy-detail",
+                StoreName = "Detail Store",
+                StoreCode = "1885",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                ReturnPolicy = "本店支持 14 天无理由退换。",
+            }).ExecuteCommandAsync();
+
+            var result = await CreateStoreService().GetStoreByGuidAsync("store-return-policy-detail");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("本店支持 14 天无理由退换。", result.Data!.ReturnPolicy);
+        }
+
+        [Fact]
         public async Task CreateStoreAsync_WhenIsActiveTrue_PersistsCashRegisterEnabled()
         {
             var service = CreateStoreService();

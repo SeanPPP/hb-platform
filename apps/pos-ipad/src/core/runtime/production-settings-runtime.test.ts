@@ -57,6 +57,8 @@ const SNAPSHOT: SettingsSnapshot = {
     address: "",
     phone: "",
     abn: "",
+    returnPolicy: "",
+    profileStoreCode: "S1",
   },
   square: {
     available: true,
@@ -717,6 +719,7 @@ function fakeControl(
     testApiAddress: unavailable,
     testPaymentProvider: unavailable,
     savePrinterSettings: unavailable,
+    loadReceiptProfile: unavailable,
     scanPrinters: unavailable,
     connectPrinter: unavailable,
     testPrinter: unavailable,

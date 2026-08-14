@@ -27,17 +27,19 @@ export interface PosIpadUpdatePolicyStorePort {
 export function deriveNewTransactionGate(
   policy: PosIpadUpdatePolicy | null,
 ): NewTransactionGate {
-  // 设备注册与鉴权是新交易准入条件；旧 enabled 字段只为协议兼容保留。
-  // 首次更新策略尚未完成时保持失败关闭，避免短暂绕过强制升级。
+  // enabled 是设备级新交易开关；强制升级始终拥有更高优先级。
+  // 旧服务端、离线冷启动或策略尚未返回时默认允许，避免误禁用收银。
   const state =
     policy === null
       ? "unchecked"
       : policy.forceUpdate
         ? "force-update"
-        : "enabled";
+        : policy.enabled
+          ? "enabled"
+          : "disabled";
   return Object.freeze({
     state,
-    canStartNewTransaction: state === "enabled",
+    canStartNewTransaction: state === "enabled" || state === "unchecked",
     canContinueRecovery: true as const,
   });
 }

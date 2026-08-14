@@ -3,6 +3,7 @@ import {
   act,
   fireEvent,
   render,
+  within,
   waitFor,
 } from "@testing-library/react-native";
 import { Dimensions, StyleSheet } from "react-native";
@@ -1240,8 +1241,12 @@ test.each(
 
   if (installment) {
     const summary = screen.getByTestId("payment-summary");
+    const summaryActionDock = screen.getByTestId(
+      "payment-summary-action-dock",
+    );
     const summaryFooter = screen.getByTestId("payment-summary-footer");
-    expect(summaryFooter.parent).toBe(summary);
+    expect(summaryActionDock.parent).toBe(summary);
+    expect(summaryFooter.parent).toBe(summaryActionDock);
     expect(
       StyleSheet.flatten(screen.getByTestId("payment-confirm").props.style)
         .minHeight,
@@ -1456,6 +1461,169 @@ test("11 英寸横屏现金支付使用紧凑高度，数字键盘和支付动�
 
   await screen.unmount();
   setPaymentWindowSize(750, 1334);
+});
+
+test.each([
+  { height: 768, label: "1024×768", width: 1024 },
+  { height: 834, label: "1194×834", width: 1194 },
+])("$label 支付错误下的恢复与终端操作集中在摘要栏固定动作区", async ({
+  height,
+  width,
+}) => {
+  setPaymentWindowSize(width, height);
+  const onBack = jest.fn();
+  const { presenter, spies } = createUiPresenter({
+    phase: "submitting",
+    selectedMethod: "linkly-cloud",
+    orderGuid: "order-linkly-recovery-layout",
+    attemptId: "attempt-linkly-recovery-layout",
+    provider: "linkly-cloud",
+    runtimeStatus: "pending",
+    runtimeErrorCode: "PAYMENT_CHECKOUT_FAILED",
+    allowedActions: actions({ recover: true, cancel: true }),
+    linkly: {
+      status: "in-progress",
+      errorCode: null,
+      allowedKeys: ["yes", "no", "ok-cancel", "authorise"],
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      onBack={onBack}
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    // 动作已经失败且 busy=false 时，不再保留误导性的“正在保存”状态条。
+    expect(screen.queryByTestId("payment-status-submitting")).toBeNull();
+    expect(screen.getByTestId("payment-runtime-error")).toBeTruthy();
+    expect(screen.getByTestId("payment-linkly-ok-cancel")).toBeTruthy();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("payment-content-scroll").props
+          .contentContainerStyle,
+      ).flex,
+    ).toBe(1);
+    const actionDock = screen.getByTestId("payment-summary-action-dock");
+    expect(actionDock.parent).toBe(screen.getByTestId("payment-summary"));
+    expect(StyleSheet.flatten(actionDock.props.style).flexShrink).toBe(0);
+    expect(
+      within(screen.getByTestId("payment-summary-scroll")).queryByTestId(
+        "payment-recovery-actions",
+      ),
+    ).toBeNull();
+    expect(
+      within(screen.getByTestId("payment-summary-scroll")).queryByTestId(
+        "payment-linkly-controls",
+      ),
+    ).toBeNull();
+    expect(within(actionDock).getByTestId("payment-recovery-actions")).toBeTruthy();
+    expect(within(actionDock).getByTestId("payment-linkly-controls")).toBeTruthy();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("payment-recovery-actions").props.style,
+      ).marginTop,
+    ).toBe(8);
+
+    const back = screen.getByTestId("payment-back");
+    expect(back.props.accessibilityState).toMatchObject({ disabled: true });
+    await fireEvent.press(back);
+    expect(onBack).not.toHaveBeenCalled();
+
+    const cancel = screen.getByTestId("payment-cancel");
+    expect(cancel.props.accessibilityState).toMatchObject({ disabled: false });
+    expect(StyleSheet.flatten(cancel.props.style)).toMatchObject({
+      flexBasis: "46%",
+      flexGrow: 1,
+      marginTop: 0,
+    });
+    await fireEvent.press(cancel);
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+  } finally {
+    await screen.unmount();
+    setPaymentWindowSize(750, 1334);
+  }
+});
+
+test("支付失败关闭错误提示后不恢复过期的正在保存状态", async () => {
+  setPaymentWindowSize(1024, 768);
+  const { presenter } = createUiPresenter({
+    phase: "submitting",
+    selectedMethod: "linkly-cloud",
+    orderGuid: "order-dismissed-payment-error",
+    attemptId: "attempt-dismissed-payment-error",
+    provider: "linkly-cloud",
+    runtimeStatus: "pending",
+    runtimeErrorCode: "PAYMENT_CHECKOUT_FAILED",
+    allowedActions: actions({ cancel: true }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    expect(screen.queryByTestId("payment-status-submitting")).toBeNull();
+    await fireEvent.press(screen.getByTestId("payment-error-dismiss"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("payment-runtime-error")).toBeNull(),
+    );
+    expect(screen.queryByTestId("payment-status-submitting")).toBeNull();
+    expect(screen.getByTestId("payment-cancel")).toBeTruthy();
+  } finally {
+    await screen.unmount();
+    setPaymentWindowSize(750, 1334);
+  }
+});
+
+test("1024×768 恢复支付草稿时取消动作保留在摘要栏固定动作区", async () => {
+  setPaymentWindowSize(1024, 768);
+  const { presenter, spies } = createUiPresenter({
+    phase: "draft-prepared",
+    selectedMethod: "linkly-cloud",
+    orderGuid: "order-recovered-draft-layout",
+    runtimeStatus: "draft-prepared",
+    allowedActions: actions({
+      start: true,
+      changeProvider: true,
+      cancel: true,
+      addCash: true,
+    }),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  try {
+    const actionDock = screen.getByTestId("payment-summary-action-dock");
+    expect(within(actionDock).getByTestId("payment-cancel")).toBeTruthy();
+    expect(screen.getByTestId("payment-entry-actions")).toBeTruthy();
+    expect(
+      StyleSheet.flatten(
+        screen.getByTestId("payment-content-scroll").props
+          .contentContainerStyle,
+      ),
+    ).toMatchObject({
+      gap: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    });
+    await fireEvent.press(screen.getByTestId("payment-cancel"));
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+  } finally {
+    await screen.unmount();
+    setPaymentWindowSize(750, 1334);
+  }
 });
 
 test("窄屏支付页改为单列且分期开关保持可达", async () => {
@@ -2612,7 +2780,9 @@ function createUiPresenter(
       publish({ ...state, amountText: value });
     }),
     setVoucherCode: jest.fn((_value: string) => undefined),
-    dismissError: jest.fn(() => undefined),
+    dismissError: jest.fn(() => {
+      publish({ ...state, runtimeErrorCode: null });
+    }),
     submitSelected: jest.fn(async () => {
       if (applySubmittedState) publish(applySubmittedState(state));
       return true;

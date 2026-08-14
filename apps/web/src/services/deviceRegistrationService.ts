@@ -142,6 +142,10 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
     deviceSystem: normalizeRegisteredDeviceSystem(raw.deviceSystem ?? raw.DeviceSystem),
     status: Number(raw.status ?? raw.Status ?? -1),
     statusDescription: String(raw.statusDescription ?? raw.StatusDescription ?? ''),
+    allowTransactions: asBoolean(
+      pick(raw, 'allowTransactions', 'AllowTransactions', '是否允许交易'),
+      true
+    ),
     remark: getNullableString(raw, 'remark', 'remarks', 'Remark', 'Remarks'),
     createdAt:
       typeof raw.createdAt === 'string'
@@ -287,6 +291,10 @@ export function normalizeDeviceRegistrationDetail(
     statusDescription: String(
       raw.statusDescription ?? raw.设备状态描述 ?? raw.StatusDescription ?? ''
     ),
+    allowTransactions: asBoolean(
+      pick(raw, 'allowTransactions', 'AllowTransactions', '是否允许交易'),
+      true
+    ),
     remark: getNullableString(raw, 'remark', 'remarks', '备注', 'Remark', 'Remarks'),
     createdAt: getString(raw, 'createdAt', '创建时间', 'CreatedAt'),
     lastModified: getNullableString(raw, 'lastModified', '最后修改时间', 'LastModified'),
@@ -311,6 +319,7 @@ export function buildUpdateDeviceRegistrationPayload(
   return {
     设备类型: payload.deviceType,
     设备系统: payload.deviceSystem,
+    是否允许交易: payload.allowTransactions,
     备注: payload.remark ?? '',
   }
 }

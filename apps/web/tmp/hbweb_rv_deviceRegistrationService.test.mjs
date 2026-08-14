@@ -542,6 +542,10 @@ function normalizeItem(raw) {
     deviceSystem: normalizeRegisteredDeviceSystem(raw.deviceSystem ?? raw.DeviceSystem),
     status: Number(raw.status ?? raw.Status ?? -1),
     statusDescription: String(raw.statusDescription ?? raw.StatusDescription ?? ""),
+    allowTransactions: asBoolean(
+      pick(raw, "allowTransactions", "AllowTransactions", "\u662F\u5426\u5141\u8BB8\u4EA4\u6613"),
+      true
+    ),
     remark: getNullableString(raw, "remark", "remarks", "Remark", "Remarks"),
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : typeof raw.CreatedAt === "string" ? raw.CreatedAt : void 0,
     lastModified: typeof raw.lastModified === "string" ? raw.lastModified : typeof raw.LastModified === "string" ? raw.LastModified : null,
@@ -648,6 +652,10 @@ function normalizeDeviceRegistrationDetail(raw) {
     statusDescription: String(
       raw.statusDescription ?? raw.\u8BBE\u5907\u72B6\u6001\u63CF\u8FF0 ?? raw.StatusDescription ?? ""
     ),
+    allowTransactions: asBoolean(
+      pick(raw, "allowTransactions", "AllowTransactions", "\u662F\u5426\u5141\u8BB8\u4EA4\u6613"),
+      true
+    ),
     remark: getNullableString(raw, "remark", "remarks", "\u5907\u6CE8", "Remark", "Remarks"),
     createdAt: getString(raw, "createdAt", "\u521B\u5EFA\u65F6\u95F4", "CreatedAt"),
     lastModified: getNullableString(raw, "lastModified", "\u6700\u540E\u4FEE\u6539\u65F6\u95F4", "LastModified"),
@@ -669,6 +677,7 @@ function buildUpdateDeviceRegistrationPayload(payload) {
   return {
     \u8BBE\u5907\u7C7B\u578B: payload.deviceType,
     \u8BBE\u5907\u7CFB\u7EDF: payload.deviceSystem,
+    \u662F\u5426\u5141\u8BB8\u4EA4\u6613: payload.allowTransactions,
     \u5907\u6CE8: payload.remark ?? ""
   };
 }
@@ -806,6 +815,7 @@ var normalizedChineseDetail = normalizeDeviceRegistrationDetail({
   \u8BBE\u5907\u7CFB\u7EDF: "Windows",
   \u8BBE\u5907\u72B6\u6001: 1,
   \u8BBE\u5907\u72B6\u6001\u63CF\u8FF0: "\u5DF2\u542F\u7528",
+  \u662F\u5426\u5141\u8BB8\u4EA4\u6613: false,
   \u5907\u6CE8: "\u4E2D\u6587\u5B57\u6BB5",
   \u521B\u5EFA\u65F6\u95F4: "2026-05-01T10:00:00Z",
   \u6700\u540E\u4FEE\u6539\u65F6\u95F4: "2026-05-02T11:00:00Z",
@@ -833,6 +843,11 @@ assertEqual(
   "editor-cn",
   "Should normalize Chinese last modified by field"
 );
+assertEqual(
+  normalizedChineseDetail.allowTransactions,
+  false,
+  "Should normalize the Chinese transaction permission field"
+);
 var normalizedCamelDetail = normalizeDeviceRegistrationDetail({
   id: 13,
   hardwareId: "HW-EN-01",
@@ -843,6 +858,7 @@ var normalizedCamelDetail = normalizeDeviceRegistrationDetail({
   deviceSystem: "Mac",
   status: 3,
   statusDescription: "Locked",
+  AllowTransactions: true,
   remarks: "camel field",
   createdAt: "2026-05-03T10:00:00Z",
   lastModified: "2026-05-04T11:00:00Z",
@@ -864,6 +880,11 @@ assertEqual(
   normalizedCamelDetail.isOnline,
   false,
   "Should normalize missing runtime online field as false"
+);
+assertEqual(
+  normalizedCamelDetail.allowTransactions,
+  true,
+  "Should normalize the PascalCase transaction permission field"
 );
 assertEqual(
   normalizeRegisteredDeviceSystem("  "),
@@ -900,6 +921,11 @@ assertEqual(
   "Should normalize current cashier name"
 );
 assertEqual(
+  normalizedRuntimeDetail.allowTransactions,
+  true,
+  "Missing transaction permission should default to allowed"
+);
+assertEqual(
   isDeviceRuntimeOnline(
     normalizedRuntimeDetail,
     Date.parse("2026-07-01T10:00:44Z")
@@ -919,6 +945,7 @@ var updateValuesWithRuntimeExtras = {
   deviceType: "Mobile",
   deviceSystem: "Android",
   remark: "updated",
+  allowTransactions: false,
   status: 2,
   statusDescription: "Disabled"
 };
@@ -927,6 +954,7 @@ assertDeepEqual(
   {
     \u8BBE\u5907\u7C7B\u578B: "Mobile",
     \u8BBE\u5907\u7CFB\u7EDF: "Android",
+    \u662F\u5426\u5141\u8BB8\u4EA4\u6613: false,
     \u5907\u6CE8: "updated"
   },
   "Update payload should only include editable Chinese DTO fields"
@@ -1054,7 +1082,7 @@ globalThis.fetch = async (input, init) => {
     success: true,
     data: {
       devices: [
-        { id: 21, hardwareId: "HW-LEGACY", deviceSystem: "" },
+        { id: 21, hardwareId: "HW-LEGACY", deviceSystem: "", AllowTransactions: false },
         { id: 22, hardwareId: "HW-UNKNOWN", deviceSystem: "VisionOS" }
       ],
       pagination: {
@@ -1111,6 +1139,16 @@ try {
     registeredDevices.devices[1]?.deviceSystem,
     "VisionOS",
     "Device registration list should preserve unknown systems"
+  );
+  assertEqual(
+    registeredDevices.devices[0]?.allowTransactions,
+    false,
+    "Device registration list should normalize a disabled transaction permission"
+  );
+  assertEqual(
+    registeredDevices.devices[1]?.allowTransactions,
+    true,
+    "Device registration list should default missing transaction permission to allowed"
   );
   assertEqual(
     calls[1]?.url,

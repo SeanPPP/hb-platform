@@ -154,7 +154,7 @@ import { SpecialProductsPresenter } from "../../features/special-products/specia
 import type { SpecialProductsRuntimeFactory } from "../../features/special-products/special-products-runtime";
 import type { LocalSyncHistoryPort } from "../../features/sync-history/sync-history-domain";
 import { SyncHistoryPresenter } from "../../features/sync-history/sync-history-presenter";
-import type { HbposTransport } from "../api/hbpos-api";
+import { HbposStoreApi, type HbposTransport } from "../api/hbpos-api";
 import { createAud, type CartSnapshot } from "../contracts";
 import type { NewTransactionGate } from "../contracts/app-updates";
 import type { CashDrawerPort } from "../contracts/drawer";
@@ -1515,6 +1515,9 @@ export function createProductionPosRuntimeServices(
             (await startCatalogReset(signal)).summary,
         },
         receiptSettings,
+        receiptProfile: {
+          load: (signal) => new HbposStoreApi(input.transport).getCurrentReceiptProfile(signal),
+        },
         paymentConfigurationTransition: {
           run: (operation) => {
             // 支付配置保存会整应用 reload，必须复用同步、履约与目录共享的全局封门。
@@ -2049,7 +2052,9 @@ export function createProductionPosRuntimeServices(
           now: input.clock.now,
           receiptLocale: receipt.locale,
           receiptPaper: receipt.paper,
+          brandName: receipt.brandName,
           storeName: receipt.storeName || session.storeCode,
+          returnPolicy: receipt.returnPolicy,
           repository: {
             async summarize(scope) {
               assertActiveScope(scope.storeCode, scope.deviceCode);
@@ -2129,8 +2134,10 @@ export function createProductionPosRuntimeServices(
                 locale: currentSettings.locale,
                 paper: currentSettings.paper,
                 reprint: job.reprint,
+                brandName: currentSettings.brandName,
                 storeName:
                   currentSettings.storeName || session.storeCode,
+                returnPolicy: currentSettings.returnPolicy,
               });
               await printer.connect(currentSettings.peripheralId);
               const result = await printer.print(
@@ -3211,6 +3218,9 @@ function receiptSettingsService(
       await settings.getReceiptPrinterSettings(),
       store.storeCode,
       store.readDevicePresentation,
+      async (next) => {
+        await settings.saveReceiptPrinterSettings(next);
+      },
     ),
     save: (input) => settings.saveReceiptPrinterSettings(input),
   };
@@ -3239,6 +3249,7 @@ function receiptReprintSettings(
           address: current.address,
           phone: current.phone,
           abn: current.abn,
+          returnPolicy: current.returnPolicy,
         },
       };
     },
@@ -3261,6 +3272,7 @@ function receiptPreviewSettings(
           address: current.address,
           phone: current.phone,
           abn: current.abn,
+          returnPolicy: current.returnPolicy,
         },
       };
     },
@@ -3290,6 +3302,7 @@ function returnReceiptSettings(
           address: current.address,
           phone: current.phone,
           abn: current.abn,
+          returnPolicy: current.returnPolicy,
         },
       };
     },
@@ -3335,6 +3348,7 @@ function receiptFulfilmentSettings(
           address: current.address,
           phone: current.phone,
           abn: current.abn,
+          returnPolicy: current.returnPolicy,
         },
       };
     },

@@ -10,6 +10,10 @@ import type {
   ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import {
+  buildSaleReceiptDocument,
+  documentToEscPosBytes,
+} from "@/features/receipts/receipt-document";
 import type { ActivePricingCartSession } from "@/features/sales/runtime";
 import {
   SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN,
@@ -20,6 +24,7 @@ import {
   type SettingsControlPort,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
+  type SettingsReceiptProfileDraft,
   type SettingsLinklyPairingPort,
   type SettingsLinklySetupControlPort,
   type SettingsScannerTestResult,
@@ -92,6 +97,9 @@ export type ProductionSettingsCompositionInput = Readonly<{
   receiptSettings: Readonly<{
     get(): Promise<ReceiptPrinterSettings>;
     save(input: ReceiptPrinterSettings): Promise<unknown>;
+  }>;
+  receiptProfile: Readonly<{
+    load(signal: AbortSignal): Promise<SettingsReceiptProfileDraft | null>;
   }>;
   paymentConfiguration: Readonly<{
     current: SettingsPaymentSettingsInput | null;
@@ -304,7 +312,11 @@ export function createProductionSettingsComposition(
         throwIfAborted(signal);
         const result = await input.printer.print(
           `settings-test:${requiredId(input.createId())}`,
-          printerTestDocument(),
+          buildPrinterTestDocument(
+            settings,
+            terminal.deviceCode,
+            terminal.storeCode,
+          ),
         );
         throwIfAborted(signal);
         if (result.status === "ambiguous") {
@@ -370,6 +382,7 @@ export function createProductionSettingsComposition(
     },
     apiConfiguration: input.apiConfiguration,
     device: input.device,
+    receiptProfile: input.receiptProfile,
   });
   const control: SettingsControlPort = Object.assign(productionControl, {
     ...(squareSetup
@@ -475,13 +488,48 @@ function emptyCatalog(): SettingsCatalogSnapshot {
   });
 }
 
-function printerTestDocument(): Uint8Array {
-  return Uint8Array.from([
-    0x1b, 0x40,
-    ...new TextEncoder().encode("HB POS PRINTER TEST\n"),
-    ...new TextEncoder().encode("PRINT / CUT / DRAWER SAFE TEST\n\n"),
-    0x1d, 0x56, 0x00,
-  ]);
+function buildPrinterTestDocument(
+  settings: ReceiptPrinterSettings,
+  deviceCode: string,
+  storeCode: string,
+): Uint8Array {
+  const soldAtIso = new Date().toISOString();
+  const totalCents = 100;
+  return documentToEscPosBytes(
+    buildSaleReceiptDocument({
+      locale: settings.locale,
+      paper: settings.paper,
+      store: {
+        brandName: settings.brandName,
+        storeName: settings.storeName,
+        address: settings.address,
+        phone: settings.phone,
+        abn: settings.abn,
+        returnPolicy: settings.returnPolicy,
+      },
+      orderNumber: "TEST",
+      soldAtIso,
+      cashierName: "SYSTEM TEST",
+      deviceCode,
+      storeCode: settings.profileStoreCode || storeCode,
+      lines: [
+        {
+          name: "Printer test item",
+          lookupCode: "TEST-001",
+          quantity: "1",
+          discountCents: 0,
+          totalCents,
+        },
+      ],
+      subtotalCents: totalCents,
+      discountCents: 0,
+      totalCents,
+      tenders: [{ method: "cash", amountCents: totalCents, reference: null }],
+      cashChangeCents: 0,
+      title: "===== TEST =====",
+      statusText: "*** NOT A SALE ***",
+    }),
+  );
 }
 
 function mapCashDrawerTestResult(

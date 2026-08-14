@@ -1151,6 +1151,9 @@ function deps(
       connect: unavailable,
       test: unavailable,
     },
+    receiptProfile: {
+      load: unavailable,
+    },
     scanner: {
       test: unavailable,
     },

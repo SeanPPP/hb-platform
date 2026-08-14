@@ -184,4 +184,77 @@ assertIncludes(
   '英文文案应包含时区必填提示',
 )
 
+assertOccurrenceAtLeast(
+  pageSource,
+  'name="returnPolicy"',
+  2,
+  '创建和编辑分店表单都应提供退换货政策文本域',
+)
+assertIncludes(
+  pageSource,
+  "t('system.stores.returnPolicy'",
+  '退换货政策表单标签应使用分店模块统一文案',
+)
+assertIncludes(
+  pageSource,
+  "t('system.stores.returnPolicyMaxLength'",
+  '退换货政策长度校验应使用分店模块自己的友好提示文案',
+)
+assertIncludes(
+  pageSource,
+  'returnPolicy: detail.returnPolicy',
+  '编辑分店时应回填服务端返回的退换货政策',
+)
+assertIncludes(
+  pageSource,
+  'detailStore.returnPolicy',
+  '列表页内详情弹窗应展示退换货政策字段',
+)
+assertIncludes(
+  pageSource,
+  "whiteSpace: 'pre-wrap'",
+  '列表页内详情弹窗应保留退换货政策换行',
+)
+assertIncludes(
+  detailPageSource,
+  'store.returnPolicy',
+  '独立分店详情页应展示退换货政策字段',
+)
+assertIncludes(
+  detailPageSource,
+  "whiteSpace: 'pre-wrap'",
+  '独立分店详情页应保留退换货政策换行',
+)
+assertIncludes(
+  detailPageSource,
+  "t('system.stores.returnPolicy'",
+  '独立分店详情页退换货政策标签应使用分店模块统一文案',
+)
+assertOccurrenceExactly(
+  storeTypesSource,
+  'returnPolicy?: string',
+  3,
+  'StoreDto、CreateStoreDto 和 UpdateStoreDto 都应声明可选退换货政策字段',
+)
+assertIncludes(
+  zhSource,
+  '"returnPolicy": "退换货政策"',
+  '中文文案应包含退换货政策标签',
+)
+assertIncludes(
+  zhSource,
+  '"returnPolicyMaxLength": "退换货政策不能超过 500 个字符"',
+  '中文文案应明确说明退换货政策最大长度',
+)
+assertIncludes(
+  enSource,
+  '"returnPolicy": "Return Policy"',
+  '英文文案应包含退换货政策标签',
+)
+assertIncludes(
+  enSource,
+  '"returnPolicyMaxLength": "Return policy cannot exceed 500 characters"',
+  '英文文案应明确说明退换货政策最大长度',
+)
+
 console.log('storeFormValidation.test: ok')

@@ -68,6 +68,7 @@ export type SettingsScreenPresenter = Pick<
   | "loadSquareDeviceCodes"
   | "loadSquareDevices"
   | "loadSquareLocations"
+  | "loadReceiptProfile"
   | "requestApiAddressChange"
   | "requestAppRestart"
   | "requestCatalogReset"
@@ -88,6 +89,12 @@ export type SettingsScreenPresenter = Pick<
   | "setPrinterLocale"
   | "setPrinterPaper"
   | "setPrinterPeripheralId"
+  | "setReceiptBrandName"
+  | "setReceiptStoreName"
+  | "setReceiptAddress"
+  | "setReceiptPhone"
+  | "setReceiptAbn"
+  | "setReceiptReturnPolicy"
   | "setReregisterStoreCode"
   | "setSquareDeviceId"
   | "setSquareDeviceCodeId"
@@ -1751,6 +1758,111 @@ function squareDevicePickerOption(
   });
 }
 
+function ReceiptStoreProfileCard({
+  disabled,
+  locale,
+  presenter,
+  state,
+}: Readonly<{
+  disabled: boolean;
+  locale: SettingsLocale;
+  presenter: SettingsScreenPresenter;
+  state: SettingsState;
+}>) {
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
+  return (
+    <SectionCard
+      eyebrow={t("eyebrow.storeProfile")}
+      title={t("peripherals.storeProfile")}
+    >
+      <FieldLabel label={t("field.receiptBrandName")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptBrandName")}
+        autoCapitalize="words"
+        autoCorrect={false}
+        editable={!disabled}
+        maxLength={120}
+        onChangeText={(value) => presenter.setReceiptBrandName(value)}
+        style={styles.textInput}
+        testID="settings-receipt-brand-name"
+        value={state.printer.brandName}
+      />
+      <FieldLabel label={t("field.receiptStoreName")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptStoreName")}
+        autoCapitalize="words"
+        autoCorrect={false}
+        editable={!disabled}
+        maxLength={120}
+        onChangeText={(value) => presenter.setReceiptStoreName(value)}
+        style={styles.textInput}
+        testID="settings-receipt-store-name"
+        value={state.printer.storeName}
+      />
+      <FieldLabel label={t("field.receiptAddress")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptAddress")}
+        editable={!disabled}
+        maxLength={240}
+        multiline
+        onChangeText={(value) => presenter.setReceiptAddress(value)}
+        style={styles.multilineTextInput}
+        testID="settings-receipt-address"
+        textAlignVertical="top"
+        value={state.printer.address}
+      />
+      <FieldLabel label={t("field.receiptPhone")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptPhone")}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!disabled}
+        maxLength={60}
+        onChangeText={(value) => presenter.setReceiptPhone(value)}
+        style={styles.textInput}
+        testID="settings-receipt-phone"
+        value={state.printer.phone}
+      />
+      <FieldLabel label={t("field.receiptAbn")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptAbn")}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        editable={!disabled}
+        maxLength={32}
+        onChangeText={(value) => presenter.setReceiptAbn(value)}
+        style={styles.textInput}
+        testID="settings-receipt-abn"
+        value={state.printer.abn}
+      />
+      <FieldLabel label={t("field.receiptReturnPolicy")} />
+      <PosKeyboardAwareTextInput
+        accessibilityLabel={t("field.receiptReturnPolicy")}
+        editable={!disabled}
+        maxLength={500}
+        multiline
+        onChangeText={(value) => presenter.setReceiptReturnPolicy(value)}
+        style={styles.multilineTextInput}
+        testID="settings-receipt-return-policy"
+        textAlignVertical="top"
+        value={state.printer.returnPolicy}
+      />
+      <View style={styles.actionRow}>
+        <ActionButton
+          disabled={disabled}
+          label={t("peripherals.loadStoreProfile")}
+          onPress={() => void presenter.loadReceiptProfile()}
+          testID="settings-receipt-profile-load"
+          tone="secondary"
+        />
+      </View>
+    </SectionCard>
+  );
+}
+
 function PeripheralsPane({
   locale,
   presenter,
@@ -1924,6 +2036,13 @@ function PeripheralsPane({
           />
         </View>
       </SectionCard>
+
+      <ReceiptStoreProfileCard
+        disabled={printerDisabled}
+        locale={locale}
+        presenter={presenter}
+        state={state}
+      />
 
       <View style={styles.twoColumn}>
         <SectionCard
@@ -2648,6 +2767,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "printer-scan-finished",
     "printer-settings-saved",
     "printer-test-passed",
+    "receipt-profile-loaded",
     "scanner-test-passed",
   ].includes(statusCode);
 }
@@ -3005,6 +3125,18 @@ const styles = StyleSheet.create({
     minHeight: SETTINGS_MIN_TOUCH_TARGET,
     paddingHorizontal: 13,
     paddingVertical: 9,
+  },
+  multilineTextInput: {
+    backgroundColor: "#FAFAF8",
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    color: posColors.ink,
+    fontSize: 16,
+    minHeight: 88,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    textAlignVertical: "top",
   },
   button: {
     alignItems: "center",

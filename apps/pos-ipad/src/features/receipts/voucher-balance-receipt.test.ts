@@ -66,6 +66,7 @@ test("订单同步成功后查询同一礼券并只保存、打印 post-sync 最
               address: "",
               phone: "",
               abn: "",
+              returnPolicy: "Refunds within 14 days with proof of purchase.",
             },
           };
         },
@@ -100,9 +101,55 @@ test("订单同步成功后查询同一礼券并只保存、打印 post-sync 最
   assert.equal(queued[0]?.jobId, "voucher-balance:voucher-attempt-1");
   assert.equal(queued[0]?.orderGuid, ORDER_GUID);
   const receipt = new TextDecoder().decode(queued[0]?.receiptBytes);
+  assert.match(receipt, /Hot Bargain/u);
   assert.match(receipt, /VC100/);
   assert.match(receipt, /AU\$6\.25/);
+  assert.equal(
+    containsSequence(
+      [...(queued[0]?.receiptBytes ?? [])],
+      [0xcd, 0xcb, 0xbf, 0xee, 0xd3, 0xeb, 0xcd, 0xcb, 0xbb, 0xf5],
+    ),
+    true,
+    "中文 Return Policy 标题必须使用 GB18030 输出",
+  );
+  assert.match(receipt, /Refunds within 14 days with proof of purchase\./);
   assert.doesNotMatch(receipt, /AU\$7\.50/);
+});
+
+test("礼券余额联抬头依次回退 Brand、Store、Store Code", async () => {
+  const render = async (brandName: string, storeName: string) => {
+    const renderer = new VoucherBalanceReceiptRenderer({
+      async getFrozenReturnReceiptSettings() {
+        return {
+          printerId: "printer-1",
+          paper: "80mm",
+          locale: "en",
+          store: {
+            brandName,
+            storeName,
+            address: "",
+            phone: "",
+            abn: "",
+            returnPolicy: "",
+          },
+        };
+      },
+    });
+    const rendered = await renderer.render({
+      ...material(),
+      confirmation: {
+        status: "confirmed",
+        remainingCents: 625,
+        confirmedAtIso: CONFIRMED_AT,
+      },
+    });
+    assert.ok(rendered);
+    return new TextDecoder().decode(rendered.receiptBytes);
+  };
+
+  assert.match(await render("Hot Bargain", "Brisbane"), /Hot Bargain/u);
+  assert.match(await render("", "Brisbane"), /Brisbane/u);
+  assert.match(await render("", ""), /S001/u);
 });
 
 test("zh-CN 礼券余额联启用中文模式并使用 GB18030 文本字节", async () => {
@@ -118,6 +165,7 @@ test("zh-CN 礼券余额联启用中文模式并使用 GB18030 文本字节", as
           address: "",
           phone: "",
           abn: "",
+          returnPolicy: "",
         },
       };
     },
@@ -452,6 +500,7 @@ test("无打印机只保留已确认快照，不阻塞同步；配置恢复后�
                 address: "",
                 phone: "",
                 abn: "",
+                returnPolicy: "",
               },
             }
           : null;

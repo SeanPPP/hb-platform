@@ -31,6 +31,7 @@ public static class CashierAuthorizationPolicies
     public const string HoldOrder = "Cashier.HoldOrder";
     public const string RecallOrder = "Cashier.RecallOrder";
     public const string HistoryRecall = "Cashier.HistoryRecall";
+    public const string ReceiptPrinter = "Cashier.ReceiptPrinter";
 
     public static void AddPolicies(AuthorizationOptions options)
     {
@@ -62,6 +63,7 @@ public static class CashierAuthorizationPolicies
         Add(options, HoldOrder, Permissions.PosTerminal.Sales.HoldOrder);
         Add(options, RecallOrder, Permissions.PosTerminal.Sales.RecallOrder);
         Add(options, HistoryRecall, Permissions.PosTerminal.History.Recall);
+        Add(options, ReceiptPrinter, Permissions.PosTerminal.Settings.ReceiptPrinter);
     }
 
     private static void Add(AuthorizationOptions options, string name, params string[] permissions)

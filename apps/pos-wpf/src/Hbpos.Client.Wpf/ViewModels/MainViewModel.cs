@@ -58,6 +58,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IReceiptPrintService _receiptPrintService;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptTextFormatter _receiptTextFormatter;
+    private readonly IStoreReceiptProfileApiClient? _storeReceiptProfileApiClient;
     private readonly ILinklyBankReceiptPrinter? _linklyBankReceiptPrinter;
     private readonly IInstallmentOrderService _installmentOrderService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
@@ -417,7 +418,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
-        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
+        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null)
     {
         _core = core;
         _infra = infra;
@@ -445,6 +447,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _receiptPrintService = print.ReceiptPrintService ?? new NoopReceiptPrintService(_localization);
         _receiptPrinterSettingsStore = print.ReceiptPrinterSettingsStore;
         _receiptTextFormatter = print.ReceiptTextFormatter ?? new ReceiptTextFormatter();
+        _storeReceiptProfileApiClient = storeReceiptProfileApiClient;
         _linklyBankReceiptPrinter = print.LinklyBankReceiptPrinter;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _suspendedOrderService = suspendedOrderService;
@@ -628,7 +631,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              sharedHeldOrderCoordinator: _sharedHeldOrderCoordinator,
              sharedHeldOrderApiClient: _sharedHeldOrderApiClient,
              sharedHeldOrderRepository: _sharedHeldOrderRepository,
-             sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker);
+             sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker,
+             storeReceiptProfileApiClient: _storeReceiptProfileApiClient);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(

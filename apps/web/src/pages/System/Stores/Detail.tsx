@@ -60,6 +60,9 @@ export default function StoreDetailPage() {
           <Descriptions.Item label={t('system.stores.address')} span={2}>
             {store.address || '--'}
           </Descriptions.Item>
+          <Descriptions.Item label={t('system.stores.returnPolicy')} span={2}>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{store.returnPolicy || '--'}</div>
+          </Descriptions.Item>
           <Descriptions.Item label={t('column.createTime')}>{store.createdAt}</Descriptions.Item>
           <Descriptions.Item label={t('system.users.updatedAt')}>{store.updatedAt}</Descriptions.Item>
         </Descriptions>

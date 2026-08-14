@@ -328,6 +328,87 @@ test("strict snapshot schema rejects credentials, customer data and card referen
       advertisementCacheRootUri,
     ),
   );
+  assert.throws(() =>
+    sanitizeCustomerDisplaySnapshot(
+      {
+        ...snapshot,
+        summary: {
+          itemQuantity: "1",
+          skuCount: 1,
+          subtotal: money(299),
+          cardReference: "card-ref",
+        },
+      },
+      advertisementCacheRootUri,
+    ),
+  );
+});
+
+test("冻结快照兼容新版单价、汇总与窗口字段，也继续接受旧版字段集", () => {
+  const legacy = sanitizeCustomerDisplaySnapshot(
+    snapshot,
+    advertisementCacheRootUri,
+  );
+  assert.equal(legacy.summary, undefined);
+  assert.equal(legacy.items[0]?.unitPrice, undefined);
+  assert.equal(
+    (legacy as CustomerDisplaySnapshot & { visibleItemStart?: number })
+      .visibleItemStart,
+    undefined,
+  );
+
+  const current = sanitizeCustomerDisplaySnapshot(
+    {
+      ...snapshot,
+      items: [
+        {
+          ...snapshot.items[0]!,
+          unitPrice: money(299),
+        },
+      ],
+      summary: {
+        itemQuantity: "2",
+        skuCount: 1,
+        subtotal: money(598),
+      },
+      visibleItemStart: 0,
+    },
+    advertisementCacheRootUri,
+  );
+
+  assert.deepEqual(current.items[0]?.unitPrice, money(299));
+  assert.deepEqual(current.summary, {
+    itemQuantity: "2",
+    skuCount: 1,
+    subtotal: money(598),
+  });
+  assert.equal(
+    (current as CustomerDisplaySnapshot & { visibleItemStart?: number })
+      .visibleItemStart,
+    0,
+  );
+});
+
+test("可视窗口必须是能完整容纳最多 12 行的有效起点", () => {
+  const items = Array.from({ length: 13 }, (_, index) => ({
+    ...snapshot.items[0]!,
+    name: `Item ${index + 1}`,
+  }));
+
+  assert.doesNotThrow(() =>
+    sanitizeCustomerDisplaySnapshot(
+      { ...snapshot, items, visibleItemStart: 1 },
+      advertisementCacheRootUri,
+    ),
+  );
+  for (const visibleItemStart of [-1, 0.5, 2]) {
+    assert.throws(() =>
+      sanitizeCustomerDisplaySnapshot(
+        { ...snapshot, items, visibleItemStart },
+        advertisementCacheRootUri,
+      ),
+    );
+  }
 });
 
 test("advertisements must be local files", () => {

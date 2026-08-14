@@ -48,6 +48,7 @@ internal sealed class MainChildViewModelFactory
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
     private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
+    private readonly IStoreReceiptProfileApiClient? _storeReceiptProfileApiClient;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -87,7 +88,8 @@ internal sealed class MainChildViewModelFactory
         ISharedHeldOrderCoordinator? sharedHeldOrderCoordinator = null,
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
-        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
+        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -127,6 +129,7 @@ internal sealed class MainChildViewModelFactory
         _sharedHeldOrderApiClient = sharedHeldOrderApiClient;
         _sharedHeldOrderRepository = sharedHeldOrderRepository;
         _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
+        _storeReceiptProfileApiClient = storeReceiptProfileApiClient;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -397,6 +400,7 @@ internal sealed class MainChildViewModelFactory
             enforcePermissionsWhenNoCashier: _enforceCashierPermissions,
             apiServerSettings: _apiServerSettings,
             operationAuthorizationService: _operationAuthorizationService,
+            storeReceiptProfileApiClient: _storeReceiptProfileApiClient,
             session: session);
     }
 

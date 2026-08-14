@@ -162,6 +162,8 @@
   <data name="settings.receiptPrinter.returnPolicy" xml:space="preserve"><value>Return Policy</value></data>
   <data name="settings.receiptPrinter.save" xml:space="preserve"><value>Save Receipt Printer</value></data>
   <data name="settings.receiptPrinter.test" xml:space="preserve"><value>Test Print</value></data>
+  <data name="settings.receiptPrinter.loadFromStore" xml:space="preserve"><value>Load from Store Profile</value></data>
+  <data name="settings.status.receiptProfileLoaded" xml:space="preserve"><value>Loaded — save to apply</value></data>
   <data name="settings.deviceRegistration.description" xml:space="preserve"><value>Choose another store and submit an authorized reregistration request for this checkout device. Pending, failed, or syncing orders must be cleared first.</value></data>
   <data name="settings.deviceRegistration.action" xml:space="preserve"><value>Change Store Registration</value></data>
   <data name="settings.status.ready" xml:space="preserve"><value>Ready.</value></data>

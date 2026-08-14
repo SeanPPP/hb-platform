@@ -1,0 +1,258 @@
+name: WPF Inno 内部烟测安装包
+
+run-name: WPF Inno ${{ inputs.version }}（内部烟测）
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号（例如 1.0.11）
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wpf-inno-smoke-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Windows x64 构建与核验
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      REQUESTED_VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 校验版本号
+        id: version
+        shell: pwsh
+        run: |
+          $version = $env:REQUESTED_VERSION.Trim()
+          if ($version -notmatch '^v?\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "版本号格式无效：$version"
+          }
+
+          if ($version.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $version = $version.Substring(1)
+          }
+
+          "normalized=$version" >> $env:GITHUB_OUTPUT
+
+      - name: 安装 .NET 8 与仓库固定 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.314
+
+      - name: 检查并安装 Inno Setup 6
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+          )
+          $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($iscc)) {
+            winget install --id JRSoftware.InnoSetup -e --source winget --silent `
+              --accept-package-agreements --accept-source-agreements --disable-interactivity
+            if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup 安装失败，winget 退出码：$LASTEXITCODE"
+            }
+
+            $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace($iscc)) {
+            throw '安装后仍未找到 Inno Setup 6 ISCC.exe。'
+          }
+
+          $isccInfo = (Get-Item -LiteralPath $iscc).VersionInfo
+          if ($isccInfo.ProductMajorPart -ne 6) {
+            throw "必须使用 Inno Setup 6，实际版本：$($isccInfo.ProductVersion)"
+          }
+
+          "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
+          "Inno Setup：$($isccInfo.ProductVersion) ($iscc)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: 运行 WPF Release 测试
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          $resultsDir = Join-Path $PWD '.artifacts\wpf-release\test-results'
+          $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
+          New-Item -ItemType Directory -Path $resultsDir, $logsDir -Force | Out-Null
+
+          dotnet test apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
+            --configuration Release `
+            -p:HbposWpfAppVersion=$version `
+            --logger 'trx;LogFileName=Hbpos.Client.Tests.trx' `
+            --results-directory $resultsDir `
+            2>&1 | Tee-Object -FilePath (Join-Path $logsDir 'Hbpos.Client.Tests.log')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Hbpos.Client.Tests 失败，退出码：$LASTEXITCODE"
+          }
+
+      - name: 运行 WPF UI Release 测试
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          $resultsDir = Join-Path $PWD '.artifacts\wpf-release\test-results'
+          $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
+
+          dotnet test apps/pos-wpf/tests/Hbpos.Client.UiTests/Hbpos.Client.UiTests.csproj `
+            --configuration Release `
+            -p:HbposWpfAppVersion=$version `
+            --logger 'trx;LogFileName=Hbpos.Client.UiTests.trx' `
+            --results-directory $resultsDir `
+            2>&1 | Tee-Object -FilePath (Join-Path $logsDir 'Hbpos.Client.UiTests.log')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Hbpos.Client.UiTests 失败，退出码：$LASTEXITCODE"
+          }
+
+      - name: 构建 Inno 内部烟测安装包
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
+          New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+          $buildLog = Join-Path $logsDir 'Build-WpfInnoInstaller.log'
+
+          Start-Transcript -Path $buildLog -Force
+          try {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass `
+              -File apps/pos-wpf/scripts/Build-WpfInnoInstaller.ps1 `
+              -Version "$version" `
+              -Configuration Release `
+              -OutputRoot ".artifacts\wpf-release" `
+              -AllowNonCommercialBuild
+            if ($LASTEXITCODE -ne 0) {
+              throw "WPF Inno 构建失败，退出码：$LASTEXITCODE"
+            }
+          }
+          finally {
+            Stop-Transcript
+          }
+
+      - name: 核验版本、哈希、签名和 Git 状态
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          $versionParts = $version.Split('.')
+          $expectedFileVersion = if ($versionParts.Count -eq 3) { "$version.0" } else { $version }
+          $releaseDir = Join-Path $PWD ".artifacts\wpf-release\$version"
+          $appPath = Join-Path $releaseDir 'publish\Hbpos.Client.Wpf.exe'
+          $installerName = "Hbpos.Client.Wpf-$version-x64.exe"
+          $installerPath = Join-Path $releaseDir $installerName
+
+          if (!(Test-Path -LiteralPath $appPath)) {
+            throw "缺少发布主程序：$appPath"
+          }
+          if (!(Test-Path -LiteralPath $installerPath)) {
+            throw "缺少安装包：$installerPath"
+          }
+
+          $appInfo = (Get-Item -LiteralPath $appPath).VersionInfo
+          $installerFile = Get-Item -LiteralPath $installerPath
+          $installerInfo = $installerFile.VersionInfo
+          $hash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+
+          if ($appInfo.FileVersion -ne $expectedFileVersion) {
+            throw "主程序 FileVersion 不匹配：$($appInfo.FileVersion)，预期：$expectedFileVersion"
+          }
+          if (!$appInfo.ProductVersion.StartsWith($version, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "主程序 ProductVersion 不匹配：$($appInfo.ProductVersion)，预期以 $version 开头"
+          }
+          if ($installerInfo.FileVersion -ne $expectedFileVersion) {
+            throw "安装包 FileVersion 不匹配：$($installerInfo.FileVersion)，预期：$expectedFileVersion"
+          }
+          if ($installerInfo.ProductVersion -ne $version) {
+            throw "安装包 ProductVersion 不匹配：$($installerInfo.ProductVersion)，预期：$version"
+          }
+          if ($signature.Status.ToString() -ne 'NotSigned') {
+            throw "内部烟测包预期未签名，实际状态：$($signature.Status)"
+          }
+
+          $shaPath = Join-Path $releaseDir "$installerName.sha256"
+          "$hash  $installerName" | Set-Content -LiteralPath $shaPath -Encoding ascii
+
+          $gitStatus = @(git status --porcelain)
+          if ($LASTEXITCODE -ne 0) {
+            throw '无法读取 git status。'
+          }
+          if ($gitStatus.Count -ne 0) {
+            throw "构建后 Git 工作区出现未预期改动：`n$($gitStatus -join "`n")"
+          }
+
+          $trackedArtifacts = @(git ls-files -- '.artifacts/**')
+          if ($LASTEXITCODE -ne 0 -or $trackedArtifacts.Count -ne 0) {
+            throw "构建产物被 Git 跟踪：`n$($trackedArtifacts -join "`n")"
+          }
+
+          $report = [ordered]@{
+            version = $version
+            sourceCommit = '${{ github.sha }}'
+            configuration = 'Release'
+            runtimeIdentifier = 'win-x64'
+            deploymentMode = 'framework-dependent'
+            requiredRuntime = '.NET 8 Desktop Runtime x64'
+            installerPath = ".artifacts/wpf-release/$version/$installerName"
+            installerFileName = $installerName
+            installerFileSize = $installerFile.Length
+            installerSha256 = $hash
+            installerFileVersion = $installerInfo.FileVersion
+            installerProductVersion = $installerInfo.ProductVersion
+            installerSignatureStatus = $signature.Status.ToString()
+            appFileVersion = $appInfo.FileVersion
+            appProductVersion = $appInfo.ProductVersion
+            gitStatusClean = $true
+            productionReady = $false
+          }
+          $reportPath = Join-Path $releaseDir 'build-report.json'
+          $report | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reportPath -Encoding utf8
+
+          @"
+          ## WPF Inno 内部烟测构建
+
+          - 安装包：``$installerName``
+          - 文件大小：``$($installerFile.Length) bytes``
+          - SHA256：``$hash``
+          - 主程序 FileVersion：``$($appInfo.FileVersion)``
+          - 主程序 ProductVersion：``$($appInfo.ProductVersion)``
+          - 安装包 FileVersion：``$($installerInfo.FileVersion)``
+          - 安装包 ProductVersion：``$($installerInfo.ProductVersion)``
+          - Authenticode：``$($signature.Status)``
+          - 运行时要求：``.NET 8 Desktop Runtime x64``
+          - 发布属性：内部烟测、framework-dependent、未签名、非正式生产包
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: 上传 EXE、SHA256 和核验报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf-inno-${{ steps.version.outputs.normalized }}-x64
+          path: |
+            .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe
+            .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe.sha256
+            .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/build-report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传构建与测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpf-inno-${{ github.run_id }}-logs
+          path: |
+            .artifacts/wpf-release/logs/**
+            .artifacts/wpf-release/test-results/**
+          if-no-files-found: warn
+          retention-days: 14

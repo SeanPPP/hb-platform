@@ -53,7 +53,16 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.device": "设备",
       "status.device.authorized": "已授权",
       "status.deviceCode": "设备代码",
+      "status.display": "客显",
+      "status.network": "网络",
+      "status.network.online": "在线",
+      "status.peripheral.disconnected": "未连接",
+      "status.printer": "打印机",
+      "status.scanner": "扫码",
+      "status.scanner.inactive": "未聚焦",
       "status.storeName": "分店名称",
+      "status.sync": "补传",
+      "status.sync.pending": "0 笔待处理",
     },
   };
 

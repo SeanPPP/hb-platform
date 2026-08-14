@@ -17,6 +17,8 @@ export type ReceiptPrinterSettings = Readonly<{
   address: string;
   phone: string;
   abn: string;
+  returnPolicy: string;
+  profileStoreCode: string;
 }>;
 
 export const DEFAULT_RECEIPT_PRINTER_SETTINGS: ReceiptPrinterSettings = {
@@ -30,6 +32,8 @@ export const DEFAULT_RECEIPT_PRINTER_SETTINGS: ReceiptPrinterSettings = {
   address: "",
   phone: "",
   abn: "",
+  returnPolicy: "",
+  profileStoreCode: "",
 };
 
 type SettingsRow = Readonly<{ setting_value: unknown }>;
@@ -96,6 +100,7 @@ function validateReceiptPrinterSettings(value: unknown): ReceiptPrinterSettings 
   const allowed = new Set([
     "printEnabled", "drawerEnabled", "peripheralId", "paper", "locale",
     "brandName", "storeName", "address", "phone", "abn",
+    "returnPolicy", "profileStoreCode",
   ]);
   for (const key of Object.keys(record)) {
     if (SENSITIVE_KEY.test(key) || !allowed.has(key)) {
@@ -117,9 +122,11 @@ function validateReceiptPrinterSettings(value: unknown): ReceiptPrinterSettings 
     locale: enumeration(record.locale, LOCALE_VALUES, "locale") as "en" | "zh-CN",
     brandName: boundedText(record.brandName, 120, "brandName"),
     storeName: boundedText(record.storeName, 120, "storeName"),
-    address: boundedText(record.address, 240, "address"),
+    address: multilineText(record.address, 240, "address"),
     phone: boundedText(record.phone, 60, "phone"),
     abn: boundedText(record.abn, 32, "abn"),
+    returnPolicy: optionalMultilineText(record.returnPolicy, 500, "returnPolicy"),
+    profileStoreCode: optionalText(record.profileStoreCode, 128, "profileStoreCode"),
   };
 }
 
@@ -144,8 +151,31 @@ function enumeration(value: unknown, allowed: ReadonlySet<string>, field: string
 }
 
 function boundedText(value: unknown, maxLength: number, field: string): string {
-  if (typeof value !== "string" || value.length > maxLength || /[\u0000-\u001F\u007F]/.test(value)) {
+  if (typeof value !== "string" || value.length > maxLength || /[\u0000-\u001F\u007F-\u009F]/.test(value)) {
     throw new Error(`Receipt printer ${field} is invalid.`);
   }
   return value;
+}
+
+/** 地址与退货政策需要换行排版，仅放行 CR/LF/TAB，其余控制字符（含 C1）仍拒绝。 */
+function multilineText(value: unknown, maxLength: number, field: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length > maxLength ||
+    /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(value)
+  ) {
+    throw new Error(`Receipt printer ${field} is invalid.`);
+  }
+  return value;
+}
+
+/** 旧 receipt_printer_v1 没有新资料字段，首次读取补默认空值且不清空旧硬件。 */
+function optionalText(value: unknown, maxLength: number, field: string): string {
+  if (value === undefined || value === null) return "";
+  return boundedText(value, maxLength, field);
+}
+
+function optionalMultilineText(value: unknown, maxLength: number, field: string): string {
+  if (value === undefined || value === null) return "";
+  return multilineText(value, maxLength, field);
 }

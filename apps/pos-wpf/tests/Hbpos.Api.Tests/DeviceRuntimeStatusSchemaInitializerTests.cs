@@ -19,6 +19,11 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
 
         var sql = Assert.Single(executor.SqlStatements);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[POSM_设备注册信息表]', N'U') IS NOT NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否允许交易') IS NULL", sql);
+        Assert.Contains("ADD [是否允许交易] BIT NOT NULL", sql);
+        Assert.Contains("DEFAULT (1) WITH VALUES", sql);
+        Assert.Contains("ERROR_NUMBER() NOT IN (2705, 2714)", sql);
+        Assert.Contains("OR COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否允许交易') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否在线') IS NULL", sql);
         Assert.Contains("ADD [是否在线] BIT NOT NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'最后心跳时间') IS NULL", sql);

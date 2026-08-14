@@ -5005,6 +5005,35 @@
         }
       }
     },
+    "/api/v1/stores/current/receipt-profile": {
+      "get": {
+        "tags": [
+          "Stores"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreReceiptProfileDtoApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreReceiptProfileDtoApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreReceiptProfileDtoApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/vouchers/{voucherCode}": {
       "get": {
         "tags": [
@@ -12030,6 +12059,60 @@
               "$ref": "#/components/schemas/StoreDto"
             },
             "nullable": true
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "StoreReceiptProfileDto": {
+        "type": "object",
+        "properties": {
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "storeName": {
+            "type": "string",
+            "nullable": true
+          },
+          "brandName": {
+            "type": "string",
+            "nullable": true
+          },
+          "address": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "abn": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnPolicy": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "StoreReceiptProfileDtoApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/StoreReceiptProfileDto"
           },
           "errorCode": {
             "type": "string",

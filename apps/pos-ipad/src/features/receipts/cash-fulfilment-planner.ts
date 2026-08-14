@@ -16,6 +16,7 @@ export type ReceiptStoreHeading = Readonly<{
   address: string;
   phone: string;
   abn: string;
+  returnPolicy: string;
 }>;
 
 /** 打印、钱箱共用同一台芯烨设备；缺失其标识时两者都不能排队。 */

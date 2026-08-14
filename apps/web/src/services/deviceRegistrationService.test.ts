@@ -41,6 +41,7 @@ const normalizedChineseDetail = normalizeDeviceRegistrationDetail({
   设备系统: 'Windows',
   设备状态: 1,
   设备状态描述: '已启用',
+  是否允许交易: false,
   备注: '中文字段',
   创建时间: '2026-05-01T10:00:00Z',
   最后修改时间: '2026-05-02T11:00:00Z',
@@ -69,6 +70,11 @@ assertEqual(
   'editor-cn',
   'Should normalize Chinese last modified by field',
 )
+assertEqual(
+  normalizedChineseDetail.allowTransactions,
+  false,
+  'Should normalize the Chinese transaction permission field',
+)
 
 const normalizedCamelDetail = normalizeDeviceRegistrationDetail({
   id: 13,
@@ -80,6 +86,7 @@ const normalizedCamelDetail = normalizeDeviceRegistrationDetail({
   deviceSystem: 'Mac',
   status: 3,
   statusDescription: 'Locked',
+  AllowTransactions: true,
   remarks: 'camel field',
   createdAt: '2026-05-03T10:00:00Z',
   lastModified: '2026-05-04T11:00:00Z',
@@ -102,6 +109,11 @@ assertEqual(
   normalizedCamelDetail.isOnline,
   false,
   'Should normalize missing runtime online field as false'
+)
+assertEqual(
+  normalizedCamelDetail.allowTransactions,
+  true,
+  'Should normalize the PascalCase transaction permission field',
 )
 assertEqual(
   normalizeRegisteredDeviceSystem('  '),
@@ -140,6 +152,11 @@ assertEqual(
   'Should normalize current cashier name',
 )
 assertEqual(
+  normalizedRuntimeDetail.allowTransactions,
+  true,
+  'Missing transaction permission should default to allowed',
+)
+assertEqual(
   isDeviceRuntimeOnline(
     normalizedRuntimeDetail,
     Date.parse('2026-07-01T10:00:44Z')
@@ -160,6 +177,7 @@ const updateValuesWithRuntimeExtras = {
   deviceType: 'Mobile',
   deviceSystem: 'Android',
   remark: 'updated',
+  allowTransactions: false,
   status: 2,
   statusDescription: 'Disabled',
 }
@@ -169,6 +187,7 @@ assertDeepEqual(
   {
     设备类型: 'Mobile',
     设备系统: 'Android',
+    是否允许交易: false,
     备注: 'updated',
   },
   'Update payload should only include editable Chinese DTO fields',
@@ -308,7 +327,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     success: true,
     data: {
       devices: [
-        { id: 21, hardwareId: 'HW-LEGACY', deviceSystem: '' },
+        { id: 21, hardwareId: 'HW-LEGACY', deviceSystem: '', AllowTransactions: false },
         { id: 22, hardwareId: 'HW-UNKNOWN', deviceSystem: 'VisionOS' },
       ],
       pagination: {
@@ -367,6 +386,16 @@ try {
     registeredDevices.devices[1]?.deviceSystem,
     'VisionOS',
     'Device registration list should preserve unknown systems',
+  )
+  assertEqual(
+    registeredDevices.devices[0]?.allowTransactions,
+    false,
+    'Device registration list should normalize a disabled transaction permission',
+  )
+  assertEqual(
+    registeredDevices.devices[1]?.allowTransactions,
+    true,
+    'Device registration list should default missing transaction permission to allowed',
   )
   assertEqual(
     calls[1]?.url,

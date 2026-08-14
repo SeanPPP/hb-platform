@@ -57,7 +57,7 @@ assert.equal(
 );
 assert.equal(easJson.build["android-internal"].android.buildType, "apk");
 
-assert.match(appConfigSource, /name:\s*"HB POS Handheld"/u);
+assert.match(appConfigSource, /name:\s*"HB POS Mobile"/u);
 assert.match(appConfigSource, /slug:\s*"hb-pos-handheld"/u);
 assert.match(appConfigSource, /scheme:\s*"hbpos-handheld"/u);
 assert.match(appConfigSource, /platforms:\s*\["ios",\s*"android"\]/u);

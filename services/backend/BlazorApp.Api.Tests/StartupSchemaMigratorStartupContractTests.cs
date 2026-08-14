@@ -71,6 +71,59 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StartupSchemaMigrator_幂等补齐门店退换货政策列且不回填()
+    {
+        var migrator = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"));
+
+        Assert.Contains("await EnsureStoreReturnPolicySchemaAsync(db, logger);", migrator);
+        Assert.Contains("private static async Task EnsureStoreReturnPolicySchemaAsync", migrator);
+        Assert.Contains("StoreReturnPolicy_Schema_Initialization", migrator);
+        Assert.Contains("OBJECT_ID(N'[dbo].[Store]', N'U') IS NOT NULL", migrator);
+        Assert.Contains("COL_LENGTH('dbo.Store', 'ReturnPolicy') IS NULL", migrator);
+        Assert.Contains("ALTER TABLE [dbo].[Store] ADD [ReturnPolicy] nvarchar(500) NULL;", migrator);
+        Assert.Contains("@LockOwner = N'Transaction'", migrator);
+        Assert.Contains("COMMIT TRANSACTION", migrator);
+        Assert.DoesNotContain("UPDATE [dbo].[Store] SET [ReturnPolicy]", migrator);
+    }
+
+    [Fact]
+    public async Task StoreDtos_退换货政策四个DTO均声明500长度上限()
+    {
+        var dtoSource = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Shared/DTOs/StoreDtos.cs"));
+
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(
+            dtoSource,
+            @"public string\? ReturnPolicy \{ get; set; \}").Count);
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(
+            dtoSource,
+            @"\[StringLength\(500, ErrorMessage = ""退换货政策长度不能超过500个字符""\)\]").Count);
+    }
+
+    [Fact]
+    public async Task StoreService_Hq同步不写入或覆盖退换货政策()
+    {
+        var serviceSource = await File.ReadAllTextAsync(Path.Combine(
+            FindRepoRoot(),
+            "services/backend/BlazorApp.Api/Services/StoreService.cs"));
+
+        var hqStart = serviceSource.IndexOf(
+            "private async Task UpsertHqBranchAsync",
+            StringComparison.Ordinal);
+        var hqEnd = serviceSource.IndexOf(
+            "private static SugarParameter ToParameter",
+            StringComparison.Ordinal);
+        Assert.True(hqStart >= 0 && hqEnd > hqStart, "无法定位 StoreService 的 HQ 同步代码区间");
+
+        var hqRegion = serviceSource[hqStart..hqEnd];
+        Assert.Contains("BranchName = store.StoreName", hqRegion, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReturnPolicy", hqRegion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_创建员工敏感审批表和Pending过滤唯一索引()
     {
         var migrator = await File.ReadAllTextAsync(

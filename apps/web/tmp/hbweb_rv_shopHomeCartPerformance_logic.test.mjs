@@ -210,13 +210,25 @@ async function main() {
     );
   });
   if (productCardQuantityStepperFailure) failures.push(productCardQuantityStepperFailure);
-  const productCardAddVisibilityFailure = await runTest("\u5546\u54C1\u5361\u5E94\u672A\u5165\u8F66\u663E\u793A Add\u3001\u5DF2\u5165\u8F66\u663E\u793A\u5220\u9664\u4E14\u4E0D\u6324\u538B\u6B65\u8FDB\u5668", () => {
+  const productCardAddVisibilityFailure = await runTest("\u5546\u54C1\u5361\u5E94\u4EE5\u56FA\u5B9A\u69FD\u4F4D\u5207\u6362\u9996\u6B21\u52A0\u8D2D\u548C\u5220\u9664", () => {
     assert(
-      productCardSource.includes("cartQuantity > 0 ? (") && productCardSource.includes("cartQuantity <= 0 ? (") && productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--left"') && productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--right"') && productCardSource.includes("cartQuantity > 0 ? 'shop-product-card-actions--in-cart' : ''") && productCardSource.includes("const addQuantity = quantity > 0 ? quantity : stepQuantity") && productCardSource.includes("void onAddToCart(product, addQuantity)") && productCardSource.includes('className="shop-product-add-button"'),
-      "\u5546\u54C1\u5361\u6CA1\u6709\u6309\u8D2D\u7269\u8F66\u72B6\u6001\u5207\u6362\u5220\u9664/Add\uFF0C\u6216 Add \u6CA1\u6709\u6309\u5F53\u524D\u6570\u91CF/INNER \u9996\u6B21\u52A0\u8D2D"
+      productCardSource.includes("cartQuantity > 0 ? (") && productCardSource.includes("cartQuantity <= 0 ? (") && productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--left"') && productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--right"') && productCardSource.includes("const addQuantity = quantity > 0 ? quantity : stepQuantity") && productCardSource.includes("void onAddToCart(product, addQuantity)") && productCardSource.includes('className="shop-product-cart-button"') && productCardSource.includes('aria-label="Add product to cart"') && productCardSource.includes('title="Add product to cart"') && !productCardSource.includes("shop-product-card-actions--in-cart") && !productCardSource.includes(">\n                  Add\n                </Button>"),
+      "\u5546\u54C1\u5361\u6CA1\u6709\u4FDD\u6301\u5DE6\u53F3\u56FA\u5B9A\u69FD\u4F4D\uFF0C\u9996\u6B21\u52A0\u8D2D\u4ECD\u663E\u793A Add \u6587\u5B57\uFF0C\u6216\u672A\u8865\u9F50\u53EF\u8BBF\u95EE\u6027\u8BF4\u660E"
     );
   });
   if (productCardAddVisibilityFailure) failures.push(productCardAddVisibilityFailure);
+  const productCardQuickPackFailure = await runTest("\u5546\u54C1\u5361 2/3/4 \u4EFD\u5FEB\u6377\u6309\u94AE\u5E94\u8BBE\u7F6E\u603B\u6570\u91CF", () => {
+    const quickPackCases = [
+      { packCount: 2, stepQuantity: 1, currentQuantity: 9, expected: 2 },
+      { packCount: 3, stepQuantity: 12, currentQuantity: 60, expected: 36 },
+      { packCount: 4, stepQuantity: 12, currentQuantity: 0, expected: 48 }
+    ];
+    assert(
+      quickPackCases.every(({ packCount, stepQuantity, expected }) => packCount * stepQuantity === expected) && quickPackCases.some(({ currentQuantity, expected }) => currentQuantity > expected) && productCardSource.includes("const handleQuickPackQuantity = (packCount: number) => {") && productCardSource.includes("const quickQuantity = packCount * stepQuantity") && productCardSource.includes("applyQuantityChange(quickQuantity)") && productCardSource.includes("[2, 3, 4].map((packCount) =>") && productCardSource.includes("onClick={() => handleQuickPackQuantity(packCount)}") && productCardSource.includes('className="shop-product-quick-pack-button"') && productCardSource.includes("aria-label={`Set total quantity to ${packCount} packs (${quickQuantity})`}") && productCardSource.includes("title={`Set total quantity to ${packCount} packs (${quickQuantity})`}"),
+      "2/3/4 \u4EFD\u6309\u94AE\u672A\u6309 packCount * stepQuantity \u8BBE\u7F6E\u603B\u91CF\u3001\u672A\u8FDE\u63A5\u70B9\u51FB\u5904\u7406\uFF0C\u6216\u7F3A\u5C11\u53EF\u8BBF\u95EE\u6027\u8BF4\u660E"
+    );
+  });
+  if (productCardQuickPackFailure) failures.push(productCardQuickPackFailure);
   const productCardRemoveOptimisticFailure = await runTest("\u5546\u54C1\u5361\u5220\u9664\u5E94\u5148\u4E50\u89C2\u9000\u51FA\u5DF2\u5165\u8F66\u72B6\u6001\u5E76\u9632\u91CD\u590D\u70B9\u51FB", () => {
     const body = extractFunctionBody(
       shopHomeSource,
@@ -236,10 +248,10 @@ async function main() {
     );
   });
   if (optimisticDynamicDataFailure) failures.push(optimisticDynamicDataFailure);
-  const productCardQuantityStyleFailure = await runTest("\u5546\u54C1\u5361\u6570\u91CF\u6B65\u8FDB\u5668\u5E94\u56FA\u5B9A\u5C45\u4E2D\u4E14 Add \u56FA\u5B9A\u5BBD\u5EA6", () => {
+  const productCardQuantityStyleFailure = await runTest("\u5546\u54C1\u5361\u6570\u91CF\u64CD\u4F5C\u533A\u5E94\u4F7F\u7528\u5355\u4E00\u56FA\u5B9A\u7F51\u683C\u5E03\u5C40", () => {
     assert(
-      productCardSource.includes("shop-product-quantity-stepper") && productCardSource.includes("shop-product-quantity-button") && productCardSource.includes("shop-product-quantity-input") && globalCssSource.includes("grid-template-columns: 28px minmax(108px, 1fr) 58px") && globalCssSource.includes(".shop-product-card-actions--in-cart") && globalCssSource.includes("grid-template-columns: 28px minmax(108px, 1fr) 28px") && globalCssSource.includes("box-sizing: border-box") && globalCssSource.includes("justify-self: center") && globalCssSource.includes("max-width: 120px") && globalCssSource.includes("min-width: 108px") && globalCssSource.includes(".shop-product-quantity-stepper") && globalCssSource.includes(".shop-product-quantity-button") && globalCssSource.includes(".shop-product-quantity-input") && globalCssSource.includes(".shop-product-add-button"),
-      "\u5546\u54C1\u5361\u6570\u91CF\u6B65\u8FDB\u5668\u7F3A\u5C11\u56FA\u5B9A\u5C45\u4E2D/Add \u56FA\u5B9A\u5BBD\u5EA6\u6837\u5F0F\uFF0C\u5361\u7247\u52A8\u4F5C\u533A\u53EF\u80FD\u6296\u52A8"
+      productCardSource.includes("shop-product-quantity-stepper") && productCardSource.includes("shop-product-quantity-button") && productCardSource.includes("shop-product-quantity-input") && globalCssSource.includes("grid-template-columns: 20px 20px minmax(24px, 1fr) 20px repeat(3, 20px) 20px") && globalCssSource.includes("box-sizing: border-box") && globalCssSource.includes("white-space: nowrap") && globalCssSource.includes(".shop-product-quantity-stepper") && globalCssSource.includes("display: contents") && globalCssSource.includes(".shop-product-quantity-button") && globalCssSource.includes(".shop-product-quantity-input") && globalCssSource.includes(".shop-product-quick-pack-button") && globalCssSource.includes(".shop-product-cart-button") && !globalCssSource.includes(".shop-product-card-actions--in-cart") && !globalCssSource.includes(".shop-product-add-button"),
+      "\u5546\u54C1\u5361\u6570\u91CF\u64CD\u4F5C\u533A\u4ECD\u4F7F\u7528\u5165\u8F66\u524D\u540E\u52A8\u6001\u5217\u5BBD\uFF0C\u6216\u7F3A\u5C11\u5FEB\u6377\u6309\u94AE/\u56FE\u6807\u69FD\u6837\u5F0F"
     );
   });
   if (productCardQuantityStyleFailure) failures.push(productCardQuantityStyleFailure);
@@ -299,6 +311,13 @@ async function main() {
     );
   });
   if (bestSellerStatusNoticeFailure) failures.push(bestSellerStatusNoticeFailure);
+  const bestSellerFailedRowsNoticeFailure = await runTest("\u70ED\u9500\u5546\u54C1 Failed \u72B6\u6001\u5E94\u540C\u65F6\u4FDD\u7559\u5546\u54C1\u884C\u548C\u683C\u5F0F\u5316\u8B66\u544A", () => {
+    assert(
+      bestSellersSource.includes("import { formatStatisticMessageAmounts } from '../../../utils/statisticMessage'") && bestSellersSource.includes("const formattedStatisticMessage = useMemo(") && bestSellersSource.includes("formatStatisticMessageAmounts(statisticMessage)") && bestSellersSource.includes("formattedStatisticMessage ||") && bestSellersSource.includes("<Tooltip title={formattedStatisticMessage}>") && bestSellersSource.includes("type={statisticStatus === 'Failed' ? 'error' : 'warning'}") && bestSellersSource.includes("message={bestSellerStatusNotice}") && bestSellersSource.includes("dataSource={products}"),
+      "Failed \u72B6\u6001\u6CA1\u6709\u540C\u65F6\u4FDD\u7559\u5546\u54C1\u884C\u3001\u7EA2\u8272\u8B66\u544A\uFF0C\u6216 Tooltip/Alert \u672A\u4F7F\u7528\u7CBE\u786E\u683C\u5F0F\u5316\u6D88\u606F"
+    );
+  });
+  if (bestSellerFailedRowsNoticeFailure) failures.push(bestSellerFailedRowsNoticeFailure);
   const bestSellerTableColumnsFailure = await runTest("\u70ED\u9500\u5546\u54C1\u8868\u683C\u5E94\u663E\u793A\u6761\u7801\u3001\u590D\u5236\u3001\u72B6\u6001\u3001\u5206\u5E97\u9500\u91CF\u548C\u52A0\u8D2D\u64CD\u4F5C", () => {
     assert(
       bestSellersSource.includes("BarcodePreview") && bestSellersSource.includes("CopyOutlined") && bestSellersSource.includes("ShoppingCartOutlined") && bestSellersSource.includes("Popover") && bestSellersSource.includes("title: 'Gross Profit'") && bestSellersSource.includes("title: 'Gross Margin'") && bestSellersSource.includes("title: 'Stats'") && bestSellersSource.includes("addStoreOrderCartItem") && bestSellersSource.includes("setCart(nextCart)") && !bestSellersSource.includes("title: 'Product Code'"),

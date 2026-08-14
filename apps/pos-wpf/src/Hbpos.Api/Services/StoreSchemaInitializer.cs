@@ -25,9 +25,21 @@ public sealed class SqlSugarStoreSchemaInitializer(
         END;
         """;
 
+    // 共享 Store 实体将新增 ReturnPolicy；启动时幂等补齐旧库列，不回填任何旧行。
+    internal const string EnsureReturnPolicyColumnSql = """
+        IF OBJECT_ID(N'[dbo].[Store]', N'U') IS NOT NULL
+           AND COL_LENGTH(N'dbo.Store', N'ReturnPolicy') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[Store]
+                ADD [ReturnPolicy] NVARCHAR(500) NULL;
+        END;
+        """;
+
     public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        return sqlExecutor.ExecuteAsync(EnsureContactEmailColumnSql, cancellationToken);
+        return sqlExecutor.ExecuteAsync(
+            EnsureContactEmailColumnSql + "\n" + EnsureReturnPolicyColumnSql,
+            cancellationToken);
     }
 }
 

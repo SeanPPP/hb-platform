@@ -52,7 +52,11 @@ public sealed class DeviceAuthenticationHandler(
             new Claim(DeviceAuthConstants.DeviceCodeClaim, device.DeviceCode),
             new Claim(DeviceAuthConstants.StoreCodeClaim, device.StoreCode),
             new Claim(DeviceAuthConstants.HardwareIdClaim, device.HardwareId),
-            new Claim(DeviceAuthConstants.DeviceSystemClaim, device.DeviceSystem)
+            new Claim(DeviceAuthConstants.DeviceSystemClaim, device.DeviceSystem),
+            new Claim(
+                DeviceAuthConstants.AllowTransactionsClaim,
+                device.AllowTransactions ? bool.TrueString : bool.FalseString,
+                ClaimValueTypes.Boolean)
         };
         var identity = new ClaimsIdentity(claims, DeviceAuthConstants.Scheme);
         var principal = new ClaimsPrincipal(identity);

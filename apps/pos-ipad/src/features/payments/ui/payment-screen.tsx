@@ -275,6 +275,12 @@ export function PaymentScreen({
   ]);
 
   const canLeave = canSafelyLeave(state);
+  // 提交阶段已结束但 presenter 保留 phase 供恢复操作时，不再回显进行中提示。
+  const actionPhaseIdle =
+    !state.busy &&
+    (state.phase === "submitting" || state.phase === "cash-confirming");
+  const showStatusPanel =
+    state.phase !== "success" && !actionPhaseIdle;
   const showEntry =
     state.phase !== "loading" &&
     state.phase !== "success" &&
@@ -303,12 +309,16 @@ export function PaymentScreen({
       {showStatusStrip ? <PosStatusStrip /> : null}
 
       <PosKeyboardAwareScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          !compact && state.phase !== "success" && styles.scrollContentBounded,
+          shortLandscape && styles.scrollContentShort,
+        ]}
         scrollEnabled={compact || state.phase === "success"}
         style={styles.contentScroll}
         testID="payment-content-scroll"
       >
-        {state.phase !== "success" ? (
+        {showStatusPanel ? (
           <PaymentStatusPanel state={state} t={t} />
         ) : null}
 
@@ -578,6 +588,7 @@ export function PaymentScreen({
                 void presenter.confirm?.();
               }}
               presenter={presenter}
+              shortLandscape={shortLandscape}
               state={state}
               t={t}
             />
@@ -1327,6 +1338,7 @@ function RecoveryActions({
           onPress={() => {
             void presenter.confirm?.();
           }}
+          style={styles.recoveryAction}
           testID="payment-confirm-cash-recovery"
           tone="primary"
         />
@@ -1341,6 +1353,7 @@ function RecoveryActions({
           onPress={() => {
             void presenter.recover();
           }}
+          style={styles.recoveryAction}
           testID="payment-recover"
           tone="primary"
         />
@@ -1352,6 +1365,7 @@ function RecoveryActions({
           onPress={() => {
             void presenter.cancel();
           }}
+          style={styles.recoveryAction}
           testID="payment-cancel"
           tone="danger"
         />
@@ -1362,6 +1376,7 @@ function RecoveryActions({
           label={t("action.cancelPreparedCashRepayment")}
           onPress={onCancelPreparedCash}
           sound="danger"
+          style={styles.recoveryAction}
           testID="payment-cancel-prepared-cash"
           tone="danger"
         />
@@ -1440,6 +1455,7 @@ function PaymentSummary({
   onCancelPreparedCash,
   onConfirm,
   presenter,
+  shortLandscape,
   state,
   t,
 }: Readonly<{
@@ -1448,6 +1464,7 @@ function PaymentSummary({
   onCancelPreparedCash(): void;
   onConfirm(): void;
   presenter: PaymentScreenPresenter;
+  shortLandscape: boolean;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
@@ -1469,6 +1486,7 @@ function PaymentSummary({
     <View
       style={[
         styles.summaryPane,
+        shortLandscape && styles.summaryPaneShort,
         compact && styles.summaryPaneCompact,
       ]}
       testID="payment-summary"
@@ -1560,46 +1578,51 @@ function PaymentSummary({
         ) : (
           <Text style={styles.emptyTenders}>{t("summary.noTenders")}</Text>
         )}
+      </ScrollView>
+      <View
+        style={styles.summaryActionDock}
+        testID="payment-summary-action-dock"
+      >
         <RecoveryActions
           onCancelPreparedCash={onCancelPreparedCash}
           presenter={presenter}
           state={state}
           t={t}
         />
+        {showConfirmation || showPreparedCashCancellationInFooter ? (
+          <View style={styles.summaryFooter} testID="payment-summary-footer">
+            {showConfirmation ? (
+              <ActionButton
+                disabled={state.busy}
+                label={
+                  state.checkout.cashRepaymentStatus === "ready" ||
+                  state.checkout.cashRepaymentStatus === "confirming"
+                    ? t("action.confirmCashReceived")
+                    : locale === "zh"
+                      ? "确认分期付款"
+                      : "Confirm installment payment"
+                }
+                onPress={onConfirm}
+                sound="danger"
+                style={styles.confirmAction}
+                testID="payment-confirm"
+              />
+            ) : null}
+            {showPreparedCashCancellationInFooter ? (
+              <ActionButton
+                disabled={state.busy}
+                label={t("action.cancelPreparedCashRepayment")}
+                onPress={onCancelPreparedCash}
+                sound="danger"
+                style={styles.preparedCashCancelAction}
+                testID="payment-cancel-prepared-cash"
+                tone="quiet"
+              />
+            ) : null}
+          </View>
+        ) : null}
         <LinklyControls presenter={presenter} state={state} t={t} />
-      </ScrollView>
-      {showConfirmation || showPreparedCashCancellationInFooter ? (
-        <View style={styles.summaryFooter} testID="payment-summary-footer">
-          {showConfirmation ? (
-            <ActionButton
-              disabled={state.busy}
-              label={
-                state.checkout.cashRepaymentStatus === "ready" ||
-                state.checkout.cashRepaymentStatus === "confirming"
-                  ? t("action.confirmCashReceived")
-                  : locale === "zh"
-                    ? "确认分期付款"
-                    : "Confirm installment payment"
-              }
-              onPress={onConfirm}
-              sound="danger"
-              style={styles.confirmAction}
-              testID="payment-confirm"
-            />
-          ) : null}
-          {showPreparedCashCancellationInFooter ? (
-            <ActionButton
-              disabled={state.busy}
-              label={t("action.cancelPreparedCashRepayment")}
-              onPress={onCancelPreparedCash}
-              sound="danger"
-              style={styles.preparedCashCancelAction}
-              testID="payment-cancel-prepared-cash"
-              tone="quiet"
-            />
-          ) : null}
-        </View>
-      ) : null}
+      </View>
     </View>
   );
 }
@@ -2039,6 +2062,14 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 18,
     gap: 14,
+  },
+  scrollContentBounded: {
+    flex: 1,
+  },
+  scrollContentShort: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
   },
   statusPanel: {
     minHeight: 70,
@@ -2710,6 +2741,9 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: "#FBFAF7",
   },
+  summaryPaneShort: {
+    padding: 14,
+  },
   summaryPaneCompact: {
     minWidth: 0,
   },
@@ -2725,6 +2759,9 @@ const styles = StyleSheet.create({
   },
   summaryScrollContentCompact: {
     flexGrow: 0,
+  },
+  summaryActionDock: {
+    flexShrink: 0,
   },
   summaryFooter: {
     paddingTop: 12,
@@ -2921,10 +2958,15 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   recoveryActions: {
-    marginTop: 16,
+    marginTop: 8,
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
+  },
+  recoveryAction: {
+    flexGrow: 1,
+    flexBasis: "46%",
+    marginTop: 0,
   },
   linklyPanel: {
     marginTop: 18,
