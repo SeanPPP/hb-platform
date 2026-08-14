@@ -1014,6 +1014,70 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AppStore登记_手持Pos只接受冻结Bundle并保存独立App事实()
+    {
+        var service = CreateReleaseService(
+            new StubAppleLookupClient(
+                new AppleAppStoreLookupResult(
+                    "123456789",
+                    "com.hbweb.poshandheld",
+                    "3.0.0",
+                    "https://apps.apple.com/au/app/id123456789"
+                )
+            )
+        );
+
+        var result = await service.CreateAsync(
+            new IosAppStoreReleaseCreateRequest
+            {
+                App = AppUpdateApps.PosHandheld,
+                AppStoreId = "123456789",
+                BuildNumber = "300",
+                Storefront = "au",
+            },
+            "release-bot"
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(AppUpdateApps.PosHandheld, result.Data!.App);
+        Assert.Equal("com.hbweb.poshandheld", result.Data.BundleIdentifier);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("01")]
+    [InlineData("12a")]
+    [InlineData("9007199254740992")]
+    public async Task AppStore登记_手持Pos拒绝设备候选无法接受的Build(string buildNumber)
+    {
+        var service = CreateReleaseService(
+            new StubAppleLookupClient(
+                new AppleAppStoreLookupResult(
+                    "123456789",
+                    "com.hbweb.poshandheld",
+                    "3.0.0",
+                    "https://apps.apple.com/au/app/id123456789"
+                )
+            )
+        );
+
+        var result = await service.CreateAsync(
+            new IosAppStoreReleaseCreateRequest
+            {
+                App = AppUpdateApps.PosHandheld,
+                AppStoreId = "123456789",
+                BuildNumber = buildNumber,
+                Storefront = "au",
+            },
+            "release-bot"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("APP_STORE_BUILD_INVALID", result.ErrorCode);
+        Assert.Equal(0, await _db.Queryable<IosAppStoreRelease>().CountAsync());
+    }
+
+    [Fact]
     public async Task AppStore登记_唯一键命中但AppStoreId或Url变化时返回事实冲突()
     {
         var request = new IosAppStoreReleaseCreateRequest
@@ -1391,6 +1455,25 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         );
         Assert.Contains("IF OBJECT_ID(N'[dbo].[PosIpadOtaRollout]', N'U') IS NULL", migrator);
         Assert.Contains("WHERE [Enabled] = 1 AND [IsDeleted] = 0", migrator);
+        Assert.Contains(
+            "IF OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicy]', N'U') IS NULL",
+            migrator
+        );
+        Assert.Contains(
+            "UX_PosHandheldUpdatePolicy_Lane",
+            migrator
+        );
+        Assert.Contains(
+            "IF OBJECT_ID(N'[dbo].[PosHandheldUpdatePolicyRevision]', N'U') IS NULL",
+            migrator
+        );
+        Assert.Contains(
+            "UX_PosHandheldUpdatePolicyRevision_Lane_Version",
+            migrator
+        );
+        Assert.Contains("TR_PosHandheldUpdatePolicyRevision_AppendOnly", migrator);
+        Assert.Contains("INSTEAD OF UPDATE, DELETE", migrator);
+        Assert.DoesNotContain("INSERT INTO [dbo].[PosHandheldUpdatePolicy]", migrator);
         Assert.DoesNotContain("ALTER TABLE [MobileAppBuild]", migrator);
         Assert.DoesNotContain("ALTER TABLE [MobileAppOtaUpdate]", migrator);
         Assert.DoesNotContain("WpfAppRelease", migrator);

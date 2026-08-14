@@ -1,4 +1,4 @@
-export type AppUpdateApp = 'mobile-ios' | 'pos-ipad'
+export type AppUpdateApp = 'mobile-ios' | 'pos-ipad' | 'pos-handheld'
 export type AppUpdateTargetScope = 'all' | 'stores'
 
 export interface IosAppStoreRelease {

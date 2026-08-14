@@ -9,7 +9,10 @@ namespace BlazorApp.Api.Controllers;
 [ApiController]
 [Route("api/app-update-policies")]
 [Authorize]
-public sealed class AppUpdatePoliciesController(INativeAppUpdatePolicyService service)
+public sealed class AppUpdatePoliciesController(
+    INativeAppUpdatePolicyService service,
+    IPosHandheldUpdatePolicyService? posHandheldService = null
+)
     : ControllerBase
 {
     [HttpGet("mobile-ios")]
@@ -56,6 +59,75 @@ public sealed class AppUpdatePoliciesController(INativeAppUpdatePolicyService se
     {
         return Ok(await service.GetStoreOptionsAsync());
     }
+
+    [HttpGet("pos-handheld")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetPosHandheld()
+    {
+        return Ok(await PosHandheldService.GetPoliciesAsync());
+    }
+
+    [HttpGet("pos-handheld/candidates/native/android")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetPosHandheldAndroidCandidates()
+    {
+        return Ok(
+            await PosHandheldService.GetCandidatesAsync(
+                PosHandheldUpdateLanes.AndroidNative
+            )
+        );
+    }
+
+    [HttpGet("pos-handheld/candidates/native/ios")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetPosHandheldIosCandidates()
+    {
+        return Ok(
+            await PosHandheldService.GetCandidatesAsync(
+                PosHandheldUpdateLanes.IosNative
+            )
+        );
+    }
+
+    [HttpGet("pos-handheld/candidates/ota")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetPosHandheldOtaCandidates(
+        [FromQuery] string platform
+    )
+    {
+        var lane = string.Equals(platform, "android", StringComparison.OrdinalIgnoreCase)
+            ? PosHandheldUpdateLanes.AndroidOta
+            : string.Equals(platform, "ios", StringComparison.OrdinalIgnoreCase)
+                ? PosHandheldUpdateLanes.IosOta
+                : platform;
+        return Ok(await PosHandheldService.GetCandidatesAsync(lane));
+    }
+
+    [HttpPut("pos-handheld/{lane}")]
+    [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+    public async Task<IActionResult> PutPosHandheldLane(
+        string lane,
+        [FromBody] PosHandheldUpdatePolicyRequest request
+    )
+    {
+        var response = await PosHandheldService.SetLaneAsync(
+            lane,
+            request,
+            User.Identity?.Name ?? "System"
+        );
+        return ToMutationResult(response);
+    }
+
+    [HttpGet("pos-handheld/revisions")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetPosHandheldRevisions([FromQuery] string lane)
+    {
+        return Ok(await PosHandheldService.GetRevisionsAsync(lane));
+    }
+
+    private IPosHandheldUpdatePolicyService PosHandheldService =>
+        posHandheldService
+        ?? throw new InvalidOperationException("手持 POS 更新策略服务未注册");
 
     private IActionResult ToMutationResult<T>(ApiResponse<T> response) =>
         response.ErrorCode

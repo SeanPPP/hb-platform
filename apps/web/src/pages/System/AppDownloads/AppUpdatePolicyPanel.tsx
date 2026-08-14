@@ -54,6 +54,7 @@ import {
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
   isAppUpdatePolicyVersionConflict,
+  isValidPosHandheldBuildNumber,
   isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
   resolveOtaReleaseStatus,
@@ -70,6 +71,7 @@ import {
   savePolicyWithConflictReload,
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
+import PosHandheldUpdatePolicyTab from './PosHandheldUpdatePolicyTab'
 
 interface AppUpdatePolicyPanelProps {
   canManage: boolean
@@ -207,6 +209,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [otaSaving, setOtaSaving] = useState(false)
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
+  const [handheldRefreshVersion, setHandheldRefreshVersion] = useState(0)
   const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
     mobileNative: new LatestRequestLane(),
     ipadNative: new LatestRequestLane(),
@@ -324,6 +327,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   )
 
   const refreshAll = useCallback(async () => {
+    setHandheldRefreshVersion((version) => version + 1)
     await Promise.allSettled([
       loadMobileNativeLane(),
       loadIpadNativeLane(),
@@ -415,13 +419,24 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
             />
           ) : null}
+          {app === 'pos-handheld' ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t(
+                'system.appDownloads.updatePolicy.posHandheld.buildNotVerifiedWarning',
+              )}
+            />
+          ) : null}
           <Descriptions size="small" bordered column={1}>
             <Descriptions.Item
               label={t('system.appDownloads.updatePolicy.registerTargetApp')}
             >
               {app === 'pos-ipad'
                 ? t('system.appDownloads.updatePolicy.tabs.ipadNative')
-                : t('system.appDownloads.updatePolicy.tabs.mobile')}
+                : app === 'pos-handheld'
+                  ? t('system.appDownloads.updatePolicy.tabs.posHandheld')
+                  : t('system.appDownloads.updatePolicy.tabs.mobile')}
             </Descriptions.Item>
             <Descriptions.Item
               label={t('system.appDownloads.updatePolicy.appStoreId')}
@@ -453,10 +468,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     summary: AppStoreReleaseRegistrationSummary,
   ) {
     const isIpad = app === 'pos-ipad'
-    invalidateLoadLane(
-      isIpad ? 'ipadNative' : 'mobileNative',
-      isIpad ? setIpadLoadState : setMobileLoadState,
-    )
+    const isHandheld = app === 'pos-handheld'
+    if (!isHandheld) {
+      invalidateLoadLane(
+        isIpad ? 'ipadNative' : 'mobileNative',
+        isIpad ? setIpadLoadState : setMobileLoadState,
+      )
+    }
     setRegisterSaving(true)
     try {
       await appUpdatePolicyService.createIosAppStoreRelease({
@@ -466,7 +484,11 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       message.success(t('system.appDownloads.updatePolicy.registerSuccess'))
       setRegisterApp(null)
       registerForm.resetFields()
-      await (isIpad ? loadIpadNativeLane() : loadMobileNativeLane())
+      if (isHandheld) {
+        setHandheldRefreshVersion((version) => version + 1)
+      } else {
+        await (isIpad ? loadIpadNativeLane() : loadMobileNativeLane())
+      }
     } catch (error) {
       console.error('Failed to register App Store release', error)
       message.error(t('system.appDownloads.updatePolicy.registerFailed'))
@@ -1459,6 +1481,17 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         </Space>
       ),
     },
+    {
+      key: 'pos-handheld',
+      label: t('system.appDownloads.updatePolicy.tabs.posHandheld'),
+      children: (
+        <PosHandheldUpdatePolicyTab
+          canManage={canManage}
+          refreshVersion={handheldRefreshVersion}
+          onRegisterIosRelease={() => openRegisterModal('pos-handheld')}
+        />
+      ),
+    },
   ]
 
   return (
@@ -1494,7 +1527,9 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         title={t('system.appDownloads.updatePolicy.registerTitle', {
           app: registerApp === 'pos-ipad'
             ? t('system.appDownloads.updatePolicy.tabs.ipadNative')
-            : t('system.appDownloads.updatePolicy.tabs.mobile'),
+            : registerApp === 'pos-handheld'
+              ? t('system.appDownloads.updatePolicy.tabs.posHandheld')
+              : t('system.appDownloads.updatePolicy.tabs.mobile'),
         })}
         onCancel={closeRegisterModal}
         destroyOnHidden
@@ -1526,6 +1561,19 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
             description={t(
               'system.appDownloads.updatePolicy.ipadBuildDoubleConfirmDescription',
+            )}
+          />
+        ) : null}
+        {registerApp === 'pos-handheld' ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t(
+              'system.appDownloads.updatePolicy.posHandheld.buildNotVerifiedWarning',
+            )}
+            description={t(
+              'system.appDownloads.updatePolicy.posHandheld.buildDoubleConfirmDescription',
             )}
           />
         ) : null}
@@ -1564,16 +1612,22 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   if (!normalized) {
                     throw new Error(t('system.appDownloads.updatePolicy.buildNumberRequired'))
                   }
-                  if (
-                    registerApp === 'pos-ipad'
-                    && !isValidPosIpadBuildNumber(normalized)
-                  ) {
+                  if (registerApp === 'pos-ipad' && !isValidPosIpadBuildNumber(normalized)) {
                     throw new Error(
                       t('system.appDownloads.updatePolicy.ipadBuildNumberInvalid'),
                     )
                   }
                   if (
+                    registerApp === 'pos-handheld'
+                    && !isValidPosHandheldBuildNumber(normalized)
+                  ) {
+                    throw new Error(
+                      t('system.appDownloads.updatePolicy.posHandheld.buildNumberInvalid'),
+                    )
+                  }
+                  if (
                     registerApp !== 'pos-ipad'
+                    && registerApp !== 'pos-handheld'
                     && !/^[0-9A-Za-z._-]{1,64}$/.test(normalized)
                   ) {
                     throw new Error(
@@ -1586,7 +1640,11 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           >
             <Input
               autoComplete="off"
-              inputMode={registerApp === 'pos-ipad' ? 'numeric' : undefined}
+              inputMode={
+                registerApp === 'pos-ipad' || registerApp === 'pos-handheld'
+                  ? 'numeric'
+                  : undefined
+              }
             />
           </Form.Item>
           <Form.Item

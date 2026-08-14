@@ -6,6 +6,7 @@ public static class AppUpdateApps
 {
     public const string MobileIos = "mobile-ios";
     public const string PosIpad = "pos-ipad";
+    public const string PosHandheld = "pos-handheld";
 }
 
 public static class AppUpdateStates
@@ -19,6 +20,31 @@ public static class AppUpdatePolicyErrorCodes
 {
     public const string VersionRequired = "APP_UPDATE_POLICY_VERSION_REQUIRED";
     public const string VersionConflict = "APP_UPDATE_POLICY_VERSION_CONFLICT";
+}
+
+public static class PosHandheldUpdateLanes
+{
+    public const string AndroidNative = "android-native";
+    public const string IosNative = "ios-native";
+    public const string AndroidOta = "android-ota";
+    public const string IosOta = "ios-ota";
+
+    public static readonly string[] All =
+        [AndroidNative, IosNative, AndroidOta, IosOta];
+}
+
+public static class PosHandheldUpdatePolicyErrorCodes
+{
+    public const string LaneInvalid = "POS_HANDHELD_UPDATE_LANE_INVALID";
+    public const string CandidateRequired = "POS_HANDHELD_UPDATE_CANDIDATE_REQUIRED";
+    public const string CandidateInvalid = "POS_HANDHELD_UPDATE_CANDIDATE_INVALID";
+    public const string CandidateFingerprintMismatch =
+        "POS_HANDHELD_UPDATE_CANDIDATE_FINGERPRINT_MISMATCH";
+    public const string OtaCandidateNotChannelHead =
+        "POS_HANDHELD_OTA_CANDIDATE_NOT_CHANNEL_HEAD";
+    public const string NativeMinimumInvalid = "POS_HANDHELD_NATIVE_MINIMUM_INVALID";
+    public const string OtaMinimumNotAllowed = "POS_HANDHELD_OTA_MINIMUM_NOT_ALLOWED";
+    public const string ReleaseMessageInvalid = "POS_HANDHELD_RELEASE_MESSAGE_INVALID";
 }
 
 public static class AppUpdateTargetScopes
@@ -304,4 +330,75 @@ public sealed class PosHandheldOtaDecisionDto
 
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public string? ReleaseMessage { get; set; }
+}
+
+public sealed class PosHandheldUpdatePolicyRequest
+{
+    public long? ExpectedPolicyVersion { get; set; }
+    public bool Enabled { get; set; }
+    public bool Required { get; set; }
+    public Guid? CandidateId { get; set; }
+    public string? MinimumSupportedVersion { get; set; }
+    public int? MinimumSupportedBuildNumber { get; set; }
+    public string? ReleaseMessage { get; set; }
+}
+
+public sealed class PosHandheldUpdatePolicyDto
+{
+    public Guid? Id { get; set; }
+    public string Lane { get; set; } = string.Empty;
+    public bool Managed { get; set; }
+    public string Source { get; set; } = "legacy";
+    public bool Enabled { get; set; }
+    public bool Required { get; set; }
+    public long PolicyVersion { get; set; }
+    public Guid? CandidateId { get; set; }
+    public bool CandidateValid { get; set; }
+    public string? BlockedReason { get; set; }
+    public PosHandheldUpdateCandidateDto? Candidate { get; set; }
+    public string? MinimumSupportedVersion { get; set; }
+    public int? MinimumSupportedBuildNumber { get; set; }
+    public string? ReleaseMessage { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
+}
+
+public sealed class PosHandheldUpdateCandidateDto
+{
+    public Guid Id { get; set; }
+    public string Lane { get; set; } = string.Empty;
+    public string Kind { get; set; } = string.Empty;
+    public string Platform { get; set; } = string.Empty;
+    public string ProjectName { get; set; } = string.Empty;
+    public string? Profile { get; set; }
+    public string? Version { get; set; }
+    public string? BuildNumber { get; set; }
+    public string? RuntimeVersion { get; set; }
+    public string? Channel { get; set; }
+    public string? UpdateId { get; set; }
+    public string? UpdateGroupId { get; set; }
+    public string? ArtifactUrl { get; set; }
+    public long? FileSize { get; set; }
+    public string? Sha256 { get; set; }
+    public string? Distribution { get; set; }
+    public string? PackageName { get; set; }
+    public string? SigningCertificateSha256 { get; set; }
+    public string? AppStoreId { get; set; }
+    public string? BundleIdentifier { get; set; }
+    public string? ReleaseMessage { get; set; }
+    public DateTime PublishedAtUtc { get; set; }
+    public bool IsCurrentHead { get; set; }
+    public bool Activatable { get; set; }
+    public string? BlockedReason { get; set; }
+}
+
+public sealed class PosHandheldUpdatePolicyRevisionDto
+{
+    public Guid Id { get; set; }
+    public string Lane { get; set; } = string.Empty;
+    public long PolicyVersion { get; set; }
+    public string Action { get; set; } = "save";
+    public PosHandheldUpdatePolicyDto Snapshot { get; set; } = new();
+    public DateTime CreatedAt { get; set; }
+    public string? CreatedBy { get; set; }
 }

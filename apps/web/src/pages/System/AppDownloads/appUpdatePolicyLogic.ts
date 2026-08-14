@@ -99,6 +99,16 @@ export function isValidPosIpadBuildNumber(value?: string | null) {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= INT32_MAX_VALUE
 }
 
+export function isValidPosHandheldBuildNumber(value?: string | null) {
+  const normalized = value?.trim() ?? ''
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    return false
+  }
+
+  const parsed = Number(normalized)
+  return Number.isSafeInteger(parsed) && parsed > 0
+}
+
 export function validateMinimumSupportedBuildNumber(
   minimumSupportedVersion?: string | null,
   minimumSupportedBuildNumber?: number | null,

@@ -51,7 +51,10 @@ public sealed class IosAppStoreReleaseService(
         var app = NormalizeApp(request.App);
         if (app is null)
         {
-            return Error("APP_STORE_APP_INVALID", "App 必须是 mobile-ios 或 pos-ipad");
+            return Error(
+                "APP_STORE_APP_INVALID",
+                "App 必须是 mobile-ios、pos-ipad 或 pos-handheld"
+            );
         }
 
         var appStoreId = NormalizeOptional(request.AppStoreId);
@@ -72,6 +75,16 @@ public sealed class IosAppStoreReleaseService(
             return Error("APP_STORE_BUILD_INVALID", "Build number 无效");
         }
 
+        // 手持客户端会把 build 作为 JavaScript 安全整数比较；登记入口必须使用同一规范，
+        // 避免写入成功后又被候选目录静默过滤。
+        if (
+            app == AppUpdateApps.PosHandheld
+            && !PosHandheldIosUpdateIdentity.IsValidBuildNumber(buildNumber)
+        )
+        {
+            return Error("APP_STORE_BUILD_INVALID", "手持 POS Build number 无效");
+        }
+
         var lookup = await lookupClient.LookupAsync(appStoreId, storefront, cancellationToken);
         var lookedUpAppStoreId = NormalizeOptional(lookup?.AppStoreId);
         if (
@@ -83,9 +96,13 @@ public sealed class IosAppStoreReleaseService(
         }
 
         var bundleIdentifier = NormalizeOptional(lookup.BundleIdentifier);
-        var expectedBundle = app == AppUpdateApps.MobileIos
-            ? options.Value.MobileIosBundleIdentifier
-            : options.Value.PosIpadBundleIdentifier;
+        var expectedBundle = app switch
+        {
+            AppUpdateApps.MobileIos => options.Value.MobileIosBundleIdentifier,
+            AppUpdateApps.PosIpad => options.Value.PosIpadBundleIdentifier,
+            AppUpdateApps.PosHandheld => options.Value.PosHandheldBundleIdentifier,
+            _ => string.Empty,
+        };
         if (!string.Equals(bundleIdentifier, expectedBundle, StringComparison.Ordinal))
         {
             return Error("APP_STORE_BUNDLE_MISMATCH", "Apple 返回的 Bundle Identifier 与目标 App 不匹配");
@@ -184,7 +201,10 @@ public sealed class IosAppStoreReleaseService(
     private static string? NormalizeApp(string? value)
     {
         var normalized = NormalizeOptional(value)?.ToLowerInvariant();
-        return normalized is AppUpdateApps.MobileIos or AppUpdateApps.PosIpad
+        return normalized
+                is AppUpdateApps.MobileIos
+                    or AppUpdateApps.PosIpad
+                    or AppUpdateApps.PosHandheld
             ? normalized
             : null;
     }

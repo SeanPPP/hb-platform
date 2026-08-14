@@ -610,6 +610,20 @@ builder.Services.AddScoped<IPosIpadOtaPolicyService>(sp =>
         sp.GetRequiredService<ILogger<PosIpadOtaPolicyService>>()
     );
 });
+builder.Services.AddScoped<IPosHandheldUpdatePolicyService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new PosHandheldUpdatePolicyService(
+        context.Db,
+        sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<PosHandheldUpdatePolicyOptions>
+        >(),
+        sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<EasWebhookOptions>
+        >(),
+        sp.GetRequiredService<ILogger<PosHandheldUpdatePolicyService>>()
+    );
+});
 builder.Services.AddScoped<MobileAppBuildService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();

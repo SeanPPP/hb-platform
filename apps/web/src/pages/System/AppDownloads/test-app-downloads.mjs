@@ -28,6 +28,15 @@ const tests = [
     entryPoint: 'src/pages/System/AppDownloads/appUpdatePolicyRequestLogic.test.ts',
   },
   {
+    name: 'pos-handheld-update-policy-logic',
+    entryPoint: 'src/pages/System/AppDownloads/posHandheldUpdatePolicyLogic.test.ts',
+  },
+  {
+    name: 'pos-handheld-update-policy-service',
+    entryPoint: 'src/services/posHandheldUpdatePolicyService.test.ts',
+    define: { 'import.meta.env': '{}' },
+  },
+  {
     name: 'service-api-token-panel-logic',
     entryPoint: 'src/pages/System/AppDownloads/serviceApiTokenPanelLogic.test.ts',
   },
