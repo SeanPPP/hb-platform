@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
@@ -216,6 +217,86 @@ public sealed class MainWindowXamlTests
         Assert.Equal(
             "pack://application:,,,/Resources/AppIcon.ico",
             (string?)window.Attribute("Icon"));
+    }
+
+    [Fact]
+    public void Startup_brand_frame_has_enough_inner_space_for_vector_mark()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "StartupSplashWindow.xaml"));
+        var brandMark = Assert.Single(document.Descendants().Where(element =>
+            element.Attributes().Any(attribute =>
+                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
+        var frame = Assert.IsType<XElement>(brandMark.Parent);
+
+        var frameWidth = ReadUniformLength(frame, "Width");
+        var frameHeight = ReadUniformLength(frame, "Height");
+        var padding = ReadUniformLength(frame, "Padding");
+        var borderThickness = ReadUniformLength(frame, "BorderThickness");
+        var markWidth = ReadUniformLength(brandMark, "Width");
+        var markHeight = ReadUniformLength(brandMark, "Height");
+
+        Assert.True(
+            frameWidth - ((padding + borderThickness) * 2) >= markWidth,
+            "Startup brand frame content width must not clip the vector mark.");
+        Assert.True(
+            frameHeight - ((padding + borderThickness) * 2) >= markHeight,
+            "Startup brand frame content height must not clip the vector mark.");
+    }
+
+    [Fact]
+    public void Startup_brand_text_keeps_glyphs_away_from_layout_edges()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "StartupSplashWindow.xaml"));
+        var brandMark = Assert.Single(document.Descendants().Where(element =>
+            element.Attributes().Any(attribute =>
+                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
+        var initials = Assert.Single(brandMark.Descendants().Where(element =>
+            string.Equals(element.Name.LocalName, "TextBlock", StringComparison.Ordinal)));
+
+        var padding = ReadThickness(initials, "Padding");
+
+        Assert.True(
+            padding.Left >= 1 && padding.Right >= 1,
+            "Startup brand text must reserve horizontal space so glyph pixels do not touch its layout edges.");
+    }
+
+    private static double ReadUniformLength(XElement element, string attributeName)
+    {
+        var attribute = Assert.IsType<XAttribute>(element.Attribute(attributeName));
+        return double.Parse(attribute.Value, CultureInfo.InvariantCulture);
+    }
+
+    private static (double Left, double Top, double Right, double Bottom) ReadThickness(
+        XElement element,
+        string attributeName)
+    {
+        var attribute = Assert.IsType<XAttribute>(element.Attribute(attributeName));
+        var values = attribute.Value
+            .Split(',', StringSplitOptions.TrimEntries)
+            .Select(value => double.Parse(value, CultureInfo.InvariantCulture))
+            .ToArray();
+
+        return values.Length switch
+        {
+            1 => (values[0], values[0], values[0], values[0]),
+            2 => (values[0], values[1], values[0], values[1]),
+            4 => (values[0], values[1], values[2], values[3]),
+            _ => throw new FormatException($"Unsupported thickness value '{attribute.Value}'.")
+        };
     }
 
     private static string FindRepoRoot()

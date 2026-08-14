@@ -2426,7 +2426,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         return false;
     }
 
-    private static ReceiptDetails CreateSuspendedReceipt(SuspendedOrder order)
+    private ReceiptDetails CreateSuspendedReceipt(SuspendedOrder order)
     {
         return new ReceiptDetails(
             order.SuspendedOrderGuid,
@@ -2444,7 +2444,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 line.UnitPrice,
                 line.DiscountAmount,
                 line.ActualAmount)).ToList(),
-            []);
+            [],
+            // 挂单尚未完成付款，必须显式覆盖通用收据默认的 Paid 状态。
+            StatusText: $"*** {T("history.payment.suspended")} ***");
     }
 
     private void ReturnToPos()

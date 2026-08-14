@@ -607,6 +607,12 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.RecallSelectedCommand.CanExecute(null));
         Assert.Equal(suspendedOrderGuid, viewModel.SelectedOrder?.OrderGuid);
         Assert.True(viewModel.SelectedOrder?.CanRecall);
+        Assert.Contains(
+            viewModel.ReceiptPreviewRows,
+            row => row.Text.Equals("*** Suspended ***", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            viewModel.ReceiptPreviewRows,
+            row => row.Text.Equals("*** Paid ***", StringComparison.Ordinal));
         Assert.Equal(
             suspendedOrderGuid.ToString("D"),
             Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
