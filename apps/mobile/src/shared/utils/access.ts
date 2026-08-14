@@ -9,6 +9,10 @@ export const PERMISSIONS = {
     View: "EmployeeProfiles.View",
   },
   Users: {
+    View: "Users.View",
+    Create: "Users.Create",
+    Edit: "Users.Edit",
+    ResetPassword: "Users.ResetPassword",
     ManageRoles: "Users.ManageRoles",
     ManageStores: "Users.ManageStores",
     ManagePos: "Users.ManagePosTerminalPermissions",

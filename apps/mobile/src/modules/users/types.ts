@@ -55,6 +55,13 @@ export interface StoreUserUpdatePayload extends StoreUserMutationInput {
   roleNames?: string[];
 }
 
+export interface StoreUserCreatePayload extends StoreUserMutationInput {
+  password: string;
+  storeCode: string;
+  roleNames?: string[];
+  employmentType?: "casual";
+}
+
 export interface StoreUserStatusPayload {
   userGuid: string;
   storeCode: string;

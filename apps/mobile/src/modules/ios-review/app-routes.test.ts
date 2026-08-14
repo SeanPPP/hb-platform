@@ -366,8 +366,8 @@ async function run() {
           (permission) => permission.name === "Users.Create",
         ),
     ),
-    false,
-    "Review 权限管理目录不得展示创建员工能力",
+    true,
+    "Review 权限管理目录必须展示创建员工能力",
   );
 
   const readContracts: Array<{
@@ -536,11 +536,41 @@ async function run() {
 
   await assert.rejects(
     () => request("POST", "/react/v1/store-users", {
-      username: "review-created-user",
-      password: "must-not-be-accepted",
+      username: "review_missing_password",
+      storeCode: "REV001",
     }),
-    /IOS_REVIEW_UNHANDLED_REQUEST: POST \/react\/v1\/store-users/,
-    "Review mock 不得提供员工账号创建端点",
+    /IOS_REVIEW_USER_PASSWORD_INVALID/,
+    "Review mock 必须拒绝缺少初始密码的员工创建请求",
+  );
+
+  const createdReviewUser = await request("POST", "/react/v1/store-users", {
+    username: "review_created_user",
+    fullName: "Review Created User",
+    email: "review-created@example.invalid",
+    phone: "0400000003",
+    password: "Review123!",
+    passwordFormat: "raw",
+    status: 1,
+    storeCode: "REV001",
+    roleNames: ["Admin"],
+    employmentType: "full-time",
+  });
+  assert.equal(createdReviewUser.username, "review_created_user");
+  assert.equal(createdReviewUser.storeCode, "REV001");
+  assert.deepEqual(createdReviewUser.roleNames, ["StoreStaff"]);
+  assert.equal(createdReviewUser.employmentType, "casual");
+  assert.equal(createdReviewUser.status, 1);
+  assert.equal("password" in createdReviewUser, false, "审核数据不得回显初始密码");
+  const usersAfterCreate = await request(
+    "POST",
+    "/react/v1/store-users/grid",
+    { storeCode: "REV001" },
+  );
+  assert.ok(
+    usersAfterCreate.items.some(
+      (user: { userGUID?: string }) => user.userGUID === createdReviewUser.userGUID,
+    ),
+    "审核模式创建的店员必须可以从列表读回",
   );
 
   const mobileRoot = resolve(import.meta.dirname, "../../..");
@@ -553,15 +583,15 @@ async function run() {
     readFile(resolve(mobileRoot, "src/modules/ios-review/identity.ts"), "utf8"),
   ]);
   const accountProvisioningSource = accountProvisioningSources.join("\n");
-  assert.doesNotMatch(
+  assert.match(
     accountProvisioningSource,
     /createStoreUser|StoreUserCreatePayload|createMutation|openCreateDialog|account-plus-outline|Users\.Create/,
-    "移动端不得暴露员工账号创建 API、mutation 或 UI 入口",
+    "移动端必须暴露受权限控制的店员创建 API、mutation 和 UI 入口",
   );
-  assert.doesNotMatch(
+  assert.match(
     accountProvisioningSources[4],
     /register\(transport, \["POST"\], "\/react\/v1\/store-users"/,
-    "Review mock 不得重新注册员工账号创建端点",
+    "Review mock 必须注册员工账号创建端点",
   );
 
   const editedReviewUser = await request(
@@ -582,7 +612,7 @@ async function run() {
       { storeCode: "REV001", status: 0 },
     ),
     { success: true },
-    "移除创建能力后必须保留停用员工能力",
+    "新增创建能力后必须保留停用员工能力",
   );
   assert.equal(
     (await request("GET", "/react/v1/store-users/review-staff-001")).status,
@@ -600,7 +630,7 @@ async function run() {
       },
     ),
     { success: true },
-    "移除创建能力后必须保留重置密码能力",
+    "新增创建能力后必须保留重置密码能力",
   );
 
   const filteredInstallments = await request(

@@ -1177,6 +1177,20 @@ export function registerIosReviewAppRoutes(
             category: "Users",
             isSystemPermission: true,
           },
+          {
+            name: "Users.Create",
+            displayName: "Create users",
+            description: "Create store staff accounts",
+            category: "Users",
+            isSystemPermission: true,
+          },
+          {
+            name: "Users.ResetPassword",
+            displayName: "Reset user passwords",
+            description: "Reset store staff account passwords",
+            category: "Users",
+            isSystemPermission: true,
+          },
         ],
       },
       {
@@ -3692,6 +3706,63 @@ function registerUserRoutes(
   register(transport, ["POST"], "/react/v1/store-users/grid", () => ({
     data: page(state().users),
   }));
+  register(transport, ["POST"], "/react/v1/store-users", ({ body }) => {
+    const current = state();
+    const payload = asRecord(body);
+    const username = String(payload.username ?? "").trim();
+    const password = String(payload.password ?? "");
+    const storeCode = String(payload.storeCode ?? "").trim();
+    const store = IOS_REVIEW_STORES.find((item) => item.storeCode === storeCode);
+
+    if (!username) {
+      throw new Error("IOS_REVIEW_USER_USERNAME_REQUIRED");
+    }
+    if (password.trim().length < 6 || password.length > 100) {
+      throw new Error("IOS_REVIEW_USER_PASSWORD_INVALID");
+    }
+    if (!store) {
+      throw new Error(`IOS_REVIEW_STORE_NOT_FOUND: ${storeCode}`);
+    }
+    if (current.users.some((item) => item.username === username)) {
+      throw new Error(`IOS_REVIEW_USER_ALREADY_EXISTS: ${username}`);
+    }
+
+    const id = nextId(current, "review-staff");
+    const status = Number(payload.status) === 0 ? 0 : 1;
+    const user: JsonRecord = {
+      userGuid: id,
+      userGUID: id,
+      username,
+      fullName: String(payload.fullName ?? "").trim() || username,
+      email: String(payload.email ?? "").trim() || undefined,
+      phone: String(payload.phone ?? "").trim() || undefined,
+      storeCode,
+      storeName: store.storeName,
+      roleNames: ["StoreStaff"],
+      accessStoreAssignments: [
+        {
+          storeGUID: store.storeGUID,
+          isPrimary: false,
+        },
+      ],
+      accessRoleGuids: ["review-role-store-staff"],
+      directPermissionCodes: [],
+      status,
+      isActive: status === 1,
+      employmentType: "casual",
+      createdAt: current.now,
+      updatedAt: current.now,
+    };
+    current.users.push(user);
+    mirrorCreate(
+      current,
+      dataStore,
+      "users",
+      id,
+      String(user.fullName ?? username),
+    );
+    return { data: clone(user), status: 201 };
+  });
   register(
     transport,
     ["GET", "PUT"],

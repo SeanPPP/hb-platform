@@ -320,12 +320,12 @@ namespace BlazorApp.Api.Controllers
         public async Task<IActionResult> GetCashierBarcode() => Ok(await _barcodeService.GetAsync());
 
         [HttpPost("me/cashier-barcode/refresh")]
-        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
         public async Task<IActionResult> RefreshCashierBarcode() =>
             Ok(await _barcodeService.RefreshAsync());
 
         [HttpPost("me/cashier-barcode/print-confirmation")]
-        [Authorize(Policy = Permissions.EmployeeProfiles.Edit)]
+        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
         public async Task<IActionResult> ConfirmCashierBarcodePrint(
             [FromBody] EmployeeCashierBarcodePrintConfirmationRequest request
         ) => Ok(await _barcodeService.ConfirmPrintAsync(request));

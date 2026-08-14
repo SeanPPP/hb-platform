@@ -1106,6 +1106,26 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void EmployeeCashierBarcodeRefresh_RequiresEmployeeProfileViewPermission()
+    {
+        var authorizeAttribute = GetMethodAuthorizeAttribute(
+            nameof(EmployeeProfilesController.RefreshCashierBarcode)
+        );
+
+        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
+    }
+
+    [Fact]
+    public void EmployeeCashierBarcodePrintConfirmation_RequiresEmployeeProfileViewPermission()
+    {
+        var authorizeAttribute = GetMethodAuthorizeAttribute(
+            nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint)
+        );
+
+        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
+    }
+
+    [Fact]
     public void StoreUsersGrid_RequiresUsersViewPermission()
     {
         var authorizeAttribute = GetMethodAuthorizeAttribute(

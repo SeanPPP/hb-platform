@@ -26,6 +26,7 @@ import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
+  toSafeStoreUserErrorLog,
   useStoreUserDetail,
   useStoreUserMutations,
   useStoreUsers,
@@ -101,6 +102,7 @@ export default function UsersScreen() {
   const [editingUserGuid, setEditingUserGuid] = useState<string | null>(null);
   const [editingStoreCode, setEditingStoreCode] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<StoreUserFormValues>(EMPTY_FORM);
+  const [initialPassword, setInitialPassword] = useState("");
   const [resetPasswordVisible, setResetPasswordVisible] = useState(false);
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [passwordUser, setPasswordUser] = useState<StoreUserListItem | null>(null);
@@ -110,7 +112,9 @@ export default function UsersScreen() {
   });
 
   const canViewUsers = access.isAdmin || access.canReadUser;
-  const canModifyUsers = access.isAdmin || (access.canReadUser && access.canWriteUser);
+  const canCreateUsers = access.isAdmin || access.hasPermission(PERMISSIONS.Users.Create);
+  const canEditUsers = access.isAdmin || access.hasPermission(PERMISSIONS.Users.Edit);
+  const canResetPasswords = access.isAdmin || access.hasPermission(PERMISSIONS.Users.ResetPassword);
   const canManageUserRoles = access.hasPermission(PERMISSIONS.Users.ManageRoles);
   const canManageUserStores = access.hasPermission(PERMISSIONS.Users.ManageStores);
   const canManagePosTerminalPermissions = access.hasPermission(PERMISSIONS.Users.ManagePos);
@@ -154,7 +158,10 @@ export default function UsersScreen() {
     () => stores.find((store) => store.storeCode === managedStoreCode) ?? null,
     [managedStoreCode, stores]
   );
-  const selectedStoreCanModify = canModifyUsers && isStoreManageable(managedStoreCode, manageableStores);
+  const selectedStoreCanCreate = canCreateUsers && isStoreManageable(managedStoreCode, manageableStores);
+  const selectedStoreCanManageUsers =
+    (canCreateUsers || canEditUsers || canResetPasswords) &&
+    isStoreManageable(managedStoreCode, manageableStores);
 
   const usersQuery = useStoreUsers(
     canViewUsers ? (isDeviceMode ? deviceBoundStoreCode : managedStoreCode) : undefined,
@@ -164,10 +171,11 @@ export default function UsersScreen() {
     editingUserGuid,
     editingStoreCode
   );
-  const { updateMutation, statusMutation, passwordMutation } =
+  const { createMutation, updateMutation, statusMutation, passwordMutation } =
     useStoreUserMutations(managedStoreCode, keyword);
 
   const isBusy =
+    createMutation.isPending ||
     updateMutation.isPending ||
     statusMutation.isPending ||
     passwordMutation.isPending;
@@ -177,8 +185,13 @@ export default function UsersScreen() {
     [managedStoreCode]
   );
   const canModifyUserStore = useCallback(
-    (user: StoreUserListItem) => canModifyUsers && isStoreManageable(resolveUserStoreCode(user), manageableStores),
-    [canModifyUsers, manageableStores, resolveUserStoreCode]
+    (user: StoreUserListItem) => canEditUsers && isStoreManageable(resolveUserStoreCode(user), manageableStores),
+    [canEditUsers, manageableStores, resolveUserStoreCode]
+  );
+  const canResetUserPassword = useCallback(
+    (user: StoreUserListItem) =>
+      canResetPasswords && isStoreManageable(resolveUserStoreCode(user), manageableStores),
+    [canResetPasswords, manageableStores, resolveUserStoreCode]
   );
 
   useEffect(() => {
@@ -200,7 +213,22 @@ export default function UsersScreen() {
     setEditingUserGuid(null);
     setEditingStoreCode(null);
     setFormValues(EMPTY_FORM);
+    setInitialPassword("");
   }, []);
+
+  const openCreateDialog = useCallback(() => {
+    // 创建必须绑定当前已选且可管理的分店，不能回落到“全部已分配分店”。
+    if (!managedStoreCode || !selectedStoreCanCreate) {
+      setSnackbarMessage(t("messages.selectManageableStoreFirst"));
+      return;
+    }
+
+    setEditingUserGuid(null);
+    setEditingStoreCode(managedStoreCode);
+    setFormValues(EMPTY_FORM);
+    setInitialPassword("");
+    setDialogVisible(true);
+  }, [managedStoreCode, selectedStoreCanCreate, t]);
 
   const openEditDialog = useCallback(
     (user: StoreUserListItem) => {
@@ -305,17 +333,30 @@ export default function UsersScreen() {
 
   const handleSubmit = useCallback(async () => {
     const targetStoreCode = editingStoreCode;
-    if (!targetStoreCode || !editingUserGuid) {
+    const isCreating = !editingUserGuid;
+    if (!targetStoreCode) {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
-    if (!canModifyUsers || !isStoreManageable(targetStoreCode, manageableStores)) {
+    if (isCreating && (!canCreateUsers || !isStoreManageable(targetStoreCode, manageableStores))) {
+      setSnackbarMessage(t("messages.storeReadOnly"));
+      return;
+    }
+    if (!isCreating && (!canEditUsers || !isStoreManageable(targetStoreCode, manageableStores))) {
       setSnackbarMessage(t("messages.storeReadOnly"));
       return;
     }
 
     if (!validateForm()) {
       return;
+    }
+
+    if (isCreating) {
+      const passwordValidationMessage = validatePasswordValue(initialPassword, t);
+      if (passwordValidationMessage) {
+        setSnackbarMessage(passwordValidationMessage);
+        return;
+      }
     }
 
     const payload = {
@@ -329,21 +370,33 @@ export default function UsersScreen() {
     };
 
     try {
-      await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
-      setSnackbarMessage(t("messages.userUpdated"));
+      if (isCreating) {
+        await createMutation.mutateAsync({
+          ...payload,
+          password: initialPassword.trim(),
+          passwordFormat: "raw",
+          employmentType: "casual",
+        });
+        setSnackbarMessage(t("messages.userCreated"));
+      } else {
+        await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
+        setSnackbarMessage(t("messages.userUpdated"));
+      }
 
       resetDialogState();
     } catch (error) {
-      console.warn("[store-users] save failed", error);
+      console.warn("[store-users] save failed", toSafeStoreUserErrorLog(error));
       setSnackbarMessage(resolveLocalizedErrorMessage(error, { t, language, fallbackKey: "messages.saveFailed" }));
     }
   }, [
-    canModifyUsers,
+    canCreateUsers,
+    canEditUsers,
+    createMutation,
     editingStoreCode,
     editingUserGuid,
     formValues,
+    initialPassword,
     manageableStores,
-    managedStoreCode,
     resetDialogState,
     language,
     t,
@@ -395,7 +448,7 @@ export default function UsersScreen() {
 
   const openResetPasswordDialog = useCallback(
     (user: StoreUserListItem) => {
-      if (!canModifyUserStore(user)) {
+      if (!canResetUserPassword(user)) {
         setSnackbarMessage(t("messages.storeReadOnly"));
         return;
       }
@@ -404,7 +457,7 @@ export default function UsersScreen() {
       setResetPasswordValue("");
       setResetPasswordVisible(true);
     },
-    [canModifyUserStore, t]
+    [canResetUserPassword, t]
   );
 
   const handleResetPassword = useCallback(async () => {
@@ -417,7 +470,7 @@ export default function UsersScreen() {
       setSnackbarMessage(t("messages.selectStoreFirst"));
       return;
     }
-    if (!canModifyUsers || !isStoreManageable(targetStoreCode, manageableStores)) {
+    if (!canResetPasswords || !isStoreManageable(targetStoreCode, manageableStores)) {
       setSnackbarMessage(t("messages.storeReadOnly"));
       return;
     }
@@ -438,12 +491,12 @@ export default function UsersScreen() {
       setSnackbarMessage(t("messages.passwordReset"));
       closeResetPasswordDialog();
     } catch (error) {
-      console.warn("[store-users] password reset failed", error);
+      console.warn("[store-users] password reset failed", toSafeStoreUserErrorLog(error));
       setSnackbarMessage(resolveLocalizedErrorMessage(error, { t, language, fallbackKey: "messages.passwordResetFailed" }));
     }
   }, [
     closeResetPasswordDialog,
-    canModifyUsers,
+    canResetPasswords,
     language,
     manageableStores,
     passwordMutation,
@@ -520,6 +573,7 @@ export default function UsersScreen() {
         ? t(`detail.employmentTypes.${item.employmentType}`, item.employmentType)
         : emptyValue;
       const canModifyThisUser = canModifyUserStore(item);
+      const canResetThisUser = canResetUserPassword(item);
       const accessEligibility = getUserAccessEligibility({
         isDeviceMode,
         isAdmin: access.isAdmin,
@@ -608,7 +662,7 @@ export default function UsersScreen() {
                 mode="outlined"
                 icon="lock-reset"
                 onPress={() => openResetPasswordDialog(item)}
-                disabled={!canModifyThisUser}
+                disabled={!canResetThisUser}
               >
                 {t("actions.resetPassword")}
               </Button>
@@ -630,6 +684,7 @@ export default function UsersScreen() {
       access.isAdmin,
       access.isStoreManager,
       canModifyUserStore,
+      canResetUserPassword,
       canManagePosTerminalPermissions,
       canManageUserRoles,
       canManageUserStores,
@@ -684,6 +739,17 @@ export default function UsersScreen() {
                   {storeCaption}
                 </Text>
               </View>
+              {canCreateUsers ? (
+                <Button
+                  compact
+                  mode="contained"
+                  icon="account-plus-outline"
+                  onPress={openCreateDialog}
+                  disabled={!selectedStoreCanCreate || isBusy}
+                >
+                  {t("actions.create")}
+                </Button>
+              ) : null}
             </View>
 
             <View style={styles.filterPanel}>
@@ -695,7 +761,7 @@ export default function UsersScreen() {
               >
                 {managedStore?.storeName || t("currentStore.allRelated")}
               </Button>
-              {managedStoreCode && !selectedStoreCanModify ? (
+              {managedStoreCode && !selectedStoreCanManageUsers ? (
                 <Text variant="bodySmall" style={styles.readOnlyHint}>
                   {t("currentStore.readOnlyHelper")}
                 </Text>
@@ -768,7 +834,7 @@ export default function UsersScreen() {
 
       <Portal>
         <Dialog visible={dialogVisible} onDismiss={resetDialogState}>
-          <Dialog.Title>{t("dialogs.editTitle")}</Dialog.Title>
+          <Dialog.Title>{editingUserGuid ? t("dialogs.editTitle") : t("dialogs.createTitle")}</Dialog.Title>
           <Dialog.ScrollArea>
             <ScrollView contentContainerStyle={styles.dialogContent}>
               <TextInput
@@ -777,8 +843,19 @@ export default function UsersScreen() {
                 value={formValues.username}
                 onChangeText={(value) => setFormValues((current) => ({ ...current, username: value }))}
                 autoCapitalize="none"
-                disabled
+                disabled={Boolean(editingUserGuid) || isBusy}
               />
+              {!editingUserGuid ? (
+                <TextInput
+                  mode="outlined"
+                  label={t("fields.initialPassword")}
+                  value={initialPassword}
+                  onChangeText={setInitialPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  disabled={isBusy}
+                />
+              ) : null}
               <TextInput
                 mode="outlined"
                 label={t("fields.fullName")}
@@ -814,7 +891,7 @@ export default function UsersScreen() {
               <Text variant="bodySmall" style={styles.secondaryText}>
                 {t("fields.fixedRoleHint")}
               </Text>
-              {detailQuery.isFetching ? (
+              {editingUserGuid && detailQuery.isFetching ? (
                 <View style={styles.inlineLoading}>
                   <ActivityIndicator />
                 </View>
@@ -825,8 +902,8 @@ export default function UsersScreen() {
             <Button onPress={resetDialogState} disabled={isBusy}>
               {t("actions.cancel")}
             </Button>
-            <Button onPress={handleSubmit} loading={updateMutation.isPending}>
-              {t("actions.save")}
+            <Button onPress={handleSubmit} loading={editingUserGuid ? updateMutation.isPending : createMutation.isPending}>
+              {editingUserGuid ? t("actions.save") : t("actions.create")}
             </Button>
           </Dialog.Actions>
         </Dialog>

@@ -203,13 +203,13 @@ assert.equal(
 );
 assert.equal(
   new Set<string>(IOS_REVIEW_PERMISSION_CODES).has("Users.Create"),
-  false,
-  "雇主预配账号的 Review 身份不得声明创建员工权限",
+  true,
+  "Review 身份必须声明受分店范围约束的员工创建权限",
 );
 assert.equal(
   reviewUser.permissions.includes("Users.Create"),
-  false,
-  "Review 登录态不得暴露创建员工能力",
+  true,
+  "Review 登录态必须能够演示新增店员流程",
 );
 assert.equal(
   IOS_REVIEW_PERMISSION_CODES.includes("Attendance.Admin.View"),

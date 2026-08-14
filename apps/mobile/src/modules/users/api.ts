@@ -1,5 +1,7 @@
+import { isAxiosError } from "axios";
 import { apiClient } from "@/shared/api/client";
 import type {
+  StoreUserCreatePayload,
   StoreUserDetail,
   StoreUserGridParams,
   StoreUserListItem,
@@ -20,6 +22,24 @@ function sanitizeMutationPayload<T extends { storeCode: string; roleNames?: stri
     ...payload,
     roleNames: [STORE_STAFF_ROLE],
     storeCode: payload.storeCode.trim(),
+  };
+}
+
+export interface SafeStoreUserErrorLogMetadata {
+  name: string;
+  code?: string;
+  status?: number;
+}
+
+export function toSafeStoreUserErrorLog(error: unknown): SafeStoreUserErrorLogMetadata {
+  if (!isAxiosError(error)) {
+    return { name: error instanceof Error ? error.name : "UnknownError" };
+  }
+
+  return {
+    name: "AxiosError",
+    ...(typeof error.code === "string" ? { code: error.code } : {}),
+    ...(typeof error.response?.status === "number" ? { status: error.response.status } : {}),
   };
 }
 
@@ -59,6 +79,17 @@ export async function updateStoreUser(payload: StoreUserUpdatePayload): Promise<
     "/react/v1/store-users/" + encodeURIComponent(payload.userGuid),
     sanitizeMutationPayload(payload)
   );
+
+  return normalizeStoreUserDetail(response.data);
+}
+
+export async function createStoreUser(payload: StoreUserCreatePayload): Promise<StoreUserDetail> {
+  // 创建入口只允许生成固定的店员账号，避免调用方意外提升角色或改变员工类型。
+  const response = await apiClient.post("/react/v1/store-users", {
+    ...sanitizeMutationPayload(payload),
+    employmentType: "casual",
+    passwordFormat: "raw",
+  });
 
   return normalizeStoreUserDetail(response.data);
 }

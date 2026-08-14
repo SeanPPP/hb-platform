@@ -32,6 +32,6 @@ The persistent banner **App Review Demo / Local sample data / Resets on restart 
 
 ## Unlisted distribution
 
-This app is intended for unlisted App Store distribution to Hot Bargain employees and authorised store managers only. It is not a consumer app and has no public sign-up. Accounts are pre-provisioned by the employer or an authorised organisation administrator through the organisation's administrative systems; access is enforced by account, role, store and device permissions. The unlisted link will be shared only through internal or authorised organisation channels. The app can be used on employer-managed devices and authorised employee-owned devices.
+This app is intended for unlisted App Store distribution to Hot Bargain employees and authorised store managers only. It is not a consumer app and has no public self-sign-up. Accounts are provisioned by the employer or an authorised organisation administrator or store manager, including a store-scoped in-app staff creation flow; access is enforced by account, role, store and device permissions. The unlisted link will be shared only through internal or authorised organisation channels. The app can be used on employer-managed devices and authorised employee-owned devices.
 
 Sign-in details are entered in App Review Information and are not repeated here.
