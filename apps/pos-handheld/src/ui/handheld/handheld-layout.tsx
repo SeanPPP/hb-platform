@@ -22,6 +22,7 @@ type HandheldScreenFrameProps = Readonly<{
   children: ReactNode;
   contentStyle?: StyleProp<ViewStyle>;
   footer?: ReactNode;
+  footerStyle?: StyleProp<ViewStyle>;
   header?: ReactNode;
   testID: string;
 }>;
@@ -31,6 +32,7 @@ export function HandheldScreenFrame({
   children,
   contentStyle,
   footer,
+  footerStyle,
   header,
   testID,
 }: HandheldScreenFrameProps) {
@@ -45,7 +47,7 @@ export function HandheldScreenFrame({
         {children}
       </View>
       {footer ? (
-        <View style={styles.footer} testID={`${testID}-footer`}>
+        <View style={[styles.footer, footerStyle]} testID={`${testID}-footer`}>
           {footer}
         </View>
       ) : null}

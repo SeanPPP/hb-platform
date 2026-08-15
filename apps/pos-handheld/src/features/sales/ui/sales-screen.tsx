@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from "react";
 import {
   ActivityIndicator,
@@ -80,6 +81,8 @@ const QUICK_ORDER_DISCOUNTS = [1_000, 2_000, 3_000, 4_000, 5_000] as const;
 const AVERAGE_CART_LINE_HEIGHT = 128;
 const CART_LINE_REMOVE_ACTION_WIDTH = 96;
 const CART_LINE_SWIPE_ACTIVATION_DISTANCE = 12;
+const COMPACT_CART_HEADER_HEIGHT = 24;
+const COMPACT_PRODUCT_ENTRY_HEIGHT = 96;
 
 type LineEditMode =
   "quantity" | "price" | "discount-amount" | "discount-percent";
@@ -290,8 +293,14 @@ export function SalesScreen({
     state.phase === "locked" ||
     checkoutVerifying ||
     newTransactionBlocked;
+  // TC26 的应用可用区为 360×592dp；低矮设备也采用同一紧凑销售布局。
+  const compactSalesLayout = windowWidth <= 360 || windowHeight <= 640;
+  const compactCartRowsMinHeight = Math.ceil(windowHeight * 0.5);
+  const compactCartListMinHeight =
+    compactCartRowsMinHeight +
+    COMPACT_PRODUCT_ENTRY_HEIGHT +
+    COMPACT_CART_HEADER_HEIGHT;
   // 窄屏成功页优先保证找零金额完整可读，390×844 及以上保持原有视觉尺度。
-  const compactSalesLayout = windowWidth <= 360;
   const compactSuccessLayout = windowWidth <= 360 || windowHeight <= 640;
   const selectedCartActionLine = cartItemActionsLineId
     ? (state.cart.lines.find((line) => line.lineId === cartItemActionsLineId) ??
@@ -340,6 +349,89 @@ export function SalesScreen({
             : "neutral",
       value: t(`status.${scanner}` as SalesCopyKey),
     },
+  ];
+  const compactOperationalItems: readonly HandheldOperationalItem[] = [
+    {
+      key: "workspace",
+      label: t("app.title"),
+      tone: "info",
+      value: terminalPresentation
+        ? `${terminalPresentation.storeName?.trim() || "—"} · ${terminalPresentation.deviceCode}`
+        : t("app.workspace"),
+    },
+    ...(showStatusStrip ? operationalItems : []),
+    ...(connectivity === "offline"
+      ? [
+          {
+            key: "offline-cash-only",
+            label: t("summary.cashOnly"),
+            tone: "warning" as const,
+            value: t("summary.cashOnlyHint"),
+          },
+        ]
+      : []),
+    ...(state.pendingLookupCount > 0 || checkoutVerifying
+      ? [
+          {
+            accessibilityLiveRegion: "polite" as const,
+            key: "catalog-verifying",
+            label: t("status.scanner"),
+            tone: "warning" as const,
+            value: t("catalog.verifying"),
+          },
+        ]
+      : []),
+    ...(lastScanFeedback
+      ? [
+          {
+            accessibilityHint: t("common.dismiss"),
+            accessibilityLiveRegion: "polite" as const,
+            key: "scan-result",
+            label: t("pda.scanResultTitle"),
+            onPress: () => setLastScanFeedback(null),
+            tone: "info" as const,
+            value: t(`pda.scanResult.${lastScanFeedback.kind}` as SalesCopyKey),
+          },
+        ]
+      : []),
+    ...(utilityActionResult
+      ? [
+          {
+            accessibilityHint: t("common.dismiss"),
+            accessibilityLiveRegion: "polite" as const,
+            key: "utility-result",
+            label: t(
+              utilityActionResult.action === "reprint"
+                ? "functions.reprintReceipt"
+                : "functions.openDrawer",
+            ),
+            onPress: () => setUtilityActionResult(null),
+            tone:
+              utilityActionResult.result.kind === "completed"
+                ? ("success" as const)
+                : ("warning" as const),
+            value: t(
+              utilityResultCopyKey(
+                utilityActionResult.action,
+                utilityActionResult.result.kind,
+              ),
+            ),
+          },
+        ]
+      : []),
+    ...(state.errorCode
+      ? [
+          {
+            accessibilityHint: t("common.dismiss"),
+            accessibilityLiveRegion: "assertive" as const,
+            key: "sales-error",
+            label: t("status.failed"),
+            onPress: () => presenter.dismissError(),
+            tone: "danger" as const,
+            value: t(errorCopyKey(state.errorCode)),
+    },
+        ]
+      : []),
   ];
 
   useEffect(
@@ -1184,11 +1276,120 @@ export function SalesScreen({
       tone: "quiet",
     },
   ];
+  const summaryActionsDisabled =
+    cartEmpty || !state.capabilities.cartEditing || transactionActionsDisabled;
+  const languageSwitcher = onSwitchLanguage ? (
+    <HandheldActionButton
+      label={locale === "zh" ? "EN" : "中"}
+      onPress={onSwitchLanguage}
+      sound="navigate"
+      testID="sales-switch-language"
+      variant="secondary"
+    />
+  ) : null;
+  const salesToolbar = (
+    <SalesToolbar
+      accessibilityCopy={{
+        moveEarlier: t("toolbar.moveEarlier"),
+        moveLater: t("toolbar.moveLater"),
+        reorderHint: t("toolbar.reorderHint"),
+        positionChanged: (label, position, total) =>
+          t("toolbar.positionChanged", { label, position, total }),
+      }}
+      actions={toolbarActions}
+      canonicalOrder={toolbarOrder}
+      closeLabel={t("toolbar.close")}
+      onOrderChange={onToolbarOrderChange}
+      triggerLabel={t("toolbar.more")}
+    />
+  );
   return (
     <HandheldScreenFrame
       contentStyle={styles.screenContent}
+      footerStyle={compactSalesLayout ? styles.compactScreenFooter : undefined}
       footer={
-        <View style={styles.checkoutDock}>
+        <View
+          style={[
+            styles.checkoutDock,
+            compactSalesLayout && styles.compactCheckoutDock,
+          ]}
+        >
+          {compactSalesLayout ? (
+            <View
+              style={[styles.summaryPane, styles.compactSummaryPane]}
+              testID="sales-summary-pane"
+            >
+              <View
+                style={styles.compactSummaryOverview}
+                testID="sales-summary-overview"
+              >
+                <View style={styles.compactSummaryMetric}>
+                  <Text numberOfLines={1} style={styles.compactSummaryLabel}>
+                    {t("summary.subtotal")}
+                  </Text>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.65}
+                    numberOfLines={1}
+                    style={styles.compactSummaryAmount}
+                  >
+                    {formatAud(state.cart.subtotal.cents, locale)}
+                  </Text>
+                </View>
+                <View style={styles.compactSummaryMetric}>
+                  <Text numberOfLines={1} style={styles.compactSummaryLabel}>
+                    {t("summary.discount")}
+                  </Text>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.65}
+                    numberOfLines={1}
+                    style={styles.compactSummaryDiscount}
+                    testID="sales-summary-discount-amount"
+                  >
+                    −{formatAud(state.cart.discount.cents, locale)}
+                  </Text>
+                </View>
+                <View style={styles.compactSummaryTotal}>
+                  <Text numberOfLines={1} style={styles.compactSummaryLabel}>
+                    {t("summary.total")}
+                  </Text>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.65}
+                    numberOfLines={1}
+                    style={styles.compactSummaryTotalAmount}
+                  >
+                    {formatAud(state.cart.actualAmount.cents, locale)}
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={[
+                  styles.summaryEditActions,
+                  styles.compactSummaryActions,
+                ]}
+                testID="sales-summary-actions"
+              >
+                <CompactSummaryAction
+                  accessibilityLabel={t("summary.orderDiscount")}
+                  disabled={summaryActionsDisabled}
+                  icon="percent-outline"
+                  onPress={() => setOrderDiscountVisible(true)}
+                  testID="sales-order-discount"
+                  tone="secondary"
+                />
+                <CompactSummaryAction
+                  accessibilityLabel={t("summary.clearCart")}
+                  disabled={summaryActionsDisabled}
+                  icon="delete-outline"
+                  onPress={() => setClearCartVisible(true)}
+                  testID="sales-clear-cart"
+                  tone="danger"
+                />
+              </View>
+            </View>
+          ) : (
           <View style={styles.summaryPane} testID="sales-summary-pane">
             <View
               style={styles.summaryOverview}
@@ -1225,11 +1426,7 @@ export function SalesScreen({
               testID="sales-summary-actions"
             >
               <ActionButton
-                disabled={
-                  cartEmpty ||
-                  !state.capabilities.cartEditing ||
-                  transactionActionsDisabled
-                }
+                  disabled={summaryActionsDisabled}
                 label={t("summary.orderDiscount")}
                 onPress={() => setOrderDiscountVisible(true)}
                 sound="navigate"
@@ -1238,11 +1435,7 @@ export function SalesScreen({
                 tone="secondary"
               />
               <ActionButton
-                disabled={
-                  cartEmpty ||
-                  !state.capabilities.cartEditing ||
-                  transactionActionsDisabled
-                }
+                  disabled={summaryActionsDisabled}
                 label={t("summary.clearCart")}
                 onPress={() => setClearCartVisible(true)}
                 style={styles.summaryEditAction}
@@ -1251,6 +1444,7 @@ export function SalesScreen({
               />
             </View>
           </View>
+          )}
           <HandheldActionButton
             disabled={
               cartEmpty ||
@@ -1278,6 +1472,17 @@ export function SalesScreen({
         </View>
       }
       header={
+        compactSalesLayout ? (
+          <View style={styles.compactTopBar} testID="sales-compact-top-bar">
+            <View style={styles.compactTopBarEdge}>{languageSwitcher}</View>
+            <HandheldOperationalStrip
+              compact
+              items={compactOperationalItems}
+              style={styles.compactTopBarStatus}
+            />
+            <View style={styles.compactTopBarEdge}>{salesToolbar}</View>
+          </View>
+        ) : (
         <>
           <HandheldPageHeader
             eyebrow={
@@ -1285,39 +1490,15 @@ export function SalesScreen({
                 ? `${terminalPresentation.storeName?.trim() || "—"} · ${terminalPresentation.deviceCode}`
                 : t("app.workspace")
             }
-            leading={
-              onSwitchLanguage ? (
-                <HandheldActionButton
-                  label={locale === "zh" ? "EN" : "中"}
-                  onPress={onSwitchLanguage}
-                  sound="navigate"
-                  testID="sales-switch-language"
-                  variant="secondary"
-                />
-              ) : undefined
-            }
+              leading={languageSwitcher ?? undefined}
             title={t("app.title")}
-            trailing={
-              <SalesToolbar
-                accessibilityCopy={{
-                  moveEarlier: t("toolbar.moveEarlier"),
-                  moveLater: t("toolbar.moveLater"),
-                  reorderHint: t("toolbar.reorderHint"),
-                  positionChanged: (label, position, total) =>
-                    t("toolbar.positionChanged", { label, position, total }),
-                }}
-                actions={toolbarActions}
-                canonicalOrder={toolbarOrder}
-                closeLabel={t("toolbar.close")}
-                onOrderChange={onToolbarOrderChange}
-                triggerLabel={t("toolbar.more")}
-              />
-            }
+              trailing={salesToolbar}
           />
           {showStatusStrip ? (
             <HandheldOperationalStrip items={operationalItems} />
           ) : null}
         </>
+        )
       }
       testID="sales-screen"
     >
@@ -1371,11 +1552,22 @@ export function SalesScreen({
       >
         <PosKeyboardAwareFlatList<CartLine>
           ListHeaderComponent={
-            <View style={styles.workspaceHeader}>
+            <View
+              style={[
+                styles.workspaceHeader,
+                compactSalesLayout && styles.compactWorkspaceHeader,
+              ]}
+            >
               {/* 键盘感知合同要求输入保持在滚动容器的词法子树；HID/软键盘状态机沿用原回调。 */}
               <HandheldStateSurface slug="pda-sales-input">
-                <HandheldSection testID="sales-product-entry">
-            <View style={styles.searchInputRow} testID="sales-search-input-row">
+                <ProductEntryFrame compact={compactSalesLayout}>
+                  <View
+                    style={[
+                      styles.searchInputRow,
+                      compactSalesLayout && styles.compactSearchInputRow,
+                    ]}
+                    testID="sales-search-input-row"
+                  >
               <PosKeyboardAwareTextInput
                 ref={searchInputRef}
                 accessibilityLabel={t("catalog.searchPlaceholder")}
@@ -1428,7 +1620,10 @@ export function SalesScreen({
               ) : null}
             </View>
             <View
-              style={styles.searchActions}
+                    style={[
+                      styles.searchActions,
+                      compactSalesLayout && styles.compactSearchActions,
+                    ]}
               testID="sales-product-entry-actions"
             >
               <ActionButton
@@ -1456,7 +1651,8 @@ export function SalesScreen({
                 />
               ) : null}
             </View>
-            {state.pendingLookupCount > 0 || checkoutVerifying ? (
+                  {!compactSalesLayout &&
+                  (state.pendingLookupCount > 0 || checkoutVerifying) ? (
               <Text
                 accessibilityLiveRegion="polite"
                 style={styles.verifyingMessage}
@@ -1465,7 +1661,7 @@ export function SalesScreen({
                 {t("catalog.verifying")}
               </Text>
             ) : null}
-            {lastScanFeedback ? (
+                  {!compactSalesLayout && lastScanFeedback ? (
               <HandheldStateSurface
                 slug="pda-scan-result"
                 style={styles.pdaState}
@@ -1475,7 +1671,9 @@ export function SalesScreen({
                     {t("pda.scanResultTitle")}
                   </Text>
                   <Text style={styles.pdaStateHint}>
-                    {t(`pda.scanResult.${lastScanFeedback.kind}` as SalesCopyKey)}
+                          {t(
+                            `pda.scanResult.${lastScanFeedback.kind}` as SalesCopyKey,
+                          )}
                   </Text>
                 </View>
                 <HandheldActionButton
@@ -1486,22 +1684,27 @@ export function SalesScreen({
                 />
               </HandheldStateSurface>
             ) : null}
-                </HandheldSection>
+                </ProductEntryFrame>
               </HandheldStateSurface>
-              {connectivity === "offline" ? (
+              {!compactSalesLayout && connectivity === "offline" ? (
                 <View
                   accessibilityRole="alert"
                   style={styles.offlineCard}
                   testID="sales-offline-cash-only"
                 >
-                  <Text style={styles.offlineTitle}>{t("summary.cashOnly")}</Text>
+                  <Text style={styles.offlineTitle}>
+                    {t("summary.cashOnly")}
+                  </Text>
                   <Text style={styles.offlineHint}>
                     {t("summary.cashOnlyHint")}
                   </Text>
                 </View>
               ) : null}
               <View
-                style={styles.cartPaneHeaderSegment}
+                style={[
+                  styles.cartPaneHeaderSegment,
+                  compactSalesLayout && styles.compactCartPaneHeaderSegment,
+                ]}
                 testID="sales-transaction-pane"
               >
               <View style={styles.cartHeader}>
@@ -1515,22 +1718,27 @@ export function SalesScreen({
           }
           ListEmptyComponent={
             <View
-              style={[styles.cartPaneEmptySegment, styles.emptyCart]}
+              style={[
+                styles.cartPaneEmptySegment,
+                styles.emptyCart,
+                compactSalesLayout && {
+                  minHeight: compactCartRowsMinHeight,
+                },
+              ]}
               testID="sales-cart-empty"
             >
                   <Text style={styles.emptyCartIcon}>＋</Text>
-                  <Text style={styles.emptyCartTitle}>
-                    {t("cart.emptyTitle")}
-                  </Text>
-                  <Text style={styles.emptyCartHint}>
-                    {t("cart.emptyHint")}
-                  </Text>
+              <Text style={styles.emptyCartTitle}>{t("cart.emptyTitle")}</Text>
+              <Text style={styles.emptyCartHint}>{t("cart.emptyHint")}</Text>
             </View>
           }
           ListFooterComponent={
             !cartEmpty ? <View style={styles.cartPaneFooterSegment} /> : null
           }
-          contentContainerStyle={styles.workspaceList}
+          contentContainerStyle={[
+            styles.workspaceList,
+            compactSalesLayout && styles.compactWorkspaceList,
+          ]}
           data={displayedCartLines}
           initialNumToRender={10}
           keyExtractor={cartLineKeyExtractor}
@@ -1540,14 +1748,17 @@ export function SalesScreen({
           removeClippedSubviews
           renderItem={renderCartLine}
           showsVerticalScrollIndicator={false}
-          style={styles.workspaceListViewport}
+          style={[
+            styles.workspaceListViewport,
+            compactSalesLayout && { minHeight: compactCartListMinHeight },
+          ]}
           testID="sales-cart-list"
           updateCellsBatchingPeriod={32}
           windowSize={7}
         />
       </HandheldStateSurface>
 
-      {utilityActionResult ? (
+      {!compactSalesLayout && utilityActionResult ? (
         <HandheldStateSurface
           slug="pda-print-drawer-result"
           style={styles.utilityResultSurface}
@@ -1571,7 +1782,7 @@ export function SalesScreen({
         </HandheldStateSurface>
       ) : null}
 
-      {state.errorCode ? (
+      {!compactSalesLayout && state.errorCode ? (
         <ErrorBanner
           dismissLabel={t("common.dismiss")}
           message={t(errorCopyKey(state.errorCode))}
@@ -2733,6 +2944,65 @@ function NumericValueDisplay({
   );
 }
 
+function ProductEntryFrame({
+  children,
+  compact,
+}: Readonly<{ children: ReactNode; compact: boolean }>) {
+  if (!compact) {
+    return (
+      <HandheldSection testID="sales-product-entry">{children}</HandheldSection>
+    );
+  }
+  return (
+    <View style={styles.compactProductEntry} testID="sales-product-entry">
+      {children}
+    </View>
+  );
+}
+
+function CompactSummaryAction({
+  accessibilityLabel,
+  disabled,
+  icon,
+  onPress,
+  testID,
+  tone,
+}: Readonly<{
+  accessibilityLabel: string;
+  disabled: boolean;
+  icon: "delete-outline" | "percent-outline";
+  onPress(): void;
+  testID: string;
+  tone: "danger" | "secondary";
+}>) {
+  const iconColor = disabled
+    ? "#7C8287"
+    : tone === "danger"
+      ? posColors.red
+      : posColors.ink;
+  return (
+    <PosPressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      sound={tone === "danger" ? "danger" : "navigate"}
+      style={({ pressed }) => [
+        styles.compactSummaryAction,
+        tone === "danger"
+          ? styles.compactSummaryActionDanger
+          : styles.compactSummaryActionSecondary,
+        disabled && styles.actionButtonDisabled,
+        pressed && !disabled && styles.actionButtonPressed,
+      ]}
+      testID={testID}
+    >
+      <MaterialCommunityIcons color={iconColor} name={icon} size={22} />
+    </PosPressable>
+  );
+}
+
 function SummaryRow({
   amount,
   amountTestID,
@@ -3214,6 +3484,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 14,
   },
+  compactCartPaneHeaderSegment: {
+    height: COMPACT_CART_HEADER_HEIGHT,
+    justifyContent: "center",
+    minHeight: COMPACT_CART_HEADER_HEIGHT,
+    paddingBottom: 0,
+    paddingHorizontal: 8,
+    paddingTop: 0,
+  },
   cartProductImage: {
     height: "100%",
     width: "100%",
@@ -3330,6 +3608,38 @@ const styles = StyleSheet.create({
   },
   checkoutDock: {
     gap: 8,
+  },
+  compactCheckoutDock: {
+    gap: 0,
+  },
+  compactScreenFooter: {
+    borderTopWidth: 0,
+    padding: 8,
+    paddingBottom: 0,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+  },
+  compactTopBar: {
+    alignItems: "center",
+    backgroundColor: posColors.surface,
+    borderBottomColor: posColors.border,
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    height: 48,
+    minHeight: 48,
+    overflow: "hidden",
+  },
+  compactTopBarEdge: {
+    alignItems: "center",
+    height: 48,
+    justifyContent: "center",
+    width: 64,
+  },
+  compactTopBarStatus: {
+    borderBottomWidth: 0,
+    flex: 1,
+    height: 48,
+    minWidth: 0,
   },
   onlineCheckoutButton: {
     marginTop: 10,
@@ -3749,6 +4059,21 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 7,
   },
+  compactProductEntry: {
+    height: COMPACT_PRODUCT_ENTRY_HEIGHT,
+    minHeight: COMPACT_PRODUCT_ENTRY_HEIGHT,
+  },
+  compactSearchActions: {
+    flexWrap: "nowrap",
+    gap: 4,
+    height: 48,
+    minHeight: 48,
+  },
+  compactSearchInputRow: {
+    gap: 4,
+    height: 48,
+    minHeight: 48,
+  },
   searchActions: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -3956,6 +4281,87 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
+  compactSummaryAction: {
+    alignItems: "center",
+    borderRadius: 0,
+    borderWidth: 1,
+    height: 48,
+    justifyContent: "center",
+    minHeight: 48,
+    minWidth: 48,
+    width: 48,
+  },
+  compactSummaryActionDanger: {
+    backgroundColor: posColors.redSoft,
+    borderColor: posColors.red,
+  },
+  compactSummaryActionSecondary: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.ink,
+  },
+  compactSummaryActions: {
+    flexShrink: 0,
+    gap: 0,
+    height: 48,
+    width: 96,
+  },
+  compactSummaryAmount: {
+    color: posColors.ink,
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "800",
+    lineHeight: 14,
+  },
+  compactSummaryDiscount: {
+    color: posColors.red,
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "800",
+    lineHeight: 14,
+  },
+  compactSummaryLabel: {
+    color: posColors.mutedInk,
+    fontSize: 9,
+    fontWeight: "800",
+    lineHeight: 12,
+  },
+  compactSummaryMetric: {
+    flex: 1,
+    justifyContent: "center",
+    minWidth: 0,
+    paddingHorizontal: 4,
+  },
+  compactSummaryOverview: {
+    alignItems: "stretch",
+    flex: 1,
+    flexDirection: "row",
+    height: 48,
+    minWidth: 0,
+  },
+  compactSummaryPane: {
+    flexDirection: "row",
+    gap: 0,
+    height: 48,
+    minHeight: 48,
+    overflow: "hidden",
+    padding: 0,
+  },
+  compactSummaryTotal: {
+    borderLeftColor: posColors.border,
+    borderLeftWidth: 1,
+    flex: 1.2,
+    justifyContent: "center",
+    minWidth: 0,
+    paddingHorizontal: 4,
+  },
+  compactSummaryTotalAmount: {
+    color: posColors.ink,
+    fontSize: 16,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+    letterSpacing: -0.5,
+    lineHeight: 19,
+  },
   summaryEditAction: {
     flex: 1,
     paddingHorizontal: 8,
@@ -4065,9 +4471,15 @@ const styles = StyleSheet.create({
   workspaceHeader: {
     gap: 10,
   },
+  compactWorkspaceHeader: {
+    gap: 0,
+  },
   workspaceList: {
     flexGrow: 1,
     padding: 10,
+  },
+  compactWorkspaceList: {
+    padding: 0,
   },
   workspaceListViewport: {
     flex: 1,

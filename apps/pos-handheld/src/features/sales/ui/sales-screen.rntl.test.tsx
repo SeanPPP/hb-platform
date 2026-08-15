@@ -600,9 +600,17 @@ describe("SalesScreen", () => {
     expect(
       flattenedStyle(screen.getByTestId("sales-summary-actions")),
     ).toMatchObject({ flexDirection: "row" });
-    expect(flattenedStyle(screen.getByTestId("sales-summary-pane"))).toMatchObject(
-      { elevation: 3 },
-    );
+    expect(
+      flattenedStyle(screen.getByTestId("sales-summary-pane")),
+    ).toMatchObject({ elevation: 3, flexDirection: "column" });
+    expect(screen.queryByTestId("sales-compact-top-bar")).toBeNull();
+    expect(flattenedStyle(cartList).minHeight).toBeUndefined();
+    expect(
+      flattenedStyle(screen.getByTestId("sales-screen-footer")),
+    ).toMatchObject({ padding: 16 });
+    expect(
+      screen.getByTestId("handheld-operational-strip").props.horizontal,
+    ).toBe(true);
 
     salesPresenter.destroy();
     await screen.unmount();
@@ -1274,6 +1282,268 @@ describe("SalesScreen", () => {
       expect(screen.getByTestId("sales-screen-footer")).toContainElement(
         screen.getByTestId("sales-open-payment"),
       );
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
+  });
+
+  it("360×592 TC26 键盘关闭时保留半屏商品行与紧凑交易操作", async () => {
+    const tc26Metrics = {
+      width: 360,
+      height: 592,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()));
+
+    await act(async () => {
+      Dimensions.set({ window: tc26Metrics, screen: tc26Metrics });
+    });
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          onOpenPayment={jest.fn()}
+          onOpenSpecialProducts={jest.fn()}
+          onSwitchLanguage={jest.fn()}
+          presenter={salesPresenter}
+        />,
+      );
+
+      expect(
+        flattenedStyle(screen.getByTestId("sales-compact-top-bar")),
+      ).toMatchObject({ height: 48, minHeight: 48 });
+      expect(
+        descendantTestIds(screen.getByTestId("sales-compact-top-bar")),
+      ).toEqual(
+        expect.arrayContaining([
+          "sales-switch-language",
+          "sales-toolbar",
+          "handheld-operational-strip",
+        ]),
+      );
+      expect(
+        flattenedStyle(screen.getByTestId("sales-search-input-row")),
+      ).toMatchObject({ height: 48, minHeight: 48 });
+      expect(
+        flattenedStyle(screen.getByTestId("sales-product-entry-actions")),
+      ).toMatchObject({ height: 48, minHeight: 48 });
+      expect(
+        descendantTestIds(screen.getByTestId("sales-product-entry-actions")),
+      ).toEqual(
+        expect.arrayContaining([
+          "sales-open-item-button",
+          "sales-open-special-products",
+        ]),
+      );
+      expect(
+        flattenedStyle(screen.getByTestId("sales-transaction-pane")),
+      ).toMatchObject({ height: 24, minHeight: 24 });
+      expect(
+        flattenedStyle(screen.getByTestId("sales-cart-list")).minHeight,
+      ).toBe(416);
+      expect(
+        flattenedStyle(screen.getByTestId("sales-summary-pane")),
+      ).toMatchObject({ flexDirection: "row", height: 48, minHeight: 48 });
+      for (const actionTestID of ["sales-order-discount", "sales-clear-cart"]) {
+        expect(flattenedStyle(screen.getByTestId(actionTestID))).toMatchObject({
+          minHeight: 48,
+          minWidth: 48,
+        });
+      }
+      expect(
+        flattenedStyle(screen.getByTestId("sales-open-payment")).minHeight,
+      ).toBeGreaterThanOrEqual(48);
+      expect(
+        flattenedStyle(screen.getByTestId("sales-screen-footer")),
+      ).toMatchObject({
+        borderTopWidth: 0,
+        padding: 8,
+        paddingBottom: 0,
+        paddingHorizontal: 8,
+        paddingTop: 8,
+      });
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
+  });
+
+  it("320×568 空购物车仍为商品行保留半屏高度", async () => {
+    const compactMetrics = {
+      width: 320,
+      height: 568,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+
+    await act(async () => {
+      Dimensions.set({ window: compactMetrics, screen: compactMetrics });
+    });
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          onOpenPayment={jest.fn()}
+          onOpenSpecialProducts={jest.fn()}
+          presenter={salesPresenter}
+          showStatusStrip={false}
+        />,
+      );
+
+      expect(
+        flattenedStyle(screen.getByTestId("sales-cart-list")).minHeight,
+      ).toBe(404);
+      expect(
+        flattenedStyle(screen.getByTestId("sales-cart-empty")).minHeight,
+      ).toBe(284);
+      expect(
+        descendantTestIds(screen.getByTestId("sales-product-entry-actions")),
+      ).toEqual(
+        expect.arrayContaining([
+          "sales-open-item-button",
+          "sales-open-special-products",
+        ]),
+      );
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
+  });
+
+  it("TC26 将离线、核验、扫码、工具结果与错误收进可关闭状态栏", async () => {
+    const tc26Metrics = {
+      width: 360,
+      height: 592,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    let publishLookupOutcome: ((event: SalesFeedbackEvent) => void) | undefined;
+    const scanWorkflow: SalesWorkflowPort = {
+      ...workflow(),
+      getPendingCatalogWorkCount: () => 1,
+      subscribeLookupOutcome(listener) {
+        publishLookupOutcome = listener;
+        return () => {
+          publishLookupOutcome = undefined;
+        };
+      },
+    };
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: scanWorkflow,
+    });
+    const onReprintReceipt = jest.fn(async () => ({
+      kind: "completed" as const,
+    }));
+
+    await act(async () => {
+      Dimensions.set({ window: tc26Metrics, screen: tc26Metrics });
+      usePosShellStore.getState().setConnectivity("offline");
+    });
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          onReprintReceipt={onReprintReceipt}
+          presenter={salesPresenter}
+        />,
+      );
+      const expectCartHeightUnchanged = () => {
+        expect(
+          flattenedStyle(screen.getByTestId("sales-cart-list")).minHeight,
+        ).toBe(416);
+      };
+
+      expect(screen.queryByTestId("sales-offline-cash-only")).toBeNull();
+      expect(screen.queryByTestId("sales-catalog-verifying")).toBeNull();
+      expect(
+        screen.getByLabelText(
+          "离线模式 · 仅现金: 银行卡和代金券支付必须连接后端。",
+        ),
+      ).toBeTruthy();
+      expect(screen.getByLabelText("扫码器: 正在核验商品…")).toBeTruthy();
+      expectCartHeightUnchanged();
+
+      await act(async () => {
+        publishLookupOutcome?.({
+          kind: "added",
+          lineId: "line-1",
+          source: "hid",
+        });
+      });
+      expect(screen.queryByTestId("handheld-state-pda-scan-result")).toBeNull();
+      const scanStatus =
+        screen.getByLabelText("已接收扫码: 商品已加入当前交易。");
+      expect(scanStatus.props.accessibilityRole).toBe("button");
+      expectCartHeightUnchanged();
+      await fireEvent.press(scanStatus);
+      expect(
+        screen.queryByLabelText("已接收扫码: 商品已加入当前交易。"),
+      ).toBeNull();
+
+      await fireEvent.press(screen.getByTestId("sales-toolbar"));
+      await fireEvent.press(screen.getByTestId("sales-reprint-receipt"));
+      await waitFor(() => {
+        expect(
+          screen.getByLabelText("重新打印: 上一张小票已发送到打印机。"),
+        ).toBeTruthy();
+      });
+      expect(
+        screen.queryByTestId("handheld-state-pda-print-drawer-result"),
+      ).toBeNull();
+      expectCartHeightUnchanged();
+      await fireEvent.press(
+        screen.getByLabelText("重新打印: 上一张小票已发送到打印机。"),
+      );
+      expect(
+        screen.queryByLabelText("重新打印: 上一张小票已发送到打印机。"),
+      ).toBeNull();
+
+      await act(async () => {
+        await salesPresenter.addLookupCode();
+      });
+      const errorStatus = screen.getByLabelText(
+        "需要处理: 请输入条码、货号或商品名称。",
+      );
+      expect(errorStatus.props.accessibilityRole).toBe("button");
+      expectCartHeightUnchanged();
+      await fireEvent.press(errorStatus);
+      expect(salesPresenter.getState().errorCode).toBeNull();
+      expect(
+        screen.queryByLabelText("需要处理: 请输入条码、货号或商品名称。"),
+      ).toBeNull();
 
       await screen.unmount();
     } finally {

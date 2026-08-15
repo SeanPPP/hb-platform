@@ -2,6 +2,7 @@ import { expect, jest, test } from "@jest/globals";
 import { render } from "@testing-library/react-native";
 import { StyleSheet, Text } from "react-native";
 
+import { handheldLayout } from "./handheld-design-tokens";
 import {
   HandheldPageHeader,
   HandheldScreenFrame,
@@ -56,4 +57,32 @@ test("handheld status badge exposes semantic state and compact height", async ()
 
   expect(badge).toHaveAccessibilityValue({ text: "已同步" });
   expect(StyleSheet.flatten(badge.props.style).minHeight).toBe(24);
+});
+
+test("handheld screen footer keeps the original default padding", async () => {
+  const screen = await render(
+    <HandheldScreenFrame footer={<Text>确认收款</Text>} testID="footer-default">
+      <Text>内容</Text>
+    </HandheldScreenFrame>,
+  );
+
+  const footer = screen.getByTestId("footer-default-footer");
+  expect(StyleSheet.flatten(footer.props.style).padding).toBe(
+    handheldLayout.fixedActionPadding,
+  );
+});
+
+test("handheld screen footerStyle overrides the default padding", async () => {
+  const screen = await render(
+    <HandheldScreenFrame
+      footer={<Text>确认收款</Text>}
+      footerStyle={{ padding: 4 }}
+      testID="footer-override"
+    >
+      <Text>内容</Text>
+    </HandheldScreenFrame>,
+  );
+
+  const footer = screen.getByTestId("footer-override-footer");
+  expect(StyleSheet.flatten(footer.props.style).padding).toBe(4);
 });
