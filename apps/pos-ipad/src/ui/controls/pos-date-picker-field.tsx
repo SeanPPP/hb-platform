@@ -162,6 +162,13 @@ export function PosDatePickerField({
             style={styles.overlay}
             testID={`${testID}-overlay`}
           >
+            <PosPressable
+              accessible={false}
+              onPress={closePicker}
+              sound="navigate"
+              style={styles.backdropDismissArea}
+              testID={`${testID}-backdrop`}
+            />
             <View style={styles.panel}>
               <Text numberOfLines={1} style={styles.title}>
                 {accessibilityLabel}
@@ -267,6 +274,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 24,
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   panel: {
     backgroundColor: posColors.surface,

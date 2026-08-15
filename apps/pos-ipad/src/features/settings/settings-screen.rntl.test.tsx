@@ -1569,6 +1569,64 @@ describe("SettingsScreen", () => {
     // 载入仅更新草稿，只有 Save 后才写入本机设置。
     expect(port.savedPrinterSettings).toHaveLength(0);
   });
+
+  it("危险确认弹窗点击面板外遮罩取消且不触发确认", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.changeText(
+      screen.getByTestId("settings-api-address"),
+      "http://localhost:5159",
+    );
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+
+    await fireEvent.press(
+      screen.getByTestId("settings-confirmation-backdrop"),
+    );
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+    expect(port.apiAddresses).toEqual([]);
+  });
+
+  it("SquarePicker 弹窗点击面板外遮罩关闭", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await screen.findByTestId("settings-pane-content-payments");
+
+    await fireEvent.press(screen.getByTestId("settings-square-location-load"));
+    expect(screen.getByTestId("settings-square-location-picker")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("settings-square-location-picker-backdrop"),
+    );
+    expect(screen.queryByTestId("settings-square-location-picker")).toBeNull();
+  });
+
+  it("打印机选择弹窗点击面板外遮罩关闭", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+    await screen.findByTestId("settings-printer-device-printer001");
+
+    await fireEvent.press(screen.getByTestId("settings-printer-picker-backdrop"));
+    expect(screen.queryByTestId("settings-printer-picker")).toBeNull();
+  });
 });
 
 function createPresenter(port: ScreenSettingsPort): SettingsPresenter {

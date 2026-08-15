@@ -424,6 +424,13 @@ function SpecialProductsAddModal({
         style={styles.modalOverlay}
         testID="special-products-add-modal"
       >
+        <PosPressable
+          accessible={false}
+          onPress={onClose}
+          sound="navigate"
+          style={styles.modalDismissArea}
+          testID="special-products-add-modal-backdrop"
+        />
         <HandheldStateSurface
           slug="special-product-editor"
           style={styles.modalStateSurface}
@@ -1131,6 +1138,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 16,
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   modalPanel: {
     backgroundColor: posColors.surface,

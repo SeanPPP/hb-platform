@@ -2671,6 +2671,221 @@ test("无 Cancel 权限时不可确认 Prepared 保持恢复阻断且不显示�
   await screen.unmount();
 });
 
+test("付款金额弹窗 busy 时遮罩不可关闭，恢复后遮罩关闭", async () => {
+  const harness = createUiPresenter({
+    selectedMethod: "cash",
+    total: aud(1_000),
+    remaining: aud(1_000),
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await openPaymentEntry(screen, "cash");
+  expect(screen.getByTestId("payment-entry-modal")).toBeTruthy();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: true,
+    });
+  });
+  await act(async () => {
+    screen.getByTestId("payment-entry-native-modal").props.onRequestClose();
+  });
+  expect(screen.getByTestId("payment-entry-modal")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("payment-entry-backdrop"));
+  expect(screen.getByTestId("payment-entry-modal")).toBeTruthy();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: false,
+    });
+  });
+  await fireEvent.press(screen.getByTestId("payment-entry-backdrop"));
+  expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+
+  await screen.unmount();
+});
+
+test("尚未收现取消续付确认弹窗 busy 时遮罩不可关闭", async () => {
+  const harness = createUiPresenter({
+    phase: "cash-collection-ready",
+    selectedMethod: "cash",
+    tenders: [
+      {
+        tenderGuid: "prepared-cash-cancel-zh",
+        method: "cash",
+        amount: aud(1_000),
+        reversible: false,
+        provider: null,
+      },
+    ],
+    allowedActions: actions({ cancel: true }),
+    checkout: {
+      flow: "installment-repayment",
+      lines: [],
+      installmentCustomer: null,
+      cash: {
+        tenderedCents: 1_000,
+        appliedCents: 1_000,
+        changeCents: 0,
+      },
+      canConfirm: true,
+      fullInstallmentConfirmationRequired: false,
+      cashRepaymentStatus: "ready",
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="zh"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("payment-cancel-prepared-cash"));
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeTruthy();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: true,
+    });
+  });
+  await act(async () => {
+    screen
+      .getByTestId("payment-cancel-prepared-cash-native-modal")
+      .props.onRequestClose();
+  });
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeTruthy();
+  await fireEvent.press(
+    screen.getByTestId("payment-cancel-prepared-cash-backdrop"),
+  );
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeTruthy();
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      busy: false,
+    });
+  });
+  await fireEvent.press(
+    screen.getByTestId("payment-cancel-prepared-cash-backdrop"),
+  );
+  expect(
+    screen.queryByTestId("payment-cancel-prepared-cash-confirmation"),
+  ).toBeNull();
+  expect(harness.spies.cancel).not.toHaveBeenCalled();
+
+  await screen.unmount();
+});
+
+test("分期全额付款确认弹窗点击面板外遮罩关闭且不确认", async () => {
+  const { presenter, spies } = createUiPresenter(
+    {
+      checkout: {
+        flow: "installment-create",
+        lines: [
+          {
+            lineKey: "line-ui-1",
+            displayName: "Tea",
+            quantity: "1",
+            actualAmountCents: 5_000,
+          },
+        ],
+        installmentCustomer: {
+          name: "Bob",
+          phone: "0400000000",
+          editable: true,
+          editorOpen: false,
+          draftName: "Bob",
+          draftPhone: "0400000000",
+          installmentNumber: null,
+        },
+        cash: {
+          tenderedCents: 0,
+          appliedCents: 0,
+          changeCents: 0,
+        },
+        canConfirm: false,
+        fullInstallmentConfirmationRequired: false,
+      },
+      selectedMethod: "cash",
+      total: aud(5_000),
+      remaining: aud(5_000),
+    },
+    (state) => ({
+      ...state,
+      remaining: aud(0),
+      tenders: [
+        {
+          tenderGuid: "cash-ui-1",
+          method: "cash",
+          amount: aud(5_000),
+          reversible: true,
+        },
+      ],
+      allowedActions: actions(),
+      checkout: {
+        ...state.checkout,
+        cash: {
+          tenderedCents: 6_000,
+          appliedCents: 5_000,
+          changeCents: 1_000,
+        },
+        canConfirm: true,
+        fullInstallmentConfirmationRequired: true,
+      },
+    }),
+  );
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  await openPaymentEntry(screen, "cash");
+  await fireEvent.changeText(screen.getByTestId("payment-amount"), "60.00");
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("payment-cash-applied")).toHaveTextContent(
+      formatAud(5_000, "en"),
+    ),
+  );
+  await fireEvent.press(screen.getByTestId("payment-confirm"));
+  expect(
+    screen.getByTestId("payment-full-installment-confirmation"),
+  ).toBeTruthy();
+  expect(spies.confirm).not.toHaveBeenCalled();
+
+  await fireEvent.press(
+    screen.getByTestId("payment-full-installment-backdrop"),
+  );
+  expect(
+    screen.queryByTestId("payment-full-installment-confirmation"),
+  ).toBeNull();
+  expect(spies.confirm).not.toHaveBeenCalled();
+
+  await screen.unmount();
+});
+
 function createUiPresenter(
   override: Partial<PaymentPresenterState> = {},
   applySubmittedState?: (

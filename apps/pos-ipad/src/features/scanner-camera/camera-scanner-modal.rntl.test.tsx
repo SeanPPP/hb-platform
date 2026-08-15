@@ -133,6 +133,23 @@ test("相机上下文和辅助文案只按当前语言显示", async () => {
   await english.unmount();
 });
 
+test("相机弹窗点击面板外遮罩关闭会话", async () => {
+  const onClose = jest.fn();
+  const rendered = await render(
+    <CameraScannerModal
+      context="product"
+      onClose={onClose}
+      onScan={jest.fn()}
+      scanner={new CameraScannerPortStub()}
+      visible
+    />,
+  );
+
+  await fireEvent.press(rendered.getByTestId("camera-scanner-backdrop"));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await rendered.unmount();
+});
+
 class CameraScannerPortStub implements CameraScannerPort {
   public accepted: string[] = [];
   public startCalls = 0;

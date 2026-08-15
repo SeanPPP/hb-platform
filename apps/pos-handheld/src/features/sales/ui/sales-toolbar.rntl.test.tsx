@@ -79,6 +79,26 @@ describe("SalesToolbar", () => {
     await screen.unmount();
   });
 
+  it("点击更多菜单面板外区域会关闭弹窗", async () => {
+    const screen = await render(
+      <SalesToolbar
+        actions={[action("held-orders"), action("daily-close")]}
+        canonicalOrder={DEFAULT_SALES_TOOLBAR_ORDER}
+        closeLabel="Close"
+        onOrderChange={jest.fn()}
+        triggerLabel="More"
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("sales-toolbar"));
+    expect(screen.getByTestId("handheld-state-sales-more-actions")).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId("sales-toolbar-backdrop"));
+
+    expect(screen.queryByTestId("handheld-state-sales-more-actions")).toBeNull();
+    await screen.unmount();
+  });
+
   it("短按会执行业务操作，disabled 仅阻止业务点击", async () => {
     const enabledPress = jest.fn();
     const disabledPress = jest.fn();

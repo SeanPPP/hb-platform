@@ -121,6 +121,13 @@ export function CameraScannerModal({
       visible={visible}
     >
       <View accessibilityViewIsModal style={styles.backdrop} testID="camera-scanner-modal">
+        <PosPressable
+          accessible={false}
+          onPress={close}
+          sound="navigate"
+          style={styles.backdropDismissArea}
+          testID="camera-scanner-backdrop"
+        />
         <View style={styles.panel}>
           <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
           <Text style={styles.title}>{contextLabel(context, t)}</Text>
@@ -180,6 +187,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 24,
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   buttonPressed: { opacity: 0.8 },
   closeButton: {

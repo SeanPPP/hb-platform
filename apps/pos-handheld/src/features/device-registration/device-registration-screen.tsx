@@ -466,6 +466,13 @@ function StorePickerOverlay({
 
   return (
     <View style={styles.modalBackdrop}>
+      <PosPressable
+        accessible={false}
+        onPress={onClose}
+        sound="navigate"
+        style={StyleSheet.absoluteFillObject}
+        testID="registration-store-backdrop"
+      />
       <View
         accessibilityViewIsModal
         style={styles.modalCard}

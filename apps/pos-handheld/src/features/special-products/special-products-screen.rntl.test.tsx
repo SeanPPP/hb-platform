@@ -419,6 +419,28 @@ describe("SpecialProductsScreen", () => {
     expect(english.queryByText("特殊商品 / Special products")).toBeNull();
     await english.unmount();
   });
+
+  it("特殊商品添加弹窗点击面板外遮罩关闭且不标记", async () => {
+    const presenter = new ScreenPresenter({
+      candidates: [product("C")],
+      items: [product("A")],
+      online: true,
+    });
+    const screen = await render(
+      <SpecialProductsScreen presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("special-products-add-product"));
+    expect(screen.getByTestId("special-products-add-modal")).toBeTruthy();
+
+    await fireEvent.press(
+      screen.getByTestId("special-products-add-modal-backdrop"),
+    );
+    expect(screen.queryByTestId("special-products-add-modal")).toBeNull();
+    expect(presenter.markCalls).toEqual([]);
+
+    await screen.unmount();
+  });
 });
 
 class ScreenPresenter implements SpecialProductsScreenPresenter {

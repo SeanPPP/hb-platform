@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Linking, StyleSheet } from "react-native";
 
 import type { SettingsSquareLocation } from "./settings-square-setup";
@@ -1603,6 +1603,168 @@ describe("SettingsScreen", () => {
     expect(StyleSheet.flatten(scannerStatus.props.style).color).not.toBe(
       posColors.green,
     );
+  });
+
+  it("危险确认弹窗点击面板外遮罩取消且不执行确认", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.changeText(
+      screen.getByTestId("settings-api-address"),
+      "http://localhost:5159",
+    );
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+
+    await fireEvent.press(
+      screen.getByTestId("settings-confirmation-backdrop"),
+    );
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+    expect(port.apiAddresses).toEqual([]);
+  });
+
+  it("危险确认弹窗 busy 时遮罩不可关闭", async () => {
+    const port = new ScreenSettingsPort();
+    let resolveAction:
+      | ((value: SettingsDangerousActionResult) => void)
+      | undefined;
+    port.executeDangerousAction = jest.fn(
+      () =>
+        new Promise<SettingsDangerousActionResult>((resolve) => {
+          resolveAction = resolve;
+        }),
+    );
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.changeText(
+      screen.getByTestId("settings-api-address"),
+      "http://localhost:5159",
+    );
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("settings-confirm").props.accessibilityState,
+      ).toMatchObject({ disabled: true }),
+    );
+
+    await fireEvent.press(
+      screen.getByTestId("settings-confirmation-backdrop"),
+    );
+    expect(screen.getByTestId("settings-confirmation")).toBeTruthy();
+
+    await act(async () => {
+      resolveAction?.({ status: "completed", kind: "change-api-address" });
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("settings-confirmation")).toBeNull(),
+    );
+  });
+
+  it("Square 选择弹窗点击面板外遮罩关闭", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await screen.findByTestId("settings-pane-content-payments");
+    await fireEvent.press(screen.getByTestId("settings-square-location-load"));
+    await screen.findByTestId(
+      "settings-square-location-picker-option-location-1",
+    );
+
+    await fireEvent.press(
+      screen.getByTestId("settings-square-location-picker-backdrop"),
+    );
+    expect(
+      screen.queryByTestId("settings-square-location-picker-modal"),
+    ).toBeNull();
+  });
+
+  it("打印机选择弹窗点击面板外遮罩关闭", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await screen.findByTestId("settings-pane-content-peripherals");
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+    await screen.findByText(/\[printer-scan-finished\]/);
+    expect(
+      screen.getByTestId("settings-printer-picker-modal").props.visible,
+    ).toBe(true);
+
+    await fireEvent.press(
+      screen.getByTestId("settings-printer-picker-backdrop"),
+    );
+    expect(
+      screen.queryByTestId("settings-printer-picker-modal"),
+    ).toBeNull();
+  });
+
+  it("打印机选择弹窗 busy 时遮罩不可关闭", async () => {
+    const port = new ScreenSettingsPort();
+    let resolveScan:
+      | ((value: readonly SettingsPrinterDevice[]) => void)
+      | undefined;
+    port.scanPrinters = jest.fn(
+      () =>
+        new Promise<readonly SettingsPrinterDevice[]>((resolve) => {
+          resolveScan = resolve;
+        }),
+    );
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    await fireEvent.press(screen.getByTestId("settings-nav-peripherals"));
+    await screen.findByTestId("settings-pane-content-peripherals");
+    await fireEvent.press(screen.getByTestId("settings-printer-scan"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("settings-printer-picker-modal").props.visible,
+      ).toBe(true),
+    );
+
+    await fireEvent.press(
+      screen.getByTestId("settings-printer-picker-backdrop"),
+    );
+    expect(
+      screen.getByTestId("settings-printer-picker-modal").props.visible,
+    ).toBe(true);
+
+    await act(async () => {
+      resolveScan?.(port.printerDevices);
+    });
+    await screen.findByText(/\[printer-scan-finished\]/);
+    await fireEvent.press(
+      screen.getByTestId("settings-printer-picker-backdrop"),
+    );
+    expect(
+      screen.queryByTestId("settings-printer-picker-modal"),
+    ).toBeNull();
   });
 });
 

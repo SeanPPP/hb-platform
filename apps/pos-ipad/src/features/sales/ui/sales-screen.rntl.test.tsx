@@ -3486,4 +3486,140 @@ describe("SalesScreen", () => {
     salesPresenter.destroy();
     await screen.unmount();
   });
+
+  it("除现金提交中外，取消语义弹窗点击面板外遮罩即关闭且不触发确认", async () => {
+    const cart = new ScreenCartPort(cartSnapshot());
+    const salesPresenter = presenter(cart);
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await openLegacyCash(salesPresenter);
+    expect(screen.getByTestId("sales-cash-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-cash-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-cash-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-open-item-button"));
+    expect(screen.getByTestId("sales-open-item-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-open-item-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-open-item-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-line-line-1-discount"));
+    expect(screen.getByTestId("sales-discount-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-discount-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-discount-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-line-line-1-edit"));
+    expect(screen.getByTestId("sales-line-edit-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-line-edit-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-line-edit-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-order-discount"));
+    expect(screen.getByTestId("sales-order-discount-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-order-discount-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-order-discount-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-order-discount"));
+    await fireEvent.press(screen.getByTestId("sales-order-discount-amount"));
+    expect(screen.getByTestId("sales-order-edit-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-order-edit-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-order-edit-modal")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("sales-clear-cart"));
+    expect(screen.getByTestId("sales-clear-cart-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-clear-cart-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.queryByTestId("sales-clear-cart-modal")).toBeNull();
+    expect(cart.edits).toEqual([]);
+    expect(cart.discounts).toEqual([]);
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("现金提交中点击遮罩不关闭，保留原有提交门禁", async () => {
+    let resolveCompletion:
+      | ((result: Awaited<ReturnType<SalesWorkflowPort["completeCash"]>>) => void)
+      | undefined;
+    const pending = new Promise<Awaited<
+      ReturnType<SalesWorkflowPort["completeCash"]>
+    >>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const completeCash = jest.fn(() => pending);
+    const cart = new ScreenCartPort(cartSnapshot());
+    const salesPresenter = presenter(cart, {
+      workflow: workflow(completeCash),
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await openLegacyCash(salesPresenter);
+    await pressKeypadKeys(screen, "sales-cash", [
+      "1",
+      "0",
+      "decimal",
+      "0",
+      "0",
+    ]);
+    await fireEvent.press(screen.getByTestId("sales-cash-confirm"));
+    expect(screen.getByTestId("sales-cash-modal")).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId("sales-cash-backdrop", {
+        includeHiddenElements: true,
+      }),
+    );
+    expect(screen.getByTestId("sales-cash-modal")).toBeTruthy();
+
+    await act(async () => {
+      resolveCompletion?.({
+        completed: true,
+        canClearCart: true,
+        orderGuid: "order-ui-submitting",
+        cashDueCents: 995,
+        changeCents: 5,
+        postCommit: { drawerDisposition: "queued" },
+      });
+      await pending;
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
 });

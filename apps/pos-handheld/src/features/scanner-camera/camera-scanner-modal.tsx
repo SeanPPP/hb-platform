@@ -26,6 +26,7 @@ import {
   normalizeScanValue,
   type ScannerCaptureContext,
 } from "@/core/peripherals/scanner";
+import { PosPressable } from "@/ui/controls/pos-pressable";
 import { HandheldActionButton } from "@/ui/handheld/handheld-actions";
 import { HandheldStateSurface } from "@/ui/handheld/handheld-design-states";
 import { HandheldSection } from "@/ui/handheld/handheld-layout";
@@ -289,6 +290,13 @@ export function CameraScannerModal({
         style={styles.backdrop}
         testID="camera-scanner-modal"
       >
+        <PosPressable
+          accessible={false}
+          onPress={close}
+          sound="navigate"
+          style={styles.modalDismissArea}
+          testID="camera-scanner-backdrop"
+        />
         <HandheldStateSurface slug="camera-scanner" style={styles.panel}>
           {/* 短屏只收缩并滚动内容区，关闭操作始终留在面板底部可达。 */}
           <ScrollView
@@ -444,6 +452,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 16,
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   description: {
     color: posColors.mutedInk,

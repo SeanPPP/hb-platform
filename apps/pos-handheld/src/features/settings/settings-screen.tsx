@@ -291,6 +291,15 @@ export function SettingsScreen({
           visible={state.confirmation !== null}
         >
           <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+            <PosPressable
+              accessible={false}
+              onPress={() => {
+                if (!state.busy) presenter.cancelConfirmation();
+              }}
+              sound="navigate"
+              style={styles.modalDismissArea}
+              testID="settings-confirmation-backdrop"
+            />
             {state.confirmation ? (
               <ConfirmationCard
                 busy={state.busy}
@@ -1564,6 +1573,13 @@ function SquarePickerModal({
       visible={visible}
     >
       <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+        <PosPressable
+          accessible={false}
+          onPress={onClose}
+          sound="navigate"
+          style={styles.modalDismissArea}
+          testID={`${testID}-backdrop`}
+        />
         <View style={styles.squarePicker} testID={testID}>
           <View style={styles.printerPickerHeader}>
             <Text style={styles.printerPickerTitle}>{title}</Text>
@@ -2095,6 +2111,13 @@ function PeripheralsPane({
         visible={printerPickerVisible}
       >
         <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+          <PosPressable
+            accessible={false}
+            onPress={closePrinterPicker}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="settings-printer-picker-backdrop"
+          />
           <HandheldStateSurface
             slug="pda-printer-connect"
             style={styles.printerPickerState}
@@ -3431,6 +3454,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 16,
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   confirmationCopy: { flex: 1 },
   confirmationTitle: {

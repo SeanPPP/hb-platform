@@ -372,6 +372,13 @@ export function SalesToolbar({
         visible={menuVisible}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={() => setMenuVisible(false)}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-toolbar-backdrop"
+          />
           <HandheldStateSurface
             slug="sales-more-actions"
             style={styles.modalPanel}
@@ -616,6 +623,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 16,
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   modalPanel: {
     backgroundColor: posColors.canvas,

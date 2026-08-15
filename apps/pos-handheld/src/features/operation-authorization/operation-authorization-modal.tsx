@@ -274,6 +274,13 @@ export function OperationAuthorizationModal({
         style={styles.overlay}
         testID="operation-authorization-modal"
       >
+        <PosPressable
+          accessible={false}
+          onPress={cancel}
+          sound="navigate"
+          style={styles.modalDismissArea}
+          testID="operation-authorization-backdrop"
+        />
         <HandheldStateSurface
           slug="operation-authorization"
           style={styles.stateSurface}
@@ -403,6 +410,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 16,
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   stateSurface: {
     backgroundColor: posColors.surface,

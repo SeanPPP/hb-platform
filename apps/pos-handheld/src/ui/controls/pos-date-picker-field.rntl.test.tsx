@@ -323,3 +323,23 @@ test("必填空值显示选择提示，禁用状态不可打开弹层", async ()
   expect(onChange).not.toHaveBeenCalled();
   expect(screen.queryByTestId("business-date-modal")).toBeNull();
 });
+
+test("日期选择弹层点击面板外遮罩关闭且不提交", async () => {
+  const onChange = jest.fn();
+  const screen = await render(
+    <PosDatePickerField
+      accessibilityLabel="开始日期"
+      locale="zh"
+      onChange={onChange}
+      testID="date-from"
+      value="2026-07-29"
+    />,
+  );
+
+  await fireEvent.press(screen.getByTestId("date-from"));
+  expect(screen.getByTestId("date-from-modal")).toBeTruthy();
+
+  await fireEvent.press(screen.getByTestId("date-from-backdrop"));
+  expect(screen.queryByTestId("date-from-modal")).toBeNull();
+  expect(onChange).not.toHaveBeenCalled();
+});

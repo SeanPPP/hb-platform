@@ -128,6 +128,16 @@ export function PaymentScreen({
   const latestState = useRef(state);
   latestState.current = state;
 
+  const closePaymentEntry = (): void => {
+    if (state.busy) return;
+    setPaymentEntryOpen(false);
+  };
+
+  const closePreparedCashCancellation = (): void => {
+    if (state.busy) return;
+    setPreparedCashCancellationOpen(false);
+  };
+
   useEffect(() => {
     void presenter.initialize();
     return () => presenter.destroy();
@@ -410,7 +420,7 @@ export function PaymentScreen({
             />
             <Modal
               animationType="fade"
-              onRequestClose={() => setPaymentEntryOpen(false)}
+              onRequestClose={closePaymentEntry}
               testID="payment-entry-native-modal"
               transparent
               visible={paymentEntryOpen && showEntry}
@@ -420,6 +430,13 @@ export function PaymentScreen({
                 style={styles.entryModalBackdrop}
                 testID="payment-entry-modal"
               >
+                <PosPressable
+                  accessible={false}
+                  onPress={closePaymentEntry}
+                  sound="navigate"
+                  style={styles.modalDismissArea}
+                  testID="payment-entry-backdrop"
+                />
                 <View
                   style={[
                     styles.entryPane,
@@ -584,7 +601,7 @@ export function PaymentScreen({
                   <ActionButton
                     disabled={state.busy}
                     label={t("action.cancel")}
-                    onPress={() => setPaymentEntryOpen(false)}
+                    onPress={closePaymentEntry}
                     style={styles.formAction}
                     sound="danger"
                     testID="payment-entry-cancel"
@@ -645,6 +662,13 @@ export function PaymentScreen({
           style={styles.confirmationBackdrop}
           testID="payment-full-installment-confirmation"
         >
+          <PosPressable
+            accessible={false}
+            onPress={() => setFullInstallmentConfirmationOpen(false)}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="payment-full-installment-backdrop"
+          />
           <View style={styles.confirmationCard}>
             <Text style={styles.confirmationTitle}>
               {t("installment.fullPayment.title")}
@@ -682,9 +706,8 @@ export function PaymentScreen({
 
       <Modal
         animationType="fade"
-        onRequestClose={() =>
-          setPreparedCashCancellationOpen(false)
-        }
+        onRequestClose={closePreparedCashCancellation}
+        testID="payment-cancel-prepared-cash-native-modal"
         transparent
         visible={preparedCashCancellationOpen}
       >
@@ -693,6 +716,13 @@ export function PaymentScreen({
           style={styles.confirmationBackdrop}
           testID="payment-cancel-prepared-cash-confirmation"
         >
+          <PosPressable
+            accessible={false}
+            onPress={closePreparedCashCancellation}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="payment-cancel-prepared-cash-backdrop"
+          />
           <View style={styles.confirmationCard}>
             <Text style={styles.confirmationTitle}>
               {t("installment.cancelPreparedCash.title")}
@@ -704,9 +734,7 @@ export function PaymentScreen({
               <ActionButton
                 disabled={state.busy}
                 label={t("installment.cancelPreparedCash.dismiss")}
-                onPress={() =>
-                  setPreparedCashCancellationOpen(false)
-                }
+                onPress={closePreparedCashCancellation}
                 style={styles.confirmationAction}
                 sound="navigate"
                 testID="payment-cancel-prepared-cash-dismiss"
@@ -3160,6 +3188,13 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(13, 36, 53, 0.58)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  modalDismissArea: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   confirmationCard: {
     width: "100%",

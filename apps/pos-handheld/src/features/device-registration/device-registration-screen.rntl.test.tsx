@@ -230,3 +230,22 @@ test("未注册设备测试通过后可安全切换服务器并重建 runtime", 
   );
   await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
 });
+
+test("申请分店选择面板点击面板外遮罩关闭", async () => {
+  const screen = await render(<DeviceRegistrationScreen />);
+  await waitFor(() =>
+    expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
+  );
+
+  await fireEvent.press(screen.getByTestId("registration-store-picker"));
+  await screen.findByTestId("registration-store-1003");
+  expect(screen.getByTestId("registration-store-modal")).toBeTruthy();
+
+  await fireEvent.press(
+    screen.getByTestId("registration-store-backdrop", {
+      includeHiddenElements: true,
+    }),
+  );
+  expect(screen.queryByTestId("registration-store-modal")).toBeNull();
+  expect(screen.queryByTestId("registration-store-1003")).toBeNull();
+});

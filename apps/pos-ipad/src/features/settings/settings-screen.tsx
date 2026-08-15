@@ -168,6 +168,10 @@ export function SettingsScreen({
     values?: Readonly<Record<string, string | number>>,
   ) => settingsText(locale, key, values);
   const interactionLocked = state.busy || state.confirmation !== null;
+  const cancelConfirmation = (): void => {
+    if (state.busy) return;
+    presenter.cancelConfirmation();
+  };
 
   return (
     <SafeAreaView style={styles.safeArea} testID="settings-screen">
@@ -290,6 +294,13 @@ export function SettingsScreen({
           visible={state.confirmation !== null}
         >
           <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+            <PosPressable
+              accessible={false}
+              onPress={cancelConfirmation}
+              sound="navigate"
+              style={styles.backdropDismissArea}
+              testID="settings-confirmation-backdrop"
+            />
             {state.confirmation ? (
               <ConfirmationCard
                 busy={state.busy}
@@ -1547,6 +1558,13 @@ function SquarePickerModal({
       visible={visible}
     >
       <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+        <PosPressable
+          accessible={false}
+          onPress={onClose}
+          sound="navigate"
+          style={styles.backdropDismissArea}
+          testID={`${testID}-backdrop`}
+        />
         <View style={styles.squarePicker} testID={testID}>
           <View style={styles.printerPickerHeader}>
             <Text style={styles.printerPickerTitle}>{title}</Text>
@@ -2109,6 +2127,13 @@ function PeripheralsPane({
         visible={printerPickerVisible}
       >
         <View accessibilityViewIsModal style={styles.confirmationOverlay}>
+          <PosPressable
+            accessible={false}
+            onPress={closePrinterPicker}
+            sound="navigate"
+            style={styles.backdropDismissArea}
+            testID="settings-printer-picker-backdrop"
+          />
           <View style={styles.printerPicker} testID="settings-printer-picker">
             <View
               style={styles.printerPickerHeader}
@@ -3456,6 +3481,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 24,
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   confirmationCopy: { flex: 1 },
   confirmationTitle: {

@@ -419,6 +419,13 @@ function SpecialProductsAddModal({
         style={styles.modalOverlay}
         testID="special-products-add-modal"
       >
+        <PosPressable
+          accessible={false}
+          onPress={onClose}
+          sound="navigate"
+          style={styles.backdropDismissArea}
+          testID="special-products-add-modal-backdrop"
+        />
         <PosKeyboardAwareScrollView
           contentContainerStyle={styles.modalPanelContent}
           keyboardShouldPersistTaps="handled"
@@ -1125,6 +1132,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 24,
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   modalPanel: {
     backgroundColor: posColors.surface,

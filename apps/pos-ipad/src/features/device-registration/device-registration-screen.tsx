@@ -414,6 +414,13 @@ function StorePickerOverlay({
 
   return (
     <View style={styles.modalBackdrop}>
+      <PosPressable
+        accessible={false}
+        onPress={onClose}
+        sound="navigate"
+        style={styles.backdropDismissArea}
+        testID="registration-store-backdrop"
+      />
       <View
         accessibilityViewIsModal
         style={styles.modalCard}
@@ -740,6 +747,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 32,
     backgroundColor: "rgba(10, 31, 50, 0.42)",
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   modalCard: {
     width: "100%",

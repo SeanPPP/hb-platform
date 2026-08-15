@@ -285,6 +285,13 @@ export function OperationAuthorizationModal({
         style={styles.overlay}
         testID="operation-authorization-modal"
       >
+        <PosPressable
+          accessible={false}
+          onPress={cancel}
+          sound="navigate"
+          style={styles.backdropDismissArea}
+          testID="operation-authorization-backdrop"
+        />
         <PosKeyboardAwareScrollView
           contentContainerStyle={styles.panelContent}
           showsVerticalScrollIndicator={false}
@@ -427,6 +434,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 32,
+  },
+  backdropDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   panel: {
     backgroundColor: posColors.surface,

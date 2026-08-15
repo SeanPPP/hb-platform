@@ -387,3 +387,28 @@ test("拒绝后保留弹窗并恢复扫码，重试成功且界面不泄漏条�
   });
   expect(submittedBarcodes).toEqual(["LEAK-ME", "APPROVED"]);
 });
+
+test("授权弹窗点击面板外遮罩关闭并返回 CANCELLED", async () => {
+  const { service } = createHarness();
+  const authorization = startAuthorization(service);
+  const screen = await render(
+    <OperationAuthorizationModal locale="zh" service={service} />,
+  );
+
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("operation-authorization-modal")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("operation-authorization-backdrop"));
+    await Promise.resolve();
+  });
+  await waitFor(() =>
+    expect(screen.queryByTestId("operation-authorization-modal")).toBeNull(),
+  );
+  await expect(authorization).resolves.toEqual({
+    authorized: false,
+    reason: "CANCELLED",
+  });
+});

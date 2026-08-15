@@ -65,6 +65,7 @@ import {
   PosKeyboardAwareScrollView,
   PosKeyboardAwareTextInput,
 } from "@/ui/controls/pos-keyboard-aware-scroll-view";
+import { PosPanResponderView } from "@/ui/controls/pos-pan-responder-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { PosSwitch } from "@/ui/controls/pos-switch";
 import { usePosShellStore } from "@/ui/shell/pos-shell-store";
@@ -1622,6 +1623,13 @@ export function SalesScreen({
         visible={state.phase === "cash" || state.phase === "submitting-cash"}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={closeCashInput}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-cash-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.numericModal}
@@ -1713,6 +1721,13 @@ export function SalesScreen({
         visible={openItemVisible}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={closeOpenItemInput}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-open-item-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.numericModal}
@@ -1797,6 +1812,13 @@ export function SalesScreen({
         visible={discountLineId !== null}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={() => setDiscountLineId(null)}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-discount-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.discountModal}
@@ -1889,6 +1911,13 @@ export function SalesScreen({
         visible={lineEdit !== null}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={closeLineEditInput}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-line-edit-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.numericModal}
@@ -1978,6 +2007,13 @@ export function SalesScreen({
         visible={orderDiscountVisible}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={() => setOrderDiscountVisible(false)}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-order-discount-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.discountModal}
@@ -2049,6 +2085,13 @@ export function SalesScreen({
         visible={orderEdit !== null}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={closeOrderEditInput}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-order-edit-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.numericModal}
@@ -2108,6 +2151,13 @@ export function SalesScreen({
         visible={clearCartVisible}
       >
         <View style={styles.modalBackdrop}>
+          <PosPressable
+            accessible={false}
+            onPress={() => setClearCartVisible(false)}
+            sound="navigate"
+            style={styles.modalDismissArea}
+            testID="sales-clear-cart-backdrop"
+          />
           <View
             accessibilityViewIsModal
             style={styles.editorModal}
@@ -2442,42 +2492,44 @@ const CartLineRow = memo(function CartLineRow({
           tone="danger"
         />
       </View>
-      <Animated.View
-        {...swipeResponder.panHandlers}
-        style={[
-          styles.cartLineSwipeSurface,
-          { transform: [{ translateX: swipeOffset }] },
-        ]}
+      <PosPanResponderView
+        panHandlers={swipeResponder.panHandlers}
         testID={`sales-line-${item.lineId}-swipe-surface`}
       >
-        <PosPressable
-          accessibilityActions={[
-            { label: t("cart.remove"), name: "delete" },
+        <Animated.View
+          style={[
+            styles.cartLineSwipeSurface,
+            { transform: [{ translateX: swipeOffset }] },
           ]}
-          accessibilityRole="button"
-          accessibilityState={{ selected: isSelected }}
-          onAccessibilityAction={(event) => {
-            if (event.nativeEvent.actionName === "delete" && !disabled) {
-              removeLine();
-            }
-          }}
-          onPress={() => {
-            if (removeActionVisibleRef.current) {
-              settleSwipe(false);
-              return;
-            }
-            onSelect(item.lineId);
-          }}
-          style={({ pressed }) => [
-            styles.cartLine,
-            item.actualAmount.cents < 0 && styles.cartLineNegative,
-            item.actualAmount.cents === 0 && styles.cartLineZero,
-            isSelected && styles.cartLineSelected,
-            pressed && styles.cartLinePressed,
-          ]}
-          testID={`sales-line-${item.lineId}`}
         >
-          <View style={styles.cartLineTop}>
+          <PosPressable
+            accessibilityActions={[
+              { label: t("cart.remove"), name: "delete" },
+            ]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: isSelected }}
+            onAccessibilityAction={(event) => {
+              if (event.nativeEvent.actionName === "delete" && !disabled) {
+                removeLine();
+              }
+            }}
+            onPress={() => {
+              if (removeActionVisibleRef.current) {
+                settleSwipe(false);
+                return;
+              }
+              onSelect(item.lineId);
+            }}
+            style={({ pressed }) => [
+              styles.cartLine,
+              item.actualAmount.cents < 0 && styles.cartLineNegative,
+              item.actualAmount.cents === 0 && styles.cartLineZero,
+              isSelected && styles.cartLineSelected,
+              pressed && styles.cartLinePressed,
+            ]}
+            testID={`sales-line-${item.lineId}`}
+          >
+            <View style={styles.cartLineTop}>
         <Text
           accessibilityLabel={t("cart.lineNumber", {
             number: index + 1,
@@ -2562,9 +2614,10 @@ const CartLineRow = memo(function CartLineRow({
           testID={`sales-line-${item.lineId}-discount`}
           tone="secondary"
         />
-          </View>
-        </PosPressable>
-      </Animated.View>
+            </View>
+          </PosPressable>
+        </Animated.View>
+      </PosPanResponderView>
     </View>
   );
 }, cartLineRowPropsEqual);
@@ -3501,6 +3554,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 28,
+  },
+  modalDismissArea: {
+    ...StyleSheet.absoluteFillObject,
   },
   modalTitle: {
     color: posColors.ink,
