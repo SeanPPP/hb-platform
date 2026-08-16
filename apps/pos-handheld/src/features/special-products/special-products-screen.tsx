@@ -1157,7 +1157,8 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   modalScroll: {
-    flexGrow: 0,
+    // 弹窗面板唯一子项：填充面板可用空间，内容超出 maxHeight 时可滚动。
+    flex: 1,
   },
   modalPanelContent: {
     padding: 18,
@@ -1244,6 +1245,9 @@ const styles = StyleSheet.create({
   },
   modalStateSurface: {
     alignItems: "center",
+    // 建立确定高度链：overlay(flex:1) → stateSurface(flex:1) → panel(maxHeight 92%)
+    // 使内容超出时 panel 高度被钳制、modalScroll(flex:1) 能填满剩余空间滚动。
+    flex: 1,
     justifyContent: "center",
     maxWidth: 430,
     width: "100%",

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { Linking, StyleSheet } from "react-native";
 
 import type { SettingsSquareLocation } from "./settings-square-setup";
@@ -88,6 +88,37 @@ describe("SettingsScreen", () => {
       keyboardDismissMode: "interactive",
       keyboardShouldPersistTaps: "handled",
     });
+  });
+
+  it("整页滚动合同：标题、导航与内容同处页面滚动容器，确认弹窗位于容器外", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="en" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+
+    const pageScroll = screen.getByTestId("settings-content-scroll");
+    // 导航、设备徽章与内容区都必须在页面滚动容器内，保证小屏手持端整页可滑动。
+    // getByTestId 找不到即抛错，无需 toBeTruthy。
+    within(pageScroll).getByTestId("settings-nav-general");
+    within(pageScroll).getByTestId("settings-device-badge");
+    within(pageScroll).getByTestId("settings-workspace");
+    within(pageScroll).getByTestId("settings-pane-content-general");
+
+    // 触发危险操作确认，让 Modal 真正进入 visible 状态后再验证其位于滚动容器外。
+    await fireEvent.changeText(
+      screen.getByTestId("settings-api-address"),
+      "http://localhost:5159",
+    );
+    await fireEvent.press(screen.getByTestId("settings-api-request-change"));
+    await screen.findByTestId("settings-confirmation");
+    expect(screen.getByTestId("settings-confirmation-modal")).toBeTruthy();
+    // 确认弹窗是原生 Modal（portal），不参与页面滚动布局。
+    expect(
+      within(pageScroll).queryByTestId("settings-confirmation-modal"),
+    ).toBeNull();
   });
 
   it("常规分区提供真实语言/安全设置与符合 48pt 合同的两组音效开关", async () => {

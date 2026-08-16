@@ -866,7 +866,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   editorScroll: {
-    flexGrow: 0,
+    // 主列唯一子项：占满剩余空间，内容超出时可滚动（flexGrow:0 会导致高度=内容高度而无法滚动）。
+    flex: 1,
   },
   summaryColumn: {
     flex: 0,

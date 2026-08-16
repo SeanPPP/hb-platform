@@ -172,7 +172,12 @@ export function SettingsScreen({
   return (
     <SafeAreaView style={styles.safeArea} testID="settings-screen">
       <HandheldStateSurface slug="settings-index" style={styles.stateSurface}>
-        <View style={styles.page}>
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.page}
+          pointerEvents={state.confirmation ? "none" : "auto"}
+          style={styles.pageScroll}
+          testID="settings-content-scroll"
+        >
         {scanner ? (
           <HidScannerCapture
             active={
@@ -203,84 +208,78 @@ export function SettingsScreen({
           <StatusBanner locale={locale} statusCode={state.statusCode} />
         ) : null}
 
-        <View style={styles.workspace} testID="settings-workspace">
-          <View
-            pointerEvents={state.confirmation ? "none" : "auto"}
-            style={styles.navigation}
-          >
-            <Text style={styles.navigationTitle}>{t("navigation.title")}</Text>
-            {NAV_ITEMS.map((item) => (
-              <ActionButton
-                disabled={interactionLocked}
-                key={item.pane}
-                label={t(item.label)}
-                onPress={() => presenter.selectPane(item.pane)}
-                selected={state.activePane === item.pane}
-                testID={`settings-nav-${item.pane}`}
-                tone="nav"
-              />
-            ))}
-            <View style={styles.deviceBadge} testID="settings-device-badge">
-              <Text style={styles.badgeLabel}>
-                {t("device.currentTerminal")}
-              </Text>
-              <Text
-                accessibilityLabel={state.device.storeName || "—"}
-                ellipsizeMode="tail"
-                numberOfLines={2}
-                style={styles.badgeValue}
-                testID="settings-device-store-name"
-              >
-                {state.device.storeName || "—"}
-              </Text>
-              <Text
-                style={styles.badgeMeta}
-                testID="settings-device-code"
-              >
-                {state.device.deviceCode || "—"}
-              </Text>
-              <Text
-                style={styles.badgeMeta}
-                testID="settings-device-store-code"
-              >
-                {state.device.storeCode || t("device.unbound")}
-              </Text>
-            </View>
+        <View
+          pointerEvents={state.confirmation ? "none" : "auto"}
+          style={styles.navigation}
+        >
+          <Text style={styles.navigationTitle}>{t("navigation.title")}</Text>
+          {NAV_ITEMS.map((item) => (
+            <ActionButton
+              disabled={interactionLocked}
+              key={item.pane}
+              label={t(item.label)}
+              onPress={() => presenter.selectPane(item.pane)}
+              selected={state.activePane === item.pane}
+              testID={`settings-nav-${item.pane}`}
+              tone="nav"
+            />
+          ))}
+          <View style={styles.deviceBadge} testID="settings-device-badge">
+            <Text style={styles.badgeLabel}>
+              {t("device.currentTerminal")}
+            </Text>
+            <Text
+              accessibilityLabel={state.device.storeName || "—"}
+              ellipsizeMode="tail"
+              numberOfLines={2}
+              style={styles.badgeValue}
+              testID="settings-device-store-name"
+            >
+              {state.device.storeName || "—"}
+            </Text>
+            <Text
+              style={styles.badgeMeta}
+              testID="settings-device-code"
+            >
+              {state.device.deviceCode || "—"}
+            </Text>
+            <Text
+              style={styles.badgeMeta}
+              testID="settings-device-store-code"
+            >
+              {state.device.storeCode || t("device.unbound")}
+            </Text>
           </View>
-
-          <PosKeyboardAwareScrollView
-            contentContainerStyle={styles.content}
-            pointerEvents={state.confirmation ? "none" : "auto"}
-            style={styles.contentScroll}
-            testID="settings-content-scroll"
-          >
-            {state.kind === "loading" || state.kind === "idle" ? (
-              <EmptyPanel
-                message={t("state.loading")}
-                testID="settings-loading"
-              />
-            ) : null}
-            {state.kind === "failed" ? (
-              <EmptyPanel
-                message={t("state.failed")}
-                testID="settings-failed"
-              />
-            ) : null}
-            {state.kind === "unauthorized" ? (
-              <EmptyPanel
-                message={t("state.unauthorized")}
-                testID="settings-unauthorized"
-              />
-            ) : null}
-            {state.kind === "ready" ? (
-              <SettingsPaneContent
-                locale={locale}
-                presenter={presenter}
-                state={state}
-              />
-            ) : null}
-          </PosKeyboardAwareScrollView>
         </View>
+
+        <View style={styles.workspace} testID="settings-workspace">
+          {state.kind === "loading" || state.kind === "idle" ? (
+            <EmptyPanel
+              message={t("state.loading")}
+              testID="settings-loading"
+            />
+          ) : null}
+          {state.kind === "failed" ? (
+            <EmptyPanel
+              message={t("state.failed")}
+              testID="settings-failed"
+            />
+          ) : null}
+          {state.kind === "unauthorized" ? (
+            <EmptyPanel
+              message={t("state.unauthorized")}
+              testID="settings-unauthorized"
+            />
+          ) : null}
+          {state.kind === "ready" ? (
+            <SettingsPaneContent
+              locale={locale}
+              presenter={presenter}
+              state={state}
+            />
+          ) : null}
+        </View>
+        </PosKeyboardAwareScrollView>
 
         <Modal
           animationType="fade"
@@ -311,7 +310,6 @@ export function SettingsScreen({
             ) : null}
           </View>
         </Modal>
-        </View>
       </HandheldStateSurface>
     </SafeAreaView>
   );
@@ -2796,13 +2794,14 @@ function formatElapsedMilliseconds(elapsedMilliseconds: number): string {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: posColors.canvas },
   stateSurface: { flex: 1 },
-  page: { flex: 1, padding: 16 },
+  // 页面级滚动容器：整页（标题/导航/内容）一起上下滚动，避免小屏手持端固定区域挤占内容区。
+  page: { flexGrow: 1, gap: 14, padding: 16, paddingBottom: 28 },
+  pageScroll: { flex: 1 },
   header: {
     alignItems: "flex-start",
     flexDirection: "column",
     gap: 8,
     justifyContent: "space-between",
-    marginBottom: 18,
   },
   titleGroup: { width: "100%" },
   eyebrow: {
@@ -2823,11 +2822,10 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 5,
   },
+  // 内容区容器：位于页面级滚动容器内，按列排布各分区卡片。
   workspace: {
-    flex: 1,
     flexDirection: "column",
-    gap: 16,
-    minHeight: 0,
+    gap: 14,
   },
   navigation: {
     backgroundColor: posColors.surface,
@@ -2849,8 +2847,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     width: "100%",
   },
-  contentScroll: { flex: 1 },
-  content: { gap: 14, paddingBottom: 28 },
   navButton: {
     alignItems: "flex-start",
     backgroundColor: "transparent",

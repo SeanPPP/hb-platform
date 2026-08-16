@@ -829,7 +829,9 @@ const styles = StyleSheet.create({
     backgroundColor: posColors.surface,
   },
   filtersScroll: {
+    // 过滤器行以内容高度为基准，但允许在窄屏/大字体下收缩，避免挤出列表区。
     flexGrow: 0,
+    flexShrink: 1,
   },
   filterField: {
     flexBasis: "47%",
