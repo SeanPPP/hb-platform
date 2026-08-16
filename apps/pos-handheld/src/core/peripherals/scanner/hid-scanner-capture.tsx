@@ -50,7 +50,8 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
       }
       idleTimerRef.current = setTimeout(() => {
         idleTimerRef.current = null;
-        if (scanner.resetPartialIfIdle()) {
+        // 扫码器未带回车时，停顿即自动提交（等效回车）；带回车时回车已先行提交。
+        if (scanner.flushPartialIfIdle()) {
           setCapturedValue("");
         }
       }, 85);

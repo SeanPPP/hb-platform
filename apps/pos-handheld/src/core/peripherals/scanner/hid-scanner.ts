@@ -149,6 +149,17 @@ export class HidScannerRouter implements ScannerPort {
     return true;
   }
 
+  /**
+   * 扫码器未配置回车后缀时，停止输入超过 idleMs 即把半段当作完整条码提交，
+   * 等效自动追加回车；扫码器带回车时本方法不会触发（回车已先行 flush）。
+   */
+  flushPartialIfIdle(receivedAt = this.now()): boolean {
+    if (!this.buffer || this.lastInputAt === null || receivedAt - this.lastInputAt <= this.idleMs) {
+      return false;
+    }
+    return this.flush("hid", receivedAt);
+  }
+
   async startCamera(): Promise<void> {
     this.cameraActive = true;
     this.resetPartial();
