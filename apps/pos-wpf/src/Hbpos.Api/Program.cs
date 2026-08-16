@@ -5,9 +5,14 @@ using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 中文注释：慢请求/5xx 结构化日志阈值（毫秒），目录热路径默认只记录慢与错，避免全量诊断日志。
+var slowRequestThresholdMs = builder.Configuration.GetValue("Logging:SlowRequestThresholdMs", 2_000);
 
 builder.Logging.AddHbposFileLogging(builder.Configuration, builder.Environment);
 builder.Services.AddHbposCentralLogging(builder.Configuration);
@@ -17,6 +22,15 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SchemaFilter<SharedSaleCartPayloadSchemaFilter>();
 });
+// 中文注释：响应压缩仅由 CatalogV2ResponseCompressionProvider 放行（商品分页 + checksumVersion=2），
+// 其他端点与 v1/WPF 一律保持未压缩，行为与启用前一致。
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/json"]);
+});
+builder.Services.AddSingleton<IResponseCompressionProvider, CatalogV2ResponseCompressionProvider>();
 builder.Services
     .AddAuthentication(DeviceAuthConstants.Scheme)
     .AddScheme<AuthenticationSchemeOptions, DeviceAuthenticationHandler>(
@@ -95,10 +109,11 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// 临时诊断：记录所有请求路径与状态码，定位"特殊商品下载未完成"根因，定位后移除。
+// 目录热路径结构化日志：仅慢请求与 5xx 错误记录 Method/Path 与耗时，
+// 不记录完整查询串、游标、lease ID、商品与凭据，避免大目录下载刷爆诊断日志。
 app.Use(async (context, next) =>
 {
-    var diagnoseStopwatch = System.Diagnostics.Stopwatch.StartNew();
+    var diagnoseStopwatch = Stopwatch.StartNew();
     try
     {
         await next();
@@ -106,17 +121,22 @@ app.Use(async (context, next) =>
     finally
     {
         diagnoseStopwatch.Stop();
-        var diagnoseLogger = context.RequestServices
-            .GetRequiredService<ILogger<Program>>();
-        diagnoseLogger.LogInformation(
-            "[RequestDiagnose] {Method} {Path}{Query} => {StatusCode} {ElapsedMs}ms",
-            context.Request.Method,
-            context.Request.Path,
-            context.Request.QueryString,
-            context.Response.StatusCode,
-            diagnoseStopwatch.ElapsedMilliseconds);
+        if (context.Response.StatusCode >= 500 ||
+            diagnoseStopwatch.ElapsedMilliseconds >= slowRequestThresholdMs)
+        {
+            var diagnoseLogger = context.RequestServices
+                .GetRequiredService<ILogger<Program>>();
+            diagnoseLogger.LogInformation(
+                "[RequestSummary] {Method} {Path} => {StatusCode} {ElapsedMs}ms",
+                context.Request.Method,
+                context.Request.Path,
+                context.Response.StatusCode,
+                diagnoseStopwatch.ElapsedMilliseconds);
+        }
     }
 });
+
+app.UseResponseCompression();
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -2122,4 +2122,45 @@ public sealed class CatalogIndexCacheTests
             }
         }
     }
+
+    [Fact]
+    public async Task SnapshotsBeyondRetentionArePrunedWhileLatestKnownGoodSurvives()
+    {
+        // 中文注释：保留期 2 小时、每店 8 版本；验证"先达到者淘汰、最新 LKG 永不受时间淘汰"。
+        var clock = new MutableTimeProvider(GeneratedAt);
+        var cache = new CatalogIndexCache(
+            clock,
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromHours(2),
+            maxSnapshotsPerStore: 8);
+
+        async Task<CatalogIndexBuildResult?> Publish(string version)
+        {
+            return await cache.GetOrBuildAsync(
+                "S01",
+                since: null,
+                _ => Task.FromResult<CatalogIndexBuildResult?>(CreateResult("S01", version)),
+                CancellationToken.None);
+        }
+
+        Assert.NotNull(await Publish("v1"));
+        clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.NotNull(await Publish("v2"));
+
+        // 中文注释：v1（t=2h 过期）超过保留期；v2（t=2h10m 过期）仍在保留期内。
+        clock.Advance(TimeSpan.FromHours(1).Add(TimeSpan.FromMinutes(59)));
+        Assert.NotNull(await Publish("v3"));
+
+        Assert.Null(cache.GetByVersion("S01", since: null, "v1"));
+        Assert.NotNull(cache.GetByVersion("S01", since: null, "v2"));
+        Assert.NotNull(cache.GetByVersion("S01", since: null, "v3"));
+
+        // 中文注释：再次推进超过保留期：v2、v3 均过期且非最新被淘汰；v4（当前最新）保留。
+        clock.Advance(TimeSpan.FromHours(3));
+        Assert.NotNull(await Publish("v4"));
+
+        Assert.Null(cache.GetByVersion("S01", since: null, "v2"));
+        Assert.Null(cache.GetByVersion("S01", since: null, "v3"));
+        Assert.NotNull(cache.GetByVersion("S01", since: null, "v4"));
+    }
 }

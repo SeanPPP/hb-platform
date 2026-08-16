@@ -159,10 +159,12 @@ test("暂存页以快照和规范化售卖码为身份，保留同商品的多�
   ]);
 
   const entries = connection.runs.filter((entry) => entry.sql.includes("INSERT INTO catalog_items ("));
-  assert.equal(entries.length, 2);
+  // 中文注释：批量写入后一次 run 携带全部商品的多行 VALUES，身份参数按 19 参数/行连续排列。
+  assert.equal(entries.length, 1);
   assert.match(entries[0]?.sql ?? "", /store_code, lookup_code_normalized/);
+  assert.match(entries[0]?.sql ?? "", /VALUES\s*\([^)]*\),\s*\(/);
   assert.deepEqual(entries[0]?.parameters.slice(0, 4), ["staging", "S1", "0123", "P1"]);
-  assert.deepEqual(entries[1]?.parameters.slice(0, 4), ["staging", "S1", "SET-01", "P1"]);
+  assert.deepEqual(entries[0]?.parameters.slice(19, 23), ["staging", "S1", "SET-01", "P1"]);
   assert.equal(connection.runs.some((entry) => entry.sql.includes("INSERT INTO catalog_barcodes")), false);
 });
 
@@ -875,3 +877,99 @@ async function scalarCount(
   const row = await connection.getFirst<{ count: number | string }>(sql);
   return Number(row?.count ?? 0);
 }
+
+test("appendPage 按 50 行/批多行写入，0 条不执行 SQL，参数数严格等于 19×行数", async () => {
+  const connection = new RecordingConnection();
+  const repository = new SqliteCatalogSnapshotRepository(connection);
+
+  await repository.appendPage("staging", []);
+  assert.equal(connection.runs.length, 0);
+
+  let before = connection.runs.length;
+  await repository.appendPage("staging", [storedItem({ lookupCodeNormalized: "L1" })]);
+  let itemRuns = connection.runs.slice(before).filter((entry) => entry.sql.includes("INSERT INTO catalog_items ("));
+  assert.equal(itemRuns.length, 1);
+  assert.equal(itemRuns[0]?.parameters.length, 19);
+  assert.equal((itemRuns[0]?.sql.match(/\?/g) ?? []).length, 19);
+
+  before = connection.runs.length;
+  await repository.appendPage(
+    "staging",
+    Array.from({ length: 51 }, (_, index) => storedItem({ lookupCodeNormalized: `L${index}` })),
+  );
+  itemRuns = connection.runs.slice(before).filter((entry) => entry.sql.includes("INSERT INTO catalog_items ("));
+  // 中文注释：51 条拆为 50 + 1 两批多行 VALUES。
+  assert.equal(itemRuns.length, 2);
+  assert.equal(itemRuns[0]?.parameters.length, 50 * 19);
+  assert.equal(itemRuns[1]?.parameters.length, 1 * 19);
+  assert.equal(
+    itemRuns.reduce((sum, entry) => sum + entry.parameters.length, 0),
+    51 * 19,
+  );
+
+  before = connection.runs.length;
+  await repository.appendPage(
+    "staging",
+    Array.from({ length: 500 }, (_, index) => storedItem({ lookupCodeNormalized: `M${index}` })),
+  );
+  itemRuns = connection.runs.slice(before).filter((entry) => entry.sql.includes("INSERT INTO catalog_items ("));
+  assert.equal(itemRuns.length, 10);
+  assert.equal(
+    itemRuns.reduce((sum, entry) => sum + entry.parameters.length, 0),
+    500 * 19,
+  );
+});
+
+test("appendPage 的特殊商品多行批量写入，含特殊标记的商品按 4 参数/行写入", async () => {
+  const connection = new RecordingConnection();
+  const repository = new SqliteCatalogSnapshotRepository(connection);
+
+  await repository.appendPage("staging", [
+    storedItem({ lookupCodeNormalized: "SP1", isSpecialProduct: true, updatedAtIso: "2026-07-30T00:00:00.000Z" }),
+    storedItem({ lookupCodeNormalized: "SP2", isSpecialProduct: true }),
+    storedItem({ lookupCodeNormalized: "N1" }),
+  ]);
+
+  const specialRuns = connection.runs.filter((entry) => entry.sql.includes("INSERT INTO special_products ("));
+  assert.equal(specialRuns.length, 1);
+  assert.equal(specialRuns[0]?.parameters.length, 2 * 4);
+  assert.deepEqual(specialRuns[0]?.parameters.slice(0, 4), ["staging", "S1", "SP1", "2026-07-30T00:00:00.000Z"]);
+});
+
+test("appendDeltaBatch 的 upsert 与特殊商品走批量写入，删除操作保持逐条", async () => {
+  // 中文注释：appendDeltaBatch 先校验 staging 的 delta 资格，需模拟 sync_mode=delta 的元数据行。
+  class DeltaEligibleConnection extends RecordingConnection {
+    public override async getFirst<T extends object>(sql: string): Promise<T | null> {
+      if (sql.includes("SELECT state, sync_mode")) {
+        return { state: "staging", sync_mode: "delta" } as T;
+      }
+      return super.getFirst(sql);
+    }
+  }
+  const connection = new DeltaEligibleConnection();
+  const repository = new SqliteCatalogSnapshotRepository(connection);
+
+  await repository.appendDeltaBatch("staging-delta", {
+    items: [
+      storedItem({ lookupCodeNormalized: "D1", isSpecialProduct: true }),
+      storedItem({ lookupCodeNormalized: "D2" }),
+    ],
+    deletedLookups: [{ storeCode: "S1", lookupCodeNormalized: "GONE" }],
+  });
+
+  const upsertRuns = connection.runs.filter((entry) => entry.sql.includes("INSERT INTO catalog_items ("));
+  assert.equal(upsertRuns.length, 1);
+  assert.equal(upsertRuns[0]?.parameters.length, 2 * 19);
+  assert.match(upsertRuns[0]?.sql ?? "", /ON CONFLICT[\s\S]*DO UPDATE SET/);
+  const specialRuns = connection.runs.filter((entry) => entry.sql.includes("INSERT INTO special_products ("));
+  assert.equal(specialRuns.length, 1);
+  assert.equal(specialRuns[0]?.parameters.length, 1 * 4);
+  // 中文注释：每个 upsert 商品前都要清理 delta_deletions 与特殊商品旧行，保持逐条语义；
+  // 额外 1 次 special_products 清理来自 deletedLookup 的 tombstone 路径。
+  const deletionRuns = connection.runs.filter((entry) => entry.sql.includes("DELETE FROM catalog_delta_deletions"));
+  assert.equal(deletionRuns.length, 2);
+  const specialDeletionRuns = connection.runs.filter((entry) => entry.sql.includes("DELETE FROM special_products"));
+  assert.equal(specialDeletionRuns.length, 3);
+  const tombstoneRuns = connection.runs.filter((entry) => entry.sql.includes("INSERT INTO catalog_delta_deletions"));
+  assert.equal(tombstoneRuns.length, 1);
+});

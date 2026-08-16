@@ -12,7 +12,11 @@ public sealed class CatalogSnapshotOptions
 {
     public string? RootPath { get; set; }
 
-    public int MaxSnapshotsPerStore { get; set; } = 3;
+    /// <summary>每门店保留的目录版本上限（先达到者淘汰，始终保留最新 LKG）。</summary>
+    public int MaxSnapshotsPerStore { get; set; } = 8;
+
+    /// <summary>目录快照保留时长（小时）；超过保留期且非最新版本的驻留快照先淘汰。</summary>
+    public int RetentionHours { get; set; } = 72;
 }
 
 public sealed record CatalogPersistedSnapshot(

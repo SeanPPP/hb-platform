@@ -550,4 +550,100 @@ public sealed class CatalogSellableIndexTests
             discountRate,
             isSpecialProduct);
     }
+
+    [Fact]
+    public void GetPage_standard_v2_pages_cache_checksum_and_keep_continuity()
+    {
+        // 中文注释：12,345 条商品 → 标准页 5000+5000+2345 三页；验证缓存命中、边界与连续性。
+        var items = Enumerable.Range(0, 12_345)
+            .Select(index => CreateItem(
+                $"P{index:D5}",
+                $"k{index:D6}",
+                $"Item {index}",
+                1m))
+            .ToArray();
+        var index = CreateIndex(items);
+
+        var first = index.GetPage(cursor: null, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(5000, first.Items.Count);
+        Assert.NotNull(first.NextCursor);
+
+        // 中文注释：标准页续页：游标 = 上一页末项商品码（规范化）。
+        var second = index.GetPage(cursor: first.NextCursor, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(5000, second.Items.Count);
+        Assert.Equal(first.NextCursor, second.Cursor);
+        Assert.Equal("K004999", second.Cursor);
+
+        // 中文注释：同一页重复请求命中缓存，checksum 与内容完全一致。
+        var secondAgain = index.GetPage(cursor: first.NextCursor, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(second.PageChecksum, secondAgain.PageChecksum);
+        Assert.Equal(
+            second.Items.Select(item => item.LookupCodeNormalized),
+            secondAgain.Items.Select(item => item.LookupCodeNormalized));
+
+        // 中文注释：末页不足 5000 条仍走标准页，hasMore=false 且 nextCursor 为空。
+        var last = index.GetPage(cursor: second.NextCursor, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(2345, last.Items.Count);
+        Assert.False(last.HasMore);
+        Assert.Null(last.NextCursor);
+    }
+
+    [Fact]
+    public void GetPage_non_standard_page_size_or_arbitrary_cursor_falls_back_to_original_path()
+    {
+        var items = Enumerable.Range(0, 12_345)
+            .Select(index => CreateItem(
+                $"P{index:D5}",
+                $"k{index:D6}",
+                $"Item {index}",
+                1m))
+            .ToArray();
+        var index = CreateIndex(items);
+        var first = index.GetPage(cursor: null, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal("K004999", first.NextCursor);
+
+        // 中文注释：非标准 pageSize（4999）走原路径：内容按 4999 切窗。
+        var nonStandard = index.GetPage(cursor: first.NextCursor, pageSize: 4999, checksumVersion: 2);
+        Assert.Equal(4999, nonStandard.Items.Count);
+        Assert.NotEqual(first.PageChecksum, nonStandard.PageChecksum);
+
+        // 中文注释：任意游标（非标准页边界，如 2500 处）回退原路径并保持分页连续性。
+        var arbitrary = index.GetPage(cursor: "k002500", pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(5000, arbitrary.Items.Count);
+        Assert.Equal("K002501", arbitrary.Items[0].LookupCodeNormalized);
+        Assert.Equal("K007500", arbitrary.NextCursor);
+
+        // 中文注释：边界游标大小写不敏感（规范化后命中）。
+        var mixedCase = index.GetPage(cursor: "K004999", pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(5000, mixedCase.Items.Count);
+        Assert.Equal(first.NextCursor, mixedCase.Cursor);
+    }
+
+    [Fact]
+    public void WarmUpStandardV2Page_precomputes_checksums_matching_regular_requests()
+    {
+        // 中文注释：5,100 条商品 → 首页 5000 + 末页 100；预热必须强制求值 Lazy（真正计算 checksum），
+        // 且预热结果与未预热索引直接计算出的摘要逐字节一致。
+        var items = Enumerable.Range(0, 5_100)
+            .Select(index => CreateItem(
+                $"P{index:D5}",
+                $"k{index:D6}",
+                $"Item {index}",
+                1m))
+            .ToArray();
+        var index = CreateIndex(items);
+        index.WarmUpStandardV2Page(0);
+        index.WarmUpStandardV2Page(1);
+
+        var first = index.GetPage(cursor: null, pageSize: 5000, checksumVersion: 2);
+        var second = index.GetPage(cursor: first.NextCursor, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(5000, first.Items.Count);
+        Assert.Equal(100, second.Items.Count);
+        Assert.StartsWith("sha256-catalog-page-v2:", first.PageChecksum);
+
+        // 中文注释：同一数据未预热索引的摘要应与预热路径完全一致。
+        var freshIndex = CreateIndex(items);
+        var freshFirst = freshIndex.GetPage(cursor: null, pageSize: 5000, checksumVersion: 2);
+        Assert.Equal(freshFirst.PageChecksum, first.PageChecksum);
+    }
 }

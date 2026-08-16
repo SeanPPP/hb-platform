@@ -1632,3 +1632,120 @@ function catalogError(code: string): (error: unknown) => boolean {
     && error.kind === "envelope"
     && error.code === code;
 }
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("condition not met before timeout");
+}
+
+test("full 下载在落库当前页期间预取下一页（网络与写入重叠）", async () => {
+  const storage = new MemoryCatalogStorage();
+  const calls: string[] = [];
+  let releaseAppend: (() => void) | null = null;
+  let gated = false;
+  const originalAppendPage = storage.appendPage.bind(storage);
+  storage.appendPage = async (snapshotId, items) => {
+    calls.push(`append:${items.length}`);
+    // 中文注释：只挂起第一页落库，验证预取请求已在此期间发出；后续页正常放行。
+    if (!gated) {
+      gated = true;
+      await new Promise<void>((resolve) => { releaseAppend = resolve; });
+    }
+    await originalAppendPage(snapshotId, items);
+  };
+  const service = new CatalogSnapshotService(storage, {
+    async getPage(input) {
+      calls.push(`fetch:${input.cursor ?? "null"}`);
+      return input.cursor === null
+        ? page({ cursor: null, nextCursor: "C2", items: [item("A")], totalCount: 2 })
+        : page({ cursor: "C2", nextCursor: null, items: [item("B")], totalCount: 2 });
+    },
+  }, { createSnapshotId: () => "prefetch-s1", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  const operation = service.downloadAndActivate({ storeCode: "S1" });
+  await waitForCondition(() => calls.some((call) => call.startsWith("append:")));
+  // 中文注释：第一页落库仍被挂起时，第二页请求必须已发出。
+  assert.equal(calls.some((call) => call === "fetch:C2"), true);
+  (releaseAppend as (() => void) | null)?.();
+  await operation;
+  assert.equal(storage.activated, "prefetch-s1");
+  assert.deepEqual(calls.filter((call) => call.startsWith("fetch:")), ["fetch:null", "fetch:C2"]);
+});
+
+test("full 下载最后一页不发起多余预取，请求总数等于页数", async () => {
+  const storage = new MemoryCatalogStorage();
+  let fetchCount = 0;
+  const service = new CatalogSnapshotService(storage, {
+    async getPage(input) {
+      fetchCount += 1;
+      return page({ cursor: input.cursor, nextCursor: null, items: [item("A")], totalCount: 1 });
+    },
+  }, { createSnapshotId: () => "single-page", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  await service.downloadAndActivate({ storeCode: "S1" });
+  assert.equal(fetchCount, 1);
+  assert.equal(storage.activated, "single-page");
+});
+
+test("delta 下载在落库当前页期间预取下一页并保持 cursor 顺序", async () => {
+  const storage = new MemoryCatalogStorage();
+  storage.active.set("active-s1", [mapCatalogLookupToStagedItem(item("OLD"))]);
+  storage.activeMetadata = {
+    snapshotId: "active-s1",
+    storeCode: "S1",
+    catalogVersion: "v1",
+    itemCount: 1,
+    activatedAt: "2026-07-28T00:00:00.000Z",
+  };
+  const calls: string[] = [];
+  let releaseAppend: (() => void) | null = null;
+  let gated = false;
+  const originalAppendDeltaBatch = storage.appendDeltaBatch.bind(storage);
+  storage.appendDeltaBatch = async (snapshotId, batch) => {
+    calls.push(`append:${batch.items.length + batch.deletedLookups.length}`);
+    // 中文注释：只挂起第一页 delta 落库，验证预取请求已在此期间发出；后续页正常放行。
+    if (!gated) {
+      gated = true;
+      await new Promise<void>((resolve) => { releaseAppend = resolve; });
+    }
+    await originalAppendDeltaBatch(snapshotId, batch);
+  };
+  const service = new CatalogSnapshotService(storage, {
+    ...remote([]),
+    async getSyncPlan() {
+      return syncPlan({
+        mode: "delta",
+        baseCatalogVersion: "v1",
+        targetCatalogVersion: "v2",
+        targetTotal: 3,
+        deltaOperationCount: 2,
+      });
+    },
+    async getDeltaPage(input) {
+      calls.push(`delta:${input.cursor ?? "null"}`);
+      return {
+        ...page({
+          cursor: input.cursor,
+          nextCursor: input.cursor === null ? "C2" : null,
+          items: [item(input.cursor === null ? "NEW1" : "NEW2")],
+          totalCount: 3,
+          catalogVersion: "v2",
+        }),
+        deletedLookups: [],
+      };
+    },
+  }, { createSnapshotId: () => "delta-prefetch", nowIso: () => "2026-07-28T00:00:00.000Z" });
+
+  const operation = service.downloadAndActivate({ storeCode: "S1" });
+  await waitForCondition(() => calls.some((call) => call.startsWith("append:")));
+  // 中文注释：第一页 delta 落库挂起期间，第二页请求必须已发出。
+  assert.equal(calls.some((call) => call === "delta:C2"), true);
+  (releaseAppend as (() => void) | null)?.();
+  await operation;
+  assert.equal(storage.deltaActivated, "delta-prefetch");
+  assert.deepEqual(calls.filter((call) => call.startsWith("delta:")), ["delta:null", "delta:C2"]);
+});

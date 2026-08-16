@@ -464,12 +464,13 @@ function buildCanonicalPage(
   items: readonly CatalogLookupItem[],
   version: CatalogPageChecksumVersion,
 ): string {
-  const number = version === 1
-    ? formatCanonicalNumberV1
-    : formatCanonicalNumberV2;
+  // 中文注释：v1 为 WPF/旧客户端共用格式，逐字节保持原实现；v2 走缓冲复用构建。
+  if (version === 2) {
+    return buildCanonicalPageV2(items);
+  }
   const values = [
     CHECKSUM_SPECS[version].marker,
-    number(items.length),
+    formatCanonicalNumberV1(items.length),
   ];
   for (const item of items) {
     values.push(
@@ -481,18 +482,78 @@ function buildCanonicalPage(
       item.lookupCodeNormalized,
       item.itemNumber ?? "",
       item.barcode ?? "",
-      number(item.retailPrice),
-      number(item.priceSource),
+      formatCanonicalNumberV1(item.retailPrice),
+      formatCanonicalNumberV1(item.priceSource),
       item.priceSourceLabel,
-      number(item.quantityFactor),
+      formatCanonicalNumberV1(item.quantityFactor),
       // 服务端按 UTC 毫秒格式计算摘要；JSON 中等价的 DateTimeOffset 文本必须先对齐。
       optionalTimestamp(item.updatedAt, "item.updatedAt") ?? "",
       item.productImage ?? "",
-      item.discountRate === null ? "" : number(item.discountRate),
+      item.discountRate === null ? "" : formatCanonicalNumberV1(item.discountRate),
       item.isSpecialProduct ? "1" : "0",
     );
   }
   return values.map((value) => `${value.length}:${value}|`).join("");
+}
+
+// 中文注释：v2 canonical 构建优化——复用 8 字节 IEEE754 缓冲与十六进制表，并以
+// 分片数组直接输出长度帧，消除每个字段和商品产生的临时字符串/数组。
+// 输出格式与后端 v2 完全一致：每字段 UTF-16 长度前缀 + ":" + 内容 + "|"。
+const BINARY64_BUFFER = new ArrayBuffer(8);
+const BINARY64_VIEW = new DataView(BINARY64_BUFFER);
+const HEX_CHARS = "0123456789abcdef";
+
+/** 中文注释：IEEE754 binary64 大端十六进制（16 字符小写）；同步调用，缓冲无并发竞争。 */
+function formatCanonicalNumberV2Fast(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new HbposApiError("Catalog checksum cannot encode a non-finite number.", {
+      kind: "envelope",
+      code: "CATALOG_PAGE_VALUE_INVALID",
+    });
+  }
+  BINARY64_VIEW.setFloat64(0, Object.is(value, -0) ? 0 : value, false);
+  const bytes = new Uint8Array(BINARY64_BUFFER);
+  let hex = "";
+  for (const byte of bytes) {
+    // 中文注释：byte 范围为 0-255，十六进制表索引恒在界内；空值兜底仅为满足严格索引检查。
+    hex += HEX_CHARS[byte >> 4] ?? "";
+    hex += HEX_CHARS[byte & 15] ?? "";
+  }
+  return hex;
+}
+
+function buildCanonicalPageV2(items: readonly CatalogLookupItem[]): string {
+  const parts: string[] = [];
+  appendCanonicalField(parts, CHECKSUM_SPECS[2].marker);
+  appendCanonicalField(parts, formatCanonicalNumberV2Fast(items.length));
+  for (const item of items) {
+    appendCanonicalField(parts, item.storeCode);
+    appendCanonicalField(parts, item.productCode);
+    appendCanonicalField(parts, item.referenceCode ?? "");
+    appendCanonicalField(parts, item.displayName);
+    appendCanonicalField(parts, item.lookupCode);
+    appendCanonicalField(parts, item.lookupCodeNormalized);
+    appendCanonicalField(parts, item.itemNumber ?? "");
+    appendCanonicalField(parts, item.barcode ?? "");
+    appendCanonicalField(parts, formatCanonicalNumberV2Fast(item.retailPrice));
+    appendCanonicalField(parts, formatCanonicalNumberV2Fast(item.priceSource));
+    appendCanonicalField(parts, item.priceSourceLabel);
+    appendCanonicalField(parts, formatCanonicalNumberV2Fast(item.quantityFactor));
+    // 中文注释：服务端按 UTC 毫秒格式计算摘要；JSON 中等价的 DateTimeOffset 文本必须先对齐。
+    appendCanonicalField(parts, optionalTimestamp(item.updatedAt, "item.updatedAt") ?? "");
+    appendCanonicalField(parts, item.productImage ?? "");
+    appendCanonicalField(
+      parts,
+      item.discountRate === null ? "" : formatCanonicalNumberV2Fast(item.discountRate),
+    );
+    appendCanonicalField(parts, item.isSpecialProduct ? "1" : "0");
+  }
+  return parts.join("");
+}
+
+/** 中文注释：输出 UTF-16 长度帧：<十进制长度>:<内容>|，与后端跨端协议一致。 */
+function appendCanonicalField(parts: string[], value: string): void {
+  parts.push(String(value.length), ":", value, "|");
 }
 
 function buildCanonicalDeltaPage(input: Readonly<{
@@ -570,23 +631,6 @@ function formatCanonicalNumberV1(value: number): string {
       ? `${digits}${"0".repeat(decimalIndex - digits.length)}`
       : `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
   return negative ? `-${expanded}` : expanded;
-}
-
-function formatCanonicalNumberV2(value: number): string {
-  if (!Number.isFinite(value)) {
-    throw new HbposApiError("Catalog checksum cannot encode a non-finite number.", {
-      kind: "envelope",
-      code: "CATALOG_PAGE_VALUE_INVALID",
-    });
-  }
-  const buffer = new ArrayBuffer(8);
-  const view = new DataView(buffer);
-  // 中文注释：服务端 decimal 没有负零；客户端也统一为正零后再编码。
-  view.setFloat64(0, Object.is(value, -0) ? 0 : value, false);
-  return Array.from(
-    new Uint8Array(buffer),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
 }
 
 function requiredText(value: unknown, field: string): string {

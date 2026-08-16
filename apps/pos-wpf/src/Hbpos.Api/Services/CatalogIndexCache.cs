@@ -82,6 +82,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly IHostApplicationLifetime? _applicationLifetime;
     private long _snapshotSequence;
+    // 中文注释：v2 标准页预热单并发门；检测到 WPF v1 下载时暂停后续预热页。
+    private readonly SemaphoreSlim _v2WarmUpGate = new(1, 1);
+    private const long V2WarmUpV1BackoffMs = 30_000;
+    // 中文注释：预热时间预算；无宿主取消信号（测试场景）时兜底，避免大目录长期占用线程池。
+    private const long V2WarmUpBudgetMs = 60_000;
 
     public CatalogIndexCache()
         : this(
@@ -207,6 +212,43 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             scopeFactory,
             applicationLifetime)
     {
+    }
+
+    /// <summary>
+    /// 生产 DI 构造：快照保留时长与每店版本上限由 CatalogSnapshot 配置驱动
+    /// （RetentionHours 默认 72h、MaxSnapshotsPerStore 默认 8），非法值回退默认常量。
+    /// </summary>
+    public CatalogIndexCache(
+        ICatalogSnapshotStore snapshotStore,
+        ICatalogBackgroundRefreshScheduler backgroundRefreshScheduler,
+        IServiceScopeFactory scopeFactory,
+        IHostApplicationLifetime applicationLifetime,
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options)
+        : this(
+            TimeProvider.System,
+            DefaultTtl,
+            ResolveSnapshotTtl(options),
+            ResolveMaxSnapshots(options),
+            snapshotStore,
+            backgroundRefreshScheduler,
+            scopeFactory,
+            applicationLifetime)
+    {
+    }
+
+    private static TimeSpan ResolveSnapshotTtl(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options)
+    {
+        var hours = options.Value.RetentionHours;
+        return hours > 0 ? TimeSpan.FromHours(hours) : DefaultSnapshotTtl;
+    }
+
+    private static int ResolveMaxSnapshots(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options)
+    {
+        return options.Value.MaxSnapshotsPerStore > 0
+            ? options.Value.MaxSnapshotsPerStore
+            : DefaultMaxSnapshotsPerStore;
     }
 
     private CatalogIndexCache(
@@ -758,6 +800,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 // 同代次的 owner 替换不等同于门店失效，durable version 仍可正常发布给 waiter。
                 entry.PublicationCompletion.TrySetResult(
                     new CatalogPublicationOutcome(PublicationStatus.Published));
+                // 中文注释：发布成功后后台预热 v2 标准页；不等待、不阻塞发布流程。
+                QueueV2PageWarmUp(cacheResult);
             }
         }
         catch (CatalogSnapshotPersistenceException exception)
@@ -1092,10 +1136,104 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         }
     }
 
+    /// <summary>
+    /// 发布后尽力预热 v2 标准页缓存：单并发、随应用停止取消；最近 30 秒内有 v1 请求
+    /// 则暂停本轮，避免与 WPF v1 下载争用。预热失败不影响发布结果与后续请求。
+    /// </summary>
+    private void QueueV2PageWarmUp(CatalogIndexBuildResult result)
+    {
+        if (!_v2WarmUpGate.Wait(0))
+        {
+            return;  // 已有预热在跑，本轮跳过
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var index = result.CatalogIndex;
+                var pageCount = Math.Max(1, (index.Items.Count + 4999) / 5000);
+                var deadline = Environment.TickCount64 + V2WarmUpBudgetMs;
+                for (var pageNumber = 0; pageNumber < pageCount; pageNumber++)
+                {
+                    _applicationLifetime?.ApplicationStopping.ThrowIfCancellationRequested();
+                    if (Environment.TickCount64 >= deadline)
+                    {
+                        break;  // 时间预算耗尽，避免无宿主取消信号时长期占用线程池
+                    }
+
+                    // 中文注释：v1 打点初始为 0（尚未有任何 v1 请求）时放行；
+                    // 否则冷启动 30 秒内的首次发布会被整轮跳过预热。
+                    var lastV1RequestTicks = CatalogSellableIndex.LastV1PageRequestTicks;
+                    if (lastV1RequestTicks != 0 &&
+                        Environment.TickCount64 - lastV1RequestTicks < V2WarmUpV1BackoffMs)
+                    {
+                        break;  // 检测到 WPF v1 下载，暂停本轮预热
+                    }
+
+                    index.WarmUpStandardV2Page(pageNumber);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // 应用停止时静默退出
+            }
+            catch (Exception)
+            {
+                // 预热是尽力而为，失败不得影响发布或后续请求
+            }
+            finally
+            {
+                _v2WarmUpGate.Release();
+            }
+        });
+    }
+
     private void PruneExpiredSnapshots(DateTimeOffset now)
     {
-        // ExpiresAt 仅表示建议刷新时间。最后一次成功版本必须持续可用，
-        // 直到容量/每店版本上限淘汰或新的已校验版本完成原子发布。
+        // 中文注释：超过保留期（RetentionHours，默认 72h）且非该店最新版本、未被下载租约
+        // 引用的驻留快照先淘汰；最新 LKG 永不因时间淘汰，磁盘描述符仍保留供懒加载。
+        lock (_snapshotGate)
+        {
+            if (_snapshots.Count == 0)
+            {
+                return;
+            }
+
+            var latestSequenceByStore = _snapshots
+                .Where(pair => pair.Key.Since is null)
+                .GroupBy(pair => pair.Key.StoreCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.MaxBy(pair => pair.Value.Sequence)!.Key,
+                    StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (key, snapshot) in _snapshots.ToArray())
+            {
+                if (key.Since is not null)
+                {
+                    continue;
+                }
+
+                if (snapshot.ExpiresAt > now)
+                {
+                    continue;
+                }
+
+                if (latestSequenceByStore.TryGetValue(key.StoreCode, out var latest) &&
+                    latest.Equals(key))
+                {
+                    continue;
+                }
+
+                if (_downloadLeases.IsVersionLeased(key.StoreCode, key.CatalogVersion))
+                {
+                    continue;
+                }
+
+                _snapshots.Remove(key);
+            }
+        }
     }
 
     private CatalogIndexBuildResult RegisterRawArtifact(CatalogIndexBuildResult result)

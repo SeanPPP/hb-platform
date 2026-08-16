@@ -423,6 +423,36 @@ export class CatalogSnapshotService {
       let page: VerifiedCatalogSyncPage | null = first;
       let stagedItems = firstItems;
       let requestedCursor: string | null = null;
+      // 中文注释：预取管道——落库当前页期间提前请求下一页，让网络 RTT 与 SQLite 写入重叠；
+      // 请求参数、cursor 顺序与全部校验语义与串行版完全一致，仅把"拉页"提前到"落库"之前。
+      let pendingCursor: string | null = null;
+      let inflightPage: Promise<VerifiedCatalogSyncPage> | null = null;
+      const prefetchNext = (currentPage: VerifiedCatalogSyncPage): void => {
+        const nextCursor = currentPage.nextCursor;
+        if (nextCursor === null || inflightPage !== null) return;
+        if (seenCursors.has(nextCursor)) {
+          throw catalogVerificationError(
+            "Catalog pagination cursor repeated.",
+            "CATALOG_CURSOR_REPEATED",
+          );
+        }
+        seenCursors.add(nextCursor);
+        pendingCursor = nextCursor;
+        // 中文注释：当前正在处理第 completedPageCount+1 页，预取的是其下一页（+2）。
+        pageNumber = completedPageCount + 2;
+        inflightPage = this.remote.getPage({
+          storeCode: input.storeCode,
+          cursor: nextCursor,
+          pageSize: this.pageSize,
+          catalogVersion: first.catalogVersion,
+          ...(plan?.downloadLeaseId
+            ? { downloadLeaseId: plan.downloadLeaseId }
+            : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        // 中文注释：abort 时预取可能永不消费；挂安全网避免 unhandled rejection。
+        void inflightPage.catch(() => undefined);
+      };
       while (page) {
         throwIfAborted(input.signal);
         assertPageContract(page, {
@@ -441,6 +471,8 @@ export class CatalogSnapshotService {
             "CATALOG_SNAPSHOT_TOTAL_CHANGED",
           );
         }
+        // 中文注释：先发起下一页预取再落库当前页，网络请求与本地写入并行执行。
+        prefetchNext(page);
         assertUniqueLookupKeys(stagedItems, seenLookupKeys);
         const finalPage = page.nextCursor === null;
         if (!finalPage && first.totalCount === 0) {
@@ -503,33 +535,18 @@ export class CatalogSnapshotService {
         if (finalPage) {
           page = null;
         } else {
-          const nextCursor = page.nextCursor;
-          if (nextCursor === null) {
+          // 中文注释：预取已在落库前发起；此处按序消费并恢复请求 cursor 上下文。
+          if (inflightPage === null) {
             throw catalogVerificationError(
-              "Catalog pagination cursor is missing.",
+              "Catalog pagination prefetch is missing.",
               "CATALOG_PAGINATION_INVALID",
             );
           }
-          if (seenCursors.has(nextCursor)) {
-            throw catalogVerificationError(
-              "Catalog pagination cursor repeated.",
-              "CATALOG_CURSOR_REPEATED",
-            );
-          }
-          seenCursors.add(nextCursor);
-          requestedCursor = nextCursor;
-          pageNumber = completedPageCount + 1;
-          page = await this.remote.getPage({
-            storeCode: input.storeCode,
-            cursor: requestedCursor,
-            pageSize: this.pageSize,
-            catalogVersion: first.catalogVersion,
-            ...(plan?.downloadLeaseId
-              ? { downloadLeaseId: plan.downloadLeaseId }
-              : {}),
-            ...(input.signal ? { signal: input.signal } : {}),
-          });
+          const nextPage = await inflightPage;
+          inflightPage = null;
           throwIfAborted(input.signal);
+          requestedCursor = pendingCursor;
+          page = nextPage;
           stagedItems = page.items.map(mapCatalogLookupToStagedItem);
         }
       }
@@ -663,19 +680,32 @@ export class CatalogSnapshotService {
       const seenDeletes = new Set<string>();
       let cursor: string | null = null;
       let completedPageCount = 0;
-      while (true) {
-        throwIfAborted(input.signal);
-        const page: CatalogDeltaPage = await getDeltaPage.call(this.remote, {
+      // 中文注释：delta 预取管道——校验通过后立即请求下一页，与落库并行；仍按序消费。
+      let pendingCursor: string | null = null;
+      let inflightPage: Promise<CatalogDeltaPage> | null = null;
+      const requestDeltaPage = (requestCursor: string | null): Promise<CatalogDeltaPage> =>
+        getDeltaPage.call(this.remote, {
           storeCode: input.storeCode,
           baseCatalogVersion: active.catalogVersion,
           targetCatalogVersion: plan.targetCatalogVersion,
-          cursor,
+          cursor: requestCursor,
           pageSize: this.pageSize,
           ...(plan.downloadLeaseId
             ? { downloadLeaseId: plan.downloadLeaseId }
             : {}),
           ...(input.signal ? { signal: input.signal } : {}),
         });
+      while (true) {
+        throwIfAborted(input.signal);
+        // 中文注释：首页必须同步取回（总操作数决定是否回退 full）；后续页消费预取结果。
+        let page: CatalogDeltaPage;
+        if (inflightPage !== null) {
+          page = await inflightPage;
+          inflightPage = null;
+          cursor = pendingCursor;
+        } else {
+          page = await requestDeltaPage(cursor);
+        }
         throwIfAborted(input.signal);
         assertPageContract(page, { requestedStoreCode: input.storeCode, requestedCursor: cursor });
         if (page.catalogVersion !== plan.targetCatalogVersion || page.totalCount !== plan.targetTotal) {
@@ -698,6 +728,22 @@ export class CatalogSnapshotService {
           await this.discardStaging(snapshotId);
           stagingStarted = false;
           return this.runFullWithFreshPlan(input);
+        }
+        // 中文注释：确认继续 delta 后才预取下一页，让网络请求与落库并行；cursor 重复检测提前到发起时。
+        const nextCursor = page.nextCursor;
+        if (nextCursor !== null && inflightPage === null) {
+          if (seenCursors.has(nextCursor)) {
+            throw catalogVerificationError(
+              "Catalog delta pagination cursor repeated.",
+              "CATALOG_CURSOR_REPEATED",
+            );
+          }
+          seenCursors.add(nextCursor);
+          pendingCursor = nextCursor;
+          pageNumber += 1;
+          inflightPage = requestDeltaPage(nextCursor);
+          // 中文注释：abort 时预取可能永不消费；挂安全网避免 unhandled rejection。
+          void inflightPage.catch(() => undefined);
         }
         const operations = [
           ...stagedItems.map((item) => ({
@@ -750,13 +796,6 @@ export class CatalogSnapshotService {
           totalPageCount: 0,
         });
         if (finalPage) break;
-        const nextCursor: string | null = page.nextCursor;
-        if (nextCursor === null || seenCursors.has(nextCursor)) {
-          throw catalogVerificationError("Catalog delta pagination cursor repeated.", "CATALOG_CURSOR_REPEATED");
-        }
-        seenCursors.add(nextCursor);
-        cursor = nextCursor;
-        pageNumber += 1;
       }
 
       progress({ step: "promotions", percent: 0 });

@@ -2,7 +2,18 @@ import type {
   ActiveCatalogSnapshotMetadata,
 } from "../../features/catalog/catalog-snapshot-service";
 
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort, SqlValue } from "./types";
+
+// 中文注释：Android 11（API 30，PDA 目标）系统 SQLite 3.28 的宿主参数上限为 999
+//（3.32+ 才是 32766）。catalog_items 多行 VALUES 每行 19 个绑定参数，批大小取 50
+//（950 参数），兼容 PDA 下限；iOS 同样安全。批内仍保持单事务原子性。
+const MAX_BULK_INSERT_ROWS = 50;
+
+/** 中文注释：catalog_items 行模板：前 18 列占位符 + is_active 常量 1 + 末列占位符，共 19 个绑定参数。 */
+const CATALOG_ITEM_ROW_PLACEHOLDER = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)";
+
+/** 中文注释：special_products 行模板：4 个绑定参数 + sort_order/is_marked 常量。 */
+const SPECIAL_PRODUCT_ROW_PLACEHOLDER = "(?, ?, ?, 0, 1, ?)";
 
 /** 目录持久化模型只保存收银必需字段；顾客资料和支付资料不属于目录。 */
 export type CatalogStoredItem = Readonly<{
@@ -264,9 +275,27 @@ export class SqliteCatalogSnapshotRepository {
   }
 
   public async appendPage(snapshotId: string, items: readonly CatalogStoredItem[]): Promise<void> {
+    const scopedSnapshotId = requiredCatalogSnapshotId(snapshotId);
     await this.db.withExclusiveTransaction(async (tx) => {
-      for (const item of items) {
-        assertStoredItem(item);
+      // 中文注释：多行 VALUES 批量写入，把逐条跨桥 run 合并为每批一次批量 run；
+      // 单事务保证任一批失败整页回滚，不会出现半页 staging。
+      for (const chunk of chunkItems(items, MAX_BULK_INSERT_ROWS)) {
+        const itemParams: SqlValue[] = [];
+        const specialParams: SqlValue[] = [];
+        let specialCount = 0;
+        for (const item of chunk) {
+          assertStoredItem(item);
+          itemParams.push(...storedItemParameters(scopedSnapshotId, item));
+          if (item.isSpecialProduct) {
+            specialParams.push(
+              scopedSnapshotId,
+              item.storeCode,
+              item.lookupCodeNormalized,
+              item.updatedAtIso,
+            );
+            specialCount += 1;
+          }
+        }
         await tx.run(
           `INSERT INTO catalog_items (
              snapshot_id, store_code, lookup_code_normalized, product_code, reference_code,
@@ -274,35 +303,15 @@ export class SqliteCatalogSnapshotRepository {
              price_source, price_source_label, quantity_factor, tax_rate_basis_points,
              row_version, product_image, discount_rate, is_special_product,
              is_active, updated_at_iso
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-          [
-            snapshotId,
-            item.storeCode,
-            item.lookupCodeNormalized,
-            item.productCode,
-            item.referenceCode,
-            item.itemNumber,
-            item.barcode,
-            item.lookupCode,
-            item.displayName,
-            item.retailPriceCents,
-            item.priceSource,
-            item.priceSourceLabel,
-            formatStoredDecimal(item.quantityFactor),
-            item.taxRateBasisPoints,
-            item.rowVersion,
-            item.productImage,
-            item.discountRate === null ? null : formatStoredDecimal(item.discountRate),
-            item.isSpecialProduct ? 1 : 0,
-            item.updatedAtIso,
-          ],
+           ) VALUES ${multiRowValues(chunk.length, CATALOG_ITEM_ROW_PLACEHOLDER)}`,
+          itemParams,
         );
-        if (item.isSpecialProduct) {
+        if (specialCount > 0) {
           await tx.run(
             `INSERT INTO special_products (
                snapshot_id, store_code, lookup_code_normalized, sort_order, is_marked, updated_at_iso
-             ) VALUES (?, ?, ?, 0, 1, ?)`,
-            [snapshotId, item.storeCode, item.lookupCodeNormalized, item.updatedAtIso],
+             ) VALUES ${multiRowValues(specialCount, SPECIAL_PRODUCT_ROW_PLACEHOLDER)}`,
+            specialParams,
           );
         }
       }
@@ -426,17 +435,46 @@ export class SqliteCatalogSnapshotRepository {
         );
       }
 
-      for (const item of batch.items) {
-        assertStoredItem(item);
-        await tx.run(
-          `DELETE FROM catalog_delta_deletions
-           WHERE snapshot_id = ?
-             AND store_code = ?
-             AND lookup_code_normalized = ?`,
-          [scopedSnapshotId, item.storeCode, item.lookupCodeNormalized],
-        );
-        await upsertCatalogItem(tx, scopedSnapshotId, item);
-        await replaceStagedSpecialProduct(tx, scopedSnapshotId, item);
+      // 中文注释：delta upsert 与特殊商品改为多行批量写入（950 参数上限内）；
+      // DELETE 语义逐条保留，且先清特殊商品行再插入，保证"曾特殊、现普通"也正确收敛。
+      for (const chunk of chunkItems(batch.items, MAX_BULK_INSERT_ROWS)) {
+        const specialParams: SqlValue[] = [];
+        let specialCount = 0;
+        for (const item of chunk) {
+          assertStoredItem(item);
+          await tx.run(
+            `DELETE FROM catalog_delta_deletions
+             WHERE snapshot_id = ?
+               AND store_code = ?
+               AND lookup_code_normalized = ?`,
+            [scopedSnapshotId, item.storeCode, item.lookupCodeNormalized],
+          );
+          await tx.run(
+            `DELETE FROM special_products
+             WHERE snapshot_id = ?
+               AND store_code = ?
+               AND lookup_code_normalized = ?`,
+            [scopedSnapshotId, item.storeCode, item.lookupCodeNormalized],
+          );
+          if (item.isSpecialProduct) {
+            specialParams.push(
+              scopedSnapshotId,
+              item.storeCode,
+              item.lookupCodeNormalized,
+              item.updatedAtIso,
+            );
+            specialCount += 1;
+          }
+        }
+        await upsertCatalogItems(tx, scopedSnapshotId, chunk);
+        if (specialCount > 0) {
+          await tx.run(
+            `INSERT INTO special_products (
+               snapshot_id, store_code, lookup_code_normalized, sort_order, is_marked, updated_at_iso
+             ) VALUES ${multiRowValues(specialCount, SPECIAL_PRODUCT_ROW_PLACEHOLDER)}`,
+            specialParams,
+          );
+        }
       }
     });
   }
@@ -903,11 +941,16 @@ async function deleteSnapshot(tx: SqliteConnectionPort, snapshotId: string, only
   await tx.run(`DELETE FROM catalog_snapshots WHERE snapshot_id = ?${guard}`, [snapshotId]);
 }
 
-async function upsertCatalogItem(
+/** 中文注释：批量 upsert 到 delta staging；多行 VALUES 配单条 ON CONFLICT 子句，SQLite 对整批生效。 */
+async function upsertCatalogItems(
   tx: SqliteConnectionPort,
   snapshotId: string,
-  item: CatalogStoredItem,
+  items: readonly CatalogStoredItem[],
 ): Promise<void> {
+  const params: SqlValue[] = [];
+  for (const item of items) {
+    params.push(...storedItemParameters(snapshotId, item));
+  }
   await tx.run(
     `INSERT INTO catalog_items (
        snapshot_id, store_code, lookup_code_normalized, product_code,
@@ -915,7 +958,7 @@ async function upsertCatalogItem(
        retail_price_cents, price_source, price_source_label, quantity_factor,
        tax_rate_basis_points, row_version, product_image, discount_rate,
        is_special_product, is_active, updated_at_iso
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+     ) VALUES ${multiRowValues(items.length, CATALOG_ITEM_ROW_PLACEHOLDER)}
      ON CONFLICT (
        snapshot_id, store_code, lookup_code_normalized
      ) DO UPDATE SET
@@ -936,35 +979,22 @@ async function upsertCatalogItem(
        is_special_product = excluded.is_special_product,
        is_active = 1,
        updated_at_iso = excluded.updated_at_iso`,
-    storedItemParameters(snapshotId, item),
+    params,
   );
 }
 
-async function replaceStagedSpecialProduct(
-  tx: SqliteConnectionPort,
-  snapshotId: string,
-  item: CatalogStoredItem,
-): Promise<void> {
-  await tx.run(
-    `DELETE FROM special_products
-     WHERE snapshot_id = ?
-       AND store_code = ?
-       AND lookup_code_normalized = ?`,
-    [snapshotId, item.storeCode, item.lookupCodeNormalized],
-  );
-  if (!item.isSpecialProduct) return;
-  await tx.run(
-    `INSERT INTO special_products (
-       snapshot_id, store_code, lookup_code_normalized,
-       sort_order, is_marked, updated_at_iso
-     ) VALUES (?, ?, ?, 0, 1, ?)`,
-    [
-      snapshotId,
-      item.storeCode,
-      item.lookupCodeNormalized,
-      item.updatedAtIso,
-    ],
-  );
+/** 中文注释：把行模板重复 rowCount 次并以逗号连接，生成多行 VALUES 片段。 */
+function multiRowValues(rowCount: number, rowPlaceholder: string): string {
+  return Array.from({ length: rowCount }, () => rowPlaceholder).join(", ");
+}
+
+/** 中文注释：按批大小切分数组，保持原顺序。 */
+function chunkItems<T>(items: readonly T[], batchSize: number): readonly (readonly T[])[] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < items.length; start += batchSize) {
+    chunks.push(items.slice(start, start + batchSize));
+  }
+  return chunks;
 }
 
 function storedItemParameters(snapshotId: string, item: CatalogStoredItem) {

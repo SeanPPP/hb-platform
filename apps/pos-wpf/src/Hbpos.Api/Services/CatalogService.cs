@@ -1735,6 +1735,8 @@ public sealed class CatalogService(
 public sealed class CatalogSellableIndex
 {
     private const int MaxPageSize = 5000;
+    // 中文注释：v2 标准页定长；客户端默认 pageSize 恰为该值，可命中标准页缓存。
+    private const int StandardPageSize = 5000;
     private const string CatalogVersionPrefix = "catalog-v1:";
     private const string PageChecksumV1AlgorithmMarker = "HBPOS-CATALOG-PAGE-CHECKSUM-V1";
     private const string PageChecksumV1Prefix = "sha256-catalog-page-v1:";
@@ -1743,6 +1745,18 @@ public sealed class CatalogSellableIndex
     private const string DeltaPageChecksumV1AlgorithmMarker = "HBPOS-CATALOG-DELTA-PAGE-CHECKSUM-V1";
     private const string DeltaPageChecksumV1Prefix = "sha256-catalog-delta-page-v1:";
     private readonly IReadOnlyDictionary<string, CatalogLookupItemDto> _itemsByNormalizedLookup;
+    // 中文注释：v2 标准页（定长 5000 条）缓存，键为页序号；Lazy 保证并发只计算一次。
+    // 条目只缓存 checksum/nextCursor/hasMore（商品数组仍从不可变索引切窗），内存开销极小。
+    private readonly ConcurrentDictionary<int, Lazy<StandardV2PageEntry>> _standardV2PageCache = new();
+    // 中文注释：进程级最近一次 v1 分页请求时间戳（TickCount64），供 v2 预热避让 WPF 下载。
+    private static long _lastV1PageRequestTicks;
+
+    internal static long LastV1PageRequestTicks => Interlocked.Read(ref _lastV1PageRequestTicks);
+
+    private sealed record StandardV2PageEntry(
+        string PageChecksum,
+        string? NextCursor,
+        bool HasMore);
 
     public CatalogSellableIndex(
         string storeCode,
@@ -1791,7 +1805,20 @@ public sealed class CatalogSellableIndex
             throw new ArgumentOutOfRangeException(nameof(checksumVersion));
         }
 
+        if (checksumVersion == 1)
+        {
+            // 中文注释：v1 打点供 v2 预热避让；不改变 v1 任何响应行为。
+            Interlocked.Exchange(ref _lastV1PageRequestTicks, Environment.TickCount64);
+        }
+
         var normalizedCursor = NormalizeLookupCode(cursor);
+        if (checksumVersion == 2 &&
+            pageSize == StandardPageSize &&
+            TryGetStandardV2Page(normalizedCursor, out var standardPage))
+        {
+            return standardPage;
+        }
+
         var take = Math.Clamp(pageSize, 1, MaxPageSize);
         var start = FindFirstAfter(normalizedCursor);
         // 游标已通过二分定位；直接按索引拷贝窗口，不能用 Skip 从数组头线性重扫。
@@ -2182,6 +2209,131 @@ public sealed class CatalogSellableIndex
         return low;
     }
 
+    private int StandardPageCount => Math.Max(1, (Items.Count + StandardPageSize - 1) / StandardPageSize);
+
+    /// <summary>
+    /// 标准 v2 页命中判定：请求游标必须恰好是标准页边界（首页为空、后续页等于上一页末项商品码），
+    /// 且 pageSize 必须为定长 5000。非标准 pageSize 或任意游标一律回退原二分分页路径，
+    /// 保证 v2 响应内容与语义不变，仅共享可复用的 checksum 计算。
+    /// </summary>
+    private bool TryGetStandardV2Page(string normalizedCursor, out CatalogSyncPageResponse page)
+    {
+        var pageNumber = 0;
+        if (!string.IsNullOrEmpty(normalizedCursor))
+        {
+            var startIndex = FindFirstAfter(normalizedCursor);
+            // 中文注释：标准页边界 = 上一页末项商品码；FindFirstAfter 落在 5000 的整数倍上
+            // 且该位置前一商品码与游标一致，才视为标准页续页。
+            if (startIndex % StandardPageSize != 0 ||
+                startIndex == 0 ||
+                startIndex >= Items.Count ||
+                !string.Equals(
+                    Items[startIndex - 1].LookupCodeNormalized,
+                    normalizedCursor,
+                    StringComparison.Ordinal))
+            {
+                page = null!;
+                return false;
+            }
+
+            pageNumber = startIndex / StandardPageSize;
+        }
+
+        if (pageNumber >= StandardPageCount)
+        {
+            page = null!;
+            return false;
+        }
+
+        var start = pageNumber * StandardPageSize;
+        var pageLength = Math.Min(StandardPageSize, Math.Max(Items.Count - start, 0));
+        var pageItems = new CatalogLookupItemDto[pageLength];
+        for (var index = 0; index < pageLength; index++)
+        {
+            pageItems[index] = Items[start + index];
+        }
+
+        // 中文注释：single-flight——并发请求同一页时只有一次计算，其余等待同一 Lazy；
+        // 计算失败时移除毒化条目，避免后续请求持续命中同一异常。
+        var entry = GetOrComputeStandardV2Page(pageNumber, pageItems);
+
+        page = new CatalogSyncPageResponse(
+            StoreCode,
+            GeneratedAt,
+            pageNumber == 0 ? null : Items[start - 1].LookupCodeNormalized,
+            pageItems,
+            [],
+            entry.NextCursor,
+            entry.HasMore,
+            Items.Count,
+            CatalogVersion,
+            entry.PageChecksum);
+        return true;
+    }
+
+    private StandardV2PageEntry ComputeStandardV2Page(
+        int pageNumber,
+        IReadOnlyList<CatalogLookupItemDto> pageItems)
+    {
+        var start = pageNumber * StandardPageSize;
+        var hasMore = Items.Count - start > StandardPageSize;
+        var nextCursor = hasMore && pageItems.Count > 0
+            ? pageItems[^1].LookupCodeNormalized
+            : null;
+        return new StandardV2PageEntry(
+            CreatePageChecksumV2Streaming(pageItems),
+            nextCursor,
+            hasMore);
+    }
+
+    /// <summary>
+    /// 发布后预热入口：强制求值标准页缓存条目，真正完成 checksum 计算；
+    /// 不触碰活跃下载，v1 活跃时由调用方暂停。
+    /// </summary>
+    internal void WarmUpStandardV2Page(int pageNumber)
+    {
+        if (pageNumber < 0 || pageNumber >= StandardPageCount)
+        {
+            return;
+        }
+
+        var start = pageNumber * StandardPageSize;
+        var pageLength = Math.Min(StandardPageSize, Math.Max(Items.Count - start, 0));
+        var pageItems = new CatalogLookupItemDto[pageLength];
+        for (var index = 0; index < pageLength; index++)
+        {
+            pageItems[index] = Items[start + index];
+        }
+
+        // 中文注释：访问 .Value 强制同步完成流式 checksum，否则预热只是预登记 Lazy 而计算仍推迟。
+        _ = GetOrComputeStandardV2Page(pageNumber, pageItems);
+    }
+
+    /// <summary>
+    /// 取标准页缓存条目并强制求值；计算失败时移除毒化条目后重抛，
+    /// 保证下一次请求可重新计算而非持续命中同一异常。
+    /// </summary>
+    private StandardV2PageEntry GetOrComputeStandardV2Page(
+        int pageNumber,
+        IReadOnlyList<CatalogLookupItemDto> pageItems)
+    {
+        var lazy = _standardV2PageCache.GetOrAdd(
+            pageNumber,
+            _ => new Lazy<StandardV2PageEntry>(
+                () => ComputeStandardV2Page(pageNumber, pageItems),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            return lazy.Value;
+        }
+        catch
+        {
+            _standardV2PageCache.TryRemove(
+                new KeyValuePair<int, Lazy<StandardV2PageEntry>>(pageNumber, lazy));
+            throw;
+        }
+    }
+
     private static CatalogLookupItemDto ToLookupItem(SellableItemDto item)
     {
         var storeCode = NormalizeStoreCode(item.StoreCode);
@@ -2261,22 +2413,25 @@ public sealed class CatalogSellableIndex
     /// <summary>
     /// 校验覆盖分页响应中每个 lookup 行的稳定业务字段；字段顺序和长度前缀是跨平台协议的一部分。
     /// RowVersion 是这些字段的派生值，因此不重复纳入。
+    /// v1 保持既有 StringBuilder 实现（WPF/旧客户端共用，必须字节级不变）；
+    /// v2 走流式 IncrementalHash，避免为整页商品构建巨型 canonical 字符串。
     /// </summary>
     private static string CreatePageChecksum(
         IReadOnlyList<CatalogLookupItemDto> items,
         int checksumVersion)
     {
+        if (checksumVersion == 2)
+        {
+            return CreatePageChecksumV2Streaming(items);
+        }
+
         var builder = new StringBuilder();
         AppendCanonical(
             builder,
-            checksumVersion == 1
-                ? PageChecksumV1AlgorithmMarker
-                : PageChecksumV2AlgorithmMarker);
+            PageChecksumV1AlgorithmMarker);
         AppendCanonical(
             builder,
-            checksumVersion == 1
-                ? items.Count.ToString(CultureInfo.InvariantCulture)
-                : FormatBinary64(items.Count));
+            items.Count.ToString(CultureInfo.InvariantCulture));
 
         foreach (var item in items)
         {
@@ -2290,34 +2445,63 @@ public sealed class CatalogSellableIndex
             AppendCanonical(builder, item.Barcode ?? string.Empty);
             AppendCanonical(
                 builder,
-                checksumVersion == 1
-                    ? FormatCatalogNumber(item.RetailPrice)
-                    : FormatBinary64(item.RetailPrice));
+                FormatCatalogNumber(item.RetailPrice));
             AppendCanonical(
                 builder,
-                checksumVersion == 1
-                    ? ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture)
-                    : FormatBinary64((int)item.PriceSource));
+                ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture));
             AppendCanonical(builder, item.PriceSourceLabel);
             AppendCanonical(
                 builder,
-                checksumVersion == 1
-                    ? FormatCatalogNumber(item.QuantityFactor)
-                    : FormatBinary64(item.QuantityFactor));
+                FormatCatalogNumber(item.QuantityFactor));
             AppendCanonical(builder, FormatCatalogTimestamp(item.UpdatedAt));
             AppendCanonical(builder, item.ProductImage ?? string.Empty);
             AppendCanonical(
                 builder,
-                checksumVersion == 1
-                    ? FormatNullableCatalogNumber(item.DiscountRate)
-                    : FormatNullableBinary64(item.DiscountRate));
+                FormatNullableCatalogNumber(item.DiscountRate));
             AppendCanonical(builder, item.IsSpecialProduct ? "1" : "0");
         }
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return string.Concat(
-            checksumVersion == 1 ? PageChecksumV1Prefix : PageChecksumV2Prefix,
+            PageChecksumV1Prefix,
             Convert.ToHexString(hashBytes).ToLowerInvariant());
+    }
+
+    /// <summary>
+    /// v2 页摘要流式构建：逐字段把 UTF-16 长度帧与 UTF-8 内容直接送入 IncrementalHash，
+    /// 输出与既有 v2 格式逐字节一致（{十进制UTF-16长度}:{内容}| 首尾相接），
+    /// 但不再分配整页 canonical 字符串，显著降低 34 万商品分页下载的 GC/CPU 压力。
+    /// </summary>
+    private static string CreatePageChecksumV2Streaming(
+        IReadOnlyList<CatalogLookupItemDto> items)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        AppendCanonical(hash, PageChecksumV2AlgorithmMarker);
+        AppendCanonical(hash, FormatBinary64(items.Count));
+
+        foreach (var item in items)
+        {
+            AppendCanonical(hash, item.StoreCode);
+            AppendCanonical(hash, item.ProductCode);
+            AppendCanonical(hash, item.ReferenceCode ?? string.Empty);
+            AppendCanonical(hash, item.DisplayName);
+            AppendCanonical(hash, item.LookupCode);
+            AppendCanonical(hash, item.LookupCodeNormalized);
+            AppendCanonical(hash, item.ItemNumber ?? string.Empty);
+            AppendCanonical(hash, item.Barcode ?? string.Empty);
+            AppendCanonical(hash, FormatBinary64(item.RetailPrice));
+            AppendCanonical(hash, FormatBinary64((int)item.PriceSource));
+            AppendCanonical(hash, item.PriceSourceLabel);
+            AppendCanonical(hash, FormatBinary64(item.QuantityFactor));
+            AppendCanonical(hash, FormatCatalogTimestamp(item.UpdatedAt));
+            AppendCanonical(hash, item.ProductImage ?? string.Empty);
+            AppendCanonical(hash, FormatNullableBinary64(item.DiscountRate));
+            AppendCanonical(hash, item.IsSpecialProduct ? "1" : "0");
+        }
+
+        return string.Concat(
+            PageChecksumV2Prefix,
+            Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
     }
 
     /// <summary>
@@ -2430,6 +2614,19 @@ public sealed class CatalogSellableIndex
             .Append('|');
     }
 
+    /// <summary>
+    /// 流式长度帧：写入 {十进制UTF-16长度}:{UTF-8内容}|，与 StringBuilder 版输出逐字节一致。
+    /// 长度前缀为 ASCII 数字，其 UTF-8 编码即原样字节。
+    /// </summary>
+    private static void AppendCanonical(IncrementalHash hash, string value)
+    {
+        var length = value.Length.ToString(CultureInfo.InvariantCulture);
+        hash.AppendData(Encoding.UTF8.GetBytes(length));
+        hash.AppendData(":"u8);
+        hash.AppendData(Encoding.UTF8.GetBytes(value));
+        hash.AppendData("|"u8);
+    }
+
     private static string FormatNullableDecimal(decimal? value)
     {
         return value?.ToString("0.#############################", CultureInfo.InvariantCulture) ?? string.Empty;
@@ -2513,6 +2710,13 @@ public sealed class CatalogSellableIndex
 
     private static string FormatBinary64(double value)
     {
+        // 中文注释：与 v1 路径一致，负零归一为正零后再编码；decimal/int 输入不会产生 -0，
+        // 此处只为消除跨端摘要的隐性不变量差异。
+        if (value == 0d)
+        {
+            value = 0d;
+        }
+
         Span<byte> bytes = stackalloc byte[sizeof(long)];
         BinaryPrimitives.WriteInt64BigEndian(
             bytes,
