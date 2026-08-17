@@ -17,6 +17,7 @@ import {
   Modal,
   PanResponder,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -2211,9 +2212,15 @@ export function SalesScreen({
           />
           <HandheldStateSurface
             slug="open-item-keypad"
-            style={styles.numericModal}
+            style={[styles.numericModal, styles.openItemModalSurface]}
           >
-            <View accessibilityViewIsModal testID="sales-open-item-modal">
+            <ScrollView
+              accessibilityViewIsModal
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+              style={styles.openItemModalScroll}
+              testID="sales-open-item-modal"
+            >
               <Text style={styles.modalTitle}>{t("openItem.title")}</Text>
               <Text style={styles.discountHint}>{t("openItem.hint")}</Text>
               <View style={styles.numericEditorBody}>
@@ -2244,12 +2251,13 @@ export function SalesScreen({
                   />
                 </View>
               </View>
-              <View style={styles.modalActions}>
+              {/* TC26 纵向空间有限：操作并排，额外文案过高时仍可滚动到按钮。 */}
+              <View style={[styles.modalActions, styles.openItemModalActions]}>
                 <ActionButton
                   label={t("discount.cancel")}
                   onPress={closeOpenItemInput}
                   sound="navigate"
-                  style={styles.modalAction}
+                  style={[styles.modalAction, styles.openItemModalAction]}
                   tone="secondary"
                 />
                 {state.errorCode === "terminal-recovery-required" ? (
@@ -2261,7 +2269,7 @@ export function SalesScreen({
                         onOpenHeldOrders();
                       }}
                       sound="navigate"
-                      style={styles.modalAction}
+                      style={[styles.modalAction, styles.openItemModalAction]}
                       testID="sales-open-item-recovery-action"
                     />
                   ) : null
@@ -2275,12 +2283,12 @@ export function SalesScreen({
                           if (added) closeOpenItemInput();
                         });
                     }}
-                    style={styles.modalAction}
+                    style={[styles.modalAction, styles.openItemModalAction]}
                     testID="sales-open-item-confirm"
                   />
                 )}
               </View>
-            </View>
+            </ScrollView>
           </HandheldStateSurface>
         </View>
       </Modal>
@@ -2842,12 +2850,17 @@ const CartLineRow = memo(function CartLineRow({
 
   return (
     <View style={styles.cartLineSwipeContainer}>
+      {/* 手势壳覆盖整行；仅展开后抬高删除层，保证 Android 命中真实按钮。 */}
       <View
         accessibilityElementsHidden={!removeActionVisible}
         importantForAccessibility={
           removeActionVisible ? "auto" : "no-hide-descendants"
         }
-        style={styles.cartLineRemoveAction}
+        pointerEvents={removeActionVisible ? "auto" : "none"}
+        style={[
+          styles.cartLineRemoveAction,
+          removeActionVisible && styles.cartLineRemoveActionInteractive,
+        ]}
         testID={`sales-line-${item.lineId}-remove-action`}
       >
         <ActionButton
@@ -3510,6 +3523,9 @@ const styles = StyleSheet.create({
     top: 0,
     width: CART_LINE_REMOVE_ACTION_WIDTH,
   },
+  cartLineRemoveActionInteractive: {
+    zIndex: 1,
+  },
   cartLineRemoveButton: {
     borderRadius: 0,
     flex: 1,
@@ -4077,6 +4093,18 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     fontWeight: "900",
     textAlign: "right",
+  },
+  openItemModalAction: {
+    flex: 1,
+  },
+  openItemModalActions: {
+    flexDirection: "row",
+  },
+  openItemModalScroll: {
+    width: "100%",
+  },
+  openItemModalSurface: {
+    overflow: "hidden",
   },
   mutedText: {
     color: posColors.mutedInk,

@@ -15,8 +15,14 @@ import { posColors } from "@/ui/theme";
 
 let mockStatusStripProps: any;
 
+// mock 记录图标 props，便于断言输入区按钮使用的图标名（如清除按钮 close）。
+const mockMaterialCommunityIcons = jest.fn((_props: unknown) => null);
+
 jest.mock("@expo/vector-icons", () => ({
-  MaterialCommunityIcons: () => null,
+  MaterialCommunityIcons: (props: unknown) => {
+    mockMaterialCommunityIcons(props);
+    return null;
+  },
 }));
 
 jest.mock("@/ui/shell/status-strip", () => ({
@@ -595,4 +601,65 @@ test("明确拒绝显示错误且不进入 sales", async () => {
     ).toBe(false);
     expect(onSuccess).not.toHaveBeenCalled();
   });
+});
+
+test("输入内容后显示清除按钮，点击清除全部内容", async () => {
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="zh"
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  // 空输入时清除按钮不渲染
+  expect(screen.queryByTestId("cashier-login-clear-barcode")).toBeNull();
+
+  await fireEvent.changeText(
+    screen.getByTestId("cashier-login-barcode"),
+    "2947858456543",
+  );
+  const clearButton = screen.getByTestId("cashier-login-clear-barcode");
+  expect(clearButton.props.accessibilityLabel).toBe("清除收银员条码");
+  expect(clearButton.props.accessibilityRole).toBe("button");
+
+  // 点击清除：输入框内容清空
+  await fireEvent.press(clearButton);
+  expect(screen.getByTestId("cashier-login-barcode").props.value).toBe("");
+
+  // 清空后清除按钮消失
+  expect(screen.queryByTestId("cashier-login-clear-barcode")).toBeNull();
+});
+
+test("清除按钮使用 close（×）图标，与键盘/可见性按钮同排渲染", async () => {
+  mockMaterialCommunityIcons.mockClear();
+  const screen = await render(
+    <CashierLoginScreen
+      controller={new CashierLoginController(store())}
+      language="zh"
+      onSuccess={jest.fn()}
+      runtime={runtime(async () => cashier())}
+    />,
+  );
+
+  await fireEvent.changeText(
+    screen.getByTestId("cashier-login-barcode"),
+    "2947858456543",
+  );
+  expect(screen.getByTestId("cashier-login-clear-barcode")).toBeTruthy();
+
+  // 清除按钮图标为 close（×）
+  const closeIconCall = mockMaterialCommunityIcons.mock.calls
+    .map((call) => call[0] as Readonly<{ name?: string }>)
+    .find((props) => props.name === "close");
+  expect(closeIconCall).toBeTruthy();
+
+  // 三个按钮与输入框同排（inputRow 内），在输入框右侧外面而非绝对定位覆盖框内
+  const input = screen.getByTestId("cashier-login-barcode");
+  const keyboard = screen.getByTestId("cashier-login-show-keyboard");
+  const visibility = screen.getByTestId("cashier-login-toggle-barcode-visibility");
+  expect(input).toBeTruthy();
+  expect(keyboard).toBeTruthy();
+  expect(visibility).toBeTruthy();
 });

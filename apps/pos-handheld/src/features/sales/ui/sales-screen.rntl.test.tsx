@@ -721,6 +721,70 @@ describe("SalesScreen", () => {
     }
   });
 
+  it("360×592 TC26 无码商品弹窗操作并排且内容可滚动", async () => {
+    const tc26Metrics = {
+      width: 360,
+      height: 592,
+      scale: 2,
+      fontScale: 1,
+    };
+    const defaultMetrics = {
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    };
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART));
+    await act(async () => {
+      Dimensions.set({ window: tc26Metrics, screen: tc26Metrics });
+    });
+
+    try {
+      const screen = await render(
+        <SalesScreen
+          locale="zh"
+          presenter={salesPresenter}
+          showStatusStrip={false}
+        />,
+      );
+
+      await fireEvent.press(screen.getByTestId("sales-open-item-button"));
+
+      const cancel = screen.getByLabelText("取消");
+      const confirm = screen.getByTestId("sales-open-item-confirm");
+      const modalScroll = screen.getByTestId("sales-open-item-modal");
+      expect(modalScroll.props).toMatchObject({
+        bounces: false,
+        showsVerticalScrollIndicator: false,
+      });
+      let actionAncestor = confirm.parent;
+      while (actionAncestor && actionAncestor !== modalScroll) {
+        actionAncestor = actionAncestor.parent;
+      }
+      expect(actionAncestor).toBe(modalScroll);
+      expect(
+        flattenedStyle(screen.getByTestId("handheld-state-open-item-keypad")),
+      ).toMatchObject({ overflow: "hidden" });
+      expect(confirm.parent).not.toBeNull();
+      expect(flattenedStyle(confirm.parent!)).toMatchObject({
+        flexDirection: "row",
+      });
+      for (const action of [cancel, confirm]) {
+        expect(flattenedStyle(action)).toMatchObject({
+          flex: 1,
+          minHeight: MIN_TOUCH_TARGET,
+        });
+      }
+
+      await screen.unmount();
+    } finally {
+      await act(async () => {
+        Dimensions.set({ window: defaultMetrics, screen: defaultMetrics });
+      });
+      salesPresenter.destroy();
+    }
+  });
+
   it("默认不显示扫码待机文案，真实扫描和打印结果仍明确反馈", async () => {
     let publishLookupOutcome: ((event: SalesFeedbackEvent) => void) | undefined;
     const scanWorkflow: SalesWorkflowPort = {
@@ -3243,11 +3307,12 @@ describe("SalesScreen", () => {
     expect(
       descendantTestIds(screen.getByTestId("sales-line-line-1-controls")),
     ).not.toContain("sales-line-line-1-remove");
-    expect(
-      screen.getByTestId("sales-line-line-1-remove-action", {
-        includeHiddenElements: true,
-      }).props.accessibilityElementsHidden,
-    ).toBe(true);
+    const hiddenRemoveAction = screen.getByTestId(
+      "sales-line-line-1-remove-action",
+      { includeHiddenElements: true },
+    );
+    expect(hiddenRemoveAction.props.accessibilityElementsHidden).toBe(true);
+    expect(hiddenRemoveAction.props.pointerEvents).toBe("none");
 
     const swipeSurface = screen.getByTestId("sales-line-line-1-swipe-surface");
     const startEvent = cartLinePanEvent(240, 240, 1);
@@ -3262,10 +3327,12 @@ describe("SalesScreen", () => {
       swipeSurface.props.onResponderMove(dragEvent);
       swipeSurface.props.onResponderRelease(dragEvent);
     });
-    expect(
-      screen.getByTestId("sales-line-line-1-remove-action").props
-        .accessibilityElementsHidden,
-    ).toBe(false);
+    const visibleRemoveAction = screen.getByTestId(
+      "sales-line-line-1-remove-action",
+    );
+    expect(visibleRemoveAction.props.accessibilityElementsHidden).toBe(false);
+    expect(visibleRemoveAction.props.pointerEvents).toBe("auto");
+    expect(flattenedStyle(visibleRemoveAction)).toMatchObject({ zIndex: 1 });
 
     await fireEvent.press(screen.getByTestId("sales-line-line-1-remove"));
     expect(salesPresenter.getState().cart.lines).toHaveLength(0);

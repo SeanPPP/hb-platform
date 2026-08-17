@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type ScrollView,
   type TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -41,6 +42,7 @@ type LoginCopy = Readonly<{
   inputLabel: string;
   inputHint: string;
   keyboard: string;
+  clearBarcode: string;
   showBarcode: string;
   hideBarcode: string;
   manualEntryHint: string;
@@ -68,6 +70,7 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     inputLabel: "Cashier barcode",
     inputHint: "Scan cashier barcode",
     keyboard: "Keyboard",
+    clearBarcode: "Clear cashier barcode",
     showBarcode: "Show cashier barcode",
     hideBarcode: "Hide cashier barcode",
     manualEntryHint: 'Scanner ready; tap "Keyboard" for manual entry.',
@@ -100,6 +103,7 @@ const copy: Record<"en" | "zh", LoginCopy> = {
     inputLabel: "收银员条码",
     inputHint: "扫描收银员条码",
     keyboard: "键盘",
+    clearBarcode: "清除收银员条码",
     showBarcode: "显示收银员条码",
     hideBarcode: "隐藏收银员条码",
     manualEntryHint: "默认使用扫码枪；手动输入请点“键盘”。",
@@ -183,6 +187,28 @@ export function CashierLoginScreen({
     if (keyboardRefreshTimerRef.current === null) return;
     clearTimeout(keyboardRefreshTimerRef.current);
     keyboardRefreshTimerRef.current = null;
+  }, []);
+
+  const keyboardScrollRef = useRef<ScrollView>(null);
+
+  // 中文注释：Android adjustResize 下 RN 不会在键盘弹出时自动滚动到焦点；
+  // 键盘弹出后显式滚动输入框到键盘上沿，保证手动输入时输入框可见。
+  useEffect(() => {
+    const keyboardDidShowSubscription = Keyboard.addListener(
+      "keyboardDidShow",
+      () => {
+        const input = barcodeRef.current;
+        if (input == null) return;
+        keyboardScrollRef.current?.scrollResponderScrollNativeHandleToKeyboard(
+          input,
+          16,
+          true,
+        );
+      },
+    );
+    return () => {
+      keyboardDidShowSubscription.remove();
+    };
   }, []);
 
   const resetToScannerMode = useCallback((): void => {
@@ -305,6 +331,7 @@ export function CashierLoginScreen({
           </View>
 
           <PosKeyboardAwareScrollView
+            ref={keyboardScrollRef}
             contentContainerStyle={styles.formPanelContent}
             showsVerticalScrollIndicator={false}
             style={styles.formPanel}
@@ -328,6 +355,10 @@ export function CashierLoginScreen({
                 accessibilityLabel={text.inputLabel}
                 autoFocus
                 autoCapitalize="characters"
+                // 扫码器未带回车时按扫码节奏自动提交（等效回车），手动输入不触发。
+                autoSubmitOnScanIdle
+                // 登录页同时接受慢速/整串注入的 HID 设备（无回车自动提交，失败可重试）。
+                mediumSpeedHidSubmit
                 autoCorrect={false}
                 editable={!submitting && !blocked}
                 onBlur={handleBarcodeBlur}
@@ -346,6 +377,59 @@ export function CashierLoginScreen({
                 testID="cashier-login-barcode"
                 value={barcode}
               />
+              </View>
+              {barcode.length > 0 ? (
+                <PosPressable
+                  accessibilityLabel={text.clearBarcode}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: submitting || blocked }}
+                  disabled={submitting || blocked}
+                  onPress={() => {
+                    setBarcode("");
+                    // 清除后保持输入焦点，便于立即重扫或手动输入。
+                    barcodeRef.current?.focus();
+                  }}
+                  sound="navigate"
+                  style={({ pressed }) => [
+                    styles.clearButton,
+                    (pressed || submitting || blocked) &&
+                      styles.visibilityButtonPressed,
+                  ]}
+                  testID="cashier-login-clear-barcode"
+                >
+                  <MaterialCommunityIcons
+                    color={
+                      submitting || blocked
+                        ? posColors.mutedInk
+                        : posColors.blue
+                    }
+                    name="close"
+                    size={24}
+                  />
+                </PosPressable>
+              ) : null}
+              <PosPressable
+                accessibilityLabel={text.keyboard}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: submitting || blocked }}
+                disabled={submitting || blocked}
+                onPress={requestManualKeyboard}
+                sound="navigate"
+                style={({ pressed }) => [
+                  styles.keyboardIconButton,
+                  (pressed || submitting || blocked) &&
+                    styles.visibilityButtonPressed,
+                ]}
+                testID="cashier-login-show-keyboard"
+              >
+                <MaterialCommunityIcons
+                  color={
+                    submitting || blocked ? posColors.mutedInk : posColors.blue
+                  }
+                  name="keyboard-outline"
+                  size={23}
+                />
+              </PosPressable>
               <PosPressable
                 accessibilityLabel={
                   barcodeVisible ? text.hideBarcode : text.showBarcode
@@ -369,28 +453,6 @@ export function CashierLoginScreen({
                   name={barcodeVisible ? "eye-off-outline" : "eye-outline"}
                   size={23}
                 />
-              </PosPressable>
-              </View>
-              <PosPressable
-              accessibilityLabel={text.keyboard}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: submitting || blocked }}
-              disabled={submitting || blocked}
-              onPress={requestManualKeyboard}
-              sound="navigate"
-              style={({ pressed }) => [
-                styles.keyboardButton,
-                (pressed || submitting || blocked) &&
-                  styles.keyboardButtonPressed,
-              ]}
-              testID="cashier-login-show-keyboard"
-            >
-              <MaterialCommunityIcons
-                color={posColors.blue}
-                name="keyboard-outline"
-                size={22}
-              />
-              <Text style={styles.keyboardLabel}>{text.keyboard}</Text>
               </PosPressable>
             </View>
             {error ? (
@@ -564,8 +626,12 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 3,
   },
-  inputRow: { gap: 8 },
-  inputContainer: { flex: 1, minWidth: 0, position: "relative" },
+  inputRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  inputContainer: { flex: 1, minWidth: 0 },
   input: {
     backgroundColor: "#FFFDF8",
     borderColor: posColors.border,
@@ -574,33 +640,28 @@ const styles = StyleSheet.create({
     fontSize: 20,
     minHeight: 56,
     paddingHorizontal: 14,
-    paddingRight: 62,
   },
   inputDisabled: { backgroundColor: "#F1F0EC", color: posColors.mutedInk },
+  // 输入框右侧外面的图标按钮（inputRow 内并排）；触摸区 48px
   visibilityButton: {
     alignItems: "center",
     justifyContent: "center",
     minHeight: 48,
     minWidth: 48,
-    position: "absolute",
-    right: 8,
-    top: 9,
   },
-  visibilityButtonPressed: { opacity: 0.62 },
-  keyboardButton: {
+  clearButton: {
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderColor: posColors.blue,
-    borderWidth: 1,
-    flexDirection: "row",
-    gap: 8,
     justifyContent: "center",
     minHeight: 48,
-    width: "100%",
-    paddingHorizontal: 12,
+    minWidth: 48,
   },
-  keyboardButtonPressed: { opacity: 0.62 },
-  keyboardLabel: { color: posColors.blue, fontSize: 16, fontWeight: "800" },
+  keyboardIconButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 48,
+    minWidth: 48,
+  },
+  visibilityButtonPressed: { opacity: 0.62 },
   submit: {
     alignItems: "center",
     backgroundColor: posColors.orange,

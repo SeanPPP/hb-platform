@@ -462,6 +462,8 @@ function SpecialProductsAddModal({
           <PosKeyboardAwareTextInput
             accessibilityLabel={t("management.searchLabel")}
             autoCapitalize="none"
+            // 扫码器未带回车时按扫码节奏自动提交（等效回车），手动输入不触发。
+            autoSubmitOnScanIdle
             autoCorrect={false}
             editable={!busy}
             onChangeText={onQueryChange}

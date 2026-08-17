@@ -9,6 +9,7 @@ module.exports = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
     "^@expo/vector-icons$": "<rootDir>/__mocks__/expo-vector-icons.js",
+    "^expo/virtual/env$": "<rootDir>/__mocks__/expo-virtual-env.js",
     "^expo-audio$": "<rootDir>/__mocks__/expo-audio.js",
     "\\.wav$": "<rootDir>/__mocks__/sound-asset.js",
   },

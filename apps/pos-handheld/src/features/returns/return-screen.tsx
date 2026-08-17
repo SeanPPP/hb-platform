@@ -178,6 +178,12 @@ export function ReturnScreen({
             "voucher",
           ]),
         );
+  const receiptLoaded =
+    state.mode === "receipt" && state.orderSummary !== null;
+  const selectedQuantity = state.lines.reduce(
+    (total, line) => total + line.selectedQuantity,
+    0,
+  );
 
   return (
     <HandheldStateSurface
@@ -192,7 +198,7 @@ export function ReturnScreen({
         </View>
         {confirmationOpen ? (
           <HandheldActionButton
-            label={locale === "zh" ? "返回查询" : "Back to lookup"}
+            label={t("action.backToSelection")}
             onPress={() => setConfirmationOpen(false)}
             sound="navigate"
             testID="return-confirmation-back"
@@ -228,7 +234,7 @@ export function ReturnScreen({
 
       <View style={styles.workspace}>
         <View style={styles.mainColumn}>
-          {!confirmationOpen ? (
+          {!confirmationOpen && !receiptLoaded ? (
             <PosKeyboardAwareScrollView
               style={styles.editorScroll}
               testID="return-editor-keyboard-scroll"
@@ -236,6 +242,7 @@ export function ReturnScreen({
             {state.mode === "receipt" ? (
               <View style={styles.lookupCard}>
                 <LabeledInput
+                  autoSubmitOnScanIdle
                   editable={!state.busy}
                   label={t("search.orderLabel")}
                   onChangeText={setOrderQuery}
@@ -263,6 +270,7 @@ export function ReturnScreen({
               <View style={styles.noReceiptPanel}>
                 <View style={styles.lookupCard}>
                   <LabeledInput
+                    autoSubmitOnScanIdle
                     editable={!state.busy}
                     label={t("search.productLabel")}
                     onChangeText={setProductQuery}
@@ -339,16 +347,30 @@ export function ReturnScreen({
 
           {state.orderSummary ? (
             <View style={styles.orderBanner} testID="return-order-summary">
-              <Text style={styles.orderTitle}>
-                {t("order.summary", { order: state.orderSummary })}
-              </Text>
-              <Text style={styles.orderSource}>
-                {t(
-                  state.loadedFrom === "remote"
-                    ? "order.remote"
-                    : "order.local",
-                )}
-              </Text>
+              <View style={styles.orderIdentity}>
+                <Text style={styles.orderTitle}>
+                  {t("order.summary", { order: state.orderSummary })}
+                </Text>
+                <View style={styles.orderStatusBadge}>
+                  <View style={styles.orderStatusDot} />
+                  <Text style={styles.orderSource}>
+                    {t(
+                      state.loadedFrom === "remote"
+                        ? "order.remote"
+                        : "order.local",
+                    )}
+                  </Text>
+                </View>
+              </View>
+              {!confirmationOpen && receiptLoaded ? (
+                <ActionButton
+                  disabled={state.busy}
+                  label={t("action.requery")}
+                  onPress={() => presenter.reset()}
+                  testID="return-order-requery"
+                  tone="quiet"
+                />
+              ) : null}
             </View>
           ) : null}
           {state.returnRecordsMayBeStale ? (
@@ -363,33 +385,62 @@ export function ReturnScreen({
           ) : null}
 
           {!confirmationOpen ? (
-            <HandheldSection
-              testID="return-lookup-result"
-              title={t("lines.title")}
-            >
-              <Text style={styles.lookupResultCount}>
-                {state.lines.length
-                  ? locale === "zh"
-                    ? `已找到 ${state.lines.length} 个可退商品`
-                    : `${state.lines.length} returnable item${
-                        state.lines.length === 1 ? "" : "s"
-                      } found`
-                  : t("lines.empty")}
-              </Text>
-              {state.phase === "loading" ? (
-                <ActivityIndicator
-                  color={posColors.orange}
-                  testID="return-loading"
-                />
-              ) : null}
-              {state.lines.length ? (
-                <HandheldActionButton
-                  label={locale === "zh" ? "查看退货明细" : "Review return"}
-                  onPress={() => setConfirmationOpen(true)}
-                  testID="return-open-confirmation"
-                />
-              ) : null}
-            </HandheldSection>
+            receiptLoaded ? (
+              <>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>{t("lines.title")}</Text>
+                  <Text style={styles.sectionCount}>
+                    {returnableCountText(locale, state.lines.length)}
+                  </Text>
+                </View>
+                <ScrollView
+                  contentContainerStyle={styles.lineList}
+                  style={styles.lineScroll}
+                  testID="return-line-list"
+                >
+                  {state.lines.length ? (
+                    state.lines.map((line) => (
+                      <ReturnLineRow
+                        key={line.id}
+                        line={line}
+                        locale={locale}
+                        onDecrease={() => presenter.decrementLine(line.id)}
+                        onIncrease={() => presenter.incrementLine(line.id)}
+                        t={t}
+                      />
+                    ))
+                  ) : (
+                    <Text style={styles.emptyText}>
+                      {t("lines.noneReturnable")}
+                    </Text>
+                  )}
+                </ScrollView>
+              </>
+            ) : (
+              <HandheldSection
+                testID="return-lookup-result"
+                title={t("lines.title")}
+              >
+                <Text style={styles.lookupResultCount}>
+                  {state.lines.length
+                    ? returnableCountText(locale, state.lines.length)
+                    : t("lines.empty")}
+                </Text>
+                {state.phase === "loading" ? (
+                  <ActivityIndicator
+                    color={posColors.orange}
+                    testID="return-loading"
+                  />
+                ) : null}
+                {state.lines.length ? (
+                  <HandheldActionButton
+                    label={locale === "zh" ? "查看退货明细" : "Review return"}
+                    onPress={() => setConfirmationOpen(true)}
+                    testID="return-open-confirmation"
+                  />
+                ) : null}
+              </HandheldSection>
+            )
           ) : (
             <>
               <View style={styles.sectionHeader}>
@@ -468,6 +519,33 @@ export function ReturnScreen({
           </View>
         </View> : null}
       </View>
+      {!confirmationOpen && receiptLoaded && state.lines.length ? (
+        <View style={styles.selectionFooter} testID="return-selection-footer">
+          <View style={styles.selectionSummary}>
+            <Text style={styles.selectionCount} testID="return-selected-count">
+              {selectedCountText(locale, selectedQuantity)}
+            </Text>
+            <View style={styles.selectionTotalRow}>
+              <Text style={styles.selectionTotalLabel}>{t("summary.total")}</Text>
+              <Text
+                style={styles.selectionTotal}
+                testID="return-selected-total"
+              >
+                {formatAud(state.selectedTotalCents, locale)}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.selectionNext}>
+            <ActionButton
+              disabled={!state.canConfirm || state.busy}
+              label={t("action.next")}
+              onPress={() => setConfirmationOpen(true)}
+              sound="navigate"
+              testID="return-next"
+            />
+          </View>
+        </View>
+      ) : null}
       </SafeAreaView>
     </HandheldStateSurface>
   );
@@ -489,8 +567,13 @@ function ReturnLineRow({
     values?: Readonly<Record<string, string | number>>,
   ): string;
 }>) {
+  const selected = line.selectedQuantity > 0;
+
   return (
-    <View style={styles.lineRow} testID={`return-row-${line.id}`}>
+    <View
+      style={[styles.lineRow, selected && styles.lineRowSelected]}
+      testID={`return-row-${line.id}`}
+    >
       <View style={styles.lineIdentity}>
         <Text numberOfLines={2} style={styles.lineName}>
           {line.displayName}
@@ -506,15 +589,8 @@ function ReturnLineRow({
           })}
         </Text>
       </View>
-      <View style={styles.quantityControl}>
-        <IconButton
-          disabled={line.selectedQuantity === 0}
-          label="−"
-          onPress={onDecrease}
-          testID={`return-decrease-${line.id}`}
-          accessibilityLabel={t("action.decrease")}
-        />
-        <Text style={styles.quantityText} testID={`return-quantity-${line.id}`}>
+      <View style={styles.lineSelection}>
+        <Text style={styles.quantityText}>
           {line.sourceKind === "receipt"
             ? t("line.quantity", {
                 selected: line.selectedQuantity,
@@ -524,16 +600,31 @@ function ReturnLineRow({
                 selected: line.selectedQuantity,
               })}
         </Text>
-        <IconButton
-          disabled={
-            line.sourceKind === "receipt" &&
-            line.selectedQuantity >= line.availableQuantity
-          }
-          label="+"
-          onPress={onIncrease}
-          testID={`return-increase-${line.id}`}
-          accessibilityLabel={t("action.increase")}
-        />
+        <View style={styles.quantityControl}>
+          <IconButton
+            disabled={line.selectedQuantity === 0}
+            label="−"
+            onPress={onDecrease}
+            testID={`return-decrease-${line.id}`}
+            accessibilityLabel={t("action.decrease")}
+          />
+          <Text
+            style={styles.quantityValue}
+            testID={`return-quantity-${line.id}`}
+          >
+            {line.selectedQuantity}
+          </Text>
+          <IconButton
+            disabled={
+              line.sourceKind === "receipt" &&
+              line.selectedQuantity >= line.availableQuantity
+            }
+            label="+"
+            onPress={onIncrease}
+            testID={`return-increase-${line.id}`}
+            accessibilityLabel={t("action.increase")}
+          />
+        </View>
       </View>
     </View>
   );
@@ -599,6 +690,7 @@ function StatusPage({
 }
 
 function LabeledInput({
+  autoSubmitOnScanIdle = false,
   editable,
   keyboardType,
   label,
@@ -608,6 +700,7 @@ function LabeledInput({
   testID,
   value,
 }: Readonly<{
+  autoSubmitOnScanIdle?: boolean;
   editable: boolean;
   keyboardType?: "default" | "decimal-pad";
   label: string;
@@ -623,6 +716,7 @@ function LabeledInput({
       <PosKeyboardAwareTextInput
         autoCapitalize="none"
         autoCorrect={false}
+        autoSubmitOnScanIdle={autoSubmitOnScanIdle}
         editable={editable}
         keyboardType={keyboardType}
         onChangeText={onChangeText}
@@ -776,6 +870,16 @@ function errorText(
   return t(`error.${code}` as ReturnCopyKey);
 }
 
+function returnableCountText(locale: ReturnLocale, count: number): string {
+  if (locale === "zh") return `${count} 个可退商品`;
+  return `${count} returnable item${count === 1 ? "" : "s"}`;
+}
+
+function selectedCountText(locale: ReturnLocale, count: number): string {
+  if (locale === "zh") return `已选 ${count} 件`;
+  return `${count} item${count === 1 ? "" : "s"} selected`;
+}
+
 export function parsePositiveAudCents(value: string): number | null {
   const match = /^\s*(\d+)(?:\.(\d{1,2}))?\s*$/.exec(value);
   if (!match) return null;
@@ -789,6 +893,7 @@ function formatAud(cents: number, locale: ReturnLocale): string {
   return new Intl.NumberFormat(locale === "zh" ? "zh-AU" : "en-AU", {
     style: "currency",
     currency: "AUD",
+    currencyDisplay: "narrowSymbol",
   }).format(cents / 100);
 }
 
@@ -822,7 +927,8 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     color: posColors.mutedInk,
-    fontSize: 14,
+    fontSize: 12,
+    lineHeight: 17,
     marginTop: 3,
   },
   modeTabs: {
@@ -832,14 +938,15 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   modeTab: {
+    flex: 1,
     minHeight: RETURN_MIN_TOUCH_TARGET,
-    minWidth: 150,
+    minWidth: 0,
     paddingHorizontal: 20,
     alignItems: "center",
     justifyContent: "center",
     borderColor: posColors.border,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 6,
     backgroundColor: posColors.surface,
   },
   modeTabActive: {
@@ -858,16 +965,19 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "column",
     gap: 8,
+    minHeight: 0,
     padding: 16,
     paddingTop: 8,
   },
   mainColumn: {
     flex: 1,
+    minHeight: 0,
     minWidth: 0,
   },
   editorScroll: {
-    // 主列唯一子项：占满剩余空间，内容超出时可滚动（flexGrow:0 会导致高度=内容高度而无法滚动）。
-    flex: 1,
+    // 查询区按内容高度布局；小屏溢出时允许收缩并独立滚动，避免挤走结果列表。
+    flexGrow: 0,
+    flexShrink: 1,
   },
   summaryColumn: {
     flex: 0,
@@ -915,12 +1025,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   orderBanner: {
-    marginTop: 12,
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderLeftColor: posColors.blue,
+    borderColor: posColors.border,
+    borderLeftColor: posColors.green,
     borderLeftWidth: 4,
-    backgroundColor: posColors.blueSoft,
+    borderRadius: 6,
+    borderRightWidth: 1,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    backgroundColor: posColors.surface,
+  },
+  orderIdentity: {
+    flex: 1,
+    minWidth: 0,
   },
   orderTitle: {
     color: posColors.ink,
@@ -928,9 +1050,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   orderSource: {
-    color: posColors.blue,
-    fontSize: 13,
-    marginTop: 2,
+    color: posColors.green,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  orderStatusBadge: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: posColors.greenSoft,
+    borderRadius: 12,
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 5,
+    minHeight: 24,
+    paddingHorizontal: 8,
+  },
+  orderStatusDot: {
+    backgroundColor: posColors.green,
+    borderRadius: 3,
+    height: 6,
+    width: 6,
   },
   warning: {
     marginTop: 8,
@@ -956,8 +1095,8 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   sectionHeader: {
-    minHeight: RETURN_MIN_TOUCH_TARGET,
-    marginTop: 10,
+    minHeight: 36,
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -967,24 +1106,34 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "800",
   },
+  sectionCount: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    fontWeight: "700",
+  },
   lineScroll: {
     flex: 1,
+    minHeight: 0,
   },
   lineList: {
     gap: 8,
     paddingBottom: 12,
   },
   lineRow: {
-    minHeight: 94,
+    minHeight: 104,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    padding: 14,
+    padding: 10,
     borderColor: posColors.border,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 6,
     backgroundColor: posColors.surface,
+  },
+  lineRowSelected: {
+    backgroundColor: posColors.orangeSoft,
+    borderColor: posColors.orange,
   },
   lineIdentity: {
     flex: 1,
@@ -1006,30 +1155,40 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 5,
   },
+  lineSelection: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
   quantityControl: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
   },
   quantityText: {
-    minWidth: 106,
-    textAlign: "center",
-    color: posColors.ink,
-    fontSize: 14,
+    textAlign: "right",
+    color: posColors.mutedInk,
+    fontSize: 12,
     fontWeight: "700",
+  },
+  quantityValue: {
+    color: posColors.ink,
+    fontSize: 20,
+    fontWeight: "900",
+    minWidth: 28,
+    textAlign: "center",
   },
   iconButton: {
     width: RETURN_MIN_TOUCH_TARGET,
     height: RETURN_MIN_TOUCH_TARGET,
     alignItems: "center",
     justifyContent: "center",
-    borderColor: posColors.blue,
+    borderColor: posColors.orange,
     borderWidth: 1,
-    borderRadius: 8,
-    backgroundColor: posColors.blueSoft,
+    borderRadius: 6,
+    backgroundColor: posColors.surface,
   },
   iconButtonText: {
-    color: posColors.blue,
+    color: posColors.orange,
     fontSize: 24,
     fontWeight: "700",
   },
@@ -1116,13 +1275,52 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     paddingTop: 18,
   },
+  selectionFooter: {
+    alignItems: "center",
+    backgroundColor: posColors.surface,
+    borderTopColor: posColors.border,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    minHeight: 80,
+    padding: 16,
+  },
+  selectionSummary: {
+    flex: 1,
+    minWidth: 0,
+  },
+  selectionCount: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  selectionTotalRow: {
+    alignItems: "baseline",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 3,
+  },
+  selectionTotalLabel: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  selectionTotal: {
+    color: posColors.green,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  selectionNext: {
+    width: 144,
+  },
   actionButton: {
     minHeight: RETURN_MIN_TOUCH_TARGET,
     minWidth: 116,
     paddingHorizontal: 18,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 6,
   },
   actionPrimary: {
     backgroundColor: posColors.orange,

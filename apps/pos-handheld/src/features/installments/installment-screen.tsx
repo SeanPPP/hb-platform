@@ -156,6 +156,18 @@ export function InstallmentScreen({
         "service-unavailable",
       ].includes(state.statusCode ?? ""),
   );
+  const reprintBelongsToDetails = Boolean(
+    state.details &&
+      "installmentGuid" in state.reprint &&
+      state.reprint.installmentGuid === state.details.installmentGuid,
+  );
+  const reprintSubmitting =
+    reprintBelongsToDetails && state.reprint.kind === "submitting";
+  const showHeaderReprint = Boolean(
+    compactDetailsOpen &&
+      state.details &&
+      (presenter.capabilities.reprint || reprintSubmitting),
+  );
 
   const openOrder = (installmentGuid: string): void => {
     setCompactDetailsOpen(true);
@@ -184,25 +196,34 @@ export function InstallmentScreen({
         testID="installments-screen"
       >
         <View style={styles.page}>
-        <Header
-          canCreate={state.access.canCreate}
-          createDraftAvailable={Boolean(state.createDraft)}
-          locale={locale}
-          onBack={onBack}
-          onPrimary={startCreate}
-          onRefresh={() => void presenter.load()}
-          online={state.online}
-          primaryAvailable={Boolean(
-            state.createDraft ? onStartCreate : onBack,
-          )}
-          refreshing={state.kind === "loading"}
-          writeLocked={
-            state.busy ||
-            state.reprint.kind === "submitting" ||
-            state.recoveryRequired ||
-            !state.online
-          }
-        />
+          <Header
+            canCreate={state.access.canCreate}
+            createDraftAvailable={Boolean(state.createDraft)}
+            detailsOpen={compactDetailsOpen}
+            installmentNumber={state.details?.installmentNumber}
+            locale={locale}
+            onBack={
+              compactDetailsOpen
+                ? () => setCompactDetailsOpen(false)
+                : onBack
+            }
+            onPrimary={startCreate}
+            onRefresh={() => void presenter.load()}
+            onReprint={() => void presenter.reprintSelected()}
+            online={state.online}
+            primaryAvailable={Boolean(
+              state.createDraft ? onStartCreate : onBack,
+            )}
+            refreshing={state.kind === "loading"}
+            reprintSubmitting={reprintSubmitting}
+            showReprint={showHeaderReprint}
+            writeLocked={
+              state.busy ||
+              state.reprint.kind === "submitting" ||
+              state.recoveryRequired ||
+              !state.online
+            }
+          />
 
         {routeFailure ? (
           <NoticeBanner
@@ -260,24 +281,31 @@ export function InstallmentScreen({
             )}
             {!layout.compact || compactDetailsOpen ? (
               <DetailsPane
-                compact={layout.compact}
-                confirmation={confirmation}
-                dangerMode={dangerMode}
                 flex={layout.detailsFlex}
                 locale={locale}
-                moreOpen={moreOpen}
-                onBackToList={() => setCompactDetailsOpen(false)}
-                onRouteFailure={() => setRouteFailure(true)}
-                onStartRepayment={onStartRepayment}
                 presenter={presenter}
-                setConfirmation={setConfirmation}
-                setDangerMode={setDangerMode}
-                setMoreOpen={setMoreOpen}
                 state={state}
               />
             ) : null}
           </View>
         )}
+        {/* 主操作与详情滚动区分离，长单据也不会把续付入口推离拇指可达区。 */}
+        {state.online && compactDetailsOpen && state.details ? (
+          <DetailsActions
+            confirmation={confirmation}
+            dangerMode={dangerMode}
+            details={state.details}
+            locale={locale}
+            moreOpen={moreOpen}
+            onRouteFailure={() => setRouteFailure(true)}
+            onStartRepayment={onStartRepayment}
+            presenter={presenter}
+            setConfirmation={setConfirmation}
+            setDangerMode={setDangerMode}
+            setMoreOpen={setMoreOpen}
+            state={state}
+          />
+        ) : null}
         </View>
       </HandheldScreenFrame>
     </HandheldStateSurface>
@@ -287,24 +315,34 @@ export function InstallmentScreen({
 function Header({
   canCreate,
   createDraftAvailable,
+  detailsOpen,
+  installmentNumber,
   locale,
   onBack,
   onPrimary,
   onRefresh,
+  onReprint,
   online,
   primaryAvailable,
   refreshing,
+  reprintSubmitting,
+  showReprint,
   writeLocked,
 }: Readonly<{
   canCreate: boolean;
   createDraftAvailable: boolean;
+  detailsOpen: boolean;
+  installmentNumber: string | undefined;
   locale: InstallmentLocale;
   onBack: (() => void) | undefined;
   onPrimary(): void;
   onRefresh(): void;
+  onReprint(): void;
   online: boolean;
   primaryAvailable: boolean;
   refreshing: boolean;
+  reprintSubmitting: boolean;
+  showReprint: boolean;
   writeLocked: boolean;
 }>) {
   const primaryDisabled = createDraftAvailable
@@ -317,13 +355,13 @@ function Header({
           label={installmentText(locale, "action.back")}
           onPress={onBack}
           sound="navigate"
-          testID="installments-back"
+          testID={detailsOpen ? "installments-details-back" : "installments-back"}
           tone="quiet"
         />
       ) : null}
       <View style={styles.headerIdentity}>
         <Text numberOfLines={1} style={styles.title}>
-          {installmentText(locale, "title")}
+          {installmentText(locale, detailsOpen ? "details.title" : "title")}
         </Text>
         <View style={styles.connectionState}>
           <View
@@ -338,22 +376,42 @@ function Header({
         </View>
       </View>
       <View style={styles.headerActions}>
-        <ActionButton
-          disabled={refreshing || !online}
-          label={installmentText(
-            locale,
-            refreshing ? "action.refreshing" : "action.refresh",
-          )}
-          onPress={onRefresh}
-          testID="installments-refresh"
-          tone="secondary"
-        />
-        {canCreate ? (
+        {detailsOpen && showReprint && installmentNumber ? (
+          <ActionButton
+            accessibilityHint={installmentText(locale, "reprint.hint")}
+            accessibilityLabel={installmentText(
+              locale,
+              "reprint.accessibility",
+              { installmentNumber },
+            )}
+            disabled={reprintSubmitting}
+            label={installmentText(
+              locale,
+              reprintSubmitting ? "action.reprinting" : "action.reprint",
+            )}
+            onPress={onReprint}
+            testID="installment-reprint"
+            tone="secondary"
+          />
+        ) : null}
+        {!detailsOpen ? (
+          <ActionButton
+            disabled={refreshing || !online}
+            label={installmentText(
+              locale,
+              refreshing ? "action.refreshing" : "action.refresh",
+            )}
+            onPress={onRefresh}
+            testID="installments-refresh"
+            tone="secondary"
+          />
+        ) : null}
+        {!detailsOpen && canCreate ? (
           <ActionButton
             disabled={primaryDisabled}
             label={installmentText(
               locale,
-              createDraftAvailable ? "action.new" : "action.goToSales",
+              createDraftAvailable ? "action.newShort" : "action.goToSales",
             )}
             onPress={onPrimary}
             sound="navigate"
@@ -408,7 +466,7 @@ function HistoryPane({
   presenter: InstallmentScreenPresenter;
   state: InstallmentPresenterState;
 }>) {
-  const statuses: readonly {
+  const primaryStatuses: readonly {
     label: string;
     status: InstallmentStatus | null;
   }[] = [
@@ -416,8 +474,45 @@ function HistoryPane({
     { label: installmentText(locale, "filter.active"), status: "Active" },
     { label: installmentText(locale, "filter.paid"), status: "PaidOff" },
     { label: installmentText(locale, "filter.picked"), status: "PickedUp" },
-    { label: installmentText(locale, "filter.cancelled"), status: "Cancelled" },
   ];
+  const advancedFilterActive =
+    state.statusFilter === "Cancelled" ||
+    state.dateFilter.preset !== "all" ||
+    state.deviceScope !== "store";
+  const datePreset = state.dateFilter.preset;
+  const advancedDateLabel =
+    datePreset === "all"
+      ? null
+      : datePreset === "custom" &&
+          state.dateFilter.fromDate &&
+          state.dateFilter.toDate
+        ? installmentText(locale, "date.customRange", {
+            from: state.dateFilter.fromDate,
+            to: state.dateFilter.toDate,
+          })
+      : installmentText(
+          locale,
+          ({
+            today: "date.today",
+            last7: "date.last7",
+            last30: "date.last30",
+            custom: "date.custom",
+          } as const)[datePreset],
+        );
+  const advancedFilterSummary = [
+    state.statusFilter === "Cancelled"
+      ? installmentText(locale, "filter.cancelled")
+      : null,
+    advancedDateLabel,
+    state.deviceScope === "device"
+      ? installmentText(locale, "scope.device")
+      : null,
+  ]
+    .filter((label): label is string => label !== null)
+    .join(" · ");
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(
+    advancedFilterActive,
+  );
   const [customDatesOpen, setCustomDatesOpen] = useState(
     state.dateFilter.preset === "custom",
   );
@@ -429,6 +524,10 @@ function HistoryPane({
     setToDate(state.dateFilter.toDate);
     if (state.dateFilter.preset === "custom") setCustomDatesOpen(true);
   }, [state.dateFilter]);
+
+  useEffect(() => {
+    if (advancedFilterActive) setAdvancedFiltersOpen(true);
+  }, [advancedFilterActive]);
 
   const chooseDatePreset = (preset: InstallmentDatePreset): void => {
     if (preset === "custom") {
@@ -456,7 +555,7 @@ function HistoryPane({
       <View style={styles.panelHeader}>
         <View>
           <Text style={styles.panelTitle}>
-            {installmentText(locale, "history.title")}
+            {installmentText(locale, "history.records")}
           </Text>
           <Text style={styles.panelMeta} testID="installments-result-count">
             {installmentText(
@@ -505,7 +604,7 @@ function HistoryPane({
           contentContainerStyle={styles.filterRow}
           showsHorizontalScrollIndicator={false}
         >
-          {statuses.map((item) => (
+          {primaryStatuses.map((item) => (
             <ActionButton
               compact
               key={item.label}
@@ -516,78 +615,119 @@ function HistoryPane({
               tone="secondary"
             />
           ))}
+          <ActionButton
+            compact
+            expanded={advancedFiltersOpen}
+            label={installmentText(
+              locale,
+              advancedFiltersOpen ? "filter.close" : "filter.more",
+            )}
+            onPress={() => setAdvancedFiltersOpen((open) => !open)}
+            selected={advancedFilterActive}
+            testID="installments-filter-toggle"
+            tone="secondary"
+          />
         </ScrollView>
       </FilterGroup>
 
-      <View style={[styles.filterColumns, compact && styles.filterColumnsCompact]}>
-        <FilterGroup label={installmentText(locale, "date.label")}>
-          <ScrollView
-            horizontal
-            contentContainerStyle={styles.filterRow}
-            showsHorizontalScrollIndicator={false}
-          >
-            {(
-              ["all", "today", "last7", "last30", "custom"] as const
-            ).map((preset) => (
-              <ActionButton
-                compact
-                key={preset}
-                label={installmentText(locale, `date.${preset}`)}
-                onPress={() => chooseDatePreset(preset)}
-                selected={state.dateFilter.preset === preset}
-                testID={`installments-date-${preset}`}
-                tone="secondary"
-              />
-            ))}
-          </ScrollView>
-        </FilterGroup>
-        <FilterGroup label={installmentText(locale, "scope.label")}>
-          <View style={styles.filterRow}>
-            {(["store", "device"] as const).map((scope) => (
-              <ActionButton
-                compact
-                key={scope}
-                label={installmentText(locale, `scope.${scope}`)}
-                onPress={() => void presenter.setDeviceScope(scope)}
-                selected={state.deviceScope === scope}
-                testID={`installments-scope-${scope}`}
-                tone="secondary"
-              />
-            ))}
-          </View>
-        </FilterGroup>
-      </View>
+      {!advancedFiltersOpen && advancedFilterActive ? (
+        <Text
+          style={styles.activeFilterSummary}
+          testID="installments-filter-summary"
+        >
+          {advancedFilterSummary}
+        </Text>
+      ) : null}
 
-      {customDatesOpen ? (
-        <View style={styles.customDateRow} testID="installments-custom-dates">
-          <PosDatePickerField
-            accessibilityLabel={installmentText(locale, "date.from")}
-            allowClear
-            locale={locale}
-            onChange={setFromDate}
-            testID="installments-date-from"
-            value={fromDate}
-          />
-          <PosDatePickerField
-            accessibilityLabel={installmentText(locale, "date.to")}
-            allowClear
-            locale={locale}
-            onChange={setToDate}
-            testID="installments-date-to"
-            value={toDate}
-          />
+      {advancedFiltersOpen ? (
+        <View
+          style={styles.advancedFilters}
+          testID="installments-filter-advanced"
+        >
           <ActionButton
             compact
-            label={installmentText(locale, "date.apply")}
-            onPress={() =>
-              void presenter.setDateFilter({
-                preset: "custom",
-                fromDate,
-                toDate,
-              })
-            }
-            testID="installments-date-apply"
+            label={installmentText(locale, "filter.cancelled")}
+            onPress={() => void presenter.setStatusFilter("Cancelled")}
+            selected={state.statusFilter === "Cancelled"}
+            testID="installments-filter-Cancelled"
+            tone="secondary"
           />
+          <View
+            style={[
+              styles.filterColumns,
+              compact && styles.filterColumnsCompact,
+            ]}
+          >
+            <FilterGroup label={installmentText(locale, "date.label")}>
+              <ScrollView
+                horizontal
+                contentContainerStyle={styles.filterRow}
+                showsHorizontalScrollIndicator={false}
+              >
+                {(
+                  ["all", "today", "last7", "last30", "custom"] as const
+                ).map((preset) => (
+                  <ActionButton
+                    compact
+                    key={preset}
+                    label={installmentText(locale, `date.${preset}`)}
+                    onPress={() => chooseDatePreset(preset)}
+                    selected={state.dateFilter.preset === preset}
+                    testID={`installments-date-${preset}`}
+                    tone="secondary"
+                  />
+                ))}
+              </ScrollView>
+            </FilterGroup>
+            <FilterGroup label={installmentText(locale, "scope.label")}>
+              <View style={styles.filterRow}>
+                {(["store", "device"] as const).map((scope) => (
+                  <ActionButton
+                    compact
+                    key={scope}
+                    label={installmentText(locale, `scope.${scope}`)}
+                    onPress={() => void presenter.setDeviceScope(scope)}
+                    selected={state.deviceScope === scope}
+                    testID={`installments-scope-${scope}`}
+                    tone="secondary"
+                  />
+                ))}
+              </View>
+            </FilterGroup>
+          </View>
+
+          {customDatesOpen ? (
+            <View style={styles.customDateRow} testID="installments-custom-dates">
+              <PosDatePickerField
+                accessibilityLabel={installmentText(locale, "date.from")}
+                allowClear
+                locale={locale}
+                onChange={setFromDate}
+                testID="installments-date-from"
+                value={fromDate}
+              />
+              <PosDatePickerField
+                accessibilityLabel={installmentText(locale, "date.to")}
+                allowClear
+                locale={locale}
+                onChange={setToDate}
+                testID="installments-date-to"
+                value={toDate}
+              />
+              <ActionButton
+                compact
+                label={installmentText(locale, "date.apply")}
+                onPress={() =>
+                  void presenter.setDateFilter({
+                    preset: "custom",
+                    fromDate,
+                    toDate,
+                  })
+                }
+                testID="installments-date-apply"
+              />
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -692,9 +832,9 @@ function OrderRow({
       accessibilityLabel={[
         order.installmentNumber,
         order.customerName,
-        statusLabel(order.status, locale),
         installmentText(locale, "balance.label"),
         money(order.balanceCents),
+        statusLabel(order.status, locale),
       ].join(", ")}
       accessibilityRole="button"
       accessibilityState={{ selected }}
@@ -718,7 +858,17 @@ function OrderRow({
       </View>
       <View style={styles.orderAmounts}>
         <StatusPill locale={locale} status={order.status} />
-        <Text style={styles.balanceAmount}>{money(order.balanceCents)}</Text>
+        <Text
+          style={[
+            styles.balanceAmount,
+            order.status === "Active"
+              ? styles.balanceAmountActive
+              : styles.balanceAmountSettled,
+          ]}
+          testID={`installment-row-balance-${order.installmentGuid}`}
+        >
+          {money(order.balanceCents)}
+        </Text>
         <Text style={styles.balanceLabel}>
           {installmentText(locale, "balance.label")}
         </Text>
@@ -728,55 +878,19 @@ function OrderRow({
 }
 
 function DetailsPane({
-  compact,
-  confirmation,
-  dangerMode,
   flex,
   locale,
-  moreOpen,
-  onBackToList,
-  onRouteFailure,
-  onStartRepayment,
   presenter,
-  setConfirmation,
-  setDangerMode,
-  setMoreOpen,
   state,
 }: Readonly<{
-  compact: boolean;
-  confirmation: ConfirmationKind | null;
-  dangerMode: DangerMode;
   flex: number;
   locale: InstallmentLocale;
-  moreOpen: boolean;
-  onBackToList(): void;
-  onRouteFailure(): void;
-  onStartRepayment: ((installmentGuid: string) => boolean) | undefined;
   presenter: InstallmentScreenPresenter;
-  setConfirmation(value: ConfirmationKind | null): void;
-  setDangerMode(value: DangerMode): void;
-  setMoreOpen(value: boolean): void;
   state: InstallmentPresenterState;
 }>) {
-  const compactBack = compact ? (
-    <View style={styles.compactDetailsHeader}>
-      <ActionButton
-        label={installmentText(locale, "action.back")}
-        onPress={onBackToList}
-        sound="navigate"
-        testID="installments-details-back"
-        tone="quiet"
-      />
-      <Text style={styles.compactDetailsTitle}>
-        {installmentText(locale, "details.empty")}
-      </Text>
-    </View>
-  ) : null;
-
   if (state.detailsLoading) {
     return (
       <View style={[styles.pane, styles.detailsPane, { flex }]} testID="installments-details-pane">
-        {compactBack}
         <CenteredState
           loading
           message={installmentText(locale, "details.loading")}
@@ -788,7 +902,6 @@ function DetailsPane({
   if (!state.selectedGuid) {
     return (
       <View style={[styles.pane, styles.detailsPane, { flex }]} testID="installments-details-pane">
-        {compactBack}
         <CenteredState
           message={installmentText(locale, "details.empty")}
           testID="installments-details-empty"
@@ -802,7 +915,6 @@ function DetailsPane({
     );
     return (
       <View style={[styles.pane, styles.detailsPane, { flex }]} testID="installments-details-pane">
-        {compactBack}
         <CenteredState
           {...(failed
             ? {
@@ -827,86 +939,100 @@ function DetailsPane({
   const details = state.details;
   return (
     <View style={[styles.pane, styles.detailsPane, { flex }]} testID="installments-details-pane">
-      {compactBack}
-      <PosKeyboardAwareScrollView
-        contentContainerStyle={styles.detailsContent}
-        style={styles.detailsScroll}
-        testID="installment-details"
-      >
-        <InstallmentDetailsContent
-          canReprint={presenter.capabilities.reprint}
-          details={details}
-          locale={locale}
-          onReprint={() => void presenter.reprintSelected()}
-          reprint={state.reprint}
-        />
-        <DetailsActions
-          confirmation={confirmation}
-          dangerMode={dangerMode}
-          details={details}
-          locale={locale}
-          moreOpen={moreOpen}
-          onRouteFailure={onRouteFailure}
-          onStartRepayment={onStartRepayment}
-          presenter={presenter}
-          setConfirmation={setConfirmation}
-          setDangerMode={setDangerMode}
-          setMoreOpen={setMoreOpen}
-          state={state}
-        />
-      </PosKeyboardAwareScrollView>
+      <View style={styles.detailsBody} testID="installment-details-body">
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.detailsContent}
+          style={styles.detailsScroll}
+          testID="installment-details"
+        >
+          <InstallmentDetailsContent
+            details={details}
+            locale={locale}
+            reprint={state.reprint}
+          />
+        </PosKeyboardAwareScrollView>
+      </View>
     </View>
   );
 }
 
 function InstallmentDetailsContent({
-  canReprint,
   details,
   locale,
-  onReprint,
   reprint,
 }: Readonly<{
-  canReprint: boolean;
   details: InstallmentDetails;
   locale: InstallmentLocale;
-  onReprint(): void;
   reprint: InstallmentPresenterState["reprint"];
 }>) {
   const reprintBelongsToDetails =
     "installmentGuid" in reprint &&
     reprint.installmentGuid === details.installmentGuid;
-  const reprintSubmitting =
-    reprintBelongsToDetails && reprint.kind === "submitting";
-  const showReprint = canReprint || reprintSubmitting;
+  const paymentProgress =
+    details.totalCents > 0
+      ? Math.min(
+          100,
+          Math.max(0, Math.round((details.paidCents / details.totalCents) * 100)),
+        )
+      : 0;
   return (
     <>
-      <View style={styles.detailHeading}>
-        <View style={styles.detailIdentity}>
+      <View
+        style={styles.balanceSummary}
+        testID="installment-balance-summary"
+      >
+        <View style={styles.summaryHeading}>
+          <StatusPill locale={locale} status={details.status} />
           <Text style={styles.detailNumber}>{details.installmentNumber}</Text>
-          <Text numberOfLines={1} style={styles.detailCustomer}>
-            {details.customerName} · {details.customerPhone ?? "—"}
+        </View>
+        <Text numberOfLines={1} style={styles.detailCustomer}>
+          {details.customerName} · {details.customerPhone ?? "—"}
+        </Text>
+        <View style={styles.balanceHero}>
+          <Text style={styles.balanceHeroLabel}>
+            {installmentText(locale, "metric.amountDue")}
+          </Text>
+          <Text
+            style={styles.balanceHeroAmount}
+            testID="installment-balance-amount"
+          >
+            {money(details.balanceCents)}
           </Text>
         </View>
-        <View style={styles.detailUtilities}>
-          <StatusPill locale={locale} status={details.status} />
-          {showReprint ? (
-            <ActionButton
-              accessibilityHint={installmentText(locale, "reprint.hint")}
-              accessibilityLabel={installmentText(
-                locale,
-                "reprint.accessibility",
-                { installmentNumber: details.installmentNumber },
-              )}
-              disabled={reprintSubmitting}
-              label={installmentText(
-                locale,
-                reprintSubmitting ? "action.reprinting" : "action.reprint",
-              )}
-              onPress={onReprint}
-              testID="installment-reprint"
-              tone="secondary"
-            />
-          ) : null}
+        <View
+          accessibilityLabel={installmentText(
+            locale,
+            "metric.paymentProgress",
+            {
+              paid: money(details.paidCents),
+              total: money(details.totalCents),
+            },
+          )}
+          accessibilityRole="progressbar"
+          accessibilityValue={{ min: 0, max: 100, now: paymentProgress }}
+          style={styles.progressTrack}
+          testID="installment-payment-progress"
+        >
+          <View
+            style={[styles.progressFill, { width: `${paymentProgress}%` }]}
+          />
+        </View>
+        <View style={styles.summaryFooter}>
+          <Text style={styles.summaryPaidText}>
+            {installmentText(locale, "metric.paid")} {" "}
+            <Text testID="installment-paid-amount">
+              {money(details.paidCents)}
+            </Text>{" "}
+            / {installmentText(locale, "metric.total")} {" "}
+            <Text testID="installment-total-amount">
+              {money(details.totalCents)}
+            </Text>
+          </Text>
+          <Text style={styles.summaryDownText}>
+            {installmentText(locale, "metric.downShort", {
+              amount: money(details.downPaymentCents),
+            })}
+          </Text>
         </View>
       </View>
 
@@ -929,48 +1055,11 @@ function InstallmentDetailsContent({
         </Text>
       ) : null}
 
-      <View style={styles.metrics}>
-        <Metric
-          label={installmentText(locale, "metric.total")}
-          value={money(details.totalCents)}
-        />
-        <Metric
-          label={installmentText(locale, "metric.down")}
-          value={money(details.downPaymentCents)}
-        />
-        <Metric
-          label={installmentText(locale, "metric.paid")}
-          value={money(details.paidCents)}
-        />
-        <Metric
-          emphasized
-          label={installmentText(locale, "metric.balance")}
-          value={money(details.balanceCents)}
-        />
-      </View>
-
-      <Section title={installmentText(locale, "section.overview")}>
-        <InfoGrid>
-          <InfoFact
-            label={installmentText(locale, "field.created")}
-            value={displayDate(details.createdAtIso, locale)}
-          />
-          <InfoFact
-            label={installmentText(locale, "field.cashier")}
-            value={details.cashierName}
-          />
-          <InfoFact
-            label={installmentText(locale, "field.device")}
-            value={details.deviceCode}
-          />
-          <InfoFact
-            label={installmentText(locale, "field.minimumDownPayment")}
-            value={money(details.minimumDownPaymentCents)}
-          />
-        </InfoGrid>
-      </Section>
-
-      <Section title={installmentText(locale, "section.items")}>
+      <Section
+        title={installmentText(locale, "section.itemsCount", {
+          count: details.lines.length,
+        })}
+      >
         {details.lines.map((line) => (
           <View key={line.installmentLineGuid} style={styles.detailRecord}>
             <View style={styles.recordHeading}>
@@ -1012,7 +1101,11 @@ function InstallmentDetailsContent({
         ))}
       </Section>
 
-      <Section title={installmentText(locale, "section.payments")}>
+      <Section
+        title={installmentText(locale, "section.paymentsCount", {
+          count: details.payments.length,
+        })}
+      >
         {details.payments.length === 0 ? (
           <Text style={styles.emptyHint}>
             {installmentText(locale, "payments.empty")}
@@ -1060,6 +1153,27 @@ function InstallmentDetailsContent({
             </View>
           ))
         )}
+      </Section>
+
+      <Section title={installmentText(locale, "section.overview")}>
+        <InfoGrid>
+          <InfoFact
+            label={installmentText(locale, "field.created")}
+            value={displayDate(details.createdAtIso, locale)}
+          />
+          <InfoFact
+            label={installmentText(locale, "field.cashier")}
+            value={details.cashierName}
+          />
+          <InfoFact
+            label={installmentText(locale, "field.device")}
+            value={details.deviceCode}
+          />
+          <InfoFact
+            label={installmentText(locale, "field.minimumDownPayment")}
+            value={money(details.minimumDownPaymentCents)}
+          />
+        </InfoGrid>
       </Section>
 
       {details.note ? (
@@ -1173,7 +1287,11 @@ function DetailsActions({
       true,
     );
     return (
-      <View style={styles.actionDock} testID="installment-action-dock">
+      <PosKeyboardAwareScrollView
+        contentContainerStyle={styles.actionDockContent}
+        style={styles.actionDock}
+        testID="installment-action-dock"
+      >
         <Text style={styles.actionDockTitle}>
           {installmentText(locale, "pickup.title")}
         </Text>
@@ -1208,7 +1326,7 @@ function DetailsActions({
             }}
           />
         ) : null}
-      </View>
+      </PosKeyboardAwareScrollView>
     );
   }
 
@@ -1233,7 +1351,11 @@ function DetailsActions({
     ? actionBlockReason(state, state.access.canCancel, true)
     : null;
   return (
-    <View style={styles.actionDock} testID="installment-action-dock">
+    <PosKeyboardAwareScrollView
+      contentContainerStyle={styles.actionDockContent}
+      style={styles.actionDock}
+      testID="installment-action-dock"
+    >
       <View style={styles.actionDockButtons}>
         {selectedDetailsRepayable ? (
           <View style={styles.primaryActionGrow}>
@@ -1242,7 +1364,7 @@ function DetailsActions({
               label={installmentText(
                 locale,
                 state.busy ? "action.working" : "action.continuePayment",
-              )}
+              ) + (state.busy ? "" : `  ${money(details.balanceCents)}`)}
               onPress={() => {
                 if (!onStartRepayment?.(details.installmentGuid)) {
                   onRouteFailure();
@@ -1301,7 +1423,7 @@ function DetailsActions({
           state={state}
         />
       ) : null}
-    </View>
+    </PosKeyboardAwareScrollView>
   );
 }
 
@@ -1512,23 +1634,6 @@ function Section({
   );
 }
 
-function Metric({
-  emphasized = false,
-  label,
-  value,
-}: Readonly<{
-  emphasized?: boolean;
-  label: string;
-  value: string;
-}>) {
-  return (
-    <View style={[styles.metric, emphasized && styles.metricEmphasized]}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue}>{value}</Text>
-    </View>
-  );
-}
-
 function StatusPill({
   locale,
   status,
@@ -1681,6 +1786,7 @@ function ActionButton({
   accessibilityLabel,
   compact = false,
   disabled = false,
+  expanded,
   label,
   onPress,
   selected = false,
@@ -1693,6 +1799,7 @@ function ActionButton({
   accessibilityLabel?: string;
   compact?: boolean;
   disabled?: boolean;
+  expanded?: boolean;
   label: string;
   onPress(): void;
   selected?: boolean;
@@ -1706,7 +1813,7 @@ function ActionButton({
       accessibilityHint={accessibilityHint}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
-      accessibilityState={{ disabled, selected }}
+      accessibilityState={{ disabled, expanded, selected }}
       disabled={disabled}
       onPress={onPress}
       sound={sound ?? (tone.startsWith("danger") ? "danger" : "tap")}
@@ -1821,13 +1928,13 @@ const styles = StyleSheet.create({
   header: {
     minHeight: 76,
     maxHeight: 80,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     borderBottomColor: posColors.border,
     borderBottomWidth: 1,
     backgroundColor: posColors.surface,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 8,
   },
   headerIdentity: {
     flex: 1,
@@ -1835,7 +1942,7 @@ const styles = StyleSheet.create({
   },
   title: {
     color: posColors.ink,
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "800",
   },
   connectionState: {
@@ -1877,9 +1984,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   historyPane: {
-    padding: 12,
+    padding: 10,
   },
   detailsPane: {
+    minHeight: 0,
+  },
+  detailsBody: {
+    flex: 1,
     minHeight: 0,
   },
   panelHeader: {
@@ -1915,6 +2026,25 @@ const styles = StyleSheet.create({
     backgroundColor: posColors.canvas,
     paddingHorizontal: 11,
     fontSize: 14,
+    borderRadius: 6,
+  },
+  advancedFilters: {
+    backgroundColor: posColors.canvas,
+    borderColor: posColors.border,
+    borderRadius: 6,
+    borderWidth: 1,
+    gap: 2,
+    padding: 8,
+  },
+  activeFilterSummary: {
+    alignSelf: "flex-start",
+    backgroundColor: posColors.blueSoft,
+    borderRadius: 6,
+    color: posColors.ink,
+    fontSize: 12,
+    fontWeight: "700",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
   },
   filterColumns: {
     flexDirection: "row",
@@ -1947,7 +2077,7 @@ const styles = StyleSheet.create({
     paddingBottom: 7,
   },
   orderList: {
-    gap: 7,
+    gap: 0,
     paddingTop: 4,
     paddingBottom: 10,
   },
@@ -1955,9 +2085,9 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
   orderRow: {
-    minHeight: 82,
+    minHeight: 90,
     borderColor: posColors.border,
-    borderWidth: 1,
+    borderBottomWidth: 1,
     padding: 10,
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1992,10 +2122,15 @@ const styles = StyleSheet.create({
     minWidth: 102,
   },
   balanceAmount: {
-    color: posColors.ink,
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: "800",
     marginTop: 5,
+  },
+  balanceAmountActive: {
+    color: posColors.orange,
+  },
+  balanceAmountSettled: {
+    color: posColors.green,
   },
   balanceLabel: {
     color: posColors.mutedInk,
@@ -2005,51 +2140,81 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 8,
   },
-  compactDetailsHeader: {
-    minHeight: 58,
-    paddingHorizontal: 10,
-    borderBottomColor: posColors.border,
-    borderBottomWidth: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  compactDetailsTitle: {
-    color: posColors.ink,
-    fontSize: 14,
-    fontWeight: "800",
-  },
   detailsScroll: {
     flex: 1,
   },
   detailsContent: {
     flexGrow: 1,
-    padding: 14,
-    gap: 12,
+    padding: 12,
+    gap: 14,
   },
-  detailHeading: {
+  balanceSummary: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 6,
+    borderWidth: 1,
+    gap: 8,
+    padding: 12,
+  },
+  summaryHeading: {
+    alignItems: "center",
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 12,
-  },
-  detailIdentity: {
-    flex: 1,
-    minWidth: 0,
-  },
-  detailUtilities: {
-    alignItems: "flex-end",
-    gap: 7,
+    gap: 10,
   },
   detailNumber: {
     color: posColors.ink,
-    fontSize: 22,
+    flex: 1,
+    fontSize: 18,
     fontWeight: "800",
   },
   detailCustomer: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  balanceHero: {
+    gap: 2,
+    marginTop: 2,
+  },
+  balanceHeroLabel: {
     color: posColors.mutedInk,
-    fontSize: 13,
-    marginTop: 3,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  balanceHeroAmount: {
+    color: posColors.orange,
+    fontSize: 32,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  progressTrack: {
+    backgroundColor: posColors.border,
+    borderRadius: 3,
+    height: 6,
+    overflow: "hidden",
+    width: "100%",
+  },
+  progressFill: {
+    backgroundColor: posColors.orange,
+    borderRadius: 3,
+    height: "100%",
+  },
+  summaryFooter: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "space-between",
+  },
+  summaryPaidText: {
+    color: posColors.ink,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  summaryDownText: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontWeight: "700",
   },
   reprintFeedback: {
     fontSize: 12,
@@ -2061,32 +2226,6 @@ const styles = StyleSheet.create({
   },
   reprintFailure: {
     color: posColors.red,
-  },
-  metrics: {
-    flexDirection: "row",
-    gap: 7,
-  },
-  metric: {
-    flex: 1,
-    minWidth: 0,
-    borderColor: posColors.border,
-    borderWidth: 1,
-    padding: 9,
-    backgroundColor: posColors.canvas,
-  },
-  metricEmphasized: {
-    backgroundColor: posColors.orangeSoft,
-    borderColor: posColors.orange,
-  },
-  metricLabel: {
-    color: posColors.mutedInk,
-    fontSize: 10,
-  },
-  metricValue: {
-    color: posColors.ink,
-    fontSize: 16,
-    fontWeight: "800",
-    marginTop: 3,
   },
   section: {
     borderTopColor: posColors.border,
@@ -2136,11 +2275,7 @@ const styles = StyleSheet.create({
     minWidth: 126,
     flexGrow: 1,
     flexBasis: "30%",
-    borderColor: posColors.border,
-    borderWidth: StyleSheet.hairlineWidth,
-    backgroundColor: posColors.canvas,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingVertical: 3,
   },
   infoLabel: {
     color: posColors.mutedInk,
@@ -2178,12 +2313,21 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   actionDock: {
-    marginTop: "auto",
-    borderColor: posColors.border,
-    borderWidth: 1,
-    backgroundColor: posColors.canvas,
-    padding: 10,
+    backgroundColor: posColors.surface,
+    borderTopColor: posColors.border,
+    borderTopWidth: 1,
+    flexGrow: 0,
+    maxHeight: "60%",
+    shadowColor: posColors.ink,
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  actionDockContent: {
     gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   actionDockTitle: {
     color: posColors.ink,
@@ -2263,6 +2407,7 @@ const styles = StyleSheet.create({
   statusPill: {
     paddingHorizontal: 8,
     paddingVertical: 4,
+    borderRadius: 6,
     borderWidth: 1,
   },
   statusActive: {
@@ -2363,6 +2508,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: posColors.orange,
     borderColor: posColors.orange,
+    borderRadius: 6,
     borderWidth: 1,
   },
   buttonCompact: {

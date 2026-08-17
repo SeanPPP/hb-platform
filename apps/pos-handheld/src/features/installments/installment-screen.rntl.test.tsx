@@ -44,6 +44,7 @@ test("任意视口采用单列列表进入详情，主要触控区不少于 48px
     workspaceGap: 0,
   });
   expect(installmentLayoutForWidth(899).compact).toBe(true);
+  expect(installmentLayoutForWidth(360).compact).toBe(true);
   expect(INSTALLMENTS_MIN_TOUCH_TARGET).toBe(48);
 
   const onBack = jest.fn();
@@ -152,6 +153,20 @@ test("搜索显式提交，状态、日期和设备范围立即调用异步筛�
   await fireEvent.press(screen.getByTestId("installments-search-submit"));
   expect(spies.load).toHaveBeenCalledTimes(1);
 
+  expect(screen.getByTestId("installments-filter-Active")).toBeTruthy();
+  expect(screen.queryByTestId("installments-date-today")).toBeNull();
+  expect(screen.queryByTestId("installments-scope-device")).toBeNull();
+  expect(
+    screen.getByTestId("installments-filter-toggle").props.accessibilityState
+      .expanded,
+  ).toBe(false);
+  await fireEvent.press(screen.getByTestId("installments-filter-toggle"));
+  expect(screen.getByTestId("installments-filter-advanced")).toBeTruthy();
+  expect(
+    screen.getByTestId("installments-filter-toggle").props.accessibilityState
+      .expanded,
+  ).toBe(true);
+
   await fireEvent.press(screen.getByTestId("installments-filter-Active"));
   await fireEvent.press(screen.getByTestId("installments-date-today"));
   await fireEvent.press(screen.getByTestId("installments-scope-device"));
@@ -177,6 +192,93 @@ test("搜索显式提交，状态、日期和设备范围立即调用异步筛�
   );
   await fireEvent.press(screen.getByTestId("installments-load-more"));
   expect(spies.loadMore).toHaveBeenCalledTimes(1);
+  await screen.unmount();
+});
+
+test("列表以余额优先，详情展示付款进度并把续付金额放入固定操作区", async () => {
+  const { presenter, spies } = createPresenter({
+    details: details("Active"),
+    orders: [summary()],
+  });
+  const screen = await render(
+    <InstallmentScreen
+      onStartRepayment={() => true}
+      presenter={presenter}
+    />,
+  );
+  await waitFor(() => expect(spies.load).toHaveBeenCalledTimes(1));
+
+  const row = screen.getByTestId(`installment-row-${GUID}`);
+  expect(
+    screen.getByTestId(`installment-row-balance-${GUID}`),
+  ).toHaveTextContent("$80.00");
+  const rowLabel = String(row.props.accessibilityLabel);
+  expect(rowLabel.indexOf("Balance")).toBeLessThan(
+    rowLabel.indexOf("Active"),
+  );
+
+  await fireEvent.press(row);
+  expect(screen.getByText("Installment details")).toBeTruthy();
+  expect(screen.getByTestId("installment-details-body")).toBeTruthy();
+  expect(screen.getByTestId("installment-balance-summary")).toBeTruthy();
+  expect(screen.getByTestId("installment-balance-amount")).toHaveTextContent(
+    "$5.00",
+  );
+  expect(screen.getByTestId("installment-paid-amount")).toHaveTextContent(
+    "$95.00",
+  );
+  expect(screen.getByTestId("installment-total-amount")).toHaveTextContent(
+    "$100.00",
+  );
+  const progress = screen.getByTestId("installment-payment-progress");
+  expect(progress.props.accessibilityValue).toEqual({
+    min: 0,
+    max: 100,
+    now: 95,
+  });
+  expect(progress.props.accessibilityLabel).toBe(
+    "Payment progress, paid $95.00 of $100.00",
+  );
+  expect(screen.getByTestId("installment-action-dock")).toBeTruthy();
+  expect(
+    screen.getByTestId("installment-continue-to-payment"),
+  ).toHaveTextContent("Continue payment  $5.00");
+  await screen.unmount();
+});
+
+test("高级筛选收起后仍显示具体生效条件", async () => {
+  const { presenter } = createPresenter({
+    dateFilter: { preset: "today", fromDate: null, toDate: null },
+    deviceScope: "device",
+    orders: [summary()],
+    statusFilter: "Cancelled",
+  });
+  const screen = await render(<InstallmentScreen presenter={presenter} />);
+
+  expect(screen.getByTestId("installments-filter-advanced")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("installments-filter-toggle"));
+  expect(screen.queryByTestId("installments-filter-advanced")).toBeNull();
+  expect(screen.getByTestId("installments-filter-summary")).toHaveTextContent(
+    "Cancelled · Today · This device",
+  );
+  await screen.unmount();
+});
+
+test("自定义日期筛选收起后摘要保留起止日期", async () => {
+  const { presenter } = createPresenter({
+    dateFilter: {
+      preset: "custom",
+      fromDate: "2026-08-01",
+      toDate: "2026-08-17",
+    },
+    orders: [summary()],
+  });
+  const screen = await render(<InstallmentScreen presenter={presenter} />);
+
+  await fireEvent.press(screen.getByTestId("installments-filter-toggle"));
+  expect(screen.getByTestId("installments-filter-summary")).toHaveTextContent(
+    "Custom 2026-08-01 – 2026-08-17",
+  );
   await screen.unmount();
 });
 
@@ -471,7 +573,7 @@ test("busy 与 online-required 明确说明阻塞原因并禁用主操作", asyn
 });
 
 test("窄屏列表优先，选中后详情接管并可返回列表", async () => {
-  setWindowWidth(800);
+  setWindowWidth(390);
   const { presenter, spies } = createPresenter({
     details: details("Active"),
     orders: [summary()],
@@ -489,6 +591,38 @@ test("窄屏列表优先，选中后详情接管并可返回列表", async () =>
   expect(screen.getByTestId("installments-details-pane")).toBeTruthy();
   await fireEvent.press(screen.getByTestId("installments-details-back"));
   expect(screen.getByTestId("installments-list")).toBeTruthy();
+  await screen.unmount();
+});
+
+test("390px 大字体下详情主操作与重打入口仍可达", async () => {
+  Dimensions.set({
+    window: { width: 390, height: 844, scale: 3, fontScale: 1.3 },
+    screen: { width: 390, height: 844, scale: 3, fontScale: 1.3 },
+  });
+  const { presenter } = createPresenter(
+    {
+      details: details("Active"),
+      orders: [summary()],
+      selectedGuid: GUID,
+    },
+    true,
+  );
+  const screen = await render(
+    <InstallmentScreen onStartRepayment={() => true} presenter={presenter} />,
+  );
+
+  expect(screen.getByTestId("installment-balance-summary")).toBeTruthy();
+  expect(screen.getByTestId("installment-action-dock")).toBeTruthy();
+  for (const testID of [
+    "installments-details-back",
+    "installment-reprint",
+    "installment-continue-to-payment",
+    "installment-more-actions",
+  ]) {
+    expect(StyleSheet.flatten(screen.getByTestId(testID).props.style).minHeight).toBe(
+      INSTALLMENTS_MIN_TOUCH_TARGET,
+    );
+  }
   await screen.unmount();
 });
 
@@ -643,10 +777,7 @@ test("打印中禁用新建、续付、危险操作与取货入口", async () =>
     />,
   );
 
-  expect(
-    activeScreen.getByTestId("installments-primary-action").props
-      .accessibilityState.disabled,
-  ).toBe(true);
+  expect(activeScreen.queryByTestId("installments-primary-action")).toBeNull();
   expect(
     activeScreen.getByTestId("installment-continue-to-payment").props
       .accessibilityState.disabled,
@@ -661,7 +792,6 @@ test("打印中禁用新建、续付、危险操作与取货入口", async () =>
   await fireEvent.press(
     activeScreen.getByTestId("installment-continue-to-payment"),
   );
-  await fireEvent.press(activeScreen.getByTestId("installments-primary-action"));
   expect(onStartRepayment).not.toHaveBeenCalled();
   expect(onStartCreate).not.toHaveBeenCalled();
   await activeScreen.unmount();

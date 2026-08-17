@@ -1,5 +1,6 @@
 import { expect, jest, test } from "@jest/globals";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 
 import type {
   NoReceiptReturnItem,
@@ -43,17 +44,34 @@ test("小票退货覆盖查询、数量、容量选择、Unknown 恢复和成功
   );
   await fireEvent.press(screen.getByTestId("return-order-search"));
   await waitFor(() =>
-    expect(screen.getByTestId("return-open-confirmation")).toBeTruthy(),
+    expect(screen.getByTestId("return-selection-footer")).toBeTruthy(),
   );
   expect(screen.getByTestId("handheld-state-returns-lookup")).toBeTruthy();
-  expect(screen.queryByTestId("return-row-return-line-1")).toBeNull();
-  await fireEvent.press(screen.getByTestId("return-open-confirmation"));
-  expect(screen.getByTestId("handheld-state-return-confirmation")).toBeTruthy();
   expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy();
+  expect(
+    StyleSheet.flatten(
+      screen.getByTestId("return-row-return-line-1").props.style,
+    ).minHeight,
+  ).toBe(104);
+  expect(screen.queryByTestId("return-order-query")).toBeNull();
+  expect(
+    screen.getByTestId("return-next").props.accessibilityState.disabled,
+  ).toBe(true);
 
   await fireEvent.press(
     screen.getByTestId("return-increase-return-line-1"),
   );
+  expect(screen.getByTestId("return-selected-count").props.children).toBe(
+    "1 item selected",
+  );
+  expect(screen.getByTestId("return-selected-total").props.children).toBe(
+    "$10.00",
+  );
+  expect(
+    screen.getByTestId("return-next").props.accessibilityState.disabled,
+  ).toBe(false);
+  await fireEvent.press(screen.getByTestId("return-next"));
+  expect(screen.getByTestId("handheld-state-return-confirmation")).toBeTruthy();
   expect(
     screen.getByTestId("return-confirm").props.accessibilityState.disabled,
   ).toBe(false);
@@ -89,13 +107,12 @@ test("路由提供 orderRef 时只自动执行一次既有小票查询", async (
   );
 
   await waitFor(() =>
-    expect(screen.getByTestId("return-open-confirmation")).toBeTruthy(),
+    expect(screen.getByTestId("return-selection-footer")).toBeTruthy(),
   );
   expect(loadReceipt).toHaveBeenCalledTimes(1);
   expect(loadReceipt).toHaveBeenCalledWith(
     "10000000-0000-4000-8000-000000000001",
   );
-  await fireEvent.press(screen.getByTestId("return-open-confirmation"));
   expect(screen.getByTestId("return-row-return-line-1")).toBeTruthy();
 });
 
@@ -128,6 +145,9 @@ test("无小票 OPENITEM 走在线主管路径并提供中英文一致的 48px �
   );
   await fireEvent.press(screen.getByTestId("return-open-confirmation"));
   expect(screen.getByText("散装商品")).toBeTruthy();
+  expect(screen.getByTestId("return-selected-total").props.children).toBe(
+    "$4.50",
+  );
   expect(authorizationCalls).toBe(1);
   expect(screen.getByText("数量 1")).toBeTruthy();
   expect(
@@ -160,7 +180,7 @@ test("支付边界等待页隐藏确认和退款方式，避免重复操作", as
     <ReturnScreen locale="en" presenter={presenter} />,
   );
 
-  await fireEvent.press(screen.getByTestId("return-open-confirmation"));
+  await fireEvent.press(screen.getByTestId("return-next"));
   await fireEvent.press(screen.getByTestId("return-confirm"));
   expect(screen.getByTestId("return-waiting")).toBeTruthy();
   expect(screen.queryByTestId("return-confirm")).toBeNull();
@@ -202,9 +222,12 @@ test("刷卡订单退款方式开放现金/代金券代替，默认仍按原支�
   );
   await fireEvent.press(screen.getByTestId("return-order-search"));
   await waitFor(() =>
-    expect(screen.getByTestId("return-open-confirmation")).toBeTruthy(),
+    expect(screen.getByTestId("return-selection-footer")).toBeTruthy(),
   );
-  await fireEvent.press(screen.getByTestId("return-open-confirmation"));
+  await fireEvent.press(
+    screen.getByTestId("return-increase-return-line-1"),
+  );
+  await fireEvent.press(screen.getByTestId("return-next"));
 
   // 代替选项：刷卡订单上同时出现现金、礼券按钮。
   expect(screen.getByTestId("return-method-cash")).toBeTruthy();
@@ -213,9 +236,6 @@ test("刷卡订单退款方式开放现金/代金券代替，默认仍按原支�
   // 默认未选择时显示按原支付方式退回的提示。
   expect(screen.getByText(/default to the original tender/i)).toBeTruthy();
 
-  await fireEvent.press(
-    screen.getByTestId("return-increase-return-line-1"),
-  );
   // 不点选代替方式：仍按原支付方式（银行卡）退回。
   await fireEvent.press(screen.getByTestId("return-confirm"));
   expect(execution.executeCalls).toHaveLength(1);
@@ -253,12 +273,12 @@ test("刷卡订单选现金代替：整单按现金退款且仍绑定原卡容�
   );
   await fireEvent.press(screen.getByTestId("return-order-search"));
   await waitFor(() =>
-    expect(screen.getByTestId("return-open-confirmation")).toBeTruthy(),
+    expect(screen.getByTestId("return-selection-footer")).toBeTruthy(),
   );
-  await fireEvent.press(screen.getByTestId("return-open-confirmation"));
   await fireEvent.press(
     screen.getByTestId("return-increase-return-line-1"),
   );
+  await fireEvent.press(screen.getByTestId("return-next"));
 
   // 选择现金代替刷卡退款。
   await fireEvent.press(screen.getByTestId("return-method-cash"));

@@ -106,6 +106,31 @@ router.acceptHidText("A".repeat(33));
 router.acceptHidText("GOOD\n");
 assert.equal(events.at(-1)?.value, "GOOD", "超长缓冲必须丢弃，不能污染下一码");
 
+// 扫码器未配置回车后缀：停止输入超过 idleMs 后应自动提交（等效自动追加回车）。
+router.setContext("product");
+router.acceptHidText("AUTO");
+now += 81;
+assert.equal(router.flushPartialIfIdle(), true, "停顿超过 idleMs 应自动提交半段");
+assert.equal(events.at(-1)?.value, "AUTO", "无回车扫码应在空闲时自动提交完整条码");
+assert.equal(events.at(-1)?.source, "hid", "自动提交的来源仍为 hid");
+
+// 失焦（setCaptureActive(false)）必须清空缓冲：残留半段在恢复前不得被自动提交。
+router.setContext("product");
+router.acceptHidText("RESIDUE");
+router.setCaptureActive(false);
+now += 81;
+assert.equal(router.flushPartialIfIdle(), false, "失焦后缓冲已清空，不得自动提交残留");
+router.setCaptureActive(true);
+
+// 停顿未超过 idleMs 不得自动提交；超过后提交并清空缓冲，空缓冲不再提交。
+router.acceptHidText("B");
+now += 40;
+assert.equal(router.flushPartialIfIdle(), false, "未超过 idleMs 不得自动提交");
+now += 41;
+assert.equal(router.flushPartialIfIdle(), true, "超过 idleMs 后应自动提交半段 B");
+assert.equal(events.at(-1)?.value, "B", "自动提交的值为超时的半段");
+assert.equal(router.flushPartialIfIdle(), false, "空缓冲不得自动提交");
+
 console.log("hid-scanner.test.ts: ok");
 
 function scanSummary(event: (typeof events)[number] | undefined) {
