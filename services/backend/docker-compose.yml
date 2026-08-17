@@ -72,6 +72,9 @@ services:
       # 旧移动端与独立手持端按 EAS project 显式映射到不同 AppKey，避免构建记录串包。
       - EasWebhook__ProjectAppKeys__hbweb-expo=mobile
       - EasWebhook__ProjectAppKeys__hb-pos-handheld=pos-handheld
+      # 手持端策略候选必须绑定独立 EAS 项目和固定 OTA channel；不在此开启旧配置式全局策略。
+      - PosHandheldUpdatePolicy__EasProjectName=hb-pos-handheld
+      - PosHandheldUpdatePolicy__OtaChannel=pos-handheld-production
       - EasWebhook__AcceptedProfiles__0=preview
       - EasWebhook__AcceptedProfiles__1=production
       - Translation__Provider=deepseek

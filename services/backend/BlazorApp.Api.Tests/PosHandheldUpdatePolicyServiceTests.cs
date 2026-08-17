@@ -607,6 +607,24 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         );
     }
 
+    [Fact]
+    public void ProductionCompose_注入手持Pos精确Ota候选身份()
+    {
+        var compose = File.ReadAllText(
+            Path.Combine(FindBackendRoot(), "docker-compose.yml")
+        );
+
+        // 候选服务会在查询 OTA 表前校验项目身份和固定 channel；生产 compose 必须显式提供。
+        Assert.Contains(
+            "PosHandheldUpdatePolicy__EasProjectName=hb-pos-handheld",
+            compose
+        );
+        Assert.Contains(
+            "PosHandheldUpdatePolicy__OtaChannel=pos-handheld-production",
+            compose
+        );
+    }
+
     public void Dispose()
     {
         db.Dispose();
