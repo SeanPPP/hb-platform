@@ -11,7 +11,10 @@ let mockCameraScannerProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
 let mockSalesRouteFocusEffect: (() => void) | null;
-type MockSalesFeedbackEvent = Readonly<{ kind: string }>;
+type MockSalesFeedbackEvent = Readonly<{
+  kind: string;
+  timingId?: string;
+}>;
 const mockSalesFeedbackSubscription: {
   listener?: (event: MockSalesFeedbackEvent) => void;
 } = {};
@@ -22,6 +25,8 @@ const mockUnsubscribeSalesFeedback = jest.fn();
 const mockSubscribeSalesFeedback =
   jest.fn<(listener: (event: MockSalesFeedbackEvent) => void) => () => void>();
 const mockPlaySound = jest.fn();
+const mockExpectSound = jest.fn();
+const mockNoteHidCharacter = jest.fn();
 const mockRouterPush = jest.fn();
 const mockRouterReplace = jest.fn();
 const mockHasRecoveryRequired = jest.fn<() => Promise<boolean>>();
@@ -86,6 +91,14 @@ jest.mock("@/i18n", () => ({
 
 jest.mock("@/ui/feedback/pos-sound-context", () => ({
   usePosSound: () => ({ play: mockPlaySound }),
+}));
+
+jest.mock("@/features/sales/runtime/scan-timing", () => ({
+  scanTiming: {
+    expectSound: (timingId: string | undefined, cue: string) =>
+      mockExpectSound(timingId, cue),
+    noteHidCharacter: () => mockNoteHidCharacter(),
+  },
 }));
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
@@ -385,6 +398,11 @@ test("销售反馈逐项映射声音 cue，并在路由卸载时解除订阅", a
   }
 
   expect(mockPlaySound.mock.calls).toEqual(cases.map(([, cue]) => [cue]));
+  mockSalesFeedbackSubscription.listener?.({
+    kind: "added",
+    timingId: "scan-1",
+  });
+  expect(mockExpectSound).toHaveBeenCalledWith("scan-1", "cart-added");
   await screen.unmount();
   expect(mockUnsubscribeSalesFeedback).toHaveBeenCalledTimes(1);
 });
@@ -585,6 +603,9 @@ test("扫码回调不等待后台在线查询，并把实际 HID/相机来源传
   await waitFor(() => {
     expect(screen.getByTestId("sales-screen")).toBeTruthy();
   });
+
+  mockRouteCaptureProps.onHidTextChange();
+  expect(mockNoteHidCharacter).toHaveBeenCalledTimes(1);
 
   const firstResult = mockRouteCaptureProps.onScan("930000000001");
   const secondResult = mockRouteCaptureProps.onScan("930000000002", "camera");

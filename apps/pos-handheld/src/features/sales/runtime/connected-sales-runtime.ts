@@ -32,6 +32,7 @@ import {
   quickOrderDiscountPermission,
   type SalesOperationSecurity,
 } from "@/features/sales/runtime/sales-operation-security";
+import { scanTiming } from "@/features/sales/runtime/scan-timing";
 
 export const SALES_NEW_TRANSACTIONS_DISABLED =
   "NEW_TRANSACTIONS_DISABLED";
@@ -44,15 +45,20 @@ export type LookupOutcome = Readonly<{
   source: LookupSource;
   kind: "added" | "incremented" | "not-found" | "failed-blocked";
   lineId?: string;
+  /** 临时性能测量会话 id；仅供 UI 声音桥关联原生播放时刻。 */
+  timingId?: string;
 }>;
 
 export type LookupAttemptOptions = Readonly<{
   source?: LookupSource;
+  /** 临时性能测量会话 id，仅供 scan-timing 打点使用；业务逻辑不得读取。 */
+  timingId?: string;
 }>;
 
 type LookupAttempt = {
   readonly attemptId: string;
   readonly source: LookupSource;
+  readonly timingId?: string;
   terminalPublished: boolean;
 };
 
@@ -823,7 +829,10 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     lookupCode: string,
     options: LookupAttemptOptions = {},
   ): Promise<string | null> {
-    const attempt = this.createLookupAttempt(options.source ?? "manual");
+    const attempt = this.createLookupAttempt(
+      options.source ?? "manual",
+      options.timingId,
+    );
     try {
       this.sessionGuard.assertActive();
       this.preparedCheckoutGate.assertMutable();
@@ -1271,11 +1280,15 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     }
   }
 
-  private createLookupAttempt(source: LookupSource): LookupAttempt {
+  private createLookupAttempt(
+    source: LookupSource,
+    timingId?: string,
+  ): LookupAttempt {
     this.nextLookupAttemptId += 1;
     return {
       attemptId: `lookup-${this.nextLookupAttemptId}`,
       source,
+      ...(timingId === undefined ? {} : { timingId }),
       terminalPublished: false,
     };
   }
@@ -1324,9 +1337,15 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
   ): boolean {
     if (attempt.terminalPublished) return false;
     attempt.terminalPublished = true;
+    if (terminal.kind === "added" || terminal.kind === "incremented") {
+      scanTiming.mark(attempt.timingId, "cart-published");
+    }
     this.notifyLookupOutcome({
       attemptId: attempt.attemptId,
       source: attempt.source,
+      ...(attempt.timingId === undefined
+        ? {}
+        : { timingId: attempt.timingId }),
       ...terminal,
     });
     return true;

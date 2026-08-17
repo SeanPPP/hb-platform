@@ -197,6 +197,32 @@ test("在线命中按当前目录代次持久覆盖本地商品", async () => {
   });
 });
 
+test("精确查码把等值谓词下推到目录候选分支并使用索引", async () => {
+  const connection = new ExactLookupPlanConnection(
+    new DatabaseSync(":memory:"),
+  );
+  try {
+    await applyMigrations(connection, () => T0);
+    await insertSnapshot(connection, "snapshot-1", "active");
+    await insertCatalogItem(connection, "snapshot-1", item());
+
+    const result = await createRepository(connection).findExact(
+      "STORE-1",
+      "TEA-1",
+    );
+
+    assert.equal(result?.lookupCodeNormalized, "TEA-1");
+    assert.ok(connection.exactLookupPlan.length > 0);
+    assert.equal(
+      connection.exactLookupPlan.some((detail) => /\bSCAN items\b/.test(detail)),
+      false,
+      connection.exactLookupPlan.join("\n"),
+    );
+  } finally {
+    await connection.close();
+  }
+});
+
 test("同一物理 active 原地换代后旧覆盖立即隔离，在途旧代次写入被拒绝", async () => {
   await withMigratedDatabase(async (connection) => {
     await insertSnapshot(connection, "snapshot-1", "active");
@@ -618,6 +644,24 @@ class ActivateAfterActiveReadConnection extends SystemSqliteConnection {
       );
     }
     return rows;
+  }
+}
+
+class ExactLookupPlanConnection extends SystemSqliteConnection {
+  public exactLookupPlan: string[] = [];
+
+  public override async getFirst<T extends object>(
+    sql: string,
+    parameters: readonly SqlValue[] = [],
+  ): Promise<T | null> {
+    if (sql.includes("LEFT JOIN candidate")) {
+      const rows = await super.getAll<{ detail: string }>(
+        `EXPLAIN QUERY PLAN ${sql}`,
+        parameters,
+      );
+      this.exactLookupPlan = rows.map((row) => row.detail);
+    }
+    return super.getFirst<T>(sql, parameters);
   }
 }
 

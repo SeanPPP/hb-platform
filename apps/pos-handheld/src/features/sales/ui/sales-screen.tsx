@@ -16,6 +16,7 @@ import {
   Image,
   Modal,
   PanResponder,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -33,6 +34,12 @@ import {
   type SalesCopyKey,
   type SalesLocale,
 } from "./sales-copy";
+import {
+  createInitialSalesHidScanState,
+  reduceSalesHidScanChange,
+  SALES_HID_SUBMIT_IDLE_MS,
+  type SalesHidScanIdleState,
+} from "./sales-hid-scan-idle";
 import {
   applySalesNumberKey,
   SalesNumberKeypad,
@@ -57,6 +64,7 @@ import {
 
 import type { CartLine, CartSnapshot } from "@/core/contracts";
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import { scanTiming } from "@/features/sales/runtime/scan-timing";
 import {
   PosKeyboardAwareFlatList,
   PosKeyboardAwareTextInput,
@@ -238,6 +246,10 @@ export function SalesScreen({
   }> | null>(null);
   const [searchSoftInputOnFocus, setSearchSoftInputOnFocus] = useState(false);
   const searchInputRef = useRef<NativeTextInput>(null);
+  const hidScanStateRef = useRef<SalesHidScanIdleState>(
+    createInitialSalesHidScanState(state.query),
+  );
+  const hidIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cartListRef = useRef<FlatList<CartLine>>(null);
   const cartLinesRef = useRef(state.cart.lines);
   cartLinesRef.current = state.cart.lines;
@@ -440,6 +452,10 @@ export function SalesScreen({
       presenter.subscribeFeedback((event) => {
         if (event.source === "hid" || event.source === "camera") {
           setLastScanFeedback(event);
+          if (event.kind === "added" || event.kind === "incremented") {
+            setSearchDrawerVisible(false);
+            setSearchResultsQuery(null);
+          }
         }
       }),
     [presenter],
@@ -525,6 +541,85 @@ export function SalesScreen({
     searchKeyboardTimerRef.current = null;
   };
 
+  const clearHidIdleTimer = (): void => {
+    if (hidIdleTimerRef.current === null) return;
+    clearTimeout(hidIdleTimerRef.current);
+    hidIdleTimerRef.current = null;
+  };
+
+  const submitPendingHidScan = (): void => {
+    const current = hidScanStateRef.current;
+    if (!current.confirmed || !current.pendingCode) return;
+    const draft = current.baseline;
+    const code = current.pendingCode;
+    clearHidIdleTimer();
+    hidScanStateRef.current = createInitialSalesHidScanState(draft);
+    presenter.setQuery(draft);
+    void presenter.addScannedLookupCode(code, "hid");
+  };
+
+  const scheduleHidScanSubmit = (): void => {
+    clearHidIdleTimer();
+    hidIdleTimerRef.current = setTimeout(() => {
+      hidIdleTimerRef.current = null;
+      submitPendingHidScan();
+    }, SALES_HID_SUBMIT_IDLE_MS);
+  };
+
+  /** 丢弃未完成/未确认的扫码节奏，并恢复扫描前手动查询草稿。 */
+  const discardHidScanDraft = (): void => {
+    clearHidIdleTimer();
+    const current = hidScanStateRef.current;
+    const hadPartial =
+      current.rapidStreak > 0 ||
+      current.confirmed ||
+      current.pendingCode !== null;
+    if (hadPartial) {
+      presenter.setQuery(current.baseline);
+    }
+    hidScanStateRef.current = createInitialSalesHidScanState(
+      hadPartial ? current.baseline : presenter.getState().query,
+    );
+  };
+
+  const handleSearchInputChange = (value: string): void => {
+    // 可见查询框临时接管 HID 时，同样从最后一个字符开始计算端到端耗时。
+    scanTiming.noteHidCharacter();
+    hidScanStateRef.current = reduceSalesHidScanChange(
+      hidScanStateRef.current,
+      {
+        value,
+        nowMs: Date.now(),
+        // Android DataWedge 默认可能整串写入；iOS 继续只按逐字符 HID 节奏识别。
+        dataWedgeBatch: Platform.OS === "android",
+      },
+    );
+    presenter.setQuery(value);
+    if (hidScanStateRef.current.confirmed) {
+      scheduleHidScanSubmit();
+    } else {
+      clearHidIdleTimer();
+    }
+  };
+
+  const handleSearchInputSubmit = (): void => {
+    const current = hidScanStateRef.current;
+    if (current.confirmed && current.pendingCode) {
+      clearHidIdleTimer();
+      const draft = current.baseline;
+      const code = current.pendingCode;
+      hidScanStateRef.current = createInitialSalesHidScanState(draft);
+      presenter.setQuery(draft);
+      void presenter.addScannedLookupCode(code, "hid");
+      return;
+    }
+    // 尚未确认成 HID 的快速输入仍是完整手动查询，不能按半码回滚。
+    resetSearchInputToHidMode(false);
+    searchInputRef.current?.blur();
+    notifyManualInputBlurred();
+    void presenter.addLookupCode();
+  };
+
   const scheduleSearchKeyboardEnable = (requestGeneration: number): void => {
     clearSearchKeyboardTimer();
     searchKeyboardRequestPhaseRef.current = "enabling";
@@ -542,6 +637,7 @@ export function SalesScreen({
 
   const requestSearchKeyboard = (): void => {
     const previousPhase = searchKeyboardRequestPhaseRef.current;
+    discardHidScanDraft();
     clearSearchKeyboardTimer();
     const requestGeneration = searchKeyboardRequestGenerationRef.current + 1;
     searchKeyboardRequestGenerationRef.current = requestGeneration;
@@ -578,7 +674,17 @@ export function SalesScreen({
     }, 0);
   };
 
-  const resetSearchInputToHidMode = (): void => {
+  const resetSearchInputToHidMode = (
+    discardPendingScan: boolean = true,
+  ): void => {
+    if (discardPendingScan) {
+      discardHidScanDraft();
+    } else {
+      clearHidIdleTimer();
+      hidScanStateRef.current = createInitialSalesHidScanState(
+        presenter.getState().query,
+      );
+    }
     clearSearchKeyboardTimer();
     searchKeyboardRequestGenerationRef.current += 1;
     searchKeyboardRequestPhaseRef.current = "idle";
@@ -603,6 +709,7 @@ export function SalesScreen({
   beginNumericInputRef.current = beginNumericInput;
 
   const handleSearchInputBlur = (): void => {
+    discardHidScanDraft();
     if (searchKeyboardRequestPhaseRef.current === "awaiting-blur") {
       const requestGeneration = searchKeyboardRequestGenerationRef.current;
       searchInputRef.current?.setNativeProps({
@@ -704,6 +811,7 @@ export function SalesScreen({
     () => () => {
       clearManualInputBlurTimer();
       clearSearchKeyboardTimer();
+      clearHidIdleTimer();
       searchKeyboardRequestGenerationRef.current += 1;
       searchKeyboardRequestPhaseRef.current = "idle";
       searchInputRef.current?.setNativeProps({
@@ -771,6 +879,10 @@ export function SalesScreen({
 
   const runCombinedProductSearch = (): void => {
     if (combinedSearchPendingRef.current) return;
+    // 搜索按钮提交的是完整手动查询；未达到阈值的快速输入也必须保留。
+    resetSearchInputToHidMode(false);
+    searchInputRef.current?.blur();
+    notifyManualInputBlurred();
     const query = state.query.trim();
     const generation = ++searchRequestGenerationRef.current;
     combinedSearchPendingRef.current = true;
@@ -1576,12 +1688,9 @@ export function SalesScreen({
                 autoCorrect={false}
                 editable={!catalogActionsDisabled}
                 onBlur={handleSearchInputBlur}
-                onChangeText={(value) => presenter.setQuery(value)}
+                onChangeText={handleSearchInputChange}
                 onFocus={handleSearchInputFocus}
-                onSubmitEditing={() => {
-                  resetSearchInputToHidMode();
-                  void presenter.addLookupCode();
-                }}
+                onSubmitEditing={handleSearchInputSubmit}
                 placeholder={t("catalog.searchPlaceholder")}
                 placeholderTextColor="#7B8793"
                 returnKeyType="done"

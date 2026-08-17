@@ -96,9 +96,11 @@ test("每次扫码仅发布一个权威 outcome，并以 disposition 区分新�
 
   await dependencies.workflow.addByLookupCode("930000000001", {
     source: "hid",
+    timingId: "scan-1",
   });
   await dependencies.workflow.addByLookupCode("930000000001", {
     source: "hid",
+    timingId: "scan-2",
   });
   await dependencies.workflow.addProduct({
     productCode: "P-TEA",
@@ -114,12 +116,33 @@ test("每次扫码仅发布一个权威 outcome，并以 disposition 区分新�
       source: outcome.source,
       kind: outcome.kind,
       lineId: outcome.lineId,
+      timingId: outcome.timingId,
     })),
     [
-      { source: "hid", kind: "added", lineId: "line-1" },
-      { source: "hid", kind: "incremented", lineId: "line-1" },
-      { source: "manual", kind: "incremented", lineId: "line-1" },
-      { source: "manual", kind: "added", lineId: "line-4" },
+      {
+        source: "hid",
+        kind: "added",
+        lineId: "line-1",
+        timingId: "scan-1",
+      },
+      {
+        source: "hid",
+        kind: "incremented",
+        lineId: "line-1",
+        timingId: "scan-2",
+      },
+      {
+        source: "manual",
+        kind: "incremented",
+        lineId: "line-1",
+        timingId: undefined,
+      },
+      {
+        source: "manual",
+        kind: "added",
+        lineId: "line-4",
+        timingId: undefined,
+      },
     ],
   );
   assert.equal(new Set(outcomes.map((outcome: any) => outcome.attemptId)).size, 4);

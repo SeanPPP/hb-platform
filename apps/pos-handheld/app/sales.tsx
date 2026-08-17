@@ -26,6 +26,7 @@ import {
 } from "@/features/installments";
 import { LOCAL_HISTORY_VIEW_PERMISSION } from "@/features/local-history/local-history-presenter";
 import { REMOTE_HISTORY_VIEW_PERMISSION } from "@/features/remote-history";
+import { scanTiming } from "@/features/sales/runtime/scan-timing";
 import { resolveTrustedProductImageUri } from "@/features/sales/runtime/trusted-product-image-uri";
 import {
   resolveSalesLocale,
@@ -35,9 +36,9 @@ import {
   type SalesUtilityActionResult,
 } from "@/features/sales/ui";
 import { reconcileSalesToolbarOrder } from "@/features/sales/ui/sales-toolbar-order";
+import { CameraScannerModal } from "@/features/scanner-camera";
 import { SETTINGS_VIEW_PERMISSION } from "@/features/settings";
 import { SPECIAL_PRODUCTS_VIEW_PERMISSION } from "@/features/special-products";
-import { CameraScannerModal } from "@/features/scanner-camera";
 import { toggleAppLanguage } from "@/i18n";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { usePosSound } from "@/ui/feedback/pos-sound-context";
@@ -135,6 +136,9 @@ export default function SalesRoute() {
     },
     [presenter],
   );
+  const noteHidTextChange = useCallback(() => {
+    scanTiming.noteHidCharacter();
+  }, []);
   const handleToolbarOrderChange = useCallback(
     (nextOrder: readonly SalesToolbarActionId[]) => {
       const reconciledOrder = reconcileSalesToolbarOrder(nextOrder);
@@ -291,6 +295,7 @@ export default function SalesRoute() {
       <RouteHidScannerCapture
         context="product"
         enabled={!manualInputActive && !cameraScannerVisible}
+        onHidTextChange={noteHidTextChange}
         onScan={addScannedProduct}
         path="/sales"
       />
@@ -464,23 +469,27 @@ function SalesSoundBridge({
   useEffect(
     () =>
       presenter.subscribeFeedback((event) => {
+        const playMeasured = (cue: Parameters<typeof play>[0]): void => {
+          scanTiming.expectSound(event.timingId, cue);
+          play(cue);
+        };
         switch (event.kind) {
           case "query-found":
           case "query-empty":
           case "query-error":
-            play(event.kind);
+            playMeasured(event.kind);
             return;
           case "added":
-            play("cart-added");
+            playMeasured("cart-added");
             return;
           case "incremented":
-            play("cart-incremented");
+            playMeasured("cart-incremented");
             return;
           case "not-found":
-            play("cart-not-found");
+            playMeasured("cart-not-found");
             return;
           case "failed-blocked":
-            play("cart-failed-blocked");
+            playMeasured("cart-failed-blocked");
         }
       }),
     [play, presenter],

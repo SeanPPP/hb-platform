@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import * as ExpoAudio from "expo-audio";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 
 import { usePosSound } from "./pos-sound-context";
 import { PosSoundProvider } from "./pos-sound-provider";
@@ -12,6 +12,16 @@ import {
   saveButtonSoundEnabled,
   saveSpecialNodeSoundEnabled,
 } from "@/ui/preferences/terminal-ui-preferences";
+
+const mockSoundPlaying = jest.fn();
+const mockDiscardExpectedSound = jest.fn();
+
+jest.mock("@/features/sales/runtime/scan-timing", () => ({
+  scanTiming: {
+    discardExpectedSound: (cue: string) => mockDiscardExpectedSound(cue),
+    soundPlaying: (cue: string) => mockSoundPlaying(cue),
+  },
+}));
 
 jest.mock("@/ui/preferences/terminal-ui-preferences", () => ({
   readButtonSoundEnabled: jest.fn(),
@@ -30,12 +40,17 @@ const mockSaveSpecialNodeSoundEnabled = jest.mocked(
 );
 
 type MockAudioPlayer = {
+  currentStatus: { isLoaded: boolean; playbackState?: string };
+  isLoaded: boolean;
+  volume: number;
   pause: ReturnType<typeof jest.fn>;
   play: ReturnType<typeof jest.fn>;
   release: ReturnType<typeof jest.fn>;
   remove: ReturnType<typeof jest.fn>;
   replace: ReturnType<typeof jest.fn>;
   seekTo: ReturnType<typeof jest.fn>;
+  addListener: ReturnType<typeof jest.fn>;
+  __emitStatus: ReturnType<typeof jest.fn>;
 };
 
 const {
@@ -75,6 +90,10 @@ function SoundProbe() {
         testID="sound-play-result"
       />
       <Pressable
+        onPress={() => play("cart-added")}
+        testID="sound-play-cart-added"
+      />
+      <Pressable
         onPress={() => setButtonSoundEnabled(false)}
         testID="button-sound-disable"
       />
@@ -94,6 +113,12 @@ function SoundProbe() {
   );
 }
 
+const originalPlatform = Platform.OS;
+
+function setPlatform(os: "android" | "ios" | "web") {
+  Object.defineProperty(Platform, "OS", { configurable: true, value: os });
+}
+
 beforeEach(() => {
   __resetAudioMock();
   jest.clearAllMocks();
@@ -105,6 +130,10 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.restoreAllMocks();
+  Object.defineProperty(Platform, "OS", {
+    configurable: true,
+    value: originalPlatform,
+  });
 });
 
 test("Provider 根级预载全部 cue、保留音频会话，并把同类点击从头重播", async () => {
@@ -354,6 +383,316 @@ test("卸载会取消晚到 seek，并暂停、释放全部预载播放器", asy
   pendingSeek.resolve();
   await Promise.resolve();
   expect(preloadedPlayer(0).play).not.toHaveBeenCalled();
+});
+
+test("冷启动首个音效：isLoaded=false 时不播放，load event 后恰好播放一次", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+  player.isLoaded = false;
+  player.currentStatus = { isLoaded: false, playbackState: "buffering" };
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  await Promise.resolve();
+
+  expect(player.seekTo).not.toHaveBeenCalled();
+  expect(player.play).not.toHaveBeenCalled();
+
+  player.__emitStatus({ isLoaded: true });
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(player.seekTo).toHaveBeenCalledTimes(1);
+});
+
+test("Android 媒体输出冷启动先静音预热，结束后只登记一次真实购物车提示音", async () => {
+  setPlatform("android");
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(7);
+  const warmupPlayer = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-cart-added"));
+
+  await waitFor(() => expect(warmupPlayer.play).toHaveBeenCalledTimes(1));
+  expect(player.play).not.toHaveBeenCalled();
+  expect(warmupPlayer.volume).toBeLessThan(0.01);
+  // 模拟 TC26 冷输出：play() 返回后约 100ms 才真正进入 playing。
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  warmupPlayer.__emitStatus({ isLoaded: true, playing: true });
+  expect(mockSoundPlaying).not.toHaveBeenCalled();
+
+  warmupPlayer.__emitStatus({
+    didJustFinish: true,
+    isLoaded: true,
+    playbackState: "ended",
+    playing: false,
+  });
+
+  // 预热等待必须从原生 playing 开始，而不是从过早返回的 play() 开始。
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(player.play).not.toHaveBeenCalled();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(player.seekTo).toHaveBeenCalledTimes(1);
+  expect(warmupPlayer.pause).toHaveBeenCalledTimes(2);
+  expect(warmupPlayer.pause.mock.invocationCallOrder[0]!).toBeLessThan(
+    warmupPlayer.seekTo.mock.invocationCallOrder[0]!,
+  );
+  expect(warmupPlayer.volume).toBe(1);
+  expect(player.volume).toBe(1);
+
+  player.__emitStatus({ isLoaded: true, playing: true });
+  expect(mockSoundPlaying).toHaveBeenCalledTimes(1);
+  expect(mockSoundPlaying).toHaveBeenCalledWith("cart-added");
+});
+
+test("Android 预热窗口内的后续购物车提示音直接播放，不重复预热", async () => {
+  setPlatform("android");
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(7);
+  const warmupPlayer = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-cart-added"));
+  await waitFor(() => expect(warmupPlayer.play).toHaveBeenCalledTimes(1));
+  warmupPlayer.__emitStatus({ isLoaded: true, playing: true });
+  warmupPlayer.__emitStatus({
+    didJustFinish: true,
+    isLoaded: true,
+    playbackState: "ended",
+    playing: false,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+
+  await fireEvent.press(screen.getByTestId("sound-play-cart-added"));
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(2));
+  expect(player.seekTo).toHaveBeenCalledTimes(2);
+  expect(warmupPlayer.play).toHaveBeenCalledTimes(1);
+  expect(player.volume).toBe(1);
+});
+
+test("Android 预热期间禁用音效会取消兜底，结束事件不会迟到反播", async () => {
+  setPlatform("android");
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(7);
+  const warmupPlayer = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-cart-added"));
+  await waitFor(() => expect(warmupPlayer.play).toHaveBeenCalledTimes(1));
+  expect(player.play).not.toHaveBeenCalled();
+  expect(warmupPlayer.volume).toBeLessThan(0.01);
+  warmupPlayer.__emitStatus({ isLoaded: true, playing: true });
+
+  await fireEvent.press(screen.getByTestId("special-sound-disable"));
+  expect(warmupPlayer.volume).toBe(1);
+  warmupPlayer.__emitStatus({
+    didJustFinish: true,
+    isLoaded: true,
+    playbackState: "ended",
+    playing: false,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 220));
+
+  expect(player.play).not.toHaveBeenCalled();
+  expect(mockDiscardExpectedSound).toHaveBeenCalledWith("cart-added");
+});
+
+test("Android 预热收不到 playing 状态时使用 500ms 兜底播放真实提示音", async () => {
+  setPlatform("android");
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(7);
+  const warmupPlayer = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-cart-added"));
+  await waitFor(() => expect(warmupPlayer.play).toHaveBeenCalledTimes(1));
+  expect(player.play).not.toHaveBeenCalled();
+  expect(warmupPlayer.volume).toBeLessThan(0.01);
+
+  await new Promise((resolve) => setTimeout(resolve, 550));
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(player.seekTo).toHaveBeenCalledTimes(1);
+  expect(warmupPlayer.volume).toBe(1);
+  expect(player.volume).toBe(1);
+});
+
+test("已加载玩家请求后即时播放", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+
+  expect(player.isLoaded).toBe(true);
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(player.seekTo).toHaveBeenCalledTimes(1);
+});
+
+test("Android 短音效结束后 isLoaded=false 时仍可从头重播", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+
+  // expo-audio Android 在 STATE_ENDED 时属性 isLoaded=false，
+  // 但 currentStatus 会把已结束且可 seek 的播放器标记为 loaded。
+  player.isLoaded = false;
+  player.currentStatus = { isLoaded: true, playbackState: "ended" };
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(2));
+  expect(player.seekTo).toHaveBeenCalledTimes(2);
+});
+
+test("原生播放器进入 playing 后登记对应 cue 的端到端计时终点", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  player.__emitStatus({ isLoaded: true, playing: true });
+
+  expect(mockSoundPlaying).toHaveBeenCalledWith("tap");
+});
+
+test("新 cue 覆盖未加载的 pending 请求，旧 pending 不反播", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const tapPlayer = preloadedPlayer(0);
+  const resultPlayer = preloadedPlayer(4);
+  tapPlayer.isLoaded = false;
+  tapPlayer.currentStatus = { isLoaded: false, playbackState: "buffering" };
+  resultPlayer.isLoaded = false;
+  resultPlayer.currentStatus = { isLoaded: false, playbackState: "buffering" };
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  await fireEvent.press(screen.getByTestId("sound-play-result"));
+
+  expect(mockDiscardExpectedSound).toHaveBeenCalledWith("tap");
+
+  tapPlayer.__emitStatus({ isLoaded: true });
+  await Promise.resolve();
+  expect(tapPlayer.play).not.toHaveBeenCalled();
+
+  resultPlayer.__emitStatus({ isLoaded: true });
+  await waitFor(() => expect(resultPlayer.play).toHaveBeenCalledTimes(1));
+  expect(tapPlayer.play).not.toHaveBeenCalled();
+});
+
+test("分组禁用会取消未加载的 pending，迟到 load 不反播", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(4);
+  player.isLoaded = false;
+  player.currentStatus = { isLoaded: false, playbackState: "buffering" };
+
+  await fireEvent.press(screen.getByTestId("sound-play-result"));
+  await fireEvent.press(screen.getByTestId("special-sound-disable"));
+  player.__emitStatus({ isLoaded: true });
+  await Promise.resolve();
+
+  expect(player.play).not.toHaveBeenCalled();
+});
+
+test("卸载会取消未加载的 pending，迟到 load 不反播", async () => {
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+  player.isLoaded = false;
+  player.currentStatus = { isLoaded: false, playbackState: "buffering" };
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  screen.unmount();
+  player.__emitStatus({ isLoaded: true });
+  await Promise.resolve();
+
+  expect(player.play).not.toHaveBeenCalled();
+});
+
+test("音频模式就绪前请求保持 pending，模式就绪后才播放", async () => {
+  const pendingMode = deferredVoid();
+  jest
+    .mocked(ExpoAudio.setAudioModeAsync)
+    .mockReturnValueOnce(pendingMode.promise);
+
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  await Promise.resolve();
+  expect(player.seekTo).not.toHaveBeenCalled();
+  expect(player.play).not.toHaveBeenCalled();
+
+  pendingMode.resolve();
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(player.seekTo).toHaveBeenCalledTimes(1);
+});
+
+test("音频模式初始化失败时安全 no-op，不影响业务", async () => {
+  const pendingMode = deferredVoid();
+  jest
+    .mocked(ExpoAudio.setAudioModeAsync)
+    .mockReturnValueOnce(pendingMode.promise);
+
+  const screen = await render(
+    <PosSoundProvider>
+      <SoundProbe />
+    </PosSoundProvider>,
+  );
+  const player = preloadedPlayer(0);
+
+  await fireEvent.press(screen.getByTestId("sound-play-tap"));
+  pendingMode.reject(new Error("audio mode failed"));
+  await Promise.resolve();
+
+  expect(player.play).not.toHaveBeenCalled();
+  expect(player.seekTo).not.toHaveBeenCalled();
 });
 
 function deferredVoid() {

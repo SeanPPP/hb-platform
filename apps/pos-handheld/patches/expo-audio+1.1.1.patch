@@ -1,0 +1,19 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index 320062e..1ac1c42 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -43,7 +43,13 @@ class AudioPlayer(
+ ) : SharedRef<ExoPlayer>(
+   ExoPlayer.Builder(context)
+     .setLooper(context.mainLooper)
+-    .setAudioAttributes(AudioAttributes.DEFAULT, false)
++    .setAudioAttributes(
++      AudioAttributes.Builder()
++        .setUsage(C.USAGE_MEDIA)
++        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
++        .build(),
++      false
++    )
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .build(),

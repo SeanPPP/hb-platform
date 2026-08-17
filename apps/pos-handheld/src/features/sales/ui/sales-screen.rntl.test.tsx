@@ -3,6 +3,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import {
   Dimensions,
   FlatList,
+  Platform,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -29,6 +30,14 @@ import { posColors } from "@/ui/theme";
 
 // 本文件渲染完整销售交互树；为低性能 CI 保留有界余量，避免 5 秒默认值造成假失败。
 jest.setTimeout(15_000);
+
+// UI 行为测试不读取 Expo 构建环境；计时器在独立 node:test 中覆盖。
+jest.mock("@/features/sales/runtime/scan-timing", () => ({
+  scanTiming: {
+    beginHid: () => undefined,
+    noteHidCharacter: () => undefined,
+  },
+}));
 
 jest.mock("@expo/vector-icons", () => {
   const { Text } = jest.requireActual(
@@ -394,6 +403,25 @@ async function openLegacyCash(salesPresenter: SalesPresenter): Promise<void> {
   await act(async () => {
     expect(await salesPresenter.openCash()).toBe(true);
   });
+}
+
+/** 按 HID 逐字符节奏写入搜索框：每个值代表一次受控累计 onChangeText。 */
+async function typeSalesSearchSequence(
+  screen: Awaited<ReturnType<typeof render>>,
+  values: readonly string[],
+  gapMs: number,
+): Promise<void> {
+  for (const value of values) {
+    await fireEvent.changeText(
+      screen.getByTestId("sales-search-input"),
+      value,
+    );
+    if (gapMs > 0) {
+      await act(async () => {
+        jest.advanceTimersByTime(gapMs);
+      });
+    }
+  }
 }
 
 function findRenderedNodesByType(
@@ -3985,6 +4013,481 @@ describe("SalesScreen", () => {
       });
       await pending;
     });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("HID 无回车扫码只提交追加条码并保留手动查询草稿", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 100);
+      expect(screen.getByTestId("sales-search-input").props.value).toBe("ABC");
+
+      await typeSalesSearchSequence(
+        screen,
+        ["ABC1", "ABC12", "ABC123", "ABC1234", "ABC12345", "ABC123456"],
+        50,
+      );
+      expect(addByLookupCode).toHaveBeenCalledTimes(0);
+
+      await act(async () => {
+        jest.advanceTimersByTime(85);
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(1);
+      expect(addByLookupCode).toHaveBeenCalledWith(
+        "123456",
+        expect.objectContaining({ source: "hid" }),
+      );
+      expect(screen.getByTestId("sales-search-input").props.value).toBe("ABC");
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("Android DataWedge 整串写入搜索框后无需回车自动查询并保留草稿", async () => {
+    const originalPlatform = Platform.OS;
+    Object.defineProperty(Platform, "OS", {
+      configurable: true,
+      value: "android",
+    });
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 100);
+
+      // DataWedge 关闭“字符作为事件发送”时会把完整条码一次写入当前输入框。
+      await fireEvent.changeText(
+        screen.getByTestId("sales-search-input"),
+        "ABC123456",
+      );
+      expect(addByLookupCode).toHaveBeenCalledTimes(0);
+
+      await act(async () => {
+        jest.advanceTimersByTime(85);
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(1);
+      expect(addByLookupCode).toHaveBeenCalledWith(
+        "123456",
+        expect.objectContaining({ source: "hid" }),
+      );
+      expect(screen.getByTestId("sales-search-input").props.value).toBe("ABC");
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+      Object.defineProperty(Platform, "OS", {
+        configurable: true,
+        value: originalPlatform,
+      });
+    }
+  });
+
+  it("HID 连续无回车扫码各提交一次且每次恢复同一手动草稿", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 100);
+
+      for (const digit of ["1", "2"] as const) {
+        await typeSalesSearchSequence(
+          screen,
+          [
+            `ABC${digit}`,
+            `ABC${digit.repeat(2)}`,
+            `ABC${digit.repeat(3)}`,
+            `ABC${digit.repeat(4)}`,
+            `ABC${digit.repeat(5)}`,
+            `ABC${digit.repeat(6)}`,
+          ],
+          50,
+        );
+        await act(async () => {
+          jest.advanceTimersByTime(85);
+        });
+        expect(screen.getByTestId("sales-search-input").props.value).toBe(
+          "ABC",
+        );
+      }
+
+      expect(addByLookupCode.mock.calls).toEqual([
+        ["111111", expect.objectContaining({ source: "hid" })],
+        ["222222", expect.objectContaining({ source: "hid" })],
+      ]);
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("HID 带回车立即提交且不因 idle 定时器重复加购", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 100);
+      await typeSalesSearchSequence(
+        screen,
+        ["ABC1", "ABC12", "ABC123", "ABC1234", "ABC12345", "ABC123456"],
+        50,
+      );
+
+      await act(async () => {
+        fireEvent(screen.getByTestId("sales-search-input"), "submitEditing");
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(1);
+      expect(addByLookupCode).toHaveBeenCalledWith(
+        "123456",
+        expect.objectContaining({ source: "hid" }),
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(200);
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("sales-search-input").props.value).toBe("ABC");
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("快速人工输入不足阈值时不误提交为 HID", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(
+        screen,
+        ["A", "AB", "ABC", "ABCD", "ABCDE", "ABCDEF"],
+        100,
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(0);
+      expect(screen.getByTestId("sales-search-input").props.value).toBe(
+        "ABCDEF",
+      );
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("尚未达到 HID 阈值的快速手动输入按回车时完整提交", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 50);
+      await act(async () => {
+        fireEvent(screen.getByTestId("sales-search-input"), "submitEditing");
+      });
+
+      expect(addByLookupCode).toHaveBeenCalledTimes(1);
+      expect(addByLookupCode).toHaveBeenCalledWith("ABC");
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("尚未达到 HID 阈值的快速手动输入点击搜索时完整查询", async () => {
+    const searchProducts = jest.fn(async (_query: string) => []);
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        searchProducts,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 50);
+      await fireEvent.press(screen.getByTestId("sales-search-button"));
+
+      expect(searchProducts).toHaveBeenCalledWith("ABC");
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("blur 丢弃未确认的半码并恢复扫描前草稿", async () => {
+    const addByLookupCode = jest.fn(
+      async (
+        _lookupCode: string,
+        _options?: Readonly<{
+          source?: "manual" | "hid" | "camera";
+          timingId?: string;
+        }>,
+      ) => null,
+    );
+    const salesPresenter = presenter(new ScreenCartPort(cartSnapshot()), {
+      workflow: {
+        ...workflow(),
+        addByLookupCode,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+    jest.useFakeTimers();
+    try {
+      await typeSalesSearchSequence(screen, ["A", "AB", "ABC"], 100);
+      await typeSalesSearchSequence(screen, ["ABC1", "ABC12"], 50);
+      expect(screen.getByTestId("sales-search-input").props.value).toBe(
+        "ABC12",
+      );
+
+      await act(async () => {
+        fireEvent(screen.getByTestId("sales-search-input"), "blur");
+      });
+      expect(screen.getByTestId("sales-search-input").props.value).toBe("ABC");
+
+      await act(async () => {
+        jest.advanceTimersByTime(200);
+      });
+      expect(addByLookupCode).toHaveBeenCalledTimes(0);
+    } finally {
+      jest.useRealTimers();
+      salesPresenter.destroy();
+      await screen.unmount();
+    }
+  });
+
+  it("手动搜索提交前恢复隐藏 HID 并结束手动输入", async () => {
+    const onManualInputFocusChange = jest.fn();
+    const searchProducts = jest.fn(async (_query: string) => []);
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        searchProducts,
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        onManualInputFocusChange={onManualInputFocusChange}
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent(screen.getByTestId("sales-search-input"), "focus");
+    await fireEvent.changeText(
+      screen.getByTestId("sales-search-input"),
+      "奶",
+    );
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+
+    expect(searchProducts).toHaveBeenCalledWith("奶");
+    expect(
+      screen.getByTestId("sales-search-input").props.showSoftInputOnFocus,
+    ).toBe(false);
+    await waitFor(() => {
+      expect(onManualInputFocusChange).toHaveBeenLastCalledWith(false);
+    });
+
+    salesPresenter.destroy();
+    await screen.unmount();
+  });
+
+  it("HID/相机成功反馈关闭搜索结果抽屉", async () => {
+    let publishLookupOutcome: ((event: SalesFeedbackEvent) => void) | undefined;
+    const searchProducts = jest.fn(async (_query: string) => [
+      {
+        productCode: "P-SCAN-1",
+        itemNumber: "I-SCAN-1",
+        lookupCode: "930000000101",
+        displayName: "Scan result 1",
+        unitPriceCents: 250,
+      },
+      {
+        productCode: "P-SCAN-2",
+        itemNumber: "I-SCAN-2",
+        lookupCode: "930000000102",
+        displayName: "Scan result 2",
+        unitPriceCents: 350,
+      },
+    ]);
+    const salesPresenter = presenter(new ScreenCartPort(EMPTY_SALE_CART), {
+      workflow: {
+        ...workflow(),
+        searchProducts,
+        subscribeLookupOutcome(listener) {
+          publishLookupOutcome = listener;
+          return () => {
+            publishLookupOutcome = undefined;
+          };
+        },
+      },
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={salesPresenter}
+        showStatusStrip={false}
+      />,
+    );
+
+    await fireEvent.changeText(
+      screen.getByTestId("sales-search-input"),
+      "奶",
+    );
+    await fireEvent.press(screen.getByTestId("sales-search-button"));
+    expect(screen.getByTestId("sales-search-results-drawer")).toBeTruthy();
+
+    await act(async () => {
+      publishLookupOutcome?.({
+        kind: "added",
+        lineId: "line-scan",
+        source: "camera",
+      });
+    });
+    expect(screen.queryByTestId("sales-search-results-drawer")).toBeNull();
 
     salesPresenter.destroy();
     await screen.unmount();
