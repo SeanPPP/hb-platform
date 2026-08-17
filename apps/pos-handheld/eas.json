@@ -1,8 +1,8 @@
 {
   "cli": {
-    "version": "21.3.0",
-    "appVersionSource": "local",
-    "requireCommit": false
+    "version": ">= 21.3.0",
+    "appVersionSource": "remote",
+    "requireCommit": true
   },
   "build": {
     "development": {
@@ -32,7 +32,14 @@
     "production": {
       "distribution": "store",
       "channel": "pos-handheld-production",
+      "environment": "production",
       "autoIncrement": true,
+      "ios": {
+        "image": "macos-sequoia-15.6-xcode-26.0"
+      },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "production"
       }
@@ -50,6 +57,10 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6802182045"
+      }
+    }
   }
 }

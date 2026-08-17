@@ -39,15 +39,19 @@ import type {
 } from '../../../types/mobileAppBuild'
 import {
   APP_DOWNLOAD_PROFILES,
+  APP_DOWNLOAD_APP_KEYS,
+  DEFAULT_APP_DOWNLOAD_APP_KEY,
   DEFAULT_APP_DOWNLOAD_PROFILE,
   buildAppDownloadQuery,
   buildAppDownloadOtaQuery,
+  normalizeAppDownloadAppKey,
   normalizeAppDownloadProfile,
   normalizeRuntimeVersionFilter,
   resolveAppDownloadMirrorStatus,
   resolveAppDownloadSource,
   resolveAppDownloadContentState,
   type AppDownloadMirrorStatus,
+  type AppDownloadAppKey,
   type AppDownloadProfile,
 } from './logic'
 import { formatAppDownloadLocalDateTime } from './time'
@@ -117,6 +121,7 @@ export default function AppDownloadsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [appKey, setAppKey] = useState<AppDownloadAppKey>(DEFAULT_APP_DOWNLOAD_APP_KEY)
   const [profile, setProfile] = useState<AppDownloadProfile>(DEFAULT_APP_DOWNLOAD_PROFILE)
   const [loadFailed, setLoadFailed] = useState(false)
   const [qrBuild, setQrBuild] = useState<MobileAppBuild | null>(null)
@@ -132,6 +137,7 @@ export default function AppDownloadsPage() {
   const [rollbackCommand, setRollbackCommand] = useState<MobileAppOtaRollbackCommand | null>(null)
   const buildLoadRequestIdRef = useRef(0)
   const otaLoadRequestIdRef = useRef(0)
+  const rollbackRequestIdRef = useRef(0)
 
   async function copyText(
     value: string | null | undefined,
@@ -178,15 +184,16 @@ export default function AppDownloadsPage() {
     nextPage = page,
     nextPageSize = pageSize,
     nextProfile: AppDownloadProfile = profile,
+    nextAppKey: AppDownloadAppKey = appKey,
   ) {
-    const query = buildAppDownloadQuery(nextProfile, nextPage, nextPageSize)
+    const query = buildAppDownloadQuery(nextProfile, nextPage, nextPageSize, nextAppKey)
     const requestId = buildLoadRequestIdRef.current + 1
     buildLoadRequestIdRef.current = requestId
     setBuildLoading(true)
     setLoadFailed(false)
     try {
       const [latestBuild, history] = await Promise.all([
-        getLatestMobileAppBuild(query.profile),
+        getLatestMobileAppBuild(query.profile, query.appKey),
         getMobileAppBuilds(query),
       ])
       if (requestId !== buildLoadRequestIdRef.current) {
@@ -197,6 +204,7 @@ export default function AppDownloadsPage() {
       setTotal(history.total)
       setPage(history.page)
       setPageSize(history.pageSize)
+      setAppKey(query.appKey)
       setProfile(query.profile)
     } catch (error) {
       if (requestId !== buildLoadRequestIdRef.current) {
@@ -222,12 +230,14 @@ export default function AppDownloadsPage() {
     nextPageSize = otaPageSize,
     nextProfile: AppDownloadProfile = profile,
     nextRuntimeVersion = otaRuntimeVersion,
+    nextAppKey: AppDownloadAppKey = appKey,
   ) {
     const query = buildAppDownloadOtaQuery(
       nextProfile,
       nextPage,
       nextPageSize,
       nextRuntimeVersion,
+      nextAppKey,
     )
     const requestId = otaLoadRequestIdRef.current + 1
     otaLoadRequestIdRef.current = requestId
@@ -265,43 +275,82 @@ export default function AppDownloadsPage() {
       return
     }
 
+    const requestId = rollbackRequestIdRef.current + 1
+    rollbackRequestIdRef.current = requestId
     setRollbackLoadingGroupId(record.updateGroupId)
     try {
       const command = await createMobileAppOtaRollbackCommand(record.updateGroupId)
+      if (requestId !== rollbackRequestIdRef.current) {
+        return
+      }
       setRollbackCommand(command)
       message.success(t('system.appDownloads.ota.rollbackCommandGenerated'))
     } catch (error) {
+      if (requestId !== rollbackRequestIdRef.current) {
+        return
+      }
       console.error(t('system.appDownloads.ota.rollbackCommandFailed'), error)
       message.error(t('system.appDownloads.ota.rollbackCommandFailed'))
     } finally {
-      setRollbackLoadingGroupId(null)
+      if (requestId === rollbackRequestIdRef.current) {
+        setRollbackLoadingGroupId(null)
+      }
     }
+  }
+
+  function handleAppKeyChange(value: string | number) {
+    const nextAppKey = normalizeAppDownloadAppKey(value)
+    if (nextAppKey === appKey) {
+      return
+    }
+
+    // 切换应用时先清空所有应用级展示状态，并使旧请求/回撤结果失效，避免跨应用短暂串数据。
+    buildLoadRequestIdRef.current += 1
+    otaLoadRequestIdRef.current += 1
+    rollbackRequestIdRef.current += 1
+    setAppKey(nextAppKey)
+    setLatest(null)
+    setItems([])
+    setTotal(0)
+    setPage(1)
+    setLoadFailed(false)
+    setQrBuild(null)
+    setOtaItems([])
+    setOtaTotal(0)
+    setOtaPage(1)
+    setOtaLoadFailed(false)
+    setOtaRuntimeDraft('')
+    setOtaRuntimeVersion('')
+    setRollbackLoadingGroupId(null)
+    setRollbackCommand(null)
+    void loadBuildData(1, pageSize, profile, nextAppKey)
+    void loadOtaData(1, otaPageSize, profile, '', nextAppKey)
   }
 
   function handleProfileChange(value: string | number) {
     const nextProfile = normalizeAppDownloadProfile(value)
     setProfile(nextProfile)
-    void loadBuildData(1, pageSize, nextProfile)
-    void loadOtaData(1, otaPageSize, nextProfile, otaRuntimeVersion)
+    void loadBuildData(1, pageSize, nextProfile, appKey)
+    void loadOtaData(1, otaPageSize, nextProfile, otaRuntimeVersion, appKey)
   }
 
   useEffect(() => {
-    void loadBuildData(1, pageSize, DEFAULT_APP_DOWNLOAD_PROFILE)
-    void loadOtaData(1, otaPageSize, DEFAULT_APP_DOWNLOAD_PROFILE, '')
+    void loadBuildData(1, pageSize, DEFAULT_APP_DOWNLOAD_PROFILE, DEFAULT_APP_DOWNLOAD_APP_KEY)
+    void loadOtaData(1, otaPageSize, DEFAULT_APP_DOWNLOAD_PROFILE, '', DEFAULT_APP_DOWNLOAD_APP_KEY)
   }, [])
 
   function handleOtaRuntimeSearch(value: string) {
     const nextRuntimeVersion = normalizeRuntimeVersionFilter(value)
     setOtaRuntimeDraft(nextRuntimeVersion)
     setOtaRuntimeVersion(nextRuntimeVersion)
-    void loadOtaData(1, otaPageSize, profile, nextRuntimeVersion)
+    void loadOtaData(1, otaPageSize, profile, nextRuntimeVersion, appKey)
   }
 
   function handleOtaRuntimeDraftChange(value: string) {
     setOtaRuntimeDraft(value)
     if (!value && otaRuntimeVersion) {
       setOtaRuntimeVersion('')
-      void loadOtaData(1, otaPageSize, profile, '')
+      void loadOtaData(1, otaPageSize, profile, '', appKey)
     }
   }
 
@@ -309,6 +358,15 @@ export default function AppDownloadsPage() {
     () =>
       APP_DOWNLOAD_PROFILES.map((value) => ({
         label: t(`system.appDownloads.profiles.${value}`),
+        value,
+      })),
+    [t],
+  )
+
+  const appKeyOptions = useMemo(
+    () =>
+      APP_DOWNLOAD_APP_KEYS.map((value) => ({
+        label: t(`system.appDownloads.apps.${value}`),
         value,
       })),
     [t],
@@ -575,6 +633,12 @@ export default function AppDownloadsPage() {
   const latestActions = (
     <Space wrap>
       <Segmented
+        value={appKey}
+        options={appKeyOptions}
+        onChange={handleAppKeyChange}
+      />
+      <Segmented
+        size="small"
         value={profile}
         options={profileOptions}
         onChange={handleProfileChange}
@@ -600,7 +664,7 @@ export default function AppDownloadsPage() {
       >
         {t('system.appDownloads.buildDetails')}
       </Button>
-      <Button icon={<ReloadOutlined />} loading={buildLoading} onClick={() => void loadBuildData(1, pageSize)}>
+      <Button icon={<ReloadOutlined />} loading={buildLoading} onClick={() => void loadBuildData(1, pageSize, profile, appKey)}>
         {t('common.refresh')}
       </Button>
     </Space>
@@ -625,7 +689,7 @@ export default function AppDownloadsPage() {
       <Button
         icon={<ReloadOutlined />}
         loading={otaLoading}
-        onClick={() => void loadOtaData(1, otaPageSize, profile, otaRuntimeVersion)}
+        onClick={() => void loadOtaData(1, otaPageSize, profile, otaRuntimeVersion, appKey)}
       >
         {t('common.refresh')}
       </Button>
@@ -721,7 +785,7 @@ export default function AppDownloadsPage() {
             pageSize,
             total,
             showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) => void loadBuildData(nextPage, nextPageSize, profile),
+            onChange: (nextPage, nextPageSize) => void loadBuildData(nextPage, nextPageSize, profile, appKey),
           }}
         />
       </Card>
@@ -759,7 +823,7 @@ export default function AppDownloadsPage() {
             total: otaTotal,
             showSizeChanger: true,
             onChange: (nextPage, nextPageSize) =>
-              void loadOtaData(nextPage, nextPageSize, profile, otaRuntimeVersion),
+              void loadOtaData(nextPage, nextPageSize, profile, otaRuntimeVersion, appKey),
           }}
         />
       </Card>

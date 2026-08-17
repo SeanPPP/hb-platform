@@ -59,7 +59,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
             Enabled = true,
             PolicyVersion = "12",
             EasProjectName = "hb-pos-handheld",
-            AndroidProfile = "android-internal",
+            AndroidProfile = "production",
             AndroidMinimumSupportedVersion = "1.5.0",
             AndroidMinimumSupportedBuild = 150,
             AndroidPackageName = "com.hbweb.poshandheld",
@@ -884,7 +884,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
                 policyOptions.EasProjectName = " ";
                 break;
             case "android-profile":
-                policyOptions.AndroidProfile = "production";
+                policyOptions.AndroidProfile = "android-internal";
                 break;
             case "android-package":
                 policyOptions.AndroidPackageName = "com.example.other";
@@ -1143,8 +1143,8 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
             }
         );
 
-        Assert.Equal("android-internal", options.AndroidProfile);
-        Assert.Equal("android-internal", capturedProfile);
+        Assert.Equal("production", options.AndroidProfile);
+        Assert.Equal("production", capturedProfile);
     }
 
     [Fact]
@@ -1296,7 +1296,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
                 ProjectName = projectName,
                 Platform = "android",
                 Status = "finished",
-                BuildProfile = "android-internal",
+                BuildProfile = "production",
                 AppVersion = version,
                 AppBuildVersion = buildVersion,
                 ArtifactUrl = downloadUrl,

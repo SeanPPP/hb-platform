@@ -69,6 +69,9 @@ services:
       - EasWebhook__Secret=${EAS_WEBHOOK_SECRET}
       - EasWebhook__AllowedAccountName=${EAS_WEBHOOK_ALLOWED_ACCOUNT_NAME}
       - EasWebhook__AllowedProjectName=${EAS_WEBHOOK_ALLOWED_PROJECT_NAME}
+      # 旧移动端与独立手持端按 EAS project 显式映射到不同 AppKey，避免构建记录串包。
+      - EasWebhook__ProjectAppKeys__hbweb-expo=mobile
+      - EasWebhook__ProjectAppKeys__hb-pos-handheld=pos-handheld
       - EasWebhook__AcceptedProfiles__0=preview
       - EasWebhook__AcceptedProfiles__1=production
       - Translation__Provider=deepseek

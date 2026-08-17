@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
+  "expo": {
+    "install": {
+      "exclude": [
+        "jest"
+      ]
+    }
+  },
   "scripts": {
     "start": "expo start --dev-client",
     "postinstall": "patch-package --error-on-fail",

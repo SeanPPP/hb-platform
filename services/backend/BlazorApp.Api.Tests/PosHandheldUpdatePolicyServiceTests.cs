@@ -28,7 +28,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         Enabled = true,
         PolicyVersion = "legacy-12",
         EasProjectName = "hb-pos-handheld",
-        AndroidProfile = "android-internal",
+        AndroidProfile = "production",
         AndroidPackageName = "com.hbweb.poshandheld",
         AndroidSigningCertificateSha256 = new string('b', 64),
         IosLatestVersion = "3.0.0",
@@ -74,7 +74,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var build = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );
@@ -123,7 +123,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var build = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );
@@ -158,7 +158,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var selected = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );
@@ -179,7 +179,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
                 ProjectName = "hb-pos-handheld",
                 Platform = "android",
                 Status = "finished",
-                BuildProfile = "android-internal",
+                BuildProfile = "production",
                 AppVersion = "3.0.0",
                 AppBuildVersion = (300 + index).ToString(),
                 ArtifactUrl = "https://downloads.example/handheld-newer.apk",
@@ -207,7 +207,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task 策略写入_拒绝跨AppKey和错误profile候选()
+    public async Task 策略写入_拒绝跨AppKey和旧Android内部候选()
     {
         var mobile = await SeedBuildAsync(
             MobileAppKeys.Mobile,
@@ -216,10 +216,10 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
             "9.0.0",
             "900"
         );
-        var preview = await SeedBuildAsync(
+        var legacyInternal = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "preview",
+            "android-internal",
             "2.0.0",
             "200"
         );
@@ -232,7 +232,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         );
         var wrongProfile = await service.SetLaneAsync(
             PosHandheldUpdateLanes.AndroidNative,
-            EnabledRequest(preview.Id),
+            EnabledRequest(legacyInternal.Id),
             "admin"
         );
 
@@ -248,7 +248,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var build = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );
@@ -296,7 +296,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var expired = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );
@@ -380,7 +380,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         var build = await SeedBuildAsync(
             MobileAppKeys.PosHandheld,
             "hb-pos-handheld",
-            "android-internal",
+            "production",
             "2.0.0",
             "200"
         );

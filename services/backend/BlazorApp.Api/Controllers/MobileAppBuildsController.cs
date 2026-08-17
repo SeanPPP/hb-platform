@@ -79,9 +79,19 @@ namespace BlazorApp.Api.Controllers
 
         [HttpGet("latest")]
         [Authorize(Policy = Permissions.System.ViewAppDownloads)]
-        public async Task<IActionResult> Latest([FromQuery] string profile = "production")
+        public async Task<IActionResult> Latest(
+            [FromQuery] string? appKey = null,
+            [FromQuery] string profile = "production"
+        )
         {
-            var result = await _service.GetLatestAsync(profile);
+            var normalizedAppKey = MobileAppKeys.Mobile;
+            // appKey 未提供时保持 legacy mobile；已提供的值必须是受控分区键，避免误读 mobile 构建。
+            if (appKey != null && !MobileAppKeys.TryNormalize(appKey, out normalizedAppKey))
+            {
+                return Ok(ApiResponse<MobileAppBuildDto?>.OK(null));
+            }
+
+            var result = await _service.GetLatestAsync(normalizedAppKey, profile);
             return Ok(result);
         }
 

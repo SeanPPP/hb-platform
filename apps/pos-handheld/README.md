@@ -36,8 +36,15 @@ npm run lint
 
 ## 发布边界
 
-- iOS：EAS `production`，用于 TestFlight / App Store。
-- Android：EAS `android-internal`，用于签名内部 APK。
+- 原生生产构建的主命令为：
+
+```bash
+npx eas-cli@latest build --profile production --platform all --non-interactive
+```
+
+- iOS：`production` 产生 Store 分发构建，并提交到独立的 App Store Connect App `HB POS Mobile`（Apple ID `6802182045`）；构建完成不等于已进入 TestFlight，必须使用明确的 EAS Build ID 执行 `npx eas-cli@latest submit --profile production --platform ios --id <build-id> --wait --non-interactive`。
+- Android：`production` 和兼容的 `android-internal` 都产生签名 APK，仅用于受控安装；它们不是 Google Play 发布或 iOS/TestFlight 提交。
+- `production` 依赖独立的 EAS project 环境变量；未同时配置 Project ID 和 updates URL 时，Expo 配置会主动失败，避免将更新连接到错误项目。
 
 手持 OTA 统一发布到固定频道 `pos-handheld-production`。默认发布 iOS；Android 必须显式指定平台：
 

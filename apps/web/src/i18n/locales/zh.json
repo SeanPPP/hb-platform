@@ -4425,6 +4425,10 @@
       "completedAt": "完成时间",
       "expirationDate": "过期时间",
       "commit": "Commit",
+      "apps": {
+        "mobile": "移动端",
+        "pos-handheld": "手持收银端"
+      },
       "profiles": {
         "production": "正式版",
         "preview": "预览版"

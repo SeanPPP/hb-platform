@@ -11,7 +11,7 @@ public sealed class PosHandheldUpdatePolicyOptions
 
     public string? EasProjectName { get; set; }
 
-    public string AndroidProfile { get; set; } = "android-internal";
+    public string AndroidProfile { get; set; } = "production";
 
     public string? AndroidMinimumSupportedVersion { get; set; }
 
@@ -51,7 +51,8 @@ public sealed class PosHandheldUpdatePolicyOptions
 public sealed partial class PosHandheldUpdatePolicyOptionsValidator
     : IValidateOptions<PosHandheldUpdatePolicyOptions>
 {
-    private const string AndroidProfile = "android-internal";
+    // 原生更新只接受生产发布 profile，避免内部构建进入可激活候选。
+    private const string AndroidProfile = "production";
     private const string AndroidPackageName = "com.hbweb.poshandheld";
     private const string OtaChannel = "pos-handheld-production";
     private const long JavaScriptSafeIntegerMax = 9007199254740991;

@@ -477,9 +477,16 @@ namespace BlazorApp.Api.Services
                 return "missing_build_id";
             if (!MatchesConfiguredValue(_options.AllowedAccountName, payload.AccountName))
                 return "account_not_allowed";
-            if (ResolveAppKeyForProject(payload.ProjectName) == null)
+            var appKey = ResolveAppKeyForProject(payload.ProjectName);
+            if (appKey == null)
                 return "project_not_allowed";
             if (!AcceptedProfiles().Contains(payload.BuildProfile, StringComparer.OrdinalIgnoreCase))
+                return "profile_not_accepted";
+            // 移动端继续接收 preview；独立手持项目只允许生产 APK 进入镜像与下载链路。
+            if (
+                appKey == MobileAppKeys.PosHandheld
+                && !string.Equals(payload.BuildProfile, "production", StringComparison.OrdinalIgnoreCase)
+            )
                 return "profile_not_accepted";
             if (!string.Equals(payload.Platform, "android", StringComparison.OrdinalIgnoreCase))
                 return "platform_not_android";

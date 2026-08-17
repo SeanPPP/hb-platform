@@ -1,4 +1,5 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
+
 import posHandheldIosIdentity from "./src/core/contracts/pos-handheld-ios-identity.json";
 
 const supportedInterfaceOrientations = [
@@ -230,6 +231,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   ...config,
   name: "HB POS Mobile",
   slug: "hb-pos-handheld",
+  owner: "pangaoqi",
   version: posHandheldAppVersion,
   icon: "./assets/icon.png",
   scheme: "hbpos-handheld",
@@ -240,6 +242,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   runtimeVersion: ota.runtimeVersion,
   updates: ota.updates,
   ios: {
+    appleTeamId: "3SV4A23SVW",
     bundleIdentifier: posHandheldIosIdentity.bundleIdentifier,
     buildNumber: "1",
     supportsTablet: false,

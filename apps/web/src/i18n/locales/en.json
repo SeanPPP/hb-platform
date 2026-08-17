@@ -4425,6 +4425,10 @@
       "completedAt": "Completed At",
       "expirationDate": "Expiration Date",
       "commit": "Commit",
+      "apps": {
+        "mobile": "Mobile",
+        "pos-handheld": "Handheld POS"
+      },
       "profiles": {
         "production": "Production",
         "preview": "Preview"

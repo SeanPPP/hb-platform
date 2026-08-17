@@ -1,19 +1,36 @@
+import {
+  DEFAULT_MOBILE_APP_KEY,
+  MOBILE_APP_KEYS,
+  normalizeMobileAppKey,
+  type MobileAppKey,
+} from '../../../types/mobileAppBuild'
+
 export const APP_DOWNLOAD_PROFILES = ['production', 'preview'] as const
 
 export type AppDownloadProfile = (typeof APP_DOWNLOAD_PROFILES)[number]
 
 export const DEFAULT_APP_DOWNLOAD_PROFILE: AppDownloadProfile = 'production'
 
+export const APP_DOWNLOAD_APP_KEYS = MOBILE_APP_KEYS
+
+export type AppDownloadAppKey = MobileAppKey
+
+export const DEFAULT_APP_DOWNLOAD_APP_KEY = DEFAULT_MOBILE_APP_KEY
+
+export const normalizeAppDownloadAppKey = normalizeMobileAppKey
+
 export interface AppDownloadQuery {
   page: number
   pageSize: number
   profile: AppDownloadProfile
+  appKey: AppDownloadAppKey
 }
 
 export interface AppDownloadOtaQuery {
   page: number
   pageSize: number
-  channel: AppDownloadProfile
+  channel: AppDownloadProfile | `pos-handheld-${AppDownloadProfile}`
+  appKey: AppDownloadAppKey
   runtimeVersion?: string
 }
 
@@ -40,12 +57,14 @@ export function buildAppDownloadQuery(
   profile: string | number | null | undefined,
   page: number,
   pageSize: number,
+  appKey?: string | number | null,
 ): AppDownloadQuery {
   return {
-    // 页面和接口共用这里的 profile 归一化，避免 production/preview 查询参数漂移。
+    // 页面和接口共用受控 profile/AppKey，避免不同应用或环境的查询参数漂移。
     profile: normalizeAppDownloadProfile(profile),
     page: Math.max(1, Math.trunc(page || 1)),
     pageSize: Math.max(1, Math.trunc(pageSize || 10)),
+    appKey: normalizeAppDownloadAppKey(appKey),
   }
 }
 
@@ -58,13 +77,20 @@ export function buildAppDownloadOtaQuery(
   page: number,
   pageSize: number,
   runtimeVersion?: string | number | null,
+  appKey?: string | number | null,
 ): AppDownloadOtaQuery {
   const normalizedRuntimeVersion = normalizeRuntimeVersionFilter(runtimeVersion)
+  const normalizedProfile = normalizeAppDownloadProfile(channel)
+  const normalizedAppKey = normalizeAppDownloadAppKey(appKey)
   return {
-    // APK profile 与 OTA channel 使用同一个切换值，避免两个列表在不同环境之间漂移。
-    channel: normalizeAppDownloadProfile(channel),
+    // 手持 EAS 项目使用独立 channel；界面仍显示 production/preview，并在查询层做确定映射。
+    channel:
+      normalizedAppKey === 'pos-handheld'
+        ? `pos-handheld-${normalizedProfile}`
+        : normalizedProfile,
     page: Math.max(1, Math.trunc(page || 1)),
     pageSize: Math.max(1, Math.trunc(pageSize || 10)),
+    appKey: normalizedAppKey,
     ...(normalizedRuntimeVersion ? { runtimeVersion: normalizedRuntimeVersion } : {}),
   }
 }

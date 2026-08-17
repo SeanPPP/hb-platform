@@ -1,5 +1,19 @@
+export const MOBILE_APP_KEYS = ['mobile', 'pos-handheld'] as const
+
+export type MobileAppKey = (typeof MOBILE_APP_KEYS)[number]
+
+export const DEFAULT_MOBILE_APP_KEY: MobileAppKey = 'mobile'
+
+export function normalizeMobileAppKey(value?: string | number | null): MobileAppKey {
+  const normalized = String(value ?? DEFAULT_MOBILE_APP_KEY).trim().toLowerCase()
+  return MOBILE_APP_KEYS.includes(normalized as MobileAppKey)
+    ? (normalized as MobileAppKey)
+    : DEFAULT_MOBILE_APP_KEY
+}
+
 export interface MobileAppBuild {
   id: string
+  appKey: MobileAppKey
   easBuildId?: string | null
   appName?: string | null
   platform?: string | null

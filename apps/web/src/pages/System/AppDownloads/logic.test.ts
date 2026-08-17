@@ -1,5 +1,6 @@
 import enLocale from '../../../i18n/locales/en.json'
 import zhLocale from '../../../i18n/locales/zh.json'
+import { normalizeMobileAppBuild } from '../../../services/mobileAppBuildService'
 import {
   APP_DOWNLOAD_PROFILES,
   DEFAULT_APP_DOWNLOAD_PROFILE,
@@ -52,28 +53,66 @@ assertEqual(
 
 assertDeepEqual(
   buildAppDownloadQuery('preview', 2.8, 20.2),
-  { profile: 'preview', page: 2, pageSize: 20 },
-  '构建查询参数时应保留当前 profile 并规范分页参数',
+  { profile: 'preview', page: 2, pageSize: 20, appKey: 'mobile' },
+  '构建查询参数时应保留当前 profile、默认 mobile AppKey 并规范分页参数',
 )
 assertDeepEqual(
   buildAppDownloadQuery(null, 0, 0),
-  { profile: 'production', page: 1, pageSize: 10 },
-  '空 profile 和无效分页应使用安全默认值',
+  { profile: 'production', page: 1, pageSize: 10, appKey: 'mobile' },
+  '空 profile、AppKey 和无效分页应使用安全默认值',
+)
+
+assertDeepEqual(
+  buildAppDownloadQuery('preview', 2, 20, ' POS-HANDHELD '),
+  { profile: 'preview', page: 2, pageSize: 20, appKey: 'pos-handheld' },
+  '构建查询应只接受受控 AppKey，并规范手持收银端值',
+)
+assertDeepEqual(
+  buildAppDownloadQuery('preview', 2, 20, 'unknown-app'),
+  { profile: 'preview', page: 2, pageSize: 20, appKey: 'mobile' },
+  '未知 AppKey 应回落到 mobile，避免跨应用读取',
 )
 assertDeepEqual(
   buildAppDownloadOtaQuery('PREVIEW', 2.8, 20.2, ' 1.0.1 '),
-  { channel: 'preview', page: 2, pageSize: 20, runtimeVersion: '1.0.1' },
-  'OTA 查询应复用 profile/channel 并清理 runtimeVersion 空白',
+  { channel: 'preview', page: 2, pageSize: 20, appKey: 'mobile', runtimeVersion: '1.0.1' },
+  'OTA 查询应复用 profile/channel、默认 mobile AppKey 并清理 runtimeVersion 空白',
 )
 assertDeepEqual(
   buildAppDownloadOtaQuery('preview', 1, 10, '   '),
-  { channel: 'preview', page: 1, pageSize: 10 },
+  { channel: 'preview', page: 1, pageSize: 10, appKey: 'mobile' },
   '空 runtimeVersion 应从 OTA 查询参数中省略，表示查询全部 runtime',
+)
+
+assertDeepEqual(
+  buildAppDownloadOtaQuery('production', 1, 10, '', 'pos-handheld'),
+  { channel: 'pos-handheld-production', page: 1, pageSize: 10, appKey: 'pos-handheld' },
+  '手持 production 视图必须映射独立 OTA channel，避免误查移动端 channel',
+)
+assertDeepEqual(
+  buildAppDownloadOtaQuery('preview', 1, 10, '', 'pos-handheld'),
+  { channel: 'pos-handheld-preview', page: 1, pageSize: 10, appKey: 'pos-handheld' },
+  '手持 preview 视图必须映射独立 OTA channel，避免误查移动端 channel',
 )
 assertEqual(
   normalizeRuntimeVersionFilter(' 1.0.1 '),
   '1.0.1',
   'runtimeVersion 筛选值应去除首尾空白',
+)
+
+assertEqual(
+  normalizeMobileAppBuild({ id: 'mobile-default' }).appKey,
+  'mobile',
+  '缺失 AppKey 的历史构建应兼容为 mobile',
+)
+assertEqual(
+  normalizeMobileAppBuild({ id: 'handheld-build', appKey: ' POS-HANDHELD ' }).appKey,
+  'pos-handheld',
+  '构建归一化应保留受控的手持收银端 AppKey',
+)
+assertEqual(
+  normalizeMobileAppBuild({ id: 'unknown-app', appKey: 'other' }).appKey,
+  'mobile',
+  '构建归一化应将未知 AppKey 回落到 mobile',
 )
 
 assertEqual(
@@ -178,6 +217,26 @@ assertEqual(
   enLocale.system.appDownloads.profiles.production,
   'Production',
   '英文 production profile 文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.apps.mobile,
+  '移动端',
+  '中文移动端 AppKey 文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.apps['pos-handheld'],
+  '手持收银端',
+  '中文手持收银端 AppKey 文案应存在',
+)
+assertEqual(
+  enLocale.system.appDownloads.apps.mobile,
+  'Mobile',
+  '英文移动端 AppKey 文案应存在',
+)
+assertEqual(
+  enLocale.system.appDownloads.apps['pos-handheld'],
+  'Handheld POS',
+  '英文手持收银端 AppKey 文案应存在',
 )
 assertEqual(
   zhLocale.system.appDownloads.runtime,

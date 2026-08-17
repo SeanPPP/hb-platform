@@ -870,9 +870,10 @@ public sealed class PosHandheldUpdatePolicyService(
     private static bool IsAndroidTrustRootValid(
         PosHandheldUpdatePolicyOptions configuration
     ) =>
+        // 候选列表、按 ID 校验与激活必须共用生产信任根，避免旧内部构建被发布。
         string.Equals(
             Normalize(configuration.AndroidProfile),
-            "android-internal",
+            "production",
             StringComparison.Ordinal
         )
         && string.Equals(

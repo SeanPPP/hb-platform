@@ -1,14 +1,27 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   MobileAppBuild,
+  MobileAppKey,
   MobileAppBuildPagedResult,
   MobileAppOtaRollbackCommand,
   MobileAppOtaUpdate,
   MobileAppOtaUpdatePagedResult,
 } from '../types/mobileAppBuild'
+import {
+  DEFAULT_MOBILE_APP_KEY,
+  MOBILE_APP_KEYS,
+  normalizeMobileAppKey,
+} from '../types/mobileAppBuild'
 import request, { unwrapApiData } from '../utils/request'
 
 const MOBILE_APP_BUILDS_API = '/api/mobile-app-builds'
+
+function tryNormalizeRequestedAppKey(value: string): MobileAppKey | null {
+  const normalized = value.trim().toLowerCase()
+  return MOBILE_APP_KEYS.includes(normalized as MobileAppKey)
+    ? (normalized as MobileAppKey)
+    : null
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -45,6 +58,8 @@ function getNumber(raw: Record<string, unknown>, key: string) {
 export function normalizeMobileAppBuild(raw: Record<string, unknown>): MobileAppBuild {
   return {
     id: getString(raw, 'id') ?? '',
+    // 历史记录缺少 AppKey 时固定回落 mobile，避免旧数据破坏应用隔离。
+    appKey: normalizeMobileAppKey(getString(raw, 'appKey')),
     easBuildId: getString(raw, 'easBuildId'),
     appName: getString(raw, 'appName'),
     platform: getString(raw, 'platform'),
@@ -104,10 +119,19 @@ export function normalizeMobileAppOtaRollbackCommand(
   }
 }
 
-export async function getLatestMobileAppBuild(profile = 'production') {
+export async function getLatestMobileAppBuild(
+  profile = 'production',
+  appKey: MobileAppKey | string = DEFAULT_MOBILE_APP_KEY,
+) {
+  // 未提供参数时由默认值兼容 mobile；显式非法/空白值必须返回空，不能回退后误读其他应用。
+  const requestedAppKey = tryNormalizeRequestedAppKey(appKey)
+  if (!requestedAppKey) {
+    return null
+  }
+
   const response = await request.get<ApiResponse<Record<string, unknown> | null> | Record<string, unknown> | null>(
     `${MOBILE_APP_BUILDS_API}/latest`,
-    { params: { profile } },
+    { params: { profile, appKey: requestedAppKey } },
   )
   const payload = unwrapApiData(response)
   return payload ? normalizeMobileAppBuild(asRecord(payload)) : null
@@ -117,6 +141,7 @@ export async function getMobileAppBuilds(params?: {
   page?: number
   pageSize?: number
   profile?: string
+  appKey?: MobileAppKey | string
 }): Promise<MobileAppBuildPagedResult> {
   const page = params?.page ?? 1
   const pageSize = params?.pageSize ?? 10
@@ -137,6 +162,7 @@ export async function getMobileAppBuilds(params?: {
       page,
       pageSize,
       profile: params?.profile ?? 'production',
+      appKey: normalizeMobileAppKey(params?.appKey),
     },
   })
 
@@ -164,6 +190,7 @@ export async function getMobileAppOtaUpdates(params?: {
   runtimeVersion?: string
   page?: number
   pageSize?: number
+  appKey?: MobileAppKey | string
 }): Promise<MobileAppOtaUpdatePagedResult> {
   const page = params?.page ?? 1
   const pageSize = params?.pageSize ?? 10
@@ -183,6 +210,7 @@ export async function getMobileAppOtaUpdates(params?: {
   >(`${MOBILE_APP_BUILDS_API}/ota-updates`, {
     params: {
       channel: params?.channel ?? 'production',
+      appKey: normalizeMobileAppKey(params?.appKey),
       runtimeVersion: runtimeVersion || undefined,
       page,
       pageSize,

@@ -74,9 +74,14 @@ test("production EAS build 使用 Handheld 专用 channel，不复用 mobile pro
   const eas = JSON.parse(
     await readFile(new URL("../eas.json", import.meta.url), "utf8"),
   );
-  assert.equal(eas.cli.version, "21.3.0");
+  assert.equal(eas.cli.version, ">= 21.3.0");
+  assert.equal(eas.cli.appVersionSource, "remote");
+  assert.equal(eas.cli.requireCommit, true);
   assert.equal(eas.build.production.channel, "pos-handheld-production");
   assert.notEqual(eas.build.production.channel, "production");
+  assert.equal(eas.build.production.environment, "production");
+  assert.equal(eas.build.production.android.buildType, "apk");
+  assert.equal(eas.submit.production.ios.ascAppId, "6802182045");
 });
 
 test("production 缺 EAS projectId/updates.url 时 fail-fast，不允许静默构建无效 OTA", () => {
@@ -264,6 +269,8 @@ function resolveConfig(environment) {
 
 function runConfig(environment) {
   const cleanEnvironment = { ...process.env };
+  // 配置测试必须只使用用例显式注入的变量，避免开发机 .env.local 掩盖 fail-fast 场景。
+  cleanEnvironment.EXPO_NO_DOTENV = "1";
   delete cleanEnvironment.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID;
   delete cleanEnvironment.EXPO_PUBLIC_HBPOS_UPDATES_URL;
   delete cleanEnvironment.EXPO_PUBLIC_HBPOS_BUILD_PROFILE;

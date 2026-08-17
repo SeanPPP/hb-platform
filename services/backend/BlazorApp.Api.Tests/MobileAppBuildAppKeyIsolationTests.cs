@@ -61,6 +61,36 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Webhook_手持项目只接受Production且不影响移动端Preview()
+    {
+        var service = CreateService();
+
+        var handheldPreview = await service.HandleEasWebhookAsync(
+            CreateBuildPayload(
+                "handheld-preview",
+                "hb-pos-handheld",
+                "2026-08-10T01:00:00Z",
+                profile: "preview"
+            )
+        );
+        var mobilePreview = await service.HandleEasWebhookAsync(
+            CreateBuildPayload(
+                "mobile-preview",
+                "hb-mobile",
+                "2026-08-10T02:00:00Z",
+                profile: "preview"
+            )
+        );
+
+        Assert.Equal("ignored", handheldPreview.Data!.Action);
+        Assert.Equal("profile_not_accepted", handheldPreview.Data.Reason);
+        Assert.Equal("saved", mobilePreview.Data!.Action);
+        var saved = await db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal(MobileAppKeys.Mobile, saved.AppKey);
+        Assert.Equal("mobile-preview", saved.EasBuildId);
+    }
+
+    [Fact]
     public async Task Same_profile_projects_do_not_cross_latest_build_id_or_history()
     {
         var service = CreateService();
@@ -110,6 +140,45 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
         Assert.Equal("handheld-build", handheldDownload.Data!.EasBuildId);
         Assert.Equal(["mobile-build"], mobileHistory.Data!.Items!.Select(item => item.EasBuildId));
         Assert.Equal(["handheld-build"], handheldHistory.Data!.Items!.Select(item => item.EasBuildId));
+    }
+
+    [Fact]
+    public async Task Latest_按受控AppKey隔离且非法键不回退Mobile()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreateBuildPayload("mobile-build", "hb-mobile", "2026-08-10T01:00:00Z")
+        );
+        await service.HandleEasWebhookAsync(
+            CreateBuildPayload("handheld-build", "hb-pos-handheld", "2026-08-10T02:00:00Z")
+        );
+        var controller = CreateController(service);
+
+        var defaultLatest = Assert.IsType<OkObjectResult>(
+            await controller.Latest(profile: "production")
+        );
+        var handheldLatest = Assert.IsType<OkObjectResult>(
+            await controller.Latest(appKey: " POS-HANDHELD ", profile: "production")
+        );
+        var invalidLatest = Assert.IsType<OkObjectResult>(
+            await controller.Latest(appKey: "unknown-app", profile: "production")
+        );
+        var blankLatest = Assert.IsType<OkObjectResult>(
+            await controller.Latest(appKey: " ", profile: "production")
+        );
+
+        Assert.Equal(
+            "mobile-build",
+            Assert.IsType<ApiResponse<MobileAppBuildDto?>>(defaultLatest.Value).Data!.EasBuildId
+        );
+        Assert.Equal(
+            "handheld-build",
+            Assert.IsType<ApiResponse<MobileAppBuildDto?>>(handheldLatest.Value).Data!.EasBuildId
+        );
+        var invalidResponse = Assert.IsType<ApiResponse<MobileAppBuildDto?>>(invalidLatest.Value);
+        Assert.True(invalidResponse.Success);
+        Assert.Null(invalidResponse.Data);
+        Assert.Null(Assert.IsType<ApiResponse<MobileAppBuildDto?>>(blankLatest.Value).Data);
     }
 
     [Fact]
@@ -279,9 +348,17 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
                 "handheld-internal",
                 "hb-pos-handheld",
                 "2026-08-10T02:00:00Z",
-                profile: "android-internal"
+                profile: "production"
             )
         );
+        // 新 Webhook 只收 production；历史 android-internal 记录仍须保持公开下载兼容。
+        var legacyHandheld = await db
+            .Queryable<MobileAppBuild>()
+            .SingleAsync(x =>
+                x.AppKey == MobileAppKeys.PosHandheld && x.EasBuildId == "handheld-internal"
+            );
+        legacyHandheld.BuildProfile = "android-internal";
+        await db.Updateable(legacyHandheld).ExecuteCommandAsync();
         var controller = CreateController(service);
 
         var mobileLatest = Assert.IsType<OkObjectResult>(
