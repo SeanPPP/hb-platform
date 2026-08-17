@@ -1158,6 +1158,7 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             return new PaymentAuthorizationResult(false, null, T("payment.card.squareRefundMissingReference", "Square refund requires an original Square payment reference."));
         }
 
+        var squareAttempt = _squarePaymentAttemptContextAccessor?.Current;
         try
         {
             var minorAmount = ToMinorUnits(amount);
@@ -1185,18 +1186,74 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             var refund = ReadSquareRefundResponse(body);
             var refundId = refund.RefundId;
             var status = refund.Status ?? string.Empty;
-            var refundAmount = refund.AmountMoney;
-            if (string.IsNullOrWhiteSpace(refundId) ||
-                !string.Equals(refund.PaymentId, paymentId, StringComparison.Ordinal) ||
-                refundAmount is null ||
-                refundAmount.Amount != minorAmount ||
-                !string.Equals(refundAmount.Currency, "AUD", StringComparison.OrdinalIgnoreCase))
+            if (!IsExpectedSquareRefund(refund, refundId, paymentId, minorAmount))
             {
                 return new PaymentAuthorizationResult(
                     false,
                     null,
                     T("payment.card.squareInvalidResponse", "Square terminal returned an invalid response."),
                     ResultUnknown: true);
+            }
+
+            if (squareAttempt?.CanBindRefund == true)
+            {
+                // Square 已返回 refundId 即代表退款可能已经发生；必须先落库，再做终态查询。
+                await squareAttempt.BindRefundAsync!(
+                    refundId,
+                    status,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None);
+            }
+
+            if (string.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    // CreatePaymentRefund 返回 PENDING 后只能查询同一 refund，绝不能再次 POST 来“确认”。
+                    using var statusResponse = await SendSquareApiAsync(
+                        HttpMethod.Get,
+                        $"api/v1/square/refunds/{Uri.EscapeDataString(refundId)}?environment={Uri.EscapeDataString(settings.Environment.ToString())}",
+                        body: null,
+                        cancellationToken);
+                    var statusBody = await ReadResponseBodyAsync(statusResponse, cancellationToken);
+                    if (!statusResponse.IsSuccessStatusCode)
+                    {
+                        return CreateSquareRefundPendingResult(
+                            refundId,
+                            status,
+                            amount,
+                            T("payment.card.squareRefundPending", "Square refund is still processing. Do not refund again; run recovery later."));
+                    }
+
+                    var refreshedRefund = ReadSquareRefundResponse(statusBody);
+                    if (!IsExpectedSquareRefund(refreshedRefund, refundId, paymentId, minorAmount))
+                    {
+                        return CreateSquareRefundPendingResult(
+                            refundId,
+                            status,
+                            amount,
+                            T("payment.card.squareInvalidResponse", "Square terminal returned an invalid response."));
+                    }
+
+                    refund = refreshedRefund;
+                    status = refund.Status ?? string.Empty;
+                    if (squareAttempt?.CanBindRefund == true)
+                    {
+                        await squareAttempt.BindRefundAsync!(
+                            refundId,
+                            status,
+                            DateTimeOffset.UtcNow,
+                            CancellationToken.None);
+                    }
+                }
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
+                {
+                    return CreateSquareRefundPendingResult(
+                        refundId,
+                        status,
+                        amount,
+                        T("payment.card.squareRefundPending", "Square refund is still processing. Do not refund again; run recovery later."));
+                }
             }
 
             if (string.Equals(status, "FAILED", StringComparison.OrdinalIgnoreCase) ||
@@ -1225,7 +1282,20 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
                     ResultUnknown: true);
             }
 
-            if (string.IsNullOrWhiteSpace(idempotencyKey)) _squareRefundIdempotencyKeys.TryRemove(refundAttemptKey, out _);
+            if (string.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateSquareRefundPendingResult(
+                    refundId,
+                    status,
+                    amount,
+                    T("payment.card.squareRefundPending", "Square refund is still processing. Do not refund again; run recovery later."));
+            }
+
+            if (string.IsNullOrWhiteSpace(idempotencyKey))
+            {
+                _squareRefundIdempotencyKeys.TryRemove(refundAttemptKey, out _);
+            }
+
             return new PaymentAuthorizationResult(
                 true,
                 $"SQRF:{refundId}",
@@ -1256,6 +1326,51 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
         {
             return new PaymentAuthorizationResult(false, null, T("payment.card.squareInvalidResponse", "Square terminal returned an invalid response."), ResultUnknown: true);
         }
+    }
+
+    private static bool IsExpectedSquareRefund(
+        SquareRefundResponse refund,
+        string expectedRefundId,
+        string expectedPaymentId,
+        long expectedAmountCents)
+    {
+        return !string.IsNullOrWhiteSpace(expectedRefundId) &&
+            string.Equals(refund.RefundId, expectedRefundId, StringComparison.Ordinal) &&
+            string.Equals(refund.PaymentId, expectedPaymentId, StringComparison.Ordinal) &&
+            refund.AmountMoney is not null &&
+            refund.AmountMoney.Amount == expectedAmountCents &&
+            string.Equals(refund.AmountMoney.Currency, "AUD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static PaymentAuthorizationResult CreateSquareRefundPendingResult(
+        string refundId,
+        string status,
+        decimal amount,
+        string message)
+    {
+        return new PaymentAuthorizationResult(
+            false,
+            $"SQRF:{refundId}",
+            message,
+            amount,
+            [
+                new CardTransactionDto(
+                    "Square",
+                    refundId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    status,
+                    null,
+                    DateTimeOffset.UtcNow,
+                    amount,
+                    null)
+            ],
+            ResponseText: status,
+            ResultUnknown: true);
     }
 
     public async Task<PaymentAuthorizationResult> RecoverLinklyAsync(

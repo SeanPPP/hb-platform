@@ -3131,6 +3131,30 @@ public sealed class CashPaymentWorkflowServiceTests
             return Task.FromResult(true);
         }
 
+        public Task<bool> TryRecordRefundResponseAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string refundId,
+            string refundStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var attempt = Attempts.Single(candidate => candidate.AttemptGuid == attemptGuid);
+            if (!string.Equals(attempt.SubmissionToken, submissionToken, StringComparison.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+
+            Update(attemptGuid, current => current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = refundId,
+                PaymentStatus = refundStatus,
+                UpdatedAt = updatedAt
+            });
+            return Task.FromResult(true);
+        }
+
         public Task<bool> TryMarkRefundPaymentVerifiedAsync(
             Guid attemptGuid,
             string submissionToken,

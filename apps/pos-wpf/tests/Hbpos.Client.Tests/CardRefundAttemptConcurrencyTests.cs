@@ -448,6 +448,18 @@ public sealed class CardRefundAttemptConcurrencyTests
                 "new-token",
                 retry.UpdatedAt.AddTicks(1)));
 
+            Assert.False(await repository.TryRecordRefundResponseAsync(
+                attempt.AttemptGuid,
+                "old-token",
+                "old-refund",
+                "PENDING",
+                retry.UpdatedAt.AddMinutes(1)));
+            Assert.True(await repository.TryRecordRefundResponseAsync(
+                attempt.AttemptGuid,
+                "new-token",
+                "refund-current",
+                "PENDING",
+                retry.UpdatedAt.AddMinutes(1)));
             Assert.False(await repository.TryMarkRefundCheckoutCreatedAsync(
                 attempt.AttemptGuid,
                 "old-token",
@@ -473,6 +485,9 @@ public sealed class CardRefundAttemptConcurrencyTests
                 retry.UpdatedAt.AddMinutes(4)));
 
             var active = Assert.IsType<LocalSquarePaymentAttempt>(await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal("refund-current", active.PaymentId);
+            Assert.Equal("PENDING", active.PaymentStatus);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, active.Status);
             Assert.True(await repository.ResolveRefundAsync(CreateResolution(
                 attempt.AttemptGuid,
                 CardRefundSupervisorDecision.ConfirmRefunded,

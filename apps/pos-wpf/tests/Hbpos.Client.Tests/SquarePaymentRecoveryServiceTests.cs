@@ -131,6 +131,55 @@ public sealed class SquarePaymentRecoveryServiceTests
         Assert.Equal(1, attempts.MarkOrderCompletedCount);
     }
 
+    [Fact]
+    public async Task RecoverLatestAsync_square_pending_refund_stays_locked_without_creating_order()
+    {
+        var attempts = new FakeSquarePaymentAttemptRepository(CreateSquareRefundAttempt());
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Refund = new SquareRefundStatusResult(
+                "REFUND-001",
+                "PENDING",
+                "PAYMENT-001",
+                1000,
+                "AUD")
+        };
+        var service = CreateService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Checking, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_completed_refund_creates_return_without_second_refund()
+    {
+        var attempts = new FakeSquarePaymentAttemptRepository(CreateSquareRefundAttempt());
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Refund = new SquareRefundStatusResult(
+                "REFUND-001",
+                "COMPLETED",
+                "PAYMENT-001",
+                1000,
+                "AUD")
+        };
+        var service = CreateService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, terminal.GetRefundCallCount);
+        Assert.Equal(1, attempts.MarkOrderCompletedCount);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(-10m, Assert.Single(result.Order!.Payments).Amount);
+    }
+
     private static SquarePaymentRecoveryService CreateService(
         FakeSquarePaymentAttemptRepository attempts,
         FakeLocalOrderRepository orders,
@@ -177,6 +226,50 @@ public sealed class SquarePaymentRecoveryServiceTests
             null,
             null,
             null);
+    }
+
+    private static LocalSquarePaymentAttempt CreateSquareRefundAttempt()
+    {
+        var draft = CreateRefundDraft("SQ:PAYMENT-001");
+        return CreateSquareAttempt(LocalSquarePaymentAttemptStatus.Recovering, checkoutId: null) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions),
+            PaymentId = "REFUND-001",
+            PaymentStatus = "PENDING",
+            SubmissionToken = "refund-submission-001"
+        };
+    }
+
+    private static CardPaymentOrderDraft CreateRefundDraft(string originalReference)
+    {
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            "S001",
+            "SKU-REFUND-10",
+            null,
+            "Returned Item",
+            "930REFUND10",
+            "ITEM-REFUND-10",
+            null,
+            1m,
+            10m,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            "RETURN-REFUND-10",
+            Guid.Parse("22222222-3333-4444-5555-666666666666"),
+            Guid.Parse("33333333-4444-5555-6666-777777777777")));
+        return new CardPaymentOrderDraft(
+            CreateDraftOrderGuid(),
+            Session,
+            cart.CreateSnapshot(),
+            [],
+            cart.ActualAmount,
+            10m,
+            "R",
+            originalReference,
+            DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
     }
 
     private static CardPaymentOrderDraft CreateDraft()
@@ -287,6 +380,29 @@ public sealed class SquarePaymentRecoveryServiceTests
             return Task.CompletedTask;
         }
 
+        public Task<bool> TryRecordRefundResponseAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string refundId,
+            string refundStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            if (_attempt is not null)
+            {
+                _attempt = _attempt with
+                {
+                    Status = LocalSquarePaymentAttemptStatus.Recovering,
+                    PaymentId = refundId,
+                    PaymentStatus = refundStatus,
+                    UpdatedAt = updatedAt
+                };
+                Status = _attempt.Status;
+            }
+
+            return Task.FromResult(true);
+        }
+
         public Task MarkCheckoutCreatedAsync(
             Guid attemptGuid,
             string checkoutId,
@@ -367,7 +483,8 @@ public sealed class SquarePaymentRecoveryServiceTests
             string environment,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>([]);
+            return Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>(
+                _attempt?.OperationKind == "Refund" ? [_attempt] : []);
         }
 
         public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
@@ -384,6 +501,11 @@ public sealed class SquarePaymentRecoveryServiceTests
         public SquarePaymentStatusResult Payment { get; set; } =
             new("PAYMENT-001", "COMPLETED", 1000, "AUD");
 
+        public SquareRefundStatusResult Refund { get; set; } =
+            new("REFUND-001", "COMPLETED", "PAYMENT-001", 1000, "AUD");
+
+        public int GetRefundCallCount { get; private set; }
+
         public Task<SquareCheckoutStatusResult> GetCheckoutAsync(
             CardTerminalSettings settings,
             string checkoutId,
@@ -398,6 +520,15 @@ public sealed class SquarePaymentRecoveryServiceTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Payment);
+        }
+
+        public Task<SquareRefundStatusResult> GetRefundAsync(
+            CardTerminalSettings settings,
+            string refundId,
+            CancellationToken cancellationToken = default)
+        {
+            GetRefundCallCount++;
+            return Task.FromResult(Refund);
         }
     }
 

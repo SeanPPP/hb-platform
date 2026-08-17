@@ -78,6 +78,42 @@ public sealed class SquareTerminalPaymentClientTests
         AssertNoSquareHeaders(capturedRequest!);
     }
 
+    [Fact]
+    public async Task GetRefundAsync_UsesHbposApiRefundEndpoint()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = request;
+            return Task.FromResult(JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "refundId": "refund-1",
+                    "environment": "Production",
+                    "status": "COMPLETED",
+                    "paymentId": "payment-1",
+                    "amountMoney": { "amount": 99, "currency": "AUD" },
+                    "updatedAt": "2026-08-17T04:53:22Z"
+                  }
+                }
+                """));
+        });
+        var client = CreateClient(handler);
+
+        var result = await client.GetRefundAsync(CreateSettings(), "refund-1");
+
+        Assert.Equal("refund-1", result.RefundId);
+        Assert.Equal("COMPLETED", result.Status);
+        Assert.Equal("payment-1", result.PaymentId);
+        Assert.Equal(99, result.AmountCents);
+        Assert.Equal("AUD", result.Currency);
+        Assert.NotNull(capturedRequest);
+        AssertHbposApiRequest(capturedRequest!, "api/v1/square/refunds/refund-1?environment=Production");
+        AssertNoSquareHeaders(capturedRequest!);
+    }
+
     private static CardTerminalSettings CreateSettings()
     {
         return new CardTerminalSettings(

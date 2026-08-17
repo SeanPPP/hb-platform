@@ -163,11 +163,12 @@ public sealed class ConfiguredCardTerminalClientTests
     [Fact]
     public async Task RefundAsync_posts_square_refund_request()
     {
-        HttpRequestMessage? capturedRequest = null;
+        var capturedRequests = new List<HttpRequestMessage>();
         var handler = new StubHttpMessageHandler((request, _) =>
         {
-            capturedRequest = CloneRequestWithBody(request);
-            return JsonResponse(
+            capturedRequests.Add(CloneRequestWithBody(request));
+            return request.Method == HttpMethod.Post
+                ? JsonResponse(
                 """
                 {
                   "refund": {
@@ -175,6 +176,19 @@ public sealed class ConfiguredCardTerminalClientTests
                     "status": "PENDING",
                     "payment_id": "payment-1",
                     "amount_money": { "amount": 1234, "currency": "AUD" }
+                  }
+                }
+                """)
+                : JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "refundId": "refund-1",
+                    "environment": "Production",
+                    "status": "COMPLETED",
+                    "paymentId": "payment-1",
+                    "amountMoney": { "amount": 1234, "currency": "AUD" }
                   }
                 }
                 """);
@@ -187,12 +201,77 @@ public sealed class ConfiguredCardTerminalClientTests
 
         Assert.True(result.Approved);
         Assert.Equal("SQRF:refund-1", result.Reference);
-        Assert.NotNull(capturedRequest);
-        AssertHbposApiRequest(capturedRequest!, "api/v1/square/refunds");
-        AssertNoSquareHeaders(capturedRequest!);
-        var body = await capturedRequest.Content!.ReadAsStringAsync();
+        Assert.Equal(2, capturedRequests.Count);
+        AssertHbposApiRequest(capturedRequests[0], "api/v1/square/refunds");
+        AssertHbposApiRequest(capturedRequests[1], "api/v1/square/refunds/refund-1?environment=Production");
+        AssertNoSquareHeaders(capturedRequests[0]);
+        AssertNoSquareHeaders(capturedRequests[1]);
+        var body = await capturedRequests[0].Content!.ReadAsStringAsync();
         Assert.Contains("\"paymentId\":\"payment-1\"", body, StringComparison.Ordinal);
         Assert.Contains("\"amount\":1234", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RefundAsync_keeps_square_pending_refund_unapproved_and_recoverable()
+    {
+        var requestCount = 0;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            requestCount++;
+            return request.Method == HttpMethod.Post
+                ? JsonResponse("{ \"refund\": { \"id\": \"refund-pending\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1234, \"currency\": \"AUD\" } } }")
+                : JsonResponse("{ \"success\": true, \"data\": { \"refundId\": \"refund-pending\", \"environment\": \"Production\", \"status\": \"PENDING\", \"paymentId\": \"payment-1\", \"amountMoney\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var result = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal("SQRF:refund-pending", result.Reference);
+        Assert.Equal(12.34m, result.AuthorizedAmount);
+        Assert.Equal("PENDING", Assert.Single(result.CardTransactions!).ResponseText);
+        Assert.Equal(2, requestCount);
+    }
+
+    [Fact]
+    public async Task RefundAsync_persists_refund_id_before_returning_pending_result()
+    {
+        var persisted = new List<(string RefundId, string Status)>();
+        var contextAccessor = new SquarePaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler((request, _) =>
+            request.Method == HttpMethod.Post
+                ? JsonResponse("{ \"refund\": { \"id\": \"refund-durable\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1234, \"currency\": \"AUD\" } } }")
+                : JsonResponse("{ \"success\": true, \"data\": { \"refundId\": \"refund-durable\", \"environment\": \"Production\", \"status\": \"PENDING\", \"paymentId\": \"payment-1\", \"amountMoney\": { \"amount\": 1234, \"currency\": \"AUD\" } } }"));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler),
+            squarePaymentAttemptContextAccessor: contextAccessor);
+        using var scope = contextAccessor.Begin(new SquarePaymentAttemptContext(
+            Guid.NewGuid(),
+            "refund-idempotency",
+            SubmissionToken: "refund-submission",
+            BindRefundAsync: (refundId, status, _, _) =>
+            {
+                persisted.Add((refundId, status));
+                return Task.CompletedTask;
+            }));
+
+        var result = await ((IIdempotentCardRefundClient)client).RefundAsync(
+            12.34m,
+            CreateSession(),
+            "SQ:payment-1",
+            "refund-idempotency");
+
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(2, persisted.Count);
+        Assert.All(persisted, evidence =>
+        {
+            Assert.Equal("refund-durable", evidence.RefundId);
+            Assert.Equal("PENDING", evidence.Status);
+        });
     }
 
     [Fact]
@@ -201,8 +280,13 @@ public sealed class ConfiguredCardTerminalClientTests
         HttpRequestMessage? capturedRequest = null;
         var handler = new StubHttpMessageHandler((request, _) =>
         {
-            capturedRequest = CloneRequestWithBody(request);
-            return JsonResponse("{ \"refund\": { \"id\": \"refund-persisted\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+            if (request.Method == HttpMethod.Post)
+            {
+                capturedRequest = CloneRequestWithBody(request);
+                return JsonResponse("{ \"refund\": { \"id\": \"refund-persisted\", \"status\": \"PENDING\", \"payment_id\": \"payment-1\", \"amount_money\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+            }
+
+            return JsonResponse("{ \"success\": true, \"data\": { \"refundId\": \"refund-persisted\", \"environment\": \"Production\", \"status\": \"COMPLETED\", \"paymentId\": \"payment-1\", \"amountMoney\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
@@ -237,12 +321,17 @@ public sealed class ConfiguredCardTerminalClientTests
     public async Task RefundAsync_reuses_square_refund_idempotency_key_after_network_failure()
     {
         var capturedRequests = new List<HttpRequestMessage>();
-        var callCount = 0;
+        var postCallCount = 0;
         var handler = new StubHttpMessageHandler((request, _) =>
         {
+            if (request.Method == HttpMethod.Get)
+            {
+                return JsonResponse("{ \"success\": true, \"data\": { \"refundId\": \"refund-retry-1\", \"environment\": \"Production\", \"status\": \"COMPLETED\", \"paymentId\": \"payment-1\", \"amountMoney\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+            }
+
             capturedRequests.Add(CloneRequestWithBody(request));
-            callCount++;
-            if (callCount == 1)
+            postCallCount++;
+            if (postCallCount == 1)
             {
                 throw new HttpRequestException("Network dropped after Square accepted the refund.");
             }
@@ -278,12 +367,17 @@ public sealed class ConfiguredCardTerminalClientTests
     public async Task RefundAsync_reuses_square_refund_idempotency_key_after_backend_gateway_failure()
     {
         var capturedRequests = new List<HttpRequestMessage>();
-        var callCount = 0;
+        var postCallCount = 0;
         var handler = new StubHttpMessageHandler((request, _) =>
         {
+            if (request.Method == HttpMethod.Get)
+            {
+                return JsonResponse("{ \"success\": true, \"data\": { \"refundId\": \"refund-retry-1\", \"environment\": \"Production\", \"status\": \"COMPLETED\", \"paymentId\": \"payment-1\", \"amountMoney\": { \"amount\": 1234, \"currency\": \"AUD\" } } }");
+            }
+
             capturedRequests.Add(CloneRequestWithBody(request));
-            callCount++;
-            if (callCount == 1)
+            postCallCount++;
+            if (postCallCount == 1)
             {
                 return JsonResponse(
                     HttpStatusCode.BadGateway,
@@ -1965,6 +2059,17 @@ public sealed class ConfiguredCardTerminalClientTests
         public Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryRecordRefundResponseAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string refundId,
+            string refundStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(true);
         }
 
         public Task MarkCheckoutCreatedAsync(

@@ -55,6 +55,11 @@ public interface ISquareTerminalBackendService
         SquareRefundRequest request,
         CancellationToken cancellationToken);
 
+    Task<SquareRefundResponse?> GetRefundAsync(
+        string environment,
+        string refundId,
+        CancellationToken cancellationToken);
+
     Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(
         SquareWebhookRequest request,
         CancellationToken cancellationToken);

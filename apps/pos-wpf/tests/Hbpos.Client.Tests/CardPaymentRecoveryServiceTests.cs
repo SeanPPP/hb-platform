@@ -2802,6 +2802,17 @@ public sealed class CardPaymentRecoveryServiceTests
             return Task.CompletedTask;
         }
 
+        public Task<bool> TryRecordRefundResponseAsync(
+            Guid attemptGuid,
+            string submissionToken,
+            string refundId,
+            string refundStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(true);
+        }
+
         public Task MarkCheckoutCreatedAsync(Guid attemptGuid, string checkoutId, string? checkoutStatus, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
         {
             Status = LocalSquarePaymentAttemptStatus.CheckoutCreated;
@@ -2958,6 +2969,9 @@ public sealed class CardPaymentRecoveryServiceTests
         public SquarePaymentStatusResult Payment { get; set; } =
             new("PAYMENT-001", "COMPLETED", 1000, "AUD");
 
+        public SquareRefundStatusResult Refund { get; set; } =
+            new("REFUND-001", "COMPLETED", "PAYMENT-001", 1000, "AUD");
+
         public Action? OnGetPayment { get; init; }
 
         public int GetCheckoutCallCount { get; private set; }
@@ -2981,6 +2995,14 @@ public sealed class CardPaymentRecoveryServiceTests
             GetPaymentCallCount++;
             OnGetPayment?.Invoke();
             return Task.FromResult(Payment);
+        }
+
+        public Task<SquareRefundStatusResult> GetRefundAsync(
+            CardTerminalSettings settings,
+            string refundId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Refund);
         }
     }
 

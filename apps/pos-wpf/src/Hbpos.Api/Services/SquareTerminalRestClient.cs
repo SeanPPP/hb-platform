@@ -77,6 +77,12 @@ public interface ISquareTerminalRestClient
         string accessToken,
         SquareRefundRequest request,
         CancellationToken cancellationToken);
+
+    Task<SquareRefundResponse?> GetRefundAsync(
+        string environment,
+        string accessToken,
+        string refundId,
+        CancellationToken cancellationToken);
 }
 
 public sealed record SquareTerminalCheckoutRecord(
@@ -374,6 +380,23 @@ public sealed class HttpSquareTerminalRestClient(
             accessToken,
             "refunds",
             payload,
+            "refund",
+            refund => MapRefund(environment, refund),
+            cancellationToken);
+    }
+
+    public Task<SquareRefundResponse?> GetRefundAsync(
+        string environment,
+        string accessToken,
+        string refundId,
+        CancellationToken cancellationToken)
+    {
+        return SendOptionalAsync(
+            HttpMethod.Get,
+            environment,
+            accessToken,
+            $"refunds/{Uri.EscapeDataString(refundId)}",
+            body: null,
             "refund",
             refund => MapRefund(environment, refund),
             cancellationToken);

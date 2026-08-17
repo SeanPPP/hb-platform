@@ -22,6 +22,14 @@ public sealed record SquarePaymentStatusResult(
     string? MaskedCardNumber = null,
     string? AuthCode = null);
 
+public sealed record SquareRefundStatusResult(
+    string RefundId,
+    string Status,
+    string PaymentId,
+    long AmountCents,
+    string Currency,
+    DateTimeOffset? UpdatedAt = null);
+
 public interface ISquareTerminalPaymentClient
 {
     Task<SquareCheckoutStatusResult> GetCheckoutAsync(
@@ -32,6 +40,11 @@ public interface ISquareTerminalPaymentClient
     Task<SquarePaymentStatusResult> GetPaymentAsync(
         CardTerminalSettings settings,
         string paymentId,
+        CancellationToken cancellationToken = default);
+
+    Task<SquareRefundStatusResult> GetRefundAsync(
+        CardTerminalSettings settings,
+        string refundId,
         CancellationToken cancellationToken = default);
 }
 
@@ -104,6 +117,38 @@ public sealed class SquareTerminalPaymentClient(HttpClient httpClient) : ISquare
             payment.CardBrand,
             payment.MaskedCardNumber,
             payment.AuthCode);
+    }
+
+    public async Task<SquareRefundStatusResult> GetRefundAsync(
+        CardTerminalSettings settings,
+        string refundId,
+        CancellationToken cancellationToken = default)
+    {
+        var refund = await SendApiAsync<SquareRefundResponse?>(
+            HttpMethod.Get,
+            $"api/v1/square/refunds/{Uri.EscapeDataString(refundId)}?environment={Uri.EscapeDataString(settings.Environment.ToString())}",
+            operationName: "refund",
+            cancellationToken);
+
+        if (refund is null)
+        {
+            throw new JsonException("Square refund API returned no refund.");
+        }
+
+        if (string.IsNullOrWhiteSpace(refund.PaymentId) ||
+            refund.AmountMoney is null ||
+            string.IsNullOrWhiteSpace(refund.AmountMoney.Currency))
+        {
+            throw new JsonException("Square refund API returned incomplete refund evidence.");
+        }
+
+        return new SquareRefundStatusResult(
+            refund.RefundId,
+            refund.Status ?? string.Empty,
+            refund.PaymentId,
+            refund.AmountMoney.Amount,
+            refund.AmountMoney.Currency,
+            refund.UpdatedAt);
     }
 
     private async Task<T> SendApiAsync<T>(
