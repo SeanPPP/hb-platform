@@ -40,6 +40,8 @@ import {
   buildCategoryNameMap,
   buildHomeProductQuery,
   flattenVisibleCategories,
+  resolveHomeSearchPageState,
+  type HomeSearchPageAction,
   type VisibleCategoryRow,
 } from "@/modules/shop/home-filters";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
@@ -101,6 +103,7 @@ export default function Home() {
   const [selectedGrade, setSelectedGrade] = useState<string | undefined>();
   const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
+  const searchReturnPageRef = useRef<number | null>(null);
   const [noticeMessage, setNoticeMessage] = useState("");
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
   const [quantityEditorProduct, setQuantityEditorProduct] = useState<StoreOrderProductItem | null>(null);
@@ -161,6 +164,14 @@ export default function Home() {
   selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
   useCartSummary(selectedStoreCode);
+  const clearAppliedSearchForScan = useCallback(() => {
+    if (keyword) {
+      // 扫码退出文字搜索时保留既有行为：回到第一页，不复用文字搜索的返回页。
+      setPageNumber(1);
+    }
+    searchReturnPageRef.current = null;
+    setKeyword("");
+  }, [keyword]);
   const handleScanLookupProduct = useCallback(
     async (
       product: StoreOrderProductItem,
@@ -175,7 +186,7 @@ export default function Home() {
       }
 
       setSearchInput("");
-      setKeyword("");
+      clearAppliedSearchForScan();
       setScannedProducts([product]);
       setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
       setSelectedCategoryGUID(undefined);
@@ -211,19 +222,19 @@ export default function Home() {
         }
       }
     },
-    [addToCart, autoAddWhenSingle, handleNormalOrderError, t]
+    [addToCart, autoAddWhenSingle, clearAppliedSearchForScan, handleNormalOrderError, t]
   );
   const handleScanAddedProduct = useCallback(
     (product: StoreOrderProductItem, _barcode?: string, _source?: unknown, scanTraceId?: string) => {
       setSearchInput("");
-      setKeyword("");
+      clearAppliedSearchForScan();
       setScannedProducts([product]);
       setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
       setSelectedCategoryGUID(undefined);
       setSelectedGrade(undefined);
       setNoticeMessage(t("messages.addedToCart", { name: product.productName || product.productCode }));
     },
-    [t]
+    [clearAppliedSearchForScan, t]
   );
   const scanResult = useScanResult({
     autoAddWhenSingle,
@@ -331,8 +342,9 @@ export default function Home() {
   const productsQuery = useProducts(productQuery, locationLookupEnabled);
 
   useEffect(() => {
+    searchReturnPageRef.current = null;
     setPageNumber(1);
-  }, [keyword, selectedCategoryGUID, selectedGrade, selectedStoreCode]);
+  }, [selectedCategoryGUID, selectedGrade, selectedStoreCode]);
 
   useEffect(() => {
     // 门店切换后清空旧门店扫码结果，避免迟到的加购反馈落到新门店界面。
@@ -438,11 +450,35 @@ export default function Home() {
 
     return mergedMap;
   }, [cartSummary?.items, productsQuery.dynamicDataMap, scannedProducts]);
+  const applySearchPageAction = useCallback((action: HomeSearchPageAction) => {
+    const nextState = resolveHomeSearchPageState(
+      {
+        keyword,
+        pageNumber,
+        returnPageNumber: searchReturnPageRef.current,
+      },
+      action,
+    );
+
+    searchReturnPageRef.current = nextState.returnPageNumber;
+    setKeyword(nextState.keyword);
+    setPageNumber(nextState.pageNumber);
+  }, [keyword, pageNumber]);
   const handleApplySearch = useCallback(() => {
     setScannedProducts(null);
     // 搜索框可能接收到同一扫码枪输入，保留商品 trace 让同商品数量调整继续走 scan-update。
-    setKeyword(searchInput.trim());
-  }, [searchInput]);
+    if (!searchInput.trim()) {
+      setSearchInput("");
+    }
+    applySearchPageAction({ type: "apply", input: searchInput });
+  }, [applySearchPageAction, searchInput]);
+  const handleSearchInputChange = useCallback((value: string) => {
+    setSearchInput(value);
+    setScannedProducts(null);
+    if (!value.trim()) {
+      applySearchPageAction({ type: "clear" });
+    }
+  }, [applySearchPageAction]);
   const handleClearSearchAndScan = useCallback(() => {
       setScannedProducts(null);
       setScannedProductTraceIds({});
@@ -686,10 +722,7 @@ export default function Home() {
           <Searchbar
             placeholder={t(locationLookupEnabled ? "locationSearchPlaceholder" : "searchPlaceholder")}
             value={searchInput}
-            onChangeText={(value) => {
-              setSearchInput(value);
-              setScannedProducts(null);
-            }}
+            onChangeText={handleSearchInputChange}
             onSubmitEditing={handleApplySearch}
             onIconPress={handleApplySearch}
             onFocus={handleSearchFocus}

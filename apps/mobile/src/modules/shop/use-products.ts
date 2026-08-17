@@ -19,6 +19,7 @@ export function useProducts(query: StoreOrderProductQuery, locationLookupEnabled
         previousData,
         previousQuery,
         locationLookupEnabled,
+        query,
       ),
     retry: false,
     queryFn: () => getProducts(query),

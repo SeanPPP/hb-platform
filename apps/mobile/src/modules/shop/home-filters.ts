@@ -9,6 +9,16 @@ export interface HomeProductQueryInput {
   pageSize: number;
 }
 
+export interface HomeSearchPageState {
+  keyword: string;
+  pageNumber: number;
+  returnPageNumber: number | null;
+}
+
+export type HomeSearchPageAction =
+  | { type: "apply"; input: string }
+  | { type: "clear" };
+
 export interface VisibleCategoryRow {
   node: StoreOrderCategoryNode;
   depth: number;
@@ -28,6 +38,36 @@ export function buildHomeProductQuery(input: HomeProductQueryInput): StoreOrderP
     pageNumber: input.pageNumber,
     pageSize: input.pageSize,
     sortBy: "Default",
+  };
+}
+
+export function resolveHomeSearchPageState(
+  state: HomeSearchPageState,
+  action: HomeSearchPageAction,
+): HomeSearchPageState {
+  if (action.type === "clear") {
+    const hasAppliedKeyword = Boolean(state.keyword.trim());
+
+    return {
+      keyword: "",
+      pageNumber: hasAppliedKeyword ? (state.returnPageNumber ?? 1) : state.pageNumber,
+      returnPageNumber: null,
+    };
+  }
+
+  const nextKeyword = action.input.trim();
+  if (!nextKeyword) {
+    return resolveHomeSearchPageState(state, { type: "clear" });
+  }
+  if (nextKeyword === state.keyword) {
+    return state;
+  }
+
+  return {
+    keyword: nextKeyword,
+    pageNumber: 1,
+    // 关键逻辑：只在首次进入搜索时保存原页，后续修改关键词继续复用同一返回点。
+    returnPageNumber: state.keyword.trim() ? state.returnPageNumber : state.pageNumber,
   };
 }
 

@@ -15,9 +15,22 @@ export function resolveShopProductsPlaceholderData<T>(
   previousData: T | undefined,
   previousQuery: PreviousShopProductsQuery | undefined,
   locationLookupEnabled: boolean,
+  currentQuery: StoreOrderProductQuery,
 ): T | undefined {
   // 权限范围变化时禁止沿用旧数据，避免短暂显示无权查看的货位结果。
-  return previousQuery?.queryKey[2] === locationLookupEnabled
-    ? previousData
-    : undefined;
+  if (previousQuery?.queryKey[2] !== locationLookupEnabled) {
+    return undefined;
+  }
+
+  const previousProductQuery = previousQuery.queryKey[1];
+  const previousItemNumber =
+    typeof previousProductQuery === "object" && previousProductQuery !== null
+      ? (previousProductQuery as StoreOrderProductQuery).itemNumber?.trim()
+      : undefined;
+  if (previousItemNumber && !currentQuery.itemNumber?.trim()) {
+    // 清空关键词时不得把旧搜索结果伪装成原商品页；无缓存时交给现有加载态承接。
+    return undefined;
+  }
+
+  return previousData;
 }
