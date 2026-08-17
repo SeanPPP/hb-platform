@@ -731,6 +731,208 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(ReceiptPrintReason.Reprint, printCall.Reason);
     }
 
+    [Theory]
+    [InlineData(true, "Succeeded")]
+    [InlineData(false, "Failed")]
+    public async Task Remote_history_reprint_prints_loaded_remote_receipt_and_records_result(
+        bool printSucceeded,
+        string expectedOutcome)
+    {
+        var orderGuid = Guid.NewGuid();
+        var remoteReceipt = new ReceiptDetails(
+            orderGuid,
+            "1042",
+            "POS-02",
+            "Remote Cashier",
+            DateTimeOffset.UtcNow,
+            18m,
+            0m,
+            18m,
+            [new ReceiptPreviewLine("Remote Item", "930220", 1m, 18m, 0m, 18m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 18m, null)]);
+        var printService = new RecordingReceiptPrintService
+        {
+            PrintReceiptResult = new ReceiptPrintResult(
+                printSucceeded,
+                printSucceeded ? "printed" : "printer offline",
+                orderGuid)
+        };
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            operationAuditLogger: auditLogger,
+            remoteOrderHistoryService: new RecordingRemoteOrderHistoryService(remoteReceipt));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        history.IsOnlineSourceSelected = true;
+        await history.LoadAsync();
+
+        Assert.True(history.IsReprintVisible);
+        Assert.True(history.ReprintCommand.CanExecute(null));
+
+        history.ReprintCommand.Execute(null);
+        await WaitUntilAsync(() => printService.Calls.Count == 1);
+
+        var printCall = Assert.Single(printService.Calls);
+        Assert.Equal(orderGuid, printCall.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.Reprint, printCall.Reason);
+        Assert.Same(remoteReceipt, printCall.Receipt);
+        var auditEvent = Assert.Single(
+            auditLogger.Events,
+            auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT");
+        Assert.Equal(expectedOutcome, auditEvent.Outcome);
+        Assert.Equal("HISTORY", auditEvent.ReasonCode);
+        Assert.Equal(orderGuid.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal(printSucceeded ? null : "printer offline", auditEvent.SafeMessage);
+    }
+
+    [Theory]
+    [InlineData(true, "Succeeded")]
+    [InlineData(false, "Failed")]
+    public async Task Installment_history_reprint_prints_loaded_receipt_and_records_result(
+        bool printSucceeded,
+        string expectedOutcome)
+    {
+        var installmentService = new RecordingInstallmentOrderService();
+        var installmentOrder = installmentService.SeedRepaymentOrder() with
+        {
+            UpdatedAt = DateTimeOffset.Now
+        };
+        installmentService.HistoryOrders = [installmentOrder];
+        var printService = new RecordingReceiptPrintService
+        {
+            PrintReceiptResult = new ReceiptPrintResult(
+                printSucceeded,
+                printSucceeded ? "printed" : "printer offline",
+                installmentOrder.OrderId)
+        };
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            installmentOrderService: installmentService,
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        history.SelectedTerminalOption = history.TerminalOptions.Single(option => option.DeviceCode is null);
+        history.IsInstallmentSourceSelected = true;
+        await history.LoadAsync();
+
+        var selectedOrder = Assert.Single(history.Orders);
+        Assert.Equal(installmentOrder.OrderId, selectedOrder.OrderGuid);
+        var installmentReceipt = Assert.IsType<ReceiptDetails>(history.SelectedReceipt);
+        Assert.True(history.IsReprintVisible);
+        Assert.True(history.ReprintCommand.CanExecute(null));
+
+        history.ReprintCommand.Execute(null);
+        await WaitUntilAsync(() => printService.Calls.Count == 1);
+
+        var printCall = Assert.Single(printService.Calls);
+        Assert.Equal(installmentOrder.OrderId, printCall.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.Reprint, printCall.Reason);
+        Assert.Same(installmentReceipt, printCall.Receipt);
+        var auditEvent = Assert.Single(
+            auditLogger.Events,
+            auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT");
+        Assert.Equal(expectedOutcome, auditEvent.Outcome);
+        Assert.Equal("HISTORY", auditEvent.ReasonCode);
+        Assert.Equal(installmentOrder.OrderId.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal(printSucceeded ? null : "printer offline", auditEvent.SafeMessage);
+    }
+
+    [Theory]
+    [InlineData(TransactionHistorySource.RemoteOrders)]
+    [InlineData(TransactionHistorySource.InstallmentOrders)]
+    public async Task History_reprint_task_cancellation_does_not_escape_event_bridge_and_records_visible_failure(
+        TransactionHistorySource source)
+    {
+        var orderGuid = Guid.NewGuid();
+        var remoteReceipt = new ReceiptDetails(
+            orderGuid,
+            "1042",
+            "POS-02",
+            "Remote Cashier",
+            DateTimeOffset.UtcNow,
+            18m,
+            0m,
+            18m,
+            [new ReceiptPreviewLine("Remote Item", "930220", 1m, 18m, 0m, 18m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 18m, null)]);
+        var installmentService = new RecordingInstallmentOrderService();
+        IRemoteOrderHistoryService? remoteHistoryService = null;
+        if (source == TransactionHistorySource.RemoteOrders)
+        {
+            remoteHistoryService = new RecordingRemoteOrderHistoryService(remoteReceipt);
+        }
+        else
+        {
+            var installmentOrder = installmentService.SeedRepaymentOrder() with
+            {
+                UpdatedAt = DateTimeOffset.Now
+            };
+            installmentService.HistoryOrders = [installmentOrder];
+            orderGuid = installmentOrder.OrderId;
+        }
+
+        var printService = new RecordingReceiptPrintService
+        {
+            PrintReceiptException = new TaskCanceledException("printer timed out")
+        };
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            installmentOrderService: installmentService,
+            operationAuditLogger: auditLogger,
+            remoteOrderHistoryService: remoteHistoryService);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        if (source == TransactionHistorySource.RemoteOrders)
+        {
+            history.IsOnlineSourceSelected = true;
+        }
+        else
+        {
+            history.SelectedTerminalOption = history.TerminalOptions.Single(option => option.DeviceCode is null);
+            history.IsInstallmentSourceSelected = true;
+        }
+        await history.LoadAsync();
+
+        Assert.True(history.ReprintCommand.CanExecute(null));
+
+        var eventBridgeContext = new RecordingSynchronizationContext();
+        var originalContext = SynchronizationContext.Current;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(eventBridgeContext);
+            history.ReprintCommand.Execute(null);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+        }
+        await WaitUntilAsync(() => auditLogger.Events.Any(
+            auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT"));
+
+        Assert.Empty(eventBridgeContext.Exceptions);
+        var auditEvent = Assert.Single(
+            auditLogger.Events,
+            auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT");
+        Assert.Equal("Failed", auditEvent.Outcome);
+        Assert.Equal("HISTORY_EXCEPTION", auditEvent.ReasonCode);
+        Assert.Equal(nameof(TaskCanceledException), auditEvent.SafeMessage);
+        Assert.Equal(orderGuid.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal("Receipt print failed: TaskCanceledException", viewModel.StatusMessage);
+        Assert.Single(printService.Calls);
+    }
+
     [Fact]
     public async Task Cashier_login_keeps_login_success_when_runtime_status_report_fails()
     {
@@ -5097,7 +5299,8 @@ public sealed class MainViewModelScannerTests
         IMainShellStartupService? mainShellStartupService = null,
         bool enforceCashierPermissions = false,
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
-        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null)
+        ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null,
+        IRemoteOrderHistoryService? remoteOrderHistoryService = null)
     {
         var priceIndex = new LocalSellableItemIndex();
         var effectiveCart = cart ?? new PosCartService();
@@ -5157,7 +5360,8 @@ public sealed class MainViewModelScannerTests
             operationAuthorizationService: operationAuthorizationService,
             enforceCashierPermissions: enforceCashierPermissions,
             linklySettlementUploadQueueReader: linklySettlementUploadQueueReader,
-            linklySettlementUploadExecutionService: linklySettlementUploadExecutionService);
+            linklySettlementUploadExecutionService: linklySettlementUploadExecutionService,
+            remoteOrderHistoryService: remoteOrderHistoryService);
     }
 
     private static MainViewModel CreateMainViewModelWithShellCatalog(
@@ -6435,6 +6639,8 @@ public sealed class MainViewModelScannerTests
     {
         public LocalInstallmentOrder? CreatedLocalOrder { get; private set; }
 
+        public IReadOnlyList<InstallmentOrderSummary> HistoryOrders { get; set; } = [];
+
         public int RecoverPendingOperationsCallCount { get; private set; }
 
         public PosSessionState? LastRecoverySession { get; private set; }
@@ -6517,10 +6723,10 @@ public sealed class MainViewModelScannerTests
         }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+            Task.FromResult(HistoryOrders);
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> SearchAsync(PosSessionState session, string? keyword, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+            Task.FromResult(HistoryOrders);
 
         public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreatedLocalOrder?.InstallmentGuid == installmentGuid ? CreatedLocalOrder : null);
@@ -6692,6 +6898,8 @@ public sealed class MainViewModelScannerTests
 
         public ReceiptPrintResult? PrintReceiptResult { get; init; }
 
+        public Exception? PrintReceiptException { get; init; }
+
         public Queue<ReceiptPrintResult> PrintReceiptResults { get; } = new();
 
         public Task<ReceiptPrintResult> PrintLatestReceiptAsync(
@@ -6717,6 +6925,11 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             Calls.Add(new ReceiptPrintCall(receipt.OrderGuid, reason, receipt));
+            if (PrintReceiptException is not null)
+            {
+                return Task.FromException<ReceiptPrintResult>(PrintReceiptException);
+            }
+
             var result = PrintReceiptResults.Count > 0
                 ? PrintReceiptResults.Dequeue()
                 : PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", receipt.OrderGuid);
@@ -6727,6 +6940,71 @@ public sealed class MainViewModelScannerTests
         {
             Calls.Add(new ReceiptPrintCall(null, ReceiptPrintReason.Test, null));
             return Task.FromResult(new ReceiptPrintResult(true, "tested"));
+        }
+    }
+
+    private sealed class RecordingSynchronizationContext : SynchronizationContext
+    {
+        private readonly ConcurrentQueue<Exception> _exceptions = new();
+
+        public IReadOnlyCollection<Exception> Exceptions => _exceptions.ToArray();
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            try
+            {
+                callback(state);
+            }
+            catch (Exception ex)
+            {
+                _exceptions.Enqueue(ex);
+            }
+        }
+    }
+
+    private sealed class RecordingRemoteOrderHistoryService(ReceiptDetails receipt) : IRemoteOrderHistoryService
+    {
+        public Task<RemoteOrderHistoryResult> QueryAsync(
+            RemoteOrderHistoryQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    receipt.OrderGuid,
+                    receipt.StoreCode,
+                    receipt.DeviceCode,
+                    receipt.CashierName,
+                    receipt.SoldAt,
+                    receipt.TotalAmount,
+                    receipt.DiscountAmount,
+                    receipt.ActualAmount,
+                    receipt.Lines.Count,
+                    "Cash",
+                    "Synced")
+            ]));
+        }
+
+        public Task<ReceiptDetails?> GetDetailsAsync(
+            Guid orderGuid,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<ReceiptDetails?>(
+                orderGuid == receipt.OrderGuid ? receipt : null);
+        }
+
+        public Task<OrderReturnContextDto?> GetReturnContextAsync(
+            Guid orderGuid,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<OrderReturnContextDto?>(null);
+        }
+
+        public Task<OrderReturnRecordCreateResponse> CreateReturnRecordsAsync(
+            OrderReturnRecordCreateRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
     }
 

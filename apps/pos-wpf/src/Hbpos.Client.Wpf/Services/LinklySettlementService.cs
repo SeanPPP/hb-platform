@@ -126,8 +126,9 @@ public sealed class LinklySettlementService(
         {
             terminalResult = await terminalClient.SettlementAsync(session, settings, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            // 终端调用已经开始时，非调用方超时按结果未知落库；调用方主动取消则保留 Pending 锁并继续传播。
             var unknown = new LocalLinklySettlementCompletion(
                 LocalLinklySettlementStatus.Unknown,
                 ResponseCode: null,
@@ -391,8 +392,9 @@ public sealed class LinklySettlementService(
         {
             resumable = await backendTerminalClient.GetResumableSettlementAsync(backendSettings, cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            // 只传播调用方主动取消；内部超时等非调用方取消按未决结算阻塞处理，不重发、不覆盖状态。
             Console.WriteLine($"[HBPOS][Client][Settlement] resumable lookup failed error={ex.GetType().Name}");
             return BlockUnresolvedSettlement(unresolvedSettlement);
         }

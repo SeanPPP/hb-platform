@@ -2979,9 +2979,33 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             // 只有打印服务返回结果后才记录补打成功或失败，避免把点击动作误记成已打印。
-            var result = await _receiptCoordinator.PrintReceiptAsync(
-                selectedOrder.OrderGuid,
-                ReceiptPrintReason.Reprint);
+            ReceiptPrintResult result;
+            if (selectedOrder.Source is
+                TransactionHistorySource.RemoteOrders or
+                TransactionHistorySource.InstallmentOrders)
+            {
+                if (history.SelectedReceipt is not { } loadedReceipt ||
+                    loadedReceipt.OrderGuid != selectedOrder.OrderGuid)
+                {
+                    var message = _localization.T("receipt.print.noReceiptFound");
+                    StatusMessage = string.Format(
+                        _localization.CurrentCulture,
+                        _localization.T("receipt.print.failed"),
+                        message);
+                    result = new ReceiptPrintResult(false, message, selectedOrder.OrderGuid);
+                }
+                else
+                {
+                    // 远程订单和分期订单都不能回退到普通本地订单查询，直接打印历史页已加载的完整小票。
+                    result = await _receiptCoordinator.PrintReceiptAsync(loadedReceipt, ReceiptPrintReason.Reprint);
+                }
+            }
+            else
+            {
+                result = await _receiptCoordinator.PrintReceiptAsync(
+                    selectedOrder.OrderGuid,
+                    ReceiptPrintReason.Reprint);
+            }
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.ReceiptReprint,
@@ -2994,13 +3018,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
+            var safeMessage = ex.GetType().Name;
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                safeMessage);
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.ReceiptReprint,
                 "Failed",
                 Session,
                 reasonCode: "HISTORY_EXCEPTION",
-                safeMessage: ex.GetType().Name,
+                safeMessage: safeMessage,
                 orderGuid: selectedOrder.OrderGuid.ToString("D"),
                 correlationId: correlation.CorrelationId,
                 traceId: correlation.TraceId);
@@ -3009,7 +3038,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 $"history receipt reprint failed error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            // 历史补打由 async void 事件桥触发；异常已审计并展示后必须在此终止，避免逃逸到 Dispatcher 导致应用退出。
         }
     }
 

@@ -97,6 +97,141 @@ public sealed class InstallmentCenterViewModelTests
         Assert.Equal("IO-001", viewModel.Orders[0].OrderNumber);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Load_and_recovery_commands_handle_recovery_timeout_and_keep_installment_locked(bool executeRecoveryCommand)
+    {
+        var targetOrder = CreateOrder("IO-TIMEOUT", "张三", "0400111222", "恢复中", canAddRepayment: true);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            LockedInstallments = new HashSet<Guid> { targetOrder.OrderId },
+            RecoverPendingOperationsException = new TaskCanceledException("recovery timed out")
+        };
+        var viewModel = new InstallmentCenterViewModel(service, CreateSession(), _ => Task.CompletedTask, () => { });
+
+        var command = executeRecoveryCommand ? viewModel.RecoveryCommand : viewModel.LoadCommand;
+        await command.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.Contains("恢复超时", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("保持锁定", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("请勿重复收款", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Load_fails_closed_when_recovery_and_lock_refresh_both_time_out()
+    {
+        var targetOrder = CreateOrder("IO-LOCK-UNKNOWN", "张三", "0400111222", "恢复中", canAddRepayment: true);
+        var createScreenOpened = false;
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            RecoverPendingOperationsException = new TaskCanceledException("recovery timed out"),
+            GetLockedInstallmentsException = new TaskCanceledException("lock lookup timed out")
+        };
+        var session = CreateSession();
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            session,
+            _ =>
+            {
+                createScreenOpened = true;
+                return Task.CompletedTask;
+            },
+            () => { });
+        viewModel.Prepare(session, CreateCartSnapshot());
+
+        await viewModel.LoadCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.False(viewModel.CreateInstallmentCommand.CanExecute(null));
+        Assert.False(viewModel.AddRepaymentCommand.CanExecute(null));
+        Assert.Contains("恢复超时", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("保持锁定", viewModel.StatusMessage, StringComparison.Ordinal);
+
+        await viewModel.CreateInstallmentCommand.ExecuteAsync(null);
+        Assert.False(createScreenOpened);
+    }
+
+    [Fact]
+    public async Task Load_keeps_all_write_commands_locked_when_recovery_times_out_and_lock_query_is_empty()
+    {
+        var mutableOrder = CreateOrder(
+            "IO-RECOVERY-UNKNOWN",
+            "张三",
+            "0400111222",
+            "恢复中",
+            canAddRepayment: true,
+            canCancelWithRefund: true,
+            canVoidCancel: true);
+        var pickupOrder = CreateOrder(
+            "IO-PICKUP-UNKNOWN",
+            "李四",
+            "0400222333",
+            "待提货",
+            canConfirmPickup: true);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [mutableOrder, pickupOrder],
+            RecoverPendingOperationsException = new TaskCanceledException("recovery timed out"),
+            LockedInstallments = new HashSet<Guid>()
+        };
+        var session = CreateSession();
+        var createScreenOpened = false;
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            session,
+            _ =>
+            {
+                createScreenOpened = true;
+                return Task.CompletedTask;
+            },
+            () => { });
+        viewModel.Prepare(session, CreateCartSnapshot());
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.False(viewModel.CreateInstallmentCommand.CanExecute(null));
+        Assert.False(viewModel.AddRepaymentCommand.CanExecute(null));
+        Assert.False(viewModel.CancelWithRefundCommand.CanExecute(null));
+        Assert.False(viewModel.VoidCancelCommand.CanExecute(null));
+
+        viewModel.SelectedOrder = pickupOrder;
+
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.False(viewModel.ConfirmPickupCommand.CanExecute(null));
+        await viewModel.CreateInstallmentCommand.ExecuteAsync(null);
+        await viewModel.VoidCancelCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPickupCommand.ExecuteAsync(null);
+        Assert.False(createScreenOpened);
+        Assert.Equal(Guid.Empty, service.LastVoidOrderId);
+        Assert.Null(service.LastConfirmPickupOrderId);
+    }
+
+    [Fact]
+    public async Task Load_preserves_ordinary_recovery_failure_warning_and_local_lock()
+    {
+        var targetOrder = CreateOrder("IO-RECOVERY-FAILED", "张三", "0400111222", "恢复中", canAddRepayment: true);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            LockedInstallments = new HashSet<Guid> { targetOrder.OrderId },
+            RecoverPendingOperationsException = new HttpRequestException("recovery unavailable")
+        };
+        var viewModel = new InstallmentCenterViewModel(service, CreateSession(), _ => Task.CompletedTask, () => { });
+
+        await viewModel.LoadCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.False(viewModel.AddRepaymentCommand.CanExecute(null));
+        Assert.Contains("恢复失败", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains(nameof(HttpRequestException), viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("请勿重复收款", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task AddRepaymentCommand_requires_voucher_inputs_and_invokes_service()
     {
@@ -367,6 +502,155 @@ public sealed class InstallmentCenterViewModelTests
     }
 
     [Fact]
+    public async Task Supervisor_refund_resolution_handles_recovery_timeout_after_decision_is_saved()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var targetOrder = CreateOrder("IO-REFUND-TIMEOUT", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var step = new LocalInstallmentRefundStep(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            targetOrder.OrderId,
+            PaymentMethodKind.Card,
+            40m,
+            "TXN-001",
+            "refund-key",
+            LocalInstallmentRefundStepState.ResultUnknown,
+            null, null, "未知", null, null, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            LockedInstallments = new HashSet<Guid> { targetOrder.OrderId },
+            RefundStepsForReview = [step],
+            ResumeCancelException = new TaskCanceledException("recovery query timed out")
+        };
+        var session = CreateSession() with
+        {
+            CashierSession = CreateCashierSession(Permissions.PosTerminal.Installments.Cancel)
+        };
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            session,
+            _ => Task.CompletedTask,
+            () => { },
+            operationAuditLogger: auditLogger);
+
+        await viewModel.LoadAsync();
+        viewModel.SupervisorRefundDecision = InstallmentRefundSupervisorDecision.ConfirmNotRefunded;
+        viewModel.SupervisorRefundReason = "银行确认未退款";
+        await viewModel.SupervisorResolveRefundCommand.ExecuteAsync(null);
+
+        Assert.NotNull(service.LastSupervisorResolution);
+        Assert.Equal(step.OperationGuid, service.LastResumeOperationGuid);
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.Contains("裁决已保存", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("恢复查询超时", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("保持锁定", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("刷新核对", viewModel.StatusMessage, StringComparison.Ordinal);
+        var failureAudit = Assert.Single(auditLogger.Events.Where(auditEvent => auditEvent.Outcome == "SupervisorRecoveryFailed"));
+        Assert.Equal("TaskCanceledException", failureAudit.SafeMessage);
+    }
+
+    [Fact]
+    public async Task Supervisor_refund_resolution_handles_timeout_while_decision_result_is_unknown()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var targetOrder = CreateOrder("IO-RESOLUTION-TIMEOUT", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var step = new LocalInstallmentRefundStep(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            targetOrder.OrderId,
+            PaymentMethodKind.Card,
+            40m,
+            "TXN-002",
+            "refund-timeout-key",
+            LocalInstallmentRefundStepState.ResultUnknown,
+            null, null, "未知", null, null, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            LockedInstallments = new HashSet<Guid> { targetOrder.OrderId },
+            RefundStepsForReview = [step],
+            ResolveRefundStepException = new TaskCanceledException("resolution request timed out")
+        };
+        var session = CreateSession() with
+        {
+            CashierSession = CreateCashierSession(Permissions.PosTerminal.Installments.Cancel)
+        };
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            session,
+            _ => Task.CompletedTask,
+            () => { },
+            operationAuditLogger: auditLogger);
+
+        await viewModel.LoadAsync();
+        viewModel.SupervisorRefundDecision = InstallmentRefundSupervisorDecision.ConfirmNotRefunded;
+        viewModel.SupervisorRefundReason = "银行确认未退款";
+        await viewModel.SupervisorResolveRefundCommand.ExecuteAsync(null);
+
+        Assert.NotNull(service.LastSupervisorResolution);
+        Assert.Null(service.LastResumeOperationGuid);
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.Contains("裁决请求超时", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("结果未知", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("保持锁定", viewModel.StatusMessage, StringComparison.Ordinal);
+        var unknownAudit = Assert.Single(auditLogger.Events.Where(auditEvent => auditEvent.Outcome == "SupervisorResolutionUnknown"));
+        Assert.Equal("TaskCanceledException", unknownAudit.SafeMessage);
+    }
+
+    [Fact]
+    public async Task Refund_step_refresh_ignores_stale_result_after_selected_order_changes()
+    {
+        var firstOrder = CreateOrder("IO-REFUND-A", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var secondOrder = CreateOrder("IO-REFUND-B", "李四", "0400222333", "退款未知", canCancelWithRefund: true);
+        var firstStep = CreateRefundStep(firstOrder.OrderId, "refund-a");
+        var secondStep = CreateRefundStep(secondOrder.OrderId, "refund-b");
+        var firstRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequestGate = new TaskCompletionSource<IReadOnlyList<LocalInstallmentRefundStep>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequestReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [firstOrder, secondOrder],
+            GetRefundStepsForReviewHandler = async (installmentGuid, _) =>
+            {
+                if (installmentGuid == firstOrder.OrderId)
+                {
+                    firstRequestStarted.TrySetResult();
+                    var result = await firstRequestGate.Task;
+                    firstRequestReturned.TrySetResult();
+                    return result;
+                }
+
+                return [secondStep];
+            }
+        };
+        var viewModel = new InstallmentCenterViewModel(service, CreateSession(), _ => Task.CompletedTask, () => { });
+        var staleStepWasApplied = false;
+        viewModel.RefundStepsForReview.CollectionChanged += (_, _) =>
+        {
+            staleStepWasApplied |= viewModel.RefundStepsForReview.Any(step => step.RefundStepGuid == firstStep.RefundStepGuid);
+        };
+
+        viewModel.SelectedOrder = firstOrder;
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        viewModel.SelectedOrder = secondOrder;
+
+        Assert.Same(secondStep, Assert.Single(viewModel.RefundStepsForReview));
+
+        firstRequestGate.SetResult([firstStep]);
+        await firstRequestReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var index = 0; index < 10; index++)
+        {
+            await Task.Yield();
+        }
+
+        Assert.False(staleStepWasApplied);
+        Assert.Same(secondStep, Assert.Single(viewModel.RefundStepsForReview));
+        Assert.Same(secondStep, viewModel.SelectedRefundStep);
+    }
+
+    [Fact]
     public async Task Ordinary_cashier_cannot_see_or_execute_supervisor_refund_resolution()
     {
         var targetOrder = CreateOrder("IO-REFUND-DENIED", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
@@ -428,6 +712,27 @@ public sealed class InstallmentCenterViewModelTests
             DateTimeOffset.Now);
     }
 
+    private static LocalInstallmentRefundStep CreateRefundStep(Guid originalPaymentGuid, string idempotencyKey) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            originalPaymentGuid,
+            PaymentMethodKind.Card,
+            40m,
+            "TXN-REFUND",
+            idempotencyKey,
+            LocalInstallmentRefundStepState.ResultUnknown,
+            null,
+            null,
+            "未知",
+            null,
+            null,
+            null,
+            null,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -463,7 +768,17 @@ public sealed class InstallmentCenterViewModelTests
 
         public IReadOnlyList<LocalInstallmentRefundStep> RefundStepsForReview { get; init; } = [];
 
+        public Func<Guid, CancellationToken, Task<IReadOnlyList<LocalInstallmentRefundStep>>>? GetRefundStepsForReviewHandler { get; init; }
+
         public InstallmentOrderActionResult ResumeCancelResult { get; init; } = new(false, "退款保持锁定", RequiresReview: true);
+
+        public Exception? RecoverPendingOperationsException { get; init; }
+
+        public Exception? GetLockedInstallmentsException { get; init; }
+
+        public Exception? ResumeCancelException { get; init; }
+
+        public Exception? ResolveRefundStepException { get; init; }
 
         public InstallmentOrderRepaymentRequest? LastRepaymentRequest { get; private set; }
 
@@ -480,21 +795,32 @@ public sealed class InstallmentCenterViewModelTests
         public Guid? LastResumeOperationGuid { get; private set; }
 
         public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
-            Task.FromResult(LockedInstallments);
+            GetLockedInstallmentsException is null
+                ? Task.FromResult(LockedInstallments)
+                : Task.FromException<IReadOnlySet<Guid>>(GetLockedInstallmentsException);
+
+        public Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+            RecoverPendingOperationsException is null
+                ? Task.FromResult<IReadOnlyList<InstallmentOperationRecoveryResult>>([])
+                : Task.FromException<IReadOnlyList<InstallmentOperationRecoveryResult>>(RecoverPendingOperationsException);
 
         public Task<IReadOnlyList<LocalInstallmentRefundStep>> GetRefundStepsForReviewAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
-            Task.FromResult(RefundStepsForReview);
+            GetRefundStepsForReviewHandler?.Invoke(installmentGuid, cancellationToken) ?? Task.FromResult(RefundStepsForReview);
 
         public Task<bool> ResolveRefundStepAsync(Guid refundStepGuid, InstallmentRefundSupervisorResolution resolution, CancellationToken cancellationToken = default)
         {
             LastSupervisorResolution = resolution;
-            return Task.FromResult(true);
+            return ResolveRefundStepException is null
+                ? Task.FromResult(true)
+                : Task.FromException<bool>(ResolveRefundStepException);
         }
 
         public Task<InstallmentOrderActionResult> ResumeCancelAfterSupervisorAsync(Guid operationGuid, string installmentNumber, PosSessionState session, CancellationToken cancellationToken = default)
         {
             LastResumeOperationGuid = operationGuid;
-            return Task.FromResult(ResumeCancelResult);
+            return ResumeCancelException is null
+                ? Task.FromResult(ResumeCancelResult)
+                : Task.FromException<InstallmentOrderActionResult>(ResumeCancelException);
         }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)

@@ -441,19 +441,30 @@ public sealed class InstallmentOrderService(
 
     public async Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
     {
-        var result = await ConfirmPickupAsync(
-            session,
-            new InstallmentConfirmPickupRequest(
-                orderId,
-                session.StoreCode,
-                session.DeviceCode,
-                session.CashierId,
-                session.CashierName,
-                DateTimeOffset.Now,
-                OperationGuid: orderId,
-                IdempotencyKey: $"{orderId:D}:pickup"),
-            cancellationToken);
-        return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? result.Status.ToString(), result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
+        try
+        {
+            var result = await ConfirmPickupAsync(
+                session,
+                new InstallmentConfirmPickupRequest(
+                    orderId,
+                    session.StoreCode,
+                    session.DeviceCode,
+                    session.CashierId,
+                    session.CashierName,
+                    DateTimeOffset.Now,
+                    OperationGuid: orderId,
+                    IdempotencyKey: $"{orderId:D}:pickup"),
+                cancellationToken);
+            return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? result.Status.ToString(), result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HTTP 超时发生时服务端可能已经确认提货，必须进入人工核对而不是允许重复提交。
+            return new InstallmentOrderActionResult(
+                false,
+                "提货确认请求超时，结果可能已提交；请刷新核对，勿重复确认提货。",
+                RequiresReview: true);
+        }
     }
 
     private async Task<LocalInstallmentOrder> SaveSnapshotAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)
