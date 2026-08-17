@@ -46,6 +46,37 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Payment_terminal_settings_content_supports_vertical_touch_panning()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "SettingsView.xaml");
+        var document = System.Xml.Linq.XDocument.Load(xamlPath);
+        var paymentSection = document
+            .Descendants()
+            .Single(element =>
+                element.Name.LocalName == "Grid" &&
+                element.Attribute("Visibility")?.Value.Contains(
+                    "IsPaymentTerminalSelected",
+                    StringComparison.Ordinal) == true);
+        var contentScrollViewer = paymentSection
+            .Ancestors()
+            .First(element => element.Name.LocalName == "ScrollViewer");
+
+        Assert.Equal("VerticalOnly", contentScrollViewer.Attribute("PanningMode")?.Value);
+        Assert.Equal("0.0008", contentScrollViewer.Attribute("PanningDeceleration")?.Value);
+        Assert.Equal("1.0", contentScrollViewer.Attribute("PanningRatio")?.Value);
+        Assert.Equal("False", contentScrollViewer.Attribute("CanContentScroll")?.Value);
+        Assert.Equal("Disabled", contentScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
+    }
+
+    [Fact]
     public async Task LoadAsync_loads_shared_api_server_settings()
     {
         var apiServerSettings = new ApiServerSettingsViewModel(

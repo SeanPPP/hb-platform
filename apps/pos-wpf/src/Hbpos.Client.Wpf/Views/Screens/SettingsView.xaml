@@ -97,7 +97,14 @@
                 <ColumnDefinition Width="240" />
             </Grid.ColumnDefinitions>
 
-            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+            <!-- 启用 WPF 原生垂直触摸平移和惯性，保留鼠标滚轮及子控件点击行为。 -->
+            <ScrollViewer Grid.Column="0"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="False"
+                          PanningMode="VerticalOnly"
+                          PanningDeceleration="0.0008"
+                          PanningRatio="1.0">
                 <Grid>
                     <StackPanel Visibility="{Binding IsDataMaintenanceSelected, Converter={StaticResource BoolToVis}}">
                         <Border Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
