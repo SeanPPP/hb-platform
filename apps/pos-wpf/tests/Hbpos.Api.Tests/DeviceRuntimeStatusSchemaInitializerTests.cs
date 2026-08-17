@@ -94,6 +94,9 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
                 services.RemoveAll<IOperationAuditSchemaInitializer>();
                 services.AddSingleton<IOperationAuditSchemaInitializer>(new TestNoOpOperationAuditSchemaInitializer());
 
+                services.RemoveAll<IOrderSyncSchemaInitializer>();
+                services.AddSingleton<IOrderSyncSchemaInitializer>(new TestNoOpOrderSyncSchemaInitializer());
+
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton<IAdvertisementSchemaInitializer>(new NoOpAdvertisementSchemaInitializer());
 
