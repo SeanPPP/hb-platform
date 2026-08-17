@@ -1276,6 +1276,47 @@ describe("SalesScreen", () => {
     await screen.unmount();
   });
 
+  it("购物车倒序展示时行号从总行数递减到一", async () => {
+    const initialCart = cartSnapshot();
+    const firstLine = initialCart.lines[0]!;
+    const cart = new ScreenCartPort({
+      ...initialCart,
+      revision: 2,
+      lines: [
+        firstLine,
+        {
+          ...firstLine,
+          lineId: "line-2",
+          productCode: "P-002",
+          itemNumber: "I-002",
+          lookupCode: "930000000002",
+          displayName: "Fresh bread",
+        },
+      ],
+    });
+    const screen = await render(
+      <SalesScreen
+        locale="zh"
+        presenter={presenter(cart)}
+        showStatusStrip={false}
+      />,
+    );
+
+    const newestLineNumber = screen.getByTestId(
+      "sales-line-line-2-line-number",
+    );
+    expect(newestLineNumber.props.accessibilityLabel).toBe("第 2 行");
+    expect(newestLineNumber.props.children).toBe(2);
+
+    const oldestLineNumber = screen.getByTestId(
+      "sales-line-line-1-line-number",
+    );
+    expect(oldestLineNumber.props.accessibilityLabel).toBe("第 1 行");
+    expect(oldestLineNumber.props.children).toBe(1);
+
+    await screen.unmount();
+  });
+
   it("购物车按加入顺序倒序展示，最新商品位于第一行", async () => {
     const baseLine = cartSnapshot().lines[0]!;
     const cart = new ScreenCartPort({
@@ -1308,11 +1349,11 @@ describe("SalesScreen", () => {
     expect(
       screen.getByTestId("sales-line-line-3-line-number").props
         .accessibilityLabel,
-    ).toBe("第 1 行");
+    ).toBe("第 3 行");
     expect(
       screen.getByTestId("sales-line-line-1-line-number").props
         .accessibilityLabel,
-    ).toBe("第 3 行");
+    ).toBe("第 1 行");
 
     salesPresenter.destroy();
     await screen.unmount();

@@ -1056,9 +1056,9 @@ export function SalesScreen({
           disabled={
             !state.capabilities.cartEditing || transactionActionsDisabled
           }
-          index={index}
           isSelected={state.selectedLineId === item.lineId}
           item={item}
+          lineNumber={displayedCartLines.length - index}
           locale={locale}
           onDecrease={handleDecreaseCartLine}
           onDiscount={setDiscountLineId}
@@ -1075,6 +1075,7 @@ export function SalesScreen({
     ),
     [
       compactSalesLayout,
+      displayedCartLines.length,
       locale,
       handleDecreaseCartLine,
       handleIncreaseCartLine,
@@ -2726,9 +2727,9 @@ function ProductSearchRow({
 type CartLineRowProps = Readonly<{
   compact: boolean;
   disabled: boolean;
-  index: number;
   isSelected: boolean;
   item: CartLine;
+  lineNumber: number;
   locale: SalesLocale;
   onDecrease(lineId: string): void;
   onDiscount(lineId: string): void;
@@ -2749,9 +2750,9 @@ type CartLineRowProps = Readonly<{
 const CartLineRow = memo(function CartLineRow({
   compact,
   disabled,
-  index,
   isSelected,
   item,
+  lineNumber,
   locale,
   onDecrease,
   onDiscount,
@@ -2913,12 +2914,12 @@ const CartLineRow = memo(function CartLineRow({
             >
         <Text
           accessibilityLabel={t("cart.lineNumber", {
-            number: index + 1,
+            number: lineNumber,
           })}
           style={styles.cartLineNumber}
           testID={`sales-line-${item.lineId}-line-number`}
         >
-          {index + 1}
+          {lineNumber}
         </Text>
         <CartProductThumbnail
           accessibilityLabel={t("cart.productImage", {
@@ -3020,7 +3021,7 @@ function cartLineRowPropsEqual(
   return (
     previous.compact === next.compact &&
     previous.disabled === next.disabled &&
-    previous.index === next.index &&
+    previous.lineNumber === next.lineNumber &&
     previous.isSelected === next.isSelected &&
     previous.locale === next.locale &&
     previous.onDecrease === next.onDecrease &&
