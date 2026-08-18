@@ -655,6 +655,15 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         {
             throw;
         }
+        catch (PromotionComputationBudgetExceededException ex)
+        {
+            // 超限时清掉本单全部旧自动促销；ApplyPromotionDiscounts 会保留手工和目录折扣。
+            _cart.ApplyPromotionDiscounts([]);
+            ConsoleLog.Write(
+                "Promotion",
+                $"promotion evaluation skipped reason={reason} budget-exceeded {ex.ToDiagnosticText()}");
+            SetStatusText(T("pos.status.promotionBudgetExceeded"), StatusFeedbackKind.Warning);
+        }
         catch (Exception ex)
         {
             // 中文注释：促销失败时保留当前折扣，只提示降级，避免收银金额被半更新。

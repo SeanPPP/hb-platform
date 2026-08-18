@@ -1448,6 +1448,59 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Pos_terminal_promotion_budget_exceeded_clears_old_promotion_warns_and_still_opens_payment()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var openedPayment = false;
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        index.ReplaceAll([CreateItem(
+            "SKU-PROMO-BUDGET",
+            "Promo Budget Tea",
+            "930PROMO-BUDGET",
+            PriceSourceKind.StoreRetailPrice,
+            10m)]);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueSync(lines => [new PromotionLineDiscount(Assert.Single(lines), 5m)]);
+        promotionService.EnqueueThrow(new PromotionComputationBudgetExceededException(
+            "PROMO-HUGE",
+            "rule",
+            PromotionComputationBudget.MaxWorkUnitsPerRule + 1,
+            PromotionComputationBudget.MaxWorkUnitsPerRule));
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: () => openedPayment = true,
+            localization: localization,
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO-BUDGET";
+        await ExecuteManualScanAsync(viewModel);
+        viewModel.ScanText = "930PROMO-BUDGET";
+        await ExecuteManualScanAsync(viewModel);
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => line.DiscountAmount == 5m);
+
+        viewModel.ScanText = "930PROMO-BUDGET";
+        await ExecuteManualScanAsync(viewModel);
+        await WaitUntilAsync(() =>
+            viewModel.StatusMessage == localization.T("pos.status.promotionBudgetExceeded"));
+
+        Assert.Equal(3m, line.Quantity);
+        Assert.Equal(0m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.None, line.DiscountSource);
+        Assert.Equal(30m, viewModel.ActualAmount);
+        Assert.Equal(StatusFeedbackKind.Warning, viewModel.StatusFeedbackKind);
+
+        viewModel.OpenPaymentCommand.Execute(null);
+
+        Assert.True(openedPayment);
+    }
+
+    [Fact]
     public async Task Pos_terminal_promotion_evaluation_does_not_recurse_when_discount_application_raises_cart_changed()
     {
         var cart = new PosCartService();

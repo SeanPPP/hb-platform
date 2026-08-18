@@ -325,6 +325,7 @@ public partial class MainWindow : Window
     private async Task<AppUpdateCoordinatorResult> RunStartupAppUpdateCheckAsync()
     {
         return await RunStartupAppUpdateCheckCoreAsync(
+            _startupOptions.PreviewMode,
             () => _appUpdateCoordinator.CheckForUpdatesAsync(manual: false),
             ReportStartupAppUpdateException,
             ReportStartupAppUpdateFailure);
@@ -343,10 +344,17 @@ public partial class MainWindow : Window
     }
 
     internal static async Task<AppUpdateCoordinatorResult> RunStartupAppUpdateCheckCoreAsync(
+        bool previewMode,
         Func<Task<AppUpdateCoordinatorResult>> checkAsync,
         Action<Exception> reportException,
         Action<AppUpdateCoordinatorResult>? reportFailure = null)
     {
+        if (previewMode)
+        {
+            // Preview 必须与真实更新链完全隔离，避免测试下载或启动生产安装包。
+            return AppUpdateCoordinatorResult.NoUpdate();
+        }
+
         try
         {
             var result = await checkAsync();

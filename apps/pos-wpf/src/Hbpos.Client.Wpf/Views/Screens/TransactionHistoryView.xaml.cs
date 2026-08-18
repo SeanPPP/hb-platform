@@ -8,23 +8,51 @@ namespace Hbpos.Client.Wpf.Views.Screens;
 public partial class TransactionHistoryView : UserControl
 {
     private TransactionHistoryViewModel? _viewModel;
+    private bool _isViewLoaded;
+    private bool _isScreenShown;
 
     public TransactionHistoryView()
     {
         InitializeComponent();
+        Loaded += TransactionHistoryViewLoaded;
+        Unloaded += TransactionHistoryViewUnloaded;
         DataContextChanged += TransactionHistoryViewDataContextChanged;
         IsVisibleChanged += TransactionHistoryViewIsVisibleChanged;
+    }
+
+    private void TransactionHistoryViewLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_isViewLoaded)
+        {
+            return;
+        }
+
+        _isViewLoaded = true;
         AttachViewModel(DataContext as TransactionHistoryViewModel);
+    }
+
+    private void TransactionHistoryViewUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_isViewLoaded && _viewModel is null)
+        {
+            return;
+        }
+
+        _isViewLoaded = false;
+        AttachViewModel(null);
     }
 
     private void TransactionHistoryViewDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        AttachViewModel(e.NewValue as TransactionHistoryViewModel);
+        if (_isViewLoaded)
+        {
+            AttachViewModel(e.NewValue as TransactionHistoryViewModel);
+        }
     }
 
     private void TransactionHistoryViewIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        if (_viewModel is null)
+        if (!_isViewLoaded || _viewModel is null)
         {
             return;
         }
@@ -32,11 +60,11 @@ public partial class TransactionHistoryView : UserControl
         // 中文注释：进入界面立即刷新；离开界面停止挂单自动刷新计时。
         if (IsVisible)
         {
-            _viewModel.OnScreenShown();
+            ShowAttachedViewModel();
         }
         else
         {
-            _viewModel.OnScreenHidden();
+            HideAttachedViewModel();
         }
     }
 
@@ -50,7 +78,7 @@ public partial class TransactionHistoryView : UserControl
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= ViewModelPropertyChanged;
-            _viewModel.OnScreenHidden();
+            HideAttachedViewModel();
         }
 
         _viewModel = viewModel;
@@ -59,11 +87,35 @@ public partial class TransactionHistoryView : UserControl
             _viewModel.PropertyChanged += ViewModelPropertyChanged;
             if (IsVisible)
             {
-                _viewModel.OnScreenShown();
+                ShowAttachedViewModel();
             }
         }
 
         UpdateHistoryColumnVisibility();
+    }
+
+    private void ShowAttachedViewModel()
+    {
+        if (_viewModel is null || _isScreenShown)
+        {
+            return;
+        }
+
+        // 先更新门状态，避免 VM 回调引发可见性重入时重复进入。
+        _isScreenShown = true;
+        _viewModel.OnScreenShown();
+    }
+
+    private void HideAttachedViewModel()
+    {
+        if (_viewModel is null || !_isScreenShown)
+        {
+            return;
+        }
+
+        // 离开时仅通知一次；Unloaded 会继续解除强事件并清空 VM 引用。
+        _isScreenShown = false;
+        _viewModel.OnScreenHidden();
     }
 
     private void ViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

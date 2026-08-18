@@ -8,6 +8,8 @@ using Microsoft.Extensions.Hosting;
 
 namespace Hbpos.Client.Wpf;
 
+internal sealed record StartupFailurePresentation(string Title, string Message);
+
 public partial class App : Application
 {
     private const int SplashShownPercent = 10;
@@ -33,26 +35,28 @@ public partial class App : Application
 
         var startupOptions = AppStartupOptions.FromArgs(e.Args);
         var startupGuard = new SingleInstanceStartupGuard();
-        var startupResult = startupGuard.TryAcquire(startupOptions.PreviewMode);
-        if (!startupResult.CanStart)
-        {
-            Shutdown();
-            return;
-        }
-
-        _startupLease = startupResult.Lease;
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
-        if (!startupOptions.PreviewMode)
-        {
-            _startupProgressState = new StartupProgressState();
-            _startupProgressState.SetStage(SplashShownPercent, StartupText("startup.stage.starting"));
-            _startupSplashWindow = new StartupSplashWindow(_startupProgressState);
-            _startupSplashWindow.Show();
-            await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
-        }
 
         try
         {
+            // 保留 Dispatcher 上下文：运行中 Mutex 必须由后续负责释放 lease 的 UI 线程获得。
+            var startupResult = await startupGuard.TryAcquireAsync(startupOptions.PreviewMode);
+            if (!startupResult.CanStart)
+            {
+                Shutdown();
+                return;
+            }
+
+            _startupLease = startupResult.Lease;
+            if (!startupOptions.PreviewMode)
+            {
+                _startupProgressState = new StartupProgressState();
+                _startupProgressState.SetStage(SplashShownPercent, StartupText("startup.stage.starting"));
+                _startupSplashWindow = new StartupSplashWindow(_startupProgressState);
+                _startupSplashWindow.Show();
+                await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
+            }
+
             _host = Host.CreateDefaultBuilder(e.Args)
                 .ConfigureServices(services =>
                 {
@@ -109,7 +113,7 @@ public partial class App : Application
         {
             // 启动入口是 async void，异常不能继续抛回调度器，避免未观察异常导致进程崩溃。
             ConsoleLog.WriteError("Startup", $"startup failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
-            FinishStartupExperience();
+            DismissStartupExperience();
             if (_host is not null)
             {
                 DisposeHostWithinTimeout(
@@ -118,6 +122,26 @@ public partial class App : Application
                     "startup-host-dispose");
 
                 _host = null;
+            }
+
+            var presentation = CreateStartupFailurePresentation(ex, StartupText);
+            if (presentation is not null && !startupOptions.PreviewMode)
+            {
+                try
+                {
+                    MessageBox.Show(
+                        presentation.Message,
+                        presentation.Title,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+                catch (Exception promptException)
+                {
+                    ConsoleLog.WriteError(
+                        "Startup",
+                        $"startup error prompt failed error={promptException.GetType().Name}",
+                        exception: promptException);
+                }
             }
 
             ResetGlobalLogging();
@@ -407,9 +431,33 @@ public partial class App : Application
         }
 
         _startupProgressState?.SetStage(StartupCompletedPercent, StartupText("startup.stage.completed"));
+        DismissStartupExperience();
+    }
+
+    private void DismissStartupExperience()
+    {
+        if (_startupSplashWindow is null)
+        {
+            return;
+        }
+
         _startupSplashWindow.Close();
         _startupSplashWindow = null;
         _startupProgressState = null;
+    }
+
+    internal static StartupFailurePresentation? CreateStartupFailurePresentation(
+        Exception exception,
+        Func<string, string> localize)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        ArgumentNullException.ThrowIfNull(localize);
+
+        return exception is ApiBaseAddressConfigurationException
+            ? new StartupFailurePresentation(
+                localize("startup.error.apiBaseAddress.title"),
+                localize("startup.error.apiBaseAddress.message"))
+            : null;
     }
 
     private static string StartupText(string key) => LocalizationResourceProvider.Instance[key];

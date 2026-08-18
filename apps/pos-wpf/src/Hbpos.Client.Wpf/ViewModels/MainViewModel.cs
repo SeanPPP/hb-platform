@@ -154,6 +154,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public SpecialProductsViewModel? CachedSpecialProductsScreen => _screenNavigator.CachedSpecialProductsScreen;
 
+    public TransactionHistoryViewModel? CachedTransactionHistoryScreen => _screenNavigator.TransactionHistory;
+
+    public SettingsViewModel? CachedSettingsScreen => _screenNavigator.Settings;
+
     public AppUpdateState AppUpdate { get; }
 
     public IOperationAuthorizationService? OperationAuthorization => _operationAuthorizationService;
@@ -835,10 +839,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool IsSpecialProductsScreenActive => ReferenceEquals(CurrentScreen, CachedSpecialProductsScreen);
 
+    public bool IsTransactionHistoryScreenActive => ReferenceEquals(CurrentScreen, CachedTransactionHistoryScreen);
+
+    public bool IsSettingsScreenActive => ReferenceEquals(CurrentScreen, CachedSettingsScreen);
+
     public bool IsFallbackScreenActive => CurrentScreen is not null &&
         !IsPosTerminalScreenActive &&
         !IsCashPaymentScreenActive &&
-        !IsSpecialProductsScreenActive;
+        !IsSpecialProductsScreenActive &&
+        !IsTransactionHistoryScreenActive &&
+        !IsSettingsScreenActive;
 
     public bool IsCashierLoginOverlayOpen =>
         CurrentScreen is not null &&
@@ -1662,9 +1672,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CachedPosTerminalScreen));
         OnPropertyChanged(nameof(CachedCashPaymentScreen));
         OnPropertyChanged(nameof(CachedSpecialProductsScreen));
+        OnPropertyChanged(nameof(CachedTransactionHistoryScreen));
+        OnPropertyChanged(nameof(CachedSettingsScreen));
         OnPropertyChanged(nameof(IsPosTerminalScreenActive));
         OnPropertyChanged(nameof(IsCashPaymentScreenActive));
         OnPropertyChanged(nameof(IsSpecialProductsScreenActive));
+        OnPropertyChanged(nameof(IsTransactionHistoryScreenActive));
+        OnPropertyChanged(nameof(IsSettingsScreenActive));
         OnPropertyChanged(nameof(IsFallbackScreenActive));
         OnPropertyChanged(nameof(ActivePageTitleText));
     }
@@ -2342,18 +2356,39 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.ResetForNewTransaction();
     }
 
-    private async void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
+    private void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
     {
-        using var grant = await AuthorizeShellOperationAsync(
-            Permissions.PosTerminal.Receipt.PrintLast,
-            "print-payment-success-receipt");
-        if (grant is null)
-        {
-            return;
-        }
+        _ = HandlePaymentSuccessPrintReceiptRequestedAsync();
+    }
 
-        using var activation = grant.Activate();
-        await PrintPaymentSuccessReceiptAsync();
+    private async Task HandlePaymentSuccessPrintReceiptRequestedAsync()
+    {
+        try
+        {
+            using var grant = await AuthorizeShellOperationAsync(
+                Permissions.PosTerminal.Receipt.PrintLast,
+                "print-payment-success-receipt");
+            if (grant is null)
+            {
+                return;
+            }
+
+            using var activation = grant.Activate();
+            await PrintPaymentSuccessReceiptAsync();
+        }
+        catch (Exception ex)
+        {
+            // 事件桥不得让授权、查询或打印异常逃逸到 Dispatcher，否则 WPF 会按未处理异常退出。
+            var safeMessage = ex.GetType().Name;
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                safeMessage);
+            ConsoleLog.WriteError(
+                "ReceiptPrint",
+                $"payment success receipt print failed error={safeMessage}",
+                exception: ex);
+        }
     }
 
     private void OnCustomerDisplayClosed(object? sender, EventArgs e)

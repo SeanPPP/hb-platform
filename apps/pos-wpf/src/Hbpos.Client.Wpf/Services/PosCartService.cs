@@ -850,10 +850,52 @@ public sealed class PosCartService
                 .ToList();
         }
 
-        var automaticDiscounts = new Dictionary<CartLine, decimal>();
-        foreach (var rule in candidates)
+        List<AutomaticPromotionPlan> plans;
+        try
         {
-            ApplyAutomaticPromotionRule(rule, automaticDiscounts);
+            plans = [];
+            foreach (var rule in candidates)
+            {
+                var productWeights = rule.Products
+                    .GroupBy(product => NormalizeProductCode(product.ProductCode), StringComparer.OrdinalIgnoreCase)
+                    .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+                    .ToDictionary(
+                        group => group.Key,
+                        group => Math.Max(1, group.Last().UnitWeight),
+                        StringComparer.OrdinalIgnoreCase);
+                if (productWeights.Count == 0)
+                {
+                    continue;
+                }
+
+                var budget = PromotionComputationBudget.CalculateRule(
+                    rule.PromotionId,
+                    _lines
+                        .Where(IsAutomaticPromotionLineEligible)
+                        .Select(line => new PromotionBudgetLine(
+                            NormalizeProductCode(line.ProductCode),
+                            line.Quantity)),
+                    productWeights,
+                    rule.ApplyQuantity,
+                    rule.MaxApplicationsPerOrder);
+                plans.Add(new AutomaticPromotionPlan(rule, productWeights, budget));
+            }
+
+            PromotionComputationBudget.EnsureOrderLimit(plans.Select(plan => plan.Budget));
+        }
+        catch (PromotionComputationBudgetExceededException ex)
+        {
+            // 旧自动促销已在本方法入口清除；手工和目录折扣不受影响，购物车继续可售。
+            ConsoleLog.Write(
+                "Promotion",
+                $"automatic promotion skipped budget-exceeded {ex.ToDiagnosticText()}");
+            return;
+        }
+
+        var automaticDiscounts = new Dictionary<CartLine, decimal>();
+        foreach (var plan in plans)
+        {
+            ApplyAutomaticPromotionRule(plan, automaticDiscounts);
         }
 
         foreach (var (line, discountAmount) in automaticDiscounts)
@@ -870,57 +912,54 @@ public sealed class PosCartService
     }
 
     private void ApplyAutomaticPromotionRule(
-        CatalogPromotionRuleDto rule,
+        AutomaticPromotionPlan plan,
         Dictionary<CartLine, decimal> automaticDiscounts)
     {
-        var productWeights = rule.Products
-            .GroupBy(product => NormalizeProductCode(product.ProductCode), StringComparer.OrdinalIgnoreCase)
-            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
-            .ToDictionary(
-                group => group.Key,
-                group => Math.Max(1, group.Last().UnitWeight),
-                StringComparer.OrdinalIgnoreCase);
-        if (productWeights.Count == 0)
+        if (plan.Budget.WorkUnits <= 0)
         {
             return;
         }
 
-        var cartUnits = new List<PromotionCartUnit>();
-        foreach (var line in _lines)
+        // 每次只保留一个 bundle，避免按数量和权重构造整单展开列表。
+        var group = new List<PromotionCartUnit>(
+            Math.Min(plan.Rule.ApplyQuantity, checked((int)plan.Budget.WorkUnits)));
+        foreach (var unit in EnumeratePromotionCartUnits(plan))
         {
-            if (!IsAutomaticPromotionLineEligible(line) ||
-                !productWeights.TryGetValue(NormalizeProductCode(line.ProductCode), out var unitWeight))
+            group.Add(unit);
+            if (group.Count != plan.Rule.ApplyQuantity)
             {
                 continue;
             }
 
-            var quantity = (int)line.Quantity;
-            for (var i = 0; i < quantity * unitWeight; i++)
+            ApplyPromotionBundle(plan.Rule, group, automaticDiscounts);
+            group.Clear();
+        }
+    }
+
+    private IEnumerable<PromotionCartUnit> EnumeratePromotionCartUnits(AutomaticPromotionPlan plan)
+    {
+        long emittedUnits = 0;
+        foreach (var line in _lines)
+        {
+            if (!IsAutomaticPromotionLineEligible(line) ||
+                !plan.ProductWeights.TryGetValue(NormalizeProductCode(line.ProductCode), out var unitWeight))
             {
-                cartUnits.Add(new PromotionCartUnit(line, line.UnitPrice));
+                continue;
             }
-        }
 
-        var bundles = cartUnits.Count / rule.ApplyQuantity;
-        if (rule.MaxApplicationsPerOrder is int maxApplications)
-        {
-            bundles = Math.Min(bundles, maxApplications);
-        }
-
-        if (bundles <= 0)
-        {
-            return;
-        }
-
-        var remainingUnits = bundles * rule.ApplyQuantity;
-        var index = 0;
-        while (remainingUnits > 0 && index < cartUnits.Count)
-        {
-            var take = Math.Min(remainingUnits, rule.ApplyQuantity);
-            var group = cartUnits.Skip(index).Take(take).ToArray();
-            ApplyPromotionBundle(rule, group, automaticDiscounts);
-            index += take;
-            remainingUnits -= take;
+            var quantity = decimal.ToInt64(line.Quantity);
+            for (long quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
+            {
+                for (var weightIndex = 0; weightIndex < unitWeight; weightIndex++)
+                {
+                    yield return new PromotionCartUnit(line, line.UnitPrice);
+                    emittedUnits++;
+                    if (emittedUnits >= plan.Budget.WorkUnits)
+                    {
+                        yield break;
+                    }
+                }
+            }
         }
     }
 
@@ -1016,6 +1055,11 @@ public sealed class PosCartService
             remainingDiscount -= lineDiscount;
         }
     }
+
+    private sealed record AutomaticPromotionPlan(
+        CatalogPromotionRuleDto Rule,
+        IReadOnlyDictionary<string, int> ProductWeights,
+        PromotionRuleBudget Budget);
 
     private sealed record PromotionCartUnit(CartLine Line, decimal UnitPrice);
 }

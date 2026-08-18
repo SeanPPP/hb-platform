@@ -48,6 +48,12 @@
   <data name="startup.stage.completed" xml:space="preserve">
     <value>启动完成</value>
   </data>
+  <data name="startup.error.apiBaseAddress.title" xml:space="preserve">
+    <value>HB POS 启动配置错误</value>
+  </data>
+  <data name="startup.error.apiBaseAddress.message" xml:space="preserve">
+    <value>HBPOS_API_BASE_URL 配置无效。请设置为完整且允许使用的 HTTP 或 HTTPS 服务器地址，然后重新启动 HB POS。</value>
+  </data>
   <data name="Backspace" xml:space="preserve">
     <value>退格</value>
   </data>
@@ -434,6 +440,9 @@
   </data>
   <data name="pos.status.promotionFallback" xml:space="preserve">
     <value>促销未更新，当前使用本地缓存价格。</value>
+  </data>
+  <data name="pos.status.promotionBudgetExceeded" xml:space="preserve">
+    <value>数量超出自动促销计算上限，本单未应用自动促销。</value>
   </data>
   <data name="payment.title" xml:space="preserve">
     <value>支付</value>

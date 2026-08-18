@@ -323,8 +323,47 @@
                 </ContentControl.Style>
             </ContentControl>
 
-            <ContentControl Content="{Binding CurrentScreen}"
-                            Visibility="{Binding IsFallbackScreenActive, Converter={StaticResource BoolToVis}}" />
+            <!-- 设置与历史 VM 本身已缓存；固定宿主确保辅助技术持续连接时也只创建一个页面实例。 -->
+            <ContentControl Content="{Binding CachedTransactionHistoryScreen}">
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Visibility" Value="Hidden" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsTransactionHistoryScreenActive}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
+
+            <ContentControl Content="{Binding CachedSettingsScreen}">
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Visibility" Value="Hidden" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSettingsScreenActive}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
+
+            <ContentControl>
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Content" Value="{x:Null}" />
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsFallbackScreenActive}" Value="True">
+                                <Setter Property="Content" Value="{Binding CurrentScreen}" />
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
 
             <Border Visibility="{Binding IsSyncCenterExpanded, Converter={StaticResource BoolToVis}}"
                     VerticalAlignment="Stretch"

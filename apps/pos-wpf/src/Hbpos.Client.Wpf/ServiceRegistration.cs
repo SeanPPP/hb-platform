@@ -10,9 +10,18 @@ using Microsoft.Extensions.Hosting;
 
 namespace Hbpos.Client.Wpf;
 
+internal sealed class ApiBaseAddressConfigurationException : Exception
+{
+    public ApiBaseAddressConfigurationException(Exception innerException)
+        : base("HBPOS_API_BASE_URL must be an absolute, permitted HTTP or HTTPS server address.", innerException)
+    {
+    }
+}
+
 public static class ServiceRegistration
 {
     private const string ApiBaseUrlEnvironmentVariable = "HBPOS_API_BASE_URL";
+    internal const string PreviewApiBaseAddress = "http://127.0.0.1:0/";
     private const string ApplicationLogUploadClientName = "HbposApplicationLogUpload";
     private const string OperationAuditUploadClientName = "HbposOperationAuditUpload";
 
@@ -22,8 +31,8 @@ public static class ServiceRegistration
     {
         services.AddSingleton(startupOptions);
         services.AddSingleton<ILocalizationService, LocalizationService>();
-        var initialApiAddress = GetApiBaseAddress().AbsoluteUri;
-        services.AddSingleton(new ApiRuntimeEndpointState(initialApiAddress));
+        var initialApiAddress = GetInitialApiBaseAddress(startupOptions);
+        services.AddSingleton(new ApiRuntimeEndpointState(initialApiAddress.AbsoluteUri));
         services.AddTransient<ApiRuntimeEndpointHandler>();
         services.AddHttpClient<ApiServerSettingsService>(client =>
         {
@@ -50,7 +59,7 @@ public static class ServiceRegistration
         services.AddSingleton<IEmergencyLoginPublicKeyCache, EmergencyLoginPublicKeyCache>();
         services.AddHttpClient<IEmergencyLoginPublicKeyApiClient, EmergencyLoginPublicKeyApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
@@ -65,7 +74,18 @@ public static class ServiceRegistration
         services.AddSingleton(sp =>
         {
             var configuration = sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build();
-            return ApplicationLogOptions.FromConfiguration(configuration, GetApiBaseAddress());
+            var options = ApplicationLogOptions.FromConfiguration(configuration, initialApiAddress);
+            if (!startupOptions.PreviewMode)
+            {
+                return options;
+            }
+
+            // Preview 不得把测试日志上传到真实中心；清空端点并关闭上传，保留本地日志用于审计。
+            return options with
+            {
+                Enabled = false,
+                IngestUri = null
+            };
         });
         services.AddSingleton(sp => OperationAuditUploadOptions.FromConfiguration(
             sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build()));
@@ -83,7 +103,7 @@ public static class ServiceRegistration
         });
         services.AddHttpClient(OperationAuditUploadClientName, client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = Timeout.InfiniteTimeSpan;
         })
         .AddRuntimeApiEndpoint()
@@ -121,7 +141,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<ApiServerSwitchCoordinator>());
         services.AddHttpClient<ICashierSessionRefreshApiClient, CashierSessionRefreshApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
@@ -174,7 +194,7 @@ public static class ServiceRegistration
         services.AddSingleton<ITestSalesDataResetService, TestSalesDataResetService>();
         services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             // 商品同步由调用方令牌控制，禁止 HttpClient 隐式 100 秒超时截断冷缓存构建。
             client.Timeout = Timeout.InfiniteTimeSpan;
         })
@@ -182,48 +202,48 @@ public static class ServiceRegistration
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IDeviceApiClient, DeviceApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(3);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IConnectivityApiClient, ConnectivityApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(3);
         })
         .AddRuntimeApiEndpoint();
         services.AddHttpClient<IAttendanceSigningKeyApiClient, AttendanceSigningKeyApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IPosRuntimeStatusApiClient, PosRuntimeStatusApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(3);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ICashierLoginApiClient, CashierLoginApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementApiClient, AdvertisementApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IPromotionApiClient, PromotionApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
@@ -235,7 +255,7 @@ public static class ServiceRegistration
         services.AddSingleton<IAdvertisementMediaCacheDirectoryProvider, AdvertisementMediaCacheDirectoryProvider>();
         services.AddHttpClient<IOrderHistoryApiClient, OrderHistoryApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(10);
         })
         .AddRuntimeApiEndpoint()
@@ -249,42 +269,42 @@ public static class ServiceRegistration
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IOrderSyncApiClient, OrderSyncApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(15);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISharedHeldOrderApiClient, SharedHeldOrderApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(15);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IInstallmentApiClient, InstallmentApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(15);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IVoucherApiClient, VoucherApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(10);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISquareTokenApiClient, SquareTokenApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ILinklyCloudCredentialApiClient, LinklyCloudCredentialApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddRuntimeApiEndpoint()
@@ -310,7 +330,7 @@ public static class ServiceRegistration
         services.AddSingleton<IAppUpdateChannelProvider, AppUpdateChannelProvider>();
         services.AddHttpClient<IAppUpdateApiClient, AppUpdateApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(10);
         })
         .AddRuntimeApiEndpoint();
@@ -370,14 +390,14 @@ public static class ServiceRegistration
         services.AddSingleton<ILinklyCloudTerminalClient, LinklyCloudTerminalClient>();
         services.AddHttpClient<ILinklyBackendTerminalClient, LinklyBackendTerminalClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient(LinklyBackendReceiptPrintedNotifier.HttpClientName, client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(10);
         })
         .AddRuntimeApiEndpoint()
@@ -389,7 +409,7 @@ public static class ServiceRegistration
         services.AddSingleton<ILinklyTerminalClient, ConfiguredLinklyTerminalClient>();
         services.AddHttpClient<ILinklySettlementSyncApiClient, LinklySettlementSyncApiClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(30);
         })
         .AddRuntimeApiEndpoint()
@@ -406,14 +426,14 @@ public static class ServiceRegistration
         services.AddSingleton<ILinklySettlementService, LinklySettlementService>();
         services.AddHttpClient<ISquareTerminalSetupClient, SquareTerminalSetupClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(15);
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISquareTerminalPaymentClient, SquareTerminalPaymentClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(30);
         })
         .AddRuntimeApiEndpoint()
@@ -429,7 +449,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<DeviceAuthorizationState>()));
         services.AddHttpClient<ICardTerminalClient, ConfiguredCardTerminalClient>(client =>
         {
-            client.BaseAddress = GetApiBaseAddress();
+            client.BaseAddress = initialApiAddress;
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
         .AddRuntimeApiEndpoint()
@@ -567,6 +587,30 @@ public static class ServiceRegistration
         return services;
     }
 
+    internal static Uri GetInitialApiBaseAddress(AppStartupOptions startupOptions)
+    {
+        ArgumentNullException.ThrowIfNull(startupOptions);
+
+        return ResolveInitialApiBaseAddress(
+            startupOptions.PreviewMode,
+            Environment.GetEnvironmentVariable(
+                ApiBaseUrlEnvironmentVariable,
+                EnvironmentVariableTarget.User),
+            Environment.GetEnvironmentVariable(
+                ApiBaseUrlEnvironmentVariable,
+                EnvironmentVariableTarget.Process));
+    }
+
+    internal static Uri ResolveInitialApiBaseAddress(
+        bool previewMode,
+        string? userBaseUrl,
+        string? processBaseUrl)
+    {
+        return previewMode
+            ? new Uri(PreviewApiBaseAddress, UriKind.Absolute)
+            : ResolveApiBaseAddress(userBaseUrl, processBaseUrl);
+    }
+
     internal static Uri GetApiBaseAddress()
     {
         return ResolveApiBaseAddress(
@@ -591,12 +635,15 @@ public static class ServiceRegistration
 #endif
             : configuredBaseUrl.Trim();
 
-        if (!baseUrl.EndsWith('/'))
+        try
         {
-            baseUrl += "/";
+            return new Uri(ApiServerSettingsService.NormalizeAddress(baseUrl), UriKind.Absolute);
         }
-
-        return new Uri(baseUrl, UriKind.Absolute);
+        catch (ArgumentException ex)
+        {
+            // 不记录配置值，避免把可能包含凭据的错误地址写入日志或启动提示。
+            throw new ApiBaseAddressConfigurationException(ex);
+        }
     }
 
     private static string GetLogDatabasePath(AppStartupOptions startupOptions)

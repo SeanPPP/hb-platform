@@ -1971,6 +1971,33 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Payment_success_print_failure_is_caught_and_reported_without_async_void_handler()
+    {
+        var printService = new RecordingReceiptPrintService
+        {
+            // 协调器会把普通异常转换成失败结果；取消类异常才会穿透到事件桥，复现原闪退路径。
+            PrintReceiptException = new TaskCanceledException("printer detail must stay out of the UI")
+        };
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+        viewModel.PaymentSuccess.LoadFromOrder(order);
+
+        viewModel.PaymentSuccess.PrintReceiptCommand.Execute(null);
+
+        await WaitUntilAsync(() =>
+            printService.Calls.Count == 1 &&
+            viewModel.StatusMessage.Contains(nameof(TaskCanceledException), StringComparison.Ordinal));
+        Assert.Single(printService.Calls);
+        Assert.DoesNotContain("printer detail must stay out of the UI", viewModel.StatusMessage, StringComparison.Ordinal);
+        var handler = typeof(MainViewModel).GetMethod(
+            "OnPaymentSuccessPrintReceiptRequested",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(handler);
+        Assert.Null(handler!.GetCustomAttributes(typeof(System.Runtime.CompilerServices.AsyncStateMachineAttribute), inherit: false).SingleOrDefault());
+    }
+
+    [Fact]
     public void Payment_success_print_button_requires_receipt_permission()
     {
         var printService = new RecordingReceiptPrintService();
@@ -6916,6 +6943,11 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             Calls.Add(new ReceiptPrintCall(orderGuid, reason, null));
+            if (PrintReceiptException is not null)
+            {
+                return Task.FromException<ReceiptPrintResult>(PrintReceiptException);
+            }
+
             return Task.FromResult(PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", orderGuid));
         }
 

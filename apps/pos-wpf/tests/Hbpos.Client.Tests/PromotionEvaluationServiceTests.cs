@@ -232,6 +232,83 @@ public sealed class PromotionEvaluationServiceTests
         Assert.Empty(discounts);
     }
 
+    [Fact]
+    public async Task EvaluateAsync_rejects_selected_rule_over_budget_before_expansion()
+    {
+        var repository = new FakeLocalPromotionRepository();
+        var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+        repository.SeedStore("S001",
+        [
+            CreateRule("PROMO-OVER-BUDGET", asOf, ["SKU-HUGE"], applyQuantity: 1, fixedPrice: 9m)
+        ]);
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(productCode: "SKU-HUGE", lookupCode: "SKU-HUGE", price: 10m));
+        Assert.True(cart.SetLineQuantity(line, PromotionComputationBudget.MaxWorkUnitsPerRule + 1));
+
+        var exception = await Assert.ThrowsAsync<PromotionComputationBudgetExceededException>(() =>
+            new PromotionEvaluationService(repository).EvaluateAsync(cart.Lines, "S001", asOf));
+
+        Assert.Equal("PROMO-OVER-BUDGET", exception.RuleId);
+        Assert.Equal("rule", exception.Scope);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_honors_max_applications_without_expanding_the_full_cart()
+    {
+        var repository = new FakeLocalPromotionRepository();
+        var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+        repository.SeedStore("S001",
+        [
+            CreateRule(
+                "PROMO-LARGE-CAPPED",
+                asOf,
+                ["SKU-LARGE-CAPPED"],
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                maxApplicationsPerOrder: 1)
+        ]);
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(
+            productCode: "SKU-LARGE-CAPPED",
+            lookupCode: "SKU-LARGE-CAPPED",
+            price: 10m));
+        Assert.True(cart.SetLineQuantity(line, 1_000_000m));
+
+        var discounts = await new PromotionEvaluationService(repository)
+            .EvaluateAsync(cart.Lines, "S001", asOf);
+
+        Assert.Equal(5m, Assert.Single(discounts).DiscountAmount);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_rejects_aggregate_order_budget_before_partial_results()
+    {
+        var repository = new FakeLocalPromotionRepository();
+        var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+        repository.SeedStore(
+            "S001",
+            Enumerable.Range(1, 6)
+                .Select(index => CreateRule(
+                    $"PROMO-ORDER-{index}",
+                    asOf,
+                    ["SKU-ORDER-BUDGET"],
+                    applyQuantity: 1,
+                    fixedPrice: 9m))
+                .ToArray());
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(
+            productCode: "SKU-ORDER-BUDGET",
+            lookupCode: "SKU-ORDER-BUDGET",
+            price: 10m));
+        Assert.True(cart.SetLineQuantity(line, PromotionComputationBudget.MaxWorkUnitsPerRule));
+
+        var exception = await Assert.ThrowsAsync<PromotionComputationBudgetExceededException>(() =>
+            new PromotionEvaluationService(repository).EvaluateAsync(cart.Lines, "S001", asOf));
+
+        Assert.Equal("order", exception.Scope);
+        Assert.Equal(PromotionComputationBudget.MaxWorkUnitsPerOrder + PromotionComputationBudget.MaxWorkUnitsPerRule, exception.CalculatedWorkUnits);
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",

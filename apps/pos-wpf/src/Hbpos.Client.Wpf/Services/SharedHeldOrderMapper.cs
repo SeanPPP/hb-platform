@@ -84,9 +84,24 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
                     $"冻结促销规则包含重复 definition id: {duplicateId}，无法精确对应，保留本地。");
             }
 
-            if (!TryMatchPromotionDiscounts(lines, frozenRules, out var mismatchDetail, out var promotionIdsByLine))
+            Dictionary<string, IReadOnlyList<string>> promotionIdsByLine;
+            try
             {
-                return Block(SharedHeldOrderMappingReasons.PromotionRulesMismatch, mismatchDetail!);
+                if (!TryMatchPromotionDiscounts(lines, frozenRules, out var mismatchDetail, out var matchedPromotionIds))
+                {
+                    return Block(SharedHeldOrderMappingReasons.PromotionRulesMismatch, mismatchDetail!);
+                }
+
+                promotionIdsByLine = matchedPromotionIds!;
+            }
+            catch (PromotionComputationBudgetExceededException ex)
+            {
+                ConsoleLog.Write(
+                    "Promotion",
+                    $"shared held order mapping blocked budget-exceeded {ex.ToDiagnosticText()}");
+                return Block(
+                    SharedHeldOrderMappingReasons.PromotionBudgetExceeded,
+                    "数量超出自动促销计算上限，本地挂单已保留，未生成共享数据。");
             }
 
             // 精确对应确认后，把每条促销行命中的冻结规则 id 写回 canonical。
@@ -96,13 +111,13 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
                     {
                         DiscountState = line.DiscountState with
                         {
-                            PromotionIds = promotionIdsByLine![line.LineId]
+                            PromotionIds = promotionIdsByLine[line.LineId]
                         }
                     }
                     : line)
                 .ToArray();
             // 只输出实际被促销行贡献/引用的冻结规则定义，避免向目标端泄露无关目录规则。
-            var contributingRuleIds = promotionIdsByLine!
+            var contributingRuleIds = promotionIdsByLine
                 .Values
                 .SelectMany(ids => ids)
                 .ToHashSet(StringComparer.Ordinal);
@@ -235,13 +250,34 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
             .ToArray();
         var rulesToEvaluate = SelectRulesToEvaluate(applicableRules);
 
-        var cumulative = new Dictionary<string, decimal>(StringComparer.Ordinal);
-        var contributionsByRule = new Dictionary<string, Dictionary<string, decimal>>(StringComparer.Ordinal);
+        var plans = new List<SharedPromotionPlan>();
         foreach (var rule in rulesToEvaluate)
         {
+            var weights = BuildRuleProductWeights(rule);
+            if (weights.Count == 0)
+            {
+                continue;
+            }
+
+            var budget = PromotionComputationBudget.CalculateRule(
+                rule.PromotionId,
+                eligibleLines.Select(line => new PromotionBudgetLine(
+                    NormalizeProductCode(line.ProductCode),
+                    line.Quantity)),
+                weights,
+                rule.ApplyQuantity,
+                rule.MaxApplicationsPerOrder);
+            plans.Add(new SharedPromotionPlan(rule, weights, budget));
+        }
+
+        PromotionComputationBudget.EnsureOrderLimit(plans.Select(plan => plan.Budget));
+        var cumulative = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var contributionsByRule = new Dictionary<string, Dictionary<string, decimal>>(StringComparer.Ordinal);
+        foreach (var plan in plans)
+        {
             var before = new Dictionary<string, decimal>(cumulative, StringComparer.Ordinal);
-            ApplyRule(cumulative, eligibleLines, rule);
-            contributionsByRule[rule.PromotionId] = cumulative
+            ApplyRule(cumulative, eligibleLines, plan);
+            contributionsByRule[plan.Rule.PromotionId] = cumulative
                 .Where(entry => !before.TryGetValue(entry.Key, out var previous) || entry.Value != previous)
                 .ToDictionary(entry => entry.Key, entry => entry.Value - (before.TryGetValue(entry.Key, out var previous) ? previous : 0m), StringComparer.Ordinal);
         }
@@ -318,83 +354,89 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
     private static void ApplyRule(
         Dictionary<string, decimal> discountsByLine,
         IReadOnlyList<SharedHeldOrderPricingLine> lines,
-        CatalogPromotionRuleDto rule)
+        SharedPromotionPlan plan)
     {
-        var weights = BuildRuleProductWeights(rule);
-        if (weights.Count == 0)
+        if (plan.Budget.WorkUnits <= 0)
         {
             return;
         }
 
-        var units = ExpandRuleUnits(lines, weights);
-        var applicationCount = units.Count / rule.ApplyQuantity;
-        if (rule.MaxApplicationsPerOrder is int maxApplications)
+        var selectedUnits = new List<RuleUnit>(
+            Math.Min(plan.Rule.ApplyQuantity, checked((int)plan.Budget.WorkUnits)));
+        foreach (var unit in EnumerateRuleUnits(lines, plan.ProductWeights, plan.Budget.WorkUnits))
         {
-            applicationCount = Math.Min(applicationCount, maxApplications);
+            selectedUnits.Add(unit);
+            if (selectedUnits.Count != plan.Rule.ApplyQuantity)
+            {
+                continue;
+            }
+
+            ApplyRuleBundle(discountsByLine, lines, plan.Rule, selectedUnits);
+            selectedUnits.Clear();
+        }
+    }
+
+    private static void ApplyRuleBundle(
+        Dictionary<string, decimal> discountsByLine,
+        IReadOnlyList<SharedHeldOrderPricingLine> lines,
+        CatalogPromotionRuleDto rule,
+        IReadOnlyList<RuleUnit> selectedUnits)
+    {
+        var groupedUnitAmounts = selectedUnits
+            .GroupBy(unit => (unit.LineId, unit.SortOrder))
+            .Select(group => new GroupedUnit(
+                group.Key.LineId,
+                group.First().UnitPrice,
+                group.Key.SortOrder))
+            .OrderBy(group => group.SortOrder)
+            .ToArray();
+        var groupTotal = Round2(groupedUnitAmounts.Sum(group => group.Amount));
+        var groupDiscount = Round2(groupTotal - rule.FixedPrice);
+        if (groupDiscount <= 0m)
+        {
+            return;
         }
 
-        for (var applicationIndex = 0; applicationIndex < applicationCount; applicationIndex++)
+        var groupedLines = groupedUnitAmounts
+            .GroupBy(group => group.LineId)
+            .Select(group => new GroupedLine(
+                group.Key,
+                Round2(group.Sum(item => item.Amount)),
+                group.Min(item => item.SortOrder)))
+            .Where(group => GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId) > 0m)
+            .OrderBy(group => group.SortOrder)
+            .ToArray();
+        if (groupedLines.Length == 0)
         {
-            // 与 WPF 评估保持一致：每个展开单位是独立 (line, sortOrder) 组，按购物车顺序消费。
-            var selectedUnits = units
-                .Skip(applicationIndex * rule.ApplyQuantity)
-                .Take(rule.ApplyQuantity)
-                .ToArray();
-            var groupedUnitAmounts = selectedUnits
-                .GroupBy(unit => (unit.LineId, unit.SortOrder))
-                .Select(group => new GroupedUnit(
-                    group.Key.LineId,
-                    group.First().UnitPrice,
-                    group.Key.SortOrder))
-                .OrderBy(group => group.SortOrder)
-                .ToArray();
-            var groupTotal = Round2(groupedUnitAmounts.Sum(group => group.Amount));
-            var groupDiscount = Round2(groupTotal - rule.FixedPrice);
-            if (groupDiscount <= 0m)
+            return;
+        }
+
+        var remainingDiscount = groupDiscount;
+        var remainingAmount = Round2(groupedLines.Sum(item => item.Amount));
+        for (var index = 0; index < groupedLines.Length && remainingDiscount > 0m; index++)
+        {
+            var group = groupedLines[index];
+            if (remainingAmount <= 0m)
             {
-                continue;
+                break;
             }
 
-            var groupedLines = groupedUnitAmounts
-                .GroupBy(group => group.LineId)
-                .Select(group => new GroupedLine(
-                    group.Key,
-                    Round2(group.Sum(item => item.Amount)),
-                    group.Min(item => item.SortOrder)))
-                .Where(group => GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId) > 0m)
-                .OrderBy(group => group.SortOrder)
-                .ToArray();
-            if (groupedLines.Length == 0)
+            var lineDiscount = index == groupedLines.Length - 1
+                ? remainingDiscount
+                : Round2(remainingDiscount * group.Amount / remainingAmount);
+            lineDiscount = Math.Clamp(
+                lineDiscount,
+                0m,
+                Math.Min(remainingDiscount, GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId)));
+            if (lineDiscount > 0m)
             {
-                continue;
-            }
-
-            var remainingDiscount = groupDiscount;
-            for (var index = 0; index < groupedLines.Length && remainingDiscount > 0m; index++)
-            {
-                var group = groupedLines[index];
-                var remainingAmount = Round2(groupedLines.Skip(index).Sum(item => item.Amount));
-                if (remainingAmount <= 0m)
-                {
-                    break;
-                }
-
-                var lineDiscount = index == groupedLines.Length - 1
-                    ? remainingDiscount
-                    : Round2(remainingDiscount * group.Amount / remainingAmount);
-                lineDiscount = Math.Clamp(
-                    lineDiscount,
-                    0m,
-                    Math.Min(remainingDiscount, GetRemainingLineDiscountCapacity(discountsByLine, lines, group.LineId)));
-                if (lineDiscount <= 0m)
-                {
-                    continue;
-                }
-
                 discountsByLine[group.LineId] = Round2(
                     (discountsByLine.TryGetValue(group.LineId, out var current) ? current : 0m) + lineDiscount);
                 remainingDiscount -= lineDiscount;
             }
+
+            // 与评估器使用相同的递减分母，消除大 bundle 内逐轮 Skip/Sum 的二次复杂度。
+            remainingAmount = Round2(remainingAmount - group.Amount);
         }
     }
 
@@ -415,12 +457,12 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
         return weights;
     }
 
-    private static List<RuleUnit> ExpandRuleUnits(
+    private static IEnumerable<RuleUnit> EnumerateRuleUnits(
         IReadOnlyList<SharedHeldOrderPricingLine> lines,
-        IReadOnlyDictionary<string, int> ruleProductWeights)
+        IReadOnlyDictionary<string, int> ruleProductWeights,
+        long workUnits)
     {
-        var expandedUnits = new List<RuleUnit>();
-        var nextExpandedId = 0;
+        long emittedUnits = 0;
         foreach (var line in lines)
         {
             var productCode = NormalizeProductCode(line.ProductCode);
@@ -429,22 +471,24 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
                 continue;
             }
 
-            var quantity = decimal.ToInt32(line.Quantity);
-            for (var quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
+            var quantity = decimal.ToInt64(line.Quantity);
+            for (long quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
             {
                 for (var weightIndex = 0; weightIndex < unitWeight; weightIndex++)
                 {
-                    expandedUnits.Add(new RuleUnit(
-                        nextExpandedId++,
+                    // 与 PromotionEvaluationService 对齐：同一实物数量的权重单位在 bundle 内只计一次金额。
+                    yield return new RuleUnit(
                         line.LineId,
                         line.UnitPriceCents / 100m,
-                        quantityIndex,
-                        weightIndex));
+                        quantityIndex);
+                    emittedUnits++;
+                    if (emittedUnits >= workUnits)
+                    {
+                        yield break;
+                    }
                 }
             }
         }
-
-        return expandedUnits;
     }
 
     private static decimal GetRemainingLineDiscountCapacity(
@@ -517,11 +561,16 @@ public sealed class SharedHeldOrderMapper : ISharedHeldOrderMapper
         return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
-    private sealed record RuleUnit(int SortOrder, string LineId, decimal UnitPrice, int QuantityIndex, int WeightIndex);
+    private sealed record SharedPromotionPlan(
+        CatalogPromotionRuleDto Rule,
+        IReadOnlyDictionary<string, int> ProductWeights,
+        PromotionRuleBudget Budget);
 
-    private sealed record GroupedUnit(string LineId, decimal Amount, int SortOrder);
+    private sealed record RuleUnit(string LineId, decimal UnitPrice, long SortOrder);
 
-    private sealed record GroupedLine(string LineId, decimal Amount, int SortOrder);
+    private sealed record GroupedUnit(string LineId, decimal Amount, long SortOrder);
+
+    private sealed record GroupedLine(string LineId, decimal Amount, long SortOrder);
 }
 
 /// <summary>

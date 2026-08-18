@@ -22,6 +22,67 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
+    public void Fallback_screen_content_is_bound_only_while_fallback_is_active()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var fallbackTrigger = Assert.Single(document.Descendants(presentation + "DataTrigger").Where(trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding IsFallbackScreenActive}"));
+        var fallbackControl = Assert.IsType<XElement>(fallbackTrigger.Ancestors(presentation + "ContentControl").FirstOrDefault());
+
+        Assert.Null(fallbackControl.Attribute("Content"));
+        var style = Assert.Single(fallbackControl
+            .Elements(presentation + "ContentControl.Style")
+            .Elements(presentation + "Style"));
+        var defaultSetters = style.Elements(presentation + "Setter").ToArray();
+        Assert.Contains(defaultSetters, setter =>
+            (string?)setter.Attribute("Property") == "Content" &&
+            (string?)setter.Attribute("Value") == "{x:Null}");
+        Assert.Contains(defaultSetters, setter =>
+            (string?)setter.Attribute("Property") == "Visibility" &&
+            (string?)setter.Attribute("Value") == "Collapsed");
+
+        var activeSetters = fallbackTrigger.Elements(presentation + "Setter").ToArray();
+        Assert.Contains(activeSetters, setter =>
+            (string?)setter.Attribute("Property") == "Content" &&
+            (string?)setter.Attribute("Value") == "{Binding CurrentScreen}");
+        Assert.Contains(activeSetters, setter =>
+            (string?)setter.Attribute("Property") == "Visibility" &&
+            (string?)setter.Attribute("Value") == "Visible");
+    }
+
+    [Theory]
+    [InlineData("{Binding CachedTransactionHistoryScreen}", "{Binding IsTransactionHistoryScreenActive}")]
+    [InlineData("{Binding CachedSettingsScreen}", "{Binding IsSettingsScreenActive}")]
+    public void Cached_heavy_screen_has_a_single_dedicated_host(string contentBinding, string activeBinding)
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var host = Assert.Single(document.Descendants(presentation + "ContentControl").Where(control =>
+            (string?)control.Attribute("Content") == contentBinding));
+        var trigger = Assert.Single(host.Descendants(presentation + "DataTrigger").Where(candidate =>
+            (string?)candidate.Attribute("Binding") == activeBinding));
+
+        Assert.Contains(trigger.Elements(presentation + "Setter"), setter =>
+            (string?)setter.Attribute("Property") == "Visibility" &&
+            (string?)setter.Attribute("Value") == "Visible");
+    }
+
+    [Fact]
     public void Cashier_login_overlay_restores_focus_when_server_switch_reenables_window()
     {
         var document = XDocument.Load(Path.Combine(

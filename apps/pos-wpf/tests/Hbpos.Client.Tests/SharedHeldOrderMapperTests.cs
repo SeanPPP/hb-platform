@@ -605,4 +605,102 @@ public sealed class SharedHeldOrderMapperTests
         Assert.Equal(SharedHeldOrderMappingReasons.PromotionRulesMismatch, result.Block!.Reason);
         Assert.Contains("PROMO-DUP", result.Block.Detail);
     }
+
+    [Fact]
+    public void Map_promotion_budget_exceeded_returns_stable_block_and_no_shared_payload()
+    {
+        var order = Order(SaleLine(
+            "P-BUDGET",
+            SharedHeldOrderCanonicalConstants.MaxQuantity,
+            10m,
+            1m,
+            null,
+            PosCartLineDiscountSource.Promotion));
+        var rules = new[]
+        {
+            new CatalogPromotionRuleDto(
+                "PROMO-BUDGET",
+                "Budget guard",
+                true,
+                100,
+                1,
+                9m,
+                null,
+                HeldAt.AddDays(-1),
+                HeldAt.AddDays(1),
+                null,
+                [new CatalogPromotionProductDto("P-BUDGET", 1)])
+        };
+
+        var result = Mapper.Map(order, rules, revision: 1);
+
+        Assert.True(result.IsBlocked);
+        Assert.Null(result.Payload);
+        Assert.Equal(SharedHeldOrderMappingReasons.PromotionBudgetExceeded, result.Block!.Reason);
+        Assert.Single(order.Lines);
+    }
+
+    [Fact]
+    public void Map_large_quantity_with_max_applications_replays_only_required_bundle()
+    {
+        var order = Order(SaleLine(
+            "P-CAPPED",
+            SharedHeldOrderCanonicalConstants.MaxQuantity,
+            10m,
+            5m,
+            null,
+            PosCartLineDiscountSource.Promotion));
+        var rules = new[]
+        {
+            new CatalogPromotionRuleDto(
+                "PROMO-CAPPED",
+                "One bundle only",
+                true,
+                100,
+                2,
+                15m,
+                1,
+                HeldAt.AddDays(-1),
+                HeldAt.AddDays(1),
+                null,
+                [new CatalogPromotionProductDto("P-CAPPED", 1)])
+        };
+
+        var result = Mapper.Map(order, rules, revision: 1);
+
+        Assert.False(result.IsBlocked);
+        Assert.Equal(500L, Assert.Single(result.Payload!.PricingState.Lines).DiscountState.Cents);
+    }
+
+    [Fact]
+    public void Map_weighted_rule_matches_evaluation_grouping_and_rounding()
+    {
+        var order = Order(
+            SaleLine("P-WEIGHTED", 1m, 12m, 2m, null, PosCartLineDiscountSource.Promotion),
+            SaleLine("P-REGULAR", 1m, 6m, 1m, null, PosCartLineDiscountSource.Promotion));
+        var rules = new[]
+        {
+            new CatalogPromotionRuleDto(
+                "PROMO-WEIGHTED-PARITY",
+                "Weighted parity",
+                true,
+                100,
+                3,
+                15m,
+                null,
+                HeldAt.AddDays(-1),
+                HeldAt.AddDays(1),
+                null,
+                [
+                    new CatalogPromotionProductDto("P-WEIGHTED", 2),
+                    new CatalogPromotionProductDto("P-REGULAR", 1)
+                ])
+        };
+
+        var result = Mapper.Map(order, rules, revision: 1);
+
+        Assert.False(result.IsBlocked);
+        Assert.Equal(200L, result.Payload!.PricingState.Lines[0].DiscountState.Cents);
+        Assert.Equal(100L, result.Payload.PricingState.Lines[1].DiscountState.Cents);
+    }
 }
