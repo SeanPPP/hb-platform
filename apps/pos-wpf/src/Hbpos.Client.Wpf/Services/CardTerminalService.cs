@@ -1198,11 +1198,12 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             if (squareAttempt?.CanBindRefund == true)
             {
                 // Square 已返回 refundId 即代表退款可能已经发生；必须先落库，再做终态查询。
-                await squareAttempt.BindRefundAsync!(
+                await BindSquareRefundEvidenceAsync(
+                    squareAttempt,
                     refundId,
                     status,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
+                    refund.UpdatedAt ?? DateTimeOffset.UtcNow,
+                    settings.Environment);
             }
 
             if (string.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase))
@@ -1239,11 +1240,12 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
                     status = refund.Status ?? string.Empty;
                     if (squareAttempt?.CanBindRefund == true)
                     {
-                        await squareAttempt.BindRefundAsync!(
+                        await BindSquareRefundEvidenceAsync(
+                            squareAttempt,
                             refundId,
                             status,
-                            DateTimeOffset.UtcNow,
-                            CancellationToken.None);
+                            refund.UpdatedAt ?? DateTimeOffset.UtcNow,
+                            settings.Environment);
                     }
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
@@ -1327,6 +1329,16 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             return new PaymentAuthorizationResult(false, null, T("payment.card.squareInvalidResponse", "Square terminal returned an invalid response."), ResultUnknown: true);
         }
     }
+
+    private static Task BindSquareRefundEvidenceAsync(
+        SquarePaymentAttemptContext squareAttempt,
+        string refundId,
+        string status,
+        DateTimeOffset updatedAt,
+        CardTerminalEnvironment environment) =>
+        squareAttempt.BindRefundEvidenceAsync is not null
+            ? squareAttempt.BindRefundEvidenceAsync(refundId, status, updatedAt, environment, CancellationToken.None)
+            : squareAttempt.BindRefundAsync!(refundId, status, updatedAt, CancellationToken.None);
 
     private static bool IsExpectedSquareRefund(
         SquareRefundResponse refund,

@@ -239,7 +239,7 @@ public sealed class ConfiguredCardTerminalClientTests
     [Fact]
     public async Task RefundAsync_persists_refund_id_before_returning_pending_result()
     {
-        var persisted = new List<(string RefundId, string Status)>();
+        var persisted = new List<(string RefundId, string Status, CardTerminalEnvironment Environment, DateTimeOffset UpdatedAt)>();
         var contextAccessor = new SquarePaymentAttemptContextAccessor();
         var handler = new StubHttpMessageHandler((request, _) =>
             request.Method == HttpMethod.Post
@@ -253,9 +253,9 @@ public sealed class ConfiguredCardTerminalClientTests
             Guid.NewGuid(),
             "refund-idempotency",
             SubmissionToken: "refund-submission",
-            BindRefundAsync: (refundId, status, _, _) =>
+            BindRefundEvidenceAsync: (refundId, status, updatedAt, environment, _) =>
             {
-                persisted.Add((refundId, status));
+                persisted.Add((refundId, status, environment, updatedAt));
                 return Task.CompletedTask;
             }));
 
@@ -271,6 +271,8 @@ public sealed class ConfiguredCardTerminalClientTests
         {
             Assert.Equal("refund-durable", evidence.RefundId);
             Assert.Equal("PENDING", evidence.Status);
+            Assert.Equal(CardTerminalEnvironment.Production, evidence.Environment);
+            Assert.NotEqual(default, evidence.UpdatedAt);
         });
     }
 

@@ -290,6 +290,13 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         {
             await ExecuteAsync(connection, "ALTER TABLE LocalInstallmentOperations ADD COLUMN ApiClaimedAt TEXT NULL;", cancellationToken);
         }
+
+        var refundStepColumns = await ReadColumnNamesAsync(connection, "LocalInstallmentRefundSteps", cancellationToken);
+        if (!refundStepColumns.Contains("ProviderEnvironment"))
+        {
+            // Square refundId 只能在创建它的环境查询，升级旧库时以 nullable 列保持兼容。
+            await ExecuteAsync(connection, "ALTER TABLE LocalInstallmentRefundSteps ADD COLUMN ProviderEnvironment TEXT NULL;", cancellationToken);
+        }
     }
 
     private static async Task EnsureLinklySettlementUploadColumnsAsync(
@@ -1303,6 +1310,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             IdempotencyKey TEXT NOT NULL,
             State TEXT NOT NULL,
             RefundReference TEXT NULL,
+            ProviderEnvironment TEXT NULL,
             CardTransactionsJson TEXT NULL,
             FailureMessage TEXT NULL,
             SupervisorDecision TEXT NULL,

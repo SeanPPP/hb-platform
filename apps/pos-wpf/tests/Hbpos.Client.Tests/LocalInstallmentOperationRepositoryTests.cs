@@ -21,6 +21,143 @@ public sealed class LocalInstallmentOperationRepositoryTests
             Assert.Equal(1L, await ReadCountAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'LocalInstallmentRefundSteps';"));
             Assert.Equal(1L, await ReadCountAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalCardPaymentAttempts') WHERE name = 'OperationKind';"));
             Assert.Equal(1L, await ReadCountAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalSquarePaymentAttempts') WHERE name = 'OperationGuid';"));
+            Assert.Equal(1L, await ReadCountAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalInstallmentRefundSteps') WHERE name = 'ProviderEnvironment';"));
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Schema_upgrade_adds_square_environment_to_legacy_refund_step_table()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            var schema = new LocalSchemaService(store);
+            await schema.InitializeAsync();
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    DROP TABLE LocalInstallmentRefundSteps;
+                    CREATE TABLE LocalInstallmentRefundSteps (
+                        RefundStepGuid TEXT PRIMARY KEY,
+                        OperationGuid TEXT NOT NULL,
+                        OriginalPaymentGuid TEXT NOT NULL,
+                        Method INTEGER NOT NULL,
+                        Amount TEXT NOT NULL,
+                        OriginalReference TEXT NULL,
+                        IdempotencyKey TEXT NOT NULL,
+                        State TEXT NOT NULL,
+                        RefundReference TEXT NULL,
+                        CardTransactionsJson TEXT NULL,
+                        FailureMessage TEXT NULL,
+                        SupervisorDecision TEXT NULL,
+                        SupervisorUserId TEXT NULL,
+                        SupervisorReason TEXT NULL,
+                        SupervisorEvidence TEXT NULL,
+                        ResolvedAt TEXT NULL,
+                        CreatedAt TEXT NOT NULL,
+                        UpdatedAt TEXT NOT NULL
+                    );
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await schema.InitializeAsync();
+
+            await using var upgraded = await store.OpenConnectionAsync();
+            Assert.Equal(1L, await ReadCountAsync(upgraded, "SELECT COUNT(*) FROM pragma_table_info('LocalInstallmentRefundSteps') WHERE name = 'ProviderEnvironment';"));
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_evidence_write_accepts_unknown_race_and_rejects_different_identity()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var operation = CreateOperation(LocalInstallmentOperationKind.Cancel) with { State = LocalInstallmentOperationState.TerminalSubmitting };
+            var step = CreateStep(operation.OperationGuid, LocalInstallmentRefundStepState.TerminalSubmitting);
+            await repository.CreateCancelOrGetAsync(operation, [step]);
+            await repository.TryTransitionRefundStepAsync(
+                step.RefundStepGuid,
+                [LocalInstallmentRefundStepState.TerminalSubmitting],
+                LocalInstallmentRefundStepState.ResultUnknown,
+                DateTimeOffset.UtcNow);
+
+            var recorded = await repository.TryRecordRefundEvidenceAsync(
+                step.RefundStepGuid,
+                [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+                "SQRF:refund-original",
+                CardTerminalEnvironment.Sandbox.ToString(),
+                "[{\"status\":\"PENDING\"}]",
+                DateTimeOffset.UtcNow);
+            var rejected = await repository.TryRecordRefundEvidenceAsync(
+                step.RefundStepGuid,
+                [LocalInstallmentRefundStepState.ResultUnknown],
+                "SQRF:refund-other",
+                CardTerminalEnvironment.Production.ToString(),
+                "[{\"status\":\"COMPLETED\"}]",
+                DateTimeOffset.UtcNow);
+
+            Assert.True(recorded);
+            Assert.False(rejected);
+            var saved = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.ResultUnknown, saved.State);
+            Assert.Equal("SQRF:refund-original", saved.RefundReference);
+            Assert.Equal(CardTerminalEnvironment.Sandbox.ToString(), saved.ProviderEnvironment);
+            Assert.Contains("PENDING", saved.CardTransactionsJson);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Declined_refund_reset_clears_evidence_and_rotates_idempotency_key_atomically()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var operation = CreateOperation(LocalInstallmentOperationKind.Cancel) with { State = LocalInstallmentOperationState.TerminalSubmitting };
+            var step = CreateStep(operation.OperationGuid, LocalInstallmentRefundStepState.TerminalSubmitting) with
+            {
+                RefundReference = "SQRF:refund-rejected",
+                ProviderEnvironment = CardTerminalEnvironment.Production.ToString(),
+                CardTransactionsJson = "[{\"status\":\"REJECTED\"}]"
+            };
+            await repository.CreateCancelOrGetAsync(operation, [step]);
+
+            var reset = await repository.TryResetRefundStepAfterDeclineAsync(
+                step.RefundStepGuid,
+                [LocalInstallmentRefundStepState.TerminalSubmitting],
+                "refund-key-next",
+                DateTimeOffset.UtcNow,
+                "REJECTED");
+
+            Assert.True(reset);
+            var saved = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.Prepared, saved.State);
+            Assert.Equal("refund-key-next", saved.IdempotencyKey);
+            Assert.Null(saved.RefundReference);
+            Assert.Null(saved.ProviderEnvironment);
+            Assert.Null(saved.CardTransactionsJson);
+            Assert.Equal("REJECTED", saved.FailureMessage);
         }
         finally
         {
@@ -63,7 +200,12 @@ public sealed class LocalInstallmentOperationRepositoryTests
             await new LocalSchemaService(store).InitializeAsync();
             var repository = new LocalInstallmentOperationRepository(store);
             var operation = CreateOperation(LocalInstallmentOperationKind.Cancel) with { State = LocalInstallmentOperationState.ResultUnknown };
-            var step = CreateStep(operation.OperationGuid, LocalInstallmentRefundStepState.ResultUnknown);
+            var step = CreateStep(operation.OperationGuid, LocalInstallmentRefundStepState.ResultUnknown) with
+            {
+                RefundReference = "SQRF:refund-pending",
+                ProviderEnvironment = CardTerminalEnvironment.Sandbox.ToString(),
+                CardTransactionsJson = "[{\"status\":\"PENDING\"}]"
+            };
             await repository.CreateCancelOrGetAsync(operation, [step]);
 
             await Assert.ThrowsAsync<ArgumentException>(() => repository.ResolveRefundStepAsync(
@@ -81,6 +223,10 @@ public sealed class LocalInstallmentOperationRepositoryTests
             Assert.Equal(LocalInstallmentRefundStepState.Prepared, saved.State);
             Assert.Equal("manager-1", saved.SupervisorUserId);
             Assert.Equal("bank-case-123", saved.SupervisorEvidence);
+            Assert.NotEqual(step.IdempotencyKey, saved.IdempotencyKey);
+            Assert.Null(saved.RefundReference);
+            Assert.Null(saved.ProviderEnvironment);
+            Assert.Null(saved.CardTransactionsJson);
         }
         finally
         {

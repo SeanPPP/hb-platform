@@ -55,11 +55,12 @@ public sealed record SquarePaymentAttemptContext(
     string IdempotencyKey,
     Func<string, string?, DateTimeOffset, CancellationToken, Task>? BindCheckoutAsync = null,
     string? SubmissionToken = null,
-    Func<string, string, DateTimeOffset, CancellationToken, Task>? BindRefundAsync = null)
+    Func<string, string, DateTimeOffset, CancellationToken, Task>? BindRefundAsync = null,
+    Func<string, string, DateTimeOffset, CardTerminalEnvironment, CancellationToken, Task>? BindRefundEvidenceAsync = null)
 {
     public bool CanBindCheckout => BindCheckoutAsync is not null;
 
-    public bool CanBindRefund => BindRefundAsync is not null;
+    public bool CanBindRefund => BindRefundEvidenceAsync is not null || BindRefundAsync is not null;
 }
 
 public interface ISquarePaymentAttemptContextAccessor

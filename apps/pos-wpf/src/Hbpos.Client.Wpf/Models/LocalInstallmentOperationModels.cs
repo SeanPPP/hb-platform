@@ -81,7 +81,8 @@ public sealed record LocalInstallmentRefundStep(
     string? SupervisorEvidence,
     DateTimeOffset? ResolvedAt,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? ProviderEnvironment = null);
 
 public sealed record InstallmentRefundSupervisorResolution(
     InstallmentRefundSupervisorDecision Decision,
