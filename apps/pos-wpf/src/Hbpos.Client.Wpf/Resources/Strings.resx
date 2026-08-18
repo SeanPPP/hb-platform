@@ -308,6 +308,7 @@
   <data name="history.totalOutstanding" xml:space="preserve"><value>Total / Outstanding</value></data>
   <data name="history.moreActions" xml:space="preserve"><value>More actions</value></data>
   <data name="history.reprint" xml:space="preserve"><value>Reprint</value></data>
+  <data name="history.detailsLoadTimeout" xml:space="preserve"><value>Order details load timed out. Please try again.</value></data>
   <data name="history.refund" xml:space="preserve"><value>Refund</value></data>
   <data name="receipt.print.printing" xml:space="preserve"><value>Printing receipt...</value></data>
   <data name="receipt.print.noReceiptFound" xml:space="preserve"><value>No receipt found.</value></data>

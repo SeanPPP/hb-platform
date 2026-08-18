@@ -759,6 +759,79 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Source_switch_blocks_reprint_while_new_source_loads()
+    {
+        var orderGuid = Guid.NewGuid();
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryGate = new TaskCompletionSource<RemoteOrderHistoryResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reprintRequested = false;
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    5m,
+                    0m,
+                    5m,
+                    "Synced",
+                    1,
+                    "Cash")
+            ],
+            Receipts =
+            {
+                [orderGuid] = new ReceiptDetails(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    5m,
+                    0m,
+                    5m,
+                    [new ReceiptPreviewLine("Receipt Tea", "930001", 1m, 5m, 0m, 5m)],
+                    [new ReceiptPaymentLine(PaymentMethodKind.Cash, 5m, null)])
+            }
+        };
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryHandler = (_, _) =>
+            {
+                queryStarted.TrySetResult();
+                return queryGate.Task;
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        await viewModel.LoadAsync();
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.IsOnlineSourceSelected = true;
+        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(orderGuid, viewModel.SelectedOrder?.OrderGuid);
+        Assert.Equal(orderGuid, viewModel.SelectedReceipt?.OrderGuid);
+        Assert.False(viewModel.IsReprintVisible);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.ReprintCommand.Execute(null);
+        Assert.False(reprintRequested);
+
+        queryGate.SetResult(new RemoteOrderHistoryResult([]));
+        await viewModel.LoadAsync();
+    }
+
+    [Fact]
     public async Task Remote_history_ignores_stale_receipt_after_selection_changes()
     {
         var firstOrderGuid = Guid.NewGuid();
@@ -919,7 +992,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.SelectedOrder = Assert.Single(
             viewModel.Orders,
             order => order.OrderGuid == secondOrderGuid);
-        await WaitUntilAsync(() => viewModel.StatusMessage == "订单详情加载超时，请重试。");
+        await WaitUntilAsync(() => viewModel.StatusMessage == "Order details load timed out. Please try again.");
 
         Assert.Null(viewModel.SelectedReceipt);
         Assert.Empty(viewModel.ReceiptPreviewRows);
@@ -3068,6 +3141,8 @@ public sealed class TransactionHistoryViewModelTests
 
         public Exception? QueryException { get; set; }
 
+        public Func<RemoteOrderHistoryQuery, CancellationToken, Task<RemoteOrderHistoryResult>>? QueryHandler { get; set; }
+
         public Dictionary<Guid, ReceiptDetails> Receipts { get; } = [];
 
         public Func<Guid, CancellationToken, Task<ReceiptDetails?>>? DetailsHandler { get; set; }
@@ -3077,6 +3152,11 @@ public sealed class TransactionHistoryViewModelTests
         public Task<RemoteOrderHistoryResult> QueryAsync(RemoteOrderHistoryQuery query, CancellationToken cancellationToken = default)
         {
             LastQuery = query;
+            if (QueryHandler is not null)
+            {
+                return QueryHandler(query, cancellationToken);
+            }
+
             if (QueryException is not null)
             {
                 return Task.FromException<RemoteOrderHistoryResult>(QueryException);

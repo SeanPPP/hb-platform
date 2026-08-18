@@ -717,7 +717,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             // 属性变更回调不能把故障 Task 留在后台；HttpClient 超时在这里统一转为可见状态。
             ClearReceiptPreview();
             StatusMessage = ex is OperationCanceledException
-                ? "订单详情加载超时，请重试。"
+                ? T("history.detailsLoadTimeout")
                 : ex.Message;
         }
     }
@@ -1747,7 +1747,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private bool CanReprintSelected()
     {
-        return SelectedOrder switch
+        if (SelectedOrder is not { } selectedOrder || selectedOrder.Source != SelectedSource)
+        {
+            return false;
+        }
+
+        return selectedOrder switch
         {
             { IsSuspendedOrder: false, Source: TransactionHistorySource.LocalOrders } => true,
             { IsSuspendedOrder: false, Source: TransactionHistorySource.RemoteOrders } remoteOrder =>
@@ -2486,6 +2491,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         // 授权等待期间可能切换订单；补打只能继续处理最初已校验的同一张订单。
         if (SelectedOrder?.OrderGuid != selectedOrder.OrderGuid ||
             SelectedOrder.Source != selectedOrder.Source ||
+            SelectedSource != selectedOrder.Source ||
             !CanReprintSelected())
         {
             return;
@@ -2691,6 +2697,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "TransactionHistory" => "Transaction History",
             "success.receiptPreview" => "Receipt Preview",
             "history.reprint" => "Reprint",
+            "history.detailsLoadTimeout" => "Order details load timed out. Please try again.",
             "history.reuploadCompleted" => "Reupload completed: {0} succeeded, {1} failed.",
             "history.reuploadRangeEmpty" => "No eligible local orders were found for the selected date range.",
             "history.reuploadRangeCancelled" => "Date-range reupload cancelled.",

@@ -855,6 +855,9 @@
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
   </data>
+  <data name="history.detailsLoadTimeout" xml:space="preserve">
+    <value>订单详情加载超时，请重试。</value>
+  </data>
   <data name="history.refund" xml:space="preserve">
     <value>退款</value>
   </data>

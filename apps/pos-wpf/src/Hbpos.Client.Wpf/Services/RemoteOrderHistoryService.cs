@@ -84,29 +84,34 @@ public sealed class RemoteOrderHistoryService(IOrderHistoryApiClient apiClient) 
         CancellationToken cancellationToken = default)
     {
         var details = await apiClient.GetDetailsAsync(orderGuid, cancellationToken);
-        return details is null
-            ? null
-            : new ReceiptDetails(
-                details.OrderGuid,
-                details.StoreCode,
-                details.DeviceCode,
-                details.CashierName,
-                details.SoldAt,
-                details.TotalAmount,
-                details.DiscountAmount,
-                details.ActualAmount,
-                details.Lines.Select(line => new ReceiptPreviewLine(
-                    line.DisplayName,
-                    line.LookupCode,
-                    line.Quantity,
-                    line.UnitPrice,
-                    line.DiscountAmount,
-                    line.ActualAmount)).ToList(),
-                details.Payments.Select(payment => new ReceiptPaymentLine(
-                    payment.Method,
-                    payment.Amount,
-                    payment.Reference,
-                    payment.CardTransactions)).ToList());
+        if (details is null)
+        {
+            return null;
+        }
+
+        var payments = details.Payments.Select(payment => new ReceiptPaymentLine(
+            payment.Method,
+            payment.Amount,
+            payment.Reference,
+            payment.CardTransactions)).ToList();
+        return new ReceiptDetails(
+            details.OrderGuid,
+            details.StoreCode,
+            details.DeviceCode,
+            details.CashierName,
+            details.SoldAt,
+            details.TotalAmount,
+            details.DiscountAmount,
+            details.ActualAmount,
+            details.Lines.Select(line => new ReceiptPreviewLine(
+                line.DisplayName,
+                line.LookupCode,
+                line.Quantity,
+                line.UnitPrice,
+                line.DiscountAmount,
+                line.ActualAmount)).ToList(),
+            payments,
+            RefundVoucher: ReceiptRefundVoucherMapper.TryCreate(payments));
     }
 
     public Task<OrderReturnContextDto?> GetReturnContextAsync(

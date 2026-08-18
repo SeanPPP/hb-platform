@@ -38,6 +38,86 @@ public sealed class ReceiptQueryServiceTests
     }
 
     [Fact]
+    public void Receipt_query_service_preserves_local_voucher_refund_mapping()
+    {
+        var order = CreateOrder(Guid.NewGuid(), DateTimeOffset.UtcNow, actualAmount: 8m) with
+        {
+            TotalAmount = -8m,
+            DiscountAmount = 0m,
+            ActualAmount = -8m,
+            Payments = [new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, -8m, " VOUCHER_REFUND:RF-LOCAL ")]
+        };
+
+        var receipt = ReceiptQueryService.CreateReceipt(order);
+
+        var refundVoucher = Assert.IsType<RefundVoucherReceipt>(receipt.RefundVoucher);
+        Assert.Equal("RF-LOCAL", refundVoucher.VoucherCode);
+        Assert.Equal(8m, refundVoucher.Amount);
+    }
+
+    [Fact]
+    public async Task Remote_order_history_maps_voucher_refund_to_standalone_receipt()
+    {
+        var orderGuid = Guid.NewGuid();
+        var details = CreateRemoteDetails(
+            orderGuid,
+            -8m,
+            [new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Voucher, -8m, " VOUCHER_REFUND:RF-REMOTE ")]);
+        var service = new RemoteOrderHistoryService(new StubOrderHistoryApiClient(details));
+
+        var receipt = await service.GetDetailsAsync(orderGuid);
+
+        Assert.NotNull(receipt);
+        var refundVoucher = Assert.IsType<RefundVoucherReceipt>(receipt.RefundVoucher);
+        Assert.Equal("RF-REMOTE", refundVoucher.VoucherCode);
+        Assert.Equal(8m, refundVoucher.Amount);
+
+        var document = new ReceiptTextFormatter().Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+        Assert.Contains("REFUND VOUCHER", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Remote_order_history_does_not_mark_ordinary_receipt_as_refund_voucher()
+    {
+        var orderGuid = Guid.NewGuid();
+        var details = CreateRemoteDetails(
+            orderGuid,
+            8m,
+            [new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Cash, 8m, null)]);
+        var service = new RemoteOrderHistoryService(new StubOrderHistoryApiClient(details));
+
+        var receipt = await service.GetDetailsAsync(orderGuid);
+
+        Assert.NotNull(receipt);
+        Assert.Null(receipt.RefundVoucher);
+
+        var document = new ReceiptTextFormatter().Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+        Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFUND VOUCHER", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("VOUCHER_REFUND_PENDING")]
+    [InlineData("VOUCHER:SALE-001")]
+    [InlineData(null)]
+    public async Task Remote_order_history_does_not_mark_non_refund_voucher_reference_as_refund_voucher(
+        string? reference)
+    {
+        var orderGuid = Guid.NewGuid();
+        var details = CreateRemoteDetails(
+            orderGuid,
+            -8m,
+            [new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Voucher, -8m, reference)]);
+        var service = new RemoteOrderHistoryService(new StubOrderHistoryApiClient(details));
+
+        var receipt = await service.GetDetailsAsync(orderGuid);
+
+        Assert.NotNull(receipt);
+        Assert.Null(receipt.RefundVoucher);
+    }
+
+    [Fact]
     public async Task Receipt_query_service_returns_latest_receipt()
     {
         var olderOrder = CreateOrder(
@@ -83,6 +163,24 @@ public sealed class ReceiptQueryServiceTests
             1m);
     }
 
+    private static OrderHistoryDetailsDto CreateRemoteDetails(
+        Guid orderGuid,
+        decimal actualAmount,
+        IReadOnlyList<OrderHistoryPaymentDto> payments)
+    {
+        return new OrderHistoryDetailsDto(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            actualAmount,
+            0m,
+            actualAmount,
+            [],
+            payments);
+    }
+
     private sealed class StubOrderRepository(IEnumerable<LocalOrder> orders) : ILocalOrderRepository
     {
         private readonly Dictionary<Guid, LocalOrder> _orders = orders.ToDictionary(order => order.OrderGuid);
@@ -125,6 +223,29 @@ public sealed class ReceiptQueryServiceTests
         {
             return Task.FromResult(_orders.TryGetValue(orderGuid, out var order) ? order : null);
         }
+    }
+
+    private sealed class StubOrderHistoryApiClient(OrderHistoryDetailsDto? details) : IOrderHistoryApiClient
+    {
+        public Task<OrderHistoryQueryResponse> QueryAsync(
+            OrderHistoryQueryRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<OrderHistoryDetailsDto?> GetDetailsAsync(
+            Guid orderGuid,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(details);
+
+        public Task<OrderReturnContextDto?> GetReturnContextAsync(
+            Guid orderGuid,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<OrderReturnRecordCreateResponse> CreateReturnRecordsAsync(
+            OrderReturnRecordCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class CultureScope : IDisposable
