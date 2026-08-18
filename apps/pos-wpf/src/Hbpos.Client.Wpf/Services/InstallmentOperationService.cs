@@ -38,6 +38,15 @@ public interface IInstallmentOperationService
         string? reason = null,
         CancellationToken cancellationToken = default);
 
+    Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+            false,
+            Message: "安全提货确认服务未配置。",
+            RequiresReview: true));
+
     Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverAsync(
         PosSessionState session,
         CancellationToken cancellationToken = default);
@@ -213,6 +222,92 @@ public sealed class InstallmentOperationService(
         var approvedOperation = ready.Operation!;
         var approvedRequest = Deserialize<InstallmentAppendPaymentRequest>(approvedOperation.RequestJson);
         return await SubmitRepaymentAsync(approvedOperation, approvedRequest, cancellationToken);
+    }
+
+    public Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => ExecutePickupCoreAsync(session, request, cancellationToken), CancellationToken.None);
+
+    private async Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupCoreAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken)
+    {
+        var operationGuid = request.OperationGuid == Guid.Empty ? request.InstallmentGuid : request.OperationGuid;
+        request = request with
+        {
+            OperationGuid = operationGuid,
+            IdempotencyKey = string.IsNullOrWhiteSpace(request.IdempotencyKey)
+                ? $"{operationGuid:D}:pickup"
+                : request.IdempotencyKey.Trim()
+        };
+        var operation = await repository.CreateOrGetAsync(CreateOperation(
+            operationGuid,
+            LocalInstallmentOperationKind.Pickup,
+            request.InstallmentGuid,
+            null,
+            request.StoreCode,
+            request.DeviceCode,
+            request.CashierId,
+            request.IdempotencyKey!,
+            JsonSerializer.Serialize(request, JsonOptions)), cancellationToken);
+
+        if (operation.Kind != LocalInstallmentOperationKind.Pickup ||
+            operation.InstallmentGuid != request.InstallmentGuid ||
+            !string.Equals(operation.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(operation.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货操作身份与本地记录不一致，保持锁定等待核对。",
+                RequiresReview: true);
+        }
+
+        if (operation.State == LocalInstallmentOperationState.Completed &&
+            !string.IsNullOrWhiteSpace(operation.ResponseJson))
+        {
+            var completed = Deserialize<InstallmentConfirmPickupResponse>(operation.ResponseJson);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                true,
+                completed,
+                ToLocalOrder(completed.Details),
+                "分期单已确认提货。");
+        }
+
+        // API 已发出或结果未知时只能由恢复流程重放同一幂等请求，普通点击不得再次 POST。
+        if (operation.State is LocalInstallmentOperationState.ApiSubmitting or LocalInstallmentOperationState.ResultUnknown)
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认结果未知，已锁定；请刷新恢复，勿重复确认。",
+                RequiresReview: true);
+        }
+
+        if (operation.State == LocalInstallmentOperationState.Prepared)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.TerminalApproved,
+                DateTimeOffset.UtcNow,
+                cancellationToken: cancellationToken);
+            operation = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        }
+
+        if (operation.State != LocalInstallmentOperationState.TerminalApproved)
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认正在恢复或已结束，请刷新核对。",
+                RequiresReview: true);
+        }
+
+        return await SubmitPickupAsync(
+            operation,
+            Deserialize<InstallmentConfirmPickupRequest>(operation.RequestJson),
+            cancellationToken);
     }
 
     public Task<InstallmentOperationResult<InstallmentCancelResponse>> ExecuteCancelAsync(
@@ -415,6 +510,12 @@ public sealed class InstallmentOperationService(
 
             if (operation.State == LocalInstallmentOperationState.Prepared)
             {
+                if (operation.Kind == LocalInstallmentOperationKind.Pickup)
+                {
+                    results.Add(await RecoverPickupAsync(operation, cancellationToken));
+                    continue;
+                }
+
                 if (operation.Kind == LocalInstallmentOperationKind.Repayment)
                 {
                     results.Add(await RecoverRepaymentAsync(operation, session, cancellationToken));
@@ -432,6 +533,7 @@ public sealed class InstallmentOperationService(
                     LocalInstallmentOperationKind.Create => await RecoverCreateAsync(operation, session, cancellationToken),
                     LocalInstallmentOperationKind.Repayment => await RecoverRepaymentAsync(operation, session, cancellationToken),
                     LocalInstallmentOperationKind.Cancel => await RecoverCancelAsync(operation, session, cancellationToken),
+                    LocalInstallmentOperationKind.Pickup => await RecoverPickupAsync(operation, cancellationToken),
                     _ => new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, "退款步骤需由取消操作处理。")
                 };
                 results.Add(result);
@@ -2011,6 +2113,35 @@ public sealed class InstallmentOperationService(
         return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, result.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown, result.Succeeded, result.Message);
     }
 
+    private async Task<InstallmentOperationRecoveryResult> RecoverPickupAsync(
+        LocalInstallmentOperation operation,
+        CancellationToken cancellationToken)
+    {
+        if (operation.State == LocalInstallmentOperationState.Prepared)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.TerminalApproved,
+                DateTimeOffset.UtcNow,
+                cancellationToken: cancellationToken);
+            operation = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        }
+
+        var request = Deserialize<InstallmentConfirmPickupRequest>(operation.RequestJson);
+        var result = await SubmitPickupAsync(
+            operation,
+            request,
+            cancellationToken,
+            allowStaleApiSubmittingClaim: operation.State == LocalInstallmentOperationState.ApiSubmitting);
+        return new InstallmentOperationRecoveryResult(
+            operation.OperationGuid,
+            operation.Kind,
+            result.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown,
+            result.Succeeded,
+            result.Message);
+    }
+
     private async Task<InstallmentOperationRecoveryResult> RecoverRepaymentAsync(LocalInstallmentOperation operation, PosSessionState session, CancellationToken cancellationToken)
     {
         var request = Deserialize<InstallmentAppendPaymentRequest>(operation.RequestJson);
@@ -2507,6 +2638,63 @@ public sealed class InstallmentOperationService(
                 }
             });
         return squarePaymentAttemptContextAccessor.Begin(context);
+    }
+
+    private async Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> SubmitPickupAsync(
+        LocalInstallmentOperation operation,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken,
+        bool allowStaleApiSubmittingClaim = false)
+    {
+        if (!await ClaimApiAsync(operation.OperationGuid, allowStaleApiSubmittingClaim, cancellationToken))
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认正在恢复或结果未知。",
+                RequiresReview: true);
+        }
+
+        try
+        {
+            var response = await apiClient.ConfirmPickupAsync(request, cancellationToken);
+            var local = ToLocalOrder(response.Details);
+            if (!await repository.CompleteWithSnapshotAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.ApiSubmitting],
+                    local,
+                    JsonSerializer.Serialize(response, JsonOptions),
+                    false,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken))
+            {
+                return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                    false,
+                    Message: "提货确认已提交，本地快照正在安全恢复。",
+                    RequiresReview: true);
+            }
+
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                true,
+                response,
+                local,
+                "分期单已确认提货。");
+        }
+        catch (OperationCanceledException)
+        {
+            await MarkApiUnknownAsync(operation.OperationGuid, "提货确认 API 调用已取消，结果未知。", CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认请求超时，结果可能已提交；已锁定，请刷新恢复，勿重复确认提货。",
+                RequiresReview: true);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await MarkApiUnknownAsync(operation.OperationGuid, exception.Message, CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认结果未知，已锁定；请刷新恢复，勿重复确认提货。",
+                RequiresReview: true);
+        }
     }
 
     private async Task<bool> RecoverSquareRefundStepsAsync(

@@ -152,6 +152,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly Dictionary<HeldOrderViewScope, IReadOnlyDictionary<Guid, LocalHeldRow>> _heldLocalRowsCache = [];
     private IReadOnlyList<SharedHeldOrderListItemDto> _heldRemoteRowsCache = [];
     private IReadOnlySet<Guid> _heldSyntheticRemoteClaimGuids = new HashSet<Guid>();
+    private readonly HashSet<Guid> _lockedInstallmentGuids = [];
+    private bool _isInstallmentRecoveryStateUnknown;
     private bool _heldRemoteCacheReady;
     private ITimer? _heldAutoRefreshTimer;
 
@@ -1572,10 +1574,19 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadInstallmentOrdersAsync(CancellationToken cancellationToken)
     {
+        _isInstallmentRecoveryStateUnknown = true;
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         var orders = await _installmentOrderService.SearchAsync(
             Session,
             NormalizeKeyword(SearchText),
             cancellationToken);
+        var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session, cancellationToken);
+        _lockedInstallmentGuids.Clear();
+        _lockedInstallmentGuids.UnionWith(lockedInstallments);
+        _isInstallmentRecoveryStateUnknown = false;
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         var from = ParseDateFrom(DateFrom);
         var to = ParseDateTo(DateTo);
         return orders
@@ -1604,7 +1615,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 InstallmentOrder: order,
                 IsInstallmentOrder: true,
                 CanContinueInstallmentPayment: order.CanAddRepayment,
-                CanConfirmInstallmentPickup: order.CanConfirmPickup,
+                CanConfirmInstallmentPickup: order.CanConfirmPickup && !_lockedInstallmentGuids.Contains(order.OrderId),
                 CustomerPhone: order.CustomerPhone,
                 DisplayCulture: CurrentDisplayCulture))
             .ToList();
@@ -1741,7 +1752,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private bool CanConfirmInstallmentPickup(HistoryOrderListItem? order)
     {
         return Session.IsOnline &&
+            !_isInstallmentRecoveryStateUnknown &&
             order?.InstallmentOrder is not null &&
+            !_lockedInstallmentGuids.Contains(order.InstallmentOrder.OrderId) &&
             order.CanConfirmInstallmentPickup;
     }
 
@@ -2446,6 +2459,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
         catch (OperationCanceledException)
         {
+            LockInstallmentPickup(orderSnapshot!.InstallmentOrder!.OrderId);
             if (ReferenceEquals(SelectedOrder, orderSnapshot))
             {
                 StatusMessage = "分期提货确认超时，结果可能已提交，请刷新后核对，勿重复操作。";
@@ -2462,6 +2476,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
 
         StatusMessage = result.Message;
+        if (result.RequiresReview)
+        {
+            // 服务层已将未知结果持久化；本页立即同步锁，防止刷新前再次提交。
+            LockInstallmentPickup(orderSnapshot!.InstallmentOrder!.OrderId);
+        }
         if (result.Succeeded)
         {
             var message = result.Message;
@@ -2471,6 +2490,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 StatusMessage = message;
             }
         }
+    }
+
+    private void LockInstallmentPickup(Guid installmentGuid)
+    {
+        _lockedInstallmentGuids.Add(installmentGuid);
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
     }
 
     private async Task ReprintSelectedAsync()

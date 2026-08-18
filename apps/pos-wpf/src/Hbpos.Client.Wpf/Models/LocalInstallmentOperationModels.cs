@@ -10,7 +10,8 @@ public enum LocalInstallmentOperationKind
     Create = 1,
     Repayment = 2,
     Cancel = 3,
-    Refund = 4
+    Refund = 4,
+    Pickup = 5
 }
 
 /// <summary>

@@ -1596,6 +1596,74 @@ public sealed class InstallmentOperationServiceTests
         }
     }
 
+    [Fact]
+    public async Task Pickup_timeout_is_locked_and_restart_replays_only_the_same_idempotent_request()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var installmentGuid = Guid.NewGuid();
+            var request = new InstallmentConfirmPickupRequest(
+                installmentGuid,
+                Session.StoreCode,
+                Session.DeviceCode,
+                Session.CashierId,
+                Session.CashierName,
+                DateTimeOffset.UtcNow,
+                OperationGuid: installmentGuid,
+                IdempotencyKey: $"{installmentGuid:D}:pickup");
+            var firstApi = new RecordingInstallmentApi
+            {
+                PickupException = new TaskCanceledException("pickup timeout")
+            };
+            var firstService = CreateService(repository, firstApi, new CountingTerminal(approve: true));
+
+            var first = await firstService.ExecutePickupAsync(Session, request);
+            var repeatedClick = await firstService.ExecutePickupAsync(Session, request);
+
+            Assert.False(first.Succeeded);
+            Assert.True(first.RequiresReview);
+            Assert.False(repeatedClick.Succeeded);
+            Assert.True(repeatedClick.RequiresReview);
+            Assert.Equal(1, firstApi.PickupCalls);
+            var unknown = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            Assert.Equal(LocalInstallmentOperationKind.Pickup, unknown.Kind);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, unknown.State);
+            Assert.Contains(installmentGuid, await firstService.GetLockedInstallmentGuidsAsync(Session));
+
+            var pickedUpAt = DateTimeOffset.UtcNow;
+            var details = CreateDetails(installmentGuid, InstallmentStatus.PickedUp) with
+            {
+                PaidAmount = 120m,
+                BalanceAmount = 0m,
+                PickupInfo = new InstallmentPickupInfoDto(pickedUpAt, Session.CashierName, null)
+            };
+            var restartedApi = new RecordingInstallmentApi
+            {
+                PickupResponse = new InstallmentConfirmPickupResponse(
+                    installmentGuid,
+                    InstallmentStatus.PickedUp,
+                    pickedUpAt,
+                    details)
+            };
+            var restartedService = CreateService(repository, restartedApi, new CountingTerminal(approve: true));
+
+            var recovery = Assert.Single(await restartedService.RecoverAsync(Session));
+
+            Assert.True(recovery.ReplayedApi);
+            Assert.Equal(1, restartedApi.PickupCalls);
+            Assert.Equal(request.OperationGuid, restartedApi.LastPickupRequest!.OperationGuid);
+            Assert.Equal(request.IdempotencyKey, restartedApi.LastPickupRequest.IdempotencyKey);
+            Assert.Equal(LocalInstallmentOperationState.Completed, (await repository.GetAsync(installmentGuid))!.State);
+            Assert.Empty(await restartedService.GetLockedInstallmentGuidsAsync(Session));
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main", "POS-01", "C001", "Alice", true, 0);
 
     private static async Task<LocalInstallmentOperationRepository> CreateRepositoryAsync(string path)
@@ -2354,10 +2422,13 @@ public sealed class InstallmentOperationServiceTests
         public InstallmentAppendPaymentResponse? AppendResponse { get; init; }
         public Exception? CancelException { get; init; }
         public InstallmentCancelResponse? CancelResponse { get; init; }
+        public Exception? PickupException { get; init; }
+        public InstallmentConfirmPickupResponse? PickupResponse { get; init; }
         public TaskCompletionSource? AppendGate { get; init; }
         public TaskCompletionSource AppendStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int AppendCalls { get; private set; }
         public int CancelCalls { get; private set; }
+        public int PickupCalls { get; private set; }
         public int CreateCancelClaimCalls { get; private set; }
         public int BeginCancelRefundCalls { get; private set; }
         public int GetCancelClaimCalls { get; private set; }
@@ -2376,6 +2447,7 @@ public sealed class InstallmentOperationServiceTests
         public InstallmentCancelClaimCreateRequest? LastCancelClaimCreateRequest { get; private set; }
         public InstallmentCancelClaimCommitRequest? LastCancelClaimCommitRequest { get; private set; }
         public InstallmentAppendPaymentRequest? LastAppendRequest { get; private set; }
+        public InstallmentConfirmPickupRequest? LastPickupRequest { get; private set; }
         private readonly Dictionary<Guid, InstallmentCancelClaimDto> _cancelClaims = [];
 
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -2390,7 +2462,17 @@ public sealed class InstallmentOperationServiceTests
             return AppendResponse ?? throw new NotSupportedException();
         }
 
-        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
+        {
+            PickupCalls++;
+            LastPickupRequest = request;
+            if (PickupException is not null)
+            {
+                return Task.FromException<InstallmentConfirmPickupResponse>(PickupException);
+            }
+
+            return Task.FromResult(PickupResponse ?? throw new NotSupportedException());
+        }
 
         public Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new InstallmentRepaymentCapabilitiesResponse(true, false, false, 120, true, false, 120));

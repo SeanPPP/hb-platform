@@ -1,5 +1,7 @@
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Constants;
+using CommunityToolkit.Mvvm.Input;
+using System.ComponentModel;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -460,6 +462,28 @@ public sealed class InstallmentCenterViewModelTests
     }
 
     [Fact]
+    public async Task ConfirmPickup_unknown_result_immediately_locks_the_selected_order()
+    {
+        var targetOrder = CreateOrder("IO-PICKUP-UNKNOWN", "李四", "0400222333", "待提货", canConfirmPickup: true);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [targetOrder],
+            ConfirmPickupResult = new InstallmentOrderActionResult(
+                false,
+                "提货确认结果未知",
+                RequiresReview: true)
+        };
+        var viewModel = new InstallmentCenterViewModel(service, CreateSession(), _ => Task.CompletedTask, () => { });
+
+        await viewModel.LoadAsync();
+        await viewModel.ConfirmPickupCommand.ExecuteAsync(null);
+
+        Assert.Equal(targetOrder.OrderId, service.LastConfirmPickupOrderId);
+        Assert.True(viewModel.IsSelectedOrderLocked);
+        Assert.False(viewModel.ConfirmPickupCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Supervisor_refund_resolution_records_reason_evidence_and_has_no_ordinary_retry_path()
     {
         var targetOrder = CreateOrder("IO-REFUND-UNKNOWN", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
@@ -651,6 +675,45 @@ public sealed class InstallmentCenterViewModelTests
     }
 
     [Fact]
+    public async Task Switching_to_order_with_pending_refund_query_immediately_clears_previous_steps()
+    {
+        var firstOrder = CreateOrder("IO-REFUND-A", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
+        var secondOrder = CreateOrder("IO-REFUND-B", "李四", "0400222333", "退款未知", canCancelWithRefund: true);
+        var firstStep = CreateRefundStep(firstOrder.OrderId, "refund-a");
+        var secondRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRequestGate = new TaskCompletionSource<IReadOnlyList<LocalInstallmentRefundStep>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeInstallmentOrderService
+        {
+            Orders = [firstOrder, secondOrder],
+            LockedInstallments = new HashSet<Guid> { firstOrder.OrderId, secondOrder.OrderId },
+            GetRefundStepsForReviewHandler = (installmentGuid, _) =>
+            {
+                if (installmentGuid == secondOrder.OrderId)
+                {
+                    secondRequestStarted.TrySetResult();
+                    return secondRequestGate.Task;
+                }
+
+                return Task.FromResult<IReadOnlyList<LocalInstallmentRefundStep>>([firstStep]);
+            }
+        };
+        var viewModel = new InstallmentCenterViewModel(service, CreateSession(), _ => Task.CompletedTask, () => { });
+
+        await viewModel.LoadAsync();
+        Assert.Same(firstStep, Assert.Single(viewModel.RefundStepsForReview));
+        Assert.True(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
+
+        viewModel.SelectedOrder = secondOrder;
+        await secondRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(viewModel.RefundStepsForReview);
+        Assert.Null(viewModel.SelectedRefundStep);
+        Assert.False(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
+        secondRequestGate.SetResult([]);
+    }
+
+    [Fact]
     public async Task Ordinary_cashier_cannot_see_or_execute_supervisor_refund_resolution()
     {
         var targetOrder = CreateOrder("IO-REFUND-DENIED", "张三", "0400111222", "退款未知", canCancelWithRefund: true);
@@ -664,6 +727,36 @@ public sealed class InstallmentCenterViewModelTests
         Assert.False(viewModel.HasRefundStepsForReview);
         Assert.False(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
         Assert.Null(service.LastSupervisorResolution);
+    }
+
+    [Theory]
+    [InlineData("repayment")]
+    [InlineData("cancel")]
+    public async Task Authorized_write_does_not_follow_selection_to_another_order(string action)
+    {
+        var firstOrder = CreateOrder("IO-AUTH-A", "张三", "0400111222", "Active", canAddRepayment: true, canCancelWithRefund: true);
+        var secondOrder = CreateOrder("IO-AUTH-B", "李四", "0400222333", "Active", canAddRepayment: true, canCancelWithRefund: true);
+        var service = new FakeInstallmentOrderService { Orders = [firstOrder, secondOrder] };
+        var authorization = new CallbackOperationAuthorizationService();
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { },
+            operationAuthorizationService: authorization);
+        await viewModel.LoadAsync();
+        authorization.BeforeReturn = () => viewModel.SelectedOrder = secondOrder;
+
+        if (action == "repayment")
+        {
+            await viewModel.AddRepaymentCommand.ExecuteAsync(null);
+            Assert.Null(service.LastRepaymentRequest);
+        }
+        else
+        {
+            await viewModel.CancelWithRefundCommand.ExecuteAsync(null);
+            Assert.Equal(Guid.Empty, service.LastCancelOrderId);
+        }
     }
 
     [Fact]
@@ -761,6 +854,8 @@ public sealed class InstallmentCenterViewModelTests
         public InstallmentOrderActionResult CancelWithRefundResult { get; init; } = new(false, "未配置");
 
         public InstallmentOrderActionResult VoidCancelResult { get; init; } = new(false, "未配置");
+
+        public InstallmentOrderActionResult ConfirmPickupResult { get; init; } = new(true, "已确认提货");
 
         public bool ThrowOnRepayment { get; init; }
 
@@ -903,8 +998,53 @@ public sealed class InstallmentCenterViewModelTests
         public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
             LastConfirmPickupOrderId = orderId;
-            return Task.FromResult(new InstallmentOrderActionResult(true, "已确认提货"));
+            return Task.FromResult(ConfirmPickupResult);
         }
+    }
+
+    private sealed class CallbackOperationAuthorizationService : IOperationAuthorizationService
+    {
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler? StatusChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public Action? BeforeReturn { get; set; }
+        public string ScannerPageId => "installment-authorization-test";
+        public bool IsPromptOpen => false;
+        public bool IsBusy => false;
+        public string PromptMessage => string.Empty;
+        public string StatusMessage => string.Empty;
+        public string PermissionCode => string.Empty;
+        public string Screen => string.Empty;
+        public string Action => string.Empty;
+        public IRelayCommand CancelCommand { get; } = new RelayCommand(() => { });
+
+        public Task<OperationAuthorizationScope?> AuthorizeAsync(
+            string permissionCode,
+            string screen,
+            string action,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            BeforeReturn?.Invoke();
+            return Task.FromResult<OperationAuthorizationScope?>(new OperationAuthorizationScope(
+                CreateCashierSession(permissionCode),
+                permissionCode,
+                screen,
+                action));
+        }
+
+        public bool ProcessScannerBarcode(string barcode) => false;
+        public void Cancel() { }
+        public void RevokeAll() { }
     }
 
     private sealed class RecordingOperationAuditLogger : IOperationAuditLogger

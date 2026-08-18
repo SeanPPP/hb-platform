@@ -1435,6 +1435,34 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Null(exception);
         Assert.Equal(order.OrderId, installmentService.LastConfirmPickupOrderId);
         Assert.Contains("结果可能已提交", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.False(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
+        await viewModel.ConfirmInstallmentPickupCommand.ExecuteAsync(row);
+        Assert.Equal(1, installmentService.ConfirmPickupCallCount);
+    }
+
+    [Fact]
+    public async Task Installment_history_restart_lock_disables_pickup_confirmation()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-LOCKED", "BBB", "0430990026", paidAmount: 55m, outstandingAmount: 0m);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LockedInstallments = new HashSet<Guid> { order.OrderId }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.False(row.CanConfirmInstallmentPickup);
+        Assert.False(viewModel.IsConfirmInstallmentPickupVisible);
+        Assert.False(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
     }
 
     [Fact]
@@ -3300,7 +3328,16 @@ public sealed class TransactionHistoryViewModelTests
 
         public Guid? LastConfirmPickupOrderId { get; private set; }
 
+        public int ConfirmPickupCallCount { get; private set; }
+
         public Exception? ConfirmPickupException { get; init; }
+
+        public InstallmentOrderActionResult? ConfirmPickupResult { get; init; }
+
+        public IReadOnlySet<Guid> LockedInstallments { get; init; } = new HashSet<Guid>();
+
+        public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(LockedInstallments);
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
@@ -3364,6 +3401,7 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
+            ConfirmPickupCallCount++;
             LastConfirmPickupOrderId = orderId;
             if (ConfirmPickupException is not null)
             {
@@ -3371,7 +3409,7 @@ public sealed class TransactionHistoryViewModelTests
             }
 
             var order = Orders.FirstOrDefault(order => order.OrderId == orderId);
-            return Task.FromResult(new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
+            return Task.FromResult(ConfirmPickupResult ?? new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
         }
     }
 

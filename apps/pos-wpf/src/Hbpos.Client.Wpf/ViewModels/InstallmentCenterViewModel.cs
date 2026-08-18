@@ -27,6 +27,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private string? _repaymentIdempotencyKey;
     private readonly HashSet<Guid> _lockedInstallmentGuids = [];
     private bool _isRecoveryStateUnknown;
+    private Guid? _refundStepsInstallmentGuid;
 
     [ObservableProperty] private PosSessionState _session;
     [ObservableProperty] private PosCartServiceSnapshot? _cartSnapshot;
@@ -152,6 +153,11 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     {
         RepaymentAmount = value?.OutstandingAmount ?? 0m;
         ResetRepaymentOperation();
+        // 切换订单时立即撤销旧退款步骤的归属，等待新订单查询完成前禁止主管操作。
+        _refundStepsInstallmentGuid = null;
+        RefundStepsForReview.Clear();
+        SelectedRefundStep = null;
+        OnPropertyChanged(nameof(HasRefundStepsForReview));
         OnPropertyChanged(nameof(SelectedOrderNumberText));
         OnPropertyChanged(nameof(SelectedOrderCustomerText));
         OnPropertyChanged(nameof(SelectedOrderOutstandingText));
@@ -299,6 +305,17 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     private async Task AddRepaymentAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || !CanAddRepayment())
+        {
+            return;
+        }
+
+        var paymentGuid = _repaymentPaymentGuid;
+        var method = RepaymentMethod;
+        var amount = RepaymentAmount;
+        var reference = RepaymentReference;
+        var voucherToken = RepaymentVoucherToken;
         using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Installments.AddRepayment, "add-repayment");
         if (permissionGrant is null)
         {
@@ -306,16 +323,28 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = permissionGrant.Activate();
 
-        if (SelectedOrder is null) return;
+        // 授权期间可能切换订单或修改补款草稿；任何漂移都必须重新发起，避免写入错误订单。
+        if (SelectedOrder?.OrderId != selectedOrder.OrderId ||
+            IsSelectedOrderLocked ||
+            !selectedOrder.CanAddRepayment ||
+            _repaymentPaymentGuid != paymentGuid ||
+            RepaymentMethod != method ||
+            RepaymentAmount != amount ||
+            !string.Equals(RepaymentReference, reference, StringComparison.Ordinal) ||
+            !string.Equals(RepaymentVoucherToken, voucherToken, StringComparison.Ordinal) ||
+            !CanAddRepayment())
+        {
+            return;
+        }
 
-        var orderId = SelectedOrder.OrderId;
+        var orderId = selectedOrder.OrderId;
         var payment = new InstallmentPaymentDraft(
-            _repaymentPaymentGuid,
-            RepaymentMethod,
-            RepaymentAmount,
-            Normalize(RepaymentReference),
-            Normalize(RepaymentVoucherToken),
-            IdempotencyKey: _repaymentIdempotencyKey ??= $"{orderId:D}:repayment:{_repaymentPaymentGuid:D}");
+            paymentGuid,
+            method,
+            amount,
+            Normalize(reference),
+            Normalize(voucherToken),
+            IdempotencyKey: _repaymentIdempotencyKey ??= $"{orderId:D}:repayment:{paymentGuid:D}");
 
         var result = await RunOrderActionAsync(
             () => _installmentOrderService.AddRepaymentAsync(new InstallmentOrderRepaymentRequest(orderId, Session, payment)),
@@ -339,6 +368,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         (RepaymentMethod != PaymentMethodKind.Voucher || (!string.IsNullOrWhiteSpace(RepaymentReference) && !string.IsNullOrWhiteSpace(RepaymentVoucherToken)));
     private async Task CancelWithRefundAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || !CanCancelWithRefund())
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "cancel-with-refund");
         if (authorization is null)
         {
@@ -346,9 +381,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = authorization.Activate();
 
-        if (SelectedOrder is not null)
+        // 授权返回后再次确认原订单仍被选中且未被恢复锁定。
+        if (SelectedOrder?.OrderId == selectedOrder.OrderId &&
+            !IsSelectedOrderLocked &&
+            selectedOrder.CanCancelWithRefund)
         {
-            var orderId = SelectedOrder.OrderId;
+            var orderId = selectedOrder.OrderId;
             await RunOrderActionAsync(
                 () => _installmentOrderService.CancelWithRefundAsync(orderId, Session),
                 OperationAuditTypes.InstallmentRepaymentCancel,
@@ -408,7 +446,14 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             !IsSelectedOrderLocked &&
             selectedOrder.CanConfirmPickup)
         {
-            await RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(selectedOrder.OrderId, Session));
+            var result = await RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(selectedOrder.OrderId, Session));
+            if (result.RequiresReview)
+            {
+                // durable operation 已落盘；同步内存锁，避免等待下一次加载期间再次点击。
+                _lockedInstallmentGuids.Add(selectedOrder.OrderId);
+                OnPropertyChanged(nameof(IsSelectedOrderLocked));
+                RaiseSelectionStateChanged();
+            }
         }
     }
 
@@ -416,15 +461,31 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     private async Task ResolveRefundBySupervisorAsync()
     {
+        var selectedOrder = SelectedOrder;
+        var selectedRefundStep = SelectedRefundStep;
+        if (selectedOrder is null ||
+            selectedRefundStep is null ||
+            _refundStepsInstallmentGuid != selectedOrder.OrderId)
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "supervisor-refund-resolution");
-        if (authorization is null || SelectedOrder is null || SelectedRefundStep is null)
+        if (authorization is null)
         {
             return;
         }
 
         using var authorizationActivation = authorization.Activate();
-        var selectedOrder = SelectedOrder;
-        var selectedRefundStep = SelectedRefundStep;
+        // 主管授权期间若选择、步骤归属或锁状态发生变化，旧步骤不得作用到新订单。
+        if (SelectedOrder?.OrderId != selectedOrder.OrderId ||
+            SelectedRefundStep?.RefundStepGuid != selectedRefundStep.RefundStepGuid ||
+            _refundStepsInstallmentGuid != selectedOrder.OrderId ||
+            !IsSelectedOrderLocked)
+        {
+            return;
+        }
+
         var authorizer = OperationAuthorizationScope.CurrentAuthorizingSession ?? Session.CashierSession;
         var decision = SupervisorRefundDecision;
         var resolution = new InstallmentRefundSupervisorResolution(
@@ -509,7 +570,13 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     }
 
     private bool CanResolveRefundBySupervisor() =>
-        !IsBusy && !IsOffline && IsRefundSupervisorAuthorized && IsSelectedOrderLocked && SelectedRefundStep is not null;
+        !IsBusy &&
+        !IsOffline &&
+        IsRefundSupervisorAuthorized &&
+        IsSelectedOrderLocked &&
+        SelectedOrder is not null &&
+        SelectedRefundStep is not null &&
+        _refundStepsInstallmentGuid == SelectedOrder.OrderId;
 
     private bool TryRequirePermission(string permissionCode)
     {
@@ -679,6 +746,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             }
 
             RefundStepsForReview.ReplaceWith(steps);
+            _refundStepsInstallmentGuid = installmentGuid;
             SelectedRefundStep = RefundStepsForReview.FirstOrDefault();
             OnPropertyChanged(nameof(HasRefundStepsForReview));
             RaiseSelectionStateChanged();
@@ -691,6 +759,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             }
 
             RefundStepsForReview.Clear();
+            _refundStepsInstallmentGuid = null;
             SelectedRefundStep = null;
             OnPropertyChanged(nameof(HasRefundStepsForReview));
             ConsoleLog.WriteError("InstallmentSupervisor", "failed to load refund review steps", null, exception);
