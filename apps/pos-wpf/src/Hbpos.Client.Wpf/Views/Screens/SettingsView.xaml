@@ -23,9 +23,11 @@
             <Setter Property="Margin" Value="0,0,0,6" />
         </Style>
 
+        <!-- 单行输入框不接管触摸平移，让设置页外层 ScrollViewer 处理纵向拖动。 -->
         <Style x:Key="SettingsFieldTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
             <Setter Property="Height" Value="42" />
             <Setter Property="FontSize" Value="13" />
+            <Setter Property="ScrollViewer.PanningMode" Value="None" />
         </Style>
 
         <Style x:Key="SettingsFieldPasswordBoxStyle" TargetType="PasswordBox">
@@ -35,6 +37,7 @@
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="ScrollViewer.PanningMode" Value="None" />
         </Style>
 
         <Style x:Key="SettingsComboBoxStyle" TargetType="ComboBox">
@@ -1465,6 +1468,7 @@
                                                  Height="86"
                                                  TextWrapping="Wrap"
                                                  AcceptsReturn="True"
+                                                 ScrollViewer.PanningMode="VerticalFirst"
                                                  VerticalScrollBarVisibility="Auto" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="2">
@@ -1479,6 +1483,7 @@
                                                  MaxLength="500"
                                                  TextWrapping="Wrap"
                                                  AcceptsReturn="True"
+                                                 ScrollViewer.PanningMode="VerticalFirst"
                                                  VerticalScrollBarVisibility="Auto" />
                                     </StackPanel>
                                 </Grid>
