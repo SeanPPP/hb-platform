@@ -888,6 +888,95 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StoreLocalSupplierInvoice_业务索引兼容迁移取消全表唯一约束()
+    {
+        var repoRoot = FindRepoRoot();
+        var context = await File.ReadAllTextAsync(Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/SqlSugarContext.cs"
+        ));
+        var service = await File.ReadAllTextAsync(Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Services/React/LocalSupplierInvoicesReactService.cs"
+        ));
+
+        Assert.DoesNotContain(
+            "CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \\\"IX_StoreLocalSupplierInvoice_Business_Unique\\\"",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "DROP INDEX [IX_StoreLocalSupplierInvoice_Business_Unique] ON [dbo].[StoreLocalSupplierInvoice]",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "DROP INDEX IF EXISTS \\\"IX_StoreLocalSupplierInvoice_Business_Unique\\\"",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "CREATE INDEX IX_StoreLocalSupplierInvoice_Store_Supplier_Invoice_NotDeleted",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "CREATE INDEX IF NOT EXISTS \\\"IX_StoreLocalSupplierInvoice_Store_Supplier_Invoice_NotDeleted\\\"",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "EnsureStoreLocalSupplierInvoiceBusinessLookupIndex();",
+            context,
+            StringComparison.Ordinal
+        );
+        Assert.True(
+            service.Split(
+                "BeginTranAsync(IsolationLevel.Serializable)",
+                StringSplitOptions.None
+            ).Length - 1 >= 2,
+            "人工创建和编辑发票都必须在 Serializable 事务内完成业务键查重。"
+        );
+        Assert.Contains(
+            "for (var attempt = 0; attempt < 2; attempt++)",
+            service,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "PostgresErrorCodes.SerializationFailure",
+            service,
+            StringComparison.Ordinal
+        );
+
+        var updateMethodStart = service.IndexOf(
+            "public async Task<ApiResponse<bool>> UpdateAsync(",
+            StringComparison.Ordinal
+        );
+        var createMethodStart = service.IndexOf(
+            "public async Task<ApiResponse<string>> CreateAsync(",
+            StringComparison.Ordinal
+        );
+        Assert.True(updateMethodStart >= 0 && createMethodStart > updateMethodStart);
+        var updateMethod = service[updateMethodStart..createMethodStart];
+        Assert.Contains(
+            "for (var attempt = 0; attempt < 2; attempt++)",
+            updateMethod,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "IsSerializationFailure(ex)",
+            updateMethod,
+            StringComparison.Ordinal
+        );
+        Assert.Contains("UPDATE_RETRY_REQUIRED", updateMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_唯一索引前先清理Wpf重复数据()
     {
         var repoRoot = FindRepoRoot();

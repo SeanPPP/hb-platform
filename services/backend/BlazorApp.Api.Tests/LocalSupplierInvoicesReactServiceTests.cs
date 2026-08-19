@@ -176,6 +176,107 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateAsync_ChangingBusinessKeyToExistingInvoice_ReturnsDuplicateWithoutChangingData()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-existing", "INV-EXISTING", new DateTime(2026, 7, 18));
+            await InsertInvoiceAsync("invoice-edit", "INV-EDIT", new DateTime(2026, 7, 19));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-edit",
+                InvoiceGUID = "invoice-edit",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateAsync(
+                "invoice-edit",
+                new UpdateInvoiceRequest
+                {
+                    InvoiceNo = " INV-EXISTING ",
+                    Remarks = "不应保存",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("DUPLICATE_INVOICE", result.ErrorCode);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == "invoice-edit");
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(x => x.DetailGUID == "detail-edit");
+            Assert.Equal("INV-EDIT", invoice.InvoiceNo);
+            Assert.Null(invoice.Remarks);
+            Assert.Equal("S01", detail.StoreCode);
+            Assert.Equal("SUP01", detail.SupplierCode);
+        }
+
+        [Fact]
+        public async Task UpdateAsync_ExistingHistoricalDuplicate_AllowsNonBusinessFieldChange()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-duplicate-1", "INV-HISTORY", new DateTime(2023, 7, 28));
+            await InsertInvoiceAsync("invoice-duplicate-2", "INV-HISTORY", new DateTime(2023, 8, 1));
+
+            var result = await CreateService().UpdateAsync(
+                "invoice-duplicate-2",
+                new UpdateInvoiceRequest { Remarks = "保留历史重复单据" }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == "invoice-duplicate-2");
+            Assert.Equal("INV-HISTORY", invoice.InvoiceNo);
+            Assert.Equal("保留历史重复单据", invoice.Remarks);
+        }
+
+        [Fact]
+        public async Task UpdateAsync_BlankInvoiceNo_ReturnsValidationErrorWithoutChangingData()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-blank-number", "INV-ORIGINAL", new DateTime(2026, 7, 19));
+
+            var result = await CreateService().UpdateAsync(
+                "invoice-blank-number",
+                new UpdateInvoiceRequest
+                {
+                    InvoiceNo = "   ",
+                    Remarks = "不应保存",
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == "invoice-blank-number");
+            Assert.Equal("INV-ORIGINAL", invoice.InvoiceNo);
+            Assert.Null(invoice.Remarks);
+        }
+
+        [Fact]
+        public async Task CreateAsync_TrimsBusinessKeyBeforeDuplicateCheckAndInsert()
+        {
+            await SeedStoreAndSupplierAsync();
+
+            var result = await CreateService().CreateAsync(
+                new CreateInvoiceRequest
+                {
+                    StoreCode = " S01 ",
+                    SupplierCode = " SUP01 ",
+                    InvoiceNo = " INV-TRIMMED ",
+                    Items = new List<PastedDetailItem>(),
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await _db.Queryable<StoreLocalSupplierInvoice>()
+                .FirstAsync(x => x.InvoiceGUID == result.Data);
+            Assert.Equal("S01", invoice.StoreCode);
+            Assert.Equal("SUP01", invoice.SupplierCode);
+            Assert.Equal("INV-TRIMMED", invoice.InvoiceNo);
+        }
+
+        [Fact]
         public async Task GetGridDataAsync_DefaultsToOrderDateDescendingAndClampsPageSizeTo20()
         {
             await SeedStoreAndSupplierAsync();
