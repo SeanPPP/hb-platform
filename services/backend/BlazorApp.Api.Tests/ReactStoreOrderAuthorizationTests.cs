@@ -1411,6 +1411,375 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSalesSinceLastArrival_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var request = new StoreOrderSalesSinceLastArrivalRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetSalesSinceLastArrivalAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>.OK(
+                    new StoreOrderSalesSinceLastArrivalResultDto()
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrival(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetSalesSinceLastArrivalAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrival_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var request = new StoreOrderSalesSinceLastArrivalRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrival(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrival_HidesSensitiveServiceException()
+    {
+        const string sentinel = "sensitive-sales-statistic-sentinel";
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetSalesSinceLastArrivalAsync(It.IsAny<StoreOrderSalesSinceLastArrivalRequestDto>()))
+            .ThrowsAsync(new InvalidOperationException(sentinel));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrival(
+            new StoreOrderSalesSinceLastArrivalRequestDto { StoreCode = "1024", ProductCode = "P001" }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain(sentinel, message, StringComparison.OrdinalIgnoreCase);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistory_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var request = new StoreOrderProductOrderHistoryRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetProductOrderHistoryAsync(request))
+            .ReturnsAsync(
+                ApiResponse<PagedListReactDto<StoreOrderProductOrderHistoryItemDto>>.OK(
+                    new PagedListReactDto<StoreOrderProductOrderHistoryItemDto>()
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductOrderHistory(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetProductOrderHistoryAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistory_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var request = new StoreOrderProductOrderHistoryRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductOrderHistory(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistory_HidesSensitiveServiceException()
+    {
+        const string sentinel = "sensitive-product-order-history-sentinel";
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetProductOrderHistoryAsync(
+                    It.IsAny<StoreOrderProductOrderHistoryRequestDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException(sentinel));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductOrderHistory(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "1024",
+                ProductCode = "P001",
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain(sentinel, message, StringComparison.OrdinalIgnoreCase);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistory_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var request = new StoreOrderProductActivityHistoryRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+            RecordType = "all",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetProductActivityHistoryAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderProductActivityHistoryResultDto>.OK(
+                    new StoreOrderProductActivityHistoryResultDto()
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductActivityHistory(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetProductActivityHistoryAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistory_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var request = new StoreOrderProductActivityHistoryRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+            RecordType = "all",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductActivityHistory(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistory_HidesSensitiveServiceException()
+    {
+        const string sentinel = "sensitive-product-activity-history-sentinel";
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetProductActivityHistoryAsync(
+                    It.IsAny<StoreOrderProductActivityHistoryRequestDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException(sentinel));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetProductActivityHistory(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "1024",
+                ProductCode = "P001",
+                RecordType = "all",
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain(sentinel, message, StringComparison.OrdinalIgnoreCase);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalSummary_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var request = new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+        {
+            StoreCode = "1024",
+            ProductCodes = new List<string> { "P001" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetSalesSinceLastArrivalSummaryAsync(request))
+            .ReturnsAsync(
+                ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>.OK(new())
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrivalSummary(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetSalesSinceLastArrivalSummaryAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalSummary_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrivalSummary(
+            new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+            {
+                StoreCode = "1024",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalSummary_HidesSensitiveServiceException()
+    {
+        const string sentinel = "sensitive-summary-sales-sentinel";
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetSalesSinceLastArrivalSummaryAsync(It.IsAny<StoreOrderSalesSinceLastArrivalSummaryRequestDto>()))
+            .ThrowsAsync(new InvalidOperationException(sentinel));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrivalSummary(
+            new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+            {
+                StoreCode = "1024",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain(sentinel, message, StringComparison.OrdinalIgnoreCase);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalSummary_超过五百商品返回400且不调用服务()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetSalesSinceLastArrivalSummary(
+            new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+            {
+                StoreCode = "1024",
+                ProductCodes = Enumerable.Range(0, 501).Select(index => $"P{index:000}").ToList(),
+            }
+        );
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task AddToCart_ForbidsWarehouseStaffLegacyManageOnScanRoute()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);

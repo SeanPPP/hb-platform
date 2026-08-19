@@ -1,0 +1,62 @@
+import { getStoreOrderProductSalesSummary } from './storeOrderService'
+
+function assertEqual<T>(actual: T, expected: T, label: string) {
+  if (actual !== expected) {
+    throw new Error(`${label}。Expected: ${String(expected)}, received: ${String(actual)}`)
+  }
+}
+
+function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
+  const actualJson = JSON.stringify(actual)
+  const expectedJson = JSON.stringify(expected)
+  if (actualJson !== expectedJson) {
+    throw new Error(`${label}。Expected: ${expectedJson}, received: ${actualJson}`)
+  }
+}
+
+const originalFetch = globalThis.fetch
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: [
+          { productCode: 'P-1', salesQuantitySinceLastArrival: 8 },
+          { productCode: 'P-2', salesQuantitySinceLastArrival: 0 },
+          { productCode: 'P-3', salesQuantitySinceLastArrival: -2 },
+          { productCode: 'P-4', salesQuantitySinceLastArrival: null },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as typeof fetch
+
+  const query = { storeCode: 'STORE-1', productCodes: ['P-1', 'P-2', 'P-3', 'P-4'] }
+  const result = await getStoreOrderProductSalesSummary(query)
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/sales-since-last-arrival/summary', 'summary route')
+  assertEqual(capturedMethod, 'POST', 'summary method')
+  assertDeepEqual(capturedBody, query, 'summary payload')
+  assertDeepEqual(
+    result,
+    [
+      { productCode: 'P-1', salesQuantitySinceLastArrival: 8 },
+      { productCode: 'P-2', salesQuantitySinceLastArrival: 0 },
+      { productCode: 'P-3', salesQuantitySinceLastArrival: -2 },
+      { productCode: 'P-4', salesQuantitySinceLastArrival: null },
+    ],
+    'summary 应保留正数、0、负数与 null',
+  )
+
+  console.log('storeOrderService.salesSummary.test: ok')
+} finally {
+  globalThis.fetch = originalFetch
+}

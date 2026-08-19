@@ -1626,6 +1626,169 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 查询商品在指定分店的仓库订货发货记录（按订单聚合并分页）。
+        /// </summary>
+        [HttpPost("product-order-history")]
+        public async Task<IActionResult> GetProductOrderHistory(
+            [FromBody] StoreOrderProductOrderHistoryRequestDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetProductOrderHistoryAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetProductOrderHistory failed storeCode={StoreCode} productCode={ProductCode}",
+                    request.StoreCode,
+                    request.ProductCode
+                );
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询分店商品的统一订货/发货历史与销售明细合并时间轴。
+        /// </summary>
+        [HttpPost("product-activity-history")]
+        public async Task<IActionResult> GetProductActivityHistory(
+            [FromBody] StoreOrderProductActivityHistoryRequestDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetProductActivityHistoryAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetProductActivityHistory failed storeCode={StoreCode} productCode={ProductCode} recordType={RecordType}",
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.RecordType
+                );
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 查询商品最近一次来货后的每日销售明细。
+        /// </summary>
+        [HttpPost("sales-since-last-arrival")]
+        public async Task<IActionResult> GetSalesSinceLastArrival(
+            [FromBody] StoreOrderSalesSinceLastArrivalRequestDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetSalesSinceLastArrivalAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetSalesSinceLastArrival failed storeCode={StoreCode} productCode={ProductCode}",
+                    request.StoreCode,
+                    request.ProductCode
+                );
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 批量查询商品最近一次来货后的销售数量。
+        /// </summary>
+        [HttpPost("sales-since-last-arrival/summary")]
+        public async Task<IActionResult> GetSalesSinceLastArrivalSummary(
+            [FromBody] StoreOrderSalesSinceLastArrivalSummaryRequestDto request
+        )
+        {
+            try
+            {
+                request.StoreCode = request.StoreCode?.Trim() ?? string.Empty;
+                request.ProductCodes = (request.ProductCodes ?? new List<string>())
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+                if (request.ProductCodes.Count > 500)
+                {
+                    return BadRequest(new { success = false, message = "商品数量不能超过500" });
+                }
+
+                var result = await _service.GetSalesSinceLastArrivalSummaryAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetSalesSinceLastArrivalSummary failed storeCode={StoreCode} requestCount={RequestCount}",
+                    request.StoreCode,
+                    request.ProductCodes?.Count ?? 0
+                );
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单列表
         /// </summary>
         [HttpPost("list")]

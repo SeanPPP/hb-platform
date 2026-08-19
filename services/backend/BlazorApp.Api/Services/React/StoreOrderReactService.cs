@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -12,6 +13,7 @@ using System.Diagnostics;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -22,6 +24,10 @@ namespace BlazorApp.Api.Services.React
         private const int HomePageWarmUpCommandTimeoutSeconds = 30;
         private const int OrderListAggregateChunkSize = 500;
         private const int ImportPriceVarianceWarehouseImportPriceBatchLimit = 500;
+        private const int SalesStatisticsMaxCutoffGroupsPerQuery = 100;
+        private const int SalesStatisticsMaxProductCodesPerCutoffGroup = 500;
+        private const int SalesStatisticsParameterBudget = 800;
+        private const int SalesStatisticsFixedParameterCount = 2;
         private static readonly string[] LocationProductLookupRoleNames = Permissions.SuperAdminRoleNames
             .Concat(Permissions.WarehouseManagerRoleNames)
             .Concat(new[] { "WarehouseStaff", "仓库员工" })
@@ -38,14 +44,106 @@ namespace BlazorApp.Api.Services.React
         private readonly IInvoiceEmailService _invoiceEmailService;
         private readonly IStoreOrderLocationProductLookupService _locationProductLookupService;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private readonly TimeProvider _timeProvider;
         private Func<ISqlSugarClient> _createHqConnection;
 
         private sealed class StoreOrderDynamicHistoryRow
         {
             public string? ProductCode { get; set; }
+            public string? OrderGUID { get; set; }
             public DateTime? OrderDate { get; set; }
+            public DateTime CreatedAt { get; set; }
             public decimal? Quantity { get; set; }
             public decimal? AllocQuantity { get; set; }
+        }
+
+        private sealed class StoreOrderProductOrderHistoryRow
+        {
+            public string? OrderGUID { get; set; }
+            public string? OrderNo { get; set; }
+            public DateTime? OrderDate { get; set; }
+            public DateTime? OutboundDate { get; set; }
+            public int? FlowStatus { get; set; }
+            public DateTime CreatedAt { get; set; }
+            public decimal? Quantity { get; set; }
+            public decimal? AllocQuantity { get; set; }
+        }
+
+        private sealed class StoreOrderProductActivityHistoryRow
+        {
+            public string RecordType { get; set; } = "order";
+            public DateTime? RecordDate { get; set; }
+            public DateTime? SortDate { get; set; }
+            public int SortType { get; set; }
+            public DateTime? CreatedAt { get; set; }
+            public string OrderGUID { get; set; } = string.Empty;
+            public string? OrderNo { get; set; }
+            public DateTime? OrderDate { get; set; }
+            public DateTime? OutboundDate { get; set; }
+            public int? FlowStatus { get; set; }
+            public decimal? Quantity { get; set; }
+            public decimal? AllocQuantity { get; set; }
+            public int? SalesQuantity { get; set; }
+            public decimal? AveragePrice { get; set; }
+            public DateTime? PeriodStartDate { get; set; }
+            public DateTime? PeriodEndDate { get; set; }
+        }
+
+        private sealed class StoreOrderSalesInterval
+        {
+            public string AnchorOrderGuid { get; init; } = string.Empty;
+            public DateTime StartDate { get; init; }
+            public DateTime EndDate { get; init; }
+        }
+
+        private sealed class StoreOrderLastArrivalRow
+        {
+            public string? ProductCode { get; set; }
+            public DateTime? OutboundDate { get; set; }
+        }
+
+        private sealed class StoreOrderProductSalesStatisticRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public int TotalQuantity { get; set; }
+        }
+
+        private sealed class StoreOrderSalesCutoffGroup
+        {
+            public DateTime ArrivalDate { get; init; }
+            public List<string> ProductCodes { get; init; } = new();
+        }
+
+        private sealed class StoreOrderSalesQuantityMapResult
+        {
+            public Dictionary<string, int> SalesQuantityMap { get; } = new(
+                StringComparer.OrdinalIgnoreCase
+            );
+            public int ArrivalRows { get; init; }
+            public int CutoffGroupCount { get; init; }
+            public int StatsQueryCount { get; init; }
+        }
+
+        private sealed class StoreOrderDailySalesStatisticRow
+        {
+            public DateTime Date { get; set; }
+            public int TotalQuantity { get; set; }
+            public decimal TotalAmount { get; set; }
+        }
+
+        private sealed class StoreOrderSalesStoreRow
+        {
+            public bool IsActive { get; set; }
+            public string? StoreCode { get; set; }
+            public string? StoreName { get; set; }
+            public string? Address { get; set; }
+            public string? TimeZoneId { get; set; }
+        }
+
+        private sealed class StoreOrderSalesContext
+        {
+            public string StoreCode { get; init; } = string.Empty;
+            public DateTime EndDate { get; init; }
         }
 
         private sealed class UnmatchedStoreOrderGroupRow
@@ -270,7 +368,8 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             IInvoiceEmailService invoiceEmailService,
             IStoreOrderLocationProductLookupService locationProductLookupService,
-            IWarehouseProductChangeHistoryService changeHistoryService
+            IWarehouseProductChangeHistoryService changeHistoryService,
+            TimeProvider? timeProvider = null
         )
         {
             _db = context.Db;
@@ -282,6 +381,7 @@ namespace BlazorApp.Api.Services.React
             _invoiceEmailService = invoiceEmailService;
             _locationProductLookupService = locationProductLookupService;
             _changeHistoryService = changeHistoryService;
+            _timeProvider = timeProvider ?? TimeProvider.System;
             _createHqConnection = () => HqSqlSugarContext.CreateConcurrentConnection(_configuration);
         }
 
@@ -4112,6 +4212,24 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
+                // IncludeSales=false 时不读取门店销售上下文，确保首屏可完全跳过来货与销量链路。
+                StoreOrderSalesContext? salesContext = null;
+                if (request.IncludeSales)
+                {
+                    try
+                    {
+                        // 门店不存在或停用会在此短路，后续不会查询来货或销售统计。
+                        salesContext = await GetActiveStoreSalesContextAsync(request.StoreCode);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "GetProductsDynamicDataAsync check store active failed; skip sales-since-last-arrival"
+                        );
+                    }
+                }
+
                 var cartSw = Stopwatch.StartNew();
                 var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 // 1. 获取购物车数量 (FlowStatus = 0)，在数据库侧聚合，避免把整车明细拉回内存。
@@ -4173,13 +4291,11 @@ namespace BlazorApp.Api.Services.React
 
                 var historySw = Stopwatch.StartNew();
                 var latestDateMap = latestOrderDates
-                    .Where(item =>
-                        !string.IsNullOrWhiteSpace(item.ProductCode) && item.LastOrderDate.HasValue
-                    )
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
                     .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(
                         group => group.Key,
-                        group => group.First().LastOrderDate!.Value,
+                        group => group.First().LastOrderDate,
                         StringComparer.OrdinalIgnoreCase
                     );
                 // 按首屏 ProductCode 一次性回查历史候选，再按 ProductCode 取最新行，避免产生 N 次 FirstAsync。
@@ -4198,29 +4314,51 @@ namespace BlazorApp.Api.Services.React
                             (d, o) =>
                                 d.ProductCode != null
                                 && productCodes.Contains(d.ProductCode)
-                                && o.OrderDate != null
                         )
-                        .OrderBy((d, o) => o.OrderDate, OrderByType.Desc)
                         .Select(
                             (d, o) =>
                                 new StoreOrderDynamicHistoryRow
                                 {
                                     ProductCode = d.ProductCode,
+                                    OrderGUID = d.OrderGUID,
                                     OrderDate = o.OrderDate,
+                                    CreatedAt = o.CreatedAt,
                                     Quantity = d.Quantity,
                                     AllocQuantity = d.AllocQuantity,
                                 }
                         )
                         .ToListAsync();
+                // 同一订单内可能存在重复商品明细，需先按订单聚合数量/配货数量，
+                // 再按 OrderDate -> CreatedAt -> OrderGUID 降序选取每个商品的最新订单，保证与历史弹窗第一行一致。
                 var historyItems = historyCandidates
                     .Where(item =>
                         !string.IsNullOrWhiteSpace(item.ProductCode)
-                        && item.OrderDate.HasValue
+                        && !string.IsNullOrWhiteSpace(item.OrderGUID)
                         && latestDateMap.TryGetValue(item.ProductCode!, out var latestDate)
-                        && item.OrderDate.Value == latestDate
+                        && item.OrderDate == latestDate
+                    )
+                    .GroupBy(item => new { item.ProductCode, item.OrderGUID })
+                    .Select(
+                        orderGroup =>
+                            new StoreOrderDynamicHistoryRow
+                            {
+                                ProductCode = orderGroup.Key.ProductCode,
+                                OrderGUID = orderGroup.Key.OrderGUID,
+                                OrderDate = orderGroup.First().OrderDate,
+                                CreatedAt = orderGroup.First().CreatedAt,
+                                Quantity = orderGroup.Sum(item => item.Quantity ?? 0m),
+                                AllocQuantity = orderGroup.Sum(item => item.AllocQuantity ?? 0m),
+                            }
                     )
                     .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
+                    .Select(
+                        productGroup =>
+                            productGroup
+                                .OrderByDescending(item => item.OrderDate)
+                                .ThenByDescending(item => item.CreatedAt)
+                                .ThenByDescending(item => item.OrderGUID)
+                                .First()
+                    )
                     .ToList();
                 historySw.Stop();
 
@@ -4264,9 +4402,41 @@ namespace BlazorApp.Api.Services.React
                     result.Add(dto);
                 }
 
+                var salesSw = Stopwatch.StartNew();
+                var salesRows = 0;
+                if (request.IncludeSales && salesContext != null)
+                {
+                    try
+                    {
+                        var salesQuantityResult = await GetSalesQuantitySinceLastArrivalMapAsync(
+                            salesContext.StoreCode,
+                            productCodes,
+                            salesContext.EndDate
+                        );
+                        salesRows = salesQuantityResult.SalesQuantityMap.Count;
+                        foreach (var dto in result)
+                        {
+                            dto.SalesQuantitySinceLastArrival = salesQuantityResult.SalesQuantityMap.TryGetValue(
+                                dto.ProductCode,
+                                out var salesQuantity
+                            )
+                                ? salesQuantity
+                                : null;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "GetProductsDynamicDataAsync fill sales-since-last-arrival failed; new field remains null"
+                        );
+                    }
+                }
+                salesSw.Stop();
+
                 totalSw.Stop();
                 _logger.LogInformation(
-                    "[shop-home-perf] stage=dynamic-data.service.done storeCode={StoreCode} requestCount={RequestCount} cartRows={CartRows} latestDateRows={LatestDateRows} historyRows={HistoryRows} cartMs={CartMs} latestDateMs={LatestDateMs} historyMs={HistoryMs} totalMs={TotalMs}",
+                    "[shop-home-perf] stage=dynamic-data.service.done storeCode={StoreCode} requestCount={RequestCount} cartRows={CartRows} latestDateRows={LatestDateRows} historyRows={HistoryRows} cartMs={CartMs} latestDateMs={LatestDateMs} historyMs={HistoryMs} salesContextLoaded={SalesContextLoaded} salesRows={SalesRows} salesMs={SalesMs} totalMs={TotalMs}",
                     request.StoreCode,
                     productCodes.Count,
                     cartItems.Count,
@@ -4275,6 +4445,9 @@ namespace BlazorApp.Api.Services.React
                     cartSw.ElapsedMilliseconds,
                     latestDateSw.ElapsedMilliseconds,
                     historySw.ElapsedMilliseconds,
+                    salesContext != null,
+                    salesRows,
+                    salesSw.ElapsedMilliseconds,
                     totalSw.ElapsedMilliseconds
                 );
 
@@ -4293,6 +4466,1113 @@ namespace BlazorApp.Api.Services.React
                     Message = ex.Message,
                 };
             }
+        }
+
+        public async Task<ApiResponse<PagedListReactDto<StoreOrderProductOrderHistoryItemDto>>> GetProductOrderHistoryAsync(
+            StoreOrderProductOrderHistoryRequestDto request
+        )
+        {
+            var storeCode = request.StoreCode?.Trim() ?? string.Empty;
+            var productCode = request.ProductCode?.Trim() ?? string.Empty;
+            var pageNumber = request.PageNumber < 1 ? 1 : request.PageNumber;
+            var pageSize = request.PageSize < 1 ? 20 : Math.Min(request.PageSize, 50);
+
+            var result = new PagedListReactDto<StoreOrderProductOrderHistoryItemDto>
+            {
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                Items = new List<StoreOrderProductOrderHistoryItemDto>(),
+            };
+
+            if (string.IsNullOrWhiteSpace(storeCode) || string.IsNullOrWhiteSpace(productCode))
+            {
+                return new ApiResponse<PagedListReactDto<StoreOrderProductOrderHistoryItemDto>>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+
+            try
+            {
+                // 同订单同商品重复明细必须在数据库侧聚合，避免翻页时把整单明细拉回内存再求和。
+                RefAsync<int> totalCount = 0;
+                var rows = await _db.Queryable<WareHouseOrderDetails>()
+                    .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                    .Where(
+                        (d, o) =>
+                            o.StoreCode == storeCode
+                            && d.ProductCode == productCode
+                            && o.FlowStatus > 0
+                            && !o.IsDeleted
+                            && !d.IsDeleted
+                    )
+                    .GroupBy(
+                        (d, o) =>
+                            new
+                            {
+                                d.OrderGUID,
+                                o.OrderNo,
+                                o.OrderDate,
+                                o.OutboundDate,
+                                o.FlowStatus,
+                                o.CreatedAt,
+                            }
+                    )
+                    .Select(
+                        (d, o) =>
+                            new StoreOrderProductOrderHistoryRow
+                            {
+                                OrderGUID = d.OrderGUID,
+                                OrderNo = o.OrderNo,
+                                OrderDate = o.OrderDate,
+                                OutboundDate = o.OutboundDate,
+                                FlowStatus = o.FlowStatus,
+                                CreatedAt = o.CreatedAt,
+                                Quantity = SqlFunc.AggregateSum(d.Quantity),
+                                AllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity),
+                            }
+                    )
+                    .MergeTable()
+                    .OrderBy(item => item.OrderDate, OrderByType.Desc)
+                    .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                    .OrderBy(item => item.OrderGUID, OrderByType.Desc)
+                    .ToPageListAsync(pageNumber, pageSize, totalCount);
+
+                result.Total = totalCount.Value;
+                result.Items = rows
+                    .Select(
+                        row =>
+                            new StoreOrderProductOrderHistoryItemDto
+                            {
+                                OrderGUID = row.OrderGUID ?? string.Empty,
+                                OrderNo = row.OrderNo,
+                                OrderDate = row.OrderDate,
+                                OutboundDate = row.OutboundDate,
+                                FlowStatus = row.FlowStatus,
+                                Quantity = row.Quantity,
+                                AllocQuantity = row.AllocQuantity,
+                            }
+                    )
+                    .ToList();
+
+                return new ApiResponse<PagedListReactDto<StoreOrderProductOrderHistoryItemDto>>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetProductOrderHistoryAsync failed storeCode={StoreCode} productCode={ProductCode}",
+                    storeCode,
+                    productCode
+                );
+                // 数据库异常交由控制器统一映射为通用安全响应，避免把底层诊断信息返回给客户端。
+                throw;
+            }
+        }
+
+        public async Task<ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>> GetSalesSinceLastArrivalAsync(
+            StoreOrderSalesSinceLastArrivalRequestDto request
+        )
+        {
+            try
+            {
+                var storeCode = request.StoreCode?.Trim() ?? string.Empty;
+                var productCode = request.ProductCode?.Trim() ?? string.Empty;
+                var pageNumber = request.PageNumber < 1 ? 1 : request.PageNumber;
+                const int pageSize = 20;
+                var result = new StoreOrderSalesSinceLastArrivalResultDto
+                {
+                    StoreCode = storeCode,
+                    ProductCode = productCode,
+                    PageNumber = pageNumber,
+                    PageSize = pageSize,
+                    Items = new List<StoreOrderSalesSinceLastArrivalItemDto>(),
+                };
+
+                if (string.IsNullOrWhiteSpace(storeCode) || string.IsNullOrWhiteSpace(productCode))
+                {
+                    result.IsAvailable = false;
+                    return new ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>
+                    {
+                        Success = true,
+                        Data = result,
+                    };
+                }
+
+                var salesContext = await GetActiveStoreSalesContextAsync(storeCode);
+                if (salesContext == null)
+                {
+                    result.IsAvailable = false;
+                    return new ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>
+                    {
+                        Success = true,
+                        Data = result,
+                    };
+                }
+
+                result.EndDate = salesContext.EndDate;
+
+                var lastArrivalDate = await GetLatestArrivalDateAsync(
+                    salesContext.StoreCode,
+                    productCode,
+                    salesContext.EndDate
+                );
+                result.LastArrivalDate = lastArrivalDate;
+                if (!lastArrivalDate.HasValue)
+                {
+                    result.IsAvailable = false;
+                    return new ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>
+                    {
+                        Success = true,
+                        Data = result,
+                    };
+                }
+
+                result.IsAvailable = true;
+                var startDate = lastArrivalDate.Value.Date;
+                result.TotalSalesQuantity = await _db
+                    .Queryable<ProductStoreDailySalesStatistic>()
+                    .Where(item =>
+                        item.BranchCode == salesContext.StoreCode
+                        && item.ProductCode == productCode
+                        && item.Date >= startDate
+                        && item.Date <= salesContext.EndDate
+                    )
+                    .SumAsync(item => item.TotalQuantity);
+
+                RefAsync<int> totalCount = 0;
+                var dailyRows = await _db
+                    .Queryable<ProductStoreDailySalesStatistic>()
+                    .Where(item =>
+                        item.BranchCode == salesContext.StoreCode
+                        && item.ProductCode == productCode
+                        && item.Date >= startDate
+                        && item.Date <= salesContext.EndDate
+                    )
+                    .GroupBy(item => item.Date)
+                    .Select(item => new StoreOrderDailySalesStatisticRow
+                    {
+                        Date = item.Date,
+                        TotalQuantity = SqlFunc.AggregateSum(item.TotalQuantity),
+                        TotalAmount = SqlFunc.AggregateSum(item.TotalAmount),
+                    })
+                    .OrderBy(item => item.Date, OrderByType.Desc)
+                    .ToPageListAsync(pageNumber, pageSize, totalCount);
+
+                result.TotalCount = totalCount.Value;
+                result.Items = dailyRows
+                    .Select(item => new StoreOrderSalesSinceLastArrivalItemDto
+                    {
+                        Date = item.Date,
+                        SalesQuantity = item.TotalQuantity,
+                        AveragePrice =
+                            item.TotalQuantity == 0
+                                ? (decimal?)null
+                                : item.TotalAmount / item.TotalQuantity,
+                    })
+                    .ToList();
+
+                return new ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetSalesSinceLastArrivalAsync failed");
+                // 数据库异常必须交由控制器统一映射，避免把底层诊断信息返回给客户端。
+                throw;
+            }
+        }
+
+        public async Task<ApiResponse<StoreOrderProductActivityHistoryResultDto>> GetProductActivityHistoryAsync(
+            StoreOrderProductActivityHistoryRequestDto request
+        )
+        {
+            var storeCode = request.StoreCode?.Trim() ?? string.Empty;
+            var productCode = request.ProductCode?.Trim() ?? string.Empty;
+            var pageNumber = request.PageNumber < 1 ? 1 : request.PageNumber;
+            var pageSize = request.PageSize < 1 ? 30 : Math.Min(request.PageSize, 50);
+            var recordType = NormalizeProductActivityRecordType(request.RecordType);
+
+            var result = new StoreOrderProductActivityHistoryResultDto
+            {
+                StoreCode = storeCode,
+                ProductCode = productCode,
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                Items = new List<StoreOrderProductActivityHistoryItemDto>(),
+            };
+
+            if (string.IsNullOrWhiteSpace(storeCode) || string.IsNullOrWhiteSpace(productCode))
+            {
+                return new ApiResponse<StoreOrderProductActivityHistoryResultDto>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+
+            try
+            {
+                var salesContext = await GetActiveStoreSalesContextAsync(storeCode);
+                var endDate = salesContext?.EndDate.Date ?? _timeProvider.GetUtcNow().UtcDateTime.Date;
+                if (salesContext != null)
+                {
+                    result.EndDate = endDate;
+                    result.LastArrivalDate = await GetLatestArrivalDateAsync(
+                        salesContext.StoreCode,
+                        productCode,
+                        endDate
+                    );
+                }
+
+                // 进货时间轴只保留门店当天往前 12 个月内、按出库时间倒序的最近 6 个已完成订单。
+                // 仅把这 6 个边界行读入内存用于生成最多 6 个区间；历史订单和销量仍由数据库分页。
+                var historyStartDate = endDate.AddMonths(-12);
+                var historyEndExclusive = endDate.AddDays(1);
+                var selectedOrders = await BuildAggregatedProductOrderHistoryQuery(storeCode, productCode)
+                    .Where(item =>
+                        item.FlowStatus == 2
+                        && item.OutboundDate != null
+                        && item.OutboundDate >= historyStartDate
+                        && item.OutboundDate < historyEndExclusive
+                    )
+                    .OrderBy(item => item.OutboundDate, OrderByType.Desc)
+                    .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                    .OrderBy(item => item.OrderGUID, OrderByType.Desc)
+                    .Take(6)
+                    .ToListAsync();
+
+                if (selectedOrders.Count > 0)
+                {
+                    result.LatestOrderQuantity = selectedOrders[0].Quantity;
+                    result.LatestAllocQuantity = selectedOrders[0].AllocQuantity;
+                }
+
+                if (salesContext != null && result.LastArrivalDate.HasValue)
+                {
+                    var startDate = result.LastArrivalDate.Value.Date;
+                    result.TotalSalesQuantity = await GetTotalSalesQuantityAsync(
+                        salesContext.StoreCode,
+                        productCode,
+                        startDate,
+                        endDate
+                    );
+                }
+
+                var validArrivalGroups = selectedOrders
+                    .Where(item => (item.AllocQuantity ?? 0) > 0 && item.OutboundDate.HasValue)
+                    .GroupBy(item => item.OutboundDate!.Value.Date)
+                    .OrderBy(group => group.Key)
+                    .ToList();
+                var intervals = new List<StoreOrderSalesInterval>(validArrivalGroups.Count);
+                for (var index = 0; index < validArrivalGroups.Count; index++)
+                {
+                    var group = validArrivalGroups[index];
+                    intervals.Add(new StoreOrderSalesInterval
+                    {
+                        AnchorOrderGuid = group.First().OrderGUID ?? string.Empty,
+                        StartDate = group.Key,
+                        EndDate = index + 1 < validArrivalGroups.Count
+                            ? validArrivalGroups[index + 1].Key.AddDays(-1)
+                            : endDate,
+                    });
+                }
+
+                var activityQueries = new List<ISugarQueryable<StoreOrderProductActivityHistoryRow>>();
+                if (recordType != "sales" && selectedOrders.Count > 0)
+                {
+                    var selectedOrderGuids = selectedOrders
+                        .Select(item => item.OrderGUID ?? string.Empty)
+                        .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                        .ToList();
+                    var orderActivityQuery = BuildAggregatedProductOrderHistoryQuery(storeCode, productCode)
+                        .Where(item =>
+                            selectedOrderGuids.Contains(item.OrderGUID!)
+                            && item.FlowStatus == 2
+                            && item.OutboundDate != null
+                            && item.OutboundDate >= historyStartDate
+                            && item.OutboundDate < historyEndExclusive
+                        )
+                        .Select(item => new StoreOrderProductActivityHistoryRow
+                        {
+                            RecordType = "order",
+                            RecordDate = item.OrderDate,
+                            SortDate = item.OutboundDate,
+                            SortType = 1,
+                            CreatedAt = item.CreatedAt,
+                            OrderGUID = item.OrderGUID ?? string.Empty,
+                            OrderNo = item.OrderNo,
+                            OrderDate = item.OrderDate,
+                            OutboundDate = item.OutboundDate,
+                            FlowStatus = item.FlowStatus,
+                            Quantity = item.Quantity,
+                            AllocQuantity = item.AllocQuantity,
+                            SalesQuantity = null,
+                            AveragePrice = null,
+                            PeriodStartDate = null,
+                            PeriodEndDate = null,
+                        });
+                    activityQueries.Add(orderActivityQuery);
+                }
+
+                if (recordType != "order" && salesContext != null && intervals.Count > 0)
+                {
+                    var dailySalesQuery = BuildDailySalesQuery(
+                            salesContext.StoreCode,
+                            productCode,
+                            intervals[0].StartDate,
+                            endDate
+                        )
+                        .Select(item => new StoreOrderProductActivityHistoryRow
+                        {
+                            RecordType = "sales",
+                            RecordDate = item.Date,
+                            SortDate = item.Date,
+                            SortType = 0,
+                            CreatedAt = null,
+                            OrderGUID = string.Empty,
+                            OrderNo = null,
+                            OrderDate = null,
+                            OutboundDate = null,
+                            FlowStatus = null,
+                            Quantity = null,
+                            AllocQuantity = null,
+                            SalesQuantity = item.TotalQuantity,
+                            AveragePrice = item.TotalQuantity == 0
+                                ? (decimal?)null
+                                : item.TotalAmount / item.TotalQuantity,
+                            PeriodStartDate = null,
+                            PeriodEndDate = null,
+                        });
+                    activityQueries.Add(dailySalesQuery);
+
+                    foreach (var interval in intervals)
+                    {
+                        var intervalStart = interval.StartDate;
+                        var intervalEnd = interval.EndDate;
+                        var anchorOrderGuid = interval.AnchorOrderGuid;
+                        var subtotalQuery = _db
+                            .Queryable<WareHouseOrder>()
+                            .LeftJoin<ProductStoreDailySalesStatistic>((order, statistic) =>
+                                statistic.BranchCode == salesContext.StoreCode
+                                && statistic.ProductCode == productCode
+                                && statistic.Date >= intervalStart
+                                && statistic.Date <= intervalEnd
+                            )
+                            .Where((order, statistic) => order.OrderGUID == anchorOrderGuid)
+                            .GroupBy((order, statistic) => order.OrderGUID)
+                            .Select((order, statistic) => new StoreOrderProductActivityHistoryRow
+                            {
+                                RecordType = "salesSubtotal",
+                                RecordDate = intervalEnd,
+                                // 使用当日最大时间保证同日小计稳定排在订单和每日销量之前。
+                                SortDate = intervalEnd.AddDays(1).AddTicks(-1),
+                                SortType = 2,
+                                CreatedAt = null,
+                                OrderGUID = string.Empty,
+                                OrderNo = null,
+                                OrderDate = null,
+                                OutboundDate = null,
+                                FlowStatus = null,
+                                Quantity = null,
+                                AllocQuantity = null,
+                                SalesQuantity = SqlFunc.IsNull(
+                                    SqlFunc.AggregateSum(statistic.TotalQuantity),
+                                    0
+                                ),
+                                AveragePrice = SqlFunc.IsNull(
+                                        SqlFunc.AggregateSum(statistic.TotalQuantity),
+                                        0
+                                    ) == 0
+                                    ? (decimal?)null
+                                    : SqlFunc.IsNull(
+                                            SqlFunc.AggregateSum(statistic.TotalAmount),
+                                            0m
+                                        )
+                                        / SqlFunc.IsNull(
+                                            SqlFunc.AggregateSum(statistic.TotalQuantity),
+                                            0
+                                        ),
+                                PeriodStartDate = intervalStart,
+                                PeriodEndDate = intervalEnd,
+                            });
+                        activityQueries.Add(subtotalQuery);
+                    }
+                }
+
+                List<StoreOrderProductActivityHistoryRow> rows;
+                if (activityQueries.Count == 0)
+                {
+                    rows = new List<StoreOrderProductActivityHistoryRow>();
+                    result.Total = 0;
+                }
+                else
+                {
+                    var mergedQuery = activityQueries.Count == 1
+                        ? activityQueries[0].MergeTable()
+                        : _db.UnionAll(activityQueries.ToArray()).MergeTable();
+                    result.Total = await mergedQuery.CountAsync();
+                    var requestedSkip = (long)(pageNumber - 1) * pageSize;
+                    if (requestedSkip >= result.Total || requestedSkip >= int.MaxValue)
+                    {
+                        rows = new List<StoreOrderProductActivityHistoryRow>();
+                    }
+                    else
+                    {
+                        rows = await mergedQuery
+                            .OrderBy(item => item.SortDate, OrderByType.Desc)
+                            .OrderBy(item => item.SortType, OrderByType.Desc)
+                            .OrderBy(item => item.OrderDate, OrderByType.Desc)
+                            .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                            .OrderBy(item => item.OrderGUID, OrderByType.Desc)
+                            .Skip((int)requestedSkip)
+                            .Take(pageSize)
+                            .ToListAsync();
+                    }
+                }
+
+                result.Items = rows.Select(ToActivityItem).ToList();
+
+                return new ApiResponse<StoreOrderProductActivityHistoryResultDto>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetProductActivityHistoryAsync failed storeCode={StoreCode} productCode={ProductCode} recordType={RecordType}",
+                    storeCode,
+                    productCode,
+                    recordType
+                );
+                // 数据库异常交由控制器统一映射为通用安全响应，避免把底层诊断信息返回给客户端。
+                throw;
+            }
+        }
+
+        private ISugarQueryable<StoreOrderProductOrderHistoryRow> BuildAggregatedProductOrderHistoryQuery(
+            string storeCode,
+            string productCode
+        )
+        {
+            // 与 GetProductOrderHistoryAsync 保持同一数据库侧聚合口径：同订单同商品重复明细求和、过滤当前店和商品、
+            // FlowStatus>0、软删除排除；调用方按场景显式追加 OrderDate/CreatedAt/OrderGUID 排序、分页或限量。
+            return _db
+                .Queryable<WareHouseOrderDetails>()
+                .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                .Where(
+                    (d, o) =>
+                        o.StoreCode == storeCode
+                        && d.ProductCode == productCode
+                        && o.FlowStatus > 0
+                        && !o.IsDeleted
+                        && !d.IsDeleted
+                )
+                .GroupBy(
+                    (d, o) =>
+                        new
+                        {
+                            d.OrderGUID,
+                            o.OrderNo,
+                            o.OrderDate,
+                            o.OutboundDate,
+                            o.FlowStatus,
+                            o.CreatedAt,
+                        }
+                )
+                .Select(
+                    (d, o) =>
+                        new StoreOrderProductOrderHistoryRow
+                        {
+                            OrderGUID = d.OrderGUID,
+                            OrderNo = o.OrderNo,
+                            OrderDate = o.OrderDate,
+                            OutboundDate = o.OutboundDate,
+                            FlowStatus = o.FlowStatus,
+                            CreatedAt = o.CreatedAt,
+                            Quantity = SqlFunc.AggregateSum(d.Quantity),
+                            AllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity),
+                        }
+                )
+                .MergeTable();
+        }
+
+        private ISugarQueryable<StoreOrderDailySalesStatisticRow> BuildDailySalesQuery(
+            string storeCode,
+            string productCode,
+            DateTime startDate,
+            DateTime endDate
+        )
+        {
+            return _db
+                .Queryable<ProductStoreDailySalesStatistic>()
+                .Where(item =>
+                    item.BranchCode == storeCode
+                    && item.ProductCode == productCode
+                    && item.Date >= startDate
+                    && item.Date <= endDate
+                )
+                .GroupBy(item => item.Date)
+                .Select(item => new StoreOrderDailySalesStatisticRow
+                {
+                    Date = item.Date,
+                    TotalQuantity = SqlFunc.AggregateSum(item.TotalQuantity),
+                    TotalAmount = SqlFunc.AggregateSum(item.TotalAmount),
+                })
+                .MergeTable();
+        }
+
+        private async Task<int> GetTotalSalesQuantityAsync(
+            string storeCode,
+            string productCode,
+            DateTime startDate,
+            DateTime endDate
+        )
+        {
+            return await _db
+                .Queryable<ProductStoreDailySalesStatistic>()
+                .Where(item =>
+                    item.BranchCode == storeCode
+                    && item.ProductCode == productCode
+                    && item.Date >= startDate
+                    && item.Date <= endDate
+                )
+                .SumAsync(item => item.TotalQuantity);
+        }
+
+        private static StoreOrderProductActivityHistoryRow ToOrderActivityRow(
+            StoreOrderProductOrderHistoryRow row
+        )
+        {
+            return new StoreOrderProductActivityHistoryRow
+            {
+                RecordType = "order",
+                RecordDate = row.OrderDate?.Date,
+                // OrderDate 为空的订单返回 null 并置底，空日期组再按 CreatedAt/GUID 倒序。
+                SortDate = row.OrderDate,
+                SortType = 1,
+                CreatedAt = row.CreatedAt,
+                OrderGUID = row.OrderGUID ?? string.Empty,
+                OrderNo = row.OrderNo,
+                OrderDate = row.OrderDate,
+                OutboundDate = row.OutboundDate,
+                FlowStatus = row.FlowStatus,
+                Quantity = row.Quantity,
+                AllocQuantity = row.AllocQuantity,
+            };
+        }
+
+        private static StoreOrderProductActivityHistoryRow ToSalesActivityRow(
+            StoreOrderDailySalesStatisticRow row
+        )
+        {
+            return new StoreOrderProductActivityHistoryRow
+            {
+                RecordType = "sales",
+                RecordDate = row.Date.Date,
+                SortDate = row.Date,
+                SortType = 0,
+                CreatedAt = null,
+                OrderGUID = string.Empty,
+                SalesQuantity = row.TotalQuantity,
+                AveragePrice =
+                    row.TotalQuantity == 0
+                        ? (decimal?)null
+                        : row.TotalAmount / row.TotalQuantity,
+            };
+        }
+
+        private static StoreOrderProductActivityHistoryItemDto ToActivityItem(
+            StoreOrderProductActivityHistoryRow row
+        )
+        {
+            return new StoreOrderProductActivityHistoryItemDto
+            {
+                RecordType = row.RecordType,
+                RecordDate = row.RecordDate?.Date,
+                OrderGUID = row.RecordType == "order" ? row.OrderGUID : null,
+                OrderNo = row.RecordType == "order" ? row.OrderNo : null,
+                OrderDate = row.RecordType == "order" ? row.OrderDate : null,
+                OutboundDate = row.RecordType == "order" ? row.OutboundDate : null,
+                FlowStatus = row.RecordType == "order" ? row.FlowStatus : null,
+                Quantity = row.RecordType == "order" ? row.Quantity : null,
+                AllocQuantity = row.RecordType == "order" ? row.AllocQuantity : null,
+                SalesQuantity = row.RecordType != "order" ? row.SalesQuantity : null,
+                AveragePrice = row.RecordType != "order" ? row.AveragePrice : null,
+                PeriodStartDate = row.RecordType == "salesSubtotal" ? row.PeriodStartDate : null,
+                PeriodEndDate = row.RecordType == "salesSubtotal" ? row.PeriodEndDate : null,
+            };
+        }
+
+        private static string NormalizeProductActivityRecordType(string? recordType)
+        {
+            return recordType?.Trim().ToLowerInvariant() switch
+            {
+                "order" => "order",
+                "sales" => "sales",
+                _ => "all",
+            };
+        }
+
+        public async Task<ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>> GetSalesSinceLastArrivalSummaryAsync(
+            StoreOrderSalesSinceLastArrivalSummaryRequestDto request
+        )
+        {
+            try
+            {
+                var productCodes = (request.ProductCodes ?? new List<string>())
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (productCodes.Count > SalesStatisticsMaxProductCodesPerCutoffGroup)
+                {
+                    return new ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>
+                    {
+                        Success = false,
+                        Message = "商品数量不能超过500",
+                    };
+                }
+
+                var result = productCodes
+                    .Select(productCode => new StoreOrderSalesSinceLastArrivalSummaryItemDto
+                    {
+                        ProductCode = productCode,
+                    })
+                    .ToList();
+                if (result.Count == 0)
+                {
+                    return ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>.OK(result);
+                }
+
+                // 门店不可用时只完成启用状态查询，所有请求商品均明确返回 null。
+                var salesContext = await GetActiveStoreSalesContextAsync(request.StoreCode);
+                if (salesContext == null)
+                {
+                    return ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>.OK(result);
+                }
+
+                var salesQuantityResult = await GetSalesQuantitySinceLastArrivalMapAsync(
+                    salesContext.StoreCode,
+                    productCodes,
+                    salesContext.EndDate
+                );
+                foreach (var item in result)
+                {
+                    item.SalesQuantitySinceLastArrival = salesQuantityResult.SalesQuantityMap.TryGetValue(
+                        item.ProductCode,
+                        out var salesQuantity
+                    )
+                        ? salesQuantity
+                        : null;
+                }
+
+                return ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "GetSalesSinceLastArrivalSummaryAsync failed storeCode={StoreCode} requestCount={RequestCount}",
+                    request.StoreCode,
+                    request.ProductCodes?.Count ?? 0
+                );
+                // 控制器统一返回通用 500，日志保留内部异常供诊断。
+                throw;
+            }
+        }
+
+        private async Task<StoreOrderSalesContext?> GetActiveStoreSalesContextAsync(string storeCode)
+        {
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return null;
+            }
+
+            var normalizedStoreCode = storeCode.Trim();
+            // 门店状态与时区资料必须一次读取，停用门店在此短路，后续不会查询来货或销售统计。
+            var store = await _db
+                .Queryable<Store>()
+                .Where(item => item.StoreCode == normalizedStoreCode && !item.IsDeleted)
+                .Select(item => new StoreOrderSalesStoreRow
+                {
+                    IsActive = item.IsActive,
+                    StoreCode = item.StoreCode,
+                    StoreName = item.StoreName,
+                    Address = item.Address,
+                    TimeZoneId = item.TimeZoneId,
+                })
+                .FirstAsync();
+            if (store?.IsActive != true)
+            {
+                return null;
+            }
+
+            var timeZoneId = ResolveStoreTimeZoneForSales(store);
+            var timeZone = ResolveTimeZoneInfo(timeZoneId);
+            return new StoreOrderSalesContext
+            {
+                StoreCode = store.StoreCode?.Trim() ?? normalizedStoreCode,
+                EndDate = TimeZoneInfo.ConvertTimeFromUtc(_timeProvider.GetUtcNow().UtcDateTime, timeZone)
+                    .Date,
+            };
+        }
+
+        private string ResolveStoreTimeZoneForSales(StoreOrderSalesStoreRow store)
+        {
+            if (!string.IsNullOrWhiteSpace(store.TimeZoneId))
+            {
+                if (StoreTimeZonePolicy.TryNormalize(store.TimeZoneId, out var configuredTimeZone)
+                    && !string.IsNullOrWhiteSpace(configuredTimeZone))
+                {
+                    return configuredTimeZone;
+                }
+
+                _logger.LogWarning(
+                    "门店 {StoreCode} 配置了不支持的销售统计时区 {TimeZoneId}，将按门店资料回退推导",
+                    store.StoreCode,
+                    store.TimeZoneId
+                );
+            }
+
+            var postcode = PublicHolidaySyncHelper.ExtractPostcodeFromAddress(store.Address);
+            var jurisdiction = PublicHolidaySyncHelper.ResolveJurisdictionFromPostcode(postcode);
+            if (jurisdiction == "QLD")
+            {
+                return StoreTimeZonePolicy.Brisbane;
+            }
+
+            if (jurisdiction == "NSW")
+            {
+                return StoreTimeZonePolicy.Sydney;
+            }
+
+            // 公共假期 helper 目前只识别 NSW/QLD；销售自然日还需覆盖 VIC 邮编。
+            if (
+                int.TryParse(postcode, out var postcodeValue)
+                && (
+                    (postcodeValue >= 3000 && postcodeValue <= 3999)
+                    || (postcodeValue >= 8000 && postcodeValue <= 8999)
+                )
+            )
+            {
+                return StoreTimeZonePolicy.Melbourne;
+            }
+
+            // Sales 文本回退只接受完整别名或完整城市/州 token，避免 Bridgewater、Victoria Park 被短子串误判。
+            if (
+                ContainsWholeToken(
+                    store.StoreCode,
+                    "BRI",
+                    "BRISBANE",
+                    "QLD",
+                    "QUEENSLAND"
+                )
+                || ContainsWholeToken(
+                    $"{store.StoreName} {store.Address}",
+                    "BRISBANE",
+                    "QLD",
+                    "QUEENSLAND"
+                )
+            )
+            {
+                return StoreTimeZonePolicy.Brisbane;
+            }
+
+            var storeDetails = $"{store.StoreName} {store.Address}";
+            if (
+                ContainsWholeToken(store.StoreCode, "MEL", "MELBOURNE", "VIC", "VICTORIA")
+                || ContainsWholeToken(storeDetails, "MELBOURNE", "VIC")
+                || (
+                    ContainsWholeToken(storeDetails, "VICTORIA")
+                    && !ContainsWholeToken(
+                        storeDetails,
+                        "NSW",
+                        "NEW SOUTH WALES",
+                        "QLD",
+                        "QUEENSLAND",
+                        "SA",
+                        "SOUTH AUSTRALIA",
+                        "WA",
+                        "WESTERN AUSTRALIA",
+                        "TAS",
+                        "TASMANIA",
+                        "NT",
+                        "NORTHERN TERRITORY",
+                        "ACT"
+                    )
+                )
+            )
+            {
+                return StoreTimeZonePolicy.Melbourne;
+            }
+
+            // 与考勤链路一致：未识别门店统一按 Sydney 计算自然日。
+            return StoreTimeZonePolicy.Sydney;
+        }
+
+        private static bool ContainsWholeToken(string? text, params string[] candidates)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            return candidates.Any(candidate =>
+                Regex.IsMatch(
+                    text,
+                    $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(candidate)}(?![\p{{L}}\p{{N}}])",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+                )
+            );
+        }
+
+        private static TimeZoneInfo ResolveTimeZoneInfo(string timeZoneId)
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(StoreTimeZonePolicy.Sydney);
+            }
+            catch (InvalidTimeZoneException)
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(StoreTimeZonePolicy.Sydney);
+            }
+        }
+
+        private async Task<DateTime?> GetLatestArrivalDateAsync(
+            string storeCode,
+            string productCode,
+            DateTime endDate
+        )
+        {
+            // 使用分店当地自然日的排他上界，既排除未来出库，也保持 OutboundDate 条件可索引。
+            var exclusiveEndDate = endDate.Date.AddDays(1);
+            var row = await _db
+                .Queryable<WareHouseOrderDetails>()
+                .InnerJoin<WareHouseOrder>((detail, order) => detail.OrderGUID == order.OrderGUID)
+                .Where((detail, order) =>
+                    order.StoreCode == storeCode
+                    && order.FlowStatus > 0
+                    && !order.IsDeleted
+                    && !detail.IsDeleted
+                    && order.OutboundDate != null
+                    && order.OutboundDate < exclusiveEndDate
+                    && detail.AllocQuantity > 0
+                    && detail.ProductCode == productCode
+                )
+                .OrderBy((detail, order) => order.OutboundDate, OrderByType.Desc)
+                .Select((detail, order) => new StoreOrderLastArrivalRow
+                {
+                    ProductCode = detail.ProductCode,
+                    OutboundDate = order.OutboundDate,
+                })
+                .FirstAsync();
+            return row?.OutboundDate;
+        }
+
+        private async Task<StoreOrderSalesQuantityMapResult> GetSalesQuantitySinceLastArrivalMapAsync(
+            string storeCode,
+            List<string> productCodes,
+            DateTime endDate
+        )
+        {
+            var salesSw = Stopwatch.StartNew();
+            var arrivalRowCount = 0;
+            var cutoffGroupCount = 0;
+            var statsQueryCount = 0;
+            var salesRows = 0;
+            try
+            {
+                var normalizedProductCodes = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (normalizedProductCodes.Count == 0)
+                {
+                    return new StoreOrderSalesQuantityMapResult();
+                }
+
+                // 批量卡片与摘要共用同一分店自然日上界，未来出库不会影响最近来货。
+                var exclusiveEndDate = endDate.Date.AddDays(1);
+                var arrivalRows = await _db
+                    .Queryable<WareHouseOrderDetails>()
+                    .InnerJoin<WareHouseOrder>((detail, order) => detail.OrderGUID == order.OrderGUID)
+                    .Where((detail, order) =>
+                        order.StoreCode == storeCode
+                        && order.FlowStatus > 0
+                        && !order.IsDeleted
+                        && !detail.IsDeleted
+                        && order.OutboundDate != null
+                        && order.OutboundDate < exclusiveEndDate
+                        && detail.AllocQuantity > 0
+                        && detail.ProductCode != null
+                        && normalizedProductCodes.Contains(detail.ProductCode)
+                    )
+                    .GroupBy((detail, order) => detail.ProductCode)
+                    .Select((detail, order) => new StoreOrderLastArrivalRow
+                    {
+                        ProductCode = detail.ProductCode,
+                        OutboundDate = SqlFunc.AggregateMax(order.OutboundDate),
+                    })
+                    .ToListAsync();
+                arrivalRowCount = arrivalRows.Count;
+
+                var arrivalDateMap = arrivalRows
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.ProductCode) && item.OutboundDate.HasValue
+                    )
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().OutboundDate!.Value.Date,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                if (arrivalDateMap.Count == 0)
+                {
+                    return new StoreOrderSalesQuantityMapResult { ArrivalRows = arrivalRowCount };
+                }
+
+                // 每个 OR 分支绑定同一来货日的商品，确保旧商品不会放大其他商品的统计范围。
+                var cutoffGroups = arrivalDateMap
+                    .GroupBy(item => item.Value)
+                    .OrderBy(group => group.Key)
+                    .SelectMany(group =>
+                        group
+                            .Select(item => item.Key)
+                            .Chunk(SalesStatisticsMaxProductCodesPerCutoffGroup)
+                            .Select(codes => new StoreOrderSalesCutoffGroup
+                            {
+                                ArrivalDate = group.Key,
+                                ProductCodes = codes.ToList(),
+                            })
+                    )
+                    .ToList();
+                cutoffGroupCount = cutoffGroups.Count;
+                var statisticRows = new List<StoreOrderProductSalesStatisticRow>();
+                foreach (var queryGroups in PackSalesStatisticCutoffGroups(cutoffGroups))
+                {
+                    var expressionable = Expressionable.Create<ProductStoreDailySalesStatistic>();
+                    foreach (var queryGroup in queryGroups)
+                    {
+                        var groupCodes = queryGroup.ProductCodes;
+                        var arrivalDate = queryGroup.ArrivalDate;
+                        expressionable = expressionable.Or(item =>
+                            groupCodes.Contains(item.ProductCode) && item.Date >= arrivalDate
+                        );
+                    }
+
+                    statsQueryCount++;
+                    // 外层条件稳定命中复合索引，内层 Expressionable 生成每组精确的 ProductCode + Date 下界。
+                    var queryRows = await _db
+                        .Queryable<ProductStoreDailySalesStatistic>()
+                        .Where(item => item.BranchCode == storeCode && item.Date <= endDate)
+                        .Where(expressionable.ToExpression())
+                        .GroupBy(item => item.ProductCode)
+                        .Select(item => new StoreOrderProductSalesStatisticRow
+                        {
+                            ProductCode = item.ProductCode,
+                            TotalQuantity = SqlFunc.AggregateSum(item.TotalQuantity),
+                        })
+                        .ToListAsync();
+                    statisticRows.AddRange(queryRows);
+                }
+
+                var statisticQuantityMap = statisticRows
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .GroupBy(item => item.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.Sum(item => item.TotalQuantity),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                var mapResult = new StoreOrderSalesQuantityMapResult
+                {
+                    ArrivalRows = arrivalRowCount,
+                    CutoffGroupCount = cutoffGroupCount,
+                    StatsQueryCount = statsQueryCount,
+                };
+                // 有有效来货但无统计行的商品回填 0；无来货商品不在字典中，调用方保持 null。
+                foreach (var pair in arrivalDateMap)
+                {
+                    mapResult.SalesQuantityMap[pair.Key] = statisticQuantityMap.TryGetValue(
+                        pair.Key,
+                        out var salesQuantity
+                    )
+                        ? salesQuantity
+                        : 0;
+                }
+
+                salesRows = mapResult.SalesQuantityMap.Count;
+                return mapResult;
+            }
+            finally
+            {
+                salesSw.Stop();
+                _logger.LogInformation(
+                    "[shop-home-perf] stage=sales-since-last-arrival.map requestCount={RequestCount} arrivalRows={ArrivalRows} cutoffGroupCount={CutoffGroupCount} statsQueryCount={StatsQueryCount} salesRows={SalesRows} salesMs={SalesMs}",
+                    productCodes.Count,
+                    arrivalRowCount,
+                    cutoffGroupCount,
+                    statsQueryCount,
+                    salesRows,
+                    salesSw.ElapsedMilliseconds
+                );
+            }
+        }
+
+        private static List<List<StoreOrderSalesCutoffGroup>> PackSalesStatisticCutoffGroups(
+            List<StoreOrderSalesCutoffGroup> cutoffGroups
+        )
+        {
+            var batches = new List<List<StoreOrderSalesCutoffGroup>>();
+            var currentBatch = new List<StoreOrderSalesCutoffGroup>();
+            var currentProductCount = 0;
+            foreach (var cutoffGroup in cutoffGroups)
+            {
+                var nextProductCount = currentProductCount + cutoffGroup.ProductCodes.Count;
+                var nextGroupCount = currentBatch.Count + 1;
+                // 限制每条 SQL 的日期分支和绑定参数，避免 500 个不同日期退化为超长 OR 表达式。
+                var exceedsParameterBudget = nextProductCount
+                    + nextGroupCount
+                    + SalesStatisticsFixedParameterCount
+                    > SalesStatisticsParameterBudget;
+                if (
+                    currentBatch.Count > 0
+                    && (nextGroupCount > SalesStatisticsMaxCutoffGroupsPerQuery || exceedsParameterBudget)
+                )
+                {
+                    batches.Add(currentBatch);
+                    currentBatch = new List<StoreOrderSalesCutoffGroup>();
+                    currentProductCount = 0;
+                }
+
+                currentBatch.Add(cutoffGroup);
+                currentProductCount += cutoffGroup.ProductCodes.Count;
+            }
+
+            if (currentBatch.Count > 0)
+            {
+                batches.Add(currentBatch);
+            }
+
+            return batches;
         }
 
         public async Task<PagedListReactDto<StoreOrderListItemDto>> GetOrderListAsync(

@@ -686,6 +686,11 @@ namespace BlazorApp.Shared.DTOs
     [Required]
     public string StoreCode { get; set; } = string.Empty;
     public List<string> ProductCodes { get; set; } = new();
+
+    /// <summary>
+    /// 是否包含最近来货后的销量；默认保持旧调用的完整动态数据行为。
+    /// </summary>
+    public bool IncludeSales { get; set; } = true;
   }
 
   /// <summary>
@@ -714,6 +719,168 @@ namespace BlazorApp.Shared.DTOs
     /// 当前购物车数量
     /// </summary>
     public decimal CartQuantity { get; set; }
+
+    /// <summary>
+    /// 最近来货后的销售数量；分店不存在、停用或没有可用来货日期时为 null。
+    /// </summary>
+    public int? SalesQuantitySinceLastArrival { get; set; }
+  }
+
+  /// <summary>
+  /// 商品仓库订货发货记录请求。
+  /// </summary>
+  public class StoreOrderProductOrderHistoryRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+  }
+
+  /// <summary>
+  /// 商品仓库订货发货记录行（按订单聚合，同订单重复商品行已汇总）。
+  /// </summary>
+  public class StoreOrderProductOrderHistoryItemDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public DateTime? OutboundDate { get; set; }
+    public int? FlowStatus { get; set; }
+    public decimal? Quantity { get; set; }
+    public decimal? AllocQuantity { get; set; }
+  }
+
+  /// <summary>
+  /// 查询最近来货后销售明细请求。
+  /// </summary>
+  public class StoreOrderSalesSinceLastArrivalRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+  }
+
+  /// <summary>
+  /// 最近来货后销售明细行。
+  /// </summary>
+  public class StoreOrderSalesSinceLastArrivalItemDto
+  {
+    public DateTime Date { get; set; }
+    public int SalesQuantity { get; set; }
+    public decimal? AveragePrice { get; set; }
+  }
+
+  /// <summary>
+  /// 最近来货后销售查询结果。
+  /// </summary>
+  public class StoreOrderSalesSinceLastArrivalResultDto
+  {
+    public string StoreCode { get; set; } = string.Empty;
+    public string ProductCode { get; set; } = string.Empty;
+    public bool IsAvailable { get; set; }
+    public DateTime? LastArrivalDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public int TotalSalesQuantity { get; set; }
+    public int TotalCount { get; set; }
+    public int PageNumber { get; set; }
+    public int PageSize { get; set; }
+    public List<StoreOrderSalesSinceLastArrivalItemDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 批量查询商品最近一次来货后的销售数量请求。
+  /// </summary>
+  public class StoreOrderSalesSinceLastArrivalSummaryRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+    public List<string> ProductCodes { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 批量查询商品最近一次来货后的销售数量结果。
+  /// </summary>
+  public class StoreOrderSalesSinceLastArrivalSummaryItemDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public int? SalesQuantitySinceLastArrival { get; set; }
+  }
+
+  /// <summary>
+  /// 商品统一订货/发货历史与销售明细合并时间轴请求。
+  /// </summary>
+  public class StoreOrderProductActivityHistoryRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 30;
+
+    /// <summary>
+    /// all / order / sales；非法值按 all 处理。
+    /// </summary>
+    public string RecordType { get; set; } = "all";
+  }
+
+  /// <summary>
+  /// 商品统一时间轴行：订单行为空销售字段，销售行为空订单字段。
+  /// </summary>
+  public class StoreOrderProductActivityHistoryItemDto
+  {
+    /// <summary>
+    /// "order"、"sales" 或 "salesSubtotal"。
+    /// </summary>
+    public string RecordType { get; set; } = "order";
+
+    /// <summary>
+    /// 统一时间轴日期；订单使用 OrderDate（为空返回 null 并置底），销售使用统计日期。
+    /// </summary>
+    public DateTime? RecordDate { get; set; }
+
+    public string? OrderGUID { get; set; }
+    public string? OrderNo { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public DateTime? OutboundDate { get; set; }
+    public int? FlowStatus { get; set; }
+    public decimal? Quantity { get; set; }
+    public decimal? AllocQuantity { get; set; }
+
+    public int? SalesQuantity { get; set; }
+    public decimal? AveragePrice { get; set; }
+    public DateTime? PeriodStartDate { get; set; }
+    public DateTime? PeriodEndDate { get; set; }
+  }
+
+  /// <summary>
+  /// 商品统一订货/发货历史与销售明细合并时间轴结果。
+  /// </summary>
+  public class StoreOrderProductActivityHistoryResultDto
+  {
+    public string StoreCode { get; set; } = string.Empty;
+    public string ProductCode { get; set; } = string.Empty;
+    public DateTime? LastArrivalDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public decimal? LatestOrderQuantity { get; set; }
+    public decimal? LatestAllocQuantity { get; set; }
+    public int TotalSalesQuantity { get; set; }
+    public int Total { get; set; }
+    public int PageNumber { get; set; }
+    public int PageSize { get; set; }
+    public List<StoreOrderProductActivityHistoryItemDto> Items { get; set; } = new();
   }
 
   /// <summary>

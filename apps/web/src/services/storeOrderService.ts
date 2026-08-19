@@ -47,10 +47,17 @@ import type {
   StoreOrderListResult,
   StoreOrderScanLookupResult,
   StoreOrderDynamicData,
+  StoreOrderDynamicDataRequest,
   StoreOrderPasteTargetField,
   StoreOrderProductItem,
   StoreOrderProductListResult,
   StoreOrderProductQuery,
+  StoreOrderProductActivityHistoryItem,
+  StoreOrderProductActivityHistoryQuery,
+  StoreOrderProductActivityHistoryResult,
+  StoreOrderProductActivityRecordType,
+  StoreOrderProductSalesSummaryItem,
+  StoreOrderProductSalesSummaryQuery,
   StoreOrderStatusUpdatePayload,
   UnmatchedStoreOrderGroup,
   SendStoreOrderInvoiceEmailPayload,
@@ -131,6 +138,80 @@ function normalizeProductPagedList(payload: unknown): StoreOrderProductListResul
   }
 }
 
+function normalizeStoreOrderProductActivityHistoryResult(
+  payload: unknown,
+  query: StoreOrderProductActivityHistoryQuery,
+): StoreOrderProductActivityHistoryResult {
+  const result = unwrapEnvelope<{
+    items?: Array<Record<string, unknown>>
+    total?: number | string
+    pageNumber?: number | string
+    pageSize?: number | string
+    lastArrivalDate?: string | null
+    endDate?: string | null
+    latestOrderQuantity?: number | string
+    latestAllocQuantity?: number | string
+    totalSalesQuantity?: number | string
+  }>(payload)
+
+  const items = Array.isArray(result?.items)
+    ? result.items
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+        .map((item): StoreOrderProductActivityHistoryItem => {
+          const recordType: StoreOrderProductActivityRecordType =
+            item.recordType === 'salesSubtotal'
+              ? 'salesSubtotal'
+              : item.recordType === 'sales'
+                ? 'sales'
+                : 'order'
+          const rawFlowStatus =
+            typeof item.flowStatus === 'number'
+              ? item.flowStatus
+              : typeof item.flowStatus === 'string' && item.flowStatus.trim()
+                ? Number(item.flowStatus)
+                : undefined
+
+          return {
+            recordType,
+            recordDate: typeof item.recordDate === 'string' ? item.recordDate : undefined,
+            periodStartDate:
+              typeof item.periodStartDate === 'string' ? item.periodStartDate : undefined,
+            periodEndDate:
+              typeof item.periodEndDate === 'string' ? item.periodEndDate : undefined,
+            orderGUID: typeof item.orderGUID === 'string' ? item.orderGUID : undefined,
+            orderNo: typeof item.orderNo === 'string' && item.orderNo.trim() ? item.orderNo : undefined,
+            orderDate: typeof item.orderDate === 'string' ? item.orderDate : undefined,
+            outboundDate: typeof item.outboundDate === 'string' ? item.outboundDate : undefined,
+            flowStatus:
+              typeof rawFlowStatus === 'number' && Number.isFinite(rawFlowStatus)
+                ? rawFlowStatus
+                : undefined,
+            quantity: readOptionalFiniteNumber(item.quantity),
+            allocQuantity: readOptionalFiniteNumber(item.allocQuantity),
+            salesQuantity: readOptionalFiniteNumber(item.salesQuantity),
+            averagePrice:
+              item.averagePrice === null
+                ? null
+                : typeof item.averagePrice === 'number'
+                  ? item.averagePrice
+                  : undefined,
+          }
+        })
+    : []
+
+  return {
+    items,
+    total: readFiniteNumber(result?.total, 0),
+    pageNumber: readFiniteNumber(result?.pageNumber, query.pageNumber || 1),
+    pageSize: readFiniteNumber(result?.pageSize, query.pageSize || 30),
+    lastArrivalDate: typeof result?.lastArrivalDate === 'string' ? result.lastArrivalDate : null,
+    endDate: typeof result?.endDate === 'string' ? result.endDate : null,
+    latestOrderQuantity: readFiniteNumber(result?.latestOrderQuantity, 0),
+    latestAllocQuantity: readFiniteNumber(result?.latestAllocQuantity, 0),
+    totalSalesQuantity: readFiniteNumber(result?.totalSalesQuantity, 0),
+  }
+}
+
 function readFiniteNumber(value: unknown, fallback = 0) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value
@@ -142,6 +223,19 @@ function readFiniteNumber(value: unknown, fallback = 0) {
   }
 
   return fallback
+}
+
+function readOptionalFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+
+  return undefined
 }
 
 function normalizeImportPriceVarianceSummary(payload: unknown): StoreOrderImportPriceVarianceSummary {
@@ -716,10 +810,7 @@ export async function lookupStoreOrderProductsByBarcode(barcode: string, signal?
   } satisfies StoreOrderScanLookupResult
 }
 
-export async function getStoreOrderProductsDynamicData(payload: {
-  storeCode: string
-  productCodes: string[]
-}) {
+export async function getStoreOrderProductsDynamicData(payload: StoreOrderDynamicDataRequest) {
   const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/dynamic-data`, {
     method: 'POST',
     data: payload,
@@ -727,6 +818,52 @@ export async function getStoreOrderProductsDynamicData(payload: {
 
   const result = normalizeResult<StoreOrderDynamicData[] | null>(response)
   return Array.isArray(result) ? result : []
+}
+
+export async function getStoreOrderProductSalesSummary(query: StoreOrderProductSalesSummaryQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/sales-since-last-arrival/summary`,
+    {
+      method: 'POST',
+      data: query,
+    },
+  )
+  const result = normalizeResult<unknown>(response)
+
+  if (!Array.isArray(result)) {
+    return []
+  }
+
+  return result.reduce<StoreOrderProductSalesSummaryItem[]>((items, item) => {
+    if (!isRecord(item) || typeof item.productCode !== 'string') {
+      return items
+    }
+
+    const salesQuantity = item.salesQuantitySinceLastArrival
+    items.push({
+      productCode: item.productCode,
+      // 0 与负数是有效业务值；只有缺失或非法值归一为隐藏所用的 null。
+      salesQuantitySinceLastArrival:
+        typeof salesQuantity === 'number' || salesQuantity === null ? salesQuantity : null,
+    })
+    return items
+  }, [])
+}
+
+export async function getStoreOrderProductActivityHistory(
+  query: StoreOrderProductActivityHistoryQuery,
+  signal?: AbortSignal,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/product-activity-history`,
+    {
+      method: 'POST',
+      data: query,
+      signal,
+    },
+  )
+
+  return normalizeStoreOrderProductActivityHistoryResult(response, query)
 }
 
 export async function getActiveStoreOrderCart(storeCode: string) {

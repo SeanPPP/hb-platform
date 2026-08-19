@@ -3,10 +3,12 @@ import {
   DeleteOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Image, InputNumber, Space, Tooltip, Typography } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { Badge, Button, Card, Image, InputNumber, Tooltip, Typography } from 'antd'
+import { memo, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../../../types/storeOrder'
 import { PRODUCT_GRADE_CONFIG } from '../../../types/productGrade'
+import { formatOrderHistoryQuantity } from '../orderHistoryQuantity'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -18,11 +20,12 @@ interface ProductCardProps {
   onAddToCart: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
   onQuantityChange: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
   onRemoveFromCart?: (product: StoreOrderProductItem) => Promise<void> | void
+  onActivityClick?: (product: StoreOrderProductItem) => void
   loading?: boolean
   removing?: boolean
 }
 
-export default function ProductCard({
+function ProductCard({
   product,
   dynamicData,
   categoryPath,
@@ -30,9 +33,11 @@ export default function ProductCard({
   onAddToCart,
   onQuantityChange,
   onRemoveFromCart,
+  onActivityClick,
   loading,
   removing = false,
 }: ProductCardProps) {
+  const { t } = useTranslation()
   const stepQuantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
   const cartQuantity = dynamicData?.cartQuantity ?? 0
   const [quantity, setQuantity] = useState<number>(0)
@@ -45,6 +50,17 @@ export default function ProductCard({
     ? (PRODUCT_GRADE_CONFIG[product.grade as keyof typeof PRODUCT_GRADE_CONFIG]?.color || '#999')
     : undefined
   const canClickCategoryPath = Boolean(categoryPath && onCategoryPathClick)
+  // Sales 只在后端返回数字时显示，0 与负数也显示；null/undefined 隐藏入口。
+  const salesQuantity = dynamicData?.salesQuantitySinceLastArrival
+  const hasSalesQuantity = typeof salesQuantity === 'number'
+  const lastOrderDate = dynamicData?.lastOrderDate
+  const hasLastOrder = Boolean(lastOrderDate)
+    || dynamicData?.lastQuantity != null
+    || dynamicData?.lastAllocQuantity != null
+  const lastQuantity = dynamicData?.lastQuantity ?? 0
+  const lastAllocQuantity = dynamicData?.lastAllocQuantity ?? 0
+  const formattedLastQuantity = formatOrderHistoryQuantity(lastQuantity)
+  const formattedLastAllocQuantity = formatOrderHistoryQuantity(lastAllocQuantity)
 
   useEffect(() => {
     setQuantity(cartQuantity)
@@ -101,6 +117,10 @@ export default function ProductCard({
     }
 
     onCategoryPathClick(product)
+  }
+
+  const handleOpenActivity = () => {
+    onActivityClick?.(product)
   }
 
   return (
@@ -278,28 +298,51 @@ export default function ProductCard({
                 </Tooltip>
               ) : null}
 
-              {dynamicData?.lastOrderDate ? (
-                <div className="shop-product-last-order">
-                  <Space direction="vertical" size={0}>
+              {(hasLastOrder || hasSalesQuantity) ? (
+                <div
+                  className="shop-product-last-order shop-product-activity-entry"
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleOpenActivity}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      handleOpenActivity()
+                    }
+                  }}
+                  aria-label={t('shop.productActivityHistory.entryAria', {
+                    order: formattedLastQuantity,
+                    send: formattedLastAllocQuantity,
+                    sales: salesQuantity ?? 0,
+                  })}
+                  title={t('shop.productActivityHistory.entryTitle')}
+                >
+                  {hasLastOrder ? (
                     <Text type="warning" style={{ fontSize: 12 }}>
-                      <ClockCircleOutlined /> Last Order:{' '}
-                      {new Date(dynamicData.lastOrderDate).toLocaleDateString()}
+                      <ClockCircleOutlined /> {t('shop.productActivityHistory.lastOrder')}:{' '}
+                      {lastOrderDate ? new Date(lastOrderDate).toLocaleDateString() : '—'}
                     </Text>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      Order{' '}
-                      <Text style={{ color: (dynamicData.lastQuantity || 0) === 0 ? '#f5222d' : undefined }}>
-                        {dynamicData.lastQuantity?.toFixed(0) || 0}
-                      </Text>{' '}
-                      / Send{' '}
-                      <Text
-                        style={{
-                          color: (dynamicData.lastAllocQuantity || 0) === 0 ? '#f5222d' : '#52c41a',
-                        }}
-                      >
-                        {dynamicData.lastAllocQuantity?.toFixed(0) || 0}
-                      </Text>
-                    </Text>
-                  </Space>
+                  ) : null}
+                  <div className="shop-product-sales-row">
+                    {hasLastOrder ? (
+                      <span className="shop-product-activity-order-send">
+                        {t('shop.productActivityHistory.orderLabel')}{' '}
+                        <span style={{ color: lastQuantity === 0 ? '#f5222d' : '#fa8c16' }}>
+                          {formattedLastQuantity}
+                        </span>{' '}
+                        / {t('shop.productActivityHistory.sendLabel')}{' '}
+                        <span style={{ color: lastAllocQuantity === 0 ? '#f5222d' : '#52c41a' }}>
+                          {formattedLastAllocQuantity}
+                        </span>
+                      </span>
+                    ) : null}
+                    {hasSalesQuantity ? (
+                      <span className="shop-product-activity-sales">
+                        {t('shop.productActivityHistory.salesLabel')}{' '}
+                        <span style={{ color: '#1677ff' }}>{salesQuantity}</span>
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
 
@@ -322,3 +365,5 @@ export default function ProductCard({
     </div>
   )
 }
+
+export default memo(ProductCard)

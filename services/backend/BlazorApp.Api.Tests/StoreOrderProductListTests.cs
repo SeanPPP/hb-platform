@@ -5,6 +5,7 @@ using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -55,6 +56,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             typeof(HBLocalSupplier),
             typeof(WareHouseOrder),
             typeof(WareHouseOrderDetails),
+            typeof(ProductStoreDailySalesStatistic),
             typeof(Store),
             typeof(DomesticProduct),
             typeof(ChinaSupplier),
@@ -3124,6 +3126,111 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetProductsDynamicDataAsync_同一订单多个商品应分别汇总最近数量()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-MULTI-PRODUCT",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 6)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-MULTI-PRODUCT",
+            "P001",
+            quantity: 2m,
+            allocQuantity: 1m
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-MULTI-PRODUCT",
+            "P002",
+            quantity: 9m,
+            allocQuantity: 8m
+        );
+
+        var result = await CreateService().GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001", "P002" },
+                IncludeSales = false,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Collection(
+            result.Data!,
+            first =>
+            {
+                Assert.Equal("P001", first.ProductCode);
+                Assert.Equal(2m, first.LastQuantity);
+                Assert.Equal(1m, first.LastAllocQuantity);
+            },
+            second =>
+            {
+                Assert.Equal("P002", second.ProductCode);
+                Assert.Equal(9m, second.LastQuantity);
+                Assert.Equal(8m, second.LastAllocQuantity);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_空订货日期仍按创建时间选择并与历史首行一致()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-NULL-DATE-OLD",
+            flowStatus: 1,
+            createdAt: new DateTime(2026, 6, 1),
+            forceNullOrderDate: true
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-NULL-DATE-NEW",
+            flowStatus: 1,
+            insertStore: false,
+            createdAt: new DateTime(2026, 6, 2),
+            forceNullOrderDate: true
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-NULL-DATE-OLD",
+            "P001",
+            quantity: 2m,
+            allocQuantity: 1m
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-NULL-DATE-NEW",
+            "P001",
+            quantity: 4.5m,
+            allocQuantity: 3.25m
+        );
+
+        var card = await CreateService().GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+                IncludeSales = false,
+            }
+        );
+        var cardItem = Assert.Single(card.Data!);
+
+        var history = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+        var firstHistory = history.Data!.Items.First();
+
+        Assert.Null(cardItem.LastOrderDate);
+        Assert.Equal("ORDER-NULL-DATE-NEW", firstHistory.OrderGUID);
+        Assert.Null(firstHistory.OrderDate);
+        Assert.Equal(firstHistory.Quantity, cardItem.LastQuantity);
+        Assert.Equal(firstHistory.AllocQuantity, cardItem.LastAllocQuantity);
+    }
+
+    [Fact]
     public async Task GetProductsDynamicDataAsync_最近订单跨度大时不应回查宽日期窗口()
     {
         await SeedStoreOrderAsync(
@@ -3170,6 +3277,2265 @@ public sealed class StoreOrderProductListTests : IDisposable
                 log.Contains(">=", StringComparison.Ordinal)
                 && log.Contains("OrderDate", StringComparison.OrdinalIgnoreCase)
         );
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistoryAsync_按OrderDate_CreatedAt_OrderGUID降序分页()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-HIST-A",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 1),
+            createdAt: new DateTime(2026, 6, 1, 10, 0, 0)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-HIST-A", "P001", quantity: 1m, allocQuantity: 1m);
+        await SeedStoreOrderAsync(
+            "ORDER-HIST-B",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 3),
+            createdAt: new DateTime(2026, 6, 1, 10, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-HIST-B", "P001", quantity: 2m, allocQuantity: 2m);
+        await SeedStoreOrderAsync(
+            "ORDER-HIST-C",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 2),
+            createdAt: new DateTime(2026, 6, 1, 10, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-HIST-C", "P001", quantity: 3m, allocQuantity: 3m);
+
+        var page1 = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 2,
+            }
+        );
+
+        Assert.True(page1.Success);
+        Assert.NotNull(page1.Data);
+        Assert.Equal(3, page1.Data.Total);
+        Assert.Equal(1, page1.Data.PageNumber);
+        Assert.Equal(2, page1.Data.PageSize);
+        Assert.Collection(
+            page1.Data.Items,
+            item => Assert.Equal("ORDER-HIST-B", item.OrderGUID),
+            item => Assert.Equal("ORDER-HIST-C", item.OrderGUID)
+        );
+
+        var page2 = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 2,
+                PageSize = 2,
+            }
+        );
+
+        Assert.True(page2.Success);
+        Assert.NotNull(page2.Data);
+        Assert.Equal(3, page2.Data.Total);
+        var last = Assert.Single(page2.Data.Items);
+        Assert.Equal("ORDER-HIST-A", last.OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistoryAsync_相同OrderDate按CreatedAt和OrderGUID降序()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-TIE-X",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 1),
+            createdAt: new DateTime(2026, 6, 1, 10, 0, 0)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-TIE-X", "P001", quantity: 1m, allocQuantity: 1m);
+        await SeedStoreOrderAsync(
+            "ORDER-TIE-Y",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 1),
+            createdAt: new DateTime(2026, 6, 2, 10, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-TIE-Y", "P001", quantity: 2m, allocQuantity: 2m);
+        await SeedStoreOrderAsync(
+            "ORDER-TIE-Z",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 1),
+            createdAt: new DateTime(2026, 6, 2, 10, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-TIE-Z", "P001", quantity: 3m, allocQuantity: 3m);
+
+        var result = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Collection(
+            result.Data.Items,
+            item => Assert.Equal("ORDER-TIE-Z", item.OrderGUID),
+            item => Assert.Equal("ORDER-TIE-Y", item.OrderGUID),
+            item => Assert.Equal("ORDER-TIE-X", item.OrderGUID)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistoryAsync_同一订单重复商品明细数据库侧汇总数量与配货数量()
+    {
+        await SeedStoreOrderAsync("ORDER-DUP", flowStatus: 1, orderDate: new DateTime(2026, 6, 1));
+        await SeedOrderDetailAsync("ORDER-DUP-1", "ORDER-DUP", "P001", quantity: 3m, allocQuantity: 1m);
+        await SeedOrderDetailAsync("ORDER-DUP-2", "ORDER-DUP", "P001", quantity: 4m, allocQuantity: 2m);
+
+        var result = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.Total);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal("ORDER-DUP", item.OrderGUID);
+        Assert.Equal(7m, item.Quantity);
+        Assert.Equal(3m, item.AllocQuantity);
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("SUM", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistoryAsync_仅返回当前分店商品记录()
+    {
+        await SeedStoreOrderAsync("ORDER-S001", flowStatus: 1, storeCode: "S001");
+        await SeedOrderDetailAsync("ORDER-S001-1", "ORDER-S001", "P001", quantity: 1m, allocQuantity: 1m, storeCode: "S001");
+        await SeedStoreOrderAsync("ORDER-S002", flowStatus: 1, storeCode: "S002", insertStore: false);
+        await SeedOrderDetailAsync("ORDER-S002-1", "ORDER-S002", "P001", quantity: 2m, allocQuantity: 2m, storeCode: "S002");
+
+        var result = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.Total);
+        Assert.Equal("ORDER-S001", Assert.Single(result.Data.Items).OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductOrderHistoryAsync_排除草稿与软删除订单头明细()
+    {
+        await SeedStoreOrderAsync("ORDER-DRAFT", flowStatus: 0, orderDate: new DateTime(2026, 6, 1));
+        await SeedOrderDetailOnlyAsync("ORDER-DRAFT", "P001", quantity: 1m, allocQuantity: 1m);
+
+        await SeedStoreOrderAsync("ORDER-DEL-HEADER", flowStatus: 1, orderDate: new DateTime(2026, 6, 1), insertStore: false);
+        await SeedOrderDetailOnlyAsync("ORDER-DEL-HEADER", "P001", quantity: 2m, allocQuantity: 2m);
+        await MarkStoreOrderDeletedAsync("ORDER-DEL-HEADER");
+
+        await SeedStoreOrderAsync("ORDER-DEL-DETAIL", flowStatus: 1, orderDate: new DateTime(2026, 6, 1), insertStore: false);
+        await SeedOrderDetailAsync("ORDER-DEL-DETAIL-1", "ORDER-DEL-DETAIL", "P001", quantity: 3m, allocQuantity: 3m, isDeleted: true);
+
+        await SeedStoreOrderAsync("ORDER-VALID", flowStatus: 1, orderDate: new DateTime(2026, 6, 1), insertStore: false);
+        await SeedOrderDetailOnlyAsync("ORDER-VALID", "P001", quantity: 4m, allocQuantity: 4m);
+
+        var result = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.Total);
+        Assert.Equal("ORDER-VALID", Assert.Single(result.Data.Items).OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_最近订单卡片与历史弹窗第一行一致()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-CARD-OLD",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 1)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-CARD-OLD", "P001", quantity: 9m, allocQuantity: 8m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-CARD-A",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 5),
+            createdAt: new DateTime(2026, 6, 1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-CARD-A", "P001", quantity: 1m, allocQuantity: 1m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-CARD-B",
+            flowStatus: 1,
+            orderDate: new DateTime(2026, 6, 5),
+            createdAt: new DateTime(2026, 6, 3),
+            insertStore: false
+        );
+        await SeedOrderDetailAsync(
+            "ORDER-CARD-B-1",
+            "ORDER-CARD-B",
+            "P001",
+            quantity: 3m,
+            allocQuantity: 1m
+        );
+        await SeedOrderDetailAsync(
+            "ORDER-CARD-B-2",
+            "ORDER-CARD-B",
+            "P001",
+            quantity: 4m,
+            allocQuantity: 2m
+        );
+
+        var card = await CreateService().GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+                IncludeSales = false,
+            }
+        );
+        var cardItem = Assert.Single(card.Data!);
+        Assert.Equal(new DateTime(2026, 6, 5), cardItem.LastOrderDate);
+        Assert.Equal(7m, cardItem.LastQuantity);
+        Assert.Equal(3m, cardItem.LastAllocQuantity);
+
+        var history = await CreateService().GetProductOrderHistoryAsync(
+            new StoreOrderProductOrderHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(history.Success);
+        Assert.Equal(3, history.Data!.Total);
+        var firstHistory = history.Data.Items.First();
+        Assert.Equal("ORDER-CARD-B", firstHistory.OrderGUID);
+        Assert.Equal(7m, firstHistory.Quantity);
+        Assert.Equal(3m, firstHistory.AllocQuantity);
+        Assert.Equal(cardItem.LastOrderDate, firstHistory.OrderDate);
+        Assert.Equal(cardItem.LastQuantity, firstHistory.Quantity);
+        Assert.Equal(cardItem.LastAllocQuantity, firstHistory.AllocQuantity);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_停用门店不查询最近来货与销售统计()
+    {
+        await SeedStoreAsync("STORE-DISABLED-DYNAMIC", "S001", "停用门店", isActive: false);
+        await SeedStoreOrderAsync(
+            "ORDER-DISABLED-DYNAMIC",
+            flowStatus: 2,
+            outboundDate: new DateTime(2026, 8, 10),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-DISABLED-DYNAMIC",
+            "P001",
+            quantity: 5m,
+            allocQuantity: 5m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 7,
+            totalAmount: 70m
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+
+        Assert.True(result.Success);
+        var item = Assert.Single(result.Data!);
+        Assert.Null(item.SalesQuantitySinceLastArrival);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)
+        );
+        // 新增最近来货查询（OutboundDate + AllocQuantity 组合）同样必须被跳过；
+        // 现有 Last Order 查询只引用 OrderDate，不会同时出现 OutboundDate 与 AllocQuantity。
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log =>
+                log.Contains("OutboundDate", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("AllocQuantity", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_不包含销量时完全跳过销售链路()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-INCLUDE-SALES-FALSE",
+            flowStatus: 2,
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-INCLUDE-SALES-FALSE",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 7,
+            totalAmount: 70m
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(new DateTime(2026, 8, 18))
+            .GetProductsDynamicDataAsync(
+                new StoreOrderDynamicDataRequestDto
+                {
+                    StoreCode = "S001",
+                    ProductCodes = new List<string> { "P001" },
+                    IncludeSales = false,
+                }
+            );
+
+        Assert.True(result.Success);
+        Assert.Null(Assert.Single(result.Data!).SalesQuantitySinceLastArrival);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log =>
+                log.Contains("OutboundDate", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("AllocQuantity", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("FROM \"Store\"", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_按最新有效出库自然日聚合最近来货后销量()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var arrivalDate = today.AddDays(-4);
+        await SeedStoreOrderAsync("ORDER-ARRIVAL", flowStatus: 2, outboundDate: arrivalDate);
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-ARRIVAL",
+            "P001",
+            quantity: 5m,
+            allocQuantity: 5m
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-OLDER-ARRIVAL",
+            flowStatus: 2,
+            outboundDate: arrivalDate.AddDays(-1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-OLDER-ARRIVAL",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalDate.AddDays(-1),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 100,
+            totalAmount: 1000m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalDate,
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalDate.AddDays(1),
+            "S001",
+            "SUP-2",
+            "P001",
+            totalQuantity: -1,
+            totalAmount: -10m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today,
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+
+        Assert.True(result.Success);
+        var item = Assert.Single(result.Data!);
+        Assert.Equal(6, item.SalesQuantitySinceLastArrival);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_销售统计查询不按商品逐个扫描()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-NO-N1",
+            flowStatus: 2,
+            outboundDate: today.AddDays(-2)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-NO-N1",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-NO-N1",
+            "P002",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today.AddDays(-1),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 1,
+            totalAmount: 10m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today.AddDays(-1),
+            "S001",
+            "SUP-1",
+            "P002",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(today).GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001", "P002" },
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Count);
+        var statsLogs = _sqlLogs
+            .Where(log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Single(statsLogs);
+        Assert.DoesNotContain(
+            statsLogs,
+            log => log.Contains("WareHouseOrderDetails", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_不同最近来货日各自排除来货日前数据且统计按商品聚合()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var arrivalP1 = today.AddDays(-3);
+        var arrivalP2 = today.AddDays(-1);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ARRIVAL-P1",
+            flowStatus: 2,
+            outboundDate: arrivalP1
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-ARRIVAL-P1",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-ARRIVAL-P2",
+            flowStatus: 2,
+            outboundDate: arrivalP2,
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-ARRIVAL-P2",
+            "P002",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+
+        // P001 最近来货日前 1 天有一条不应计入的统计。
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalP1.AddDays(-1),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 50,
+            totalAmount: 500m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalP1,
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalP1.AddDays(1),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        // P002 最近来货日前 1 天同样有一条不应计入的统计。
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalP2.AddDays(-1),
+            "S001",
+            "SUP-1",
+            "P002",
+            totalQuantity: 100,
+            totalAmount: 1000m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            arrivalP2,
+            "S001",
+            "SUP-1",
+            "P002",
+            totalQuantity: 5,
+            totalAmount: 50m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today,
+            "S001",
+            "SUP-1",
+            "P002",
+            totalQuantity: 6,
+            totalAmount: 60m
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(today).GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001", "P002" },
+            }
+        );
+
+        Assert.True(result.Success);
+        var byProductCode = result.Data!.ToDictionary(item => item.ProductCode);
+        Assert.Equal(2, byProductCode.Count);
+        Assert.Equal(7, byProductCode["P001"].SalesQuantitySinceLastArrival);
+        Assert.Equal(11, byProductCode["P002"].SalesQuantitySinceLastArrival);
+
+        // 精确条件必须在数据库内按各商品来货日过滤，且最终只按商品聚合，不能拉日明细后再裁剪。
+        var statsSql = Assert.Single(
+            _sqlLogs,
+            log =>
+                log.Contains(
+                    "ProductStoreDailySalesStatistic",
+                    StringComparison.OrdinalIgnoreCase
+                )
+        );
+        var groupByIndex = statsSql.IndexOf("GROUP BY", StringComparison.OrdinalIgnoreCase);
+        Assert.True(groupByIndex >= 0);
+        var groupColumns = statsSql[(groupByIndex + "GROUP BY".Length)..].Trim();
+        Assert.Contains("ProductCode", groupColumns, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Date", groupColumns, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(" OR ", statsSql, StringComparison.OrdinalIgnoreCase);
+        var serviceSource = File.ReadAllText(
+            FindRepositoryFile("services/backend/BlazorApp.Api/Services/React/StoreOrderReactService.cs")
+        );
+        Assert.DoesNotContain("earliestArrivalDate", serviceSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_五百商品统计查询次数固定不随商品数增长()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var productCodes = Enumerable.Range(0, 500)
+            .Select(index => $"P{index:000}")
+            .ToList();
+        var details = productCodes
+            .Select(code => new WareHouseOrderDetails
+            {
+                DetailGUID = $"ORDER-500-{code}",
+                OrderGUID = "ORDER-500",
+                StoreCode = "S001",
+                ProductCode = code,
+                Quantity = 1m,
+                AllocQuantity = 1m,
+                ImportPrice = 2m,
+                ImportAmount = 2m,
+                OEMPrice = 3m,
+                OEMAmount = 3m,
+                IsDeleted = false,
+            })
+            .ToList();
+        var statistics = productCodes
+            .Select((code, index) => new ProductStoreDailySalesStatistic
+            {
+                Date = today.AddDays(-1),
+                BranchCode = "S001",
+                SupplierCode = "SUP-1",
+                ProductCode = code,
+                TotalQuantity = index + 1,
+                TotalAmount = (index + 1) * 10m,
+                OrderCount = 1,
+                CostSource = "Test",
+                UpdateTime = today.AddDays(-1),
+            })
+            .ToList();
+
+        await SeedStoreOrderAsync(
+            "ORDER-500",
+            flowStatus: 2,
+            outboundDate: today.AddDays(-2)
+        );
+        await _db.Insertable(details).ExecuteCommandAsync();
+        await _db.Insertable(statistics).ExecuteCommandAsync();
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(today).GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = productCodes,
+            }
+        );
+
+        Assert.True(result.Success);
+        var byProductCode = result.Data!.ToDictionary(item => item.ProductCode);
+        Assert.Equal(500, byProductCode.Count);
+        for (var index = 0; index < 500; index++)
+        {
+            Assert.Equal(index + 1, byProductCode[$"P{index:000}"].SalesQuantitySinceLastArrival);
+        }
+
+        var statsLogs = _sqlLogs
+            .Where(log =>
+                log.Contains(
+                    "ProductStoreDailySalesStatistic",
+                    StringComparison.OrdinalIgnoreCase
+                )
+        )
+            .ToList();
+        Assert.Single(statsLogs);
+        var statsSql = statsLogs.Single();
+        // 500 商品仍由一条带 BranchCode、ProductCode、Date 条件的统计 SQL 完成，防止退化为 N+1。
+        Assert.Contains("BranchCode", statsSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ProductCode", statsSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Date", statsSql, StringComparison.OrdinalIgnoreCase);
+        var groupByIndex = statsSql.IndexOf("GROUP BY", StringComparison.OrdinalIgnoreCase);
+        Assert.True(groupByIndex >= 0);
+        Assert.DoesNotContain(
+            "Date",
+            statsSql[(groupByIndex + "GROUP BY".Length)..],
+            StringComparison.OrdinalIgnoreCase
+        );
+        // 全流程固定 6 次查询：门店校验、购物车、最近订单日期、历史候选、最近来货、销售统计。
+        Assert.Equal(6, _sqlLogs.Count);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_五百个不同来货日最多五条精确统计SQL()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreAsync("STORE-CUT", "S001", "统计门店", isActive: true);
+        var productCodes = Enumerable.Range(0, 500).Select(index => $"CUT-{index:000}").ToList();
+        var orders = productCodes
+            .Select((code, index) => new WareHouseOrder
+            {
+                OrderGUID = $"ORDER-CUT-{index:000}",
+                StoreCode = "S001",
+                FlowStatus = 2,
+                OutboundDate = today.AddDays(-index - 1),
+                IsDeleted = false,
+            })
+            .ToList();
+        var details = productCodes
+            .Select((code, index) => new WareHouseOrderDetails
+            {
+                DetailGUID = $"ORDER-CUT-{index:000}-{code}",
+                OrderGUID = $"ORDER-CUT-{index:000}",
+                StoreCode = "S001",
+                ProductCode = code,
+                Quantity = 1m,
+                AllocQuantity = 1m,
+                IsDeleted = false,
+            })
+            .ToList();
+        var statistics = productCodes
+            .Select((code, index) => new ProductStoreDailySalesStatistic
+            {
+                Date = today.AddDays(-index - 1),
+                BranchCode = "S001",
+                SupplierCode = "SUP-1",
+                ProductCode = code,
+                TotalQuantity = index + 1,
+                TotalAmount = index + 1,
+                OrderCount = 1,
+                CostSource = "Test",
+                UpdateTime = today,
+            })
+            .ToList();
+        await _db.Insertable(orders).ExecuteCommandAsync();
+        await _db.Insertable(details).ExecuteCommandAsync();
+        await _db.Insertable(statistics).ExecuteCommandAsync();
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(today).GetSalesSinceLastArrivalSummaryAsync(
+            new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = productCodes,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(500, result.Data!.Count);
+        var statsLogs = _sqlLogs
+            .Where(log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Equal(5, statsLogs.Count);
+        Assert.All(statsLogs, log =>
+        {
+            Assert.Contains("BranchCode", log, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("ProductCode", log, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Date", log, StringComparison.OrdinalIgnoreCase);
+            var groupByIndex = log.IndexOf("GROUP BY", StringComparison.OrdinalIgnoreCase);
+            Assert.True(groupByIndex >= 0);
+            Assert.DoesNotContain(
+                "Date",
+                log[(groupByIndex + "GROUP BY".Length)..],
+                StringComparison.OrdinalIgnoreCase
+            );
+        });
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalSummaryAsync_返回零负数和无来货的空值()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync("ORDER-SUMMARY", flowStatus: 2, outboundDate: today.AddDays(-1));
+        await SeedOrderDetailOnlyAsync("ORDER-SUMMARY", "P-ZERO", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderDetailOnlyAsync("ORDER-SUMMARY", "P-NEGATIVE", quantity: 1m, allocQuantity: 1m);
+        await SeedProductStoreDailySalesStatisticAsync(
+            today.AddDays(-1), "S001", "SUP-1", "P-ZERO", totalQuantity: 0, totalAmount: 0m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today, "S001", "SUP-1", "P-NEGATIVE", totalQuantity: -3, totalAmount: -30m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetSalesSinceLastArrivalSummaryAsync(
+            new StoreOrderSalesSinceLastArrivalSummaryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { " P-ZERO ", "P-NEGATIVE", "P-NO-ARRIVAL", "P-ZERO" },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Collection(
+            result.Data!,
+            item => { Assert.Equal("P-ZERO", item.ProductCode); Assert.Equal(0, item.SalesQuantitySinceLastArrival); },
+            item => { Assert.Equal("P-NEGATIVE", item.ProductCode); Assert.Equal(-3, item.SalesQuantitySinceLastArrival); },
+            item => { Assert.Equal("P-NO-ARRIVAL", item.ProductCode); Assert.Null(item.SalesQuantitySinceLastArrival); }
+        );
+    }
+
+    [Fact]
+    public void SqlSugarContext_PostgreSQL销售统计索引包含覆盖列()
+    {
+        var sourcePath = FindRepositoryFile(
+            "services/backend/BlazorApp.Api/Data/SqlSugarContext.cs"
+        );
+        var source = File.ReadAllText(sourcePath);
+
+        Assert.Contains(
+            "CREATE INDEX IF NOT EXISTS \\\"IX_ProductStoreDailySalesStatistic_Branch_Product_Date\\\" ON \\\"ProductStoreDailySalesStatistic\\\" (\\\"BranchCode\\\", \\\"ProductCode\\\", \\\"Date\\\") INCLUDE (\\\"TotalQuantity\\\", \\\"TotalAmount\\\")",
+            source,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_未来出库忽略并与卡片一致()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var latestEffectiveArrival = today.AddDays(-3).AddHours(15);
+        await SeedStoreOrderAsync(
+            "ORDER-PAST-ARRIVAL",
+            flowStatus: 2,
+            outboundDate: latestEffectiveArrival
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-PAST-ARRIVAL",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-FUTURE-OUTBOUND",
+            flowStatus: 2,
+            outboundDate: today.AddDays(2),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-FUTURE-OUTBOUND",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            latestEffectiveArrival.Date,
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            today,
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        var service = CreateServiceForSalesDate(today);
+        var card = await service.GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+        var detail = await service.GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+            }
+        );
+
+        Assert.True(card.Success, card.Message);
+        Assert.True(detail.Success, detail.Message);
+        Assert.Equal(latestEffectiveArrival, detail.Data!.LastArrivalDate);
+        Assert.Equal(today, detail.Data.EndDate);
+        Assert.Equal(7, detail.Data.TotalSalesQuantity);
+        Assert.Equal(detail.Data.TotalSalesQuantity, Assert.Single(card.Data!).SalesQuantitySinceLastArrival);
+    }
+
+    [Theory]
+    [InlineData("STORE-1", "Bridgewater SA 门店", "Bridgewater SA 5155", "Australia/Sydney")]
+    [InlineData("STORE-2", "Victoria Park 门店", "Victoria Park WA 6100", "Australia/Sydney")]
+    [InlineData("BRI-01", "普通门店", "测试地址", "Australia/Brisbane")]
+    [InlineData("MEL-01", "普通门店", "测试地址", "Australia/Melbourne")]
+    [InlineData("STORE-3", "Brisbane 门店", "Brisbane QLD 4000", "Australia/Brisbane")]
+    [InlineData("STORE-4", "Melbourne 门店", "Melbourne VIC 3000", "Australia/Melbourne")]
+    public void ResolveStoreTimeZoneForSales_文本回退严格匹配门店别名(
+        string storeCode,
+        string storeName,
+        string address,
+        string expectedTimeZoneId
+    )
+    {
+        var resolvedTimeZoneId = InvokeSalesTimeZoneResolution(
+            CreateService(),
+            storeCode,
+            storeName,
+            address
+        );
+
+        Assert.Equal(expectedTimeZoneId, resolvedTimeZoneId);
+    }
+
+    [Theory]
+    [InlineData("Australia/Brisbane", "Brisbane QLD 4000", "Brisbane 门店", "2026-01-15")]
+    [InlineData("Invalid/TimeZone", "Sydney NSW 2000", "Sydney 门店", "2026-01-16")]
+    [InlineData(null, "Melbourne VIC 3000", "Melbourne 门店", "2026-01-16")]
+    [InlineData(null, "3000", "Central Store", "2026-01-16")]
+    [InlineData(null, "Bridgewater SA 5155", "Bridgewater SA 门店", "2026-01-16")]
+    [InlineData(null, "Victoria Park WA 6100", "Victoria Park 门店", "2026-01-16")]
+    public async Task GetSalesSinceLastArrivalAsync_固定UTC跨门店午夜时卡片与明细共用门店截止日(
+        string? configuredTimeZone,
+        string address,
+        string storeName,
+        string expectedEndDate
+    )
+    {
+        var utcNow = new DateTimeOffset(2026, 1, 15, 13, 30, 0, TimeSpan.Zero);
+        var expectedDate = DateTime.Parse(expectedEndDate);
+        await _db.Insertable(new Store
+        {
+            StoreGUID = $"STORE-TIMEZONE-{storeName}",
+            StoreCode = "S001",
+            StoreName = storeName,
+            Address = address,
+            TimeZoneId = configuredTimeZone,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedStoreOrderAsync(
+            "ORDER-TIMEZONE",
+            flowStatus: 2,
+            outboundDate: new DateTime(2026, 1, 14),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-TIMEZONE",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 1, 15),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 1, 16),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 7,
+            totalAmount: 70m
+        );
+
+        var service = CreateService(new FixedTimeProvider(utcNow));
+        var card = await service.GetProductsDynamicDataAsync(
+            new StoreOrderDynamicDataRequestDto
+            {
+                StoreCode = "S001",
+                ProductCodes = new List<string> { "P001" },
+            }
+        );
+        var detail = await service.GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+            }
+        );
+
+        Assert.True(card.Success, card.Message);
+        Assert.True(detail.Success, detail.Message);
+        Assert.Equal(expectedDate, detail.Data!.EndDate);
+        Assert.Equal(expectedDate == new DateTime(2026, 1, 15) ? 4 : 11, detail.Data.TotalSalesQuantity);
+        Assert.Equal(detail.Data.TotalSalesQuantity, Assert.Single(card.Data!).SalesQuantitySinceLastArrival);
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_统计查询异常会记录后抛给控制器()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-STATISTIC-ERROR",
+            flowStatus: 2,
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-STATISTIC-ERROR",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await _db.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() =>
+            CreateService().GetSalesSinceLastArrivalAsync(
+                new StoreOrderSalesSinceLastArrivalRequestDto
+                {
+                    StoreCode = "S001",
+                    ProductCode = "P001",
+                }
+            )
+        );
+
+        Assert.Contains("ProductStoreDailySalesStatistic", exception.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_停用门店截止日保持为空()
+    {
+        await SeedStoreAsync("STORE-DISABLED-END-DATE", "S001", "停用门店", isActive: false);
+
+        var result = await CreateService(new FixedTimeProvider(
+            new DateTimeOffset(2026, 1, 15, 13, 30, 0, TimeSpan.Zero)
+        )).GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.False(result.Data!.IsAvailable);
+        Assert.Null(result.Data.EndDate);
+    }
+
+    [Fact]
+    public void SqlSugarContext_CreateTable后SQLite最近来货销量索引键列顺序正确()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"store-order-index-{Guid.NewGuid():N}.db");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:DefaultConnection"] = $"Data Source={dbPath}",
+                ["Database:InitializeOnStartup"] = "false",
+            })
+            .Build();
+        var context = new SqlSugarContext(
+            configuration,
+            NullLogger<SqlSugarContext>.Instance,
+            Mock.Of<ICurrentUserService>()
+        );
+
+        try
+        {
+            context.Db.CodeFirst.InitTables(typeof(ProductStoreDailySalesStatistic));
+            var initializeIndexes = typeof(SqlSugarContext).GetMethod(
+                "CreateIndexesForCurrentDatabase",
+                BindingFlags.Instance | BindingFlags.NonPublic
+            );
+            Assert.NotNull(initializeIndexes);
+            initializeIndexes.Invoke(context, null);
+
+            var indexInfo = context.Db.Ado.GetDataTable(
+                "PRAGMA index_info('IX_ProductStoreDailySalesStatistic_Branch_Product_Date')"
+            );
+            var keyColumns = indexInfo.Rows
+                .Cast<System.Data.DataRow>()
+                .OrderBy(row => Convert.ToInt32(row["seqno"]))
+                .Select(row => Convert.ToString(row["name"]))
+                .ToArray();
+
+            Assert.Equal(new[] { "BranchCode", "ProductCode", "Date" }, keyColumns);
+
+            var sourcePath = Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "BlazorApp.Api",
+                "Data",
+                "SqlSugarContext.cs"
+            );
+            var source = File.ReadAllText(Path.GetFullPath(sourcePath));
+            var createTableStart = source.IndexOf(
+                "public void CreateTable()",
+                StringComparison.Ordinal
+            );
+            var createTableEnd = source.IndexOf(
+                "private void CreateIndexesForCurrentDatabase()",
+                createTableStart,
+                StringComparison.Ordinal
+            );
+            Assert.True(createTableStart >= 0 && createTableEnd > createTableStart);
+            var createTableBody = source[createTableStart..createTableEnd];
+            Assert.Contains("CreateIndexesForCurrentDatabase();", createTableBody);
+            Assert.DoesNotContain("CreateNormalIndexes();", createTableBody);
+        }
+        finally
+        {
+            context.Db.Dispose();
+            if (File.Exists(dbPath))
+            {
+                File.Delete(dbPath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_按日期倒序分页并跨供应商合并()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var arrival = new DateTime(2026, 8, 10, 9, 30, 0);
+        await SeedStoreOrderAsync("ORDER-SALES-ARRIVAL", flowStatus: 2, outboundDate: arrival);
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-SALES-ARRIVAL",
+            "P001",
+            quantity: 5m,
+            allocQuantity: 5m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 1,
+            totalAmount: 10m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 11),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-2",
+            "P001",
+            totalQuantity: -1,
+            totalAmount: 10m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 13),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        var service = CreateServiceForSalesDate(today);
+        var page1 = await service.GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 2,
+            }
+        );
+        var page2 = await service.GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 2,
+                PageSize = 2,
+            }
+        );
+
+        Assert.True(page1.Success, page1.Message);
+        Assert.True(page2.Success, page2.Message);
+        Assert.True(page1.Data!.IsAvailable);
+        Assert.Equal(arrival, page1.Data.LastArrivalDate);
+        Assert.Equal(today, page1.Data.EndDate);
+        Assert.Equal(9, page1.Data.TotalSalesQuantity);
+        Assert.Equal(4, page1.Data.TotalCount);
+        Assert.Equal(20, page1.Data.PageSize);
+        Assert.Equal(20, page2.Data!.PageSize);
+        Assert.Collection(
+            page1.Data.Items,
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 13), item.Date);
+                Assert.Equal(4, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 12), item.Date);
+                Assert.Equal(2, item.SalesQuantity);
+                Assert.Equal(20m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 11), item.Date);
+                Assert.Equal(2, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 10), item.Date);
+                Assert.Equal(1, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            }
+        );
+        Assert.Empty(page2.Data.Items);
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_零销量与负销量及均价()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-SALES-EDGE",
+            flowStatus: 2,
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-SALES-EDGE",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 0,
+            totalAmount: 100m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 11),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: -5,
+            totalAmount: -20m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 0,
+            totalAmount: 0m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 13),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 10,
+            totalAmount: 0m
+        );
+
+        var result = await CreateService().GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                PageNumber = 1,
+                PageSize = 100,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(5, result.Data!.TotalSalesQuantity);
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.Collection(
+            result.Data.Items,
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 13), item.Date);
+                Assert.Equal(10, item.SalesQuantity);
+                Assert.Equal(0m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 12), item.Date);
+                Assert.Equal(0, item.SalesQuantity);
+                Assert.Null(item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 11), item.Date);
+                Assert.Equal(-5, item.SalesQuantity);
+                Assert.Equal(4m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal(new DateTime(2026, 8, 10), item.Date);
+                Assert.Equal(0, item.SalesQuantity);
+                Assert.Null(item.AveragePrice);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_无来货返回不可用且不查统计()
+    {
+        await SeedStoreAsync("STORE-NO-ARRIVAL", "S001", "有门店无来货");
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.False(result.Data!.IsAvailable);
+        Assert.Null(result.Data.LastArrivalDate);
+        Assert.Empty(result.Data.Items);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetSalesSinceLastArrivalAsync_停用门店返回不可用且不查统计()
+    {
+        await SeedStoreAsync("STORE-SALES-DISABLED", "S001", "停用门店", isActive: false);
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 1,
+            totalAmount: 10m
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetSalesSinceLastArrivalAsync(
+            new StoreOrderSalesSinceLastArrivalRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.False(result.Data!.IsAvailable);
+        Assert.Null(result.Data.LastArrivalDate);
+        Assert.Empty(result.Data.Items);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_all模式合并订单与销售并按日期倒序且同日订单优先()
+    {
+        var today = new DateTime(2026, 8, 18);
+        var arrival = new DateTime(2026, 8, 10, 9, 30, 0);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-ARR",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 10),
+            outboundDate: arrival
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-ARR", "P001", quantity: 5m, allocQuantity: 5m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-A",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 18),
+            outboundDate: new DateTime(2026, 8, 18),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-A", "P001", quantity: 7m, allocQuantity: 3m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-B",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 12),
+            outboundDate: new DateTime(2026, 8, 12),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-B", "P001", quantity: 4m, allocQuantity: 2m);
+
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 13),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 1,
+            totalAmount: 10m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var data = result.Data!;
+        Assert.Equal("S001", data.StoreCode);
+        Assert.Equal("P001", data.ProductCode);
+        Assert.Equal(new DateTime(2026, 8, 18), data.LastArrivalDate);
+        Assert.Equal(today, data.EndDate);
+        Assert.Equal(7m, data.LatestOrderQuantity);
+        Assert.Equal(3m, data.LatestAllocQuantity);
+        Assert.Equal(0, data.TotalSalesQuantity);
+        Assert.Equal(8, data.Total);
+        Assert.Equal(3, data.Items.Count(item => item.RecordType == "order"));
+        Assert.Equal(2, data.Items.Count(item => item.RecordType == "sales"));
+        Assert.Equal(3, data.Items.Count(item => item.RecordType == "salesSubtotal"));
+        Assert.Equal("salesSubtotal", data.Items[0].RecordType);
+        Assert.Equal("ORDER-ACT-A", data.Items[1].OrderGUID);
+        Assert.True(
+            data.Items.FindIndex(item => item.OrderGUID == "ORDER-ACT-B")
+                < data.Items.FindIndex(item =>
+                    item.RecordType == "sales" && item.RecordDate == new DateTime(2026, 8, 12)
+                )
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_order筛选仅返回订单并正确分页()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-FILT-A",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 3),
+            outboundDate: new DateTime(2026, 6, 3)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-FILT-A", "P001", quantity: 1m, allocQuantity: 1m);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-FILT-B",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 2),
+            outboundDate: new DateTime(2026, 6, 2),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-FILT-B", "P001", quantity: 2m, allocQuantity: 2m);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-FILT-C",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 1),
+            outboundDate: new DateTime(2026, 6, 1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-FILT-C", "P001", quantity: 3m, allocQuantity: 3m);
+
+        var page1 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "ORDER",
+                PageNumber = 1,
+                PageSize = 2,
+            }
+        );
+
+        Assert.True(page1.Success, page1.Message);
+        Assert.Equal(3, page1.Data!.Total);
+        Assert.Equal(2, page1.Data.PageSize);
+        Assert.Collection(
+            page1.Data.Items,
+            item =>
+            {
+                Assert.Equal("order", item.RecordType);
+                Assert.Equal("ORDER-ACT-FILT-A", item.OrderGUID);
+            },
+            item =>
+            {
+                Assert.Equal("order", item.RecordType);
+                Assert.Equal("ORDER-ACT-FILT-B", item.OrderGUID);
+            }
+        );
+
+        var page2 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+                PageNumber = 2,
+                PageSize = 2,
+            }
+        );
+        Assert.Equal(3, page2.Data!.Total);
+        var last = Assert.Single(page2.Data.Items);
+        Assert.Equal("ORDER-ACT-FILT-C", last.OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_sales筛选仅返回销售并正确分页()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-SALES-ARR",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 10),
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-SALES-ARR", "P001", quantity: 5m, allocQuantity: 5m);
+
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 1,
+            totalAmount: 10m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 11),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 13),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        var page1 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "sales",
+                PageNumber = 1,
+                PageSize = 2,
+            }
+        );
+
+        Assert.True(page1.Success, page1.Message);
+        Assert.Equal(5, page1.Data!.Total);
+        Assert.Equal(10, page1.Data.TotalSalesQuantity);
+        Assert.Collection(
+            page1.Data.Items,
+            item =>
+            {
+                Assert.Equal("salesSubtotal", item.RecordType);
+                Assert.Equal(10, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            },
+            item =>
+            {
+                Assert.Equal("sales", item.RecordType);
+                Assert.Equal(new DateTime(2026, 8, 13), item.RecordDate);
+                Assert.Equal(4, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            }
+        );
+
+        var page2 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "sales",
+                PageNumber = 2,
+                PageSize = 2,
+            }
+        );
+        Assert.Equal(5, page2.Data!.Total);
+        Assert.Collection(
+            page2.Data.Items,
+            item => Assert.Equal(new DateTime(2026, 8, 12), item.RecordDate),
+            item => Assert.Equal(new DateTime(2026, 8, 11), item.RecordDate)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_非法recordType回退all()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-INVALID",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 10),
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-INVALID", "P001", quantity: 5m, allocQuantity: 5m);
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 12),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "unknown",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(3, result.Data!.Total);
+        Assert.Contains(result.Data.Items, item => item.RecordType == "order");
+        Assert.Contains(result.Data.Items, item => item.RecordType == "sales");
+        Assert.Contains(result.Data.Items, item => item.RecordType == "salesSubtotal");
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_无最近来货销售不可用但订单仍正常()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreAsync("STORE-ACT-NO-ARR", "S001", "有门店无来货");
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-NO-ARR",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 1),
+            outboundDate: new DateTime(2026, 6, 2),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-NO-ARR", "P001", quantity: 6m, allocQuantity: 0m);
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Null(result.Data!.LastArrivalDate);
+        Assert.Equal(today, result.Data.EndDate);
+        Assert.Equal(0, result.Data.TotalSalesQuantity);
+        Assert.Equal(1, result.Data.Total);
+        Assert.Equal(6m, result.Data.LatestOrderQuantity);
+        Assert.Equal(0m, result.Data.LatestAllocQuantity);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal("order", item.RecordType);
+        Assert.Equal("ORDER-ACT-NO-ARR", item.OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_同一订单重复商品明细数据库侧汇总()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-DUP",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 1),
+            outboundDate: new DateTime(2026, 6, 2)
+        );
+        await SeedOrderDetailAsync("ORDER-ACT-DUP-1", "ORDER-ACT-DUP", "P001", quantity: 3m, allocQuantity: 1m);
+        await SeedOrderDetailAsync("ORDER-ACT-DUP-2", "ORDER-ACT-DUP", "P001", quantity: 4m, allocQuantity: 2m);
+
+        _sqlLogs.Clear();
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data!.Total);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal(7m, item.Quantity);
+        Assert.Equal(3m, item.AllocQuantity);
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("SUM", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_门店隔离且排除草稿与软删除()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync("ORDER-ACT-S001", flowStatus: 2, storeCode: "S001", outboundDate: new DateTime(2026, 8, 1));
+        await SeedOrderDetailAsync("ORDER-ACT-S001-1", "ORDER-ACT-S001", "P001", quantity: 1m, allocQuantity: 1m, storeCode: "S001");
+        await SeedStoreOrderAsync("ORDER-ACT-S002", flowStatus: 2, storeCode: "S002", outboundDate: new DateTime(2026, 8, 1), insertStore: false);
+        await SeedOrderDetailAsync("ORDER-ACT-S002-1", "ORDER-ACT-S002", "P001", quantity: 2m, allocQuantity: 2m, storeCode: "S002");
+        await SeedStoreOrderAsync("ORDER-ACT-DRAFT", flowStatus: 0, storeCode: "S001", insertStore: false);
+        await SeedOrderDetailAsync("ORDER-ACT-DRAFT-1", "ORDER-ACT-DRAFT", "P001", quantity: 3m, allocQuantity: 3m, storeCode: "S001");
+        await SeedStoreOrderAsync("ORDER-ACT-DEL", flowStatus: 2, storeCode: "S001", outboundDate: new DateTime(2026, 8, 1), insertStore: false);
+        await SeedOrderDetailAsync("ORDER-ACT-DEL-1", "ORDER-ACT-DEL", "P001", quantity: 4m, allocQuantity: 4m, storeCode: "S001");
+        await MarkStoreOrderDeletedAsync("ORDER-ACT-DEL");
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data!.Total);
+        Assert.Equal("ORDER-ACT-S001", Assert.Single(result.Data.Items).OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_all同日订单按完整OrderDate倒序且优先于销售()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-SAME-ARR",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 1),
+            outboundDate: new DateTime(2026, 8, 1)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-SAME-ARR", "P001", quantity: 9m, allocQuantity: 9m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-SAME-LATE",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 18, 10, 0, 0),
+            outboundDate: new DateTime(2026, 8, 18, 15, 0, 0),
+            createdAt: new DateTime(2026, 8, 18, 10, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-SAME-LATE", "P001", quantity: 7m, allocQuantity: 3m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-SAME-EARLY",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 18, 9, 0, 0),
+            outboundDate: new DateTime(2026, 8, 18, 15, 0, 0),
+            createdAt: new DateTime(2026, 8, 18, 9, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-SAME-EARLY", "P001", quantity: 5m, allocQuantity: 2m);
+
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 18),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var data = result.Data!;
+        Assert.Equal(6, data.Total);
+        Assert.Equal(7m, data.LatestOrderQuantity);
+        Assert.Equal(3m, data.LatestAllocQuantity);
+        Assert.Equal(4, data.TotalSalesQuantity);
+        Assert.Equal(3, data.Items.Count(item => item.RecordType == "order"));
+        Assert.Equal(1, data.Items.Count(item => item.RecordType == "sales"));
+        Assert.Equal(2, data.Items.Count(item => item.RecordType == "salesSubtotal"));
+        Assert.Single(
+            data.Items,
+            item =>
+                item.RecordType == "salesSubtotal"
+                && item.PeriodStartDate == new DateTime(2026, 8, 18)
+        );
+        Assert.Equal("ORDER-ACT-SAME-LATE", data.Items[1].OrderGUID);
+        Assert.Equal("ORDER-ACT-SAME-EARLY", data.Items[2].OrderGUID);
+        Assert.Equal("sales", data.Items[3].RecordType);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_空出库日期订单被排除()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-NULL-A",
+            flowStatus: 2,
+            forceNullOrderDate: true,
+            createdAt: new DateTime(2026, 6, 2, 12, 0, 0)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-NULL-A", "P001", quantity: 1m, allocQuantity: 1m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-NULL-B",
+            flowStatus: 2,
+            forceNullOrderDate: true,
+            createdAt: new DateTime(2026, 6, 2, 12, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-NULL-B", "P001", quantity: 2m, allocQuantity: 2m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-NULL-C",
+            flowStatus: 2,
+            forceNullOrderDate: true,
+            createdAt: new DateTime(2026, 6, 2, 11, 0, 0),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-NULL-C", "P001", quantity: 3m, allocQuantity: 3m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-REAL",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 6, 1),
+            outboundDate: new DateTime(2026, 6, 2),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-REAL", "P001", quantity: 6m, allocQuantity: 4m);
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var data = result.Data!;
+        Assert.Equal(2, data.Total);
+        Assert.Equal(6m, data.LatestOrderQuantity);
+        Assert.Contains(data.Items, item => item.RecordType == "salesSubtotal");
+        var order = Assert.Single(data.Items, item => item.RecordType == "order");
+        Assert.Equal("ORDER-ACT-REAL", order.OrderGUID);
+        Assert.DoesNotContain(data.Items, item => item.OrderGUID?.StartsWith("ORDER-ACT-NULL") == true);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_分页参数归一化()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync("ORDER-ACT-NORM", flowStatus: 2, orderDate: new DateTime(2026, 6, 1), outboundDate: new DateTime(2026, 6, 2));
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-NORM", "P001", quantity: 1m, allocQuantity: 1m);
+
+        var normalizedDefault = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+                PageNumber = 0,
+                PageSize = 0,
+            }
+        );
+        Assert.Equal(1, normalizedDefault.Data!.PageNumber);
+        Assert.Equal(30, normalizedDefault.Data.PageSize);
+
+        var normalizedCapped = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+                PageNumber = -3,
+                PageSize = 999,
+            }
+        );
+        Assert.Equal(1, normalizedCapped.Data!.PageNumber);
+        Assert.Equal(50, normalizedCapped.Data.PageSize);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_all极大越界页码直接返回空页()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-OUT-OF-RANGE",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 18),
+            outboundDate: new DateTime(2026, 8, 18)
+        );
+        await SeedOrderDetailOnlyAsync(
+            "ORDER-ACT-OUT-OF-RANGE",
+            "P001",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = int.MaxValue,
+                PageSize = 50,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.Data!.Total);
+        Assert.Empty(result.Data.Items);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_all跨页合并且total准确()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-PAGE-ARR",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 1),
+            outboundDate: new DateTime(2026, 8, 1)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-PAGE-ARR", "P001", quantity: 9m, allocQuantity: 9m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-PAGE-A",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 18),
+            outboundDate: new DateTime(2026, 8, 18),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-PAGE-A", "P001", quantity: 1m, allocQuantity: 1m);
+
+        await SeedStoreOrderAsync(
+            "ORDER-ACT-PAGE-B",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 16),
+            outboundDate: new DateTime(2026, 8, 16),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-ACT-PAGE-B", "P001", quantity: 2m, allocQuantity: 2m);
+
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 17),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 30m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 15),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 4,
+            totalAmount: 40m
+        );
+
+        _sqlLogs.Clear();
+        var page1 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = 1,
+                PageSize = 2,
+            }
+        );
+        Assert.True(page1.Success, page1.Message);
+        Assert.Equal(8, page1.Data!.Total);
+        Assert.Collection(
+            page1.Data.Items,
+            item => Assert.Equal("salesSubtotal", item.RecordType),
+            item => Assert.Equal("ORDER-ACT-PAGE-A", item.OrderGUID)
+        );
+
+        var page2 = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+                PageNumber = 2,
+                PageSize = 2,
+            }
+        );
+        Assert.Equal(8, page2.Data!.Total);
+        Assert.Collection(
+            page2.Data.Items,
+            item => Assert.Equal("salesSubtotal", item.RecordType),
+            item =>
+            {
+                Assert.Equal("sales", item.RecordType);
+                Assert.Equal(new DateTime(2026, 8, 17), item.RecordDate);
+            }
+        );
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("UNION ALL", StringComparison.OrdinalIgnoreCase)
+                && (
+                    log.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                    || log.Contains("OFFSET", StringComparison.OrdinalIgnoreCase)
+                )
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_最近完成进货生成每日销量与区间小计()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-INTERVAL-NEW",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 9),
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-INTERVAL-NEW", "P001", quantity: 12m, allocQuantity: 12m);
+        await SeedStoreOrderAsync(
+            "ORDER-INTERVAL-OLD",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 7, 31),
+            outboundDate: new DateTime(2026, 8, 1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-INTERVAL-OLD", "P001", quantity: 6m, allocQuantity: 6m);
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 10),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 2,
+            totalAmount: 20m
+        );
+        await SeedProductStoreDailySalesStatisticAsync(
+            new DateTime(2026, 8, 5),
+            "S001",
+            "SUP-1",
+            "P001",
+            totalQuantity: 3,
+            totalAmount: 45m
+        );
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "all",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(30, result.Data!.PageSize);
+        Assert.Equal(6, result.Data.Total);
+        Assert.Collection(
+            result.Data.Items,
+            item =>
+            {
+                Assert.Equal("salesSubtotal", item.RecordType);
+                Assert.Equal(new DateTime(2026, 8, 10), item.PeriodStartDate);
+                Assert.Equal(today, item.PeriodEndDate);
+                Assert.Equal(2, item.SalesQuantity);
+                Assert.Equal(10m, item.AveragePrice);
+            },
+            item => Assert.Equal("ORDER-INTERVAL-NEW", item.OrderGUID),
+            item => Assert.Equal(new DateTime(2026, 8, 10), item.RecordDate),
+            item =>
+            {
+                Assert.Equal("salesSubtotal", item.RecordType);
+                Assert.Equal(new DateTime(2026, 8, 1), item.PeriodStartDate);
+                Assert.Equal(new DateTime(2026, 8, 9), item.PeriodEndDate);
+                Assert.Equal(3, item.SalesQuantity);
+                Assert.Equal(15m, item.AveragePrice);
+            },
+            item => Assert.Equal(new DateTime(2026, 8, 5), item.RecordDate),
+            item => Assert.Equal("ORDER-INTERVAL-OLD", item.OrderGUID)
+        );
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_最近六单与十二个月窗口共同限制()
+    {
+        var today = new DateTime(2026, 8, 18);
+        for (var index = 0; index < 7; index++)
+        {
+            var outboundDate = today.AddDays(-index);
+            var orderGuid = $"ORDER-LIMIT-{index}";
+            await SeedStoreOrderAsync(
+                orderGuid,
+                flowStatus: 2,
+                orderDate: outboundDate,
+                outboundDate: outboundDate,
+                insertStore: index == 0
+            );
+            await SeedOrderDetailOnlyAsync(orderGuid, "P001", quantity: 1m, allocQuantity: 0m);
+        }
+        await SeedStoreOrderAsync(
+            "ORDER-LIMIT-OLD",
+            flowStatus: 2,
+            orderDate: new DateTime(2025, 8, 17),
+            outboundDate: new DateTime(2025, 8, 17),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-LIMIT-OLD", "P001", quantity: 1m, allocQuantity: 0m);
+        await SeedStoreOrderAsync(
+            "ORDER-LIMIT-FUTURE",
+            flowStatus: 2,
+            orderDate: today.AddDays(1),
+            outboundDate: today.AddDays(1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-LIMIT-FUTURE", "P001", quantity: 1m, allocQuantity: 0m);
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "order",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(6, result.Data!.Total);
+        Assert.Equal(
+            Enumerable.Range(0, 6).Select(index => $"ORDER-LIMIT-{index}"),
+            result.Data.Items.Select(item => item.OrderGUID)
+        );
+        Assert.DoesNotContain(result.Data.Items, item => item.OrderGUID == "ORDER-LIMIT-OLD");
+        Assert.DoesNotContain(result.Data.Items, item => item.OrderGUID == "ORDER-LIMIT-FUTURE");
+
+        await SeedStoreOrderAsync(
+            "ORDER-LIMIT-BOUNDARY",
+            flowStatus: 2,
+            orderDate: today.AddMonths(-12),
+            outboundDate: today.AddMonths(-12),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-LIMIT-BOUNDARY", "P002", quantity: 1m, allocQuantity: 0m);
+        var boundary = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P002",
+                RecordType = "order",
+            }
+        );
+        Assert.Equal("ORDER-LIMIT-BOUNDARY", Assert.Single(boundary.Data!.Items).OrderGUID);
+    }
+
+    [Fact]
+    public async Task GetProductActivityHistoryAsync_零销量区间加权均价且排除未来销量()
+    {
+        var today = new DateTime(2026, 8, 18);
+        await SeedStoreOrderAsync(
+            "ORDER-SALES-NEW",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 10),
+            outboundDate: new DateTime(2026, 8, 10)
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-SALES-NEW", "P001", quantity: 12m, allocQuantity: 12m);
+        await SeedStoreOrderAsync(
+            "ORDER-SALES-OLD",
+            flowStatus: 2,
+            orderDate: new DateTime(2026, 8, 1),
+            outboundDate: new DateTime(2026, 8, 1),
+            insertStore: false
+        );
+        await SeedOrderDetailOnlyAsync("ORDER-SALES-OLD", "P001", quantity: 6m, allocQuantity: 6m);
+        await SeedProductStoreDailySalesStatisticAsync(new DateTime(2026, 8, 11), "S001", "SUP-1", "P001", 2, 20m);
+        await SeedProductStoreDailySalesStatisticAsync(new DateTime(2026, 8, 12), "S001", "SUP-1", "P001", 3, 60m);
+        await SeedProductStoreDailySalesStatisticAsync(today.AddDays(1), "S001", "SUP-1", "P001", 100, 1000m);
+
+        var result = await CreateServiceForSalesDate(today).GetProductActivityHistoryAsync(
+            new StoreOrderProductActivityHistoryRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P001",
+                RecordType = "sales",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(5, result.Data!.TotalSalesQuantity);
+        Assert.Equal(4, result.Data.Total);
+        Assert.DoesNotContain(result.Data.Items, item => item.RecordDate == today.AddDays(1));
+        var latestSubtotal = Assert.Single(
+            result.Data.Items,
+            item => item.RecordType == "salesSubtotal" && item.PeriodStartDate == new DateTime(2026, 8, 10)
+        );
+        Assert.Equal(5, latestSubtotal.SalesQuantity);
+        Assert.Equal(16m, latestSubtotal.AveragePrice);
+        var zeroSubtotal = Assert.Single(
+            result.Data.Items,
+            item => item.RecordType == "salesSubtotal" && item.PeriodStartDate == new DateTime(2026, 8, 1)
+        );
+        Assert.Equal(0, zeroSubtotal.SalesQuantity);
+        Assert.Null(zeroSubtotal.AveragePrice);
     }
 
     [Fact]
@@ -4597,7 +6963,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         DateTime? createdAt = null,
         string? updatedBy = null,
         DateTime? updatedAt = null,
-        string? cartOwnerUserGuid = null
+        string? cartOwnerUserGuid = null,
+        bool forceNullOrderDate = false
     )
     {
         if (insertStore)
@@ -4610,7 +6977,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             OrderGUID = orderGuid,
             StoreCode = storeCode,
             OrderNo = $"{orderGuid}-NO",
-            OrderDate = orderDate ?? new DateTime(2026, 6, 1),
+            OrderDate = forceNullOrderDate ? null : orderDate ?? new DateTime(2026, 6, 1),
             OutboundDate = outboundDate,
             FlowStatus = flowStatus,
             Remarks = remarks,
@@ -4632,6 +6999,30 @@ public sealed class StoreOrderProductListTests : IDisposable
             Address = "测试地址",
             IsActive = isActive,
             IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedProductStoreDailySalesStatisticAsync(
+        DateTime date,
+        string branchCode,
+        string supplierCode,
+        string productCode,
+        int totalQuantity,
+        decimal totalAmount,
+        int orderCount = 1
+    )
+    {
+        await _db.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = date.Date,
+            BranchCode = branchCode,
+            SupplierCode = supplierCode,
+            ProductCode = productCode,
+            TotalQuantity = totalQuantity,
+            TotalAmount = totalAmount,
+            OrderCount = orderCount,
+            CostSource = "Test",
+            UpdateTime = date.Date,
         }).ExecuteCommandAsync();
     }
 
@@ -4741,6 +7132,40 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedOrderDetailAsync(
+        string detailGuid,
+        string orderGuid,
+        string productCode,
+        decimal quantity,
+        decimal allocQuantity,
+        bool isDeleted = false,
+        string storeCode = "S001"
+    )
+    {
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = detailGuid,
+            OrderGUID = orderGuid,
+            StoreCode = storeCode,
+            ProductCode = productCode,
+            Quantity = quantity,
+            AllocQuantity = allocQuantity,
+            ImportPrice = 2m,
+            ImportAmount = quantity * 2m,
+            OEMPrice = 3m,
+            OEMAmount = quantity * 3m,
+            IsDeleted = isDeleted,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task MarkStoreOrderDeletedAsync(string orderGuid)
+    {
+        await _db.Updateable<WareHouseOrder>()
+            .SetColumns(o => new WareHouseOrder { IsDeleted = true })
+            .Where(o => o.OrderGUID == orderGuid)
+            .ExecuteCommandAsync();
+    }
+
     private async Task SeedDomesticProductAsync(
         string productCode,
         decimal unitVolume,
@@ -4799,6 +7224,20 @@ public sealed class StoreOrderProductListTests : IDisposable
             LocationGuid = locationGuid,
             IsDeleted = false,
         }).ExecuteCommandAsync();
+    }
+
+    private static string FindRepositoryFile(string relativePath)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, relativePath);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"找不到仓库文件: {relativePath}");
     }
 
     private static string FormatSqlLog(SugarParameter[]? parameters, string sql)
@@ -5114,5 +7553,72 @@ public sealed class StoreOrderProductListTests : IDisposable
         hqField!.SetValue(service, () => _db);
 
         return service;
+    }
+
+    private StoreOrderReactService CreateService(TimeProvider timeProvider)
+    {
+        var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
+        typeof(SqlSugarContext)
+            .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(context, _db);
+
+        var httpContextAccessor = new HttpContextAccessor();
+        var orderNumberGenerator = new Mock<IOrderNumberGenerator>();
+        orderNumberGenerator.Setup(item => item.GetNextOrderNoAsync()).ReturnsAsync("ORD-user-1");
+
+        var service = new StoreOrderReactService(
+            context,
+            NullLogger<StoreOrderReactService>.Instance,
+            httpContextAccessor,
+            orderNumberGenerator.Object,
+            new ConfigurationBuilder().Build(),
+            Mock.Of<IMapper>(),
+            Mock.Of<IInvoiceEmailService>(),
+            _locationLookupService,
+            _changeHistoryService,
+            timeProvider
+        );
+        typeof(StoreOrderReactService)
+            .GetField("_createHqConnection", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, () => _db);
+        return service;
+    }
+
+    private StoreOrderReactService CreateServiceForSalesDate(DateTime date)
+    {
+        var utcDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Utc);
+        return CreateService(new FixedTimeProvider(new DateTimeOffset(utcDate)));
+    }
+
+    private static string InvokeSalesTimeZoneResolution(
+        StoreOrderReactService service,
+        string storeCode,
+        string storeName,
+        string address
+    )
+    {
+        var serviceType = typeof(StoreOrderReactService);
+        var storeRowType = serviceType.GetNestedType(
+            "StoreOrderSalesStoreRow",
+            BindingFlags.NonPublic
+        );
+        Assert.NotNull(storeRowType);
+        var storeRow = Activator.CreateInstance(storeRowType!);
+        Assert.NotNull(storeRow);
+        storeRowType!.GetProperty("StoreCode")!.SetValue(storeRow, storeCode);
+        storeRowType.GetProperty("StoreName")!.SetValue(storeRow, storeName);
+        storeRowType.GetProperty("Address")!.SetValue(storeRow, address);
+
+        var method = serviceType.GetMethod(
+            "ResolveStoreTimeZoneForSales",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+        return Assert.IsType<string>(method!.Invoke(service, new[] { storeRow }));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

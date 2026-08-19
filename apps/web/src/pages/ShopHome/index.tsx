@@ -1,6 +1,6 @@
 import { ShoppingCartOutlined } from '@ant-design/icons'
 import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -14,11 +14,25 @@ import ShopScanResultPicker from '../../components/ShopScanResultPicker'
 import { PRODUCT_GRADE_CONFIG } from '../../types/productGrade'
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner'
 import ProductCard from './components/ProductCard'
+import ProductActivityHistoryModal from './components/ProductActivityHistoryModal'
+import {
+  buildShopHomeDynamicDataRequestIdentity,
+  createShopHomeDynamicDataRequestCoordinator,
+  createShopHomeDynamicDataStoreScopeCoordinator,
+  createShopHomeSalesSummaryRequestCoordinator,
+  mergeShopHomeBaseDynamicDataMap,
+  mergeShopHomeCartDynamicData,
+  readShopHomeDynamicDataRequestProductCodes,
+  runShopHomeDynamicDataRequest,
+  runShopHomeSalesSummaryRequest,
+  runShopHomeStoreScopedDynamicDataRequest,
+} from './shopHomeCartDynamicData'
 import {
   addStoreOrderCartItem,
   getActiveStoreOrderCart,
   getStoreOrderProducts,
   getStoreOrderProductsDynamicData,
+  getStoreOrderProductSalesSummary,
   lookupStoreOrderProductsByBarcode,
   removeStoreOrderCartItem,
   updateStoreOrderCartItem,
@@ -104,8 +118,14 @@ export default function ShopHomePage() {
   const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})
   const [removingCartProductMap, setRemovingCartProductMap] = useState<Record<string, boolean>>({})
   const [cartOnlyFilter, setCartOnlyFilter] = useState(false)
+  const [activityModalProduct, setActivityModalProduct] = useState<StoreOrderProductItem | null>(null)
+  const [activityModalOpen, setActivityModalOpen] = useState(false)
   const quantityUpdateTimersRef = useRef<Record<string, number>>({})
   const quantityUpdateVersionRef = useRef<Record<string, number>>({})
+  const dynamicDataMapRef = useRef<Record<string, StoreOrderDynamicData>>({})
+  const dynamicDataRequestCoordinatorRef = useRef(createShopHomeDynamicDataRequestCoordinator())
+  const salesSummaryRequestCoordinatorRef = useRef(createShopHomeSalesSummaryRequestCoordinator())
+  const dynamicDataStoreScopeCoordinatorRef = useRef(createShopHomeDynamicDataStoreScopeCoordinator())
   const scanBusyRef = useRef(false)
   const cameraActiveRef = useRef(false)
   const pickerOpenRef = useRef(false)
@@ -128,6 +148,12 @@ export default function ShopHomePage() {
     }
 
     previousSelectedStoreCodeRef.current = nextStoreCode
+    Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))
+    quantityUpdateTimersRef.current = {}
+    quantityUpdateVersionRef.current = {}
+    setOptimisticCartQuantityMap({})
+    setRemovingCartProductMap({})
+    setQuantityLoadingMap({})
     setCameraEnabled(false)
     setCameraSessionKey('')
     cameraActiveRef.current = false
@@ -136,6 +162,9 @@ export default function ShopHomePage() {
     setPickerOpen(false)
     setPickerLoading(false)
     setScanCandidates([])
+    // 切店立即关闭并清空商品活动历史弹窗，旧请求由弹窗内部 version/identity 守卫丢弃。
+    setActivityModalOpen(false)
+    setActivityModalProduct(null)
   }, [selectedStore?.storeCode])
 
   useEffect(() => {
@@ -185,16 +214,6 @@ export default function ShopHomePage() {
     }))
   }, [cart?.items])
 
-  const cartProductDynamicDataMap = useMemo<Record<string, StoreOrderDynamicData>>(() => {
-    return (cart?.items ?? []).reduce<Record<string, StoreOrderDynamicData>>((acc, item) => {
-      acc[item.productCode] = {
-        productCode: item.productCode,
-        cartQuantity: item.quantity,
-      }
-      return acc
-    }, {})
-  }, [cart?.items])
-
   const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {
     return (cart?.items ?? []).reduce<Record<string, number>>((acc, item) => {
       acc[item.productCode] = item.quantity
@@ -210,6 +229,15 @@ export default function ShopHomePage() {
   const displayProducts = cartOnlyFilter ? cartProductPageItems : products
   const displayTotal = cartOnlyFilter ? cartProductItems.length : total
   const cartProductCount = (cart?.items.length || cart?.totalSKU) ?? 0
+  const displayProductCodes = useMemo(
+    () => displayProducts.map((product) => product.productCode),
+    [displayProducts],
+  )
+  const dynamicDataRequestIdentity = buildShopHomeDynamicDataRequestIdentity({
+    active: Boolean(selectedStore?.storeCode && displayProductCodes.length),
+    storeCode: selectedStore?.storeCode,
+    productCodes: displayProductCodes,
+  })
 
   const pageTitle = useMemo(() => {
     if (cartOnlyFilter) {
@@ -226,6 +254,34 @@ export default function ShopHomePage() {
 
     return t('shop.allProducts')
   }, [cartOnlyFilter, categoryId, categoryName, keyword, t])
+
+  useLayoutEffect(() => {
+    const coordinator = dynamicDataStoreScopeCoordinatorRef.current
+    const storeCode = selectedStore?.storeCode ?? null
+    // 门店 scope 只能在已提交生命周期切换，不能让候选 render 污染 ABA generation。
+    coordinator.activate(storeCode)
+
+    return () => {
+      coordinator.deactivate(storeCode)
+    }
+  }, [selectedStore?.storeCode])
+
+  useLayoutEffect(() => {
+    dynamicDataMapRef.current = dynamicDataMap
+  }, [dynamicDataMap])
+
+  useLayoutEffect(() => {
+    const coordinator = dynamicDataRequestCoordinatorRef.current
+    const salesCoordinator = salesSummaryRequestCoordinatorRef.current
+    // 只有已提交的 render 才能切换请求身份，避免并发候选 render 污染当前 token。
+    coordinator.activate(dynamicDataRequestIdentity)
+    salesCoordinator.activate(dynamicDataRequestIdentity)
+
+    return () => {
+      coordinator.deactivate(dynamicDataRequestIdentity)
+      salesCoordinator.deactivate(dynamicDataRequestIdentity)
+    }
+  }, [dynamicDataRequestIdentity])
 
   useEffect(() => {
     setCurrentPage(1)
@@ -264,11 +320,30 @@ export default function ShopHomePage() {
       const result = await getStoreOrderProductsDynamicData({
         storeCode: selectedStore.storeCode,
         productCodes,
+        includeSales: false,
       })
 
       return result.reduce<Record<string, StoreOrderDynamicData>>((acc, item) => {
         acc[item.productCode] = item
         return acc
+      }, {})
+    },
+    [selectedStore?.storeCode],
+  )
+
+  const loadSalesSummaryMap = useCallback(
+    async (productCodes: string[]) => {
+      if (!selectedStore?.storeCode || !productCodes.length) {
+        return {}
+      }
+
+      const result = await getStoreOrderProductSalesSummary({
+        storeCode: selectedStore.storeCode,
+        productCodes,
+      })
+      return result.reduce<Record<string, number | null>>((salesMap, item) => {
+        salesMap[item.productCode] = item.salesQuantitySinceLastArrival
+        return salesMap
       }, {})
     },
     [selectedStore?.storeCode],
@@ -399,39 +474,88 @@ export default function ShopHomePage() {
   }, [categoryId, categoryTree])
 
   useEffect(() => {
-    let cancelled = false
+    const identity = dynamicDataRequestIdentity
+    if (!identity) {
+      setDynamicDataMap({})
+      return
+    }
 
-    const fetchDynamicData = async () => {
-      if (!selectedStore?.storeCode || !products.length) {
-        setDynamicDataMap({})
-        return
-      }
+    const coordinator = dynamicDataRequestCoordinatorRef.current
+    const token = coordinator.begin(identity)
+    const requestProductCodes = readShopHomeDynamicDataRequestProductCodes(identity)
+    const prioritySalesProductCodes = requestProductCodes.slice(0, 50)
+    const remainderSalesProductCodes = requestProductCodes.slice(50)
+    const startedAt = getShopHomePerfNow()
+    void runShopHomeDynamicDataRequest({
+      coordinator,
+      token,
+      productCodes: requestProductCodes,
+      request: loadDynamicDataMap,
+      onSuccess: (nextMap) => {
+        setDynamicDataMap(nextMap)
+        logShopHomePerf('dynamic-base.done', {
+          storeCode: selectedStore?.storeCode,
+          requestCount: requestProductCodes.length,
+          resultCount: Object.keys(nextMap).length,
+          elapsedMs: Math.round(getShopHomePerfNow() - startedAt),
+        })
 
-      try {
-        const startedAt = getShopHomePerfNow()
-        const nextMap = await loadDynamicDataMap(products.map((item) => item.productCode))
-        if (!cancelled) {
-          setDynamicDataMap(nextMap)
-          logShopHomePerf('dynamic-data.done', {
-            storeCode: selectedStore.storeCode,
-            requestCount: products.length,
-            resultCount: Object.keys(nextMap).length,
-            elapsedMs: Math.round(getShopHomePerfNow() - startedAt),
+        const salesCoordinator = salesSummaryRequestCoordinatorRef.current
+        const mergeSalesSummary = (salesMap: Record<string, number | null>) => {
+          setDynamicDataMap((previousMap) => {
+            let hasChanged = false
+            const nextMap = { ...previousMap }
+            Object.entries(salesMap).forEach(([productCode, salesQuantitySinceLastArrival]) => {
+              const previousData = previousMap[productCode]
+              if (!previousData || previousData.salesQuantitySinceLastArrival === salesQuantitySinceLastArrival) {
+                return
+              }
+
+              hasChanged = true
+              nextMap[productCode] = { ...previousData, salesQuantitySinceLastArrival }
+            })
+            return hasChanged ? nextMap : previousMap
           })
         }
-      } catch (error) {
-        if (!cancelled) {
-          setDynamicDataMap({})
+        const requestSalesBatch = (productCodes: string[], stage: 'sales-priority.done' | 'sales-remainder.done') => {
+          const salesStartedAt = getShopHomePerfNow()
+          const requestRemainderSales = () => {
+            if (stage === 'sales-priority.done' && remainderSalesProductCodes.length > 0) {
+              void requestSalesBatch(remainderSalesProductCodes, 'sales-remainder.done')
+            }
+          }
+          return runShopHomeSalesSummaryRequest({
+            coordinator: salesCoordinator,
+            token: salesCoordinator.begin(identity),
+            productCodes,
+            request: loadSalesSummaryMap,
+            onSuccess: (salesMap) => {
+              mergeSalesSummary(salesMap)
+              logShopHomePerf(stage, {
+                storeCode: selectedStore?.storeCode,
+                requestCount: productCodes.length,
+                resultCount: Object.keys(salesMap).length,
+                elapsedMs: Math.round(getShopHomePerfNow() - salesStartedAt),
+              })
+              requestRemainderSales()
+            },
+            // 优先批失败不清空基础数据，并继续尝试余量；旧 token 不会进入该回调。
+            onError: requestRemainderSales,
+          })
         }
-      }
-    }
 
-    void fetchDynamicData()
+        void requestSalesBatch(prioritySalesProductCodes, 'sales-priority.done')
+      },
+      onError: () => {
+        setDynamicDataMap({})
+      },
+    })
 
     return () => {
-      cancelled = true
+      coordinator.invalidate(token)
     }
-  }, [loadDynamicDataMap, products, selectedStore?.storeCode])
+    // identity 已编码门店和当前展示页商品；购物车数量变化不应重复请求同一批商品。
+  }, [dynamicDataRequestIdentity, loadDynamicDataMap, loadSalesSummaryMap])
 
   useEffect(() => {
     let cancelled = false
@@ -462,13 +586,25 @@ export default function ShopHomePage() {
   }, [loadDynamicDataMap, pickerOpen, scanCandidates, selectedStore?.storeCode])
 
   const refreshCart = useCallback(async () => {
-    if (!selectedStore?.storeCode) {
+    const storeCode = selectedStore?.storeCode ?? null
+    if (!storeCode) {
       setCart(null)
-      return
+      return true
     }
 
-    const cart = await getActiveStoreOrderCart(selectedStore.storeCode)
-    setCart(cart)
+    const coordinator = dynamicDataStoreScopeCoordinatorRef.current
+    const token = coordinator.capture(storeCode)
+    if (!token) {
+      return false
+    }
+
+    const nextCart = await getActiveStoreOrderCart(storeCode)
+    if (!coordinator.isCurrent(token)) {
+      return false
+    }
+
+    setCart(nextCart)
+    return true
   }, [selectedStore?.storeCode, setCart])
 
   const ensureFullCart = useCallback(async () => {
@@ -492,29 +628,29 @@ export default function ShopHomePage() {
     return nextCart
   }, [cart, selectedStore?.storeCode, setCart])
 
-  const refreshDynamicData = useCallback(async () => {
-    if (!selectedStore?.storeCode || !products.length) {
-      setDynamicDataMap({})
-      return
-    }
-
-    const nextMap = await loadDynamicDataMap(products.map((item) => item.productCode))
-    setDynamicDataMap(nextMap)
-  }, [loadDynamicDataMap, products, selectedStore?.storeCode])
-
   const refreshDynamicDataForProducts = useCallback(
     async (productCodes: string[]) => {
       const normalizedCodes = productCodes
         .filter((code) => Boolean(code))
         .filter((code, index, allCodes) => allCodes.indexOf(code) === index)
 
-      if (!selectedStore?.storeCode || !normalizedCodes.length) {
+      const storeCode = selectedStore?.storeCode ?? null
+      const coordinator = dynamicDataStoreScopeCoordinatorRef.current
+      const token = coordinator.capture(storeCode)
+      if (!token || !normalizedCodes.length) {
         return
       }
 
-      const nextMap = await loadDynamicDataMap(normalizedCodes)
-      setDynamicDataMap((prev) => ({ ...prev, ...nextMap }))
-      setPickerDynamicDataMap((prev) => ({ ...prev, ...nextMap }))
+      await runShopHomeStoreScopedDynamicDataRequest({
+        coordinator,
+        token,
+        productCodes: normalizedCodes,
+        request: loadDynamicDataMap,
+        onSuccess: (nextMap) => {
+          setDynamicDataMap((prev) => mergeShopHomeBaseDynamicDataMap(prev, nextMap))
+          setPickerDynamicDataMap((prev) => ({ ...prev, ...nextMap }))
+        },
+      })
     },
     [loadDynamicDataMap, selectedStore?.storeCode],
   )
@@ -740,6 +876,16 @@ export default function ShopHomePage() {
     [navigate],
   )
 
+  const handleOpenActivity = useCallback((product: StoreOrderProductItem) => {
+    setActivityModalProduct(product)
+    setActivityModalOpen(true)
+  }, [])
+
+  const handleCloseActivity = useCallback(() => {
+    setActivityModalOpen(false)
+    setActivityModalProduct(null)
+  }, [])
+
   const handleCartOnlyFilterToggle = useCallback(async () => {
     if (cartOnlyFilter) {
       setCartOnlyFilter(false)
@@ -810,8 +956,8 @@ export default function ShopHomePage() {
       const productCode = product.productCode
       const normalizedQuantity = Math.max(0, Math.floor(Number.isFinite(quantity) ? quantity : 0))
       const currentCartQuantity = cart?.isSummaryOnly
-        ? (dynamicDataMap[productCode]?.cartQuantity ?? 0)
-        : (cartQuantityByProductCode[productCode] ?? dynamicDataMap[productCode]?.cartQuantity ?? 0)
+        ? (dynamicDataMapRef.current[productCode]?.cartQuantity ?? 0)
+        : (cartQuantityByProductCode[productCode] ?? dynamicDataMapRef.current[productCode]?.cartQuantity ?? 0)
       const hasPendingQuantityWork =
         optimisticCartQuantityMap[productCode] !== undefined ||
         quantityUpdateTimersRef.current[productCode] !== undefined ||
@@ -889,7 +1035,6 @@ export default function ShopHomePage() {
     [
       cartQuantityByProductCode,
       cart?.isSummaryOnly,
-      dynamicDataMap,
       optimisticCartQuantityMap,
       quantityLoadingMap,
       refreshDynamicDataForProducts,
@@ -899,7 +1044,7 @@ export default function ShopHomePage() {
     ],
   )
 
-  const handleRemoveFromCart = async (product: StoreOrderProductItem) => {
+  const handleRemoveFromCart = useCallback(async (product: StoreOrderProductItem) => {
     if (!selectedStore?.storeCode) {
       message.warning(t('shop.selectStoreFirst'))
       return
@@ -933,12 +1078,17 @@ export default function ShopHomePage() {
         detailGUID: cartItem.detailGUID,
       })
       message.success(t('shop.removedFromCart', { name: product.productName }))
-      await Promise.all([refreshCart(), refreshDynamicData()])
-      setOptimisticCartQuantityMap((prev) => {
-        const next = { ...prev }
-        delete next[productCode]
-        return next
-      })
+      const [cartRefreshResult] = await Promise.allSettled([
+        refreshCart(),
+        refreshDynamicDataForProducts([productCode]),
+      ])
+      if (cartRefreshResult.status === 'fulfilled' && cartRefreshResult.value) {
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[productCode]
+          return next
+        })
+      }
     } catch (error) {
       setOptimisticCartQuantityMap((prev) => {
         const next = { ...prev }
@@ -953,7 +1103,14 @@ export default function ShopHomePage() {
         return next
       })
     }
-  }
+  }, [
+    ensureFullCart,
+    refreshCart,
+    refreshDynamicDataForProducts,
+    removingCartProductMap,
+    selectedStore?.storeCode,
+    t,
+  ])
 
   return (
     <div className="shop-home-page">
@@ -1070,19 +1227,15 @@ export default function ShopHomePage() {
         <>
           <div className="shop-home-grid">
             {displayProducts.map((product) => {
-              const dynamicData = cartOnlyFilter
-                ? cartProductDynamicDataMap[product.productCode]
-                : dynamicDataMap[product.productCode]
-              const syncedDynamicData: StoreOrderDynamicData = {
-                ...(dynamicData ?? {
-                  productCode: product.productCode,
-                }),
-                // summary-only 没有明细，当前页商品仍以 dynamic-data 的 cartQuantity 判断是否已入车。
-                productCode: dynamicData?.productCode ?? product.productCode,
+              const dynamicData = dynamicDataMap[product.productCode]
+              const syncedDynamicData: StoreOrderDynamicData = mergeShopHomeCartDynamicData({
+                dynamicData,
+                productCode: product.productCode,
+                // summary-only 没有明细；full cart 时始终以购物车真实数量覆盖动态接口值。
                 cartQuantity: cart?.isSummaryOnly
-                  ? (dynamicData?.cartQuantity ?? 0)
-                  : (cartQuantityByProductCode[product.productCode] ?? dynamicData?.cartQuantity ?? 0),
-              }
+                  ? undefined
+                  : cartQuantityByProductCode[product.productCode],
+              })
               const isRemovingFromCart = Boolean(removingCartProductMap[product.productCode])
               const optimisticCartQuantity = isRemovingFromCart
                 ? 0
@@ -1109,6 +1262,7 @@ export default function ShopHomePage() {
                   onAddToCart={handleAddToCart}
                   onQuantityChange={handleProductQuantityChange}
                   onRemoveFromCart={handleRemoveFromCart}
+                  onActivityClick={handleOpenActivity}
                   loading={Boolean(quantityLoadingMap[product.productCode] || isRemovingFromCart)}
                   removing={isRemovingFromCart}
                 />
@@ -1164,6 +1318,14 @@ export default function ShopHomePage() {
             setPickerOpen(false)
           })
         }}
+      />
+
+      <ProductActivityHistoryModal
+        open={activityModalOpen}
+        product={activityModalProduct}
+        storeCode={selectedStore?.storeCode ?? null}
+        storeName={selectedStore?.storeName ?? null}
+        onClose={handleCloseActivity}
       />
     </div>
   )

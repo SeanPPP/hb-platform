@@ -87,6 +87,34 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 查询商品在指定分店的仓库订货发货记录（按订单聚合并分页）。
+        /// </summary>
+        Task<ApiResponse<PagedListReactDto<StoreOrderProductOrderHistoryItemDto>>> GetProductOrderHistoryAsync(
+            StoreOrderProductOrderHistoryRequestDto request
+        );
+
+        /// <summary>
+        /// 查询分店商品最近一次来货后的每日销售明细。
+        /// </summary>
+        Task<ApiResponse<StoreOrderSalesSinceLastArrivalResultDto>> GetSalesSinceLastArrivalAsync(
+            StoreOrderSalesSinceLastArrivalRequestDto request
+        );
+
+        /// <summary>
+        /// 查询分店商品的统一订货/发货历史与销售明细合并时间轴。
+        /// </summary>
+        Task<ApiResponse<StoreOrderProductActivityHistoryResultDto>> GetProductActivityHistoryAsync(
+            StoreOrderProductActivityHistoryRequestDto request
+        );
+
+        /// <summary>
+        /// 批量查询分店商品最近一次来货后的销售数量。
+        /// </summary>
+        Task<ApiResponse<List<StoreOrderSalesSinceLastArrivalSummaryItemDto>>> GetSalesSinceLastArrivalSummaryAsync(
+            StoreOrderSalesSinceLastArrivalSummaryRequestDto request
+        );
+
+        /// <summary>
         /// 获取订单列表
         /// </summary>
         Task<PagedListReactDto<StoreOrderListItemDto>> GetOrderListAsync(StoreOrderListFilterDto filter);

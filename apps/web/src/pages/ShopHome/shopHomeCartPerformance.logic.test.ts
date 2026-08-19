@@ -1,5 +1,17 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import {
+  buildShopHomeDynamicDataRequestIdentity,
+  createShopHomeDynamicDataRequestCoordinator,
+  createShopHomeDynamicDataStoreScopeCoordinator,
+  createShopHomeSalesSummaryRequestCoordinator,
+  mergeShopHomeBaseDynamicDataMap,
+  mergeShopHomeCartDynamicData,
+  readShopHomeDynamicDataRequestProductCodes,
+  runShopHomeDynamicDataRequest,
+  runShopHomeSalesSummaryRequest,
+  runShopHomeStoreScopedDynamicDataRequest,
+} from './shopHomeCartDynamicData'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -27,6 +39,17 @@ function extractFunctionBody(source: string, marker: string, endMarker: string) 
   return source.slice(start, end)
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+
+  return { promise, resolve, reject }
+}
+
 const shopHomeFile = path.resolve(process.cwd(), 'src/pages/ShopHome/index.tsx')
 const shopHomeSource = readFileSync(shopHomeFile, 'utf8')
 const productCardFile = path.resolve(process.cwd(), 'src/pages/ShopHome/components/ProductCard.tsx')
@@ -41,11 +64,42 @@ const enLocaleSource = readFileSync(path.resolve(process.cwd(), 'src/i18n/locale
 async function main() {
   const failures: string[] = []
 
+  const localBaseRefreshPreservesSalesFailure = await runTest(
+    '单商品基础动态刷新应保留已经加载的 Sales',
+    () => {
+      const previousMap = {
+        P1: {
+          productCode: 'P1',
+          cartQuantity: 1,
+          salesQuantitySinceLastArrival: -2,
+        },
+        P2: {
+          productCode: 'P2',
+          cartQuantity: 2,
+          salesQuantitySinceLastArrival: null,
+        },
+      }
+      const nextMap = mergeShopHomeBaseDynamicDataMap(previousMap, {
+        P1: { productCode: 'P1', cartQuantity: 3 },
+        P2: { productCode: 'P2', cartQuantity: 4 },
+      })
+
+      assert(nextMap.P1.cartQuantity === 3, '基础动态字段必须使用最新值')
+      assert(nextMap.P1.salesQuantitySinceLastArrival === -2, '负 Sales 必须在局部刷新后保留')
+      assert(nextMap.P2.salesQuantitySinceLastArrival === null, '不可用 Sales 的 null 语义必须保留')
+      assert(
+        shopHomeSource.includes('mergeShopHomeBaseDynamicDataMap(prev, nextMap)'),
+        '主商品动态 map 的局部刷新必须复用保留 Sales 的字段级合并',
+      )
+    },
+  )
+  if (localBaseRefreshPreservesSalesFailure) failures.push(localBaseRefreshPreservesSalesFailure)
+
   const productQuantityUpdateFailure = await runTest('商品卡数量按钮应直接设置购物车数量并复用返回购物车', () => {
     const body = extractFunctionBody(
       shopHomeSource,
       'const handleProductQuantityChange = useCallback',
-      'const handleRemoveFromCart = async',
+      'const handleRemoveFromCart = useCallback',
     )
 
     assert(
@@ -76,7 +130,7 @@ async function main() {
     const body = extractFunctionBody(
       shopHomeSource,
       'const handleProductQuantityChange = useCallback',
-      'const handleRemoveFromCart = async',
+      'const handleRemoveFromCart = useCallback',
     )
     const refreshIndex = body.indexOf('await refreshDynamicDataForProducts([productCode])')
     const latestVersionCheckIndex = body.indexOf('if (quantityUpdateVersionRef.current[productCode] !== updateVersion) return', refreshIndex)
@@ -141,7 +195,7 @@ async function main() {
     const productQuantityBody = extractFunctionBody(
       shopHomeSource,
       'const handleProductQuantityChange = useCallback',
-      'const handleRemoveFromCart = async',
+      'const handleRemoveFromCart = useCallback',
     )
     const scanAddBody = extractFunctionBody(
       shopHomeSource,
@@ -238,26 +292,494 @@ async function main() {
   })
   if (cartOnlyFilterFailure) failures.push(cartOnlyFilterFailure)
 
-  const cartOnlyDynamicDataFailure = await runTest('购物车商品过滤应使用购物车数量覆盖商品卡动态数据', () => {
+  const cartOnlyDynamicDataFailure = await runTest('购物车商品过滤应保留完整动态数据并以真实购物车数量覆盖', async () => {
+    const salesValues = [12, 0, -3, null, undefined] as const
+    for (const salesQuantitySinceLastArrival of salesValues) {
+      const merged = mergeShopHomeCartDynamicData({
+        dynamicData: {
+          productCode: 'P-CART',
+          cartQuantity: 999,
+          lastOrderDate: '2026-08-01',
+          salesQuantitySinceLastArrival,
+        },
+        productCode: 'P-CART',
+        cartQuantity: 7,
+      })
+
+      assert(merged.cartQuantity === 7, '购物车真实数量必须覆盖 dynamic-data 中的旧数量')
+      assert(merged.lastOrderDate === '2026-08-01', '购物车模式必须保留最近来货等完整动态数据')
+      assert(
+        Object.is(merged.salesQuantitySinceLastArrival, salesQuantitySinceLastArrival),
+        `Sales 值 ${String(salesQuantitySinceLastArrival)} 在合并后发生变化`,
+      )
+      assert(
+        (typeof merged.salesQuantitySinceLastArrival === 'number') ===
+          (salesQuantitySinceLastArrival !== null && salesQuantitySinceLastArrival !== undefined),
+        'Sales 正数、0、负数应显示，null/undefined 应隐藏',
+      )
+    }
+
+    const stableDynamicData = {
+      productCode: 'P-STABLE',
+      cartQuantity: 7,
+      lastOrderDate: '2026-08-01',
+      salesQuantitySinceLastArrival: 0,
+    }
     assert(
-      shopHomeSource.includes('const cartProductDynamicDataMap = useMemo<Record<string, StoreOrderDynamicData>>(() => {') &&
-        shopHomeSource.includes('cartQuantity: item.quantity') &&
-        shopHomeSource.includes('const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {') &&
+      Object.is(
+        mergeShopHomeCartDynamicData({
+          dynamicData: stableDynamicData,
+          productCode: 'P-STABLE',
+          cartQuantity: 7,
+        }),
+        stableDynamicData,
+      ),
+      '动态数据内容未变时必须返回原引用，避免 Sales 分批触发未变化卡片重渲染',
+    )
+    assert(productCardSource.includes('export default memo(ProductCard)'), 'ProductCard 必须使用 React.memo')
+    const quantityHandler = extractFunctionBody(
+      shopHomeSource,
+      'const handleProductQuantityChange = useCallback',
+      'const handleRemoveFromCart = useCallback',
+    )
+    assert(
+      shopHomeSource.includes('const dynamicDataMapRef = useRef<Record<string, StoreOrderDynamicData>>({})') &&
+        quantityHandler.includes('dynamicDataMapRef.current[productCode]?.cartQuantity') &&
+        !quantityHandler.includes('\n      dynamicDataMap,\n'),
+      '数量回调不得依赖整个 dynamicDataMap，否则每批 Sales 都会让所有 ProductCard 重新渲染',
+    )
+
+    const hiddenIdentity = buildShopHomeDynamicDataRequestIdentity({
+      active: false,
+      storeCode: 'S1',
+      productCodes: ['P1', 'P2'],
+    })
+    const hiddenCoordinator = createShopHomeDynamicDataRequestCoordinator()
+    hiddenCoordinator.activate(hiddenIdentity)
+    let requestCount = 0
+    await runShopHomeDynamicDataRequest({
+      coordinator: hiddenCoordinator,
+      token: hiddenCoordinator.begin(hiddenIdentity),
+      productCodes: ['P1', 'P2'],
+      request: async () => {
+        requestCount += 1
+        return {}
+      },
+      onSuccess: () => undefined,
+      onError: () => undefined,
+    })
+    assert(requestCount === 0, '无有效展示上下文时不得发起动态数据请求')
+
+    const pageOneIdentity = buildShopHomeDynamicDataRequestIdentity({
+      active: true,
+      storeCode: 'S1',
+      productCodes: ['P1', 'P2'],
+    })
+    const pageTwoIdentity = buildShopHomeDynamicDataRequestIdentity({
+      active: true,
+      storeCode: 'S1',
+      productCodes: ['P3', 'P4'],
+    })
+    const storeTwoIdentity = buildShopHomeDynamicDataRequestIdentity({
+      active: true,
+      storeCode: 'S2',
+      productCodes: ['P3', 'P4'],
+    })
+    assert(pageOneIdentity !== pageTwoIdentity, '分页后请求身份必须变化')
+    assert(pageTwoIdentity !== storeTwoIdentity, '切店后请求身份必须变化')
+
+    const renderSafeCoordinator = createShopHomeDynamicDataRequestCoordinator()
+    renderSafeCoordinator.activate(pageOneIdentity)
+    const committedPageOneToken = renderSafeCoordinator.begin(pageOneIdentity)
+    assert(committedPageOneToken, '已提交的页 1 应能开始请求')
+
+    // render 只计算候选 identity；未提交的页 2 不得触碰 coordinator。
+    const uncommittedPageTwoIdentity = pageTwoIdentity
+    assert(uncommittedPageTwoIdentity !== pageOneIdentity, '未提交候选身份应与当前身份不同')
+    assert(
+      renderSafeCoordinator.isCurrent(committedPageOneToken),
+      '未提交的候选身份不应改变已提交页面的当前 token',
+    )
+
+    renderSafeCoordinator.deactivate(pageOneIdentity)
+    renderSafeCoordinator.activate(pageTwoIdentity)
+    // B 已提交 layout，但 passive effect 还未 begin；紧接着回 A 必须能开始新代次。
+    renderSafeCoordinator.deactivate(pageTwoIdentity)
+    renderSafeCoordinator.activate(pageOneIdentity)
+    const returnedPageOneToken = renderSafeCoordinator.begin(pageOneIdentity)
+    assert(returnedPageOneToken, 'B 未 begin 就回 A 时，A 应能开始新请求')
+    assert(
+      returnedPageOneToken.version > committedPageOneToken.version,
+      '回到 A 的请求必须使用更新的单调 version',
+    )
+    assert(
+      !renderSafeCoordinator.isCurrent(committedPageOneToken) &&
+        renderSafeCoordinator.isCurrent(returnedPageOneToken),
+      'B 未 begin 就回 A 时，旧 A token 应失效且新 A token 应生效',
+    )
+
+    const requestedBatches: string[][] = []
+
+    const runAbaScenario = async (
+      label: string,
+      firstIdentity: string | null,
+      middleIdentity: string | null,
+      firstProductCodes: string[],
+      middleProductCodes: string[],
+      firstOutcome: 'success' | 'error',
+    ) => {
+      const coordinator = createShopHomeDynamicDataRequestCoordinator()
+      const committed: string[] = []
+      const errors: string[] = []
+      const firstDeferred = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+      const middleDeferred = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+      const currentDeferred = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+
+      coordinator.activate(firstIdentity)
+      const firstRequest = runShopHomeDynamicDataRequest({
+        coordinator,
+        token: coordinator.begin(firstIdentity),
+        productCodes: firstProductCodes,
+        request: (productCodes) => {
+          requestedBatches.push(productCodes)
+          return firstDeferred.promise
+        },
+        onSuccess: () => committed.push(`${label}-first`),
+        onError: () => errors.push(`${label}-first`),
+      })
+
+      coordinator.activate(middleIdentity)
+      const middleRequest = runShopHomeDynamicDataRequest({
+        coordinator,
+        token: coordinator.begin(middleIdentity),
+        productCodes: middleProductCodes,
+        request: (productCodes) => {
+          requestedBatches.push(productCodes)
+          return middleDeferred.promise
+        },
+        onSuccess: () => committed.push(`${label}-middle`),
+        onError: () => errors.push(`${label}-middle`),
+      })
+
+      coordinator.activate(firstIdentity)
+      const currentRequest = runShopHomeDynamicDataRequest({
+        coordinator,
+        token: coordinator.begin(firstIdentity),
+        productCodes: firstProductCodes,
+        request: (productCodes) => {
+          requestedBatches.push(productCodes)
+          return currentDeferred.promise
+        },
+        onSuccess: () => committed.push(`${label}-current`),
+        onError: () => errors.push(`${label}-current`),
+      })
+
+      currentDeferred.resolve({ CURRENT: { productCode: 'CURRENT', cartQuantity: 3 } })
+      await currentRequest
+      if (firstOutcome === 'success') {
+        firstDeferred.resolve({ STALE: { productCode: 'STALE', cartQuantity: 1 } })
+        middleDeferred.reject(new Error(`${label} stale middle error`))
+      } else {
+        firstDeferred.reject(new Error(`${label} stale first error`))
+        middleDeferred.resolve({ STALE: { productCode: 'STALE', cartQuantity: 2 } })
+      }
+      await Promise.all([firstRequest, middleRequest])
+
+      assert(
+        JSON.stringify(committed) === JSON.stringify([`${label}-current`]),
+        `${label} ABA 后旧成功响应不得提交`,
+      )
+      assert(errors.length === 0, `${label} ABA 后旧错误不得污染新状态`)
+    }
+
+    // 删除购物车末页商品会让 displayProducts 从 P1/P2 收缩并翻到 P3/P4；旧页响应不得覆盖新页。
+    await runAbaScenario(
+      'cart-delete-page',
+      pageOneIdentity,
+      pageTwoIdentity,
+      ['P1', 'P2'],
+      ['P3', 'P4'],
+      'success',
+    )
+    await runAbaScenario(
+      'store',
+      pageTwoIdentity,
+      storeTwoIdentity,
+      ['P3', 'P4'],
+      ['P3', 'P4'],
+      'error',
+    )
+    assert(
+      requestedBatches.every((batch) => batch.length === 2) && requestedBatches.length === 6,
+      '每页动态数据必须一次批量请求，不得按商品产生 N+1',
+    )
+
+    assert(
+      shopHomeSource.includes('const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {') &&
         shopHomeSource.includes('acc[item.productCode] = item.quantity') &&
-        shopHomeSource.includes('cartOnlyFilter') &&
+        shopHomeSource.includes('const displayProductCodes = useMemo(') &&
+        shopHomeSource.includes('buildShopHomeDynamicDataRequestIdentity({') &&
+        shopHomeSource.includes('createShopHomeDynamicDataRequestCoordinator()') &&
+        shopHomeSource.includes('runShopHomeDynamicDataRequest({') &&
+        !shopHomeSource.includes('const cartProductDynamicDataMap = useMemo') &&
         shopHomeSource.includes('const currentCartQuantity = cart?.isSummaryOnly') &&
-        shopHomeSource.includes('const dynamicData = cartOnlyFilter') &&
-        shopHomeSource.includes('? cartProductDynamicDataMap[product.productCode]') &&
-        shopHomeSource.includes(': dynamicDataMap[product.productCode]') &&
-        shopHomeSource.includes('const syncedDynamicData: StoreOrderDynamicData = {') &&
-        shopHomeSource.includes('cart?.isSummaryOnly') &&
-        shopHomeSource.includes('dynamicData?.cartQuantity ?? 0') &&
-        shopHomeSource.includes('cartQuantityByProductCode[product.productCode] ?? dynamicData?.cartQuantity ?? 0') &&
+        shopHomeSource.includes('mergeShopHomeCartDynamicData({') &&
+        productCardSource.includes("const hasSalesQuantity = typeof salesQuantity === 'number'") &&
         shopHomeSource.includes('dynamicData={cardDynamicData}'),
-      '商品卡没有在 summary-only 时保留 dynamic-data.cartQuantity，或 full cart 时没有用全局 cart.items 覆盖数量',
+      'ShopHome 未批量加载当前购物车页动态数据、未按真实购物车数量合并，或 ProductCard 的 Sales 显示契约回归',
     )
   })
   if (cartOnlyDynamicDataFailure) failures.push(cartOnlyDynamicDataFailure)
+
+  const dynamicDataCommitPhaseFailure = await runTest('动态数据身份只应在 layout 提交阶段激活', () => {
+    const identityStart = shopHomeSource.indexOf('const dynamicDataRequestIdentity =')
+    const pageTitleStart = shopHomeSource.indexOf('const pageTitle = useMemo', identityStart)
+    const layoutEffectStart = shopHomeSource.indexOf('useLayoutEffect(() => {', identityStart)
+    const requestEffectStart = shopHomeSource.indexOf(
+      'useEffect(() => {\n    const identity = dynamicDataRequestIdentity',
+      identityStart,
+    )
+    assert(identityStart >= 0 && pageTitleStart > identityStart, '找不到动态数据 identity render 区段')
+    assert(
+      !shopHomeSource.slice(identityStart, pageTitleStart).includes('.activate('),
+      'render 阶段不得直接 activate coordinator',
+    )
+    assert(
+      shopHomeSource.includes("import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'") &&
+        layoutEffectStart > pageTitleStart &&
+        requestEffectStart > layoutEffectStart,
+      'coordinator activate 必须使用 useLayoutEffect，且先于 passive request effect',
+    )
+    const layoutEffectBody = shopHomeSource.slice(layoutEffectStart, requestEffectStart)
+    assert(
+      layoutEffectBody.includes('coordinator.activate(dynamicDataRequestIdentity)') &&
+        layoutEffectBody.includes('coordinator.deactivate(dynamicDataRequestIdentity)'),
+      'layout effect 必须在提交时激活 identity，并在 cleanup 定向失效该 identity',
+    )
+  })
+  if (dynamicDataCommitPhaseFailure) failures.push(dynamicDataCommitPhaseFailure)
+
+  const progressiveSalesSummaryFailure = await runTest(
+    'Sales summary 应先提交基础动态数据、优先 50 个且拒绝旧响应与余量失败',
+    async () => {
+      const coordinator = createShopHomeSalesSummaryRequestCoordinator()
+      const identity = buildShopHomeDynamicDataRequestIdentity({
+        active: true,
+        storeCode: 'S1',
+        productCodes: ['P1', 'P2', 'P3'],
+      })
+      assert(
+        JSON.stringify(readShopHomeDynamicDataRequestProductCodes(identity)) ===
+          JSON.stringify(['P1', 'P2', 'P3']),
+        'Sales 分批商品码必须从稳定 identity 还原，不能依赖购物车重算产生的新数组引用',
+      )
+      const priorityDeferred = createDeferred<Record<string, number | null>>()
+      const remainderDeferred = createDeferred<Record<string, number | null>>()
+      const requestedBatches: string[][] = []
+      const committed: Record<string, number | null> = {}
+      let remainderRequest: Promise<void> | null = null
+
+      coordinator.activate(identity)
+      const priorityRequest = runShopHomeSalesSummaryRequest({
+        coordinator,
+        token: coordinator.begin(identity),
+        productCodes: ['P1', 'P2'],
+        request: (productCodes) => {
+          requestedBatches.push(productCodes)
+          return priorityDeferred.promise
+        },
+        onSuccess: (result) => {
+          Object.assign(committed, result)
+          remainderRequest = runShopHomeSalesSummaryRequest({
+            coordinator,
+            token: coordinator.begin(identity),
+            productCodes: ['P3'],
+            request: (productCodes) => {
+              requestedBatches.push(productCodes)
+              return remainderDeferred.promise
+            },
+            onSuccess: (nextResult) => Object.assign(committed, nextResult),
+            // 余量失败不得清掉已经可见的优先批 Sales。
+            onError: () => undefined,
+          })
+        },
+        onError: () => undefined,
+      })
+
+      assert(requestedBatches.length === 1, '基础动态数据提交前不应预取余量 Sales')
+      priorityDeferred.resolve({ P1: 12, P2: 0 })
+      await priorityRequest
+      assert(
+        JSON.stringify(requestedBatches) === JSON.stringify([['P1', 'P2'], ['P3']]),
+        'Sales 必须先请求优先批，成功后才请求余量',
+      )
+      assert(committed.P1 === 12 && committed.P2 === 0, '优先批成功后必须先提交其 Sales')
+      remainderDeferred.reject(new Error('remainder failed'))
+      await remainderRequest
+      assert(committed.P1 === 12 && committed.P2 === 0 && !('P3' in committed), '余量失败不得清空优先批')
+
+      const abaCoordinator = createShopHomeSalesSummaryRequestCoordinator()
+      const staleDeferred = createDeferred<Record<string, number | null>>()
+      const currentDeferred = createDeferred<Record<string, number | null>>()
+      const abaCommitted: string[] = []
+      const abaErrors: string[] = []
+      const filterIdentity = buildShopHomeDynamicDataRequestIdentity({
+        active: true,
+        storeCode: 'S1',
+        productCodes: ['FILTERED'],
+      })
+
+      abaCoordinator.activate(identity)
+      const staleRequest = runShopHomeSalesSummaryRequest({
+        coordinator: abaCoordinator,
+        token: abaCoordinator.begin(identity),
+        productCodes: ['P1'],
+        request: () => staleDeferred.promise,
+        onSuccess: () => abaCommitted.push('stale'),
+        onError: () => abaErrors.push('stale'),
+      })
+      // 切店、分页或筛选后又回到相同 identity 时，旧 token 也必须失效。
+      abaCoordinator.activate(filterIdentity)
+      abaCoordinator.activate(identity)
+      const currentRequest = runShopHomeSalesSummaryRequest({
+        coordinator: abaCoordinator,
+        token: abaCoordinator.begin(identity),
+        productCodes: ['P1'],
+        request: () => currentDeferred.promise,
+        onSuccess: () => abaCommitted.push('current'),
+        onError: () => abaErrors.push('current'),
+      })
+      staleDeferred.reject(new Error('stale error'))
+      currentDeferred.resolve({ P1: -3 })
+      await Promise.all([staleRequest, currentRequest])
+      assert(
+        JSON.stringify(abaCommitted) === JSON.stringify(['current']) && abaErrors.length === 0,
+        '筛选/切店 ABA 后旧 Sales 成功或错误不得污染当前页',
+      )
+
+      const dynamicDataEffect = extractFunctionBody(
+        shopHomeSource,
+        'useEffect(() => {\n    const identity = dynamicDataRequestIdentity',
+        'useEffect(() => {\n    let cancelled = false',
+      )
+      const removeBody = extractFunctionBody(
+        shopHomeSource,
+        'const handleRemoveFromCart = useCallback',
+        '  return (\n    <div className="shop-home-page">',
+      )
+      assert(
+        shopHomeSource.includes('includeSales: false') &&
+          dynamicDataEffect.includes('const requestProductCodes = readShopHomeDynamicDataRequestProductCodes(identity)') &&
+          dynamicDataEffect.includes('const prioritySalesProductCodes = requestProductCodes.slice(0, 50)') &&
+          dynamicDataEffect.includes('const remainderSalesProductCodes = requestProductCodes.slice(50)') &&
+          !dynamicDataEffect.includes('\n    prioritySalesProductCodes,\n') &&
+          !dynamicDataEffect.includes('\n    remainderSalesProductCodes,\n') &&
+          shopHomeSource.includes("logShopHomePerf('dynamic-base.done'") &&
+          shopHomeSource.includes("stage: 'sales-priority.done' | 'sales-remainder.done'") &&
+          dynamicDataEffect.includes('const requestRemainderSales = () => {') &&
+          dynamicDataEffect.includes('onError: requestRemainderSales') &&
+          dynamicDataEffect.includes('runShopHomeSalesSummaryRequest({') &&
+          !removeBody.includes('refreshDynamicData()') &&
+          removeBody.includes('const [cartRefreshResult] = await Promise.allSettled([') &&
+          removeBody.includes('refreshCart(),') &&
+          removeBody.includes('refreshDynamicDataForProducts([productCode]),'),
+        'ShopHome 未使用稳定 identity 分批、优先失败后继续余量、性能日志或删除局部刷新',
+      )
+    },
+  )
+  if (progressiveSalesSummaryFailure) failures.push(progressiveSalesSummaryFailure)
+
+  const storeScopedRefreshFailure = await runTest('单商品动态数据刷新应拒绝切店 ABA 的旧响应，并保留并发商品各自结果', async () => {
+    const coordinator = createShopHomeDynamicDataStoreScopeCoordinator()
+    const staleResponse = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+    const productAResponse = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+    const productBResponse = createDeferred<Record<string, { productCode: string; cartQuantity: number }>>()
+    const committed: Record<string, { productCode: string; cartQuantity: number }> = {}
+
+    coordinator.activate('S1')
+    const staleToken = coordinator.capture('S1')
+    const staleRequest = runShopHomeStoreScopedDynamicDataRequest({
+      coordinator,
+      token: staleToken,
+      productCodes: ['STALE'],
+      request: () => staleResponse.promise,
+      onSuccess: (result) => Object.assign(committed, result),
+    })
+
+    // S1 -> S2 -> S1 必须产生新代次，旧 S1 响应即使最后返回也不能合并 Sales。
+    coordinator.activate('S2')
+    coordinator.activate('S1')
+    const currentToken = coordinator.capture('S1')
+    const productARequest = runShopHomeStoreScopedDynamicDataRequest({
+      coordinator,
+      token: currentToken,
+      productCodes: ['A'],
+      request: () => productAResponse.promise,
+      onSuccess: (result) => Object.assign(committed, result),
+    })
+    const productBRequest = runShopHomeStoreScopedDynamicDataRequest({
+      coordinator,
+      token: currentToken,
+      productCodes: ['B'],
+      request: () => productBResponse.promise,
+      onSuccess: (result) => Object.assign(committed, result),
+    })
+
+    productBResponse.resolve({ B: { productCode: 'B', cartQuantity: 2 } })
+    staleResponse.resolve({ STALE: { productCode: 'STALE', cartQuantity: 99 } })
+    productAResponse.resolve({ A: { productCode: 'A', cartQuantity: 1 } })
+    await Promise.all([staleRequest, productARequest, productBRequest])
+
+    assert(!('STALE' in committed), '切店 ABA 后旧单商品响应不得合并')
+    assert(committed.A?.cartQuantity === 1 && committed.B?.cartQuantity === 2, '不同商品的局部刷新不得互相覆盖')
+
+    const refreshDynamicDataForProductsBody = extractFunctionBody(
+      shopHomeSource,
+      'const refreshDynamicDataForProducts = useCallback',
+      'const updateScanFeedback = useCallback',
+    )
+    assert(
+      refreshDynamicDataForProductsBody.includes('const coordinator = dynamicDataStoreScopeCoordinatorRef.current') &&
+        refreshDynamicDataForProductsBody.includes('const token = coordinator.capture(storeCode)') &&
+        refreshDynamicDataForProductsBody.includes('runShopHomeStoreScopedDynamicDataRequest({'),
+      '单商品刷新没有接入可测试的门店范围请求协调逻辑',
+    )
+  })
+  if (storeScopedRefreshFailure) failures.push(storeScopedRefreshFailure)
+
+  const cartRefreshScopeFailure = await runTest('删除后的购物车刷新应拒绝切店与 ABA 的旧响应', () => {
+    const body = extractFunctionBody(
+      shopHomeSource,
+      'const refreshCart = useCallback',
+      'const ensureFullCart = useCallback',
+    )
+    assert(
+      body.includes('const coordinator = dynamicDataStoreScopeCoordinatorRef.current') &&
+        body.includes('const token = coordinator.capture(storeCode)') &&
+        body.includes('if (!coordinator.isCurrent(token))') &&
+        body.indexOf('if (!coordinator.isCurrent(token))') < body.indexOf('setCart(nextCart)'),
+      '购物车刷新必须在 setCart 前校验门店 generation，阻止 S1→S2→S1 的旧响应覆盖',
+    )
+  })
+  if (cartRefreshScopeFailure) failures.push(cartRefreshScopeFailure)
+
+  const storeSwitchMutationStateFailure = await runTest('切店应清理旧门店商品操作状态和待提交定时器', () => {
+    const body = extractFunctionBody(
+      shopHomeSource,
+      'useEffect(() => {\n    const nextStoreCode = selectedStore?.storeCode ?? null',
+      'useEffect(() => {\n    return () => {',
+    )
+    assert(
+      body.includes('Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))') &&
+        body.includes('quantityUpdateTimersRef.current = {}') &&
+        body.includes('quantityUpdateVersionRef.current = {}') &&
+        body.includes('setOptimisticCartQuantityMap({})') &&
+        body.includes('setRemovingCartProductMap({})') &&
+        body.includes('setQuantityLoadingMap({})'),
+      '切店必须清空旧门店乐观数量、删除/加载状态并失效待提交数量更新',
+    )
+  })
+  if (storeSwitchMutationStateFailure) failures.push(storeSwitchMutationStateFailure)
 
   const summaryCartFailure = await runTest('商城首页 summary-only 不应阻断当前页商品卡购物车状态', () => {
     assert(
@@ -401,7 +923,7 @@ async function main() {
   const productCardRemoveOptimisticFailure = await runTest('商品卡删除应先乐观退出已入车状态并防重复点击', () => {
     const body = extractFunctionBody(
       shopHomeSource,
-      'const handleRemoveFromCart = async',
+      'const handleRemoveFromCart = useCallback',
       '  return (\n    <div className="shop-home-page">',
     )
 
@@ -413,6 +935,8 @@ async function main() {
         body.includes('if (removingCartProductMap[productCode])') &&
         body.includes('setRemovingCartProductMap((prev) => ({ ...prev, [productCode]: true }))') &&
         body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: 0 }))') &&
+        body.includes('const [cartRefreshResult] = await Promise.allSettled') &&
+        body.includes("cartRefreshResult.status === 'fulfilled' && cartRefreshResult.value") &&
         body.includes('delete next[productCode]') &&
         shopHomeSource.includes('const isRemovingFromCart = Boolean(removingCartProductMap[product.productCode])') &&
         shopHomeSource.includes('const optimisticCartQuantity = isRemovingFromCart') &&

@@ -501,6 +501,24 @@ export interface StoreOrderDynamicData {
   lastQuantity?: number
   lastAllocQuantity?: number
   cartQuantity: number
+  // 最近来货日至今的销量；后端未返回或不可用时为 null/undefined，卡片据此隐藏 Sales 入口。
+  salesQuantitySinceLastArrival?: number | null
+}
+
+export interface StoreOrderDynamicDataRequest {
+  storeCode: string
+  productCodes: string[]
+  includeSales?: boolean
+}
+
+export interface StoreOrderProductSalesSummaryQuery {
+  storeCode: string
+  productCodes: string[]
+}
+
+export interface StoreOrderProductSalesSummaryItem {
+  productCode: string
+  salesQuantitySinceLastArrival: number | null
 }
 
 export interface StoreOrderCartItem {
@@ -718,4 +736,49 @@ export interface PasteReplaceStoreOrderLinesPayload {
     importPrice?: number
     action?: StoreOrderPasteAction
   }>
+}
+
+// 商品活动记录类型：订货发货行、销售行或区间小计行。
+export type StoreOrderProductActivityRecordType = 'order' | 'sales' | 'salesSubtotal'
+
+// 商品活动记录筛选维度；all 表示合并一张时间轴表格。
+export type StoreOrderProductActivityFilter = 'all' | 'order' | 'sales'
+
+// 商品“订货 · 发货 · 销售”合并活动历史分页查询参数。
+export interface StoreOrderProductActivityHistoryQuery {
+  storeCode: string
+  productCode: string
+  pageNumber: number
+  pageSize: number
+  recordType: StoreOrderProductActivityFilter
+}
+
+// 商品活动历史行。订货行带订单字段，销售行带销量字段；未知/缺失字段由服务归一化防御。
+export interface StoreOrderProductActivityHistoryItem {
+  recordType: StoreOrderProductActivityRecordType
+  recordDate?: string
+  periodStartDate?: string
+  periodEndDate?: string
+  orderGUID?: string
+  orderNo?: string
+  orderDate?: string
+  outboundDate?: string
+  flowStatus?: number
+  quantity?: number
+  allocQuantity?: number
+  salesQuantity?: number
+  averagePrice?: number | null
+}
+
+// 商品活动历史分页结果，含紧凑摘要。
+export interface StoreOrderProductActivityHistoryResult {
+  items: StoreOrderProductActivityHistoryItem[]
+  total: number
+  pageNumber: number
+  pageSize: number
+  lastArrivalDate?: string | null
+  endDate?: string | null
+  latestOrderQuantity?: number
+  latestAllocQuantity?: number
+  totalSalesQuantity?: number
 }

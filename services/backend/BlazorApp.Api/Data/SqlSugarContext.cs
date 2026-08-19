@@ -402,7 +402,7 @@ namespace BlazorApp.Api.Data
                 EnsureInvoiceEmailConfigurationMultiAccountSchema();
                 EnsureContainerDetailSchemaColumns();
                 EnsureDomesticSetTemplateEnabledSupplierNameUniqueIndex();
-                CreateNormalIndexes();
+                CreateIndexesForCurrentDatabase();
                 EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
 
                 Console.WriteLine("数据库表检查完成！");
@@ -412,6 +412,23 @@ namespace BlazorApp.Api.Data
                 Console.WriteLine($"初始化表时出现错误: {ex.Message}");
                 Console.WriteLine($"错误详情: {ex.StackTrace}");
                 throw;
+            }
+        }
+
+        private void CreateIndexesForCurrentDatabase()
+        {
+            // 正常建表流程按当前方言进入幂等索引清单；SQL Server 保持原有创建路径不变。
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                CreateNormalIndexes();
+            }
+            else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                CreatePostgreSQLIndexesIfNotExists();
+            }
+            else if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                CreateSqliteIndexesIfNotExists();
             }
         }
 
@@ -1354,6 +1371,10 @@ namespace BlazorApp.Api.Data
                 {
                     CreatePostgreSQLIndexesIfNotExists();
                 }
+                else if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+                {
+                    CreateSqliteIndexesIfNotExists();
+                }
 
                 Console.WriteLine("✓ 索引检查完成");
             }
@@ -1361,6 +1382,21 @@ namespace BlazorApp.Api.Data
             {
                 Console.WriteLine($"检查索引时出现错误: {ex.Message}");
                 // 索引创建失败不影响主要功能，仅记录日志
+            }
+        }
+
+        private void CreateSqliteIndexesIfNotExists()
+        {
+            var indexStatements = new Dictionary<string, string>
+            {
+                // 商品最近来货后销量：键列与批量统计筛选保持一致，SQLite 不支持 INCLUDE。
+                ["IX_ProductStoreDailySalesStatistic_Branch_Product_Date"] =
+                    "CREATE INDEX IF NOT EXISTS [IX_ProductStoreDailySalesStatistic_Branch_Product_Date] ON [ProductStoreDailySalesStatistic]([BranchCode], [ProductCode], [Date])",
+            };
+
+            foreach (var indexStatement in indexStatements)
+            {
+                _db.Ado.ExecuteCommand(indexStatement.Value);
             }
         }
 
@@ -1465,6 +1501,8 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity\" ON \"ProductStoreDailySalesStatistic\" (\"Date\", \"SupplierCode\", \"TotalQuantity\")",
                 ["IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product\" ON \"ProductStoreDailySalesStatistic\" (\"Date\", \"BranchCode\", \"SupplierCode\", \"ProductCode\")",
+                ["IX_ProductStoreDailySalesStatistic_Branch_Product_Date"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ProductStoreDailySalesStatistic_Branch_Product_Date\" ON \"ProductStoreDailySalesStatistic\" (\"BranchCode\", \"ProductCode\", \"Date\") INCLUDE (\"TotalQuantity\", \"TotalAmount\")",
                 ["IX_SalesStatisticRefreshState_Type_Date"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_SalesStatisticRefreshState_Type_Date\" ON \"SalesStatisticRefreshState\" (\"StatisticType\", \"Date\")",
                 ["IX_ScheduledTaskLog_TaskType"] =
@@ -1628,6 +1666,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_AddedAt' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_AddedAt ON [CartItem](AddedAt)",
                 ["IX_WareHouseOrder_CartScope"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_CartScope' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid])",
+                ["IX_ProductStoreDailySalesStatistic_Branch_Product_Date"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Branch_Product_Date' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Branch_Product_Date ON [ProductStoreDailySalesStatistic](BranchCode, ProductCode, Date) INCLUDE(TotalQuantity, TotalAmount)",
                 ["IX_LocalSupplier_Status"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Status' AND object_id = OBJECT_ID('LocalSupplier')) CREATE INDEX IX_LocalSupplier_Status ON [LocalSupplier](Status)",
                 ["IX_LocalSupplier_Name"] =
@@ -1701,6 +1741,10 @@ namespace BlazorApp.Api.Data
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
                     CreatePostgreSQLIndexesIfNotExists();
+                }
+                else if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+                {
+                    CreateSqliteIndexesIfNotExists();
                 }
 
                 Console.WriteLine("✓ 所有索引创建成功");
@@ -1902,6 +1946,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Supplier_Product' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Supplier_Product ON [ProductStoreDailySalesStatistic](Date, SupplierCode, ProductCode)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Supplier_Quantity ON [ProductStoreDailySalesStatistic](Date, SupplierCode, TotalQuantity)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Date_Branch_Supplier_Product ON [ProductStoreDailySalesStatistic](Date, BranchCode, SupplierCode, ProductCode)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductStoreDailySalesStatistic_Branch_Product_Date' AND object_id = OBJECT_ID('ProductStoreDailySalesStatistic')) CREATE INDEX IX_ProductStoreDailySalesStatistic_Branch_Product_Date ON [ProductStoreDailySalesStatistic](BranchCode, ProductCode, Date) INCLUDE(TotalQuantity, TotalAmount)",
                 // SalesStatisticRefreshState表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SalesStatisticRefreshState_Type_Date' AND object_id = OBJECT_ID('SalesStatisticRefreshState')) CREATE INDEX IX_SalesStatisticRefreshState_Type_Date ON [SalesStatisticRefreshState](StatisticType, Date)",
                 // StoreRetailPrice表的普通索引
