@@ -1,4 +1,24 @@
 {
+  "supplierOrderingExtension": {
+    "name": "供应商下单助手",
+    "checking": "检测中…",
+    "statusNotInstalled": "未安装 / 可能已禁用或超时",
+    "statusInstalled": "订货助手 v{{version}} 已安装",
+    "statusOptionalUpdate": "发现新版本 v{{version}}",
+    "statusForcedUpdate": "当前版本已停止支持，请更新",
+    "installAssistant": "安装订货助手",
+    "version": "版本",
+    "recheck": "重新检测",
+    "notPublished": "尚未发布",
+    "installEdge": "安装 Edge 扩展",
+    "installChrome": "安装 Chrome 扩展",
+    "openAssistant": "打开助手并登录",
+    "openFailed": "无法打开助手，请点击重新检测后再试",
+    "mobileHint": "请使用电脑浏览器打开此页面安装扩展",
+    "releaseUnavailable": "暂无法获取版本信息，请稍后重试",
+    "releaseNotes": "更新说明",
+    "recommended": "推荐"
+  },
   "login": {
     "welcome": "欢迎登录",
     "subtitle": "请输入您的账号信息",

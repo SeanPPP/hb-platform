@@ -1,0 +1,115 @@
+# HB Supplier Order 扩展
+
+Chrome / Edge Manifest V3 扩展，在供应商列表页（内置 DATS）为每个商品注入“上次订货日期/数量、至今销量”按钮，点击在侧栏查看该商品 12 个月内最多 6 次采购周期（订货/销售混排）。
+
+## 目录
+
+- `src/`：扩展源码（不含构建产物与凭据）
+- `src/lib/`：可测试的纯逻辑模块（版本、transform、profile 校验、微批、节点状态、分页/混排、握手、鉴权判定、single-flight refresh、i18n）
+- `src/background/service-worker.js`：统一请求、令牌存储、single-flight refresh、消息路由、动态内容脚本注册
+- `src/content/shop-bridge.js`：`/shop` 页面桥接（PING/OPEN）
+- `src/content/list.js`：供应商列表页注入
+- `src/sidepanel/`：侧栏 UI
+- `test/`：Node 原生测试
+- `build.mjs`：零依赖构建脚本
+- `dist/chrome`、`dist/edge`：构建产物（同版本双包）
+
+## 环境要求
+
+- Node.js 20+（构建与测试使用原生 `node:test`，无第三方依赖）
+
+## 本地加载
+
+先构建：
+
+```bash
+npm test
+npm run build
+```
+
+### Chrome
+
+1. 打开 `chrome://extensions`。
+2. 打开右上角“开发者模式”。
+3. 点击“加载已解压的扩展程序”，选择 `dist/chrome`。
+
+### Edge
+
+1. 打开 `edge://extensions`。
+2. 打开左下角“开发人员模式”。
+3. 点击“加载解压缩的扩展”，选择 `dist/edge`。
+
+加载后：
+
+1. 点击扩展图标打开侧栏，登录 HB 账号。
+2. 若当前用户返回了 `stores`，选择门店；否则手动输入门店编码并保存。
+3. 在“供应商”列表对 DATS origin 点击“授权”（需用户手势，仅申请该供应商 origin 的可选权限）。
+4. 打开 `https://www.dats.com.au/` 的列表页，商品卡片下方会出现按钮；点击按钮在侧栏定位到该 `supplierCode/itemNumber`。
+
+## 权限边界
+
+- `host_permissions` 仅包含 HB API 正式源；`/shop` 桥接脚本仅注入 HB Web 正式源。
+- `optional_host_permissions` 为 `https://*/*`，仅在侧栏用户手势下逐供应商 origin 申请。
+- 配置只解释声明式 selector / attribute / text，以及 `trim` / `uppercase` / `lowercase` 三类 transform；绝不 `eval` / `Function` / 远程 JS。
+- access token 存 `chrome.storage.session`，refresh token 存 `chrome.storage.local`，不保存密码。
+
+## 构建与双包
+
+`build.mjs` 生成 `dist/chrome` 与 `dist/edge`，两者 manifest `version` 相同（1.0.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
+
+```bash
+HB_API_ORIGIN=https://staging.example.com npm run build
+HB_WEB_ORIGIN=https://staff.example.com HB_API_ORIGIN=https://api.example.com npm run build
+```
+
+构建会做 manifest JSON 语法校验，并在最后校验双包版本一致。
+
+## HB 后端配置
+
+参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、两个隐藏商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
+
+```bash
+BrowserExtension__LatestVersion=1.0.1
+BrowserExtension__MinimumVersion=1.0.0
+BrowserExtension__ChromeStoreUrl=https://chromewebstore.google.com/detail/...
+BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail/...
+```
+
+紧急停用内置 DATS 时将 `UseBuiltInDatsProfile` 设为 `false` 并递增 `ConfigVersion`；扩展下一次同步配置后会移除该域名脚本，无需发新版。
+
+## 发布
+
+### Chrome Unlisted
+
+1. 从构建目录内部打包，确保 `manifest.json` 位于 zip 根目录：`cd dist/chrome && zip -r ../hb-supplier-order-chrome.zip .`。
+2. 在 Chrome Web Store 开发者后台创建/选择项目，上传 zip。
+3. “可见性”选择“不公开（Unlisted）”，提交审核。
+4. 审核通过后按后台给出的 Unlisted 链接分发。
+
+### Edge Hidden
+
+1. 从 `dist/edge` 目录内部打包，确保 `manifest.json` 位于 zip 根目录。
+2. 在 Microsoft Partner Center 的扩展页面上传包。
+3. 可见性选择“隐藏（Hidden）”，按需配置组织内分发或隐藏链接。
+
+正式图标源稿位于 `assets/icon-master.svg`，浏览器所需的 16/32/48/128px PNG 位于 `src/icons/`，构建时会原样复制到两个商店包；本仓库不包含任何凭据或商店密钥。
+
+## 版本与更新策略
+
+- 普通供应商（仅新增 `supplierCode/displayName/origins/选择器` 等声明式配置）通过服务端 `GET /api/react/v1/browser-extension/supplier-profiles` 下发，**无需发布新版**；扩展内置 DATS 默认 profile，服务端不可用时回退内置默认。
+- 需要新增特殊逻辑（新的解析行为、交互或 API 契约变化）时，才需要修改扩展代码并发布新版。
+- 双包始终保持同一版本号（`build.mjs` 会校验）。
+
+## 自动更新与补丁回滚
+
+- 商店安装版由 Chrome Web Store / Edge Add-ons 自动推送更新，无需用户操作。
+- 补丁流程：修改代码 → `npm test` 全绿 → `npm run build` 重新生成双包 → 递增 `package.json` 版本（同时更新 manifest 模板占位由构建替换）→ 上传商店审核。
+- 商店版不能降低版本号。回滚流程是恢复上一版本代码，递增一个更高的补丁版本，重新测试、构建并提交审核；本地加载版可直接重新加载旧构建目录。
+
+## 测试
+
+```bash
+npm test
+```
+
+覆盖：semver/版本状态、profile 校验与安全 transform、微批去重与分页上限、动态节点状态纯逻辑、分页/筛选/混排、握手校验、鉴权判定、single-flight refresh、i18n。

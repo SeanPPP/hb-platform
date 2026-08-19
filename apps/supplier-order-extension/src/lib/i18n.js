@@ -1,0 +1,88 @@
+export const SUPPORTED_LOCALES = ['zh', 'en'];
+export const DEFAULT_LOCALE = 'zh';
+
+export const MESSAGES = {
+  zh: {
+    title: 'HB 供应商订货助手',
+    login: '登录',
+    logout: '退出',
+    username: '用户名',
+    password: '密码',
+    save: '保存',
+    emptyCredentials: '请输入用户名和密码',
+    store: '门店',
+    storeCode: '门店编码',
+    supplier: '供应商',
+    grant: '授权',
+    granted: '已授权',
+    grantSuccess: '授权成功',
+    grantDenied: '未授权',
+    grantFailed: '授权失败',
+    storeSaved: '已保存门店',
+    all: '全部',
+    order: '订货',
+    sales: '销售',
+    type: '类型',
+    date: '日期',
+    orderNo: '单号',
+    quantity: '数量',
+    price: '平均价格',
+    page: '页',
+    prev: '上一页',
+    next: '下一页',
+    noData: '暂无数据',
+    loading: '加载中…',
+    error: '加载失败',
+    noMatch: '无匹配',
+    noPurchase: '无采购',
+    noStore: '请先选择门店',
+    lastOrder: '上次订货',
+    salesToDate: '至今销量',
+  },
+  en: {
+    title: 'HB Supplier Ordering Assistant',
+    login: 'Login',
+    logout: 'Logout',
+    username: 'Username',
+    password: 'Password',
+    save: 'Save',
+    emptyCredentials: 'Enter username and password',
+    store: 'Store',
+    storeCode: 'Store code',
+    supplier: 'Supplier',
+    grant: 'Grant',
+    granted: 'Granted',
+    grantSuccess: 'Permission granted',
+    grantDenied: 'Permission not granted',
+    grantFailed: 'Permission failed',
+    storeSaved: 'Store saved',
+    all: 'All',
+    order: 'Order',
+    sales: 'Sales',
+    type: 'Type',
+    date: 'Date',
+    orderNo: 'Reference no.',
+    quantity: 'Qty',
+    price: 'Average price',
+    page: 'Page',
+    prev: 'Prev',
+    next: 'Next',
+    noData: 'No data',
+    loading: 'Loading…',
+    error: 'Load failed',
+    noMatch: 'No match',
+    noPurchase: 'No purchase',
+    noStore: 'Select a store first',
+    lastOrder: 'Last order',
+    salesToDate: 'Sales to date',
+  },
+};
+
+export function normalizeLocale(locale) {
+  return SUPPORTED_LOCALES.includes(locale) ? locale : DEFAULT_LOCALE;
+}
+
+export function t(locale, key) {
+  const dict = MESSAGES[locale] || MESSAGES[DEFAULT_LOCALE];
+  return dict[key] != null ? dict[key] : key;
+}

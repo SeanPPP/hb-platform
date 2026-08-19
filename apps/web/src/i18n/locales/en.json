@@ -1,4 +1,24 @@
 {
+  "supplierOrderingExtension": {
+    "name": "Supplier Ordering Assistant",
+    "checking": "Detecting…",
+    "statusNotInstalled": "Not installed / may be disabled or timed out",
+    "statusInstalled": "Ordering Assistant v{{version}} is installed",
+    "statusOptionalUpdate": "Version v{{version}} is available",
+    "statusForcedUpdate": "This version is no longer supported. Please update.",
+    "installAssistant": "Install Ordering Assistant",
+    "version": "Version",
+    "recheck": "Recheck",
+    "notPublished": "Not published yet",
+    "installEdge": "Install for Edge",
+    "installChrome": "Install for Chrome",
+    "openAssistant": "Open Assistant and sign in",
+    "openFailed": "Unable to open the assistant. Recheck and try again.",
+    "mobileHint": "Please open this page in a desktop browser to install the extension",
+    "releaseUnavailable": "Version information is unavailable. Please try again later.",
+    "releaseNotes": "Release notes",
+    "recommended": "Recommended"
+  },
   "login": {
     "welcome": "Welcome",
     "subtitle": "Please enter your credentials",

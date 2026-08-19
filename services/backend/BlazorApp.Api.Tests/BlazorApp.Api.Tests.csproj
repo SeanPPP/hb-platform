@@ -86,6 +86,7 @@
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ContainerAllocationSalesReportServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesAuthorizationPipelineTests.cs" />
+    <Compile Include="BrowserExtensionTests.cs" />
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />

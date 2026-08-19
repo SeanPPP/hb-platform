@@ -16,6 +16,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import LanguageSwitch from '../components/LanguageSwitch'
 import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
+import SupplierOrderingExtensionEntry from '../components/SupplierOrderingExtensionEntry'
 import { getUserStores } from '../services/userService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../services/warehouseCategoryService'
 import { getActiveStoreOrderCart, getActiveStoreOrderCartSummary } from '../services/storeOrderService'
@@ -653,6 +654,7 @@ export default function ShopLayout() {
             action={<Space>{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
           />
         ) : null}
+        {isShopHomePage ? <SupplierOrderingExtensionEntry /> : null}
         <Outlet />
       </div>
 

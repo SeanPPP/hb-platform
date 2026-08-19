@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HB Supplier Order</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1 id="pageTitle">HB Supplier Order</h1>
+      <button id="localeBtn" type="button">EN</button>
+    </header>
+    <main>
+      <section id="authSection" hidden>
+        <input id="username" type="text" autocomplete="username" />
+        <input id="password" type="password" autocomplete="current-password" />
+        <button id="loginBtn" type="button">登录</button>
+      </section>
+
+      <section id="userSection" hidden>
+        <div id="userInfo"></div>
+        <button id="logoutBtn" type="button">退出</button>
+      </section>
+
+      <section id="storeSection" hidden>
+        <label id="storeLabel" for="storeSelect">门店</label>
+        <select id="storeSelect" hidden></select>
+        <input id="storeCodeInput" type="text" hidden />
+        <button id="storeSaveBtn" type="button">保存</button>
+      </section>
+
+      <section id="supplierSection" hidden>
+        <h2 id="supplierTitle">供应商</h2>
+        <ul id="supplierList"></ul>
+      </section>
+
+      <section id="itemSection" hidden>
+        <h2 id="itemTitle"></h2>
+        <div class="filters">
+          <button type="button" data-filter="all" class="active">全部</button>
+          <button type="button" data-filter="order">订货</button>
+          <button type="button" data-filter="sales">销售</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th id="typeHeading">类型</th>
+                <th id="dateHeading">日期</th>
+                <th id="orderNoHeading">单号</th>
+                <th id="quantityHeading">数量</th>
+                <th id="priceHeading">平均价格</th>
+              </tr>
+            </thead>
+            <tbody id="itemBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prevBtn" type="button">上一页</button>
+          <span id="pageInfo"></span>
+          <button id="nextBtn" type="button">下一页</button>
+        </div>
+      </section>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

@@ -536,6 +536,9 @@ builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<AppUpdatePolicyOptions>(
     builder.Configuration.GetSection("AppUpdatePolicy")
 );
+builder.Services.Configure<BrowserExtensionOptions>(
+    builder.Configuration.GetSection(BrowserExtensionOptions.SectionName)
+);
 builder.Services
     .AddOptions<PosHandheldUpdatePolicyOptions>()
     .Bind(builder.Configuration.GetSection("PosHandheldUpdatePolicy"))
@@ -771,6 +774,8 @@ builder.Services.AddScoped<
     StoreOrderLocationProductLookupService
 >();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
+builder.Services.AddScoped<IBrowserExtensionAccessService, BrowserExtensionAccessService>();
+builder.Services.AddScoped<IBrowserExtensionService, BrowserExtensionService>();
 builder.Services.AddScoped<PreorderReactService>();
 builder.Services.AddScoped<IPreorderReactService>(provider =>
     provider.GetRequiredService<PreorderReactService>()

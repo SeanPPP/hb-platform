@@ -1,0 +1,166 @@
+/* 供应商下单助手安装入口：独立 scoped CSS，前缀 soe- 避免污染商城全局样式。 */
+
+.soe-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 1320px;
+  margin: 12px auto 0;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+
+.soe-entry-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.soe-entry-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.soe-entry--ok .soe-entry-dot { background: #16a34a; }
+.soe-entry--optional .soe-entry-dot { background: #d97706; }
+.soe-entry--forced .soe-entry-dot { background: #dc2626; }
+.soe-entry--checking .soe-entry-dot { background: #2563eb; animation: soe-pulse 1.2s ease-in-out infinite; }
+.soe-entry--missing .soe-entry-dot { background: #9ca3af; }
+
+/* 弹窗内状态圆点使用独立的 tone 后缀类，保持与状态条一致。 */
+.soe-entry-dot--ok { background: #16a34a; }
+.soe-entry-dot--optional { background: #d97706; }
+.soe-entry-dot--forced { background: #dc2626; }
+.soe-entry-dot--checking { background: #2563eb; animation: soe-pulse 1.2s ease-in-out infinite; }
+.soe-entry-dot--missing { background: #9ca3af; }
+
+.soe-entry-name { font-weight: 600; color: #111827; white-space: nowrap; }
+.soe-entry-status { color: #4b5563; }
+.soe-entry--optional .soe-entry-status { color: #b45309; }
+.soe-entry--forced .soe-entry-status { color: #dc2626; font-weight: 600; }
+.soe-entry-version { color: #6b7280; font-size: 12px; white-space: nowrap; }
+.soe-entry-action {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.soe-entry-recheck {
+  flex: 0 0 auto;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #374151;
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.soe-entry-recheck:hover { border-color: #2563eb; color: #2563eb; }
+
+.soe-entry-main:focus-visible,
+.soe-entry-recheck:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.soe-dialog-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.soe-dialog-status-text { font-weight: 600; color: #111827; }
+.soe-dialog-version { color: #6b7280; font-size: 12px; margin-left: auto; }
+.soe-dialog-browser { color: #9ca3af; font-size: 12px; }
+
+.soe-install-list { display: grid; gap: 10px; margin-bottom: 14px; }
+
+.soe-install-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+  text-decoration: none;
+}
+
+a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
+
+.soe-install-link--primary { border-color: #2563eb; box-shadow: inset 0 0 0 1px #2563eb; }
+.soe-install-link--disabled { color: #9ca3af; cursor: not-allowed; }
+.soe-install-link--disabled.soe-install-link--primary { box-shadow: none; border-color: #93c5fd; }
+
+.soe-install-link-label { font-weight: 500; }
+.soe-install-link-state { color: #9ca3af; font-size: 12px; }
+.soe-install-link-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #2563eb;
+  font-size: 12px;
+}
+
+.soe-mobile-hint,
+.soe-unavailable { margin: 0 0 14px; color: #6b7280; }
+
+.soe-notes {
+  border-top: 1px solid #f0f0f0;
+  padding-top: 12px;
+  margin-bottom: 14px;
+}
+
+.soe-notes-title { font-weight: 600; color: #111827; margin-bottom: 6px; }
+.soe-notes p { margin: 0; color: #4b5563; white-space: pre-wrap; }
+
+.soe-open { margin-top: 4px; }
+
+@keyframes soe-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (max-width: 720px) {
+  .soe-entry {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    margin: 8px 12px 0;
+  }
+
+  .soe-entry-main { flex-wrap: wrap; }
+  .soe-entry-action { margin-left: 19px; }
+  .soe-entry-recheck { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .soe-entry-dot { animation: none !important; }
+}
