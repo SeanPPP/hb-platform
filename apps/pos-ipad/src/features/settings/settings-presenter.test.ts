@@ -1726,6 +1726,27 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
   assert.equal(port.dangerousActionCalls, 4);
 });
 
+test("清除设备注册必须先展示影响说明，并只在最终确认时传递瞬时员工条码", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  assert.equal(presenter.requestDeviceRegistrationReset(), true);
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "reset-device-registration",
+  });
+  assert.deepEqual(port.deviceResetBarcodes, []);
+
+  await presenter.confirmDangerousAction(" 9900000000001 ");
+
+  assert.deepEqual(port.deviceResetBarcodes, ["9900000000001"]);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(
+    presenter.getState().statusCode,
+    "device-registration-reset-completed",
+  );
+});
+
 test("任何待同步、未决支付、活动购物车或耐久写入都会阻断危险操作并保留本地数据", async () => {
   const pendingCases: SettingsPendingDataSnapshot[] = [
     safePending({ paymentConfigurationSensitiveOrderCount: 1 }),
@@ -2219,6 +2240,7 @@ class FakeSettingsPort implements SettingsControlPort {
     targetStoreCode: string;
     terminalName?: string;
   }[] = [];
+  public readonly deviceResetBarcodes: string[] = [];
 
   public async loadSnapshot(): Promise<SettingsSnapshot> {
     this.loadCalls += 1;
@@ -2252,6 +2274,8 @@ class FakeSettingsPort implements SettingsControlPort {
 
   public async executeDangerousAction(
     action: SettingsDangerousConfirmation,
+    _signal?: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult> {
     this.dangerousActionCalls += 1;
     if (this.failSafety) {
@@ -2311,6 +2335,10 @@ class FakeSettingsPort implements SettingsControlPort {
         targetStoreCode: action.targetStoreCode,
         ...(action.terminalName ? { terminalName: action.terminalName } : {}),
       });
+      return { status: "completed" as const, kind: action.kind };
+    }
+    if (action.kind === "reset-device-registration") {
+      this.deviceResetBarcodes.push(employeeBarcode?.trim() ?? "");
       return { status: "completed" as const, kind: action.kind };
     }
     if (action.kind === "change-payment-settings") {

@@ -27,6 +27,7 @@ public static class CashierAuthorizationPolicies
     public const string SpecialProductsView = "Cashier.SpecialProductsView";
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
     public const string DeviceRegistration = "Cashier.DeviceRegistration";
+    public const string DeviceRegistrationReset = "Cashier.DeviceRegistrationReset";
     public const string OperationAuditView = "Cashier.OperationAuditView";
     public const string HoldOrder = "Cashier.HoldOrder";
     public const string RecallOrder = "Cashier.RecallOrder";
@@ -59,6 +60,11 @@ public static class CashierAuthorizationPolicies
         Add(options, SpecialProductsView, Permissions.PosTerminal.SpecialProducts.View);
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);
         Add(options, DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration);
+        AddFreshEmployee(
+            options,
+            DeviceRegistrationReset,
+            TimeSpan.FromMinutes(2),
+            Permissions.PosTerminal.Settings.DeviceRegistration);
         Add(options, OperationAuditView, Permissions.PosTerminal.Audit.View);
         Add(options, HoldOrder, Permissions.PosTerminal.Sales.HoldOrder);
         Add(options, RecallOrder, Permissions.PosTerminal.Sales.RecallOrder);
@@ -87,9 +93,30 @@ public static class CashierAuthorizationPolicies
             }
         });
     }
+
+    private static void AddFreshEmployee(
+        AuthorizationOptions options,
+        string name,
+        TimeSpan maximumTicketAge,
+        params string[] permissions)
+    {
+        options.AddPolicy(name, policy =>
+        {
+            policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new CashierPermissionRequirement(
+                permissions,
+                RequireFreshOnlineTicket: true,
+                RequireActiveEmployee: true,
+                MaximumTicketAge: maximumTicketAge));
+        });
+    }
 }
 
-public sealed record CashierPermissionRequirement(string[] PermissionCodes) : IAuthorizationRequirement;
+public sealed record CashierPermissionRequirement(
+    string[] PermissionCodes,
+    bool RequireFreshOnlineTicket = false,
+    bool RequireActiveEmployee = false,
+    TimeSpan? MaximumTicketAge = null) : IAuthorizationRequirement;
 
 public static class CashierAuthorizationContext
 {
@@ -114,19 +141,78 @@ public sealed class CashierPermissionAuthorizationHandler(
 
         var deviceStoreCode = context.User.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
         var deviceCode = context.User.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
+        var deviceHardwareId = context.User.FindFirstValue(DeviceAuthConstants.HardwareIdClaim);
+        // 高危操作必须有可核验的设备硬件身份；缺失时直接拒绝，避免继续进入员工校验分支。
+        if (requirement.RequireActiveEmployee && string.IsNullOrWhiteSpace(deviceHardwareId))
+        {
+            return;
+        }
+
+        IPosIpadAppReviewAuthorizationBoundary? appReviewBoundary = null;
+        bool? isAppReviewDevice = null;
+
+        async Task<bool> IsAppReviewDeviceAsync()
+        {
+            if (isAppReviewDevice is not null)
+            {
+                return isAppReviewDevice.Value;
+            }
+
+            if (string.IsNullOrWhiteSpace(deviceStoreCode)
+                || string.IsNullOrWhiteSpace(deviceCode)
+                || string.IsNullOrWhiteSpace(deviceHardwareId))
+            {
+                isAppReviewDevice = false;
+                return false;
+            }
+
+            appReviewBoundary = httpContext.RequestServices
+                .GetRequiredService<IPosIpadAppReviewAuthorizationBoundary>();
+            isAppReviewDevice = await appReviewBoundary.IsReviewDeviceAsync(
+                deviceStoreCode,
+                deviceCode,
+                deviceHardwareId,
+                httpContext.RequestAborted);
+            return isAppReviewDevice.Value;
+        }
+
         var token = httpContext.Request.Headers[CashierAuthorizationConstants.HeaderName].ToString();
         var ticket = ticketService.Validate(token);
         if (ticket is not null &&
             string.Equals(ticket.StoreCode, deviceStoreCode, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(ticket.DeviceCode, deviceCode, StringComparison.OrdinalIgnoreCase))
+            string.Equals(ticket.DeviceCode, deviceCode, StringComparison.OrdinalIgnoreCase) &&
+            (!requirement.RequireFreshOnlineTicket ||
+             (!string.IsNullOrWhiteSpace(ticket.HardwareId) &&
+              string.Equals(ticket.HardwareId, deviceHardwareId, StringComparison.Ordinal))))
         {
+            var nowUtc = DateTimeOffset.UtcNow;
+            var maximumTicketAge = requirement.MaximumTicketAge ?? TimeSpan.FromMinutes(2);
+            var ticketIsFresh = !requirement.RequireFreshOnlineTicket
+                || (ticket.BarcodeAuthenticatedAtUtc is { } barcodeAuthenticatedAtUtc
+                    && barcodeAuthenticatedAtUtc <= nowUtc.AddSeconds(30)
+                    && barcodeAuthenticatedAtUtc >= nowUtc.Subtract(maximumTicketAge));
+            if (!ticketIsFresh)
+            {
+                return;
+            }
+
             // 只有真正校验收银员票据时才解析数据库服务，普通设备认证端点不会提前连接数据库。
             var cashierService = httpContext!.RequestServices.GetRequiredService<ICashierService>();
-            if (await cashierService.HasAnyPermissionAsync(
+            var hasPermission = await cashierService.HasAnyPermissionAsync(
                     ticket.UserGuid,
                     ticket.StoreCode,
                     requirement.PermissionCodes,
-                    httpContext.RequestAborted))
+                    httpContext.RequestAborted);
+            var reviewDevice = hasPermission && await IsAppReviewDeviceAsync();
+            var mustBeActiveEmployee = requirement.RequireActiveEmployee || reviewDevice;
+            var hasActiveEmployeeIdentity = hasPermission && (!mustBeActiveEmployee
+                || await (appReviewBoundary ??= httpContext.RequestServices
+                    .GetRequiredService<IPosIpadAppReviewAuthorizationBoundary>())
+                    .IsActiveEmployeeCashierAsync(
+                    ticket.CashierId,
+                    ticket.UserGuid,
+                    httpContext.RequestAborted));
+            if (hasPermission && hasActiveEmployeeIdentity)
             {
                 // 关键逻辑：敏感业务字段必须使用已验票身份，不能继续信任客户端快照中的 CashierId。
                 httpContext.Items[CashierAuthorizationContext.CashierIdItemKey] = ticket.CashierId;
@@ -135,7 +221,9 @@ public sealed class CashierPermissionAuthorizationHandler(
             }
         }
 
-        if (EmergencyLoginTokenCodec.HasSupportedPrefix(token))
+        if (!requirement.RequireFreshOnlineTicket
+            && EmergencyLoginTokenCodec.HasSupportedPrefix(token)
+            && !await IsAppReviewDeviceAsync())
         {
             // 仅紧急二维码才解析摘要数据库服务，缺失票据不会让普通设备请求提前连接数据库。
             var emergencyGrantService = httpContext.RequestServices
@@ -153,12 +241,15 @@ public sealed class CashierPermissionAuthorizationHandler(
             }
         }
 
-        if (string.Equals(
-                configuration?["CashierAuthorization:Mode"],
-                "Audit",
-                StringComparison.OrdinalIgnoreCase))
+        var isAuditMode = string.Equals(
+            configuration?["CashierAuthorization:Mode"],
+            "Audit",
+            StringComparison.OrdinalIgnoreCase);
+        if (!requirement.RequireFreshOnlineTicket
+            && isAuditMode
+            && !await IsAppReviewDeviceAsync())
         {
-            // Audit 阶段只记录缺失授权，不阻断已通过设备认证的旧客户端；Enforce 是默认安全模式。
+            // 关键逻辑：仅 grant 消费表中的审核设备强制真实员工票据；同店既有设备保持 Audit 兼容。
             logger?.LogWarning(
                 "Cashier authorization audit bypass store={StoreCode} device={DeviceCode} permissions={Permissions}",
                 deviceStoreCode,

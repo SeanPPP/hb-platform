@@ -65,7 +65,105 @@ public sealed class SqlSugarDeviceRuntimeStatusSchemaInitializer(
                 ALTER TABLE [dbo].[POSM_设备注册信息表]
                     ADD [收银员登录时间] DATETIME2(7) NULL;
             END;
+
+            BEGIN TRY
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_设备注册信息表]')
+                      AND [name] = N'IX_POSM_DeviceRegistration_HardwareId')
+                BEGIN
+                    -- 关键逻辑：为匿名注册的 SERIALIZABLE 范围锁提供稳定键范围，避免并发插入绕过同硬件检查。
+                    CREATE NONCLUSTERED INDEX [IX_POSM_DeviceRegistration_HardwareId]
+                        ON [dbo].[POSM_设备注册信息表] ([设备硬件识别码])
+                        INCLUDE ([ID], [分店代码], [系统设备编号], [设备状态], [设备授权码], [设备系统]);
+                END;
+            END TRY
+            BEGIN CATCH
+                -- 多实例可能同时启动；仅忽略另一实例已创建同名索引的竞争。
+                IF ERROR_NUMBER() <> 1913
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM sys.indexes
+                        WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_设备注册信息表]')
+                          AND [name] = N'IX_POSM_DeviceRegistration_HardwareId')
+                BEGIN
+                    THROW;
+                END;
+            END CATCH;
+
+            BEGIN TRY
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_设备注册信息表]')
+                      AND [name] = N'IX_POSM_DeviceRegistration_StoreCode_Status')
+                BEGIN
+                    -- 关键逻辑：审核设备上限计数必须锁定目标分店和状态的键范围，而不是依赖全表扫描锁。
+                    CREATE NONCLUSTERED INDEX [IX_POSM_DeviceRegistration_StoreCode_Status]
+                        ON [dbo].[POSM_设备注册信息表] ([分店代码], [设备状态])
+                        INCLUDE ([ID]);
+                END;
+            END TRY
+            BEGIN CATCH
+                IF ERROR_NUMBER() <> 1913
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM sys.indexes
+                        WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_设备注册信息表]')
+                          AND [name] = N'IX_POSM_DeviceRegistration_StoreCode_Status')
+                BEGIN
+                    THROW;
+                END;
+            END CATCH;
         END;
+
+        BEGIN TRY
+            IF OBJECT_ID(N'[dbo].[POSM_AppReviewGrantConsumptions]', N'U') IS NULL
+            BEGIN
+                -- 关键逻辑：审核 grant 消费记录独立于可编辑、可删除的设备备注，以主键保证全生命周期只消费一次。
+                CREATE TABLE [dbo].[POSM_AppReviewGrantConsumptions]
+                (
+                    [GrantId] UNIQUEIDENTIFIER NOT NULL,
+                    [StoreCode] VARCHAR(50) NOT NULL,
+                    [HardwareId] VARCHAR(100) NOT NULL,
+                    [DeviceCode] VARCHAR(50) NOT NULL,
+                    [ConsumedAtUtc] DATETIME2(7) NOT NULL,
+                    CONSTRAINT [PK_POSM_AppReviewGrantConsumptions] PRIMARY KEY ([GrantId])
+                );
+            END;
+        END TRY
+        BEGIN CATCH
+            -- 多实例只允许忽略另一实例已经完整建表的竞争。
+            IF ERROR_NUMBER() <> 2714
+                OR OBJECT_ID(N'[dbo].[POSM_AppReviewGrantConsumptions]', N'U') IS NULL
+            BEGIN
+                THROW;
+            END;
+        END CATCH;
+
+        BEGIN TRY
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_AppReviewGrantConsumptions]')
+                  AND [name] = N'IX_POSM_AppReviewGrantConsumptions_StoreDevice')
+            BEGIN
+                CREATE NONCLUSTERED INDEX [IX_POSM_AppReviewGrantConsumptions_StoreDevice]
+                    ON [dbo].[POSM_AppReviewGrantConsumptions] ([StoreCode], [HardwareId], [DeviceCode]);
+            END;
+        END TRY
+        BEGIN CATCH
+            IF ERROR_NUMBER() <> 1913
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_AppReviewGrantConsumptions]')
+                      AND [name] = N'IX_POSM_AppReviewGrantConsumptions_StoreDevice')
+            BEGIN
+                THROW;
+            END;
+        END CATCH;
         """;
 
     public Task InitializeAsync(CancellationToken cancellationToken = default)

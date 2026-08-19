@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 
@@ -42,6 +44,18 @@ public sealed class DeviceServiceTests
         Assert.DoesNotContain("@StoreCode", sql, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void CountActiveOrLockedByStoreCodeForRegistrationSql_LocksReviewStoreRange()
+    {
+        var sql = SqlSugarDeviceRegistrationRepository.CountActiveOrLockedByStoreCodeForRegistrationSql;
+
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[POSM_AppReviewGrantConsumptions]", sql, StringComparison.Ordinal);
+        Assert.Contains("consumption.[StoreCode] = @StoreCode", sql, StringComparison.Ordinal);
+        Assert.Contains("[设备状态] IN (1, 2)", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM [POSM_设备注册信息表] WITH", sql, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(3)]
@@ -62,7 +76,11 @@ public sealed class DeviceServiceTests
             LatestByHardwareId = target,
             RegistrationsForUpdate = [target]
         };
-        var service = new DeviceService(repository, LoadStoreAsync, () => now);
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            () => now,
+            utcNowProvider: () => new DateTimeOffset(now));
 
         var response = await service.RegisterAsync(
             new DeviceRegisterRequest("1003", "HW-001", "Counter 2"),
@@ -90,7 +108,11 @@ public sealed class DeviceServiceTests
     {
         var now = new DateTime(2026, 7, 10, 11, 1, 0);
         var repository = new FakeDeviceRegistrationRepository();
-        var service = new DeviceService(repository, LoadStoreAsync, () => now);
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            () => now,
+            utcNowProvider: () => new DateTimeOffset(now));
 
         var response = await service.RegisterAsync(
             new DeviceRegisterRequest("1003", "HW-001", "Counter 2"),
@@ -118,6 +140,389 @@ public sealed class DeviceServiceTests
             CancellationToken.None);
 
         Assert.Equal("iPadOS", Assert.Single(repository.CreatedRegistrations).DeviceSystem);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewGateAndProvisioningCodeAreValid_AutoApprovesNewIpad()
+    {
+        var now = new DateTime(2026, 8, 18, 12, 0, 0);
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            () => now,
+            CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal(1, response.DeviceStatus);
+        Assert.NotNull(response.AuthorizationCode);
+        var created = Assert.Single(repository.CreatedRegistrations);
+        Assert.Equal(1, created.DeviceStatus);
+        Assert.Equal("HBPOS_APP_REVIEW", created.CreatedBy);
+        Assert.StartsWith("POS_1003_REVIEW_", created.DeviceCode, StringComparison.Ordinal);
+        Assert.True(created.DeviceCode.Length <= 50);
+        Assert.Contains("auto-approved", created.Remark, StringComparison.Ordinal);
+        Assert.Contains("AppReviewGrant:4baf31b5792d49ef8cc2d38b486a28a7", created.Remark, StringComparison.Ordinal);
+        Assert.Equal(1, repository.ActiveOrLockedCountCalls);
+        var consumption = Assert.Single(repository.AppReviewGrantConsumptions);
+        Assert.Equal(Guid.Parse("4baf31b5-792d-49ef-8cc2-d38b486a28a7"), consumption.GrantId);
+        Assert.Equal("IPAD-REVIEW-001", consumption.HardwareId);
+        Assert.Equal(created.DeviceCode, consumption.DeviceCode);
+    }
+
+    [Theory]
+    [InlineData("WRONG-REVIEW-DEVICE-CODE")]
+    [InlineData("SHORT-CODE")]
+    [InlineData(null)]
+    public async Task RegisterAsync_WhenReviewProvisioningCodeIsMissingOrInvalid_RejectsWithoutCreatingPending(string? provisioningCode)
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", provisioningCode),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Null(response.AuthorizationCode);
+        Assert.Empty(repository.CreatedRegistrations);
+        Assert.Equal(0, repository.ActiveOrLockedCountCalls);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewGateIsExpired_RejectsWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Equal(0, repository.ActiveOrLockedCountCalls);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewDeviceLimitIsReached_RejectsWithoutCreatingPending()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository { ActiveOrLockedCount = 1 };
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-002", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Empty(repository.CreatedRegistrations);
+        Assert.Equal(1, repository.ActiveOrLockedCountCalls);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewCodeMatchesExistingPendingRegistration_ApprovesExactSnapshot()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var pending = new DeviceRegistrationRecord
+        {
+            Id = 91,
+            DeviceCode = "POS_1003_1200",
+            StoreCode = "1003",
+            HardwareId = "IPAD-REVIEW-001",
+            DeviceStatus = -1,
+            AuthorizationCode = "AUTH-PENDING",
+            DeviceSystem = "iPadOS"
+        };
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            RegistrationsForUpdate = [pending]
+        };
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal("POS_1003_1200", response.DeviceCode);
+        Assert.NotEqual("AUTH-PENDING", response.AuthorizationCode);
+        Assert.Empty(repository.CreatedRegistrations);
+        var approval = Assert.Single(repository.AppReviewApprovalRequests);
+        Assert.Equal(91, approval.RegistrationId);
+        Assert.Equal(-1, approval.ExpectedDeviceStatus);
+        Assert.Equal("AUTH-PENDING", approval.ExpectedAuthorizationCode);
+        Assert.Equal("iPadOS", approval.DeviceSystem);
+        Assert.Single(repository.AppReviewGrantConsumptions);
+    }
+
+    [Fact]
+    public async Task RegisterForAppReviewAsync_WhenPlatformIsNotIpad_RejectsWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "WINDOWS-001", "Counter", "Windows", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Equal(0, repository.ActiveOrLockedCountCalls);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterForAppReviewAsync_WhenWindowExpiresWhileWaitingForGrantLock_RejectsWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var expiresAtUtc = utcNow.AddSeconds(1);
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            OnAcquireAppReviewGrantLock = () => utcNow = expiresAtUtc
+        };
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", expiresAtUtc),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Empty(repository.CreatedRegistrations);
+        Assert.Empty(repository.AppReviewApprovalRequests);
+        Assert.Empty(repository.AppReviewGrantConsumptions);
+    }
+
+    [Fact]
+    public async Task RegisterForAppReviewAsync_AcquiresStoreGrantLockBeforeHardwareRangeLock()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal(
+            ["app-review-lock", "hardware-range"],
+            repository.RegistrationOperationOrder.Take(2));
+    }
+
+    [Fact]
+    public async Task RegisterForAppReviewAsync_WhenStoreCodeIsLong_PreservesRandomDeviceCodeSuffix()
+    {
+        const string storeCode = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var options = CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7));
+        options.StoreCode = storeCode;
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            (code, _) => Task.FromResult<DeviceStoreInfo?>(new DeviceStoreInfo(code, "Long Store")),
+            appReviewOptions: options,
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest(storeCode, "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Matches("^POS_A{6}_REVIEW_[0-9a-f]{32}$", response.DeviceCode);
+        Assert.Equal(50, response.DeviceCode.Length);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewGrantWasAlreadyConsumedByAnotherDevice_RejectsWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            AppReviewGrantConsumption = new DeviceRegistrationAppReviewGrantConsumption
+            {
+                GrantId = Guid.Parse("4baf31b5-792d-49ef-8cc2-d38b486a28a7"),
+                StoreCode = "1003",
+                HardwareId = "IPAD-REVIEW-001",
+                DeviceCode = "POS_1003_1200",
+                ConsumedAtUtc = utcNow.AddMinutes(-1).UtcDateTime
+            }
+        };
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-002", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenExistingReviewDeviceWasDisabled_DoesNotReenableIt()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var disabled = new DeviceRegistrationRecord
+        {
+            Id = 92,
+            DeviceCode = "POS_1003_1201",
+            StoreCode = "1003",
+            HardwareId = "IPAD-REVIEW-001",
+            DeviceStatus = 0,
+            AuthorizationCode = "AUTH-DISABLED",
+            DeviceSystem = "iPadOS"
+        };
+        var repository = new FakeDeviceRegistrationRepository { RegistrationsForUpdate = [disabled] };
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Empty(repository.AppReviewApprovalRequests);
+        Assert.Empty(repository.ResetRequests);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task RegisterForAppReviewAsync_WhenApprovedResponseWasLost_RecoversAfterExpiryOrDisable(
+        bool enabled,
+        bool expired)
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var active = new DeviceRegistrationRecord
+        {
+            Id = 93,
+            DeviceCode = "POS_1003_1202",
+            StoreCode = "1003",
+            HardwareId = "IPAD-REVIEW-001",
+            DeviceStatus = 1,
+            AuthorizationCode = "AUTH-RECOVERABLE",
+            DeviceSystem = "iPadOS"
+        };
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            RegistrationsForUpdate = [active],
+            AppReviewGrantConsumption = new DeviceRegistrationAppReviewGrantConsumption
+            {
+                GrantId = Guid.Parse("4baf31b5-792d-49ef-8cc2-d38b486a28a7"),
+                StoreCode = "1003",
+                HardwareId = "IPAD-REVIEW-001",
+                DeviceCode = "POS_1003_1202",
+                ConsumedAtUtc = utcNow.AddMinutes(-1).UtcDateTime
+            }
+        };
+        var options = CreateReviewOptions(
+            "OPEN-REVIEW-DEVICE",
+            expired ? utcNow : utcNow.AddDays(7));
+        options.Enabled = enabled;
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: options,
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", " iPaDoS ", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal("AUTH-RECOVERABLE", response.AuthorizationCode);
+        Assert.Equal("POS_1003_1202", response.DeviceCode);
+        Assert.Empty(repository.CreatedRegistrations);
+        Assert.Empty(repository.AppReviewGrantConsumptions);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenReviewWindowIsOpen_RequiresDedicatedEndpointWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterAsync(
+            new DeviceRegisterRequest("1003", "IPAD-REVIEW-001", "App Review", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Empty(repository.CreatedRegistrations);
+    }
+
+    [Fact]
+    public async Task RegisterForAppReviewAsync_WhenStoreDoesNotMatch_RejectsWithoutWrites()
+    {
+        var utcNow = new DateTimeOffset(2026, 8, 18, 2, 0, 0, TimeSpan.Zero);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            appReviewOptions: CreateReviewOptions("OPEN-REVIEW-DEVICE", utcNow.AddDays(7)),
+            utcNowProvider: () => utcNow);
+
+        var response = await service.RegisterForAppReviewAsync(
+            new DeviceRegisterRequest("1002", "IPAD-REVIEW-001", "App Review", "iPadOS", "OPEN-REVIEW-DEVICE"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.Equal(3, response.DeviceStatus);
+        Assert.Empty(repository.CreatedRegistrations);
     }
 
     [Fact]
@@ -169,6 +574,101 @@ public sealed class DeviceServiceTests
 
         Assert.True(response.IsAllowed);
         Assert.Equal("AUTH-001", response.AuthorizationCode);
+        Assert.False(response.ExactIdentityMatched);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenIpadDeviceCodeIsReused_uses_the_latest_exact_hardware_record()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-OTHER",
+                DeviceStatus = 1,
+                DeviceSystem = "iPadOS",
+                AuthorizationCode = "AUTH-OTHER"
+            },
+            DeviceByExactIdentity = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-EXPECTED",
+                DeviceStatus = 0,
+                DeviceSystem = "iPadOS",
+                AuthorizationCode = "AUTH-EXPECTED"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003", "HW-EXPECTED", "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.Equal(0, response.DeviceStatus);
+        Assert.False(response.IsAllowed);
+        Assert.True(response.ExactIdentityMatched);
+    }
+
+    [Theory]
+    [InlineData("iOS")]
+    [InlineData("Android")]
+    public async Task VerifyAsync_WhenNonIpadExactHardwareMatches_does_not_issue_ipad_recovery_proof(
+        string deviceSystem)
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByExactIdentity = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-EXPECTED",
+                DeviceStatus = 1,
+                DeviceSystem = deviceSystem,
+                AuthorizationCode = "AUTH-EXPECTED"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest(
+                "POS_1003_1011",
+                "1003",
+                "HW-EXPECTED",
+                "handheld",
+                deviceSystem),
+            CancellationToken.None);
+
+        Assert.True(response.IsAllowed);
+        Assert.Equal("AUTH-EXPECTED", response.AuthorizationCode);
+        Assert.False(response.ExactIdentityMatched);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_WhenIpadHardwareDoesNotMatch_never_reports_an_exact_identity_match()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DeviceByCode = new DeviceRegistrationRecord
+            {
+                DeviceCode = "POS_1003_1011",
+                StoreCode = "1003",
+                HardwareId = "HW-REGISTERED",
+                DeviceStatus = 0,
+                DeviceSystem = "iPadOS",
+                AuthorizationCode = "AUTH-REGISTERED"
+            }
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        var response = await service.VerifyAsync(
+            new DeviceVerifyRequest("POS_1003_1011", "1003", "HW-OTHER", "iPad counter", "iPadOS"),
+            CancellationToken.None);
+
+        Assert.False(response.IsAllowed);
+        Assert.False(response.ExactIdentityMatched);
     }
 
     [Fact]
@@ -221,6 +721,7 @@ public sealed class DeviceServiceTests
         Assert.False(response.IsAllowed);
         Assert.Equal("Device system does not match existing registration.", response.Message);
         Assert.Null(response.AuthorizationCode);
+        Assert.False(response.ExactIdentityMatched);
     }
 
     [Theory]
@@ -965,6 +1466,67 @@ public sealed class DeviceServiceTests
     }
 
     [Fact]
+    public async Task ResetRegistrationAsync_DisablesOnlyAuthenticatedCurrentDeviceInsideTransaction()
+    {
+        var modifiedAt = new DateTime(2026, 8, 18, 12, 30, 0, DateTimeKind.Unspecified);
+        var disabledAtUtc = DateTimeOffset.Parse("2026-08-18T02:30:00Z");
+        var operationId = Guid.Parse("36d6605c-1e25-4fd1-b345-bec1c4ffad31");
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(
+            repository,
+            LoadStoreAsync,
+            () => modifiedAt,
+            utcNowProvider: () => disabledAtUtc);
+
+        var result = await service.ResetRegistrationAsync(
+            new DeviceRegistrationResetRequest(operationId),
+            new DeviceRegistrationResetContext(
+                "POS_1042_0247",
+                "1042",
+                "INSTALL-1042",
+                "CASHIER-HGUID"),
+            CancellationToken.None);
+
+        Assert.Equal(operationId, result.OperationId);
+        Assert.Equal("POS_1042_0247", result.DeviceCode);
+        Assert.Equal("1042", result.StoreCode);
+        Assert.Equal(disabledAtUtc.UtcDateTime, result.DisabledAtUtc);
+        Assert.Equal(1, repository.TransactionCallCount);
+        var reset = Assert.Single(repository.ResetActiveRequests);
+        Assert.Equal("INSTALL-1042", reset.HardwareId);
+        Assert.Equal("POS_1042_0247", reset.DeviceCode);
+        Assert.Equal("1042", reset.StoreCode);
+        Assert.Equal("CASHIER-HGUID", reset.ModifiedBy);
+        Assert.Equal(modifiedAt, reset.ModifiedAtUtc);
+        Assert.Contains(operationId.ToString("D"), reset.RemarkSuffix, StringComparison.Ordinal);
+        Assert.DoesNotContain("9900000000001", reset.RemarkSuffix, StringComparison.Ordinal);
+        Assert.False(repository.CurrentRegistrationEnabled);
+    }
+
+    [Fact]
+    public async Task ResetRegistrationAsync_WhenExactEnabledRegistrationChanged_ThrowsAndRollsBack()
+    {
+        var repository = new FakeDeviceRegistrationRepository
+        {
+            DisableActiveRowsAffected = 0
+        };
+        var service = new DeviceService(repository, LoadStoreAsync);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResetRegistrationAsync(
+            new DeviceRegistrationResetRequest(Guid.NewGuid()),
+            new DeviceRegistrationResetContext(
+                "POS_1042_0247",
+                "1042",
+                "INSTALL-1042",
+                "CASHIER-HGUID"),
+            CancellationToken.None));
+
+        Assert.Equal(1, repository.TransactionCallCount);
+        Assert.Single(repository.ResetActiveRequests);
+        Assert.True(repository.CurrentRegistrationEnabled);
+    }
+
+    [Fact]
     public async Task UpdateRuntimeStatusAsync_KeepsSameCashierLoginTimeAndClearsEmptyCashier()
     {
         var firstNow = new DateTime(2026, 7, 1, 10, 0, 0);
@@ -1025,9 +1587,25 @@ public sealed class DeviceServiceTests
         return Task.FromResult(store);
     }
 
+    private static PosIpadAppReviewOptions CreateReviewOptions(string provisioningCode, DateTimeOffset expiresAtUtc)
+    {
+        return new PosIpadAppReviewOptions
+        {
+            Enabled = true,
+            StoreCode = "1003",
+            ExpiresAtUtc = expiresAtUtc,
+            MaxActiveDevices = 1,
+            GrantId = "4baf31b5-792d-49ef-8cc2-d38b486a28a7",
+            RegistrationCodeSha256 = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(provisioningCode)))
+        };
+    }
+
     private sealed class FakeDeviceRegistrationRepository : IDeviceRegistrationRepository
     {
         public DeviceRegistrationRecord? DeviceByCode { get; init; }
+
+        public DeviceRegistrationRecord? DeviceByExactIdentity { get; init; }
 
         public DeviceRegistrationRecord? LatestByHardwareId { get; init; }
 
@@ -1045,13 +1623,31 @@ public sealed class DeviceServiceTests
 
         public int ResetRowsAffected { get; init; } = 1;
 
+        public int AppReviewApprovalRowsAffected { get; init; } = 1;
+
+        public int ActiveOrLockedCount { get; init; }
+
+        public int ActiveOrLockedCountCalls { get; private set; }
+
+        public DeviceRegistrationAppReviewGrantConsumption? AppReviewGrantConsumption { get; init; }
+
+        public Action? OnAcquireAppReviewGrantLock { get; init; }
+
         public List<DeviceRegistrationDisableRequest> DisabledRequests { get; } = [];
 
         public List<ActiveDisableSnapshot> ActiveDisabledRequests { get; } = [];
 
+        public List<DeviceRegistrationResetActiveRequest> ResetActiveRequests { get; } = [];
+
         public List<DeviceRegistrationResetForReregisterRequest> ResetRequests { get; } = [];
 
+        public List<DeviceRegistrationAppReviewApprovalRequest> AppReviewApprovalRequests { get; } = [];
+
         public List<DeviceRegistrationCreateRequest> CreatedRegistrations { get; } = [];
+
+        public List<DeviceRegistrationAppReviewGrantConsumption> AppReviewGrantConsumptions { get; } = [];
+
+        public List<string> RegistrationOperationOrder { get; } = [];
 
         public int TransactionCallCount { get; private set; }
 
@@ -1071,6 +1667,15 @@ public sealed class DeviceServiceTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(DeviceByCode);
+        }
+
+        public Task<DeviceRegistrationRecord?> FindLatestByDeviceCodeAndHardwareIdAsync(
+            string deviceCode,
+            string storeCode,
+            string hardwareId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(DeviceByExactIdentity);
         }
 
         public Task<DeviceRegistrationRecord?> FindLatestByHardwareIdAsync(
@@ -1099,8 +1704,46 @@ public sealed class DeviceServiceTests
             string hardwareId,
             CancellationToken cancellationToken)
         {
+            RegistrationOperationOrder.Add("hardware-range");
             return Task.FromResult(RegistrationsForUpdate);
         }
+
+        public Task<int> CountActiveOrLockedByStoreCodeForRegistrationAsync(
+            string storeCode,
+            CancellationToken cancellationToken)
+        {
+            ActiveOrLockedCountCalls++;
+            return Task.FromResult(ActiveOrLockedCount);
+        }
+
+        public Task AcquireAppReviewGrantLockAsync(
+            Guid grantId,
+            string storeCode,
+            CancellationToken cancellationToken)
+        {
+            RegistrationOperationOrder.Add("app-review-lock");
+            OnAcquireAppReviewGrantLock?.Invoke();
+            return Task.CompletedTask;
+        }
+
+        public Task<DeviceRegistrationAppReviewGrantConsumption?> FindAppReviewGrantConsumptionAsync(
+            Guid grantId,
+            CancellationToken cancellationToken) => Task.FromResult(AppReviewGrantConsumption);
+
+        public Task<int> ConsumeAppReviewGrantAsync(
+            DeviceRegistrationAppReviewGrantConsumption consumption,
+            DateTime expiresAtUtc,
+            CancellationToken cancellationToken)
+        {
+            AppReviewGrantConsumptions.Add(consumption);
+            return Task.FromResult(1);
+        }
+
+        public Task<bool> IsAppReviewDeviceAsync(
+            string storeCode,
+            string deviceCode,
+            string hardwareId,
+            CancellationToken cancellationToken) => Task.FromResult(false);
 
         public Task<int> DisableActiveRegistrationAsync(
             string hardwareId,
@@ -1118,12 +1761,33 @@ public sealed class DeviceServiceTests
             return Task.FromResult(DisableActiveRowsAffected);
         }
 
+        public Task<int> ResetActiveRegistrationAsync(
+            DeviceRegistrationResetActiveRequest request,
+            CancellationToken cancellationToken)
+        {
+            ResetActiveRequests.Add(request);
+            if (DisableActiveRowsAffected == 1)
+            {
+                CurrentRegistrationEnabled = false;
+            }
+
+            return Task.FromResult(DisableActiveRowsAffected);
+        }
+
         public Task<int> ResetRegistrationForReregisterAsync(
             DeviceRegistrationResetForReregisterRequest request,
             CancellationToken cancellationToken)
         {
             ResetRequests.Add(request);
             return Task.FromResult(ResetRowsAffected);
+        }
+
+        public Task<int> ApproveRegistrationForAppReviewAsync(
+            DeviceRegistrationAppReviewApprovalRequest request,
+            CancellationToken cancellationToken)
+        {
+            AppReviewApprovalRequests.Add(request);
+            return Task.FromResult(AppReviewApprovalRowsAffected);
         }
 
         public Task<int> DisablePendingRegistrationAsync(

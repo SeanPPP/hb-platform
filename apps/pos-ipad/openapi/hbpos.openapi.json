@@ -791,6 +791,54 @@
         }
       }
     },
+    "/api/v1/devices/app-review-register": {
+      "post": {
+        "tags": [
+          "Devices"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegisterRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegisterRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegisterResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegisterResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegisterResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/devices/verify": {
       "post": {
         "tags": [
@@ -880,6 +928,54 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceReregisterResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/reset-registration": {
+      "post": {
+        "tags": [
+          "Devices"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegistrationResetRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegistrationResetRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegistrationResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegistrationResetResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegistrationResetResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegistrationResetResponseApiResult"
                 }
               }
             }
@@ -6389,6 +6485,10 @@
           "deviceSystem": {
             "type": "string",
             "nullable": true
+          },
+          "provisioningCode": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -6434,6 +6534,58 @@
           },
           "data": {
             "$ref": "#/components/schemas/DeviceRegisterResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceRegistrationResetRequest": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceRegistrationResetResponse": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deviceCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "storeCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "disabledAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceRegistrationResetResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeviceRegistrationResetResponse"
           },
           "errorCode": {
             "type": "string",
@@ -6589,6 +6741,9 @@
           "authorizationCode": {
             "type": "string",
             "nullable": true
+          },
+          "exactIdentityMatched": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

@@ -11,6 +11,86 @@ namespace Hbpos.Api.Tests;
 public sealed class ServiceRegistrationTests
 {
     [Fact]
+    public void AddHbposApiServices_AllowsAppReviewGateWithStoreScopedEnforcementInAuditMode()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["PosIpadAppReview:Enabled"] = "true",
+                ["PosIpadAppReview:StoreCode"] = " 1042 ",
+                ["PosIpadAppReview:ExpiresAtUtc"] = DateTimeOffset.UtcNow.AddHours(1).ToString("O"),
+                ["PosIpadAppReview:MaxActiveDevices"] = "1",
+                ["PosIpadAppReview:GrantId"] = "4baf31b5-792d-49ef-8cc2-d38b486a28a7",
+                ["PosIpadAppReview:RegistrationCodeSha256"] = new string('A', 64),
+                ["CashierAuthorization:Mode"] = "Audit"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices(configuration);
+
+        Assert.NotEmpty(services);
+    }
+
+    [Fact]
+    public void AddHbposApiServices_RejectsEnabledAppReviewGateWithoutStoreCode()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["PosIpadAppReview:Enabled"] = "true",
+                ["CashierAuthorization:Mode"] = "Audit"
+            })
+            .Build();
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddHbposApiServices(configuration));
+
+        Assert.Contains("PosIpadAppReview:StoreCode", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("PosIpadAppReview:ExpiresAtUtc", null)]
+    [InlineData("PosIpadAppReview:MaxActiveDevices", "0")]
+    [InlineData("PosIpadAppReview:MaxActiveDevices", "2")]
+    [InlineData("PosIpadAppReview:GrantId", "not-a-guid")]
+    [InlineData("PosIpadAppReview:RegistrationCodeSha256", "ABCDEF")]
+    public void AddHbposApiServices_RejectsIncompleteEnabledAppReviewGate(string invalidKey, string? invalidValue)
+    {
+        var values = ValidAppReviewConfiguration();
+        values[invalidKey] = invalidValue;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            new ServiceCollection().AddHbposApiServices(configuration));
+
+        Assert.Contains(invalidKey, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AddHbposApiServices_AllowsExpiredReviewWindowSoOrdinaryPosApiCanRestart()
+    {
+        var values = ValidAppReviewConfiguration();
+        values["PosIpadAppReview:ExpiresAtUtc"] = "2000-01-01T00:00:00Z";
+
+        var services = new ServiceCollection();
+        services.AddHbposApiServices(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+
+        Assert.NotEmpty(services);
+    }
+
+    private static Dictionary<string, string?> ValidAppReviewConfiguration() => new()
+    {
+        ["PosIpadAppReview:Enabled"] = "true",
+        ["PosIpadAppReview:StoreCode"] = "1042",
+        ["PosIpadAppReview:ExpiresAtUtc"] = DateTimeOffset.UtcNow.AddHours(1).ToString("O"),
+        ["PosIpadAppReview:MaxActiveDevices"] = "1",
+        ["PosIpadAppReview:GrantId"] = "4baf31b5-792d-49ef-8cc2-d38b486a28a7",
+        ["PosIpadAppReview:RegistrationCodeSha256"] = new string('A', 64),
+        ["CashierAuthorization:Mode"] = "Audit"
+    };
+    [Fact]
     public void AddHbposApiServices_prefers_async_section_and_ignores_empty_legacy_fallback()
     {
         var configuration = new ConfigurationBuilder()

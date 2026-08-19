@@ -34,6 +34,14 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
         Assert.Contains("ADD [当前收银员姓名] NVARCHAR(100) NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'收银员登录时间') IS NULL", sql);
         Assert.Contains("ADD [收银员登录时间] DATETIME2(7) NULL", sql);
+        Assert.Contains("IX_POSM_DeviceRegistration_HardwareId", sql);
+        Assert.Contains("([设备硬件识别码])", sql);
+        Assert.Contains("IX_POSM_DeviceRegistration_StoreCode_Status", sql);
+        Assert.Contains("([分店代码], [设备状态])", sql);
+        Assert.Contains("CREATE TABLE [dbo].[POSM_AppReviewGrantConsumptions]", sql);
+        Assert.Contains("[GrantId] UNIQUEIDENTIFIER NOT NULL", sql);
+        Assert.Contains("CONSTRAINT [PK_POSM_AppReviewGrantConsumptions] PRIMARY KEY", sql);
+        Assert.Contains("IX_POSM_AppReviewGrantConsumptions_StoreDevice", sql);
     }
 
     [Fact]

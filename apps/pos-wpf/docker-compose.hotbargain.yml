@@ -39,6 +39,16 @@ services:
       # 中央策略先登记并验证后再启用；关闭时原生更新继续使用 PosIpad 本地策略。
       - AppUpdate__CentralPolicyEnabled=${HBPOS_APP_UPDATE_CENTRAL_POLICY_ENABLED:-false}
       - AppUpdate__CheckApiKey=${WPF_APP_UPDATE_CHECK_API_KEY:?required}
+      - CashierAuthorization__Mode=${HBPOS_CASHIER_AUTHORIZATION_MODE:-Audit}
+      # App Review 默认关闭；仅在审核窗口从服务器 .env 注入专用门店、UTC 到期时间和开通码 SHA-256。
+      - PosIpadAppReview__Enabled=${HBPOS_IPAD_APP_REVIEW_ENABLED:-false}
+      - PosIpadAppReview__StoreCode=${HBPOS_IPAD_APP_REVIEW_STORE_CODE:-}
+      - PosIpadAppReview__ExpiresAtUtc=${HBPOS_IPAD_APP_REVIEW_EXPIRES_AT_UTC:-}
+      - PosIpadAppReview__MaxActiveDevices=${HBPOS_IPAD_APP_REVIEW_MAX_ACTIVE_DEVICES:-1}
+      - PosIpadAppReview__GrantId=${HBPOS_IPAD_APP_REVIEW_GRANT_ID:-}
+      - PosIpadAppReview__RegistrationCodeSha256=${HBPOS_IPAD_APP_REVIEW_REGISTRATION_CODE_SHA256:-}
+      # 只信任 Nginx 到容器的一跳代理地址；部署前必须按 hb-network 实际网关写入服务器 .env。
+      - ReverseProxy__KnownProxies__0=${HBPOS_REVERSE_PROXY_IP:-}
       # Linkly 回调必须是公网 HTTPS；服务会在该 base 后拼接 api/v1/linkly/cloud-notifications/...
       - LinklyCloudBackendAsync__PublicNotificationBaseUrl=https://hotbargain.vip/pos-api/
       - LinklyCloudBackendAsync__ProductionNotificationBearer=${LINKLY_CLOUD_PRODUCTION_NOTIFICATION_BEARER:-}

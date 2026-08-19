@@ -73,6 +73,7 @@ export type SettingsScreenPresenter = Pick<
   | "requestAppRestart"
   | "requestCatalogReset"
   | "requestDeviceReregistration"
+  | "requestDeviceRegistrationReset"
   | "requestLinklyPair"
   | "refreshLinklySetup"
   | "refreshSquareDeviceCode"
@@ -307,7 +308,11 @@ export function SettingsScreen({
                 confirmation={state.confirmation}
                 locale={locale}
                 onCancel={() => presenter.cancelConfirmation()}
-                onConfirm={() => void presenter.confirmDangerousAction()}
+                onConfirm={(employeeBarcode) =>
+                  void presenter.confirmDangerousAction(employeeBarcode)
+                }
+                storeCode={state.device.storeCode}
+                deviceCode={state.device.deviceCode}
               />
             ) : null}
           </View>
@@ -2341,6 +2346,31 @@ function DevicePane({
           tone="danger"
         />
       </SectionCard>
+      <SectionCard
+        eyebrow={t("eyebrow.dangerZone")}
+        title={t("device.resetRegistration")}
+      >
+        <Text style={styles.dangerDescription}>
+          {t("device.resetRegistrationImpact")}
+        </Text>
+        <View style={styles.metricRow}>
+          <Metric
+            label={t("metric.store")}
+            value={state.device.storeCode || "—"}
+          />
+          <Metric
+            label={t("metric.device")}
+            value={state.device.deviceCode || "—"}
+          />
+        </View>
+        <ActionButton
+          disabled={disabled}
+          label={t("device.reviewResetRegistration")}
+          onPress={() => presenter.requestDeviceRegistrationReset()}
+          testID="settings-device-registration-reset-request"
+          tone="danger"
+        />
+      </SectionCard>
     </View>
   );
 }
@@ -2424,46 +2454,93 @@ function ConfirmationCard({
   locale,
   onCancel,
   onConfirm,
+  storeCode,
+  deviceCode,
 }: Readonly<{
   busy: boolean;
   confirmation: SettingsDangerousConfirmation;
   locale: SettingsLocale;
   onCancel(): void;
-  onConfirm(): void;
+  onConfirm(employeeBarcode?: string): void;
+  storeCode: string;
+  deviceCode: string;
 }>) {
+  const requiresEmployeeScan =
+    confirmation.kind === "reset-device-registration";
+  const [employeeBarcode, setEmployeeBarcode] = useState("");
+  const submit = (): void => {
+    const scannedBarcode = employeeBarcode.trim();
+    if (requiresEmployeeScan) {
+      setEmployeeBarcode("");
+      onConfirm(scannedBarcode);
+      return;
+    }
+    onConfirm();
+  };
   return (
     <View
       accessibilityRole="alert"
       style={styles.confirmation}
       testID="settings-confirmation"
     >
-      <View style={styles.confirmationCopy}>
+      <PosKeyboardAwareScrollView
+        contentContainerStyle={styles.confirmationScrollContent}
+        style={styles.confirmationScroll}
+        testID="settings-confirmation-scroll"
+      >
+        <View style={styles.confirmationCopy}>
         <Text style={styles.confirmationTitle}>
-          {confirmationTitle(locale, confirmation)}
+          {confirmationTitle(locale, confirmation, storeCode, deviceCode)}
         </Text>
         <Text style={styles.confirmationBody}>
-          {settingsText(locale, "confirmation.body")}
-        </Text>
-      </View>
-      <View style={styles.confirmationActions}>
-        <ActionButton
-          disabled={busy}
-          label={settingsText(locale, "action.cancel")}
-          onPress={onCancel}
-          testID="settings-confirm-cancel"
-          tone="quiet"
-        />
-        <ActionButton
-          disabled={busy}
-          label={settingsText(
+          {settingsText(
             locale,
-            busy ? "action.checking" : "action.confirm",
+            requiresEmployeeScan
+              ? "confirmation.resetDeviceBody"
+              : "confirmation.body",
           )}
-          onPress={onConfirm}
-          testID="settings-confirm"
-          tone="danger"
-        />
-      </View>
+        </Text>
+        {requiresEmployeeScan ? (
+          <View style={styles.confirmationScan}>
+            <FieldLabel label={settingsText(locale, "field.employeeBarcode")} />
+            <PosKeyboardAwareTextInput
+              accessibilityLabel={settingsText(locale, "field.employeeBarcode")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              editable={!busy}
+              onChangeText={setEmployeeBarcode}
+              secureTextEntry
+              style={styles.textInput}
+              testID="settings-device-registration-reset-barcode"
+              value={employeeBarcode}
+            />
+            <Text style={styles.fieldHint}>
+              {settingsText(locale, "field.employeeBarcodeHint")}
+            </Text>
+          </View>
+        ) : null}
+        </View>
+        <View style={styles.confirmationActions}>
+          <ActionButton
+            disabled={busy}
+            label={settingsText(locale, "action.cancel")}
+            onPress={onCancel}
+            testID="settings-confirm-cancel"
+            tone="quiet"
+          />
+          <ActionButton
+            disabled={busy || (requiresEmployeeScan && !employeeBarcode.trim())}
+            label={settingsText(
+              locale,
+              busy ? "action.checking" : "action.confirm",
+            )}
+            onPress={submit}
+            testID="settings-confirm"
+            tone="danger"
+          />
+        </View>
+      </PosKeyboardAwareScrollView>
     </View>
   );
 }
@@ -2744,6 +2821,8 @@ function ActionButton({
 function confirmationTitle(
   locale: SettingsLocale,
   confirmation: SettingsDangerousConfirmation,
+  storeCode: string,
+  deviceCode: string,
 ): string {
   switch (confirmation.kind) {
     case "change-api-address":
@@ -2759,6 +2838,11 @@ function confirmationTitle(
     case "reregister-device":
       return settingsText(locale, "confirmation.reregisterDevice", {
         targetStoreCode: confirmation.targetStoreCode,
+      });
+    case "reset-device-registration":
+      return settingsText(locale, "confirmation.resetDeviceRegistration", {
+        storeCode: storeCode || "—",
+        deviceCode: deviceCode || "—",
       });
     default:
       return settingsText(locale, "confirmation.restartApp");
@@ -2782,6 +2866,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "catalog-downloaded",
     "catalog-reset",
     "device-reregister-started",
+    "device-registration-reset-completed",
     "display-setting-saved",
     "display-test-passed",
     "linkly-paired",
@@ -3151,6 +3236,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
   },
+  fieldHint: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  dangerDescription: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginBottom: 12,
+  },
   multilineTextInput: {
     backgroundColor: "#FAFAF8",
     borderColor: posColors.border,
@@ -3486,6 +3584,12 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   confirmationCopy: { flex: 1 },
+  confirmationScroll: { flex: 1 },
+  confirmationScrollContent: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 20,
+  },
   confirmationTitle: {
     color: posColors.red,
     fontSize: 18,
@@ -3497,6 +3601,7 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 6,
   },
+  confirmationScan: { marginTop: 8 },
   confirmationActions: {
     alignItems: "center",
     flexDirection: "row",

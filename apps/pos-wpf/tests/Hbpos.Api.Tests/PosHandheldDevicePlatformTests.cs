@@ -391,6 +391,13 @@ public sealed class PosHandheldDevicePlatformTests
             CancellationToken cancellationToken) =>
             Task.FromResult(DeviceByCode);
 
+        public Task<DeviceRegistrationRecord?> FindLatestByDeviceCodeAndHardwareIdAsync(
+            string deviceCode,
+            string storeCode,
+            string hardwareId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(DeviceByCode);
+
         public Task<DeviceRegistrationRecord?> FindActiveOrLockedRegistrationAsync(
             string hardwareId,
             CancellationToken cancellationToken) =>
@@ -406,6 +413,32 @@ public sealed class PosHandheldDevicePlatformTests
             string hardwareId,
             CancellationToken cancellationToken) =>
             Task.FromResult(RegistrationsForUpdate);
+
+        public Task<int> CountActiveOrLockedByStoreCodeForRegistrationAsync(
+            string storeCode,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
+        public Task AcquireAppReviewGrantLockAsync(
+            Guid grantId,
+            string storeCode,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<DeviceRegistrationAppReviewGrantConsumption?> FindAppReviewGrantConsumptionAsync(
+            Guid grantId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<DeviceRegistrationAppReviewGrantConsumption?>(null);
+
+        public Task<int> ConsumeAppReviewGrantAsync(
+            DeviceRegistrationAppReviewGrantConsumption consumption,
+            DateTime expiresAtUtc,
+            CancellationToken cancellationToken) => Task.FromResult(1);
+
+        public Task<bool> IsAppReviewDeviceAsync(
+            string storeCode,
+            string deviceCode,
+            string hardwareId,
+            CancellationToken cancellationToken) => Task.FromResult(false);
 
         public Task<int> DisablePendingRegistrationAsync(
             DeviceRegistrationDisableRequest request,
@@ -434,6 +467,11 @@ public sealed class PosHandheldDevicePlatformTests
             return Task.FromResult(1);
         }
 
+        public Task<int> ApproveRegistrationForAppReviewAsync(
+            DeviceRegistrationAppReviewApprovalRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(1);
+
         public Task CreateRegistrationAsync(
             DeviceRegistrationCreateRequest request,
             CancellationToken cancellationToken)
@@ -458,6 +496,11 @@ public sealed class PosHandheldDevicePlatformTests
         public DeviceReregisterContext? Context { get; private set; }
 
         public Task<DeviceRegisterResponse> RegisterAsync(
+            DeviceRegisterRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<DeviceRegisterResponse> RegisterForAppReviewAsync(
             DeviceRegisterRequest request,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();

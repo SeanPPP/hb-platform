@@ -6,6 +6,7 @@ using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -17,8 +18,10 @@ public sealed class DevicesControllerTests
     public void DeviceEndpoints_KeepExpectedRoutes()
     {
         Assert.Equal("register", GetHttpPostTemplate(nameof(DevicesController.Register)));
+        Assert.Equal("app-review-register", GetHttpPostTemplate(nameof(DevicesController.AppReviewRegister)));
         Assert.Equal("verify", GetHttpPostTemplate(nameof(DevicesController.Verify)));
         Assert.Equal("reregister", GetHttpPostTemplate(nameof(DevicesController.Reregister)));
+        Assert.Equal("reset-registration", GetHttpPostTemplate(nameof(DevicesController.ResetRegistration)));
         Assert.Equal("runtime-status", GetHttpPostTemplate(nameof(DevicesController.ReportRuntimeStatus)));
         Assert.Equal(
             CashierAuthorizationPolicies.DeviceRegistration,
@@ -27,10 +30,25 @@ public sealed class DevicesControllerTests
                 .Cast<AuthorizeAttribute>()
                 .Single()
                 .Policy);
+        Assert.Equal(
+            CashierAuthorizationPolicies.DeviceRegistrationReset,
+            typeof(DevicesController).GetMethod(nameof(DevicesController.ResetRegistration))?
+                .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+                .Cast<AuthorizeAttribute>()
+                .Single()
+                .Policy);
         Assert.NotNull(typeof(DevicesController)
             .GetMethod(nameof(DevicesController.ReportRuntimeStatus))?
             .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
             .SingleOrDefault());
+        Assert.Empty(typeof(DevicesController)
+            .GetMethod(nameof(DevicesController.Register))!
+            .GetCustomAttributes(typeof(EnableRateLimitingAttribute), inherit: false));
+        var reviewRateLimit = Assert.Single(typeof(DevicesController)
+            .GetMethod(nameof(DevicesController.AppReviewRegister))!
+            .GetCustomAttributes(typeof(EnableRateLimitingAttribute), inherit: false)
+            .Cast<EnableRateLimitingAttribute>());
+        Assert.Equal("app-review-device-registration", reviewRateLimit.PolicyName);
     }
 
     [Fact]
@@ -53,7 +71,25 @@ public sealed class DevicesControllerTests
         var apiResult = Assert.IsType<ApiResult<DeviceRegisterResponse>>(ok.Value);
         Assert.True(apiResult.Success);
         Assert.Same(expected, apiResult.Data);
-        Assert.Same(request, service.LastRegisterRequest);
+        Assert.Equal(request, service.LastRegisterRequest);
+        Assert.Null(Assert.IsType<DeviceRegisterRequest>(service.LastRegisterRequest).ProvisioningCode);
+    }
+
+    [Fact]
+    public async Task AppReviewRegister_ForwardsProvisioningCodeToDedicatedServicePath()
+    {
+        var expected = new DeviceRegisterResponse(
+            "POS_1042_1011", "1042", "testStore", 1, true, "Device is enabled.", "AUTH");
+        var service = new FakeDeviceService { RegisterResponse = expected };
+        var controller = new DevicesController(service);
+        var request = new DeviceRegisterRequest(
+            "1042", "IPAD-REVIEW", "App Review", DeviceSystems.IpadOs, "OPEN-REVIEW-DEVICE");
+
+        var result = await controller.AppReviewRegister(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        Assert.True(Assert.IsType<ApiResult<DeviceRegisterResponse>>(ok.Value).Success);
+        Assert.Equal("OPEN-REVIEW-DEVICE", service.LastRegisterRequest?.ProvisioningCode);
     }
 
     [Fact]
@@ -134,6 +170,76 @@ public sealed class DevicesControllerTests
     }
 
     [Fact]
+    public async Task ResetRegistration_UsesOnlyAuthenticatedDeviceAndVerifiedCashierIdentity()
+    {
+        var operationId = Guid.Parse("36d6605c-1e25-4fd1-b345-bec1c4ffad31");
+        var expected = new DeviceRegistrationResetResponse(
+            operationId,
+            "POS_1042_0247",
+            "1042",
+            new DateTime(2026, 8, 18, 2, 30, 0, DateTimeKind.Utc));
+        var service = new FakeDeviceService { ResetResponse = expected };
+        var httpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS_1042_0247"),
+                new Claim(DeviceAuthConstants.StoreCodeClaim, "1042"),
+                new Claim(DeviceAuthConstants.HardwareIdClaim, "INSTALL-1042"),
+            ], DeviceAuthConstants.Scheme)),
+        };
+        httpContext.Items[CashierAuthorizationContext.CashierIdItemKey] = "EMPLOYEE-HGUID";
+        var controller = new DevicesController(service)
+        {
+            ControllerContext = new ControllerContext { HttpContext = httpContext }
+        };
+
+        var result = await controller.ResetRegistration(
+            new DeviceRegistrationResetRequest(operationId),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<DeviceRegistrationResetResponse>>(ok.Value);
+        Assert.True(apiResult.Success);
+        Assert.Same(expected, apiResult.Data);
+        Assert.Equal("POS_1042_0247", service.LastResetContext?.DeviceCode);
+        Assert.Equal("1042", service.LastResetContext?.StoreCode);
+        Assert.Equal("INSTALL-1042", service.LastResetContext?.HardwareId);
+        Assert.Equal("EMPLOYEE-HGUID", service.LastResetContext?.CashierId);
+    }
+
+    [Fact]
+    public async Task ResetRegistration_RejectsMissingVerifiedCashierIdentityBeforeServiceWrite()
+    {
+        var service = new FakeDeviceService();
+        var controller = new DevicesController(service)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [
+                        new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS_1042_0247"),
+                        new Claim(DeviceAuthConstants.StoreCodeClaim, "1042"),
+                        new Claim(DeviceAuthConstants.HardwareIdClaim, "INSTALL-1042"),
+                    ], DeviceAuthConstants.Scheme)),
+                }
+            }
+        };
+
+        var result = await controller.ResetRegistration(
+            new DeviceRegistrationResetRequest(Guid.NewGuid()),
+            CancellationToken.None);
+
+        var unauthorized = Assert.IsType<UnauthorizedObjectResult>(result.Result);
+        Assert.Equal(
+            "CASHIER_AUTH_REQUIRED",
+            Assert.IsType<ApiResult<DeviceRegistrationResetResponse>>(unauthorized.Value).ErrorCode);
+        Assert.Null(service.LastResetContext);
+    }
+
+    [Fact]
     public void CreateDeviceCode_UsesStoreCodeAndLocalHourMinute()
     {
         var deviceCode = DeviceService.CreateDeviceCode(
@@ -172,13 +278,19 @@ public sealed class DevicesControllerTests
 
         public DeviceReregisterResponse? ReregisterResponse { get; init; }
 
+        public DeviceRegistrationResetResponse? ResetResponse { get; init; }
+
         public DeviceRegisterRequest? LastRegisterRequest { get; private set; }
+
+        public DeviceRegisterRequest? LastAppReviewRegisterRequest { get; private set; }
 
         public DeviceVerifyRequest? LastVerifyRequest { get; private set; }
 
         public DeviceReregisterRequest? LastReregisterRequest { get; private set; }
 
         public DeviceReregisterContext? LastReregisterContext { get; private set; }
+
+        public DeviceRegistrationResetContext? LastResetContext { get; private set; }
 
         public Task<bool> UpdateRuntimeStatusAsync(
             string hardwareId,
@@ -200,6 +312,15 @@ public sealed class DevicesControllerTests
             return Task.FromResult(RegisterResponse!);
         }
 
+        public Task<DeviceRegisterResponse> RegisterForAppReviewAsync(
+            DeviceRegisterRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastRegisterRequest = request;
+            LastAppReviewRegisterRequest = request;
+            return Task.FromResult(RegisterResponse!);
+        }
+
         public Task<DeviceVerifyResponse> VerifyAsync(
             DeviceVerifyRequest request,
             CancellationToken cancellationToken)
@@ -216,6 +337,15 @@ public sealed class DevicesControllerTests
             LastReregisterRequest = request;
             LastReregisterContext = currentDevice;
             return Task.FromResult(ReregisterResponse!);
+        }
+
+        public Task<DeviceRegistrationResetResponse> ResetRegistrationAsync(
+            DeviceRegistrationResetRequest request,
+            DeviceRegistrationResetContext currentDevice,
+            CancellationToken cancellationToken)
+        {
+            LastResetContext = currentDevice;
+            return Task.FromResult(ResetResponse!);
         }
     }
 }

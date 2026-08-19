@@ -30,6 +30,10 @@ import {
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import type { DeviceSessionState } from "@/core/security/device-session";
 import { toggleAppLanguage } from "@/i18n";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
@@ -46,6 +50,7 @@ export function DeviceRegistrationScreen() {
     useState<StoreLoadState>("idle");
   const [storeLoadError, setStoreLoadError] = useState<string | null>(null);
   const [selectedStoreCode, setSelectedStoreCode] = useState("");
+  const [provisioningCode, setProvisioningCode] = useState("");
   const [pickerVisible, setPickerVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const serverOperation = useRef<AbortController | null>(null);
@@ -88,7 +93,10 @@ export function DeviceRegistrationScreen() {
   }, [deviceSession]);
 
   useEffect(() => {
-    if (runtime.state.phase === "pending-approval") {
+    if (
+      runtime.state.phase === "pending-approval" ||
+      runtime.state.phase === "locked"
+    ) {
       return;
     }
     void loadStores();
@@ -144,14 +152,20 @@ export function DeviceRegistrationScreen() {
 
     setRequestError(null);
     setIsSubmitting(true);
+    const normalizedProvisioningCode = provisioningCode.trim();
     try {
       const next = await deviceSession.register({
         storeCode: selectedStore.storeCode,
+        ...(normalizedProvisioningCode
+          ? { provisioningCode: normalizedProvisioningCode }
+          : {}),
       });
       await reconcile(next);
     } catch (error: unknown) {
       applyRequestFailure(error, runtime, setRequestError);
     } finally {
+      // 开通码只用于本次设备注册，不保存在组件状态或本地安全存储中。
+      setProvisioningCode("");
       setIsSubmitting(false);
     }
   };
@@ -213,19 +227,46 @@ export function DeviceRegistrationScreen() {
           </View>
         </View>
 
-        <View style={styles.formPanel}>
+        <PosKeyboardAwareScrollView
+          contentContainerStyle={styles.formPanelContent}
+          style={styles.formPanel}
+        >
           <Text style={styles.formTitle}>
-            {runtime.state.phase === "pending-approval"
-              ? t("registration.pendingTitle")
-              : t("registration.formTitle")}
+            {runtime.state.phase === "locked"
+              ? t("registration.lockedTitle")
+              : runtime.state.phase === "pending-approval"
+                ? t("registration.pendingTitle")
+                : t("registration.formTitle")}
           </Text>
           <Text style={styles.formHint}>
-            {runtime.state.phase === "pending-approval"
-              ? t("registration.pendingHint")
-              : t("registration.formHint")}
+            {runtime.state.phase === "locked"
+              ? t("registration.lockedHint")
+              : runtime.state.phase === "pending-approval"
+                ? t("registration.pendingHint")
+                : t("registration.formHint")}
           </Text>
 
-          {runtime.state.phase !== "pending-approval" ? (
+          {runtime.state.phase === "locked" ? (
+            <View
+              accessibilityRole="alert"
+              style={styles.pendingCard}
+              testID="registration-recovery-readonly"
+            >
+              <MaterialCommunityIcons
+                color={posColors.red}
+                name="shield-alert-outline"
+                size={34}
+              />
+              <View style={styles.pendingCopy}>
+                <Text style={styles.pendingCode}>
+                  {t("registration.lockedTitle")}
+                </Text>
+                <Text style={styles.pendingStore}>
+                  {t("registration.lockedHint")}
+                </Text>
+              </View>
+            </View>
+          ) : runtime.state.phase !== "pending-approval" ? (
             <>
               <FieldLabel>{t("registration.storeCode")}</FieldLabel>
               <PosPressable
@@ -290,6 +331,26 @@ export function DeviceRegistrationScreen() {
                   </PosPressable>
                 </View>
               ) : null}
+
+              <FieldLabel>{t("registration.provisioningCode")}</FieldLabel>
+              <PosKeyboardAwareTextInput
+                accessibilityLabel={t("registration.provisioningCode")}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isSubmitting}
+                onChangeText={setProvisioningCode}
+                maxLength={128}
+                placeholder={t("registration.provisioningCodePlaceholder")}
+                placeholderTextColor={posColors.mutedInk}
+                secureTextEntry
+                style={styles.provisioningCodeInput}
+                testID="registration-provisioning-code"
+                textContentType="oneTimeCode"
+                value={provisioningCode}
+              />
+              <Text style={styles.provisioningCodeHint}>
+                {t("registration.provisioningCodeHint")}
+              </Text>
             </>
           ) : (
             <View style={styles.pendingCard}>
@@ -315,7 +376,21 @@ export function DeviceRegistrationScreen() {
             </View>
           ) : null}
 
-          {runtime.state.phase !== "pending-approval" ? (
+          {runtime.state.phase === "locked" ? (
+            <PosPressable
+              accessibilityRole="button"
+              onPress={() => void runtime.retry()}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && styles.secondaryButtonPressed,
+              ]}
+              testID="registration-recovery-retry"
+            >
+              <Text style={styles.secondaryButtonLabel}>
+                {t("registration.recoveryRetry")}
+              </Text>
+            </PosPressable>
+          ) : runtime.state.phase !== "pending-approval" ? (
             <PosPressable
               accessibilityRole="button"
               accessibilityState={{ disabled: submitDisabled }}
@@ -349,7 +424,7 @@ export function DeviceRegistrationScreen() {
             </PosPressable>
           )}
 
-          {serverConnection ? (
+          {serverConnection && runtime.state.phase !== "locked" ? (
             <View style={styles.serverConnectionPanel}>
               <ServerConnectionPanel
                 canSave={runtime.state.phase === "registration-required"}
@@ -377,7 +452,7 @@ export function DeviceRegistrationScreen() {
               />
             </View>
           ) : null}
-        </View>
+        </PosKeyboardAwareScrollView>
       </View>
       <StorePickerOverlay
         onClose={() => setPickerVisible(false)}
@@ -622,10 +697,12 @@ const styles = StyleSheet.create({
   formPanel: {
     width: 430,
     alignSelf: "center",
-    padding: 30,
     borderWidth: 1,
     borderColor: posColors.border,
     backgroundColor: posColors.surface,
+  },
+  formPanelContent: {
+    padding: 30,
   },
   formTitle: { color: posColors.ink, fontSize: 25, fontWeight: "900" },
   formHint: {
@@ -662,6 +739,22 @@ const styles = StyleSheet.create({
   storePickerPlaceholder: {
     color: posColors.mutedInk,
     fontWeight: "500",
+  },
+  provisioningCodeInput: {
+    minHeight: 50,
+    paddingHorizontal: 15,
+    borderWidth: 1,
+    borderColor: posColors.border,
+    backgroundColor: "#FFFFFF",
+    color: posColors.ink,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  provisioningCodeHint: {
+    marginTop: 7,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
   },
   storeStatus: {
     marginTop: 10,

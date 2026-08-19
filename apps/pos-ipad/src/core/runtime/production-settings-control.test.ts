@@ -342,6 +342,7 @@ test("任一活动购物车、未决支付或耐久队列都会原子阻断危�
         reregister: async () => {
           executed = true;
         },
+        resetRegistration: async () => "completed",
       },
     }),
   );
@@ -468,6 +469,7 @@ test("普通危险动作持有目录独占门，支付配置单独进入全局 t
       },
       device: {
         reregister: async () => undefined,
+        resetRegistration: async () => "completed",
       },
       appUpdate: {
         check: async () => {
@@ -869,6 +871,7 @@ test("支付配置之外的危险动作仍由完整待处理数据门禁阻断",
         reregister: async () => {
           events.push("device:reregister");
         },
+        resetRegistration: async () => "completed",
       },
       appUpdate: {
         check: async () => {
@@ -1116,6 +1119,65 @@ test("重启安全决策失败时映射 safety-check-failed", async () => {
   );
 });
 
+test("清除设备注册必须通过全量待处理门禁且不会调用重置服务", async () => {
+  let resetCalls = 0;
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => ({ ...CLEAR, pendingSaleCount: 1 }),
+      },
+      device: {
+        reregister: async () => undefined,
+        resetRegistration: async () => {
+          resetCalls += 1;
+          return "completed" as const;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { kind: "reset-device-registration" },
+      new AbortController().signal,
+      "EMPLOYEE-BARCODE",
+    ),
+    { status: "blocked", reason: "pending-local-data" },
+  );
+  assert.equal(resetCalls, 0);
+});
+
+test("清除设备注册仅把瞬时员工条码交给重置协调器，成功后重载运行时", async () => {
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      device: {
+        reregister: async () => undefined,
+        resetRegistration: async (barcode) => {
+          events.push(`reset:${barcode}`);
+          return "completed" as const;
+        },
+      },
+      runtimeReload: {
+        reload: async () => {
+          events.push("reload");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { kind: "reset-device-registration" },
+      new AbortController().signal,
+      "EMPLOYEE-BARCODE",
+    ),
+    { status: "completed", kind: "reset-device-registration" },
+  );
+  assert.deepEqual(events, ["reset:EMPLOYEE-BARCODE", "reload"]);
+});
+
 type DependencyOverrides = Partial<ProductionSettingsControlDependencies>;
 
 function deps(
@@ -1174,6 +1236,7 @@ function deps(
     },
     device: {
       reregister: unavailable,
+      resetRegistration: unavailable,
     },
     ...overrides,
   };

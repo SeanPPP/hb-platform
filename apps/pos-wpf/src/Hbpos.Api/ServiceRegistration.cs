@@ -12,6 +12,10 @@ public static class ServiceRegistration
         this IServiceCollection services,
         IConfiguration? configuration = null)
     {
+        if (configuration?.GetValue<bool>($"{PosIpadAppReviewOptions.SectionName}:Enabled") == true)
+        {
+            ValidateEnabledAppReviewConfiguration(configuration);
+        }
         var globalKeysPath = ResolveDataProtectionKeysPath(
             configuration?["DataProtection:KeysPath"],
             "DataProtectionKeys");
@@ -73,6 +77,8 @@ public static class ServiceRegistration
             services.Configure<SquareTerminalRestOptions>(configuration.GetSection("Square"));
             services.Configure<AppUpdateOptions>(configuration.GetSection("AppUpdate"));
             services.Configure<PosIpadOptions>(configuration.GetSection("PosIpad"));
+            services.Configure<PosIpadAppReviewOptions>(
+                configuration.GetSection(PosIpadAppReviewOptions.SectionName));
             services.Configure<CatalogSnapshotOptions>(configuration.GetSection("CatalogSnapshot"));
             services.Configure<CatalogSyncOptions>(configuration.GetSection("CatalogSync"));
             services.Configure<CatalogDailyPrebuildOptions>(configuration.GetSection("CatalogDailyPrebuild"));
@@ -87,6 +93,7 @@ public static class ServiceRegistration
         services.AddScoped<IOperationAuditReadService, SqlSugarOperationAuditReadService>();
         services.AddScoped<IOperationAuditSchemaInitializer, SqlSugarOperationAuditSchemaInitializer>();
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
+        services.AddScoped<IPosIpadAppReviewAuthorizationBoundary, PosIpadAppReviewAuthorizationBoundary>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<IAppUpdateDeviceIdentityValidator, AppUpdateDeviceIdentityValidator>();
@@ -234,6 +241,45 @@ public static class ServiceRegistration
         });
 
         return services;
+    }
+
+    private static void ValidateEnabledAppReviewConfiguration(IConfiguration configuration)
+    {
+        var prefix = PosIpadAppReviewOptions.SectionName;
+        if (string.IsNullOrWhiteSpace(configuration[$"{prefix}:StoreCode"]))
+        {
+            throw new InvalidOperationException($"Enabled {prefix} requires {prefix}:StoreCode.");
+        }
+
+        if (!DateTimeOffset.TryParse(configuration[$"{prefix}:ExpiresAtUtc"], out _))
+        {
+            throw new InvalidOperationException($"Enabled {prefix} requires a valid {prefix}:ExpiresAtUtc.");
+        }
+
+        if (configuration.GetValue<int>($"{prefix}:MaxActiveDevices") != 1)
+        {
+            throw new InvalidOperationException($"Enabled {prefix} requires {prefix}:MaxActiveDevices=1.");
+        }
+
+        if (!Guid.TryParse(configuration[$"{prefix}:GrantId"], out _))
+        {
+            throw new InvalidOperationException($"Enabled {prefix} requires a valid {prefix}:GrantId.");
+        }
+
+        var configuredHash = configuration[$"{prefix}:RegistrationCodeSha256"]?.Trim();
+        try
+        {
+            if (string.IsNullOrEmpty(configuredHash)
+                || Convert.FromHexString(configuredHash).Length != 32)
+            {
+                throw new FormatException();
+            }
+        }
+        catch (FormatException)
+        {
+            throw new InvalidOperationException(
+                $"Enabled {prefix} requires a 64-character SHA-256 {prefix}:RegistrationCodeSha256.");
+        }
     }
 
     private static string ResolveDataProtectionKeysPath(string? configuredPath, string defaultDirectoryName)

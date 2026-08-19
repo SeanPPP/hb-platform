@@ -273,6 +273,7 @@ export type SettingsDangerousConfirmation =
       targetStoreCode: string;
       terminalName?: string;
     }>
+  | Readonly<{ kind: "reset-device-registration" }>
   | Readonly<{ kind: "restart-app" }>;
 
 export type SettingsDangerousActionResult =
@@ -288,7 +289,12 @@ export type SettingsDangerousActionResult =
         | "change-payment-settings"
         | "pair-linkly"
         | "reregister-device"
+        | "reset-device-registration"
         | "restart-app";
+    }>
+  | Readonly<{
+      status: "pending-recovery";
+      kind: "reset-device-registration";
     }>
   | Readonly<{
       status: "unknown";
@@ -354,6 +360,7 @@ export interface SettingsControlPort {
   executeDangerousAction(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult>;
 }
 
@@ -373,6 +380,10 @@ export type SettingsStatusCode =
   | "catalog-reset-failed"
   | "device-reregister-failed"
   | "device-reregister-started"
+  | "device-registration-reset-barcode-required"
+  | "device-registration-reset-completed"
+  | "device-registration-reset-failed"
+  | "device-registration-reset-pending-recovery"
   | "display-setting-failed"
   | "display-setting-saved"
   | "display-test-failed"
@@ -1900,6 +1911,17 @@ export class SettingsPresenter {
     });
   }
 
+  public requestDeviceRegistrationReset(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return false;
+    }
+    return this.requestConfirmation({ kind: "reset-device-registration" });
+  }
+
   public requestAppRestart(): boolean {
     if (this.catalogRefreshRunning()) {
       this.patch({ confirmation: null, statusCode: "safety-check-failed" });
@@ -1916,9 +1938,19 @@ export class SettingsPresenter {
     this.patch({ confirmation: null, statusCode: null });
   }
 
-  public confirmDangerousAction(): Promise<void> {
+  public confirmDangerousAction(employeeBarcode?: string): Promise<void> {
     const confirmation = this.state.confirmation;
     if (!confirmation || this.destroyed) return Promise.resolve();
+    const resetEmployeeBarcode = employeeBarcode?.trim() ?? "";
+    if (
+      confirmation.kind === "reset-device-registration" &&
+      !resetEmployeeBarcode
+    ) {
+      this.patch({
+        statusCode: "device-registration-reset-barcode-required",
+      });
+      return Promise.resolve();
+    }
     if (
       this.catalogRefreshRunning() &&
       conflictsWithCatalogRefresh(confirmation)
@@ -1934,6 +1966,9 @@ export class SettingsPresenter {
         const result = await this.options.port.executeDangerousAction(
           confirmation,
           this.lifetime.signal,
+          confirmation.kind === "reset-device-registration"
+            ? resetEmployeeBarcode
+            : undefined,
         );
         if (result.status === "blocked") {
           this.patch({
@@ -1974,6 +2009,13 @@ export class SettingsPresenter {
           if (this.state.linklySetup?.health.kind !== "failed") {
             this.patch({ statusCode: "linkly-pair-unknown" });
           }
+          return;
+        }
+        if (result.status === "pending-recovery") {
+          this.patch({
+            confirmation: null,
+            statusCode: "device-registration-reset-pending-recovery",
+          });
           return;
         }
         if (result.kind !== confirmation.kind) {
@@ -2022,6 +2064,13 @@ export class SettingsPresenter {
             catalog: normalizeCatalog(result.catalog),
             confirmation: null,
             statusCode: "catalog-reset",
+          });
+          return;
+        }
+        if (confirmation.kind === "reset-device-registration") {
+          this.patch({
+            confirmation: null,
+            statusCode: "device-registration-reset-completed",
           });
           return;
         }
@@ -3062,6 +3111,8 @@ function dangerousActionFailureCode(
       return "catalog-reset-failed";
     case "reregister-device":
       return "device-reregister-failed";
+    case "reset-device-registration":
+      return "device-registration-reset-failed";
     default:
       return "restart-failed";
   }

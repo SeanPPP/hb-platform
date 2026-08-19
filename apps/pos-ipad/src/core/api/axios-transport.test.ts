@@ -80,6 +80,46 @@ test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证
   assert.equal(request?.headers?.["X-HBPOS-Cashier-Authorization"], "cashier-secret");
 });
 
+test("请求显式提供的新鲜员工票据不得被当前收银员 bearer 覆盖", async () => {
+  let request: AxiosRequestConfig | undefined;
+  const instance = create({
+    adapter: async (config) => {
+      request = config;
+      return { config, status: 200, statusText: "OK", headers: {}, data: { success: true } };
+    },
+  });
+  const transport = createAxiosHbposTransport(
+    "https://hbpos.example",
+    {
+      async getCredentials() {
+        return {
+          device: {
+            authorizationCode: "device-secret",
+            deviceCode: "IPAD-1042-01",
+            storeCode: "1042",
+            hardwareId: "INSTALL-001",
+          },
+          cashierAuthorization: "current-cashier-ticket",
+        };
+      },
+    },
+    instance,
+  );
+
+  await transport.request({
+    method: "POST",
+    url: "/api/v1/devices/reset-registration",
+    headers: {
+      "X-HBPOS-Cashier-Authorization": "fresh-online-ticket",
+    },
+  });
+
+  assert.equal(
+    request?.headers?.["X-HBPOS-Cashier-Authorization"],
+    "fresh-online-ticket",
+  );
+});
+
 test("请求最终 origin 偏离已选 API 时在读取凭据前失败关闭", async () => {
   let credentialReads = 0;
   let adapterCalls = 0;

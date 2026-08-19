@@ -149,6 +149,9 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
                 services.AddSingleton<ICashierAuthorizationTicketService>(new PairingTicketService());
                 services.RemoveAll<ICashierService>();
                 services.AddSingleton<ICashierService>(new PairingCashierService(paymentSettingsGranted));
+                services.RemoveAll<IPosIpadAppReviewAuthorizationBoundary>();
+                services.AddSingleton<IPosIpadAppReviewAuthorizationBoundary>(
+                    new NonReviewDeviceAuthorizationBoundary());
 
                 var schemaInitializer = new NoOpLinklySchemaInitializer();
                 services.RemoveAll<IStoreSchemaInitializer>();

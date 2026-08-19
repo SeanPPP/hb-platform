@@ -60,7 +60,10 @@ export function createAxiosHbposTransport(
       config.headers.set("X-HBPOS-Store-Code", credentials.device.storeCode);
       config.headers.set("X-HBPOS-Hardware-Id", credentials.device.hardwareId);
     }
-    if (credentials.cashierAuthorization) {
+    if (
+      credentials.cashierAuthorization &&
+      !config.headers.has("X-HBPOS-Cashier-Authorization")
+    ) {
       config.headers.set("X-HBPOS-Cashier-Authorization", credentials.cashierAuthorization);
     }
     return config;

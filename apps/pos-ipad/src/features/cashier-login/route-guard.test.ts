@@ -47,7 +47,7 @@ test("入口只在设备与数据库就绪后进入登录或收银", () => {
       { ...ready, phase: "locked", device: "locked" },
       cashier,
     ),
-    null,
+    "/registration",
   );
 });
 

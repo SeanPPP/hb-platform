@@ -24,7 +24,7 @@ const mockGetItemSync = jest.mocked(Storage.getItemSync);
 const mockSetItem = jest.mocked(Storage.setItem);
 
 const mockRegister = jest.fn<
-  (input: Readonly<{ storeCode: string }>) => Promise<DeviceSessionState>
+  (input: Readonly<{ storeCode: string; provisioningCode?: string }>) => Promise<DeviceSessionState>
 >();
 const mockListRegistrationStores = jest.fn<
   () => Promise<readonly DeviceRegistrationStore[]>
@@ -141,6 +141,29 @@ test("必须选择申请分店，提交时不发送终端名称", async () => {
     expect(mockRegister).toHaveBeenCalledWith({ storeCode: "1003" }),
   );
   expect(mockRegister.mock.calls[0]?.[0]).not.toHaveProperty("terminalName");
+  expect(mockRegister.mock.calls[0]?.[0]).not.toHaveProperty("provisioningCode");
+});
+
+test("填写设备开通码时去除首尾空白后随注册请求发送", async () => {
+  const screen = await render(<DeviceRegistrationScreen />);
+  await waitFor(() =>
+    expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
+  );
+
+  await fireEvent.press(screen.getByTestId("registration-store-picker"));
+  await fireEvent.press(await screen.findByTestId("registration-store-1003"));
+  await fireEvent.changeText(
+    screen.getByTestId("registration-provisioning-code"),
+    "  OPEN-REVIEW-DEVICE  ",
+  );
+  await fireEvent.press(screen.getByTestId("registration-submit"));
+
+  await waitFor(() =>
+    expect(mockRegister).toHaveBeenCalledWith({
+      storeCode: "1003",
+      provisioningCode: "OPEN-REVIEW-DEVICE",
+    }),
+  );
 });
 
 test("中英文切换保留已经选择的申请分店", async () => {
@@ -190,6 +213,30 @@ test("未注册设备测试通过后可安全切换服务器并重建 runtime", 
     ),
   );
   await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
+});
+
+test("设备重置状态不确定时只显示只读恢复页并禁止重复注册", async () => {
+  mockRuntimeValue = {
+    ...(mockRuntimeValue as Record<string, unknown>),
+    state: {
+      backend: "offline",
+      database: "ready",
+      device: "locked",
+      phase: "locked",
+    },
+  };
+
+  const screen = await render(<DeviceRegistrationScreen />);
+
+  expect(screen.getByTestId("registration-recovery-readonly")).toBeTruthy();
+  expect(screen.queryByTestId("registration-store-picker")).toBeNull();
+  expect(screen.queryByTestId("registration-provisioning-code")).toBeNull();
+  expect(screen.queryByTestId("registration-submit")).toBeNull();
+  expect(screen.queryByTestId("server-connection-edit")).toBeNull();
+  expect(mockListRegistrationStores).not.toHaveBeenCalled();
+
+  await fireEvent.press(screen.getByTestId("registration-recovery-retry"));
+  expect(mockRetry).toHaveBeenCalledTimes(1);
 });
 
 test("分店选择浮层点击面板外遮罩关闭", async () => {

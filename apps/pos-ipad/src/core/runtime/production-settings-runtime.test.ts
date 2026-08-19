@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { UpdateTransitionLeaseCoordinator } from "../../features/app-updates/update-transition-lease-coordinator";
 import type {
   SettingsControlPort,
   SettingsLinklyHealthSnapshot,
@@ -371,6 +372,78 @@ test("危险动作只能在组合根独占区执行，并在动作完成后再�
   ]);
 });
 
+test("清除设备注册通过全局 transition 等待在途 operation 并拒绝新 operation", async () => {
+  let sessionActive = true;
+  const events: string[] = [];
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const operationRelease = deferred<void>();
+  transition.bindTransitionBarrier((operation) => operation());
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        if (!sessionActive) throw new Error("SESSION_REPLACED");
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.DeviceRegistration",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      executeDangerousAction: async (action, _signal, employeeBarcode) => {
+        assert.equal(action.kind, "reset-device-registration");
+        assert.equal(employeeBarcode, "EMPLOYEE-BARCODE");
+        events.push("reset");
+        sessionActive = false;
+        return {
+          status: "completed",
+          kind: "reset-device-registration",
+        };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      throw new Error("device registration reset must not pre-acquire cart lease");
+    },
+    runDeviceRegistrationResetTransition: (operation) =>
+      transition.runTransition(operation),
+  } as Parameters<typeof createProductionSettingsRuntime>[0] & {
+    runDeviceRegistrationResetTransition<T>(
+      operation: () => Promise<T>,
+    ): Promise<T>;
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  events.length = 0;
+  const existing = transition.runOperation(async () => {
+    events.push("operation:started");
+    await operationRelease.promise;
+    events.push("operation:finished");
+  });
+
+  assert.equal(presenter.requestDeviceRegistrationReset(), true);
+  const reset = presenter.confirmDangerousAction("EMPLOYEE-BARCODE");
+
+  assert.equal(transition.isTransitionActive(), true);
+  await assert.rejects(transition.runOperation(async () => undefined));
+  assert.deepEqual(events, ["operation:started", "lease"]);
+
+  operationRelease.resolve();
+  await existing;
+  await reset;
+
+  assert.deepEqual(events, [
+    "operation:started",
+    "lease",
+    "operation:finished",
+    "reset",
+  ]);
+});
+
 test("App 重启跳过普通购物车独占，但动作完成后仍复核可信 cashier lease", async () => {
   const events: string[] = [];
   const runtime = createProductionSettingsRuntime({
@@ -730,4 +803,15 @@ function fakeControl(
     executeDangerousAction: unavailable,
     ...overrides,
   };
+}
+
+function deferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+}> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
 }

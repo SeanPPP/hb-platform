@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Hbpos.Contracts.Devices;
 
 namespace Hbpos.Api.Tests;
@@ -32,5 +33,21 @@ public sealed class DevicePlatformContractTests
         Assert.DoesNotContain(
             constructor.GetParameters(),
             parameter => string.Equals(parameter.Name, "deviceSystem", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Registration_code_validation_metadata_is_attached_to_record_constructor_parameter()
+    {
+        var constructor = typeof(DeviceRegisterRequest).GetConstructors().Single();
+        var provisioningCodeParameter = constructor.GetParameters().Single(parameter =>
+            string.Equals(parameter.Name, "ProvisioningCode", StringComparison.OrdinalIgnoreCase));
+
+        var validation = Assert.Single(
+            provisioningCodeParameter.GetCustomAttributes(typeof(StringLengthAttribute), inherit: false)
+                .Cast<StringLengthAttribute>());
+        Assert.Equal(128, validation.MaximumLength);
+        Assert.Equal(16, validation.MinimumLength);
+        Assert.Empty(typeof(DeviceRegisterRequest).GetProperty(nameof(DeviceRegisterRequest.ProvisioningCode))!
+            .GetCustomAttributes(typeof(StringLengthAttribute), inherit: false));
     }
 }

@@ -4,6 +4,7 @@ using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 
 namespace Hbpos.Api.Controllers;
@@ -19,11 +20,27 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
 
     [AllowAnonymous]
     [HttpPost("register")]
+    [RequestSizeLimit(4096)]
     public async Task<ActionResult<ApiResult<DeviceRegisterResponse>>> Register(
         [FromBody] DeviceRegisterRequest request,
         CancellationToken cancellationToken)
     {
-        var response = await deviceService.RegisterAsync(request, cancellationToken);
+        // 普通注册端点永不接受审核开通码，避免绕过审核专用限流路径。
+        var response = await deviceService.RegisterAsync(
+            request with { ProvisioningCode = null },
+            cancellationToken);
+        return Ok(ApiResult<DeviceRegisterResponse>.Ok(response));
+    }
+
+    [AllowAnonymous]
+    [EnableRateLimiting("app-review-device-registration")]
+    [HttpPost("app-review-register")]
+    [RequestSizeLimit(4096)]
+    public async Task<ActionResult<ApiResult<DeviceRegisterResponse>>> AppReviewRegister(
+        [FromBody] DeviceRegisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        var response = await deviceService.RegisterForAppReviewAsync(request, cancellationToken);
         return Ok(ApiResult<DeviceRegisterResponse>.Ok(response));
     }
 
@@ -61,6 +78,47 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
             new DeviceReregisterContext(deviceCode, storeCode, hardwareId, deviceSystem ?? DeviceSystems.Windows),
             cancellationToken);
         return Ok(ApiResult<DeviceReregisterResponse>.Ok(response));
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.DeviceRegistrationReset)]
+    [HttpPost("reset-registration")]
+    [RequestSizeLimit(1024)]
+    public async Task<ActionResult<ApiResult<DeviceRegistrationResetResponse>>> ResetRegistration(
+        [FromBody] DeviceRegistrationResetRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.OperationId == Guid.Empty)
+        {
+            return BadRequest(ApiResult<DeviceRegistrationResetResponse>.Fail(
+                "OPERATION_ID_REQUIRED",
+                "operationId is required."));
+        }
+
+        var deviceCode = User?.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
+        var storeCode = User?.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
+        var hardwareId = User?.FindFirstValue(DeviceAuthConstants.HardwareIdClaim);
+        if (string.IsNullOrWhiteSpace(deviceCode)
+            || string.IsNullOrWhiteSpace(storeCode)
+            || string.IsNullOrWhiteSpace(hardwareId))
+        {
+            return Unauthorized(ApiResult<DeviceRegistrationResetResponse>.Fail(
+                "DEVICE_AUTH_REQUIRED",
+                "Device authorization is required."));
+        }
+
+        var cashierId = HttpContext.Items[CashierAuthorizationContext.CashierIdItemKey] as string;
+        if (string.IsNullOrWhiteSpace(cashierId))
+        {
+            return Unauthorized(ApiResult<DeviceRegistrationResetResponse>.Fail(
+                "CASHIER_AUTH_REQUIRED",
+                "Fresh cashier authorization is required."));
+        }
+
+        var response = await deviceService.ResetRegistrationAsync(
+            request,
+            new DeviceRegistrationResetContext(deviceCode, storeCode, hardwareId, cashierId),
+            cancellationToken);
+        return Ok(ApiResult<DeviceRegistrationResetResponse>.Ok(response));
     }
 
     [Authorize(Policy = CashierAuthorizationPolicies.DeviceRegistration)]

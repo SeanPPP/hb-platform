@@ -3974,6 +3974,7 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
                 });
               }
             },
+            resetRegistration: async () => "completed",
           },
           runtimeReload: {
             reload: async () => {
@@ -4416,7 +4417,10 @@ function settingsRuntimeConfiguration(): ProductionSettingsRuntimeConfiguration 
       save: async () => undefined,
     },
     runtimeReload: { reload: async () => undefined },
-    device: { reregister: async () => undefined },
+    device: {
+      reregister: async () => undefined,
+      resetRegistration: async () => "completed",
+    },
     printer: {
       getStatus: async () => "ready",
       scan: async () => [],

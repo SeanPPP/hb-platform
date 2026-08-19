@@ -7,6 +7,7 @@ using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Cashiers;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
 
@@ -210,6 +211,40 @@ public sealed class CashierServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BarcodeLoginAsync_身份冲突日志不包含条码或其后四位()
+    {
+        const string barcode = "9900000000001";
+        await SeedStoreAsync("store-allowed", "S-ALLOWED");
+        await SeedUserAsync("legacy-user", "Legacy User");
+        await SeedUserAsync("employee-user", "Employee User");
+        await SeedUserStoreAsync("legacy-user", "store-allowed");
+        await SeedUserStoreAsync("employee-user", "store-allowed");
+        await SeedCashierAsync("legacy-cashier", "legacy-user", "S-OLD", barcode);
+        await _db.Insertable(new EmployeeCashierBarcode
+        {
+            HGUID = "employee-cashier",
+            UserGUID = "employee-user",
+            Barcode = barcode,
+            Status = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        var logger = new RecordingLogger<CashierService>();
+
+        var session = await CreateService(logger).BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("S-ALLOWED", barcode, "POS-1"),
+            CancellationToken.None);
+
+        Assert.Null(session);
+        Assert.NotEmpty(logger.Messages);
+        Assert.All(logger.Messages, message =>
+        {
+            Assert.DoesNotContain(barcode, message, StringComparison.Ordinal);
+            Assert.DoesNotContain(barcode[^4..], message, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
     public async Task BarcodeLoginAsync_按分店应用显式允许拒绝且不影响其他分店()
     {
         await SeedStoreAsync("store-a", "S-A");
@@ -331,6 +366,18 @@ public sealed class CashierServiceTests : IDisposable
         Assert.True(storeB);
     }
 
+    [Fact]
+    public async Task Hardware_barcode_login_default_implementation_fails_closed()
+    {
+        ICashierService service = new HardwareDefaultingCashierService();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            service.BarcodeLoginAsync(
+                new CashierBarcodeLoginRequest("S001", "BC-1", "POS-01"),
+                "HW-01",
+                CancellationToken.None));
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -342,10 +389,29 @@ public sealed class CashierServiceTests : IDisposable
         }
     }
 
-    private CashierService CreateService() => new(
+    private CashierService CreateService(ILogger<CashierService>? logger = null) => new(
         CreateHbposContext(_db),
         new FakeTicketService(),
-        NullLogger<CashierService>.Instance);
+        logger ?? NullLogger<CashierService>.Instance);
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+        }
+    }
 
     private sealed class FakeTicketService : ICashierAuthorizationTicketService
     {
@@ -357,7 +423,39 @@ public sealed class CashierServiceTests : IDisposable
             string storeCode,
             string deviceCode) => ("test-ticket", ExpiresAtUtc);
 
+        public (string Token, DateTimeOffset ExpiresAtUtc) Issue(
+            string cashierId,
+            string userGuid,
+            string storeCode,
+            string deviceCode,
+            string? hardwareId) => ("test-ticket", ExpiresAtUtc);
+
+        public (string Token, DateTimeOffset ExpiresAtUtc) Issue(
+            string cashierId,
+            string userGuid,
+            string storeCode,
+            string deviceCode,
+            string? hardwareId,
+            DateTimeOffset? barcodeAuthenticatedAtUtc) => ("test-ticket", ExpiresAtUtc);
+
         public CashierAuthorizationTicket? Validate(string? token) => null;
+    }
+
+    private sealed class HardwareDefaultingCashierService : ICashierService
+    {
+        public Task<CashierSessionDto?> BarcodeLoginAsync(
+            CashierBarcodeLoginRequest request,
+            CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
+
+        public Task<CashierSessionDto?> RefreshSessionAsync(
+            CashierAuthorizationTicket ticket,
+            CancellationToken cancellationToken) => Task.FromResult<CashierSessionDto?>(null);
+
+        public Task<bool> HasAnyPermissionAsync(
+            string userGuid,
+            string storeCode,
+            IReadOnlyCollection<string> permissionCodes,
+            CancellationToken cancellationToken) => Task.FromResult(true);
     }
 
     private async Task SeedStoreAsync(string storeGuid, string storeCode)

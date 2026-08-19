@@ -869,6 +869,10 @@ public sealed class SquareControllerTests
                         TestAuthHandler.SchemeName,
                         _ => { });
 
+                services.RemoveAll<IPosIpadAppReviewAuthorizationBoundary>();
+                services.AddSingleton<IPosIpadAppReviewAuthorizationBoundary>(
+                    new NonReviewDeviceAuthorizationBoundary());
+
                 services.RemoveAll<ISquareTokenService>();
                 services.AddSingleton(squareTokenService ?? new StubSquareTokenService());
 

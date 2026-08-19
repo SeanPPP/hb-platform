@@ -20,7 +20,8 @@ export function resolvePosEntryRoute(
 ): PosEntryRoute {
   if (
     runtime.phase === "registration-required" ||
-    runtime.phase === "pending-approval"
+    runtime.phase === "pending-approval" ||
+    runtime.phase === "locked"
   ) {
     return "/registration";
   }

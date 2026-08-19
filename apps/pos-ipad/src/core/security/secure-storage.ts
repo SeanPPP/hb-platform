@@ -15,10 +15,16 @@ export interface CashierSessionKeyHasher {
   sha256Hex(input: string): Promise<string>;
 }
 
+export interface CashierSessionAuthorizationNamespace {
+  /** 仅返回当前设备授权码的不可逆指纹，不得返回原始授权码。 */
+  getAuthorizationFingerprint(): Promise<string>;
+}
+
 const installationIdKey = "hbpos.ipad.installation-id.v1";
 const deviceCredentialsKey = "hbpos.ipad.device-credentials.v1";
 const devicePresentationKey = "hbpos.ipad.device-presentation.v1";
 const pendingDeviceRegistrationKey = "hbpos.ipad.pending-device-registration.v1";
+const deviceRegistrationResetMarkerKey = "hbpos.ipad.device-registration-reset.v1";
 const deviceLockKey = "hbpos.ipad.device-lock.v1";
 const activeCashierAuthorizationKey = "hbpos.ipad.active-cashier-authorization.v1";
 const secureThisDeviceOnly: SecureStoreWriteOptions = { requireThisDeviceOnly: true };
@@ -44,6 +50,16 @@ type StoredDevicePresentation = DevicePresentationCache &
 export type PendingDeviceRegistration = Readonly<{
   deviceCode: string;
   storeCode: string;
+}>;
+
+export type DeviceRegistrationResetMarker = Readonly<{
+  version: 1;
+  operationId: string;
+  phase: "prepared" | "server-disabled";
+  deviceCode: string;
+  storeCode: string;
+  hardwareId: string;
+  createdAtUtc: string;
 }>;
 
 export class InstallationIdentityStore {
@@ -152,10 +168,35 @@ export class PendingDeviceRegistrationStore {
   }
 }
 
+/** 服务端重置与本机 Keychain 清理之间的崩溃恢复标记；损坏时必须失败关闭。 */
+export class DeviceRegistrationResetMarkerStore {
+  public constructor(private readonly secureStore: SecureStorePort) {}
+
+  public async load(): Promise<DeviceRegistrationResetMarker | null> {
+    const raw = await this.secureStore.get(deviceRegistrationResetMarkerKey);
+    return raw ? parseDeviceRegistrationResetMarker(raw) : null;
+  }
+
+  public save(marker: DeviceRegistrationResetMarker): Promise<void> {
+    return this.secureStore.set(
+      deviceRegistrationResetMarkerKey,
+      JSON.stringify(validateDeviceRegistrationResetMarker(marker)),
+      secureThisDeviceOnly,
+    );
+  }
+
+  public clear(): Promise<void> {
+    return this.secureStore.remove(deviceRegistrationResetMarkerKey);
+  }
+}
+
 export class DeviceLockStore {
+  private recoveryProcessLocked = false;
+
   public constructor(private readonly secureStore: SecureStorePort) {}
 
   public async isLocked(): Promise<boolean> {
+    if (this.recoveryProcessLocked) return true;
     return (await this.secureStore.get(deviceLockKey)) !== null;
   }
 
@@ -166,12 +207,27 @@ export class DeviceLockStore {
   public async unlock(): Promise<void> {
     await this.secureStore.remove(deviceLockKey);
   }
+
+  /**
+   * 重置恢复专用的进程内闩锁必须先于 Keychain 写入置位。
+   * 即使持久锁写入失败，同一运行时中的登录和设备会话仍会失败关闭。
+   */
+  public async lockForRecovery(reason: string): Promise<void> {
+    this.recoveryProcessLocked = true;
+    await this.lock(reason);
+  }
+
+  /** 仅在精确恢复及本机清理全部完成后释放；普通 unlock 不得旁路恢复锁。 */
+  public releaseRecoveryProcessLock(): void {
+    this.recoveryProcessLocked = false;
+  }
 }
 
 export class CashierSessionCache {
   public constructor(
     public readonly secureStore: SecureStorePort,
     private readonly keyHasher: CashierSessionKeyHasher,
+    private readonly authorizationNamespace: CashierSessionAuthorizationNamespace,
   ) {}
 
   public async load(
@@ -206,13 +262,20 @@ export class CashierSessionCache {
   }
 
   private async key(storeCode: string, deviceCode: string, userBarcode: string): Promise<string> {
-    // Keychain 项名不能泄露可扫描的收银员条码；仅保存规范化三元组的 SHA-256 摘要。
-    const material = `${storeCode.trim()}\n${deviceCode.trim()}\n${userBarcode.trim()}`;
+    // v3 同时绑定当前设备授权码指纹；重新注册轮换授权码后，旧 v2/v3 项均不可达。
+    // Keychain 项名不能泄露设备授权码或可扫描条码，只保存组合材料的 SHA-256 摘要。
+    const authorizationFingerprint = (
+      await this.authorizationNamespace.getAuthorizationFingerprint()
+    ).trim();
+    if (!authorizationFingerprint) {
+      throw new Error("Cashier cache authorization namespace is unavailable.");
+    }
+    const material = `${authorizationFingerprint}\n${storeCode.trim()}\n${deviceCode.trim()}\n${userBarcode.trim()}`;
     const digest = await this.keyHasher.sha256Hex(material);
     if (!/^[a-f0-9]{64}$/i.test(digest)) {
       throw new Error("Cashier cache key hasher returned an invalid SHA-256 digest.");
     }
-    return `hbpos.ipad.cashier.v2.${digest.toLowerCase()}`;
+    return `hbpos.ipad.cashier.v3.${digest.toLowerCase()}`;
   }
 }
 
@@ -648,6 +711,67 @@ function validatePendingDeviceRegistration(
   return {
     deviceCode: storedText(record.deviceCode, pendingDeviceRegistrationKey),
     storeCode: storedText(record.storeCode, pendingDeviceRegistrationKey),
+  };
+}
+
+function parseDeviceRegistrationResetMarker(
+  raw: string,
+): DeviceRegistrationResetMarker {
+  return validateDeviceRegistrationResetMarker(
+    parseStored<unknown>(raw, deviceRegistrationResetMarkerKey),
+  );
+}
+
+function validateDeviceRegistrationResetMarker(
+  value: unknown,
+): DeviceRegistrationResetMarker {
+  const record = storedRecord(value, deviceRegistrationResetMarkerKey);
+  const expectedKeys = [
+    "version",
+    "operationId",
+    "phase",
+    "deviceCode",
+    "storeCode",
+    "hardwareId",
+    "createdAtUtc",
+  ];
+  const operationId = storedText(
+    record.operationId,
+    deviceRegistrationResetMarkerKey,
+  ).trim();
+  const createdAtUtc = storedText(
+    record.createdAtUtc,
+    deviceRegistrationResetMarkerKey,
+  ).trim();
+  if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !(key in record)) ||
+    record.version !== 1 ||
+    (record.phase !== "prepared" && record.phase !== "server-disabled") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      operationId,
+    ) ||
+    !Number.isFinite(Date.parse(createdAtUtc))
+  ) {
+    throw new Error(`Stored ${deviceRegistrationResetMarkerKey} is invalid.`);
+  }
+  return {
+    version: 1,
+    operationId,
+    phase: record.phase,
+    deviceCode: storedText(
+      record.deviceCode,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    storeCode: storedText(
+      record.storeCode,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    hardwareId: storedText(
+      record.hardwareId,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    createdAtUtc,
   };
 }
 

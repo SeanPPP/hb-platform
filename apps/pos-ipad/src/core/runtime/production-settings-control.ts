@@ -91,6 +91,10 @@ export type ProductionSettingsControlDependencies = Readonly<{
       }>,
       signal: AbortSignal,
     ): Promise<void>;
+    resetRegistration(
+      employeeBarcode: string,
+      signal: AbortSignal,
+    ): Promise<"completed" | "pending-recovery">;
   }>;
 }>;
 
@@ -206,8 +210,17 @@ export class ProductionSettingsControl implements SettingsControlPort {
   public async executeDangerousAction(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
-    assertActive: () => void = () => undefined,
+    employeeBarcodeOrAssertActive?: string | (() => void),
+    explicitAssertActive?: () => void,
   ): Promise<SettingsDangerousActionResult> {
+    const employeeBarcode =
+      typeof employeeBarcodeOrAssertActive === "string"
+        ? employeeBarcodeOrAssertActive
+        : undefined;
+    const assertActive =
+      typeof employeeBarcodeOrAssertActive === "function"
+        ? employeeBarcodeOrAssertActive
+        : explicitAssertActive ?? (() => undefined);
     throwIfAborted(signal);
     if (
       action.kind === "change-payment-settings" ||
@@ -216,20 +229,39 @@ export class ProductionSettingsControl implements SettingsControlPort {
       // transition 已按目录→购物车固定锁序封住新业务并等待在途 operation；
       // 这里直接进入 guarded，不能再次申请同一目录门造成自锁。
       return this.input.paymentConfigurationTransition.run(() =>
-        this.executeDangerousActionGuarded(action, signal, assertActive),
+        this.executeDangerousActionGuarded(
+          action,
+          signal,
+          employeeBarcode,
+          assertActive,
+        ),
       );
     }
-    if (
-      action.kind === "reset-catalog" ||
-      action.kind === "restart-app"
-    ) {
+    if (action.kind === "reset-catalog" || action.kind === "restart-app") {
       // App 更新会自行取得 transition 的目录独占门；此处预拿普通门会与其等待
       // operation 清零形成自锁。目录重置则由共享后台 coordinator 自己互斥。
-      return this.executeDangerousActionGuarded(action, signal);
+      return this.executeDangerousActionGuarded(
+        action,
+        signal,
+        employeeBarcode,
+      );
+    }
+    if (action.kind === "reset-device-registration") {
+      // 已由全局 transition 取得目录→购物车 barrier；不得重复申请目录门。
+      return this.executeDangerousActionGuarded(
+        action,
+        signal,
+        employeeBarcode,
+        assertActive,
+      );
     }
     try {
       return await this.input.catalog.runExclusive(() =>
-        this.executeDangerousActionGuarded(action, signal),
+        this.executeDangerousActionGuarded(
+          action,
+          signal,
+          employeeBarcode,
+        ),
       );
     } catch (error) {
       if (
@@ -246,6 +278,7 @@ export class ProductionSettingsControl implements SettingsControlPort {
   private async executeDangerousActionGuarded(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    employeeBarcode?: string,
     assertActive: () => void = () => undefined,
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
@@ -348,6 +381,27 @@ export class ProductionSettingsControl implements SettingsControlPort {
           this.input.runtimeReload.reload(signal),
         );
         return completed(action.kind);
+      case "reset-device-registration": {
+        const barcode = employeeBarcode?.trim() ?? "";
+        if (!barcode) {
+          throw new Error("SETTINGS_DEVICE_RESET_EMPLOYEE_BARCODE_REQUIRED");
+        }
+        // 服务端提交后动作不可逆；协调器负责 response-loss marker 与本机 fail-close。
+        throwIfAborted(signal);
+        assertActive();
+        const result = await this.input.device.resetRegistration(
+          barcode,
+          signal,
+        );
+        if (result === "pending-recovery") {
+          return Object.freeze({
+            status: "pending-recovery" as const,
+            kind: action.kind,
+          });
+        }
+        await this.input.runtimeReload.reload(signal);
+        return completed(action.kind);
+      }
       case "restart-app": {
         const restarted = await abortChecked(signal, () =>
           this.input.appUpdate.restart(signal),

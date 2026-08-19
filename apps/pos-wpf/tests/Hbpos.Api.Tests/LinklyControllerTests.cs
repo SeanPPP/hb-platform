@@ -858,6 +858,10 @@ public sealed class LinklyControllerTests
                         TestAuthHandler.SchemeName,
                         _ => { });
 
+                services.RemoveAll<IPosIpadAppReviewAuthorizationBoundary>();
+                services.AddSingleton<IPosIpadAppReviewAuthorizationBoundary>(
+                    new NonReviewDeviceAuthorizationBoundary());
+
                 services.RemoveAll<ILinklyCloudCredentialService>();
                 services.AddSingleton(linklyCloudCredentialService ?? new StubLinklyCloudCredentialService());
 

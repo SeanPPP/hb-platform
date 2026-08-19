@@ -1043,6 +1043,7 @@ function dependencies(
     },
     device: {
       reregister: async () => undefined,
+      resetRegistration: async () => "completed",
     },
     printer: {
       getStatus: async () => "ready",

@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace Hbpos.Contracts.Devices;
 
 public sealed record DeviceVerifyRequest(
@@ -14,13 +16,15 @@ public sealed record DeviceVerifyResponse(
     int DeviceStatus,
     bool IsAllowed,
     string? Message = null,
-    string? AuthorizationCode = null);
+    string? AuthorizationCode = null,
+    bool ExactIdentityMatched = false);
 
 public sealed record DeviceRegisterRequest(
     string StoreCode,
     string HardwareId,
     string? TerminalName = null,
-    string? DeviceSystem = null);
+    string? DeviceSystem = null,
+    [StringLength(128, MinimumLength = 16)] string? ProvisioningCode = null);
 
 public static class DeviceSystems
 {
@@ -94,3 +98,11 @@ public sealed record DeviceReregisterResponse(
     bool IsAllowed,
     string? Message = null,
     string? AuthorizationCode = null);
+
+public sealed record DeviceRegistrationResetRequest(Guid OperationId);
+
+public sealed record DeviceRegistrationResetResponse(
+    Guid OperationId,
+    string DeviceCode,
+    string StoreCode,
+    DateTime DisabledAtUtc);

@@ -60,6 +60,7 @@ import { HidScannerRouter } from "../peripherals/scanner";
 import { SecurityApiCredentialProvider } from "../security/api-credential-provider";
 import { CashierAuthenticationService } from "../security/cashier-authentication";
 import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
+import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
 import { DeviceSessionCoordinator } from "../security/device-session";
 import { ExpoSecureStoreAdapter } from "../security/expo-secure-store";
 import {
@@ -72,6 +73,8 @@ import {
   CashierSessionCache,
   DeviceCredentialStore,
   DeviceLockStore,
+  DevicePresentationStore,
+  DeviceRegistrationResetMarkerStore,
   InstallationIdentityStore,
   PendingDeviceRegistrationStore,
 } from "../security/secure-storage";
@@ -377,8 +380,11 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     () => Crypto.randomUUID(),
   );
   const deviceCredentials = new DeviceCredentialStore(secureStore);
+  const devicePresentation = new DevicePresentationStore(secureStore);
   const pendingRegistration = new PendingDeviceRegistrationStore(secureStore);
   const deviceLock = new DeviceLockStore(secureStore);
+  const deviceRegistrationResetMarker =
+    new DeviceRegistrationResetMarkerStore(secureStore);
   const cashierAuthorization = new CashierAuthorizationStore(
     secureStore,
     {
@@ -407,6 +413,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     deviceCredentials,
     deviceLock,
     pendingRegistration,
+    devicePresentation,
   );
   const publicDeviceSession = createPublicDeviceSession(
     deviceSession,
@@ -427,6 +434,25 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
 
   const network = new ExpoNetworkStatus();
   const cashierApi = new HbposCashierApi(transport);
+  const resetRecovery = new DeviceRegistrationResetCoordinator({
+    api: deviceApi,
+    authenticateOnline: async () => {
+      throw new Error("Device reset authentication is unavailable during startup recovery.");
+    },
+    credentials: deviceCredentials,
+    presentation: devicePresentation,
+    pendingRegistration,
+    lock: deviceLock,
+    marker: deviceRegistrationResetMarker,
+    cashierAuthorization,
+    installation,
+    createOperationId: () => Crypto.randomUUID(),
+    nowIso: () => new Date().toISOString(),
+    invalidateCurrentCashier: () => {
+      cashierSessionInvalidation.notify("device-scope-change");
+    },
+  });
+  await resetRecovery.recover();
   const cashierCache = new CashierSessionCache(secureStore, {
     sha256Hex: async (material) =>
       Crypto.digestStringAsync(
@@ -434,16 +460,37 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         `${await installation.getOrCreate()}\n${material}`,
         { encoding: Crypto.CryptoEncoding.HEX },
       ),
+  }, {
+    getAuthorizationFingerprint: async () => {
+      const current = await deviceCredentials.load();
+      if (!current?.authorizationCode) {
+        throw new Error("Cashier cache device authorization is unavailable.");
+      }
+      return Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        current.authorizationCode,
+        { encoding: Crypto.CryptoEncoding.HEX },
+      );
+    },
   });
-  const [locked, credentials, pending, installationId, online] = await Promise.all([
+  const [
+    locked,
+    credentials,
+    pending,
+    resetPending,
+    installationId,
+    online,
+  ] = await Promise.all([
     deviceLock.isLocked(),
     deviceCredentials.load(),
     pendingRegistration.load(),
+    resetRecovery.isResetRecoveryPending(),
     installation.getOrCreate(),
     network.isOnline(),
   ]);
   const localDevice = resolveLocalDeviceState({
     locked,
+    registrationResetPending: resetPending,
     credentials,
     pending,
     installationId,
@@ -456,16 +503,19 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         currentLocked,
         currentCredentials,
         currentPending,
+        currentResetPending,
         currentInstallationId,
       ] =
         await Promise.all([
           deviceLock.isLocked(),
           deviceCredentials.load(),
           pendingRegistration.load(),
+          resetRecovery.isResetRecoveryPending(),
           installation.getOrCreate(),
         ]);
       return resolveLocalDeviceState({
         locked: currentLocked,
+        registrationResetPending: currentResetPending,
         credentials: currentCredentials,
         pending: currentPending,
         installationId: currentInstallationId,
@@ -579,6 +629,24 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       deviceLock,
       emergencyCashier?.authentication,
     );
+    const deviceRegistrationReset =
+      new DeviceRegistrationResetCoordinator({
+        api: deviceApi,
+        authenticateOnline: (input) =>
+          cashierAuthentication.loginOnlineOnly(input),
+        credentials: deviceCredentials,
+        presentation: devicePresentation,
+        pendingRegistration,
+        lock: deviceLock,
+        marker: deviceRegistrationResetMarker,
+        cashierAuthorization,
+        installation,
+        createOperationId: () => Crypto.randomUUID(),
+        nowIso: () => new Date().toISOString(),
+        invalidateCurrentCashier: () => {
+          cashierSessionInvalidation.notify("device-scope-change");
+        },
+      });
     // 主管代授权复用同一加密离线缓存，但紧急二维码不得替换当前收银员或主管票据。
     const supervisorAuthentication =
       new CashierAuthenticationService(
@@ -887,6 +955,21 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
               throw new Error(
                 `SETTINGS_DEVICE_REREGISTRATION_${result.status.toUpperCase()}`,
               );
+            }
+          },
+          resetRegistration: async (employeeBarcode, signal) => {
+            throwIfRuntimeAborted(signal);
+            try {
+              await deviceRegistrationReset.reset(employeeBarcode);
+              return "completed" as const;
+            } catch (error) {
+              // 由 coordinator 做类型明确的失败后恢复判定：marker 存在或读取失败
+              // 都按 pending 处理（读取失败时已失效收银员并锁定），
+              // 显式拒绝且 marker 确认不存在才抛原错误。
+              if (await deviceRegistrationReset.isResetRecoveryPending()) {
+                return "pending-recovery" as const;
+              }
+              throw error;
             }
           },
         },

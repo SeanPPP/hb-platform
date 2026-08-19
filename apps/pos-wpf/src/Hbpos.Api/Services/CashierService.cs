@@ -13,6 +13,19 @@ public interface ICashierService
         CashierBarcodeLoginRequest request,
         CancellationToken cancellationToken);
 
+    Task<CashierSessionDto?> BarcodeLoginAsync(
+        CashierBarcodeLoginRequest request,
+        string? hardwareId,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(hardwareId))
+        {
+            throw new NotSupportedException("Hardware-bound cashier login requires an explicit implementation.");
+        }
+
+        return BarcodeLoginAsync(request, cancellationToken);
+    }
+
     Task<bool> HasAnyPermissionAsync(
         string userGuid,
         string storeCode,
@@ -51,6 +64,11 @@ public sealed class CashierService(
 
     public async Task<CashierSessionDto?> BarcodeLoginAsync(
         CashierBarcodeLoginRequest request,
+        CancellationToken cancellationToken) => await BarcodeLoginAsync(request, null, cancellationToken);
+
+    public async Task<CashierSessionDto?> BarcodeLoginAsync(
+        CashierBarcodeLoginRequest request,
+        string? hardwareId,
         CancellationToken cancellationToken)
     {
         var userBarcode = request.UserBarcode?.Trim();
@@ -97,10 +115,8 @@ public sealed class CashierService(
         if (cashier is not null && employeeCashier is not null)
         {
             // 关键逻辑：双表同时有效表示数据唯一性已损坏，禁止任意选择身份继续授权。
-            var barcodeSuffix = userBarcode.Length <= 4 ? "***" : $"***{userBarcode[^4..]}";
             logger.LogCritical(
-                "收银条码同时命中 legacy 与 employee 表，已拒绝登录。BarcodeSuffix={BarcodeSuffix}, Legacy={LegacyHguid}, Employee={EmployeeHguid}",
-                barcodeSuffix,
+                "收银条码同时命中 legacy 与 employee 表，已拒绝登录。Legacy={LegacyHguid}, Employee={EmployeeHguid}",
                 cashier.HGUID,
                 employeeCashier.HGUID);
             return null;
@@ -119,7 +135,8 @@ public sealed class CashierService(
             storeCode,
             deviceCode,
             cancellationToken,
-            timings);
+            timings,
+            hardwareId);
         }
         finally
         {
@@ -141,7 +158,10 @@ public sealed class CashierService(
             ticket.UserGuid,
             ticket.StoreCode,
             ticket.DeviceCode,
-            cancellationToken);
+            cancellationToken,
+            hardwareId: ticket.HardwareId,
+            barcodeAuthenticatedAtUtc: ticket.BarcodeAuthenticatedAtUtc,
+            preserveBarcodeAuthenticationTime: true);
     }
 
     public async Task<bool> HasAnyPermissionAsync(
@@ -291,7 +311,10 @@ public sealed class CashierService(
         string storeCode,
         string deviceCode,
         CancellationToken cancellationToken,
-        CashierLoginTimings? timings = null)
+        CashierLoginTimings? timings = null,
+        string? hardwareId = null,
+        DateTimeOffset? barcodeAuthenticatedAtUtc = null,
+        bool preserveBarcodeAuthenticationTime = false)
     {
         var storeStopwatch = Stopwatch.StartNew();
         // 关键逻辑：用户状态与全部允许门店一次读取，减少远程数据库往返。
@@ -321,7 +344,16 @@ public sealed class CashierService(
         var snapshot = await GetPermissionSnapshotAsync(userGuid, currentStore.StoreGuid, cancellationToken);
         if (timings is not null) timings.PermissionMs = permissionStopwatch.ElapsedMilliseconds;
         var user = userStores[0];
-        var authorization = ticketService.Issue(cashierId, userGuid, storeCode, deviceCode);
+        // 新签发票据绑定设备硬件；旧入口可传空值并继续保持原有会话兼容。
+        var authorization = preserveBarcodeAuthenticationTime
+            ? ticketService.Issue(
+                cashierId,
+                userGuid,
+                storeCode,
+                deviceCode,
+                hardwareId,
+                barcodeAuthenticatedAtUtc)
+            : ticketService.Issue(cashierId, userGuid, storeCode, deviceCode, hardwareId);
         return new CashierSessionDto(
             cashierId,
             userGuid,

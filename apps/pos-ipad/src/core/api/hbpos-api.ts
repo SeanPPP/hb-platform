@@ -92,6 +92,15 @@ export type DeviceVerifyRequest = components["schemas"]["DeviceVerifyRequest"];
 export type DeviceVerifyResponse = components["schemas"]["DeviceVerifyResponse"];
 export type DeviceReregisterRequest = components["schemas"]["DeviceReregisterRequest"];
 export type DeviceReregisterResponse = components["schemas"]["DeviceReregisterResponse"];
+export type DeviceRegistrationResetRequest = Readonly<{
+  operationId: string;
+}>;
+export type DeviceRegistrationResetResponse = Readonly<{
+  operationId: string;
+  deviceCode: string;
+  storeCode: string;
+  disabledAtUtc: string;
+}>;
 export type CashierBarcodeLoginRequest = components["schemas"]["CashierBarcodeLoginRequest"];
 export type CashierSessionDto = components["schemas"]["CashierSessionDto"];
 type StoreDto = components["schemas"]["StoreDto"];
@@ -133,9 +142,12 @@ export class HbposDeviceApi {
   public async register(
     input: Omit<DeviceRegisterRequest, "deviceSystem">
   ): Promise<DeviceRegisterResponse> {
+    const registrationPath = input.provisioningCode?.trim()
+      ? "/api/v1/devices/app-review-register"
+      : "/api/v1/devices/register";
     const response = await this.transport.request<HbposEnvelope<DeviceRegisterResponse>>({
       method: "POST",
-      url: "/api/v1/devices/register",
+      url: registrationPath,
       data: { ...input, deviceSystem: HBPOS_DEVICE_SYSTEM }
     });
     return unwrapHbposEnvelope(response.data);
@@ -157,6 +169,27 @@ export class HbposDeviceApi {
       method: "POST",
       url: "/api/v1/devices/reregister",
       data: input
+    });
+    return unwrapHbposEnvelope(response.data);
+  }
+
+  public async resetRegistration(
+    input: DeviceRegistrationResetRequest,
+    freshCashierAuthorization: string,
+  ): Promise<DeviceRegistrationResetResponse> {
+    const token = freshCashierAuthorization.trim();
+    if (!token) {
+      throw new TypeError("Fresh cashier authorization is required.");
+    }
+    const response = await this.transport.request<
+      HbposEnvelope<DeviceRegistrationResetResponse>
+    >({
+      method: "POST",
+      url: "/api/v1/devices/reset-registration",
+      data: input,
+      headers: {
+        "X-HBPOS-Cashier-Authorization": token,
+      },
     });
     return unwrapHbposEnvelope(response.data);
   }

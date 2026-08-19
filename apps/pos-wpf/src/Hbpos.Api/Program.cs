@@ -5,9 +5,13 @@ using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics;
+using System.Net;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +22,37 @@ builder.Logging.AddHbposFileLogging(builder.Configuration, builder.Environment);
 builder.Services.AddHbposCentralLogging(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    foreach (var proxyValue in builder.Configuration
+                 .GetSection("ReverseProxy:KnownProxies")
+                 .GetChildren()
+                 .Select(static child => child.Value)
+                 .Where(static value => !string.IsNullOrWhiteSpace(value)))
+    {
+        if (!IPAddress.TryParse(proxyValue, out var proxyAddress))
+        {
+            throw new InvalidOperationException("ReverseProxy:KnownProxies contains an invalid IP address.");
+        }
+
+        options.KnownProxies.Add(proxyAddress);
+    }
+});
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("app-review-device-registration", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            static _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
 builder.Services.AddSwaggerGen(options =>
 {
     options.SchemaFilter<SharedSaleCartPayloadSchemaFilter>();
@@ -107,6 +142,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// 关键逻辑：仅信任显式代理的一跳 X-Forwarded-For，使审核端点按真实公网 IP 限流。
+app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 
 // 目录热路径结构化日志：仅慢请求与 5xx 错误记录 Method/Path 与耗时，
@@ -137,6 +174,7 @@ app.Use(async (context, next) =>
 });
 
 app.UseResponseCompression();
+app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();

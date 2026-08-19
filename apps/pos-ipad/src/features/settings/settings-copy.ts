@@ -219,6 +219,11 @@ export const settingsEnglishCopy = {
   "field.targetStoreCode": "Target store code",
   "field.terminalName": "Terminal name",
   "device.reviewReregistration": "Review re-registration",
+  "eyebrow.dangerZone": "DANGER ZONE",
+  "device.resetRegistration": "Clear device registration",
+  "device.resetRegistrationImpact":
+    "Stops only this device registration on the server, clears local device and cashier credentials, then returns to registration. Installation ID, synced business data and ordinary settings are retained. Any unfinished local work blocks the action.",
+  "device.reviewResetRegistration": "Review clear registration",
   "hardware.title": "Hardware test",
   "hardware.subtitle":
     "Verify each hardware path without creating a sale or payment.",
@@ -231,6 +236,10 @@ export const settingsEnglishCopy = {
   "hardware.waitingForTest": "Waiting for test",
   "confirmation.body":
     "Local pending data is never cleared; any pending work blocks this action.",
+  "confirmation.resetDeviceBody":
+    "Read the impact above, then scan a real employee barcode with device registration permission. Cached, emergency and cross-store authorization is rejected. The barcode is used once and is not saved.",
+  "field.employeeBarcode": "Employee barcode",
+  "field.employeeBarcodeHint": "Scan now — no value is prefilled",
   "action.cancel": "Cancel",
   "action.checking": "Checking…",
   "action.confirm": "Confirm",
@@ -243,6 +252,8 @@ export const settingsEnglishCopy = {
   "confirmation.pairLinkly": "Pair the current Linkly terminal",
   "confirmation.resetCatalog": "Reset local catalog",
   "confirmation.reregisterDevice": "Re-register device to {{targetStoreCode}}",
+  "confirmation.resetDeviceRegistration":
+    "Clear registration for {{storeCode}} / {{deviceCode}}",
   "confirmation.restartApp": "Restart app safely",
   "hardware.connected": "Connected",
   "hardware.ready": "Ready",
@@ -268,6 +279,14 @@ export const settingsEnglishCopy = {
   "status.catalog-reset-failed": "Catalog reset failed",
   "status.device-reregister-failed": "Re-registration did not start",
   "status.device-reregister-started": "Device re-registration started",
+  "status.device-registration-reset-barcode-required":
+    "Scan an authorized employee barcode to continue",
+  "status.device-registration-reset-completed":
+    "Device registration cleared; restarting registration",
+  "status.device-registration-reset-failed":
+    "Device registration was not cleared",
+  "status.device-registration-reset-pending-recovery":
+    "Reset result requires online recovery; POS remains locked",
   "status.display-setting-failed": "Display setting failed",
   "status.display-setting-saved": "Display setting saved",
   "status.display-test-failed": "Display test failed",
@@ -540,6 +559,11 @@ export const settingsChineseCopy = {
   "field.targetStoreCode": "目标门店代码",
   "field.terminalName": "终端名称",
   "device.reviewReregistration": "检查并申请重新注册",
+  "eyebrow.dangerZone": "危险操作",
+  "device.resetRegistration": "清除设备注册",
+  "device.resetRegistrationImpact":
+    "仅在服务端停用当前设备记录，并清除本机设备及员工凭据，然后返回注册页。installation ID、已同步业务数据和普通设置会保留；存在任何未完成本地数据时操作会被阻断。",
+  "device.reviewResetRegistration": "阅读影响并继续",
   "hardware.title": "硬件测试",
   "hardware.subtitle": "逐项验证硬件链路；测试不会创建销售或支付。",
   "hardware.printTest": "打印测试小票",
@@ -551,6 +575,10 @@ export const settingsChineseCopy = {
   "hardware.waitingForTest": "等待测试",
   "confirmation.body":
     "确认前会再次检查活动购物车、待同步销售或退款、未决支付与耐久写入。待同步数据不会被清除；存在任何项目时操作会被阻断。",
+  "confirmation.resetDeviceBody":
+    "阅读影响说明后，请重新扫描具备设备注册权限的真实员工条码。离线缓存、紧急登录及跨店授权均会被拒绝；条码仅使用一次且不会保存。",
+  "field.employeeBarcode": "员工条码",
+  "field.employeeBarcodeHint": "请现在扫码，不会预填任何条码",
   "action.cancel": "取消",
   "action.checking": "检查中…",
   "action.confirm": "确认执行",
@@ -563,6 +591,8 @@ export const settingsChineseCopy = {
   "confirmation.pairLinkly": "配对当前 Linkly 终端",
   "confirmation.resetCatalog": "重置本地商品目录",
   "confirmation.reregisterDevice": "重新注册到 {{targetStoreCode}}",
+  "confirmation.resetDeviceRegistration":
+    "清除 {{storeCode}} / {{deviceCode}} 的设备注册",
   "confirmation.restartApp": "安全重启应用",
   "hardware.connected": "已连接",
   "hardware.ready": "就绪",
@@ -585,6 +615,13 @@ export const settingsChineseCopy = {
   "status.catalog-reset-failed": "目录重置失败",
   "status.device-reregister-failed": "重新注册未开始",
   "status.device-reregister-started": "设备重新注册已开始",
+  "status.device-registration-reset-barcode-required":
+    "请扫描具备权限的员工条码后继续",
+  "status.device-registration-reset-completed":
+    "设备注册已清除，正在返回注册流程",
+  "status.device-registration-reset-failed": "设备注册未清除",
+  "status.device-registration-reset-pending-recovery":
+    "重置结果需要联网恢复，POS 将保持锁定",
   "status.display-setting-failed": "客显设置失败",
   "status.display-setting-saved": "客显设置已保存",
   "status.display-test-failed": "客显测试失败",

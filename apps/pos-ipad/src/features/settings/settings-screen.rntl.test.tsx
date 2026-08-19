@@ -1496,6 +1496,43 @@ describe("SettingsScreen", () => {
     );
   });
 
+  it("清除设备注册显示精确设备影响说明，员工条码不预填且只在最终确认时提交", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.press(
+      screen.getByTestId("settings-device-registration-reset-request"),
+    );
+
+    expect(screen.getByText(/清除 BNE-01 \/ POS-01/)).toBeTruthy();
+    const barcode = screen.getByTestId(
+      "settings-device-registration-reset-barcode",
+    );
+    expect(barcode.props.value).toBe("");
+    expect(barcode.props.secureTextEntry).toBe(true);
+    expect(
+      screen.getByTestId("settings-confirm").props.accessibilityState.disabled,
+    ).toBe(true);
+
+    fireEvent.changeText(barcode, "9900000000001");
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("settings-confirm").props.accessibilityState
+          .disabled,
+      ).toBe(false);
+    });
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+
+    await waitFor(() => {
+      expect(port.deviceResetBarcodes).toEqual(["9900000000001"]);
+    });
+  });
+
   it("小票门店资料卡片提供六字段、44pt 载入按钮且载入只更新草稿", async () => {
     const port = new ScreenSettingsPort();
     port.receiptProfileValue = {
@@ -1760,6 +1797,7 @@ class ScreenSettingsPort implements SettingsControlPort {
   public receiptProfileValue: SettingsReceiptProfileDraft | null = null;
   public scannerTests = 0;
   public displayTests = 0;
+  public readonly deviceResetBarcodes: string[] = [];
   public snapshotValue: SettingsSnapshot | null = null;
   private catalogRefreshState: ReturnType<
     SettingsControlPort["getCatalogRefreshState"]
@@ -1801,6 +1839,8 @@ class ScreenSettingsPort implements SettingsControlPort {
 
   public async executeDangerousAction(
     action: SettingsDangerousConfirmation,
+    _signal?: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult> {
     if (action.kind === "change-api-address") {
       this.apiAddresses.push(action.apiBaseUrl);
@@ -1825,6 +1865,9 @@ class ScreenSettingsPort implements SettingsControlPort {
         kind: action.kind,
         catalog: { snapshotId: null, itemCount: 0, activatedAt: null },
       };
+    }
+    if (action.kind === "reset-device-registration") {
+      this.deviceResetBarcodes.push(employeeBarcode?.trim() ?? "");
     }
     return { status: "completed", kind: action.kind };
   }

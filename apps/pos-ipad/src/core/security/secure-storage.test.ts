@@ -6,6 +6,7 @@ import {
   CashierSessionCache,
   DeviceCredentialStore,
   DevicePresentationStore,
+  DeviceRegistrationResetMarkerStore,
   InMemorySecureStore,
   PendingDeviceRegistrationStore,
   type CashierSessionKeyHasher,
@@ -15,6 +16,11 @@ const localOnly = { requireThisDeviceOnly: true };
 const cacheKeyHasher: CashierSessionKeyHasher = {
   async sha256Hex() {
     return "b".repeat(64);
+  },
+};
+const cashierCacheNamespace = {
+  async getAuthorizationFingerprint() {
+    return "device-auth-fingerprint";
   },
 };
 
@@ -166,8 +172,59 @@ test("待审批记录缺少设备或门店时不得进入本地 pending 状态",
   );
 });
 
+test("设备注册重置恢复标记只保存精确设备身份、阶段和操作 UUID", async () => {
+  const secureStore = new InMemorySecureStore();
+  const markers = new DeviceRegistrationResetMarkerStore(secureStore);
+  const expected = {
+    version: 1 as const,
+    operationId: "10000000-0000-4000-8000-000000000001",
+    phase: "prepared" as const,
+    deviceCode: "IPAD-1042-01",
+    storeCode: "1042",
+    hardwareId: "20000000-0000-4000-8000-000000000002",
+    createdAtUtc: "2026-08-18T02:00:00.000Z",
+  };
+
+  await markers.save(expected);
+
+  assert.deepEqual(await markers.load(), expected);
+  assert.equal(
+    await secureStore.get("hbpos.ipad.device-registration-reset.v1"),
+    JSON.stringify(expected),
+  );
+  assert.deepEqual(secureStore.lastWriteOptions, localOnly);
+});
+
+test("损坏的设备注册重置恢复标记必须失败关闭且不能自动删除", async () => {
+  const secureStore = new InMemorySecureStore();
+  const key = "hbpos.ipad.device-registration-reset.v1";
+  await secureStore.set(
+    key,
+    JSON.stringify({
+      version: 1,
+      operationId: "not-a-uuid",
+      phase: "prepared",
+      deviceCode: "IPAD-1",
+      storeCode: "1042",
+      hardwareId: "INSTALL-1",
+      createdAtUtc: "2026-08-18T02:00:00.000Z",
+    }),
+    localOnly,
+  );
+
+  await assert.rejects(
+    new DeviceRegistrationResetMarkerStore(secureStore).load(),
+    /Stored hbpos\.ipad\.device-registration-reset\.v1 is invalid/,
+  );
+  assert.notEqual(await secureStore.get(key), null);
+});
+
 test("收银员缓存保存时必须与门店和设备绑定，不能把另一设备的票据写入当前键", async () => {
-  const cache = new CashierSessionCache(new InMemorySecureStore(), cacheKeyHasher);
+  const cache = new CashierSessionCache(
+    new InMemorySecureStore(),
+    cacheKeyHasher,
+    cashierCacheNamespace,
+  );
 
   await assert.rejects(
     cache.save("S1", "POS-1", "BARCODE-1", {
@@ -184,8 +241,12 @@ test("收银员缓存保存时必须与门店和设备绑定，不能把另一�
 
 test("收银员离线缓存拒绝损坏字段和换绑内容，不把 JSON 类型断言当作认证", async () => {
   const secureStore = new InMemorySecureStore();
-  const cache = new CashierSessionCache(secureStore, cacheKeyHasher);
-  const key = `hbpos.ipad.cashier.v2.${"b".repeat(64)}`;
+  const cache = new CashierSessionCache(
+    secureStore,
+    cacheKeyHasher,
+    cashierCacheNamespace,
+  );
+  const key = `hbpos.ipad.cashier.v3.${"b".repeat(64)}`;
 
   for (const value of [
     { storeCode: "S1", deviceCode: "POS-1" },
@@ -222,7 +283,11 @@ test("收银员缓存 Key 使用规范化三元组的 SHA-256，绝不把条码�
       return "c".repeat(64);
     },
   };
-  const cache = new CashierSessionCache(secureStore, hasher);
+  const cache = new CashierSessionCache(
+    secureStore,
+    hasher,
+    cashierCacheNamespace,
+  );
   const barcode = "CASHIER-PRIVATE-BARCODE";
 
   await cache.save(" S1 ", " POS-1 ", ` ${barcode} `, {
@@ -233,10 +298,44 @@ test("收银员缓存 Key 使用规范化三元组的 SHA-256，绝不把条码�
     deviceCode: " POS-1 ",
   });
 
-  assert.deepEqual(hasherInputs, [`S1\nPOS-1\n${barcode}`]);
+  assert.deepEqual(hasherInputs, [
+    `device-auth-fingerprint\nS1\nPOS-1\n${barcode}`,
+  ]);
   assert.equal(secureStore.lastWriteKey?.includes(barcode), false);
-  assert.equal(secureStore.lastWriteKey, `hbpos.ipad.cashier.v2.${"c".repeat(64)}`);
+  assert.equal(secureStore.lastWriteKey, `hbpos.ipad.cashier.v3.${"c".repeat(64)}`);
   assert.deepEqual(secureStore.lastWriteOptions, localOnly);
+});
+
+test("重新注册轮换设备授权码后不能命中旧收银员缓存", async () => {
+  const secureStore = new InMemorySecureStore();
+  let authorizationFingerprint = "authorization-v1";
+  const hasher: CashierSessionKeyHasher = {
+    async sha256Hex(input) {
+      return input.startsWith("authorization-v1\n")
+        ? "1".repeat(64)
+        : "2".repeat(64);
+    },
+  };
+  const cache = new CashierSessionCache(secureStore, hasher, {
+    async getAuthorizationFingerprint() {
+      return authorizationFingerprint;
+    },
+  });
+  await cache.save("S1", "POS-1", "BARCODE-1", {
+    cashierId: "C1",
+    userGuid: "U1",
+    cashierName: "Alice",
+    storeCode: "S1",
+    deviceCode: "POS-1",
+  });
+
+  authorizationFingerprint = "authorization-v2";
+
+  assert.equal(await cache.load("S1", "POS-1", "BARCODE-1"), null);
+  assert.notEqual(
+    await secureStore.get(`hbpos.ipad.cashier.v3.${"1".repeat(64)}`),
+    null,
+  );
 });
 
 test("收银员 bearer 活动期间可读，到期后立即 fail-close 并后台清除 Keychain", async () => {

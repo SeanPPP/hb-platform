@@ -55,7 +55,7 @@ export function subscribeDeviceScopeChange(
 }
 
 export interface DeviceSessionApi {
-  register(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceRegisterResponse>;
+  register(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string; provisioningCode?: string }>): Promise<DeviceRegisterResponse>;
   verify(input: Readonly<{ deviceCode: string; storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceVerifyResponse>;
   reregister(input: Readonly<{ targetStoreCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceReregisterResponse>;
 }
@@ -85,7 +85,7 @@ export class DeviceSessionCoordinator {
       new DevicePresentationStore(credentials.secureStore);
   }
 
-  public async register(input: Readonly<{ storeCode: string; terminalName?: string }>): Promise<DeviceSessionState> {
+  public async register(input: Readonly<{ storeCode: string; terminalName?: string; provisioningCode?: string }>): Promise<DeviceSessionState> {
     const generation = this.beginOperation();
     this.state = { status: "registering", storeCode: input.storeCode };
     const hardwareId = await this.installation.getOrCreate();

@@ -1,5 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Devices;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Hbpos.Api.Services;
@@ -8,12 +11,21 @@ public interface IDeviceService
 {
     Task<DeviceRegisterResponse> RegisterAsync(DeviceRegisterRequest request, CancellationToken cancellationToken);
 
+    Task<DeviceRegisterResponse> RegisterForAppReviewAsync(
+        DeviceRegisterRequest request,
+        CancellationToken cancellationToken);
+
     Task<DeviceVerifyResponse> VerifyAsync(DeviceVerifyRequest request, CancellationToken cancellationToken);
 
     Task<DeviceReregisterResponse> ReregisterAsync(
         DeviceReregisterRequest request,
         DeviceReregisterContext currentDevice,
         CancellationToken cancellationToken);
+
+    Task<DeviceRegistrationResetResponse> ResetRegistrationAsync(
+        DeviceRegistrationResetRequest request,
+        DeviceRegistrationResetContext currentDevice,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task<bool> UpdateRuntimeStatusAsync(
         string hardwareId,
@@ -36,6 +48,13 @@ public interface IDeviceRegistrationRepository
         string storeCode,
         CancellationToken cancellationToken);
 
+    Task<DeviceRegistrationRecord?> FindLatestByDeviceCodeAndHardwareIdAsync(
+        string deviceCode,
+        string storeCode,
+        string hardwareId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Exact device identity lookup requires an explicit implementation.");
+
     Task<DeviceRegistrationRecord?> FindActiveOrLockedRegistrationAsync(
         string hardwareId,
         CancellationToken cancellationToken);
@@ -46,6 +65,30 @@ public interface IDeviceRegistrationRepository
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<DeviceRegistrationRecord>> FindAllByHardwareIdForRegistrationAsync(
+        string hardwareId,
+        CancellationToken cancellationToken);
+
+    Task<int> CountActiveOrLockedByStoreCodeForRegistrationAsync(
+        string storeCode,
+        CancellationToken cancellationToken);
+
+    Task AcquireAppReviewGrantLockAsync(
+        Guid grantId,
+        string storeCode,
+        CancellationToken cancellationToken);
+
+    Task<DeviceRegistrationAppReviewGrantConsumption?> FindAppReviewGrantConsumptionAsync(
+        Guid grantId,
+        CancellationToken cancellationToken);
+
+    Task<int> ConsumeAppReviewGrantAsync(
+        DeviceRegistrationAppReviewGrantConsumption consumption,
+        DateTime expiresAtUtc,
+        CancellationToken cancellationToken);
+
+    Task<bool> IsAppReviewDeviceAsync(
+        string storeCode,
+        string deviceCode,
         string hardwareId,
         CancellationToken cancellationToken);
 
@@ -60,8 +103,21 @@ public interface IDeviceRegistrationRepository
         string remarkSuffix,
         CancellationToken cancellationToken);
 
+    Task<int> ResetActiveRegistrationAsync(
+        DeviceRegistrationResetActiveRequest request,
+        CancellationToken cancellationToken) => DisableActiveRegistrationAsync(
+            request.HardwareId,
+            request.DeviceCode,
+            request.StoreCode,
+            request.RemarkSuffix,
+            cancellationToken);
+
     Task<int> ResetRegistrationForReregisterAsync(
         DeviceRegistrationResetForReregisterRequest request,
+        CancellationToken cancellationToken);
+
+    Task<int> ApproveRegistrationForAppReviewAsync(
+        DeviceRegistrationAppReviewApprovalRequest request,
         CancellationToken cancellationToken);
 
     Task CreateRegistrationAsync(
@@ -83,6 +139,12 @@ public sealed record DeviceReregisterContext(
     string HardwareId,
     string DeviceSystem = DeviceSystems.Windows);
 
+public sealed record DeviceRegistrationResetContext(
+    string DeviceCode,
+    string StoreCode,
+    string HardwareId,
+    string CashierId);
+
 public sealed record DeviceStoreInfo(
     string StoreCode,
     string StoreName);
@@ -102,6 +164,19 @@ public sealed class DeviceRegistrationRecord
     public string? AuthorizationCode { get; set; }
 
     public string? DeviceSystem { get; set; }
+}
+
+public sealed class DeviceRegistrationAppReviewGrantConsumption
+{
+    public Guid GrantId { get; set; }
+
+    public string StoreCode { get; set; } = string.Empty;
+
+    public string HardwareId { get; set; } = string.Empty;
+
+    public string DeviceCode { get; set; } = string.Empty;
+
+    public DateTime ConsumedAtUtc { get; set; }
 }
 
 public sealed class DeviceRegistrationDisableRequest
@@ -163,6 +238,44 @@ public sealed class DeviceRegistrationResetForReregisterRequest
     public string ModifiedBy { get; init; } = string.Empty;
 }
 
+public sealed class DeviceRegistrationResetActiveRequest
+{
+    public string HardwareId { get; init; } = string.Empty;
+
+    public string DeviceCode { get; init; } = string.Empty;
+
+    public string StoreCode { get; init; } = string.Empty;
+
+    public string RemarkSuffix { get; init; } = string.Empty;
+
+    public DateTime ModifiedAtUtc { get; init; }
+
+    public string ModifiedBy { get; init; } = string.Empty;
+}
+
+public sealed class DeviceRegistrationAppReviewApprovalRequest
+{
+    public int RegistrationId { get; init; }
+
+    public string HardwareId { get; init; } = string.Empty;
+
+    public string StoreCode { get; init; } = string.Empty;
+
+    public string DeviceCode { get; init; } = string.Empty;
+
+    public int ExpectedDeviceStatus { get; init; }
+
+    public string? ExpectedAuthorizationCode { get; init; }
+
+    public string AuthorizationCode { get; init; } = string.Empty;
+
+    public string RemarkSuffix { get; init; } = string.Empty;
+
+    public string DeviceSystem { get; init; } = DeviceSystems.IpadOs;
+
+    public DateTime ModifiedAt { get; init; }
+}
+
 public sealed record DeviceRuntimeStatusUpdateRequest(
     string HardwareId,
     string DeviceCode,
@@ -174,6 +287,7 @@ public sealed record DeviceRuntimeStatusUpdateRequest(
 
 public sealed class DeviceService : IDeviceService
 {
+    private const int MinimumProvisioningCodeLength = 16;
     private const int PendingStatus = -1;
     private const int DisabledStatus = 0;
     private const int EnabledStatus = 1;
@@ -184,30 +298,58 @@ public sealed class DeviceService : IDeviceService
     private readonly IDeviceRegistrationRepository deviceRegistrationRepository;
     private readonly Func<string, CancellationToken, Task<DeviceStoreInfo?>> loadStoreAsync;
     private readonly Func<DateTime> nowProvider;
+    private readonly Func<DateTimeOffset> utcNowProvider;
+    private readonly PosIpadAppReviewOptions appReviewOptions;
+    private readonly ILogger<DeviceService> logger;
 
     public DeviceService(
         HbposSqlSugarContext dbContext,
         IDeviceRegistrationRepository deviceRegistrationRepository,
-        Func<DateTime>? nowProvider = null)
+        IOptions<PosIpadAppReviewOptions> appReviewOptions,
+        ILogger<DeviceService> logger)
     {
         this.dbContext = dbContext;
         this.deviceRegistrationRepository = deviceRegistrationRepository;
         loadStoreAsync = LoadStoreAsync;
-        this.nowProvider = nowProvider ?? (() => DateTime.Now);
+        nowProvider = () => DateTime.Now;
+        utcNowProvider = () => DateTimeOffset.UtcNow;
+        this.appReviewOptions = appReviewOptions.Value;
+        this.logger = logger;
     }
 
     public DeviceService(
         IDeviceRegistrationRepository deviceRegistrationRepository,
         Func<string, CancellationToken, Task<DeviceStoreInfo?>> loadStoreAsync,
-        Func<DateTime>? nowProvider = null)
+        Func<DateTime>? nowProvider = null,
+        PosIpadAppReviewOptions? appReviewOptions = null,
+        Func<DateTimeOffset>? utcNowProvider = null,
+        ILogger<DeviceService>? logger = null)
     {
         this.deviceRegistrationRepository = deviceRegistrationRepository;
         this.loadStoreAsync = loadStoreAsync;
         this.nowProvider = nowProvider ?? (() => DateTime.Now);
+        this.appReviewOptions = appReviewOptions ?? new PosIpadAppReviewOptions();
+        this.utcNowProvider = utcNowProvider ?? (() => DateTimeOffset.UtcNow);
+        this.logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<DeviceService>.Instance;
     }
 
-    public async Task<DeviceRegisterResponse> RegisterAsync(
+    public Task<DeviceRegisterResponse> RegisterAsync(
         DeviceRegisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        return RegisterCoreAsync(request, appReviewOnly: false, cancellationToken);
+    }
+
+    public Task<DeviceRegisterResponse> RegisterForAppReviewAsync(
+        DeviceRegisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        return RegisterCoreAsync(request, appReviewOnly: true, cancellationToken);
+    }
+
+    private async Task<DeviceRegisterResponse> RegisterCoreAsync(
+        DeviceRegisterRequest request,
+        bool appReviewOnly,
         CancellationToken cancellationToken)
     {
         var storeCode = Normalize(request.StoreCode);
@@ -234,6 +376,35 @@ public sealed class DeviceService : IDeviceService
             return CreateRegisterResponse(string.Empty, storeCode, string.Empty, UnregisteredStatus, "Store was not found or inactive.");
         }
 
+        var isConfiguredAppReviewTarget = IsConfiguredAppReviewTarget(storeCode, deviceSystem);
+        var appReviewGrant = TryMatchAppReviewGrant(request, storeCode, deviceSystem);
+        var appReviewWindowOpen = IsAppReviewWindowOpen();
+        if (appReviewOnly && appReviewGrant is null)
+        {
+            // 关键逻辑：审核专用端点只接受精确门店、iPadOS 和匹配的开通码，其他组合零写入失败关闭。
+            return CreateRegisterResponse(
+                string.Empty,
+                storeCode,
+                store.StoreName,
+                UnregisteredStatus,
+                "App Review device activation code is invalid or expired.");
+        }
+
+        if (!appReviewOnly && appReviewWindowOpen && isConfiguredAppReviewTarget)
+        {
+            return CreateRegisterResponse(
+                string.Empty,
+                storeCode,
+                store.StoreName,
+                UnregisteredStatus,
+                "App Review device registration requires the dedicated activation endpoint.");
+        }
+
+        if (!appReviewOnly)
+        {
+            appReviewGrant = null;
+        }
+
         var now = nowProvider();
         DeviceRegisterResponse? response = null;
 
@@ -241,8 +412,69 @@ public sealed class DeviceService : IDeviceService
         await deviceRegistrationRepository.ExecuteInTransactionAsync(
             async token =>
             {
-                var registrations = await deviceRegistrationRepository
-                    .FindAllByHardwareIdForRegistrationAsync(hardwareId, token);
+                IReadOnlyList<DeviceRegistrationRecord> registrations;
+
+                if (appReviewGrant is not null)
+                {
+                    // 关键逻辑：审核注册统一按 store → grant → hardware 顺序加锁，避免跨硬件计数形成死锁环。
+                    await deviceRegistrationRepository.AcquireAppReviewGrantLockAsync(
+                        appReviewGrant.GrantId,
+                        storeCode,
+                        token);
+                    registrations = await deviceRegistrationRepository
+                        .FindAllByHardwareIdForRegistrationAsync(hardwareId, token);
+                    var consumedGrant = await deviceRegistrationRepository
+                        .FindAppReviewGrantConsumptionAsync(appReviewGrant.GrantId, token);
+                    if (consumedGrant is not null)
+                    {
+                        var recoverableRegistration = registrations.FirstOrDefault(registration =>
+                            registration.DeviceStatus == EnabledStatus
+                            && string.Equals(registration.StoreCode, consumedGrant.StoreCode, StringComparison.Ordinal)
+                            && string.Equals(registration.HardwareId, consumedGrant.HardwareId, StringComparison.Ordinal)
+                            && string.Equals(registration.DeviceCode, consumedGrant.DeviceCode, StringComparison.Ordinal)
+                            && string.Equals(consumedGrant.StoreCode, storeCode, StringComparison.Ordinal)
+                            && string.Equals(consumedGrant.HardwareId, hardwareId, StringComparison.Ordinal)
+                            && !string.IsNullOrWhiteSpace(registration.AuthorizationCode));
+                        if (recoverableRegistration is not null)
+                        {
+                            // 关键逻辑：首次成功响应丢失时，相同 grant/store/hardware 只恢复原设备凭据，不产生第二次消费。
+                            response = new DeviceRegisterResponse(
+                                recoverableRegistration.DeviceCode!,
+                                storeCode,
+                                store.StoreName,
+                                EnabledStatus,
+                                true,
+                                GetStatusMessage(EnabledStatus),
+                                recoverableRegistration.AuthorizationCode);
+                            return;
+                        }
+
+                        response = CreateRegisterResponse(
+                            string.Empty,
+                            storeCode,
+                            store.StoreName,
+                            UnregisteredStatus,
+                            "App Review device activation code has already been used.");
+                        return;
+                    }
+
+                    // 关键逻辑：取得 grant 锁后重新读取时钟，避免锁等待跨过到期时间仍完成首次消费。
+                    if (!IsAppReviewWindowOpen())
+                    {
+                        response = CreateRegisterResponse(
+                            string.Empty,
+                            storeCode,
+                            store.StoreName,
+                            UnregisteredStatus,
+                            "App Review device activation is unavailable.");
+                        return;
+                    }
+                }
+                else
+                {
+                    registrations = await deviceRegistrationRepository
+                        .FindAllByHardwareIdForRegistrationAsync(hardwareId, token);
+                }
 
                 // 关键逻辑：同一硬件任意启用或锁定记录都会阻止匿名注册，且不得产生任何写入。
                 var blockingRegistration = registrations.FirstOrDefault(static registration =>
@@ -316,6 +548,27 @@ public sealed class DeviceService : IDeviceService
                     return;
                 }
 
+                var autoApproveForAppReview = false;
+                if (appReviewGrant is not null
+                    && (targetRegistration is null || targetRegistration.DeviceStatus == PendingStatus))
+                {
+                    // 关键逻辑：设备上限计数与注册写入共享事务和范围锁，避免并发请求同时越过单设备上限。
+                    var activeOrLockedCount = await deviceRegistrationRepository
+                        .CountActiveOrLockedByStoreCodeForRegistrationAsync(storeCode, token);
+                    autoApproveForAppReview = activeOrLockedCount < appReviewOptions.MaxActiveDevices;
+                }
+
+                if (appReviewGrant is not null && !autoApproveForAppReview)
+                {
+                    response = CreateRegisterResponse(
+                        targetRegistration?.DeviceCode ?? string.Empty,
+                        storeCode,
+                        store.StoreName,
+                        UnregisteredStatus,
+                        "App Review device activation is unavailable.");
+                    return;
+                }
+
                 // 关键逻辑：只保留目标店最新的待确认记录，其余同硬件待确认记录必须逐条条件禁用。
                 foreach (var pendingRegistration in registrations.Where(registration =>
                              registration.DeviceStatus == PendingStatus
@@ -335,6 +588,51 @@ public sealed class DeviceService : IDeviceService
                     {
                         throw new InvalidOperationException("Pending device registration changed during registration.");
                     }
+                }
+
+                if (autoApproveForAppReview && targetRegistration is not null)
+                {
+                    var authorizationCode = Guid.NewGuid().ToString("N");
+                    var approvedCount = await deviceRegistrationRepository.ApproveRegistrationForAppReviewAsync(
+                        new DeviceRegistrationAppReviewApprovalRequest
+                        {
+                            RegistrationId = targetRegistration.Id,
+                            HardwareId = targetRegistration.HardwareId ?? hardwareId,
+                            StoreCode = targetRegistration.StoreCode ?? storeCode,
+                            DeviceCode = targetRegistration.DeviceCode!,
+                            ExpectedDeviceStatus = targetRegistration.DeviceStatus,
+                            ExpectedAuthorizationCode = targetRegistration.AuthorizationCode,
+                            AuthorizationCode = authorizationCode,
+                            RemarkSuffix = $" | {appReviewGrant!.Marker}; auto-approved at {utcNowProvider():O}",
+                            DeviceSystem = targetDeviceSystem,
+                            ModifiedAt = now
+                        },
+                        token);
+                    if (approvedCount != 1)
+                    {
+                        throw new InvalidOperationException("Target device registration changed during App Review approval.");
+                    }
+
+                    await ConsumeAppReviewGrantAsync(
+                        appReviewGrant!,
+                        storeCode,
+                        hardwareId,
+                        targetRegistration.DeviceCode,
+                        token);
+
+                    response = new DeviceRegisterResponse(
+                        targetRegistration.DeviceCode,
+                        storeCode,
+                        store.StoreName,
+                        EnabledStatus,
+                        true,
+                        GetStatusMessage(EnabledStatus),
+                        authorizationCode);
+                    logger.LogInformation(
+                        "App Review device auto-approved for store {StoreCode}, device {DeviceCode}.",
+                        storeCode,
+                        targetRegistration.DeviceCode);
+                    return;
                 }
 
                 if (targetRegistration?.DeviceStatus == PendingStatus)
@@ -385,21 +683,45 @@ public sealed class DeviceService : IDeviceService
                     return;
                 }
 
-                var newRegistration = CreatePendingRegistration(
-                    hardwareId,
-                    storeCode,
-                    terminalName,
-                    now,
-                    deviceSystem: deviceSystem);
+                var newRegistration = autoApproveForAppReview
+                    ? CreateAppReviewApprovedRegistration(
+                        hardwareId,
+                        storeCode,
+                        terminalName,
+                        now,
+                        deviceSystem,
+                        appReviewGrant!.Marker)
+                    : CreatePendingRegistration(
+                        hardwareId,
+                        storeCode,
+                        terminalName,
+                        now,
+                        deviceSystem: deviceSystem);
                 await deviceRegistrationRepository.CreateRegistrationAsync(newRegistration, token);
+                if (autoApproveForAppReview)
+                {
+                    await ConsumeAppReviewGrantAsync(
+                        appReviewGrant!,
+                        storeCode,
+                        hardwareId,
+                        newRegistration.DeviceCode,
+                        token);
+                }
                 response = new DeviceRegisterResponse(
                     newRegistration.DeviceCode,
                     storeCode,
                     store.StoreName,
-                    PendingStatus,
-                    false,
-                    GetStatusMessage(PendingStatus),
-                    null);
+                    newRegistration.DeviceStatus,
+                    autoApproveForAppReview,
+                    GetStatusMessage(newRegistration.DeviceStatus),
+                    autoApproveForAppReview ? newRegistration.AuthorizationCode : null);
+                if (autoApproveForAppReview)
+                {
+                    logger.LogInformation(
+                        "App Review device auto-approved for store {StoreCode}, device {DeviceCode}.",
+                        storeCode,
+                        newRegistration.DeviceCode);
+                }
             },
             cancellationToken);
 
@@ -424,7 +746,22 @@ public sealed class DeviceService : IDeviceService
             return CreateVerifyResponse(deviceCode, storeCode, string.Empty, UnregisteredStatus, "Store was not found or inactive.");
         }
 
-        var device = await deviceRegistrationRepository.FindByDeviceCodeAsync(deviceCode, storeCode, cancellationToken);
+        var requiresExactHardwareId = DeviceSystems.RequiresExactHardwareId(submittedDeviceSystem);
+        if (requiresExactHardwareId && string.IsNullOrWhiteSpace(hardwareId))
+        {
+            return CreateVerifyResponse(
+                deviceCode,
+                storeCode,
+                store.StoreName,
+                UnregisteredStatus,
+                $"Device hardware id is required for {submittedDeviceSystem}.");
+        }
+
+        // iPadOS 等跨端设备必须按门店、设备码、硬件码取最新记录，避免复用设备码命中其他硬件。
+        var device = requiresExactHardwareId
+            ? await deviceRegistrationRepository.FindLatestByDeviceCodeAndHardwareIdAsync(
+                deviceCode, storeCode, hardwareId, cancellationToken)
+            : await deviceRegistrationRepository.FindByDeviceCodeAsync(deviceCode, storeCode, cancellationToken);
         if (device is null)
         {
             return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, UnregisteredStatus, "Device is not registered.");
@@ -438,12 +775,6 @@ public sealed class DeviceService : IDeviceService
         if (!string.Equals(submittedDeviceSystem, registeredDeviceSystem, StringComparison.Ordinal))
         {
             return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, "Device system does not match existing registration.");
-        }
-
-        if (DeviceSystems.RequiresExactHardwareId(registeredDeviceSystem)
-            && string.IsNullOrWhiteSpace(hardwareId))
-        {
-            return CreateVerifyResponse(deviceCode, storeCode, store.StoreName, device.DeviceStatus, $"Device hardware id is required for {registeredDeviceSystem}.");
         }
 
         if (!DeviceAuthorizationPlatformPolicy.IsHardwareIdAccepted(
@@ -461,7 +792,8 @@ public sealed class DeviceService : IDeviceService
             device.DeviceStatus,
             device.DeviceStatus == EnabledStatus,
             GetStatusMessage(device.DeviceStatus),
-            device.DeviceStatus == EnabledStatus ? device.AuthorizationCode : null);
+            device.DeviceStatus == EnabledStatus ? device.AuthorizationCode : null,
+            ExactIdentityMatched: DeviceSystems.IsIpadOs(submittedDeviceSystem));
     }
 
     public async Task<DeviceReregisterResponse> ReregisterAsync(
@@ -590,6 +922,56 @@ public sealed class DeviceService : IDeviceService
             null);
     }
 
+    public async Task<DeviceRegistrationResetResponse> ResetRegistrationAsync(
+        DeviceRegistrationResetRequest request,
+        DeviceRegistrationResetContext currentDevice,
+        CancellationToken cancellationToken)
+    {
+        if (request.OperationId == Guid.Empty)
+        {
+            throw new ArgumentException("operationId is required.", nameof(request));
+        }
+
+        var deviceCode = Normalize(currentDevice.DeviceCode);
+        var storeCode = Normalize(currentDevice.StoreCode);
+        var hardwareId = Normalize(currentDevice.HardwareId);
+        var cashierId = Normalize(currentDevice.CashierId);
+        if (deviceCode.Length == 0 || storeCode.Length == 0 || hardwareId.Length == 0 || cashierId.Length == 0)
+        {
+            throw new ArgumentException("Authenticated device and cashier identity are required.", nameof(currentDevice));
+        }
+
+        var disabledAtUtc = utcNowProvider().UtcDateTime;
+        var modifiedAt = nowProvider();
+        var remark = $" | Device registration reset operation {request.OperationId:D} at {disabledAtUtc:O}";
+        await deviceRegistrationRepository.ExecuteInTransactionAsync(
+            async token =>
+            {
+                var affected = await deviceRegistrationRepository.ResetActiveRegistrationAsync(
+                    new DeviceRegistrationResetActiveRequest
+                    {
+                        HardwareId = hardwareId,
+                        DeviceCode = deviceCode,
+                        StoreCode = storeCode,
+                        RemarkSuffix = remark,
+                        ModifiedAtUtc = modifiedAt,
+                        ModifiedBy = cashierId
+                    },
+                    token);
+                if (affected != 1)
+                {
+                    throw new InvalidOperationException("Current device registration changed during reset.");
+                }
+            },
+            cancellationToken);
+
+        return new DeviceRegistrationResetResponse(
+            request.OperationId,
+            deviceCode,
+            storeCode,
+            disabledAtUtc);
+    }
+
     public async Task<bool> UpdateRuntimeStatusAsync(
         string hardwareId,
         string deviceCode,
@@ -662,6 +1044,114 @@ public sealed class DeviceService : IDeviceService
             DeviceSystem = deviceSystem
         };
     }
+
+    private static DeviceRegistrationCreateRequest CreateAppReviewApprovedRegistration(
+        string hardwareId,
+        string storeCode,
+        string terminalName,
+        DateTime createdAt,
+        string deviceSystem,
+        string grantMarker)
+    {
+        // 审核设备始终保留完整随机后缀，长门店代码只能截断门店片段，不能牺牲唯一性。
+        const int maxDeviceCodeLength = 50;
+        const string prefix = "POS_";
+        var randomSuffix = $"_REVIEW_{Guid.NewGuid():N}";
+        var maxStoreCodeLength = maxDeviceCodeLength - prefix.Length - randomSuffix.Length;
+        var storeCodeSegment = storeCode[..Math.Min(maxStoreCodeLength, storeCode.Length)];
+        var reviewDeviceCode = $"{prefix}{storeCodeSegment}{randomSuffix}";
+        return new DeviceRegistrationCreateRequest
+        {
+            HardwareId = hardwareId,
+            DeviceCode = reviewDeviceCode,
+            StoreCode = storeCode,
+            DeviceStatus = EnabledStatus,
+            AuthorizationCode = Guid.NewGuid().ToString("N"),
+            Remark = string.IsNullOrWhiteSpace(terminalName)
+                ? $"HBPOS {grantMarker}; auto-approved registration"
+                : $"HBPOS {grantMarker}; auto-approved registration: {terminalName}",
+            CreatedAt = createdAt,
+            CreatedBy = "HBPOS_APP_REVIEW",
+            DeviceSystem = deviceSystem
+        };
+    }
+
+    private bool IsConfiguredAppReviewTarget(string storeCode, string deviceSystem)
+    {
+        return string.Equals(storeCode, appReviewOptions.StoreCode?.Trim(), StringComparison.Ordinal)
+            && string.Equals(deviceSystem, DeviceSystems.IpadOs, StringComparison.Ordinal);
+    }
+
+    private bool IsAppReviewWindowOpen()
+    {
+        return appReviewOptions.Enabled
+            && appReviewOptions.ExpiresAtUtc is not null
+            && utcNowProvider() < appReviewOptions.ExpiresAtUtc.Value
+            && appReviewOptions.MaxActiveDevices == 1;
+    }
+
+    private AppReviewGrantContext? TryMatchAppReviewGrant(
+        DeviceRegisterRequest request,
+        string storeCode,
+        string deviceSystem)
+    {
+        if (!IsConfiguredAppReviewTarget(storeCode, deviceSystem)
+            || !Guid.TryParse(appReviewOptions.GrantId, out var grantId))
+        {
+            return null;
+        }
+
+        var submittedCode = request.ProvisioningCode?.Trim();
+        var configuredHash = appReviewOptions.RegistrationCodeSha256?.Trim();
+        if (string.IsNullOrEmpty(submittedCode)
+            || submittedCode.Length < MinimumProvisioningCodeLength
+            || submittedCode.Length > 128
+            || string.IsNullOrEmpty(configuredHash))
+        {
+            return null;
+        }
+
+        try
+        {
+            var expectedHash = Convert.FromHexString(configuredHash);
+            var submittedHash = SHA256.HashData(Encoding.UTF8.GetBytes(submittedCode));
+            return expectedHash.Length == submittedHash.Length
+                && CryptographicOperations.FixedTimeEquals(expectedHash, submittedHash)
+                    ? new AppReviewGrantContext(grantId, $"AppReviewGrant:{grantId:N}")
+                    : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    private async Task ConsumeAppReviewGrantAsync(
+        AppReviewGrantContext grant,
+        string storeCode,
+        string hardwareId,
+        string deviceCode,
+        CancellationToken cancellationToken)
+    {
+        var consumed = await deviceRegistrationRepository.ConsumeAppReviewGrantAsync(
+            new DeviceRegistrationAppReviewGrantConsumption
+            {
+                GrantId = grant.GrantId,
+                StoreCode = storeCode,
+                HardwareId = hardwareId,
+                DeviceCode = deviceCode,
+                ConsumedAtUtc = utcNowProvider().UtcDateTime
+            },
+            appReviewOptions.ExpiresAtUtc?.UtcDateTime
+                ?? throw new InvalidOperationException("App Review activation expiry is required."),
+            cancellationToken);
+        if (consumed != 1)
+        {
+            throw new InvalidOperationException("App Review grant consumption was not recorded.");
+        }
+    }
+
+    private sealed record AppReviewGrantContext(Guid GrantId, string Marker);
 
     private static DeviceRegisterResponse CreateRegisterResponse(
         string deviceCode,
@@ -749,9 +1239,55 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
         ORDER BY [ID] DESC;
         """;
 
+    internal const string CountActiveOrLockedByStoreCodeForRegistrationSql = """
+        SELECT COUNT(1)
+        FROM [dbo].[POSM_AppReviewGrantConsumptions] AS consumption WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN [dbo].[POSM_设备注册信息表] AS registration WITH (UPDLOCK, HOLDLOCK)
+            ON registration.[分店代码] = consumption.[StoreCode]
+           AND registration.[设备硬件识别码] = consumption.[HardwareId]
+           AND registration.[系统设备编号] = consumption.[DeviceCode]
+        WHERE consumption.[StoreCode] = @StoreCode
+          AND registration.[设备状态] IN (1, 2);
+        """;
+
+    internal const string FindAppReviewGrantConsumptionSql = """
+        SELECT TOP 1
+            [GrantId],
+            [StoreCode],
+            [HardwareId],
+            [DeviceCode],
+            [ConsumedAtUtc]
+        FROM [dbo].[POSM_AppReviewGrantConsumptions] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [GrantId] = @GrantId;
+        """;
+
     internal const string ResetRegistrationForReregisterSql = """
         UPDATE [POSM_设备注册信息表]
         SET [设备状态] = @PendingStatus,
+            [设备授权码] = @AuthorizationCode,
+            [设备系统] = @DeviceSystem,
+            [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix),
+            [最后修改时间] = @ModifiedAt,
+            [最后修改人] = @ModifiedBy,
+            [是否在线] = 0,
+            [最后心跳时间] = NULL,
+            [当前收银员ID] = NULL,
+            [当前收银员姓名] = NULL,
+            [收银员登录时间] = NULL
+        WHERE [ID] = @RegistrationId
+          AND [设备硬件识别码] = @HardwareId
+          AND [分店代码] = @StoreCode
+          AND [系统设备编号] = @DeviceCode
+          AND [设备状态] = @ExpectedDeviceStatus
+          AND (
+              [设备授权码] = @ExpectedAuthorizationCode
+              OR ([设备授权码] IS NULL AND @ExpectedAuthorizationCode IS NULL)
+          );
+        """;
+
+    internal const string ApproveRegistrationForAppReviewSql = """
+        UPDATE [POSM_设备注册信息表]
+        SET [设备状态] = @EnabledStatus,
             [设备授权码] = @AuthorizationCode,
             [设备系统] = @DeviceSystem,
             [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix),
@@ -823,6 +1359,34 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
         return record;
     }
 
+    public async Task<DeviceRegistrationRecord?> FindLatestByDeviceCodeAndHardwareIdAsync(
+        string deviceCode,
+        string storeCode,
+        string hardwareId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP 1
+                [系统设备编号] AS DeviceCode,
+                [分店代码] AS StoreCode,
+                [设备硬件识别码] AS HardwareId,
+                [设备状态] AS DeviceStatus,
+                [设备授权码] AS AuthorizationCode,
+                [设备系统] AS DeviceSystem
+            FROM [POSM_设备注册信息表]
+            WHERE [系统设备编号] = @DeviceCode
+              AND [分店代码] = @StoreCode
+              AND [设备硬件识别码] = @HardwareId
+            ORDER BY [ID] DESC;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<DeviceRegistrationRecord>(
+            sql,
+            new SugarParameter("@DeviceCode", deviceCode),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@HardwareId", hardwareId));
+    }
+
     public async Task<DeviceRegistrationRecord?> FindActiveOrLockedRegistrationAsync(
         string hardwareId,
         CancellationToken cancellationToken)
@@ -866,6 +1430,103 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
         return await dbContext.PosmDb.Ado.SqlQueryAsync<DeviceRegistrationRecord>(
             FindAllByHardwareIdForRegistrationSql,
             new SugarParameter("@HardwareId", hardwareId));
+    }
+
+    public async Task<int> CountActiveOrLockedByStoreCodeForRegistrationAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：范围锁与注册写入同事务持有，确保 App Review 单设备上限在并发下仍成立。
+        return await dbContext.PosmDb.Ado.GetIntAsync(
+            CountActiveOrLockedByStoreCodeForRegistrationSql,
+            new SugarParameter("@StoreCode", storeCode));
+    }
+
+    public async Task AcquireAppReviewGrantLockAsync(
+        Guid grantId,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            DECLARE @StoreResult int;
+            DECLARE @GrantResult int;
+            EXEC @StoreResult = sys.sp_getapplock
+                @Resource = @StoreResource,
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 5000;
+            IF @StoreResult < 0
+                SELECT @StoreResult;
+            ELSE
+            BEGIN
+                EXEC @GrantResult = sys.sp_getapplock
+                    @Resource = @GrantResource,
+                    @LockMode = 'Exclusive',
+                    @LockOwner = 'Transaction',
+                    @LockTimeout = 5000;
+                SELECT @GrantResult;
+            END;
+            """;
+        var result = await dbContext.PosmDb.Ado.GetIntAsync(
+            sql,
+            new SugarParameter("@StoreResource", $"HBPOS:AppReviewStore:{storeCode}"),
+            new SugarParameter("@GrantResource", $"HBPOS:AppReviewGrant:{grantId:N}"));
+        if (result < 0)
+        {
+            throw new InvalidOperationException("Could not acquire the App Review grant lock.");
+        }
+    }
+
+    public async Task<DeviceRegistrationAppReviewGrantConsumption?> FindAppReviewGrantConsumptionAsync(
+        Guid grantId,
+        CancellationToken cancellationToken)
+    {
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<DeviceRegistrationAppReviewGrantConsumption>(
+            FindAppReviewGrantConsumptionSql,
+            new SugarParameter("@GrantId", grantId));
+    }
+
+    public Task<int> ConsumeAppReviewGrantAsync(
+        DeviceRegistrationAppReviewGrantConsumption consumption,
+        DateTime expiresAtUtc,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO [dbo].[POSM_AppReviewGrantConsumptions]
+                ([GrantId], [StoreCode], [HardwareId], [DeviceCode], [ConsumedAtUtc])
+            SELECT
+                @GrantId, @StoreCode, @HardwareId, @DeviceCode, @ConsumedAtUtc
+            WHERE SYSUTCDATETIME() < @ExpiresAtUtc;
+            """;
+        // 关键逻辑：GrantId 主键保证一次消费；数据库时钟门禁保证到期瞬间会让整个注册事务回滚。
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            sql,
+            new SugarParameter("@GrantId", consumption.GrantId),
+            new SugarParameter("@StoreCode", consumption.StoreCode),
+            new SugarParameter("@HardwareId", consumption.HardwareId),
+            new SugarParameter("@DeviceCode", consumption.DeviceCode),
+            new SugarParameter("@ConsumedAtUtc", consumption.ConsumedAtUtc),
+            new SugarParameter("@ExpiresAtUtc", expiresAtUtc));
+    }
+
+    public async Task<bool> IsAppReviewDeviceAsync(
+        string storeCode,
+        string deviceCode,
+        string hardwareId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM [dbo].[POSM_AppReviewGrantConsumptions]
+            WHERE [StoreCode] = @StoreCode
+              AND [DeviceCode] = @DeviceCode
+              AND [HardwareId] = @HardwareId;
+            """;
+        return await dbContext.PosmDb.Ado.GetIntAsync(
+            sql,
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@DeviceCode", deviceCode),
+            new SugarParameter("@HardwareId", hardwareId)) > 0;
     }
 
     public Task<int> DisablePendingRegistrationAsync(
@@ -920,6 +1581,40 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             new SugarParameter("@EnabledStatus", 1));
     }
 
+    public Task<int> ResetActiveRegistrationAsync(
+        DeviceRegistrationResetActiveRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：清除入口只能停用当前已认证的启用记录，且同步清空运行时在线身份。
+        const string sql = """
+            UPDATE [POSM_设备注册信息表]
+            SET [设备状态] = @DisabledStatus,
+                [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix),
+                [最后修改时间] = @ModifiedAtUtc,
+                [最后修改人] = @ModifiedBy,
+                [是否在线] = 0,
+                [最后心跳时间] = NULL,
+                [当前收银员ID] = NULL,
+                [当前收银员姓名] = NULL,
+                [收银员登录时间] = NULL
+            WHERE [系统设备编号] = @DeviceCode
+              AND [分店代码] = @StoreCode
+              AND [设备硬件识别码] = @HardwareId
+              AND [设备状态] = @EnabledStatus;
+            """;
+
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            sql,
+            new SugarParameter("@DisabledStatus", 0),
+            new SugarParameter("@RemarkSuffix", request.RemarkSuffix),
+            new SugarParameter("@ModifiedAtUtc", request.ModifiedAtUtc),
+            new SugarParameter("@ModifiedBy", request.ModifiedBy),
+            new SugarParameter("@DeviceCode", request.DeviceCode),
+            new SugarParameter("@StoreCode", request.StoreCode),
+            new SugarParameter("@HardwareId", request.HardwareId),
+            new SugarParameter("@EnabledStatus", 1));
+    }
+
     public Task<int> ResetRegistrationForReregisterAsync(
         DeviceRegistrationResetForReregisterRequest request,
         CancellationToken cancellationToken)
@@ -933,6 +1628,27 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             new SugarParameter("@RemarkSuffix", request.RemarkSuffix),
             new SugarParameter("@ModifiedAt", request.ModifiedAt),
             new SugarParameter("@ModifiedBy", request.ModifiedBy),
+            new SugarParameter("@RegistrationId", request.RegistrationId),
+            new SugarParameter("@HardwareId", request.HardwareId),
+            new SugarParameter("@StoreCode", request.StoreCode),
+            new SugarParameter("@DeviceCode", request.DeviceCode),
+            new SugarParameter("@ExpectedDeviceStatus", request.ExpectedDeviceStatus),
+            new SugarParameter("@ExpectedAuthorizationCode", request.ExpectedAuthorizationCode));
+    }
+
+    public Task<int> ApproveRegistrationForAppReviewAsync(
+        DeviceRegistrationAppReviewApprovalRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：审批只更新事务中读取的精确快照，任何并发状态变化都触发 0 行并回滚。
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            ApproveRegistrationForAppReviewSql,
+            new SugarParameter("@EnabledStatus", 1),
+            new SugarParameter("@AuthorizationCode", request.AuthorizationCode),
+            new SugarParameter("@DeviceSystem", request.DeviceSystem),
+            new SugarParameter("@RemarkSuffix", request.RemarkSuffix),
+            new SugarParameter("@ModifiedAt", request.ModifiedAt),
+            new SugarParameter("@ModifiedBy", "HBPOS_APP_REVIEW"),
             new SugarParameter("@RegistrationId", request.RegistrationId),
             new SugarParameter("@HardwareId", request.HardwareId),
             new SugarParameter("@StoreCode", request.StoreCode),
