@@ -2456,7 +2456,7 @@ export default function WarehouseProductsPage() {
         {
             key: 'action',
             title: t('column.action'),
-            width: 280,
+            width: 400,
             fixed: 'right',
             render: (_, record) => (<Space size={0}>
             {access.canWriteProduct ? (<Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>

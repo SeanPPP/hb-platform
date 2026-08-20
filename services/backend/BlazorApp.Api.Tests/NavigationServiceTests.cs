@@ -58,6 +58,134 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ClaimPermissionWithoutExactInfo_HidesProductSalesAnalysis()
+    {
+        // Claim 上下文没有精确权限信息，精确节点必须 fail-closed，不能把展开权限误当 exact。
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/product-movement-report"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        );
+    }
+
+    [Fact]
+    public async Task BuildMenu_ProductSalesAnalysisRequiresExactProductMovementView()
+    {
+        using var harness = new NavigationTestHarness();
+        await harness.SeedUserWithRoleAsync(
+            "user-1",
+            "role-user",
+            "User",
+            Permissions.Reports.View
+        );
+
+        var service = harness.CreateNavigationService();
+        var user = CreateUserWithId("user-1");
+
+        var menu = service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        // 原商品移动报表继续兼容 Reports.View；精确节点商品销量分析必须拒绝。
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/product-movement-report"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        );
+    }
+
+    [Fact]
+    public async Task BuildMenu_ProductSalesAnalysisShownWithExactProductMovementView()
+    {
+        using var harness = new NavigationTestHarness();
+        await harness.SeedUserWithRoleAsync(
+            "user-1",
+            "role-user",
+            "User",
+            Permissions.Reports.ProductMovementView
+        );
+
+        var service = harness.CreateNavigationService();
+        var user = CreateUserWithId("user-1");
+
+        var menu = service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        var productSalesAnalysis = Assert.Single(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        );
+        Assert.Equal("menu.warehouseProductFlowAnalysis", productSalesAnalysis.TitleKey);
+        Assert.Equal(Permissions.Reports.ProductMovementView, productSalesAnalysis.Permission);
+        Assert.True(productSalesAnalysis.RequireExactPermission);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public async Task BuildMenu_SuperAdminAliasShowsProductSalesAnalysis(string roleName)
+    {
+        using var harness = new NavigationTestHarness();
+        await harness.SeedUserWithRoleAsync("user-1", "role-admin", roleName);
+
+        var service = harness.CreateNavigationService();
+        var user = CreateUserWithId("user-1");
+
+        var menu = service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        );
+    }
+
+    [Fact]
+    public void BuildMenu_LocalPurchaseViewShowsAustralianLocalProductAnalysis()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.LocalPurchase.View));
+
+        var menu = _service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/local-product-sales-analysis"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        );
+    }
+
+    [Fact]
     public void BuildMenu_ShowsSystemNavigationWithViewAppDownloadsWithoutDashboardPermission()
     {
         var user = CreateUser(new Claim("permission", Permissions.System.ViewAppDownloads));

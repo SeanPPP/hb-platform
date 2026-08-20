@@ -1,0 +1,27 @@
+.toolbar { margin-bottom: 12px; }
+.optionsAlert { margin-bottom: 12px; }
+.summaryCard { margin-bottom: 12px; }
+.layout { display: grid; grid-template-columns: minmax(280px, 29fr) minmax(420px, 43fr) minmax(300px, 28fr); gap: 12px; align-items: start; }
+.panel { min-width: 0; }
+.filters { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #edf0f4; }
+.selectionBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; color: #657185; font-size: 12px; }
+.candidates { display: grid; gap: 4px; max-height: 600px; overflow: auto; }
+.candidate { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px; border: 1px solid transparent; border-radius: 6px; background: #fff; text-align: left; }
+.candidate:hover, .currentCandidate { border-color: #b8d1ff; background: #f1f6ff; }
+.candidateMain { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.candidateMain:disabled { cursor: default; opacity: .62; }
+.candidateText { display: grid; min-width: 0; gap: 2px; }
+.candidateText strong, .candidateText span, .candidateText small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.candidateText span { color: #4b5565; font-size: 12px; }.candidateText small { color: #8290a4; font-size: 11px; }
+.pagination { margin-top: 12px; }
+.state { display: grid; min-height: 150px; place-items: center; }
+.productHeader { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid #edf0f4; }.productHeader h4 { margin: 3px 0; }.productHeader span { color: #69768a; font-size: 12px; }
+.totals { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }.totals div { padding: 8px; border: 1px solid #e5ebf5; border-radius: 6px; text-align: center; }.totals span, .totals strong { display: block; }.totals span { color: #69768a; font-size: 12px; }.totals strong { margin-top: 3px; color: #172033; font-size: 15px; }
+.topTotals { margin: 0; }
+.trendTitle { margin-top: 18px !important; }
+.branchButton { padding: 0; border: 0; background: transparent; color: #246bfd; cursor: pointer; text-align: left; }.currentBranch td { background: #edf4ff !important; }
+:global(.product-flow-image), :global(.product-flow-image-fallback) { flex: 0 0 auto; border: 1px solid #e5eaf1; border-radius: 6px; background: #f7f9fc; object-fit: contain; }
+:global(.product-flow-image-fallback) { display: grid; place-items: center; color: #98a4b5; }
+:global(.product-flow-chart) { display: block; width: 100%; height: auto; margin-top: 4px; border: 1px solid #edf0f4; border-radius: 6px; background: #fff; }
+@media (max-width: 1199px) { .layout { grid-template-columns: minmax(280px, 38fr) minmax(420px, 62fr); }.rightColumn { grid-column: 1 / -1; } }
+@media (max-width: 768px) { .toolbar :global(.ant-picker) { width: 100%; }.layout { grid-template-columns: 1fr; }.rightColumn { grid-column: auto; }.totals { grid-template-columns: 1fr 1fr; }.panel { padding: 10px; } }

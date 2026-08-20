@@ -86,6 +86,10 @@
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
     <Compile Include="ProductSalesAnalysisServiceTests.cs" />
+    <Compile Include="WarehouseProductFlowAnalysisLogicTests.cs" />
+    <Compile Include="WarehouseProductFlowAnalysisServiceTests.cs" />
+    <Compile Include="LocalSupplierProductSalesAnalysisLogicTests.cs" />
+    <Compile Include="LocalSupplierProductSalesAnalysisServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesReportServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesAuthorizationPipelineTests.cs" />
     <Compile Include="BrowserExtensionTests.cs" />

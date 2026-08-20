@@ -44,6 +44,8 @@ export function buildRolePreviewAccess(permissionState: RolePermissionStateDto):
     username: permissionState.roleName,
     email: '',
     permissions: permissionState.effectivePermissionCodes,
+    // 商品销量分析等精确契约节点只读原始未展开权限，不能用 effective 展开结果冒充。
+    exactPermissions: permissionState.explicitPermissionCodes,
     roleNames,
     storeNames: [],
   }

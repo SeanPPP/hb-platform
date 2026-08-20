@@ -222,6 +222,32 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task UserHasExactPermissionAsync_ReportsView别名不能授予ProductMovementView()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Reports.View);
+
+        var result = await CreateService()
+            .UserHasExactPermissionAsync("user-1", Permissions.Reports.ProductMovementView);
+
+        Assert.True(result.Success);
+        Assert.False(result.Data);
+    }
+
+    [Fact]
+    public async Task UserHasExactPermissionAsync_直接ProductMovementView权限可通过()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.ProductMovementView);
+
+        var result = await CreateService()
+            .UserHasExactPermissionAsync("user-1", Permissions.Reports.ProductMovementView);
+
+        Assert.True(result.Success);
+        Assert.True(result.Data);
+    }
+
+    [Fact]
     public async Task GetUserPermissionSnapshotAsync_AdminRoleReturnsImplicitAllPermissions()
     {
         await SeedUserWithRoleAsync("user-1", "role-admin", "Admin");
@@ -252,6 +278,51 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.Contains("LocalInvocie.View", result.Data.PermissionCodes);
         Assert.Contains(Permissions.LocalPurchase.View, result.Data.PermissionCodes);
         Assert.Contains(Permissions.Reports.View, result.Data.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionSnapshotAsync_ExactPermissionCodes_ReturnsRawUnexpandedCodes()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Reports.View);
+
+        var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data.IsSuperAdmin);
+        Assert.Contains(Permissions.Reports.View, result.Data.ExactPermissionCodes);
+        Assert.DoesNotContain(
+            Permissions.Reports.ProductMovementView,
+            result.Data.ExactPermissionCodes
+        );
+        // 展开集合仍包含别名展开后的 canonical 权限，兼容旧语义。
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.PermissionCodes);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionSnapshotAsync_ExactPermissionCodes_IncludesDirectUserPermission()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.ProductMovementView);
+
+        var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.ExactPermissionCodes);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionSnapshotAsync_AdminRoleReturnsExactAllPermissions()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-admin", "Admin");
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.Reports.ProductMovementView);
+
+        var result = await CreateService().GetUserPermissionSnapshotAsync("user-1");
+
+        Assert.NotNull(result.Data);
+        Assert.True(result.Data.IsSuperAdmin);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.ExactPermissionCodes);
     }
 
     [Fact]

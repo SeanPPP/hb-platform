@@ -23,6 +23,8 @@ namespace BlazorApp.Api.Services
                 new(StringComparer.OrdinalIgnoreCase);
             public HashSet<string> PermissionCodes { get; init; } =
                 new(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> ExactPermissionCodes { get; init; } =
+                new(StringComparer.OrdinalIgnoreCase);
         }
 
         private sealed class AppNavigationDefinition
@@ -125,6 +127,8 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/overview",       TitleKey = "menu.salesData",   Icon = "DashboardOutlined", Permission = Permissions.Reports.View },
                     new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.Reports.View },
                     new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.Reports.ProductMovementView },
+                    new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.Reports.ProductMovementView, RequireExactPermission = true },
+                    new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.LocalPurchase.View },
                     new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.LocalPurchase.View },
                 },
             },
@@ -475,6 +479,7 @@ namespace BlazorApp.Api.Services
                             Icon = node.Icon,
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
+                            RequireExactPermission = node.RequireExactPermission,
                             Children = filteredChildren,
                         });
                     }
@@ -490,6 +495,7 @@ namespace BlazorApp.Api.Services
                             Icon = node.Icon,
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
+                            RequireExactPermission = node.RequireExactPermission,
                             Children = null,
                         });
                     }
@@ -509,6 +515,11 @@ namespace BlazorApp.Api.Services
             if (string.IsNullOrEmpty(node.Permission))
             {
                 return true;
+            }
+
+            if (node.RequireExactPermission)
+            {
+                return context.IsAdmin || HasExactPermission(context, node.Permission);
             }
 
             if (context.IsAdmin || HasPermission(context, node.Permission))
@@ -603,6 +614,10 @@ namespace BlazorApp.Api.Services
                     Permissions.ExpandPermissionCodes(result.Data.PermissionCodes),
                     StringComparer.OrdinalIgnoreCase
                 ),
+                ExactPermissionCodes = new HashSet<string>(
+                    result.Data.ExactPermissionCodes ?? new List<string>(),
+                    StringComparer.OrdinalIgnoreCase
+                ),
             };
         }
 
@@ -640,6 +655,9 @@ namespace BlazorApp.Api.Services
                             )
                             .Select(claim => claim.Value)
                     ),
+                    StringComparer.OrdinalIgnoreCase
+                ),
+                ExactPermissionCodes = new HashSet<string>(
                     StringComparer.OrdinalIgnoreCase
                 ),
             };
@@ -693,6 +711,20 @@ namespace BlazorApp.Api.Services
 
             return GetNavigationEquivalentPermissionCodes(permission)
                 .Any(code => context.PermissionCodes.Contains(code));
+        }
+
+        private static bool HasExactPermission(
+            NavigationPermissionContext context,
+            string? permission
+        )
+        {
+            if (string.IsNullOrWhiteSpace(permission))
+            {
+                return false;
+            }
+
+            // 精确权限节点不做别名展开，只按原始精确代码判定。
+            return context.ExactPermissionCodes.Contains(permission);
         }
 
         private static bool HasAnyPermission(

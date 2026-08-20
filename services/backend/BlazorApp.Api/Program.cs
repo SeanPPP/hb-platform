@@ -801,6 +801,14 @@ builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactServi
 builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer>();
 builder.Services.AddScoped<IProductMovementReportService, ProductMovementReportService>();
 builder.Services.AddScoped<
+    IWarehouseProductFlowAnalysisService,
+    WarehouseProductFlowAnalysisService
+>();
+builder.Services.AddScoped<
+    ILocalSupplierProductSalesAnalysisService,
+    LocalSupplierProductSalesAnalysisService
+>();
+builder.Services.AddScoped<
     ILocalSupplierInvoiceSalesAnalysisService,
     LocalSupplierInvoiceSalesAnalysisService
 >();

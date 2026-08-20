@@ -32,7 +32,7 @@ import {
   WalletOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
-import { matchPath } from 'react-router-dom'
+import { matchPath, Navigate } from 'react-router-dom'
 import i18n from '../i18n'
 import ForbiddenPage from '../pages/Forbidden'
 import DashboardPage from '../pages/Dashboard'
@@ -46,6 +46,8 @@ import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
 import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
+import WarehouseProductFlowAnalysisPage from '../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'
+import LocalProductSalesAnalysisPage from '../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'
 import PurchaseAmountDashboardPage from '../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
@@ -560,6 +562,35 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewProductMovementReport',
         },
         element: <ProductMovementReportPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/warehouse-product-flow-analysis',
+        meta: {
+          title: 'menu.warehouseProductFlowAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canViewProductSalesAnalysis',
+        },
+        element: <WarehouseProductFlowAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/local-product-sales-analysis',
+        meta: {
+          title: 'menu.localProductSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+        },
+        element: <LocalProductSalesAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/product-sales-analysis',
+        meta: {
+          title: 'menu.warehouseProductFlowAnalysis',
+          hidden: true,
+          accessKey: 'canViewProductSalesAnalysis',
+        },
+        element: <Navigate replace to="/executive-sales-intelligence/warehouse-product-flow-analysis" />,
       },
       {
         path: '/executive-sales-intelligence/purchase-amount-dashboard',

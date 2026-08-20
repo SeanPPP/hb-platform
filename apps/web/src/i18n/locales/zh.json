@@ -106,6 +106,9 @@
     "salesData": "销售数据",
     "salesDetail": "销售明细",
     "productMovementReport": "商品经营分析",
+    "productSalesAnalysis": "商品销量分析",
+    "warehouseProductFlowAnalysis": "仓库商品流转分析",
+    "localProductSalesAnalysis": "澳洲本地商品分析",
     "purchaseAmountDashboard": "进货金额看板",
     "pageNotFound": "页面不存在",
     "warehouseProductRecords": "商品数据查询"
@@ -5005,6 +5008,7 @@
       "type": "类型",
       "typeOrder": "订货发货",
       "typeSales": "销售",
+      "typeSalesDetails": "销售明细",
       "typeSubtotal": "区间小计",
       "orderNo": "订单号",
       "orderQuantity": "订货量",

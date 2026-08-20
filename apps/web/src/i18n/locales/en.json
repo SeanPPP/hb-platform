@@ -106,6 +106,9 @@
     "salesData": "Sales Data",
     "salesDetail": "Sales Detail",
     "productMovementReport": "Product Movement Report",
+    "productSalesAnalysis": "Product Sales Analysis",
+    "warehouseProductFlowAnalysis": "Warehouse Product Flow Analysis",
+    "localProductSalesAnalysis": "Australian Local Product Analysis",
     "purchaseAmountDashboard": "Purchase Amount Dashboard",
     "pageNotFound": "Page Not Found",
     "warehouseProductRecords": "Product Data Query"
@@ -5005,6 +5008,7 @@
       "type": "Type",
       "typeOrder": "Order / Shipment",
       "typeSales": "Sales",
+      "typeSalesDetails": "Sales details",
       "typeSubtotal": "Interval total",
       "orderNo": "Order No.",
       "orderQuantity": "Ordered",

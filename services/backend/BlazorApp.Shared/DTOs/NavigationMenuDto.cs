@@ -10,6 +10,10 @@ namespace BlazorApp.Shared.DTOs
         public string Icon { get; set; } = string.Empty;
         public string? Permission { get; set; }
         public bool RequireAdmin { get; set; }
+        /// <summary>
+        /// 精确权限节点标记。为 true 时仅按精确权限代码判定可见性，不展开别名。
+        /// </summary>
+        public bool RequireExactPermission { get; set; }
         public List<NavigationMenuDto>? Children { get; set; }
     }
 
