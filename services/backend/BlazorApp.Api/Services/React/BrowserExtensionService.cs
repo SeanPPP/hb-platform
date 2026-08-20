@@ -5,6 +5,7 @@ using BlazorApp.Api.Models;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Options;
 using SqlSugar;
 
@@ -13,18 +14,21 @@ namespace BlazorApp.Api.Services.React;
 public sealed class BrowserExtensionService : IBrowserExtensionService
 {
     private readonly ISqlSugarClient _db;
+    private readonly ISqlSugarClient _posmDb;
     private readonly IOptionsSnapshot<BrowserExtensionOptions> _options;
     private readonly ILogger<BrowserExtensionService> _logger;
     private readonly TimeProvider _timeProvider;
 
     public BrowserExtensionService(
         SqlSugarContext context,
+        POSMSqlSugarContext posmContext,
         IOptionsSnapshot<BrowserExtensionOptions> options,
         ILogger<BrowserExtensionService> logger,
         TimeProvider? timeProvider = null
     )
     {
         _db = context.Db;
+        _posmDb = posmContext.Db;
         _options = options;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -179,6 +183,163 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         return response;
     }
 
+    public async Task<BrowserExtensionStoreOptionsDto> GetEnabledStoresAsync(
+        IReadOnlyCollection<string> relatedStoreCodes
+    )
+    {
+        var relatedCodes = (relatedStoreCodes ?? Array.Empty<string>())
+            .Select(code => code?.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (relatedCodes.Count == 0)
+        {
+            return new BrowserExtensionStoreOptionsDto();
+        }
+
+        var enabledPosStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        var allowedStoreCodes = enabledPosStoreCodes
+            .Where(relatedCodes.Contains)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (allowedStoreCodes.Count == 0)
+        {
+            return new BrowserExtensionStoreOptionsDto();
+        }
+
+        var stores = await _db.Queryable<Store>()
+            .Where(store => store.IsActive && !store.IsDeleted)
+            .ToListAsync();
+
+        return new BrowserExtensionStoreOptionsDto
+        {
+            Stores = stores
+                .Where(store => allowedStoreCodes.Contains(store.StoreCode?.Trim() ?? string.Empty))
+                .OrderBy(store => store.StoreName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(store => store.StoreCode, StringComparer.OrdinalIgnoreCase)
+                .Select(store => new BrowserExtensionStoreOptionDto
+                {
+                    StoreCode = store.StoreCode.Trim(),
+                    StoreName = string.IsNullOrWhiteSpace(store.StoreName)
+                        ? store.StoreCode.Trim()
+                        : store.StoreName.Trim(),
+                })
+                .ToList(),
+        };
+    }
+
+    public async Task<BrowserExtensionSupplierTopSalesDto> GetSupplierTopSalesAsync(
+        BrowserExtensionSupplierTopSalesRequestDto request
+    )
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var supplierCode = NormalizeCode(request.SupplierCode, "供应商代码");
+        var days = BrowserExtensionRankingLogic.NormalizeDays(request.Days);
+        EnsureSupplierEnabled(supplierCode);
+
+        var today = ResolveRankingToday();
+        var startDate = BrowserExtensionRankingLogic.ResolveStartDate(today, days);
+        var enabledStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        var response = new BrowserExtensionSupplierTopSalesDto
+        {
+            SupplierCode = supplierCode,
+            Days = days,
+            StartDate = startDate,
+            EndDate = today,
+            EnabledStoreCount = enabledStoreCodes.Count,
+        };
+        if (enabledStoreCodes.Count == 0)
+        {
+            return response;
+        }
+
+        var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
+        var endDateExclusive = today.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var salesRows = await _db.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row =>
+                enabledStoreCodes.Contains(row.BranchCode)
+                && row.SupplierCode == supplierCode
+                && row.Date >= startDateTime
+                && row.Date < endDateExclusive
+            )
+            .GroupBy(row => row.ProductCode)
+            .Select(row => new BrowserExtensionSupplierSalesAggregate
+            {
+                ProductCode = row.ProductCode,
+                ProductName = SqlFunc.AggregateMax(row.ProductName),
+                SalesQuantity = SqlFunc.AggregateSum(row.TotalQuantity),
+                SalesAmount = SqlFunc.AggregateSum(row.TotalAmount),
+                SalesStatisticLastUpdate = SqlFunc.AggregateMax(row.UpdateTime),
+            })
+            .ToListAsync();
+        response.TotalProductCount = salesRows.Count(row =>
+            !string.IsNullOrWhiteSpace(row.ProductCode) && row.SalesQuantity > 0m
+        );
+        response.SalesStatisticLastUpdate = salesRows
+            .Select(row => row.SalesStatisticLastUpdate)
+            .Where(value => value.HasValue)
+            .DefaultIfEmpty()
+            .Max();
+
+        var ranked = BrowserExtensionRankingLogic.RankTopDecile(salesRows);
+        if (ranked.Count == 0)
+        {
+            return response;
+        }
+
+        var productCodes = ranked.Select(row => row.ProductCode).ToList();
+        var products = await _db.Queryable<Product>()
+            .Where(product =>
+                !product.IsDeleted
+                && product.ProductCode != null
+                && productCodes.Contains(product.ProductCode)
+            )
+            .ToListAsync();
+        var productByCode = products
+            .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+            .GroupBy(product => product.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(product => product.UpdatedAt ?? product.CreatedAt)
+                    .First(),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+        response.Items = ranked
+            .Select(row =>
+            {
+                productByCode.TryGetValue(row.ProductCode, out var product);
+                var itemNumber = product?.ItemNumber?.Trim();
+                var productName = product?.ProductName?.Trim();
+                return new BrowserExtensionSupplierTopSalesItemDto
+                {
+                    Rank = row.Rank,
+                    ItemNumber = string.IsNullOrWhiteSpace(itemNumber)
+                        ? row.ProductCode
+                        : itemNumber,
+                    ProductCode = row.ProductCode,
+                    ProductName = !string.IsNullOrWhiteSpace(productName)
+                        ? productName
+                        : row.ProductName?.Trim() ?? row.ProductCode,
+                    ImageUrl = product?.ProductImage?.Trim(),
+                    SalesQuantity = row.SalesQuantity,
+                    AverageSellingPrice = row.AverageSellingPrice,
+                };
+            })
+            .ToList();
+
+        _logger.LogInformation(
+            "浏览器订货助手供应商热销排行查询完成 SupplierCode={SupplierCode} Days={Days} StoreCount={StoreCount} ProductCount={ProductCount} TopCount={TopCount}",
+            supplierCode,
+            days,
+            enabledStoreCodes.Count,
+            response.TotalProductCount,
+            response.Items.Count
+        );
+        return response;
+    }
+
     private async Task<List<BrowserExtensionProductSummaryDto>> QuerySummariesAsync(
         string storeCode,
         string supplierCode,
@@ -249,6 +410,49 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
                 ? configuredTimeZone
                 : InstallmentOrderStoreTimeZoneResolver.Resolve(store);
         var timeZone = FindTimeZone(timeZoneId);
+        var localNow = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), timeZone);
+        return DateOnly.FromDateTime(localNow.DateTime);
+    }
+
+    private async Task<List<string>> QueryEnabledPosStoreCodesAsync()
+    {
+        var storeCodes = await _posmDb.Queryable<POSM_设备注册信息表>()
+            .Where(device =>
+                device.设备状态 == 1
+                && device.设备类型 == "POS"
+                && device.分店代码 != null
+                && device.分店代码 != ""
+            )
+            .Select(device => device.分店代码)
+            .ToListAsync();
+
+        var enabledPosStoreCodes = storeCodes
+            .Select(code => code?.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (enabledPosStoreCodes.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var activeStores = await _db.Queryable<Store>()
+            .Where(store => store.IsActive && !store.IsDeleted)
+            .Select(store => store.StoreCode)
+            .ToListAsync();
+        return activeStores
+            .Select(code => code?.Trim().ToUpperInvariant())
+            .Where(code => !string.IsNullOrWhiteSpace(code) && enabledPosStoreCodes.Contains(code))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private DateOnly ResolveRankingToday()
+    {
+        var timeZone = FindTimeZone(StoreTimeZonePolicy.Brisbane);
         var localNow = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), timeZone);
         return DateOnly.FromDateTime(localNow.DateTime);
     }
@@ -333,6 +537,10 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
 
 public static partial class BrowserExtensionProfileCatalog
 {
+    public const string ExtensionVersionHeader = "X-HB-Extension-Version";
+    public const string SupplierProfilesMinimumClientVersion = "1.1.0";
+    public const string ExtendedProfilesMinimumClientVersion = "1.2.0";
+
     private static readonly HashSet<string> AllowedSources = new(StringComparer.OrdinalIgnoreCase)
     {
         "attribute",
@@ -344,6 +552,9 @@ public static partial class BrowserExtensionProfileCatalog
         "trim",
         "uppercase",
         "lowercase",
+        "after-colon",
+        "underscore-to-slash",
+        "after-sku",
     };
 
     private static readonly HashSet<string> AllowedMountPositions = new(
@@ -374,17 +585,24 @@ public static partial class BrowserExtensionProfileCatalog
     {
         var configuredProfiles = options.SupplierProfiles
             ?? new List<BrowserExtensionSupplierProfileOptions>();
-        IEnumerable<BrowserExtensionSupplierProfileOptions> candidates = configuredProfiles;
-        if (
-            options.UseBuiltInDatsProfile
-            && !configuredProfiles.Any(profile =>
-                string.Equals(profile.SupplierCode, "DATS", StringComparison.OrdinalIgnoreCase)
-            )
-        )
+        var configuredCodes = configuredProfiles
+            .Select(profile => profile.SupplierCode?.Trim())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var builtInProfiles = new List<BrowserExtensionSupplierProfileOptions>();
+        if (options.UseBuiltInDatsProfile)
         {
-            candidates = new[] { BrowserExtensionSupplierProfileOptions.CreateDatsDefault() }
-                .Concat(configuredProfiles);
+            builtInProfiles.Add(BrowserExtensionSupplierProfileOptions.CreateDatsDefault());
         }
+        if (options.UseBuiltInSupplierProfiles)
+        {
+            builtInProfiles.AddRange(BrowserExtensionSupplierProfileOptions.CreateSupplierDefaults());
+        }
+
+        // 同业务供应商代码的后台配置优先；配置为 disabled 可立即停用有问题的内置规则。
+        var candidates = builtInProfiles
+            .Where(profile => !configuredCodes.Contains(profile.SupplierCode))
+            .Concat(configuredProfiles);
 
         return new BrowserExtensionSupplierProfilesDto
         {
@@ -400,6 +618,51 @@ public static partial class BrowserExtensionProfileCatalog
                 .Select(group => group.First())
                 .ToList(),
         };
+    }
+
+    public static BrowserExtensionSupplierProfilesDto FilterProfilesForClient(
+        BrowserExtensionSupplierProfilesDto profiles,
+        string? extensionVersion
+    )
+    {
+        if (IsVersionAtLeast(extensionVersion, ExtendedProfilesMinimumClientVersion))
+        {
+            return profiles;
+        }
+
+        if (IsVersionAtLeast(extensionVersion, SupplierProfilesMinimumClientVersion))
+        {
+            // 1.1.x 不认识新增转换，也没有 TXK 的精确 HTTP host permission。
+            return new BrowserExtensionSupplierProfilesDto
+            {
+                ConfigVersion = profiles.ConfigVersion,
+                Profiles = profiles.Profiles
+                    .Where(profile =>
+                        profile.Origins.All(origin => origin.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        && profile.ItemNumber.Transforms.All(transform =>
+                            !transform.Equals("underscore-to-slash", StringComparison.OrdinalIgnoreCase)
+                            && !transform.Equals("after-sku", StringComparison.OrdinalIgnoreCase)
+                        )
+                    )
+                    .ToList(),
+            };
+        }
+
+        // 1.0.x 不认识 after-colon；仅返回旧客户端可安全校验的 DATS，避免整份目录失效。
+        return new BrowserExtensionSupplierProfilesDto
+        {
+            ConfigVersion = profiles.ConfigVersion,
+            Profiles = profiles.Profiles
+                .Where(profile => profile.SupplierCode == "240")
+                .ToList(),
+        };
+    }
+
+    private static bool IsVersionAtLeast(string? value, string minimum)
+    {
+        return Version.TryParse(value?.Trim(), out var version)
+            && Version.TryParse(minimum, out var minimumVersion)
+            && version >= minimumVersion;
     }
 
     private static BrowserExtensionSupplierProfileDto? TryBuildProfile(
@@ -485,6 +748,11 @@ public static partial class BrowserExtensionProfileCatalog
         var match = HttpsMatchPatternRegex().Match(value);
         if (!match.Success)
         {
+            // 供应商目前只提供 HTTP；仅允许这个经过核验的精确主机，不开放 HTTP 通配。
+            match = TxkHttpMatchPatternRegex().Match(value);
+        }
+        if (!match.Success)
+        {
             return false;
         }
 
@@ -523,6 +791,9 @@ public static partial class BrowserExtensionProfileCatalog
 
     [GeneratedRegex(@"^https://(?<host>(?:\*\.)?[A-Za-z0-9.-]+)(?::\d+)?(?<path>/[^\s]*)$")]
     private static partial Regex HttpsMatchPatternRegex();
+
+    [GeneratedRegex(@"^http://txkorders\.inzantsales\.com(?<path>/[^\s]*)$", RegexOptions.IgnoreCase)]
+    private static partial Regex TxkHttpMatchPatternRegex();
 
     [GeneratedRegex(@"^[A-Za-z_:][A-Za-z0-9_:.-]*$")]
     private static partial Regex AttributeNameRegex();

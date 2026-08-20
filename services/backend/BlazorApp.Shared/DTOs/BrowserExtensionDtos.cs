@@ -129,3 +129,47 @@ public sealed class BrowserExtensionPurchaseCyclesDto
     public decimal SalesSinceLatestPurchase { get; set; }
     public List<BrowserExtensionPurchaseCycleDto> Cycles { get; set; } = new();
 }
+
+public sealed class BrowserExtensionStoreOptionDto
+{
+    public string StoreCode { get; set; } = string.Empty;
+    public string StoreName { get; set; } = string.Empty;
+}
+
+public sealed class BrowserExtensionStoreOptionsDto
+{
+    public List<BrowserExtensionStoreOptionDto> Stores { get; set; } = new();
+}
+
+public sealed class BrowserExtensionSupplierTopSalesRequestDto
+{
+    [Required]
+    [StringLength(50)]
+    public string SupplierCode { get; set; } = string.Empty;
+
+    [Range(1, 90)]
+    public int Days { get; set; } = 60;
+}
+
+public sealed class BrowserExtensionSupplierTopSalesItemDto
+{
+    public int Rank { get; set; }
+    public string ItemNumber { get; set; } = string.Empty;
+    public string ProductCode { get; set; } = string.Empty;
+    public string ProductName { get; set; } = string.Empty;
+    public string? ImageUrl { get; set; }
+    public decimal SalesQuantity { get; set; }
+    public decimal? AverageSellingPrice { get; set; }
+}
+
+public sealed class BrowserExtensionSupplierTopSalesDto
+{
+    public string SupplierCode { get; set; } = string.Empty;
+    public int Days { get; set; }
+    public DateOnly StartDate { get; set; }
+    public DateOnly EndDate { get; set; }
+    public int EnabledStoreCount { get; set; }
+    public int TotalProductCount { get; set; }
+    public DateTime? SalesStatisticLastUpdate { get; set; }
+    public List<BrowserExtensionSupplierTopSalesItemDto> Items { get; set; } = new();
+}

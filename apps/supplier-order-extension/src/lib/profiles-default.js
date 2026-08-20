@@ -1,9 +1,10 @@
 // 内置默认供应商 profile（DATS 列表页）
 export const DEFAULT_PROFILES = {
-  configVersion: '1',
+  configVersion: '2',
   profiles: [
     {
-      supplierCode: 'DATS',
+      // DATS 是显示名称；HB 的供应商业务代码是 240。
+      supplierCode: '240',
       displayName: 'DATS',
       enabled: true,
       origins: ['https://www.dats.com.au/*'],

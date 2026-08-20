@@ -166,6 +166,7 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
         {
             new("@StoreCode", normalizedStoreCode),
             new("@SupplierCode", normalizedSupplierCode),
+            new("@Cutoff", today.AddMonths(-12).ToDateTime(TimeOnly.MinValue)),
             new("@Today", today.ToDateTime(TimeOnly.MinValue)),
         };
         parameters.AddRange(
@@ -182,17 +183,22 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
             ProductMatches AS (
                 SELECT
                     requested.ItemNumber,
-                    MAX(CASE WHEN p.UUID IS NULL THEN 0 ELSE 1 END) AS HasProduct,
-                    MAX(NULLIF(p.ProductCode, N'')) AS ProductCode,
-                    MAX(NULLIF(p.ProductName, N'')) AS ProductName
+                    MAX(CASE WHEN storeProduct.UUID IS NULL THEN 0 ELSE 1 END) AS HasProduct,
+                    MAX(CASE WHEN storeProduct.UUID IS NULL THEN NULL ELSE NULLIF(p.ProductCode, N'') END) AS ProductCode,
+                    MAX(CASE WHEN storeProduct.UUID IS NULL THEN NULL ELSE NULLIF(p.ProductName, N'') END) AS ProductName
                 FROM RequestedItems requested
                 LEFT JOIN [Product] p
                     ON UPPER(LTRIM(RTRIM(p.ItemNumber))) = requested.ItemNumber
-                    AND UPPER(LTRIM(RTRIM(COALESCE(p.LocalSupplierCode, N'')))) = @SupplierCode
                     AND COALESCE(p.IsDeleted, 0) = 0
+                -- 商品匹配必须同时满足供应商、货号和分店，不能只依赖商品主表的默认供应商。
+                LEFT JOIN [StoreRetailPrice] storeProduct
+                    ON storeProduct.ProductCode = p.ProductCode
+                    AND UPPER(LTRIM(RTRIM(COALESCE(storeProduct.StoreCode, N'')))) = @StoreCode
+                    AND UPPER(LTRIM(RTRIM(COALESCE(storeProduct.SupplierCode, N'')))) = @SupplierCode
+                    AND COALESCE(storeProduct.IsDeleted, 0) = 0
                 GROUP BY requested.ItemNumber
             ),
-            -- 列表按钮需要显示“全历史最后一次订货至今销量”；12 个月窗口只限制侧栏周期明细。
+            -- 列表摘要与侧栏明细统一限制在最近 12 个自然月。
             PurchaseLines AS (
                 SELECT
                     requested.ItemNumber,
@@ -216,6 +222,7 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
                     AND UPPER(LTRIM(RTRIM(COALESCE(h.StoreCode, N'')))) = @StoreCode
                     AND UPPER(LTRIM(RTRIM(COALESCE(h.SupplierCode, N'')))) = @SupplierCode
                     AND COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) IS NOT NULL
+                    AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) >= @Cutoff
                     AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) <= @Today
             ),
             PurchaseEvents AS (

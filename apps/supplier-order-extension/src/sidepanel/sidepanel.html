@@ -12,6 +12,21 @@
       <button id="localeBtn" type="button">EN</button>
     </header>
     <main>
+      <section id="apiSection" class="api-settings">
+        <div class="section-heading">
+          <label id="apiTitle" for="apiOriginInput">后端接口</label>
+          <small id="apiOriginHint"></small>
+        </div>
+        <div class="api-presets" role="group" aria-labelledby="apiTitle">
+          <button id="apiRemoteBtn" type="button">远端 /</button>
+          <button id="apiLocalBtn" type="button">本地 5002</button>
+        </div>
+        <div class="api-origin-row">
+          <input id="apiOriginInput" type="url" inputmode="url" spellcheck="false" />
+          <button id="apiSaveBtn" type="button">应用</button>
+        </div>
+      </section>
+
       <section id="authSection" hidden>
         <input id="username" type="text" autocomplete="username" />
         <input id="password" type="password" autocomplete="current-password" />
@@ -26,16 +41,25 @@
       <section id="storeSection" hidden>
         <label id="storeLabel" for="storeSelect">门店</label>
         <select id="storeSelect" hidden></select>
-        <input id="storeCodeInput" type="text" hidden />
+        <p id="storeEmpty" class="inline-empty" hidden>暂无已启用 POS 的关联门店</p>
         <button id="storeSaveBtn" type="button">保存</button>
       </section>
 
       <section id="supplierSection" hidden>
-        <h2 id="supplierTitle">供应商</h2>
+        <div class="supplier-heading">
+          <h2 id="supplierTitle">供应商</h2>
+          <button id="supplierToggleBtn" type="button" hidden>展开已授权</button>
+        </div>
+        <p id="supplierCollapseHint" class="supplier-collapse-hint" hidden></p>
         <ul id="supplierList"></ul>
       </section>
 
-      <section id="itemSection" hidden>
+      <div id="dataTabs" class="data-tabs" role="tablist" hidden>
+        <button id="historyTab" type="button" role="tab" aria-selected="true">商品记录</button>
+        <button id="rankingTab" type="button" role="tab" aria-selected="false">热销 TOP 10%</button>
+      </div>
+
+      <section id="itemSection" role="tabpanel" hidden>
         <h2 id="itemTitle"></h2>
         <div class="filters">
           <button type="button" data-filter="all" class="active">全部</button>
@@ -60,6 +84,35 @@
           <button id="prevBtn" type="button">上一页</button>
           <span id="pageInfo"></span>
           <button id="nextBtn" type="button">下一页</button>
+        </div>
+      </section>
+
+      <section id="rankingSection" role="tabpanel" hidden>
+        <div class="ranking-heading">
+          <div>
+            <h2 id="rankingTitle">供应商热销 TOP 10%</h2>
+            <small id="rankingSupplier"></small>
+          </div>
+          <span class="ranking-badge">TOP 10%</span>
+        </div>
+        <div class="ranking-supplier-control">
+          <label id="rankingSupplierLabel" for="rankingSupplierSelect">供应商</label>
+          <select id="rankingSupplierSelect"></select>
+        </div>
+        <div class="ranking-toolbar">
+          <span id="rankingPeriodLabel">统计周期</span>
+          <div class="period-buttons" role="group" aria-labelledby="rankingPeriodLabel">
+            <button type="button" data-ranking-days="60" class="active">60 天</button>
+            <button type="button" data-ranking-days="90">90 天</button>
+          </div>
+        </div>
+        <p id="rankingScope" class="ranking-scope"></p>
+        <ol id="rankingList" class="ranking-list"></ol>
+        <p id="rankingEmpty" class="muted" hidden>暂无销售数据</p>
+        <div id="rankingPager" class="pager ranking-pager" hidden>
+          <button id="rankingPrevBtn" type="button">上一页</button>
+          <span id="rankingPageInfo"></span>
+          <button id="rankingNextBtn" type="button">下一页</button>
         </div>
       </section>
 

@@ -1,14 +1,23 @@
 // 后台 Service Worker：统一请求、token 存储、single-flight refresh、消息路由、动态内容脚本注册
 import { isAuthFailure } from '../lib/api-response.js';
+import {
+  LOCAL_API_ORIGIN,
+  normalizeApiOrigin,
+  resolveApiOrigin,
+  toApiHostPattern,
+} from '../lib/api-origin.js';
 import { createAuthExecutor } from '../lib/refresh-flow.js';
+import { resolveGrantedProfileOrigins } from '../lib/origin-registration.js';
 import { DEFAULT_PROFILES } from '../lib/profiles-default.js';
-import { validateProfiles } from '../lib/profiles.js';
-import { API_BASE } from '../config.js';
+import { migrateProfileConfig } from '../lib/profile-cache.js';
+import { matchProfile, validateProfiles } from '../lib/profiles.js';
+import { API_BASE, EXTENSION_VERSION } from '../config.js';
 
 const ACCESS_KEY = 'accessToken';
 const REFRESH_KEY = 'refreshToken';
 const PROFILES_KEY = 'supplierProfiles';
 const GRANTED_KEY = 'grantedOrigins';
+const API_ORIGIN_KEY = 'apiOrigin';
 
 const getSession = (keys) => chrome.storage.session.get(keys);
 const setSession = (obj) => chrome.storage.session.set(obj);
@@ -27,12 +36,21 @@ async function getRefreshToken() {
   return r[REFRESH_KEY];
 }
 
+async function getApiOrigin() {
+  const stored = await getLocal(API_ORIGIN_KEY);
+  return resolveApiOrigin(stored[API_ORIGIN_KEY], API_BASE);
+}
+
 // 直接 fetch 并解析 ApiResponse 信封，返回统一结构
 async function rawFetch(path, options = {}) {
-  const accessToken = await getAccessToken();
-  const headers = { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) };
+  const [accessToken, apiOrigin] = await Promise.all([getAccessToken(), getApiOrigin()]);
+  const headers = {
+    'X-HB-Extension-Version': EXTENSION_VERSION,
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.headers || {}),
+  };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${apiOrigin}${path}`, { ...options, headers });
   let body = null;
   try {
     body = await res.json();
@@ -47,6 +65,36 @@ async function rawFetch(path, options = {}) {
     message: body && body.message,
     errorCode: body && body.errorCode,
   };
+}
+
+async function handleGetApiOrigin() {
+  return {
+    ok: true,
+    apiOrigin: await getApiOrigin(),
+    defaultApiOrigin: API_BASE,
+    localApiOrigin: LOCAL_API_ORIGIN,
+  };
+}
+
+async function handleSetApiOrigin({ apiOrigin }) {
+  const normalized = normalizeApiOrigin(apiOrigin, API_BASE);
+  if (!normalized) return { ok: false, error: '接口地址无效' };
+
+  const pattern = toApiHostPattern(normalized);
+  if (!pattern || !(await chrome.permissions.contains({ origins: [pattern] }))) {
+    return { ok: false, error: '接口地址尚未获得浏览器授权' };
+  }
+
+  const current = await getApiOrigin();
+  if (normalized === current) {
+    return { ok: true, apiOrigin: normalized, changed: false, requiresLogin: false };
+  }
+
+  // 环境切换时清除旧环境令牌和供应商缓存，避免跨环境传递凭据或沿用错误配置。
+  await setLocal({ [API_ORIGIN_KEY]: normalized, [PROFILES_KEY]: DEFAULT_PROFILES });
+  await Promise.all([removeSession([ACCESS_KEY]), removeLocal([REFRESH_KEY])]);
+  await syncContentScripts();
+  return { ok: true, apiOrigin: normalized, changed: true, requiresLogin: true };
 }
 
 // 用 refreshToken 换取新令牌（不经过 withRefresh，避免递归刷新）
@@ -125,7 +173,7 @@ async function handleLogout() {
 }
 
 async function handleGetProfiles() {
-  const { [PROFILES_KEY]: storedConfig } = await getLocal(PROFILES_KEY);
+  const storedConfig = await migrateStoredProfiles();
   const storedValidation = validateProfiles(storedConfig);
   let config = storedValidation.valid
     ? {
@@ -159,6 +207,13 @@ async function handleGetProfiles() {
   return { ok: true, profiles: config.profiles, configVersion: config.configVersion, source };
 }
 
+async function migrateStoredProfiles() {
+  const { [PROFILES_KEY]: storedConfig } = await getLocal(PROFILES_KEY);
+  const migrated = migrateProfileConfig(storedConfig);
+  if (migrated !== storedConfig) await setLocal({ [PROFILES_KEY]: migrated });
+  return migrated;
+}
+
 async function handleRelease() {
   const res = await apiRequest('/api/react/v1/browser-extension/release', { method: 'GET' });
   if (!res.success) return { ok: false, error: res.message || res.errorCode || '获取版本失败' };
@@ -189,26 +244,62 @@ async function handlePurchaseCycles({ storeCode, supplierCode, itemNumber }) {
   return { ok: true, data: res.data };
 }
 
+async function handleStores() {
+  const res = await apiRequest('/api/react/v1/browser-extension/stores', { method: 'GET' });
+  if (!res.success) return { ok: false, error: res.message || res.errorCode || '门店获取失败' };
+  return { ok: true, data: res.data };
+}
+
+async function handleSupplierTopSales({ supplierCode, days }) {
+  if (!supplierCode) return { ok: false, error: '供应商代码缺失' };
+  const normalizedDays = Number(days) === 90 ? 90 : 60;
+  const res = await apiRequest('/api/react/v1/browser-extension/supplier-top-sales', {
+    method: 'POST',
+    body: JSON.stringify({ supplierCode, days: normalizedDays }),
+  });
+  if (!res.success) return { ok: false, error: res.message || res.errorCode || '热销排行获取失败' };
+  return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };
+}
+
+async function handleActiveSupplier() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch {
+    return { ok: true, supplier: null };
+  }
+  const href = tabs[0] && tabs[0].url;
+  if (!href) return { ok: true, supplier: null };
+
+  let url;
+  try {
+    url = new URL(href);
+  } catch {
+    return { ok: true, supplier: null };
+  }
+  const storedConfig = await migrateStoredProfiles();
+  const validation = validateProfiles(storedConfig);
+  const profile = validation.valid
+    ? matchProfile(validation.profiles, { origin: url.origin, pathname: url.pathname })
+    : null;
+  return {
+    ok: true,
+    supplier: profile
+      ? { supplierCode: profile.supplierCode, displayName: profile.displayName }
+      : null,
+  };
+}
+
 // 根据已授权 origin 同步动态内容脚本
 async function syncContentScripts() {
   const stored = await getLocal([GRANTED_KEY, PROFILES_KEY]);
   const granted = Array.isArray(stored[GRANTED_KEY]) ? stored[GRANTED_KEY] : [];
   const validation = validateProfiles(stored[PROFILES_KEY]);
-  const allowedOrigins = new Set(
-    (validation.valid ? validation.profiles : [])
-      .filter((profile) => profile.enabled !== false)
-      .flatMap((profile) => profile.origins || []),
+  const origins = await resolveGrantedProfileOrigins(
+    validation.valid ? validation.profiles : [],
+    (origin) => chrome.permissions.contains({ origins: [origin] }),
   );
-  const origins = [];
-  for (const origin of granted) {
-    if (!allowedOrigins.has(origin)) continue;
-    try {
-      if (await chrome.permissions.contains({ origins: [origin] })) origins.push(origin);
-    } catch {
-      // 权限已撤销或浏览器拒绝时不注册该域名。
-    }
-  }
-  if (origins.length !== granted.length) {
+  if (origins.length !== granted.length || origins.some((origin, index) => origin !== granted[index])) {
     await setLocal({ [GRANTED_KEY]: origins });
   }
   try {
@@ -281,12 +372,13 @@ chrome.runtime.onInstalled.addListener(async () => {
   } catch {
     // 某些环境不支持，忽略
   }
-  const { [PROFILES_KEY]: existing } = await getLocal(PROFILES_KEY);
+  const existing = await migrateStoredProfiles();
   if (!existing) await setLocal({ [PROFILES_KEY]: DEFAULT_PROFILES });
   await syncContentScripts();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  await migrateStoredProfiles();
   await syncContentScripts();
 });
 
@@ -296,6 +388,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (type) {
       case 'LOGIN':
         return handleLogin(message);
+      case 'GET_API_ORIGIN':
+        return handleGetApiOrigin();
+      case 'SET_API_ORIGIN':
+        return handleSetApiOrigin(message);
       case 'CURRENT':
         return handleCurrent();
       case 'LOGOUT':
@@ -308,6 +404,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return handleSummaryBatch(message);
       case 'PURCHASE_CYCLES':
         return handlePurchaseCycles(message);
+      case 'GET_STORES':
+        return handleStores();
+      case 'SUPPLIER_TOP_SALES':
+        return handleSupplierTopSales(message);
+      case 'ACTIVE_SUPPLIER':
+        return handleActiveSupplier();
       case 'REGISTER_ORIGIN':
         return handleRegisterOrigin(message);
       case 'OPEN_SIDE_PANEL':

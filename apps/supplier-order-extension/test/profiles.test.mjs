@@ -60,10 +60,51 @@ test('validateProfiles 拒绝非法 source / mountPosition / 缺失字段', () =
   );
 });
 
+test('仅允许 TXK 的精确 HTTP 站点，拒绝其他明文 HTTP 配置', () => {
+  const txk = {
+    ...validProfile,
+    supplierCode: 'SP2502280001',
+    displayName: 'TXK',
+    origins: ['http://txkorders.inzantsales.com/*'],
+    listPagePatterns: ['http://txkorders.inzantsales.com/shop*'],
+    cardSelector: '.single-product.grid-view',
+    itemNumber: {
+      source: 'text',
+      selector: '.sku',
+      attribute: null,
+      transforms: ['after-sku', 'trim', 'uppercase'],
+    },
+    mountSelector: '.price-box',
+  };
+
+  assert.equal(validateProfiles({ profiles: [txk] }).valid, true);
+  assert.equal(
+    validateProfiles({
+      profiles: [{ ...txk, origins: ['http://example.com/*'] }],
+    }).valid,
+    false,
+  );
+  for (const unsafeOrigin of [
+    'http://txkorders.inzantsales.com.evil.example/*',
+    'http://txkorders.inzantsales.com:8080/*',
+    'http://user@txkorders.inzantsales.com/*',
+  ]) {
+    assert.equal(
+      validateProfiles({ profiles: [{ ...txk, origins: [unsafeOrigin] }] }).valid,
+      false,
+      `必须拒绝 ${unsafeOrigin}`,
+    );
+  }
+  assert.equal(originMatchesAny(txk.origins, 'http://txkorders.inzantsales.com'), true);
+  assert.equal(originMatchesAny(txk.origins, 'http://evil.example.com'), false);
+});
+
 test('内置 DATS profile 通过校验', () => {
   const r = validateProfiles(DEFAULT_PROFILES);
   assert.equal(r.valid, true);
-  assert.equal(r.profiles[0].supplierCode, 'DATS');
+  assert.equal(DEFAULT_PROFILES.configVersion, '2');
+  assert.equal(r.profiles[0].supplierCode, '240');
+  assert.equal(r.profiles[0].displayName, 'DATS');
   assert.equal(r.profiles[0].mountPosition, 'afterend');
 });
 

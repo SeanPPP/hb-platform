@@ -3,16 +3,19 @@ import { safeTransformList } from './transforms.js';
 export const ALLOWED_SOURCES = new Set(['attribute', 'text']);
 export const ALLOWED_MOUNT_POSITIONS = new Set(['beforebegin', 'afterbegin', 'beforeend', 'afterend']);
 
-function isSafeHttpsPattern(value, originOnly = false) {
+const TXK_HTTP_PATTERN = /^http:\/\/txkorders\.inzantsales\.com(?<path>\/[^\s]*)$/i;
+
+function isSafeMatchPattern(value, originOnly = false) {
   if (typeof value !== 'string' || value.length === 0 || value.length > 300) return false;
-  const match = /^https:\/\/(?:\*\.)?[A-Za-z0-9.-]+(?::\d+)?(?<path>\/[^\s]*)$/.exec(value);
+  const match = /^https:\/\/(?:\*\.)?[A-Za-z0-9.-]+(?::\d+)?(?<path>\/[^\s]*)$/.exec(value)
+    || TXK_HTTP_PATTERN.exec(value);
   return !!match && (!originOnly || match.groups.path === '/*');
 }
 
 function isSafePagePattern(value) {
   return (
     (typeof value === 'string' && value.startsWith('/') && value.length <= 300)
-    || isSafeHttpsPattern(value)
+    || isSafeMatchPattern(value)
   );
 }
 
@@ -65,7 +68,7 @@ export function validateProfiles(raw) {
       errs.push('origins 必须为非空数组');
     } else {
       p.origins.forEach((o, j) => {
-        if (!isSafeHttpsPattern(o, true)) errs.push(`origins[${j}] 非法`);
+        if (!isSafeMatchPattern(o, true)) errs.push(`origins[${j}] 非法`);
       });
     }
     if (!Array.isArray(p.listPagePatterns)) {

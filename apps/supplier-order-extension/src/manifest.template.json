@@ -6,7 +6,12 @@
   "minimum_chrome_version": "116",
   "permissions": ["storage", "sidePanel", "scripting"],
   "host_permissions": ["__API_ORIGIN__/*"],
-  "optional_host_permissions": ["https://*/*"],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://txkorders.inzantsales.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
@@ -31,7 +36,7 @@
   "web_accessible_resources": [
     {
       "resources": ["lib/*", "config.js"],
-      "matches": ["https://*/*"]
+      "matches": ["https://*/*", "http://txkorders.inzantsales.com/*"]
     }
   ],
   "icons": {

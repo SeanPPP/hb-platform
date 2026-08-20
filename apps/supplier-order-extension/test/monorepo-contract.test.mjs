@@ -78,10 +78,26 @@ test('构建分别配置 HB Web 与 API 源，/shop 桥接不依赖 API 同源',
   assert.ok(manifest.includes('__API_ORIGIN__/*'));
 });
 
+test('供应商目录请求携带扩展版本，旧客户端可由后端安全降级', () => {
+  const worker = read('src/background/service-worker.js');
+  assert.ok(worker.includes("'X-HB-Extension-Version': EXTENSION_VERSION"));
+});
+
 test('供应商页注入按钮保留可见键盘焦点', () => {
   const list = read('src/content/list.js');
   assert.ok(list.includes('.hb-btn:focus-visible'));
   assert.ok(list.includes("attachShadow({ mode: 'closed' })"));
+});
+
+test('供应商页摘要按钮完整显示并自动换行', () => {
+  const list = read('src/content/list.js');
+  const buttonStyle = list.match(/'\.hb-btn\{([^']+)\}'/)?.[1] ?? '';
+
+  assert.ok(buttonStyle.includes('white-space:normal'));
+  assert.ok(buttonStyle.includes('overflow-wrap:anywhere'));
+  assert.ok(!buttonStyle.includes('white-space:nowrap'));
+  assert.ok(!buttonStyle.includes('text-overflow:ellipsis'));
+  assert.ok(!buttonStyle.includes('overflow:hidden'));
 });
 
 test('侧栏商品请求使用 generation guard，旧响应不能覆盖新商品', () => {
@@ -98,4 +114,88 @@ test('退出重试在请求闭包内重新读取旋转后的 refresh token', () 
   assert.ok(start >= 0 && end > start);
   assert.ok(logout.includes('authExecutor.withRefresh(async () =>'));
   assert.ok(logout.indexOf('authExecutor.withRefresh') < logout.indexOf('getRefreshToken()'));
+});
+
+test('侧栏提供远端和本地 5002 后端地址快捷设置', () => {
+  const html = read('src/sidepanel/sidepanel.html');
+  const sidepanel = read('src/sidepanel/sidepanel.js');
+  const worker = read('src/background/service-worker.js');
+  const manifest = read('src/manifest.template.json');
+
+  for (const id of ['apiOriginInput', 'apiRemoteBtn', 'apiLocalBtn', 'apiSaveBtn']) {
+    assert.ok(html.includes(`id="${id}"`), `侧栏缺少 ${id}`);
+  }
+  assert.ok(sidepanel.includes("type: 'GET_API_ORIGIN'"));
+  assert.ok(sidepanel.includes("type: 'SET_API_ORIGIN'"));
+  assert.ok(worker.includes("case 'GET_API_ORIGIN':"));
+  assert.ok(worker.includes("case 'SET_API_ORIGIN':"));
+  assert.ok(worker.includes('removeSession([ACCESS_KEY])'));
+  assert.ok(worker.includes('removeLocal([REFRESH_KEY])'));
+  assert.ok(manifest.includes('http://localhost/*'));
+  assert.ok(manifest.includes('http://127.0.0.1/*'));
+});
+
+test('TXK 明文 HTTP 权限仅开放给已核验的精确域名', () => {
+  const manifest = read('src/manifest.template.json');
+
+  assert.ok(manifest.includes('http://txkorders.inzantsales.com/*'));
+  assert.ok(!manifest.includes('"http://*/*"'));
+});
+
+test('Top 10% 商品图片、名称和货号完整显示并允许窄屏换行', () => {
+  const css = read('src/sidepanel/sidepanel.css');
+  const sidepanel = read('src/sidepanel/sidepanel.js');
+  const nameRule = css.match(/\.ranking-product strong\s*\{([^}]+)\}/)?.[1] ?? '';
+  const codeRule = css.match(/\.ranking-code\s*\{([^}]+)\}/)?.[1] ?? '';
+  const imageRule = css.match(/\.ranking-image\s*\{([^}]+)\}/)?.[1] ?? '';
+
+  assert.ok(!nameRule.includes('-webkit-line-clamp'));
+  assert.ok(!nameRule.includes('overflow: hidden'));
+  assert.ok(nameRule.includes('white-space: normal'));
+  assert.ok(codeRule.includes('white-space: normal'));
+  assert.ok(codeRule.includes('overflow-wrap: anywhere'));
+  assert.ok(!codeRule.includes('text-overflow: ellipsis'));
+  assert.ok(imageRule.includes('width: 72px'));
+  assert.ok(imageRule.includes('height: 72px'));
+  assert.ok(sidepanel.includes("placeholder.className = 'ranking-image-placeholder'"));
+  assert.ok(sidepanel.includes('placeholder.hidden = false'));
+});
+
+test('Top 10% 支持供应商自动与手动切换、均价和每页 50 条分页', () => {
+  const html = read('src/sidepanel/sidepanel.html');
+  const sidepanel = read('src/sidepanel/sidepanel.js');
+
+  for (const id of [
+    'rankingSupplierSelect',
+    'rankingPrevBtn',
+    'rankingPageInfo',
+    'rankingNextBtn',
+  ]) {
+    assert.ok(html.includes(`id="${id}"`), `排名区缺少 ${id}`);
+  }
+
+  assert.ok(sidepanel.includes('chrome.tabs.onActivated.addListener'));
+  assert.ok(sidepanel.includes('chrome.tabs.onUpdated.addListener'));
+  assert.ok(sidepanel.includes("el('rankingSupplierSelect').addEventListener('change'"));
+  assert.ok(sidepanel.includes('formatAverageSellingPrice(item.averageSellingPrice'));
+  assert.ok(sidepanel.includes('paginateRanking(items, rankingPage)'));
+  assert.ok(sidepanel.includes('const activeSupplierRequestGeneration = createGenerationGuard(0)'));
+  assert.ok(sidepanel.includes('activeSupplierRequestGeneration.isCurrent(requestGeneration)'));
+  assert.ok(sidepanel.includes("placeholder.value = ''"));
+});
+
+test('没有当前商品时仍可切换到商品记录空状态', () => {
+  const sidepanel = read('src/sidepanel/sidepanel.js');
+  const tabRenderStart = sidepanel.indexOf('function renderDataTabs()');
+  const tabRenderEnd = sidepanel.indexOf('async function copyText', tabRenderStart);
+  const tabClickStart = sidepanel.indexOf("el('historyTab').addEventListener");
+  const tabClickEnd = sidepanel.indexOf("el('rankingTab').addEventListener", tabClickStart);
+  const tabRender = sidepanel.slice(tabRenderStart, tabRenderEnd);
+  const tabClick = sidepanel.slice(tabClickStart, tabClickEnd);
+
+  assert.ok(tabRenderStart >= 0 && tabRenderEnd > tabRenderStart);
+  assert.ok(tabClickStart >= 0 && tabClickEnd > tabClickStart);
+  assert.ok(!tabRender.includes("el('historyTab').disabled = !hasHistory"));
+  assert.ok(!tabClick.includes('if (!currentItem) return'));
+  assert.ok(sidepanel.includes("t(locale, 'historyNoItem')"));
 });

@@ -406,6 +406,7 @@ export default function ShopLayout() {
             {t('shop.localSupplierInvoices')}
           </Link>
           <span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>
+          {isShopHomePage ? <SupplierOrderingExtensionEntry /> : null}
           <LanguageSwitch className="shop-top-language-switch" size="small" />
         </div>
       </div>
@@ -654,7 +655,6 @@ export default function ShopLayout() {
             action={<Space>{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
           />
         ) : null}
-        {isShopHomePage ? <SupplierOrderingExtensionEntry /> : null}
         <Outlet />
       </div>
 

@@ -1,12 +1,13 @@
 // 供应商列表页注入：MutationObserver + IntersectionObserver + WeakMap + generation guard，
 // 微批请求商品摘要并注入 shadow DOM 按钮，点击定位到侧栏采购周期。
 (async () => {
-  const [profilesMod, batchMod, transformsMod, stateMod, i18nMod] = await Promise.all([
+  const [profilesMod, batchMod, transformsMod, stateMod, i18nMod, recoveryMod] = await Promise.all([
     import(chrome.runtime.getURL('lib/profiles.js')),
     import(chrome.runtime.getURL('lib/batch.js')),
     import(chrome.runtime.getURL('lib/transforms.js')),
     import(chrome.runtime.getURL('lib/dats-state.js')),
     import(chrome.runtime.getURL('lib/i18n.js')),
+    import(chrome.runtime.getURL('lib/list-recovery.js')),
   ]);
   const { matchProfile } = profilesMod;
   const { createBatchQueue } = batchMod;
@@ -19,6 +20,12 @@
     normalizeSummaryMap,
   } = stateMod;
   const { normalizeLocale, t } = i18nMod;
+  const {
+    markSummaryRequestFailed,
+    needsHostRemount,
+    resetSummaryRetry,
+    shouldRequestVisibleSummary,
+  } = recoveryMod;
 
   const origin = location.origin;
 
@@ -87,7 +94,7 @@
     const root = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = [
-      '.hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;}',
       '.hb-btn:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}',
       '.hb-order{color:#c62828;font-weight:600;}',
       '.hb-sales{color:#1565c0;font-weight:600;}',
@@ -137,6 +144,7 @@
 
   function requestSummary(entry) {
     if (!active || entry.requested) return;
+    if (entry.state?.kind === 'loading') resetSummaryRetry(entry);
     entry.requested = true;
     const requestedGeneration = entry.generation;
     const requestedItemNumber = entry.itemNumber;
@@ -156,6 +164,7 @@
         const state = summary && summary.storeMissing
           ? { kind: 'noStore' }
           : computeButtonState(summary);
+        resetSummaryRetry(entry);
         entry.state = state;
         renderButton(entry, state);
       })
@@ -168,8 +177,8 @@
         ) {
           return;
         }
-        entry.state = { kind: 'error', reason: 'error' };
-        renderButton(entry, entry.state);
+        const state = markSummaryRequestFailed(entry);
+        renderButton(entry, state);
       });
   }
 
@@ -201,6 +210,21 @@
     },
   });
 
+  function attachEntryButton(entry) {
+    entry.host?.remove();
+    entry.card.querySelector('[data-hb-sro-host]')?.remove();
+    entry.host = mountHost(entry.card);
+    entry.btn = createShadowButton(entry.host);
+    entry.btn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({
+        type: 'LOCATE_ITEM',
+        storeCode: selectedStoreCode || null,
+        supplierCode: profile.supplierCode,
+        itemNumber: entry.itemNumber,
+      });
+    });
+  }
+
   function ensureCard(card) {
     const itemNumber = readItemNumber(card);
     const existing = registry.get(card);
@@ -216,33 +240,24 @@
 
     let entry = existing;
     if (!entry) {
-      // 扩展更新或脚本重载后，清理失去事件处理器的旧 host，再重新挂载。
-      card.querySelector('[data-hb-sro-host]')?.remove();
-      const host = mountHost(card);
-      const btn = createShadowButton(host);
       entry = {
         generation: generation.current(),
         card,
         itemNumber,
-        host,
-        btn,
+        host: null,
+        btn: null,
         state: { kind: 'loading' },
         requested: false,
         isVisible: false,
       };
+      // 扩展更新或脚本重载后，清理失去事件处理器的旧 host，再重新挂载。
+      attachEntryButton(entry);
       registry.set(card, entry);
       trackedCards.add(card);
-      btn.addEventListener('click', () => {
-        chrome.runtime.sendMessage({
-          type: 'LOCATE_ITEM',
-          storeCode: selectedStoreCode || null,
-          supplierCode: profile.supplierCode,
-          itemNumber: entry.itemNumber,
-        });
-      });
       if (visibilityObserver) visibilityObserver.observe(card);
     } else {
       entry.generation = generation.current();
+      if (needsHostRemount(entry)) attachEntryButton(entry);
       if (entry.itemNumber !== itemNumber) {
         entry.itemNumber = itemNumber;
         entry.requested = false;
@@ -251,6 +266,7 @@
       }
     }
     renderButton(entry, entry.state);
+    if (shouldRequestVisibleSummary(entry)) requestSummary(entry);
     return entry;
   }
 
@@ -294,7 +310,7 @@
         const entry = registry.get(e.target);
         if (!entry) continue;
         entry.isVisible = e.isIntersecting;
-        if (e.isIntersecting) requestSummary(entry);
+        if (e.isIntersecting && shouldRequestVisibleSummary(entry)) requestSummary(entry);
       }
     },
     { rootMargin: '600px' },
@@ -358,6 +374,7 @@
       if (entry) {
         entry.generation = generation.current();
         entry.requested = false;
+        entry.state = { kind: 'loading' };
       }
     }
     scan();

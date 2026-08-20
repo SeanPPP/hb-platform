@@ -239,10 +239,17 @@ public sealed class BrowserExtensionSqlBuilderTests
         );
 
         Assert.Contains("COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt)", query.Sql);
-        Assert.DoesNotContain("@Cutoff", query.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Cutoff", query.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            query.Parameters,
+            parameter => Equals(parameter.Value, new DateTime(2025, 8, 19))
+        );
         Assert.Contains("COALESCE(d.ItemNumber, p.ItemNumber)", query.Sql);
         Assert.Contains("COALESCE(h.IsDeleted, 0) = 0", query.Sql);
         Assert.Contains("COALESCE(d.IsDeleted, 0) = 0", query.Sql);
+        Assert.Contains("LEFT JOIN [StoreRetailPrice] storeProduct", query.Sql);
+        Assert.Contains("storeProduct.StoreCode", query.Sql);
+        Assert.Contains("storeProduct.SupplierCode", query.Sql);
         Assert.DoesNotContain("DROP TABLE", query.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(query.Parameters, parameter => Equals(parameter.Value, "ABC-1"));
         Assert.Contains("s.SupplierCode = @SupplierCode", query.Sql);
@@ -322,12 +329,160 @@ public sealed class BrowserExtensionControllerContractTests
 public sealed class BrowserExtensionProfileCatalogTests
 {
     [Fact]
+    public void Profiles_BrazcoSupportsCategoryHtmlPages()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        var brazco = Assert.Single(result.Profiles, profile => profile.SupplierCode == "243");
+        Assert.Contains("https://www.brazcoint.com.au/*.html*", brazco.ListPagePatterns);
+    }
+
+    [Fact]
+    public void Profiles_MnbSupportsCategoryHtmlPagesWithoutHyphens()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        var mnb = Assert.Single(result.Profiles, profile => profile.SupplierCode == "225");
+        Assert.Contains("https://www.mnb.com.au/*.html*", mnb.ListPagePatterns);
+    }
+
+    [Fact]
+    public void Profiles_MalmarSupportsProductsHtmCategoryPages()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        var malmar = Assert.Single(result.Profiles, profile => profile.SupplierCode == "227");
+        Assert.Contains("https://www.malmar.com.au/products/*.htm*", malmar.ListPagePatterns);
+    }
+
+    [Fact]
+    public void Profiles_MeteorPartySupportsCurrentCategoryTrees()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        var meteor = Assert.Single(result.Profiles, profile => profile.SupplierCode == "226");
+        Assert.Contains("https://www.meteorparty.com.au/Party*", meteor.ListPagePatterns);
+        Assert.Contains("https://www.meteorparty.com.au/Events*", meteor.ListPagePatterns);
+        Assert.Contains("https://www.meteorparty.com.au/Seasonal*", meteor.ListPagePatterns);
+        Assert.Contains("https://www.meteorparty.com.au/Tableware*", meteor.ListPagePatterns);
+        Assert.Contains("https://www.meteorparty.com.au/Candles*", meteor.ListPagePatterns);
+    }
+
+    [Fact]
+    public void Profiles_DefaultCatalogContainsAllSupportedSuppliers()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        Assert.Equal("6", result.ConfigVersion);
+        Assert.Equal(
+            new[] { "240", "243", "227", "226", "201", "203", "225", "218", "267", "236", "SP2502280001", "SP0101" },
+            result.Profiles.Select(profile => profile.SupplierCode)
+        );
+        Assert.Equal(
+            new[] { "DATS", "Brazco", "Malmar", "Meteor Party", "Yatsal", "Windragon", "MNB", "PJ SAS", "Jemark", "GFA", "TXK", "Boom Up" },
+            result.Profiles.Select(profile => profile.DisplayName)
+        );
+
+        var brazco = Assert.Single(result.Profiles, profile => profile.SupplierCode == "243");
+        Assert.Equal(new[] { "after-colon", "trim", "uppercase" }, brazco.ItemNumber.Transforms);
+
+        var yatsal = Assert.Single(result.Profiles, profile => profile.SupplierCode == "201");
+        Assert.Equal(
+            new[] { "https://yatsal.com.au/*", "https://www.yatsal.com.au/*" },
+            yatsal.Origins
+        );
+
+        var pjsas = Assert.Single(result.Profiles, profile => profile.SupplierCode == "218");
+        Assert.Equal(new[] { "https://www.pjsas.com.au/*" }, pjsas.Origins);
+        Assert.Equal(new[] { "after-colon", "trim", "uppercase" }, pjsas.ItemNumber.Transforms);
+
+        (string Code, string Card, string Source, string? Selector, string? Attribute, string Mount, string Pattern)[] expectedContracts =
+        {
+            ("243", ".product-listing-record", "text", ".product-listing-code", null, ".product-listing-code", "https://www.brazcoint.com.au/*.html*"),
+            ("227", "li.item-thumbs", "text", ".p-spec strong", null, ".p-spec", "https://www.malmar.com.au/Products.aspx*"),
+            ("226", ".facets-item-cell-grid[data-sku]", "attribute", null, "data-sku", ".facets-item-cell-grid-title", "https://www.meteorparty.com.au/balloons/*"),
+            ("201", ".product[data-product-code]", "attribute", null, "data-product-code", ".widget-productlist-code", "https://yatsal.com.au/*"),
+            ("203", "li.product", "text", ".sku", null, ".sku", "https://windragon.com.au/product-category/*"),
+            ("225", ".product-listing-record", "text", ".product-listing-code", null, ".product-listing-code", "https://www.mnb.com.au/*.html*"),
+            ("218", ".product-listing-record", "text", ".product-listing-code", null, ".product-listing-code", "https://www.pjsas.com.au/*.html*"),
+            ("267", "ul.products li.product", "text", ".model", null, ".model", "https://www.jemark.com.au/category/*"),
+            ("236", ".list-row[data-product]", "attribute", null, "data-product", ".content > a[href*='/product/view?id=']", "https://gfa.opmetrix.store/products/view*"),
+            ("SP2502280001", ".single-product.grid-view", "text", ".sku", null, ".price-box", "http://txkorders.inzantsales.com/shop*"),
+            ("SP0101", "main ul.products li.product", "text", ".custom_sku", null, "h2.woocommerce-loop-product__title", "https://boomup.com.au/shop*"),
+        };
+        foreach (var expected in expectedContracts)
+        {
+            var profile = Assert.Single(result.Profiles, item => item.SupplierCode == expected.Code);
+            Assert.Equal(expected.Card, profile.CardSelector);
+            Assert.Equal(expected.Source, profile.ItemNumber.Source);
+            Assert.Equal(expected.Selector, profile.ItemNumber.Selector);
+            Assert.Equal(expected.Attribute, profile.ItemNumber.Attribute);
+            Assert.Equal(expected.Mount, profile.MountSelector);
+            Assert.Contains(expected.Pattern, profile.ListPagePatterns);
+        }
+    }
+
+    [Theory]
+    [InlineData(null, 1)]
+    [InlineData("", 1)]
+    [InlineData("1.0.0", 1)]
+    [InlineData("1.1.0", 10)]
+    [InlineData("1.2.0", 12)]
+    [InlineData("2.0.0", 12)]
+    public void Profiles_FilterForClientProtectsLegacyExtensions(
+        string? extensionVersion,
+        int expectedCount
+    )
+    {
+        var all = BrowserExtensionProfileCatalog.BuildProfiles(new BrowserExtensionOptions());
+
+        var result = BrowserExtensionProfileCatalog.FilterProfilesForClient(all, extensionVersion);
+
+        Assert.Equal(expectedCount, result.Profiles.Count);
+        Assert.Equal("240", result.Profiles[0].SupplierCode);
+        Assert.DoesNotContain(
+            result.Profiles.SelectMany(profile => profile.ItemNumber.Transforms),
+            transform => transform == "after-colon" && expectedCount == 1
+        );
+        if (expectedCount < 12)
+        {
+            Assert.DoesNotContain(result.Profiles, profile => profile.SupplierCode == "236");
+            Assert.DoesNotContain(result.Profiles, profile => profile.SupplierCode == "SP2502280001");
+        }
+        if (expectedCount == 10)
+        {
+            Assert.Equal(
+                new[] { "240", "243", "227", "226", "201", "203", "225", "218", "267", "SP0101" },
+                result.Profiles.Select(profile => profile.SupplierCode)
+            );
+        }
+    }
+
+    [Fact]
+    public void Profiles_ConfiguredDisabledRuleSuppressesMatchingBuiltInSupplier()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(
+            new BrowserExtensionOptions
+            {
+                SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
+                {
+                    new() { SupplierCode = "243", Enabled = false },
+                },
+            }
+        );
+
+        Assert.DoesNotContain(result.Profiles, profile => profile.SupplierCode == "243");
+        Assert.Equal(11, result.Profiles.Count);
+    }
+
+    [Fact]
     public void Profiles_CanDisableBuiltInDatsWithoutPublishingExtension()
     {
         var result = BrowserExtensionProfileCatalog.BuildProfiles(
             new BrowserExtensionOptions
             {
                 UseBuiltInDatsProfile = false,
+                UseBuiltInSupplierProfiles = false,
                 SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>(),
             }
         );
@@ -336,10 +491,11 @@ public sealed class BrowserExtensionProfileCatalogTests
     }
 
     [Fact]
-    public void Profiles_OnlyReturnEnabledDeclarativeHttpsConfiguration()
+    public void Profiles_OnlyReturnEnabledDeclarativeConfiguration()
     {
         var options = new BrowserExtensionOptions
         {
+            UseBuiltInSupplierProfiles = false,
             SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
             {
                 BrowserExtensionSupplierProfileOptions.CreateDatsDefault(),
@@ -370,8 +526,107 @@ public sealed class BrowserExtensionProfileCatalogTests
         var result = BrowserExtensionProfileCatalog.BuildProfiles(options);
 
         var profile = Assert.Single(result.Profiles);
-        Assert.Equal("DATS", profile.SupplierCode);
+        Assert.Equal("240", profile.SupplierCode);
+        Assert.Equal("DATS", profile.DisplayName);
         Assert.Equal(new[] { "trim", "uppercase" }, profile.ItemNumber.Transforms);
+    }
+
+    [Fact]
+    public void Profiles_OnlyAllowExactTxkHttpOrigin()
+    {
+        BrowserExtensionSupplierProfileOptions TxkWithOrigin(string origin) =>
+            new()
+            {
+                SupplierCode = "SP2502280001",
+                DisplayName = "TXK",
+                Origins = new List<string> { origin },
+                ListPagePatterns = new List<string> { origin.Replace("/*", "/shop*") },
+                CardSelector = ".single-product.grid-view",
+                ItemNumberSource = "text",
+                ItemNumberSelector = ".sku",
+                ItemNumberTransforms = new List<string> { "after-sku", "trim", "uppercase" },
+                MountSelector = ".price-box",
+            };
+
+        var accepted = BrowserExtensionProfileCatalog.BuildProfiles(
+            new BrowserExtensionOptions
+            {
+                UseBuiltInDatsProfile = false,
+                UseBuiltInSupplierProfiles = false,
+                SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
+                {
+                    TxkWithOrigin("http://txkorders.inzantsales.com/*"),
+                },
+            }
+        );
+        var rejected = BrowserExtensionProfileCatalog.BuildProfiles(
+            new BrowserExtensionOptions
+            {
+                UseBuiltInDatsProfile = false,
+                UseBuiltInSupplierProfiles = false,
+                SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
+                {
+                    TxkWithOrigin("http://example.com/*"),
+                },
+            }
+        );
+
+        var profile = Assert.Single(accepted.Profiles);
+        Assert.Equal(new[] { "after-sku", "trim", "uppercase" }, profile.ItemNumber.Transforms);
+        Assert.Empty(rejected.Profiles);
+
+        foreach (
+            var unsafeOrigin in new[]
+            {
+                "http://txkorders.inzantsales.com.evil.example/*",
+                "http://txkorders.inzantsales.com:8080/*",
+                "http://user@txkorders.inzantsales.com/*",
+            }
+        )
+        {
+            var unsafeResult = BrowserExtensionProfileCatalog.BuildProfiles(
+                new BrowserExtensionOptions
+                {
+                    UseBuiltInDatsProfile = false,
+                    UseBuiltInSupplierProfiles = false,
+                    SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
+                    {
+                        TxkWithOrigin(unsafeOrigin),
+                    },
+                }
+            );
+            Assert.Empty(unsafeResult.Profiles);
+        }
+    }
+
+    [Fact]
+    public void Profiles_ConfiguredDatsBusinessCodeOverridesBuiltInProfile()
+    {
+        var result = BrowserExtensionProfileCatalog.BuildProfiles(
+            new BrowserExtensionOptions
+            {
+                UseBuiltInSupplierProfiles = false,
+                SupplierProfiles = new List<BrowserExtensionSupplierProfileOptions>
+                {
+                    new()
+                    {
+                        SupplierCode = "240",
+                        DisplayName = "Configured DATS",
+                        Origins = new List<string> { "https://www.dats.com.au/*" },
+                        ListPagePatterns = new List<string> { "https://www.dats.com.au/office-stationery*" },
+                        CardSelector = ".configured-product",
+                        ItemNumberSource = "attribute",
+                        ItemNumberAttribute = "data-product-code",
+                        MountSelector = ".configured-code",
+                    },
+                },
+            }
+        );
+
+        var profile = Assert.Single(result.Profiles);
+        Assert.Equal("240", profile.SupplierCode);
+        Assert.Equal("Configured DATS", profile.DisplayName);
+        Assert.Equal(".configured-product", profile.CardSelector);
     }
 
     [Fact]

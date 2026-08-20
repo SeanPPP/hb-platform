@@ -15,3 +15,31 @@ test('t 语言区分与回退', () => {
   assert.notEqual(t('zh', 'login'), t('en', 'login'));
   assert.equal(t('zh', 'missing.key.xyz'), 'missing.key.xyz');
 });
+
+test('后端接口设置提供完整中英文文案', () => {
+  for (const key of [
+    'apiTitle',
+    'apiRemote',
+    'apiLocal',
+    'apiApply',
+    'apiHint',
+    'apiSaved',
+    'apiSwitched',
+    'apiInvalid',
+    'apiPermissionDenied',
+  ]) {
+    assert.equal(typeof t('zh', key), 'string', `zh.${key}`);
+    assert.equal(typeof t('en', key), 'string', `en.${key}`);
+    assert.notEqual(t('zh', key), key, `zh.${key}`);
+    assert.notEqual(t('en', key), key, `en.${key}`);
+  }
+});
+
+test('供应商折叠控件提供完整中英文文案', () => {
+  for (const key of ['supplierExpand', 'supplierCollapse', 'supplierCollapsedHint']) {
+    assert.equal(typeof t('zh', key), 'string', `zh.${key}`);
+    assert.equal(typeof t('en', key), 'string', `en.${key}`);
+    assert.notEqual(t('zh', key), key, `zh.${key}`);
+    assert.notEqual(t('en', key), key, `en.${key}`);
+  }
+});

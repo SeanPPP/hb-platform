@@ -25,10 +25,16 @@ assert.ok(
 const preorderGateIndex = layout.indexOf('showPreorderGateAlert ? (')
 const entryIndex = layout.indexOf('<SupplierOrderingExtensionEntry />')
 const outletIndex = layout.indexOf('<Outlet />')
+const desktopLogoutIndex = layout.indexOf("<span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>")
+const desktopLanguageIndex = layout.indexOf('<LanguageSwitch className="shop-top-language-switch"')
 assert.ok(preorderGateIndex >= 0, '预订拦截提示块必须存在')
 assert.ok(entryIndex >= 0, '扩展入口必须存在')
-assert.ok(outletIndex > entryIndex, '扩展入口必须位于 Outlet 之前')
-assert.ok(preorderGateIndex < entryIndex, '扩展入口必须位于预订拦截提示之后')
+assert.ok(desktopLogoutIndex >= 0, '桌面端退出登录入口必须存在')
+assert.ok(desktopLanguageIndex >= 0, '桌面端语言切换必须存在')
+assert.ok(desktopLogoutIndex < entryIndex, '扩展入口必须位于桌面端退出登录之后')
+assert.ok(entryIndex < desktopLanguageIndex, '扩展入口必须位于桌面端语言切换之前')
+assert.ok(entryIndex < preorderGateIndex, '扩展入口不得继续渲染在商品内容区')
+assert.ok(outletIndex > preorderGateIndex, 'Outlet 必须保留在预订拦截提示之后')
 
 const requiredI18nKeys = [
   'name',

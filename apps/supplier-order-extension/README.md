@@ -1,6 +1,6 @@
 # HB Supplier Order 扩展
 
-Chrome / Edge Manifest V3 扩展，在供应商列表页（内置 DATS）为每个商品注入“上次订货日期/数量、至今销量”按钮，点击在侧栏查看该商品 12 个月内最多 6 次采购周期（订货/销售混排）。
+Chrome / Edge Manifest V3 扩展，在已配置的供应商列表页为每个商品注入“上次订货日期/数量、至今销量”按钮，点击在侧栏查看该商品 12 个月内最多 6 次采购周期（订货/销售混排）。
 
 ## 目录
 
@@ -41,21 +41,29 @@ npm run build
 
 加载后：
 
-1. 点击扩展图标打开侧栏，登录 HB 账号。
-2. 若当前用户返回了 `stores`，选择门店；否则手动输入门店编码并保存。
-3. 在“供应商”列表对 DATS origin 点击“授权”（需用户手势，仅申请该供应商 origin 的可选权限）。
-4. 打开 `https://www.dats.com.au/` 的列表页，商品卡片下方会出现按钮；点击按钮在侧栏定位到该 `supplierCode/itemNumber`。
+1. 点击扩展图标打开侧栏，在“后端接口”中选择“远端 /”或“本地 5002”；也可以填写自定义 HTTPS origin。
+2. 登录 HB 账号。
+3. 若当前用户返回了 `stores`，选择门店；否则手动输入门店编码并保存。
+4. 在“供应商”列表对 DATS origin 点击“授权”（需用户手势，仅申请该供应商 origin 的可选权限）。
+5. 打开 `https://www.dats.com.au/` 的列表页，商品卡片下方会出现按钮；点击按钮在侧栏定位到该 `supplierCode/itemNumber`。
+
+后端接口快捷设置：
+
+- “远端 /”恢复到构建时的 `HB_API_ORIGIN`，正式构建默认为 `https://hotbargain.vip`。
+- “本地 5002”使用 `http://localhost:5002`，首次选择时浏览器会请求 localhost 可选权限。
+- 自定义地址只接受 HTTPS origin；本机调试额外允许 `localhost` 或 `127.0.0.1` HTTP，不能包含路径、查询、片段或用户名密码。
+- 接口地址发生变化时，扩展会清除当前 access/refresh token 和供应商配置缓存，必须在新环境重新登录，避免跨环境传递凭据。
 
 ## 权限边界
 
 - `host_permissions` 仅包含 HB API 正式源；`/shop` 桥接脚本仅注入 HB Web 正式源。
-- `optional_host_permissions` 为 `https://*/*`，仅在侧栏用户手势下逐供应商 origin 申请。
-- 配置只解释声明式 selector / attribute / text，以及 `trim` / `uppercase` / `lowercase` 三类 transform；绝不 `eval` / `Function` / 远程 JS。
+- `optional_host_permissions` 默认覆盖 HTTPS 供应商；TXK 因现站仅提供 HTTP，额外只允许精确的 `http://txkorders.inzantsales.com/*`，仍需在侧栏由用户逐供应商授权。
+- 配置只解释声明式 selector / attribute / text，以及内置固定 transform（包括 GFA 的下划线转斜线、TXK 的固定 SKU 前缀提取）；绝不 `eval` / `Function` / 后台任意正则 / 远程 JS。
 - access token 存 `chrome.storage.session`，refresh token 存 `chrome.storage.local`，不保存密码。
 
 ## 构建与双包
 
-`build.mjs` 生成 `dist/chrome` 与 `dist/edge`，两者 manifest `version` 相同（1.0.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
+`build.mjs` 生成 `dist/chrome` 与 `dist/edge`，两者 manifest `version` 相同（当前 1.2.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
 
 ```bash
 HB_API_ORIGIN=https://staging.example.com npm run build
@@ -69,13 +77,13 @@ HB_WEB_ORIGIN=https://staff.example.com HB_API_ORIGIN=https://api.example.com np
 参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、两个隐藏商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
 
 ```bash
-BrowserExtension__LatestVersion=1.0.1
-BrowserExtension__MinimumVersion=1.0.0
+BrowserExtension__LatestVersion=1.2.0
+BrowserExtension__MinimumVersion=1.1.0
 BrowserExtension__ChromeStoreUrl=https://chromewebstore.google.com/detail/...
 BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail/...
 ```
 
-紧急停用内置 DATS 时将 `UseBuiltInDatsProfile` 设为 `false` 并递增 `ConfigVersion`；扩展下一次同步配置后会移除该域名脚本，无需发新版。
+紧急停用内置 DATS 时将 `UseBuiltInDatsProfile` 设为 `false`；停用其余内置供应商时将 `UseBuiltInSupplierProfiles` 设为 `false`。单个供应商也可在 `SupplierProfiles` 中用相同 `SupplierCode` 配置 `Enabled: false` 覆盖。每次变更后递增 `ConfigVersion`，扩展下一次同步配置后会移除对应域名脚本，无需发新版。
 
 ## 发布
 
@@ -96,7 +104,7 @@ BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail
 
 ## 版本与更新策略
 
-- 普通供应商（仅新增 `supplierCode/displayName/origins/选择器` 等声明式配置）通过服务端 `GET /api/react/v1/browser-extension/supplier-profiles` 下发，**无需发布新版**；扩展内置 DATS 默认 profile，服务端不可用时回退内置默认。
+- 普通供应商（仅新增 `supplierCode/displayName/origins/选择器` 等声明式配置）通过服务端 `GET /api/react/v1/browser-extension/supplier-profiles` 下发，**无需发布新版**；当前后端默认目录包含 DATS、Brazco、Malmar、Meteor Party、Yatsal、Windragon、MNB、PJ SAS、Jemark、GFA、TXK 和 Boom Up，扩展离线回退仍只保留 DATS。
 - 需要新增特殊逻辑（新的解析行为、交互或 API 契约变化）时，才需要修改扩展代码并发布新版。
 - 双包始终保持同一版本号（`build.mjs` 会校验）。
 

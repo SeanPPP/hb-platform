@@ -78,6 +78,26 @@ public sealed class BrowserExtensionAccessService : IBrowserExtensionAccessServi
             ) == true;
     }
 
+    public async Task<IReadOnlyList<string>> GetRelatedStoreCodesAsync(ClaimsPrincipal user)
+    {
+        if (user.Identity?.IsAuthenticated != true)
+        {
+            return Array.Empty<string>();
+        }
+
+        var userGuid = user.FindFirst("userId")?.Value
+            ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrWhiteSpace(userGuid))
+        {
+            return Array.Empty<string>();
+        }
+
+        var stores = await _userService.GetUserStoresAsync(userGuid);
+        return stores.Success
+            ? BrowserExtensionStoreSelection.NormalizeRelatedStoreCodes(stores.Data)
+            : Array.Empty<string>();
+    }
+
     private async Task<bool> HasPermissionAsync(ClaimsPrincipal user, string permission)
     {
         var result = await _authorizationService.AuthorizeAsync(user, null, permission);

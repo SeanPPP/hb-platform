@@ -1,37 +1,45 @@
-/* 供应商下单助手安装入口：独立 scoped CSS，前缀 soe- 避免污染商城全局样式。 */
+/* 供应商下单助手入口：独立 scoped CSS，前缀 soe- 避免污染商城全局样式。 */
 
 .soe-entry {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  max-width: 1320px;
-  margin: 12px auto 0;
-  padding: 10px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+  flex: 0 0 auto;
 }
 
-.soe-entry-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  background: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
+.soe-entry-trigger.ant-btn {
+  height: 24px;
+  padding-inline: 8px;
+  border-color: #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+  color: #333;
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.soe-entry-trigger.ant-btn:hover,
+.soe-entry-trigger.ant-btn:focus-visible {
+  border-color: #6f3cc3;
+  background: #f7f3ff;
+  color: #5f2cab;
+}
+
+.soe-entry-trigger.ant-btn:focus-visible {
+  outline: 2px solid rgb(111 60 195 / 24%);
+  outline-offset: 2px;
+}
+
+.soe-entry-trigger-label,
+.shop-top-bar .shop-shell .soe-entry-trigger-label:hover {
   color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .soe-entry-dot {
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: #9ca3af;
@@ -50,41 +58,8 @@
 .soe-entry-dot--checking { background: #2563eb; animation: soe-pulse 1.2s ease-in-out infinite; }
 .soe-entry-dot--missing { background: #9ca3af; }
 
-.soe-entry-name { font-weight: 600; color: #111827; white-space: nowrap; }
-.soe-entry-status { color: #4b5563; }
-.soe-entry--optional .soe-entry-status { color: #b45309; }
-.soe-entry--forced .soe-entry-status { color: #dc2626; font-weight: 600; }
-.soe-entry-version { color: #6b7280; font-size: 12px; white-space: nowrap; }
-.soe-entry-action {
-  margin-left: auto;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.soe-entry-recheck {
-  flex: 0 0 auto;
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #374151;
-  border-radius: 8px;
-  padding: 5px 10px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-}
-
-.soe-entry-recheck:hover { border-color: #2563eb; color: #2563eb; }
-
-.soe-entry-main:focus-visible,
-.soe-entry-recheck:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 2px;
-}
+.soe-entry--optional .soe-entry-trigger { color: #b45309; }
+.soe-entry--forced .soe-entry-trigger { border-color: #fecaca; color: #dc2626; font-weight: 600; }
 
 .soe-dialog-status {
   display: flex;
@@ -96,6 +71,7 @@
 .soe-dialog-status-text { font-weight: 600; color: #111827; }
 .soe-dialog-version { color: #6b7280; font-size: 12px; margin-left: auto; }
 .soe-dialog-browser { color: #9ca3af; font-size: 12px; }
+.soe-dialog-recheck { flex: 0 0 auto; }
 
 .soe-install-list { display: grid; gap: 10px; margin-bottom: 14px; }
 
@@ -146,19 +122,6 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 @keyframes soe-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
-}
-
-@media (max-width: 720px) {
-  .soe-entry {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    margin: 8px 12px 0;
-  }
-
-  .soe-entry-main { flex-wrap: wrap; }
-  .soe-entry-action { margin-left: 19px; }
-  .soe-entry-recheck { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

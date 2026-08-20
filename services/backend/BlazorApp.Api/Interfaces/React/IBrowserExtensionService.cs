@@ -14,4 +14,12 @@ public interface IBrowserExtensionService
     Task<BrowserExtensionPurchaseCyclesDto> GetPurchaseCyclesAsync(
         BrowserExtensionPurchaseCyclesRequestDto request
     );
+
+    Task<BrowserExtensionStoreOptionsDto> GetEnabledStoresAsync(
+        IReadOnlyCollection<string> relatedStoreCodes
+    );
+
+    Task<BrowserExtensionSupplierTopSalesDto> GetSupplierTopSalesAsync(
+        BrowserExtensionSupplierTopSalesRequestDto request
+    );
 }

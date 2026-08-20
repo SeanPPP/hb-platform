@@ -1,6 +1,6 @@
 {
   "name": "hb-supplier-order-extension",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "HB Supplier Order Chrome/Edge Manifest V3 extension",

@@ -182,6 +182,9 @@ export default function SupplierOrderingExtensionEntry() {
         : isOptional
           ? t('supplierOrderingExtension.statusOptionalUpdate', { version: release?.latestVersion })
           : t('supplierOrderingExtension.statusInstalled', { version: installedVersion })
+  const triggerLabel = !checking && !installed
+    ? t('supplierOrderingExtension.installAssistant')
+    : statusLabel
 
   const noteLang = i18n.language?.startsWith('zh') ? 'zh' : 'en'
   const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''
@@ -238,9 +241,9 @@ export default function SupplierOrderingExtensionEntry() {
 
   return (
     <div className={`soe-entry soe-entry--${tone}`}>
-      <button
-        type="button"
-        className="soe-entry-main"
+      <Button
+        size="small"
+        className="soe-entry-trigger"
         onClick={() => {
           setOpenError(null)
           setDialogOpen(true)
@@ -249,15 +252,8 @@ export default function SupplierOrderingExtensionEntry() {
         aria-expanded={dialogOpen}
       >
         <span className="soe-entry-dot" aria-hidden="true" />
-        <span className="soe-entry-name">{t('supplierOrderingExtension.name')}</span>
-        <span className="soe-entry-status">{statusLabel}</span>
-        {!checking && !installed ? (
-          <span className="soe-entry-action">{t('supplierOrderingExtension.installAssistant')}</span>
-        ) : null}
-      </button>
-      <button type="button" className="soe-entry-recheck" onClick={runHandshake}>
-        {t('supplierOrderingExtension.recheck')}
-      </button>
+        <span className="soe-entry-trigger-label">{triggerLabel}</span>
+      </Button>
 
       <Modal
         className="soe-dialog"
@@ -277,6 +273,9 @@ export default function SupplierOrderingExtensionEntry() {
           {installedBrowser ? (
             <span className="soe-dialog-browser">{installedBrowser}</span>
           ) : null}
+          <Button size="small" className="soe-dialog-recheck" onClick={runHandshake}>
+            {t('supplierOrderingExtension.recheck')}
+          </Button>
         </div>
 
         {isMobile ? (
