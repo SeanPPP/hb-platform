@@ -630,6 +630,20 @@ public sealed class BrowserExtensionProfileCatalogTests
     }
 
     [Fact]
+    public void Release_DefaultsExposePublishedEdgeHiddenStoreLinkOnly()
+    {
+        var release = BrowserExtensionProfileCatalog.BuildRelease(new BrowserExtensionOptions());
+
+        Assert.Equal("1.2.0", release.LatestVersion);
+        Assert.Equal("1.1.0", release.MinimumVersion);
+        Assert.Empty(release.ChromeStoreUrl);
+        Assert.Equal(
+            "https://microsoftedge.microsoft.com/addons/detail/eeggjfaljfdkoanlaonfiodmljkmpfhn",
+            release.EdgeStoreUrl
+        );
+    }
+
+    [Fact]
     public void Release_StripsNonHttpsStoreLinksAndInvalidVersions()
     {
         var release = BrowserExtensionProfileCatalog.BuildRelease(

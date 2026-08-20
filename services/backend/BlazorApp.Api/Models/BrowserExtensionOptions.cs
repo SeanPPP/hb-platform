@@ -7,7 +7,8 @@ public sealed class BrowserExtensionOptions
     public string LatestVersion { get; set; } = "1.2.0";
     public string MinimumVersion { get; set; } = "1.1.0";
     public string ChromeStoreUrl { get; set; } = string.Empty;
-    public string EdgeStoreUrl { get; set; } = string.Empty;
+    public string EdgeStoreUrl { get; set; } =
+        "https://microsoftedge.microsoft.com/addons/detail/eeggjfaljfdkoanlaonfiodmljkmpfhn";
     public string ReleaseNotesZh { get; set; } = "新增 Jemark、GFA、TXK 和 Boom Up 供应商支持";
     public string ReleaseNotesEn { get; set; } = "Adds Jemark, GFA, TXK and Boom Up supplier support";
     public string ConfigVersion { get; set; } = "6";
