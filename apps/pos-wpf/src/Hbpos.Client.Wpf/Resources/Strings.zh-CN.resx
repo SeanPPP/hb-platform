@@ -2200,6 +2200,15 @@
   <data name="linkly.local.test.exception" xml:space="preserve">
     <value>Linkly 连接失败：{0}</value>
   </data>
+  <data name="linkly.local.logon.connectionFailed" xml:space="preserve"><value>Linkly EFT-Client 连接失败。</value></data>
+  <data name="linkly.local.logon.requestFailed" xml:space="preserve"><value>无法发送 Linkly 银行网络登录请求。</value></data>
+  <data name="linkly.local.logon.success" xml:space="preserve"><value>Linkly 刷卡机已登录银行网络。</value></data>
+  <data name="linkly.local.logon.failed" xml:space="preserve"><value>Linkly 银行网络登录失败：{0}（{1}）。</value></data>
+  <data name="linkly.local.logon.timeout" xml:space="preserve"><value>Linkly 银行网络登录超时。</value></data>
+  <data name="linkly.local.logon.exception" xml:space="preserve"><value>Linkly 银行网络登录失败：{0}</value></data>
+  <data name="linkly.local.logon.cancelled" xml:space="preserve"><value>Linkly 银行网络登录已取消。</value></data>
+  <data name="linkly.local.logon.cancelledUnknown" xml:space="preserve"><value>Linkly 银行网络登录已取消，结果未知。</value></data>
+  <data name="linkly.local.logon.outcomeUnknown" xml:space="preserve"><value>Linkly 银行网络登录结果未知，请先检查刷卡机再重试。</value></data>
   <data name="linkly.local.amountMustBePositive" xml:space="preserve">
     <value>刷卡金额必须大于零。</value>
   </data>

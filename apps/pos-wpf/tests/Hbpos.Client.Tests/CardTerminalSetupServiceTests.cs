@@ -12,6 +12,30 @@ public sealed class CardTerminalSetupServiceTests
     private const string LocalToken = "opaque-local-setup-token";
 
     [Fact]
+    public async Task LogonLinklyAsync_delegates_to_local_terminal_client()
+    {
+        var expected = new LinklyLogonResult(true, "logged on", "00", "APPROVED");
+        var linklyClient = new FakeLinklyTerminalClient { LogonResult = expected };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            new FakeSquareTerminalSetupClient(),
+            linklyClient);
+        using var cancellationTokenSource = new CancellationTokenSource();
+
+        var result = await service.LogonLinklyAsync(
+            "192.168.1.10",
+            2011,
+            TimeSpan.FromSeconds(45),
+            cancellationTokenSource.Token);
+
+        Assert.Same(expected, result);
+        Assert.Equal("192.168.1.10", linklyClient.LastLogonHost);
+        Assert.Equal(2011, linklyClient.LastLogonPort);
+        Assert.Equal(TimeSpan.FromSeconds(45), linklyClient.LastLogonTimeout);
+        Assert.Equal(cancellationTokenSource.Token, linklyClient.LastLogonCancellationToken);
+    }
+
+    [Fact]
     public async Task GetSquareAccessTokenAsync_returns_null_without_reading_local_store()
     {
         var store = new FakeCardTerminalSettingsStore();
@@ -867,6 +891,16 @@ public sealed class CardTerminalSetupServiceTests
 
     private sealed class FakeLinklyTerminalClient : ILinklyTerminalClient
     {
+        public LinklyLogonResult LogonResult { get; init; } = new(false);
+
+        public string? LastLogonHost { get; private set; }
+
+        public int? LastLogonPort { get; private set; }
+
+        public TimeSpan? LastLogonTimeout { get; private set; }
+
+        public CancellationToken LastLogonCancellationToken { get; private set; }
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             string host,
             int port,
@@ -874,6 +908,19 @@ public sealed class CardTerminalSetupServiceTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new LinklyConnectionTestResult(false));
+        }
+
+        public Task<LinklyLogonResult> LogonAsync(
+            string host,
+            int port,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            LastLogonHost = host;
+            LastLogonPort = port;
+            LastLogonTimeout = timeout;
+            LastLogonCancellationToken = cancellationToken;
+            return Task.FromResult(LogonResult);
         }
 
         public Task<PaymentAuthorizationResult> PurchaseAsync(

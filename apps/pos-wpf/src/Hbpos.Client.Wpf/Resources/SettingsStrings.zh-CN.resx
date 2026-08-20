@@ -81,6 +81,11 @@
   <data name="settings.linkly.localIp.portInvalid" xml:space="preserve"><value>请输入 1 到 65535 之间的 Linkly 端口。</value></data>
   <data name="settings.linkly.localIp.timeoutInvalid" xml:space="preserve"><value>请输入大于 0 秒的 Linkly 超时时间。</value></data>
   <data name="settings.linkly.localIp.testing" xml:space="preserve"><value>正在检测 Linkly LocalIp {0}:{1}...</value></data>
+  <data name="settings.linkly.localIp.logon" xml:space="preserve"><value>登录银行网络</value></data>
+  <data name="settings.linkly.localIp.loggingOn" xml:space="preserve"><value>正在通过 Linkly LocalIp {0}:{1} 登录银行网络...</value></data>
+  <data name="settings.linkly.localIp.logonSuccess" xml:space="preserve"><value>Linkly 刷卡机已登录银行网络。</value></data>
+  <data name="settings.linkly.localIp.logonFailed" xml:space="preserve"><value>Linkly 银行网络登录失败，请检查刷卡机后重试。</value></data>
+  <data name="settings.linkly.localIp.logonUnknown" xml:space="preserve"><value>Linkly 银行网络登录结果未知，请先检查刷卡机再重试。</value></data>
   <data name="settings.linkly.test.configurationChanged" xml:space="preserve"><value>检测期间 Linkly 设置已更改，请重新测试当前设置。</value></data>
   <data name="settings.linkly.cloudDirect.title" xml:space="preserve"><value>Cloud 直连同步</value></data>
   <data name="settings.linkly.cloudDirect.description" xml:space="preserve"><value>在本机保存 Cloud API 测试账号，完成刷卡机配对后测试直连 Cloud。该模式仅返回交易状态结果。</value></data>

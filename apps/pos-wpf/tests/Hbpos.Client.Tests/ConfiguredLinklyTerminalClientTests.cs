@@ -8,6 +8,27 @@ namespace Hbpos.Client.Tests;
 public sealed class ConfiguredLinklyTerminalClientTests
 {
     [Fact]
+    public async Task LogonAsync_uses_only_local_linkly_client()
+    {
+        var localFactory = new FakeLinklyEftClientFactory();
+        var cloud = new FakeCloudTerminalClient();
+        var backend = new FakeBackendTerminalClient();
+        var client = new ConfiguredLinklyTerminalClient(
+            new LinklyTerminalClient(localFactory),
+            cloud,
+            backend);
+
+        var result = await client.LogonAsync("192.168.1.10", 2011, TimeSpan.FromSeconds(30));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, localFactory.Client.ConnectCallCount);
+        Assert.Equal("192.168.1.10", localFactory.Client.LastHost);
+        Assert.Equal(2011, localFactory.Client.LastPort);
+        Assert.Equal(0, cloud.PurchaseCallCount);
+        Assert.Equal(0, backend.PurchaseCallCount);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_routes_local_ip_mode_to_local_linkly_client()
     {
         var localFactory = new FakeLinklyEftClientFactory();
@@ -665,6 +686,12 @@ public sealed class ConfiguredLinklyTerminalClientTests
 
         public int ConnectCallCount { get; private set; }
 
+        public string? LastHost { get; private set; }
+
+        public int? LastPort { get; private set; }
+
+        public EFTRequest? LastRequest { get; private set; }
+
         public Task<bool> ConnectAsync(
             string hostName,
             int hostPort,
@@ -672,11 +699,14 @@ public sealed class ConfiguredLinklyTerminalClientTests
             bool useKeepAlive)
         {
             ConnectCallCount++;
+            LastHost = hostName;
+            LastPort = hostPort;
             return Task.FromResult(connectResult);
         }
 
         public Task<bool> WriteRequestAsync(EFTRequest request)
         {
+            LastRequest = request;
             return Task.FromResult(true);
         }
 
@@ -693,6 +723,16 @@ public sealed class ConfiguredLinklyTerminalClientTests
             }
 
             _responseReturned = true;
+            if (LastRequest is EFTLogonRequest)
+            {
+                return Task.FromResult<EFTResponse?>(new EFTLogonResponse
+                {
+                    Success = true,
+                    ResponseCode = "00",
+                    ResponseText = "APPROVED"
+                });
+            }
+
             return Task.FromResult<EFTResponse?>(new EFTTransactionResponse
             {
                 Success = true,

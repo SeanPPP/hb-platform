@@ -167,6 +167,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool _linklyConnectionSucceeded;
 
     [ObservableProperty]
+    private bool? _linklyPinPadLoggedOn;
+
+    [ObservableProperty]
     private string _linklyTestStatusMessage = string.Empty;
 
     [ObservableProperty]
@@ -307,6 +310,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OpenLinklySetupInstructionsCommand = new RelayCommand(() => IsLinklySetupInstructionsOpen = true);
         CloseLinklySetupInstructionsCommand = new RelayCommand(() => IsLinklySetupInstructionsOpen = false);
         TestLinklyCommand = new AsyncRelayCommand(TestLinklyAsync, CanTestLinkly);
+        LogonLinklyCommand = new AsyncRelayCommand(LogonLinklyAsync, CanLogonLinkly);
         SaveLinklyCommand = new AsyncRelayCommand(SaveLinklyAsync, CanSaveLinkly);
         MoveLinklyPriorityUpCommand = new RelayCommand<LinklyModePriorityItem>(MoveLinklyPriorityUp, CanMoveLinklyPriorityUp);
         MoveLinklyPriorityDownCommand = new RelayCommand<LinklyModePriorityItem>(MoveLinklyPriorityDown, CanMoveLinklyPriorityDown);
@@ -385,6 +389,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public IRelayCommand CloseLinklySetupInstructionsCommand { get; }
 
     public IAsyncRelayCommand TestLinklyCommand { get; }
+
+    public IAsyncRelayCommand LogonLinklyCommand { get; }
 
     public IAsyncRelayCommand TestLinklyTransactionStatusCommand { get; }
 
@@ -592,6 +598,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _savedSquareDeviceId = _loadedConfiguration.SquareDeviceId;
             _devicesLoadedForLocationId = null;
             LinklyConnectionSucceeded = false;
+            LinklyPinPadLoggedOn = null;
             ClearLinklyTestStatus();
             SquareLocations.Clear();
             SquareDevices.Clear();
@@ -721,6 +728,47 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         var inputsChangedDuringTest = testedInputs != CaptureLinklyTestInputs();
         SyncLinklyState();
         if (inputsChangedDuringTest)
+        {
+            ResetLinklyConnectionTest();
+            SetLinklyTestValidationStatus("settings.linkly.test.configurationChanged");
+        }
+    }
+
+    private async Task LogonLinklyAsync()
+    {
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            "logon-linkly");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+        if (string.IsNullOrWhiteSpace(LinklyHostText))
+        {
+            SetLinklyTestValidationStatus("settings.linkly.localIp.hostRequired");
+            return;
+        }
+
+        if (!int.TryParse(LinklyPortText, out var port) || port is <= 0 or > 65535)
+        {
+            SetLinklyTestValidationStatus("settings.linkly.localIp.portInvalid");
+            return;
+        }
+
+        if (!int.TryParse(TimeoutSecondsText, out var timeoutSeconds) || timeoutSeconds <= 0)
+        {
+            SetLinklyTestValidationStatus("settings.linkly.localIp.timeoutInvalid");
+            return;
+        }
+
+        var testedInputs = CaptureLinklyTestInputs();
+        SyncLinklyInputs();
+        await _linklyCoordinator.LogonAsync(_linklyState);
+        var inputsChangedDuringLogon = testedInputs != CaptureLinklyTestInputs();
+        SyncLinklyState();
+        if (inputsChangedDuringLogon)
         {
             ResetLinklyConnectionTest();
             SetLinklyTestValidationStatus("settings.linkly.test.configurationChanged");
@@ -1099,6 +1147,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool CanTestLinkly()
     {
         return !IsBusy && (PrimaryLinklyMode != LinklySettingsMode.CloudDirectSync || HasSavedLinklyCloudSecret);
+    }
+
+    private bool CanLogonLinkly()
+    {
+        return !IsBusy &&
+            PrimaryLinklyMode == LinklySettingsMode.LocalIp &&
+            LinklyConnectionSucceeded &&
+            LinklyPinPadLoggedOn == false;
     }
 
     private bool CanTestLinklyTransactionStatus()
@@ -1596,6 +1652,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         RaiseCommandStates();
     }
 
+    partial void OnLinklyPinPadLoggedOnChanged(bool? value)
+    {
+        RaiseCommandStates();
+    }
+
     partial void OnIsBusyChanged(bool value)
     {
         RaiseCommandStates();
@@ -1614,6 +1675,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SaveLinklyCloudCredentialCommand.NotifyCanExecuteChanged();
         CancelLinklyCloudPairingCommand.NotifyCanExecuteChanged();
         TestLinklyCommand.NotifyCanExecuteChanged();
+        LogonLinklyCommand.NotifyCanExecuteChanged();
         TestLinklyTransactionStatusCommand.NotifyCanExecuteChanged();
         SaveLinklyCommand.NotifyCanExecuteChanged();
         MoveLinklyPriorityUpCommand.NotifyCanExecuteChanged();
@@ -1672,6 +1734,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         HasSavedLinklyCloudPassword = _linklyState.HasSavedCloudPassword;
         HasSavedLinklyCloudSecret = _linklyState.HasSavedCloudSecret;
         LinklyConnectionSucceeded = _linklyState.ConnectionSucceeded;
+        LinklyPinPadLoggedOn = _linklyState.PinPadLoggedOn;
         LinklyPairCodeText = _linklyState.PairCodeText;
         _loadedConfiguration = _linklyState.LoadedConfiguration;
         _linklySecretStatusVersion = _linklyState.SecretStatusVersion;
@@ -1698,6 +1761,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _linklyState.HasSavedCloudPassword = HasSavedLinklyCloudPassword;
         _linklyState.HasSavedCloudSecret = HasSavedLinklyCloudSecret;
         _linklyState.ConnectionSucceeded = LinklyConnectionSucceeded;
+        _linklyState.PinPadLoggedOn = LinklyPinPadLoggedOn;
         _linklyState.PairCodeText = LinklyPairCodeText;
         _linklyState.LoadedConfiguration = _loadedConfiguration;
         _linklyState.SecretStatusVersion = _linklySecretStatusVersion;
@@ -1717,6 +1781,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
         _linklyCoordinator.ResetConnectionTest(_linklyState);
         LinklyConnectionSucceeded = _linklyState.ConnectionSucceeded;
+        LinklyPinPadLoggedOn = _linklyState.PinPadLoggedOn;
     }
 
     private void SetStatus(string key, params object[] args)

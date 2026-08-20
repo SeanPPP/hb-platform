@@ -16,6 +16,7 @@ public sealed class LinklySettingsState
     public bool HasSavedCloudSecret;
     public bool IsSandbox;
     public bool ConnectionSucceeded;
+    public bool? PinPadLoggedOn;
     public CardTerminalConfiguration LoadedConfiguration = CardTerminalConfiguration.Default;
     public int SecretStatusVersion;
     public int CredentialStatusVersion;
@@ -81,6 +82,7 @@ public sealed class LinklySettingsCoordinator
             try
             {
                 s.ConnectionSucceeded = false;
+                s.PinPadLoggedOn = null;
                 _clearLinklyTestStatus();
                 var testMode = _getPrimaryMode();
                 LinklyConnectionTestResult result;
@@ -98,6 +100,7 @@ public sealed class LinklySettingsCoordinator
                 }
 
                 s.ConnectionSucceeded = result.Succeeded;
+                s.PinPadLoggedOn = result.PinPadLoggedOn;
                 if (string.IsNullOrWhiteSpace(result.Message))
                     SetLinklyTestResult(result.Succeeded);
                 else
@@ -108,6 +111,48 @@ public sealed class LinklySettingsCoordinator
             }
             catch (Exception ex)
             {
+                _setLinklyTestStatusOverride(ex.Message);
+                _setStatusOverride(ex.Message);
+                throw;
+            }
+        }, null);
+    }
+
+    public async Task LogonAsync(LinklySettingsState s)
+    {
+        await _runBusy(async () =>
+        {
+            try
+            {
+                var host = NormalizeHost(s.HostText);
+                var port = ParsePort(s.PortText);
+                _setLinklyTestStatus("settings.linkly.localIp.loggingOn", [host, port]);
+                var result = await _setup.LogonLinklyAsync(
+                    host,
+                    port,
+                    TimeSpan.FromSeconds(ParseTimeoutSeconds(s.TimeoutSecondsText)));
+
+                // 登录失败不撤销已通过的连通性测试，保存配置仍应保持可用。
+                s.PinPadLoggedOn = result.Succeeded;
+                if (string.IsNullOrWhiteSpace(result.Message))
+                {
+                    var key = result.Succeeded
+                        ? "settings.linkly.localIp.logonSuccess"
+                        : result.ResultUnknown
+                            ? "settings.linkly.localIp.logonUnknown"
+                            : "settings.linkly.localIp.logonFailed";
+                    _setLinklyTestStatus(key, Arg());
+                    _setStatus(key, Arg());
+                }
+                else
+                {
+                    _setLinklyTestStatusOverride(result.Message);
+                    _setStatusOverride(result.Message);
+                }
+            }
+            catch (Exception ex)
+            {
+                s.PinPadLoggedOn = false;
                 _setLinklyTestStatusOverride(ex.Message);
                 _setStatusOverride(ex.Message);
                 throw;
@@ -159,6 +204,7 @@ public sealed class LinklySettingsCoordinator
             try
             {
                 s.ConnectionSucceeded = false;
+                s.PinPadLoggedOn = null;
                 _clearLinklyTestStatus();
                 var result = await _setup.PairLinklyCloudAsync(env, pairCode, username, password,
                     syncBackendTerminalCredential: s.SelectedMode == LinklySettingsMode.CloudBackendAsync);
@@ -466,7 +512,12 @@ public sealed class LinklySettingsCoordinator
     private static string LogVal(string? v) => string.IsNullOrWhiteSpace(v) ? "<null>" : v;
 
     // Public helpers for external callers (ViewModel On*Changed, LoadAsync)
-    public void ResetConnectionTest(LinklySettingsState s) { s.ConnectionSucceeded = false; _clearLinklyTestStatus(); }
+    public void ResetConnectionTest(LinklySettingsState s)
+    {
+        s.ConnectionSucceeded = false;
+        s.PinPadLoggedOn = null;
+        _clearLinklyTestStatus();
+    }
     public void ClearTestStatus() => _clearLinklyTestStatus();
     public void SetTestStatus(string key) => _setLinklyTestStatus(key, Arg());
     public void SetTestStatus(string key, object a1) => _setLinklyTestStatus(key, new[] { a1 });

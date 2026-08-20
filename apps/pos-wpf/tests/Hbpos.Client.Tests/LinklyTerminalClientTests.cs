@@ -425,12 +425,157 @@ public sealed class LinklyTerminalClientTests
         var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
 
         Assert.True(result.Succeeded);
+        Assert.True(result.PinPadLoggedOn);
         var request = Assert.IsType<EFTStatusRequest>(eftClient.LastRequest);
         Assert.Equal(TerminalApplication.EFTPOS, request.Application);
         Assert.Equal("00", request.Merchant);
         Assert.Equal(StatusType.Standard, request.StatusType);
         Assert.Equal(1, eftClient.DisconnectCallCount);
         Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task LogonAsync_sends_standard_request_and_accepts_success_after_receipt_and_display()
+    {
+        const string receiptText = "SECRET LOGON RECEIPT";
+        const string displayText = "SECRET DISPLAY TEXT";
+        using var logs = new ConsoleLogCapture();
+        var eftClient = new FakeLinklyEftClient(
+            new EFTReceiptResponse
+            {
+                Type = ReceiptType.Logon,
+                ReceiptText = [receiptText]
+            },
+            new EFTDisplayResponse
+            {
+                NumberOfLines = 1,
+                DisplayText = [displayText]
+            },
+            new EFTLogonResponse
+            {
+                Success = true,
+                ResponseCode = "00",
+                ResponseText = "APPROVED"
+            });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("00", result.ResponseCode);
+        Assert.Contains(receiptText, Assert.Single(result.ReceiptTexts!));
+        var request = Assert.IsType<EFTLogonRequest>(eftClient.LastRequest);
+        Assert.Equal("00", request.Merchant);
+        Assert.Equal(LogonType.Standard, request.LogonType);
+        Assert.Equal(TerminalApplication.EFTPOS, request.Application);
+        Assert.Equal(ReceiptPrintModeType.POSPrinter, request.ReceiptAutoPrint);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+
+        var logPayload = string.Join(
+            Environment.NewLine,
+            logs.ReadJsonEvents("LinklyLocal").Select(element => element.GetRawText()));
+        Assert.DoesNotContain(receiptText, logPayload, StringComparison.Ordinal);
+        Assert.DoesNotContain(displayText, logPayload, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LogonAsync_rejects_response_when_response_code_is_not_00()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTLogonResponse
+        {
+            Success = true,
+            ResponseCode = "05",
+            ResponseText = "DECLINED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("05", result.ResponseCode);
+        Assert.Contains("DECLINED", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LogonAsync_returns_unknown_when_response_times_out_after_request_is_sent()
+    {
+        var eftClient = new FakeLinklyEftClient { WaitForCancellationOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromMilliseconds(50));
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.IsType<EFTLogonRequest>(eftClient.LastRequest);
+        Assert.Contains("unknown", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+    }
+
+    [Fact]
+    public async Task LogonAsync_returns_unknown_when_connection_drops_after_request_is_sent()
+    {
+        var eftClient = new FakeLinklyEftClient();
+        eftClient.ReadExceptions.Enqueue(new ConnectionException("Connection dropped."));
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Contains("unknown", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+    }
+
+    [Fact]
+    public async Task LogonAsync_attempts_cancel_when_caller_cancels_after_request_is_sent()
+    {
+        var eftClient = new FakeLinklyEftClient { WaitForCancellationOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+        using var cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        var result = await client.LogonAsync(
+            "127.0.0.1",
+            2011,
+            TimeSpan.FromSeconds(5),
+            cancellationTokenSource.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Collection(
+            eftClient.Requests,
+            request => Assert.IsType<EFTLogonRequest>(request),
+            request => Assert.IsType<EFTSendKeyRequest>(request));
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+    }
+
+    [Fact]
+    public async Task LogonAsync_returns_unknown_for_empty_response_after_request_is_sent()
+    {
+        var eftClient = new FakeLinklyEftClient { ReturnNullOnRead = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.ResultUnknown);
+        Assert.Contains("unknown", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LogonAsync_returns_retryable_failure_when_request_cannot_be_sent()
+    {
+        var eftClient = new FakeLinklyEftClient { WriteResult = false };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.LogonAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.ResultUnknown);
+        Assert.Contains("could not be sent", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
     }
 
     [Fact]
@@ -589,7 +734,26 @@ public sealed class LinklyTerminalClientTests
     }
 
     [Fact]
-    public async Task TestConnectionAsync_fails_when_pinpad_is_not_logged_on()
+    public async Task TestConnectionAsync_explicit_offline_response_overrides_stale_logged_on_flag()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
+        {
+            Success = true,
+            LoggedOn = true,
+            ResponseCode = "PF",
+            ResponseText = "PINpad Offline"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.PinPadLoggedOn);
+        Assert.Contains("offline (PF)", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_succeeds_with_warning_when_pinpad_is_online_but_not_logged_on()
     {
         var eftClient = new FakeLinklyEftClient(new EFTStatusResponse
         {
@@ -602,7 +766,8 @@ public sealed class LinklyTerminalClientTests
 
         var result = await client.TestConnectionAsync("127.0.0.1", 2011, TimeSpan.FromSeconds(1));
 
-        Assert.False(result.Succeeded);
+        Assert.True(result.Succeeded);
+        Assert.False(result.PinPadLoggedOn);
         Assert.Contains("not logged on", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 

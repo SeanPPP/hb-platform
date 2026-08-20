@@ -873,6 +873,15 @@ public sealed class ConfiguredLinklyTerminalClient(
         return localClient.TestConnectionAsync(host, port, timeout, cancellationToken);
     }
 
+    public Task<LinklyLogonResult> LogonAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        return localClient.LogonAsync(host, port, timeout, cancellationToken);
+    }
+
     public Task<PaymentAuthorizationResult> PurchaseAsync(
         decimal amount,
         PosSessionState session,

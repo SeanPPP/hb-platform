@@ -794,6 +794,15 @@
   <data name="linkly.local.test.unknownResponse" xml:space="preserve"><value>Unknown response</value></data>
   <data name="linkly.local.test.statusTimeout" xml:space="preserve"><value>Linkly PINpad readiness check timed out.</value></data>
   <data name="linkly.local.test.exception" xml:space="preserve"><value>Linkly connection failed: {0}</value></data>
+  <data name="linkly.local.logon.connectionFailed" xml:space="preserve"><value>Linkly EFT-Client connection failed.</value></data>
+  <data name="linkly.local.logon.requestFailed" xml:space="preserve"><value>Linkly bank network logon request could not be sent.</value></data>
+  <data name="linkly.local.logon.success" xml:space="preserve"><value>Linkly PINpad logged on to the bank network.</value></data>
+  <data name="linkly.local.logon.failed" xml:space="preserve"><value>Linkly bank network logon failed: {0} ({1}).</value></data>
+  <data name="linkly.local.logon.timeout" xml:space="preserve"><value>Linkly bank network logon timed out.</value></data>
+  <data name="linkly.local.logon.exception" xml:space="preserve"><value>Linkly bank network logon failed: {0}</value></data>
+  <data name="linkly.local.logon.cancelled" xml:space="preserve"><value>Linkly bank network logon was cancelled.</value></data>
+  <data name="linkly.local.logon.cancelledUnknown" xml:space="preserve"><value>Linkly bank network logon was cancelled; the result is unknown.</value></data>
+  <data name="linkly.local.logon.outcomeUnknown" xml:space="preserve"><value>Linkly bank network logon result is unknown. Check the PINpad before retrying.</value></data>
   <data name="linkly.local.amountMustBePositive" xml:space="preserve"><value>Card amount must be greater than zero.</value></data>
   <data name="linkly.local.cancelled" xml:space="preserve"><value>ANZ Linkly transaction was cancelled.</value></data>
   <data name="linkly.local.connectionFailed" xml:space="preserve"><value>ANZ Linkly EFT-Client connection failed.</value></data>

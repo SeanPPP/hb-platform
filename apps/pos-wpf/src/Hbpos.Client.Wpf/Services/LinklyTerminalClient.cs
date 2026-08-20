@@ -15,6 +15,15 @@ public interface ILinklyTerminalClient
         TimeSpan timeout,
         CancellationToken cancellationToken = default);
 
+    Task<LinklyLogonResult> LogonAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklyLogonResult(
+            false,
+            "Linkly bank network logon is not supported by this terminal client."));
+
     Task<LinklySettlementResult> SettlementAsync(
         PosSessionState session,
         CardTerminalSettings settings,
@@ -78,7 +87,16 @@ public sealed record LinklyStatusTestDetails(
 public sealed record LinklyConnectionTestResult(
     bool Succeeded,
     string? Message = null,
-    LinklyStatusTestDetails? StatusTest = null);
+    LinklyStatusTestDetails? StatusTest = null,
+    bool? PinPadLoggedOn = null);
+
+public sealed record LinklyLogonResult(
+    bool Succeeded,
+    string? Message = null,
+    string? ResponseCode = null,
+    string? ResponseText = null,
+    IReadOnlyList<string>? ReceiptTexts = null,
+    bool ResultUnknown = false);
 
 public sealed record LinklySettlementResult(
     bool Succeeded,
@@ -265,12 +283,14 @@ public sealed class LinklyTerminalClient(
                     continue;
                 }
 
-                var ready = status.Success && status.LoggedOn;
+                var pinPadOffline = string.Equals(status.ResponseCode, "PF", StringComparison.OrdinalIgnoreCase) ||
+                    status.ResponseText?.Contains("PINpad Offline", StringComparison.OrdinalIgnoreCase) == true;
+                var ready = status.Success && status.LoggedOn && !pinPadOffline;
                 LogJson(
                     operation,
                     "received",
                     "response",
-                    success: ready,
+                    success: status.Success && !pinPadOffline,
                     request: statusRequestLog,
                     response: new
                     {
@@ -282,26 +302,27 @@ public sealed class LinklyTerminalClient(
                         status.StatusType,
                         status.TerminalCommsType
                     });
-                if (ready)
-                {
-                    return new LinklyConnectionTestResult(
-                        true,
-                        T("linkly.local.test.success", "Linkly PINpad is online and logged on."));
-                }
-
-                if (string.Equals(status.ResponseCode, "PF", StringComparison.OrdinalIgnoreCase) ||
-                    status.ResponseText?.Contains("PINpad Offline", StringComparison.OrdinalIgnoreCase) == true)
+                if (pinPadOffline)
                 {
                     return new LinklyConnectionTestResult(
                         false,
                         T("linkly.local.test.pinpadOffline", "Linkly PINpad is offline (PF). Check the terminal connection in Linkly Client."));
                 }
 
+                if (ready)
+                {
+                    return new LinklyConnectionTestResult(
+                        true,
+                        T("linkly.local.test.success", "Linkly PINpad is online and logged on."),
+                        PinPadLoggedOn: true);
+                }
+
                 if (status.Success && !status.LoggedOn)
                 {
                     return new LinklyConnectionTestResult(
-                        false,
-                        T("linkly.local.test.notLoggedOn", "Linkly PINpad is online but not logged on to the bank network."));
+                        true,
+                        T("linkly.local.test.notLoggedOn", "Linkly PINpad is online but not logged on to the bank network."),
+                        PinPadLoggedOn: false);
                 }
 
                 return new LinklyConnectionTestResult(
@@ -342,6 +363,216 @@ public sealed class LinklyTerminalClient(
                 string.Format(
                     CultureInfo.CurrentCulture,
                     T("linkly.local.test.exception", "Linkly connection failed: {0}"),
+                    ex.Message));
+        }
+        finally
+        {
+            SafeDisconnect(client, txnRef: null);
+        }
+    }
+
+    public async Task<LinklyLogonResult> LogonAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new LinklyLogonResult(
+                false,
+                T("linkly.local.logon.cancelled", "Linkly bank network logon was cancelled."));
+        }
+
+        using var timeoutCts = CreateConfiguredTimeoutToken(timeout, cancellationToken);
+        using var client = clientFactory.Create();
+        var receipts = new List<string>();
+        var requestMayHaveBeenSent = false;
+        var operation = "connect";
+        try
+        {
+            var connectRequest = CreateConnectRequest(host, port);
+            LogJson("connect", "start", "request", request: connectRequest, details: new { purpose = "logon" });
+            var connected = await client.ConnectAsync(host, port, useSsl: false, useKeepAlive: false)
+                .WaitAsync(timeoutCts.Token);
+            LogJson(
+                "connect",
+                connected ? "succeeded" : "failed",
+                "response",
+                success: connected,
+                request: connectRequest,
+                response: new { connected },
+                details: new { purpose = "logon" });
+            if (!connected)
+            {
+                return new LinklyLogonResult(
+                    false,
+                    T("linkly.local.logon.connectionFailed", "Linkly EFT-Client connection failed."));
+            }
+
+            operation = "logon";
+            var request = new EFTLogonRequest
+            {
+                Merchant = Merchant,
+                LogonType = LogonType.Standard,
+                Application = TerminalApplication.EFTPOS,
+                ReceiptAutoPrint = ReceiptPrintModeType.POSPrinter
+            };
+            LogJson(operation, "sent", "request", request: request);
+            requestMayHaveBeenSent = true;
+            if (!await client.WriteRequestAsync(request).WaitAsync(timeoutCts.Token))
+            {
+                requestMayHaveBeenSent = false;
+                LogJson(operation, "failed", "response", success: false, reason: "write-request-failed", request: request);
+                return new LinklyLogonResult(
+                    false,
+                    T("linkly.local.logon.requestFailed", "Linkly bank network logon request could not be sent."));
+            }
+
+            // 登录小票仅随结果返回供诊断，不打印、不持久化，也绝不把正文写入日志。
+            while (true)
+            {
+                var response = await client.ReadResponseAsync(timeoutCts.Token);
+                switch (response)
+                {
+                    case EFTReceiptResponse receipt when receipt.Type == ReceiptType.Logon:
+                        CaptureReceipt(receipts, receipt);
+                        LogJson(
+                            "logon-receipt",
+                            "received",
+                            "response",
+                            details: new
+                            {
+                                receipt.Type,
+                                lineCount = receipt.ReceiptText?.Length ?? 0
+                            });
+                        break;
+                    case EFTReceiptResponse receipt:
+                        LogJson(
+                            "logon-receipt",
+                            "ignored",
+                            "response",
+                            reason: "non-logon-receipt",
+                            details: new
+                            {
+                                receipt.Type,
+                                lineCount = receipt.ReceiptText?.Length ?? 0
+                            });
+                        break;
+                    case EFTDisplayResponse display:
+                        LogJson(
+                            "logon-display",
+                            "ignored",
+                            "response",
+                            details: new
+                            {
+                                display.NumberOfLines,
+                                display.LineLength,
+                                display.CancelKeyFlag,
+                                display.AcceptYesKeyFlag,
+                                display.DeclineNoKeyFlag,
+                                display.AuthoriseKeyFlag,
+                                display.OKKeyFlag,
+                                display.InputType,
+                                display.GraphicCode
+                            });
+                        break;
+                    case EFTLogonResponse logon:
+                    {
+                        var succeeded = logon.Success &&
+                            string.Equals(logon.ResponseCode, "00", StringComparison.Ordinal);
+                        LogJson(
+                            operation,
+                            "received",
+                            "response",
+                            success: succeeded,
+                            request: request,
+                            response: logon);
+                        var responseText = NormalizeOptional(logon.ResponseText);
+                        var responseCode = NormalizeOptional(logon.ResponseCode);
+                        var message = succeeded
+                            ? T("linkly.local.logon.success", "Linkly PINpad logged on to the bank network.")
+                            : string.Format(
+                                CultureInfo.CurrentCulture,
+                                T("linkly.local.logon.failed", "Linkly bank network logon failed: {0} ({1})."),
+                                responseText ?? T("linkly.local.test.unknownResponse", "Unknown response"),
+                                responseCode ?? "--");
+                        return new LinklyLogonResult(
+                            succeeded,
+                            message,
+                            responseCode,
+                            responseText,
+                            receipts);
+                    }
+                    case null:
+                        LogJson(operation, "unknown", "response", success: false, reason: "empty-response", request: request);
+                        return CreateUnknownLogonResult(receipts);
+                    default:
+                        LogJson(
+                            operation,
+                            "ignored",
+                            "response",
+                            reason: "unexpected-response",
+                            details: new { responseType = response.GetType().Name });
+                        break;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            LogJson(
+                operation,
+                requestMayHaveBeenSent ? "unknown" : "failed",
+                "response",
+                success: false,
+                reason: "caller-cancelled");
+            if (requestMayHaveBeenSent)
+            {
+                await TryCancelLogonAsync(client, timeout);
+                return new LinklyLogonResult(
+                    false,
+                    T("linkly.local.logon.cancelledUnknown", "Linkly bank network logon was cancelled; the result is unknown."),
+                    ReceiptTexts: receipts,
+                    ResultUnknown: true);
+            }
+
+            return new LinklyLogonResult(
+                false,
+                T("linkly.local.logon.cancelled", "Linkly bank network logon was cancelled."));
+        }
+        catch (OperationCanceledException)
+        {
+            LogJson(
+                operation,
+                requestMayHaveBeenSent ? "unknown" : "failed",
+                "response",
+                success: false,
+                reason: "timeout");
+            return requestMayHaveBeenSent
+                ? CreateUnknownLogonResult(receipts)
+                : new LinklyLogonResult(
+                    false,
+                    T("linkly.local.logon.timeout", "Linkly bank network logon timed out."));
+        }
+        catch (Exception ex)
+        {
+            LogJson(
+                operation,
+                requestMayHaveBeenSent ? "unknown" : "failed",
+                "response",
+                success: false,
+                reason: ex.GetType().Name,
+                details: new { ex.Message });
+            if (requestMayHaveBeenSent)
+            {
+                return CreateUnknownLogonResult(receipts);
+            }
+
+            return new LinklyLogonResult(
+                false,
+                string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("linkly.local.logon.exception", "Linkly bank network logon failed: {0}"),
                     ex.Message));
         }
         finally
@@ -1252,6 +1483,46 @@ public sealed class LinklyTerminalClient(
         receipts.Add(string.Join(Environment.NewLine, receiptText));
     }
 
+    private LinklyLogonResult CreateUnknownLogonResult(IReadOnlyList<string> receipts)
+    {
+        return new LinklyLogonResult(
+            false,
+            T(
+                "linkly.local.logon.outcomeUnknown",
+                "Linkly bank network logon result is unknown. Check the PINpad before retrying."),
+            ReceiptTexts: receipts,
+            ResultUnknown: true);
+    }
+
+    private async Task TryCancelLogonAsync(ILinklyEftClient client, TimeSpan timeout)
+    {
+        using var cancelCts = CreateConfiguredTimeoutToken(timeout, CancellationToken.None);
+        var cancelRequest = CreateCancelRequest();
+        try
+        {
+            LogJson("logon-cancel", "sent", "request", request: cancelRequest);
+            var sent = await client.SendCancelRequestAsync().WaitAsync(cancelCts.Token);
+            LogJson(
+                "logon-cancel",
+                sent ? "succeeded" : "failed",
+                "response",
+                success: sent,
+                reason: sent ? null : "send-cancel-failed",
+                request: cancelRequest);
+        }
+        catch (Exception ex)
+        {
+            LogJson(
+                "logon-cancel",
+                "failed",
+                "response",
+                success: false,
+                reason: ex.GetType().Name,
+                request: cancelRequest,
+                details: new { ex.Message });
+        }
+    }
+
     private static CancellationTokenSource CreateBusinessWaitTimeoutToken(CancellationToken cancellationToken)
     {
         var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1400,6 +1671,14 @@ public sealed class LinklyTerminalClient(
                 request.Merchant,
                 request.ReceiptAutoPrint
             },
+            EFTLogonRequest request => new
+            {
+                request.Merchant,
+                request.LogonType,
+                request.Application,
+                request.ReceiptAutoPrint,
+                request.CutReceipt
+            },
             EFTSettlementRequest request => new
             {
                 request.SettlementType,
@@ -1436,6 +1715,17 @@ public sealed class LinklyTerminalClient(
                 response.Stan,
                 response.CardName,
                 response.DateSettlement
+            },
+            EFTLogonResponse response => new
+            {
+                response.Success,
+                response.ResponseCode,
+                response.ResponseText,
+                response.PinPadVersion,
+                response.Catid,
+                response.Caid,
+                response.Stan,
+                response.Date
             },
             EFTSettlementResponse response => new
             {

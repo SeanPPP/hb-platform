@@ -54,6 +54,15 @@ public interface ICardTerminalSetupService
         TimeSpan timeout,
         CancellationToken cancellationToken = default);
 
+    Task<LinklyLogonResult> LogonLinklyAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklyLogonResult(
+            false,
+            "Linkly bank network logon is not supported by this setup service."));
+
     Task<LinklyConnectionTestResult> PairLinklyCloudAsync(
         CardTerminalEnvironment environment,
         string pairCode,
@@ -214,6 +223,15 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         return linklyTerminalClient.TestConnectionAsync(host, port, timeout, cancellationToken);
+    }
+
+    public Task<LinklyLogonResult> LogonLinklyAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        return linklyTerminalClient.LogonAsync(host, port, timeout, cancellationToken);
     }
 
     public async Task<LinklyConnectionTestResult> PairLinklyCloudAsync(
