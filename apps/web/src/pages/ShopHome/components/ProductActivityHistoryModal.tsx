@@ -1,6 +1,6 @@
 import { Button, Empty, Modal, Radio, Spin, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getStoreOrderProductActivityHistory } from '../../../services/storeOrderService'
 import {
@@ -18,6 +18,10 @@ import {
   runProductActivityHistoryRequest,
 } from '../productActivityHistoryRequestCoordinator'
 import { formatOrderHistoryQuantity } from '../orderHistoryQuantity'
+import {
+  buildProductActivityTableRows,
+  type ProductActivityTableRow,
+} from '../productActivityHistoryRows'
 
 const { Text } = Typography
 
@@ -95,6 +99,7 @@ export default function ProductActivityHistoryModal({
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [filter, setFilter] = useState<StoreOrderProductActivityFilter>('all')
+  const [expandedSalesPeriodKeys, setExpandedSalesPeriodKeys] = useState<string[]>([])
   const [summary, setSummary] = useState<ActivitySummary | null>(null)
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [reloadToken, setReloadToken] = useState(0)
@@ -111,6 +116,7 @@ export default function ProductActivityHistoryModal({
     setLastActivityEntityKey(activityEntityKey)
     setPage(1)
     setFilter('all')
+    setExpandedSalesPeriodKeys([])
     setItems([])
     setTotal(0)
     setSummary(null)
@@ -148,6 +154,7 @@ export default function ProductActivityHistoryModal({
       setTotal(0)
       setPage(1)
       setFilter('all')
+      setExpandedSalesPeriodKeys([])
       setSummary(null)
       setStatus('idle')
     }
@@ -205,7 +212,10 @@ export default function ProductActivityHistoryModal({
     setFilter(nextFilter)
     // 切换筛选必须回到第一页，旧页码由 identity 守卫丢弃。
     setPage(1)
+    setExpandedSalesPeriodKeys([])
   }
+
+  const tableRows = useMemo(() => buildProductActivityTableRows(items), [items])
 
   const getFlowStatusMeta = (value?: number) => {
     if (typeof value !== 'number') {
@@ -228,7 +238,7 @@ export default function ProductActivityHistoryModal({
 
   const renderOrderValue = (
     value: number | undefined,
-    record: StoreOrderProductActivityHistoryItem,
+    record: ProductActivityTableRow,
     className: string,
   ) => {
     if (record.recordType !== 'order') {
@@ -238,10 +248,10 @@ export default function ProductActivityHistoryModal({
     return <span className={className}>{formatOrderHistoryQuantity(value)}</span>
   }
 
-  const getActivityRowClassName = (record: StoreOrderProductActivityHistoryItem) =>
+  const getActivityRowClassName = (record: ProductActivityTableRow) =>
     record.recordType === 'salesSubtotal' ? 'shop-product-activity-subtotal-row' : ''
 
-  const columns: TableColumnsType<StoreOrderProductActivityHistoryItem> = [
+  const columns: TableColumnsType<ProductActivityTableRow> = [
     {
       title: t('shop.productActivityHistory.date'),
       dataIndex: 'recordDate',
@@ -255,8 +265,10 @@ export default function ProductActivityHistoryModal({
       title: t('shop.productActivityHistory.type'),
       dataIndex: 'recordType',
       key: 'recordType',
-      render: (value: StoreOrderProductActivityHistoryItem['recordType']) =>
-        value === 'salesSubtotal' ? (
+      render: (value: StoreOrderProductActivityHistoryItem['recordType'], record) =>
+        record.isSalesContinuation ? (
+          <Tag color="purple">{t('shop.productActivityHistory.typeSalesDetails')}</Tag>
+        ) : value === 'salesSubtotal' ? (
           <Tag color="purple">{t('shop.productActivityHistory.typeSubtotal')}</Tag>
         ) : value === 'sales' ? (
           <Tag color="blue">{t('shop.productActivityHistory.typeSales')}</Tag>
@@ -300,7 +312,7 @@ export default function ProductActivityHistoryModal({
       key: 'salesQuantity',
       align: 'right',
       render: (value: number | undefined, record) =>
-        record.recordType === 'salesSubtotal' ? (
+        record.recordType === 'salesSubtotal' && !record.isSalesContinuation ? (
           <span className="shop-product-activity-qty-sales">
             {formatOrderHistoryQuantity(value ?? 0)}
           </span>
@@ -318,7 +330,7 @@ export default function ProductActivityHistoryModal({
       key: 'averagePrice',
       align: 'right',
       render: (value: number | null | undefined, record) =>
-        record.recordType === 'salesSubtotal'
+        record.recordType === 'salesSubtotal' && !record.isSalesContinuation
           ? value == null || (record.salesQuantity ?? 0) === 0
             ? '—'
             : formatAudPrice(value)
@@ -396,69 +408,79 @@ export default function ProductActivityHistoryModal({
             </Text>
           </div>
 
-          <div className="shop-product-activity-filter">
-            <Text type="secondary">{t('shop.productActivityHistory.filter')}: </Text>
-            <Radio.Group
-              size="small"
-              optionType="button"
-              value={filter}
-              onChange={(event) =>
-                handleFilterChange(event.target.value as StoreOrderProductActivityFilter)
-              }
-            >
-              <Radio.Button value="all">{t('shop.productActivityHistory.filterAll')}</Radio.Button>
-              <Radio.Button value="order">{t('shop.productActivityHistory.filterOrder')}</Radio.Button>
-              <Radio.Button value="sales">{t('shop.productActivityHistory.filterSales')}</Radio.Button>
-            </Radio.Group>
+          <div className="shop-product-activity-details-content">
+            <div className="shop-product-activity-filter">
+              <Text type="secondary">{t('shop.productActivityHistory.filter')}: </Text>
+              <Radio.Group
+                size="small"
+                optionType="button"
+                aria-label={t('shop.productActivityHistory.filter')}
+                value={filter}
+                onChange={(event) =>
+                  handleFilterChange(event.target.value as StoreOrderProductActivityFilter)
+                }
+              >
+                <Radio.Button value="all">
+                  {t('shop.productActivityHistory.filterAll')}
+                </Radio.Button>
+                <Radio.Button value="order">
+                  {t('shop.productActivityHistory.filterOrder')}
+                </Radio.Button>
+                <Radio.Button value="sales">
+                  {t('shop.productActivityHistory.filterSales')}
+                </Radio.Button>
+              </Radio.Group>
+            </div>
+
+            {status === 'loading' ? (
+              <div className="shop-product-activity-state">
+                <Spin />
+              </div>
+            ) : status === 'error' ? (
+              <div className="shop-product-activity-state">
+                <Text type="danger">{t('shop.productActivityHistory.loadFailed')}</Text>
+                <Button size="small" onClick={() => setReloadToken((value) => value + 1)}>
+                  {t('shop.productActivityHistory.retry')}
+                </Button>
+              </div>
+            ) : (
+              <Table
+                size="small"
+                className="shop-product-activity-table"
+                columns={columns}
+                dataSource={tableRows}
+                rowKey={(record) => record.tableKey}
+                rowClassName={getActivityRowClassName}
+                expandable={{
+                  expandedRowKeys: expandedSalesPeriodKeys,
+                  onExpandedRowsChange: (keys) =>
+                    setExpandedSalesPeriodKeys(keys.map((key) => String(key))),
+                  rowExpandable: (record) => (record.children?.length ?? 0) > 0,
+                  childrenColumnName: 'children',
+                  indentSize: 12,
+                }}
+                pagination={{
+                  current: page,
+                  pageSize: ACTIVITY_PAGE_SIZE,
+                  total,
+                  showSizeChanger: false,
+                  onChange: (nextPage) => {
+                    setExpandedSalesPeriodKeys([])
+                    setPage(nextPage)
+                  },
+                }}
+                locale={{
+                  emptyText: (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={t('shop.productActivityHistory.empty')}
+                    />
+                  ),
+                }}
+                scroll={{ x: 1040 }}
+              />
+            )}
           </div>
-
-          {status === 'loading' ? (
-            <div className="shop-product-activity-state">
-              <Spin />
-            </div>
-          ) : status === 'error' ? (
-            <div className="shop-product-activity-state">
-              <Text type="danger">{t('shop.productActivityHistory.loadFailed')}</Text>
-              <Button size="small" onClick={() => setReloadToken((value) => value + 1)}>
-                {t('shop.productActivityHistory.retry')}
-              </Button>
-            </div>
-          ) : (
-            <Table
-              size="small"
-              className="shop-product-activity-table"
-              columns={columns}
-              dataSource={items}
-              rowKey={(record, index) => {
-                if (record.recordType === 'order') {
-                  return record.orderGUID || `order-${index}`
-                }
-
-                if (record.recordType === 'salesSubtotal') {
-                  return `salesSubtotal-${record.periodStartDate ?? ''}-${record.periodEndDate ?? ''}`
-                }
-
-                return `sales-${record.recordDate || index}-${index}`
-              }}
-              rowClassName={getActivityRowClassName}
-              pagination={{
-                current: page,
-                pageSize: ACTIVITY_PAGE_SIZE,
-                total,
-                showSizeChanger: false,
-                onChange: (nextPage) => setPage(nextPage),
-              }}
-              locale={{
-                emptyText: (
-                  <Empty
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description={t('shop.productActivityHistory.empty')}
-                  />
-                ),
-              }}
-              scroll={{ x: 1040 }}
-            />
-          )}
         </div>
       ) : null}
     </Modal>

@@ -2052,6 +2052,12 @@ body {
   font-size: 12px;
 }
 
+.shop-product-activity-details-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .shop-product-activity-filter {
   display: flex;
   align-items: center;

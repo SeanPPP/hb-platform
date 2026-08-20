@@ -5004,6 +5004,7 @@
       "type": "类型",
       "typeOrder": "订货发货",
       "typeSales": "销售",
+      "typeSalesDetails": "销售明细",
       "typeSubtotal": "区间小计",
       "orderNo": "订单号",
       "orderQuantity": "订货量",

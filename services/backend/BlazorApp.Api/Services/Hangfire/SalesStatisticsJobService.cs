@@ -1,7 +1,11 @@
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Diagnostics;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBSalesRecord;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Configuration;
@@ -109,11 +113,109 @@ namespace BlazorApp.Api.Services
     public class SalesStatisticsJobService
     {
         /// <summary>
+        /// 2025 HBSales 批量快照中单日的不可变来源签名。
+        /// </summary>
+        public sealed record HBSales2025DailySnapshotSignature(
+            DateTime Date,
+            int RowCount,
+            DateTime? MainLastModifiedAt,
+            DateTime? MainCreatedAt,
+            DateTime? DetailLastModifiedAt,
+            DateTime? DetailCreatedAt,
+            string Checksum
+        );
+
+        /// <summary>
+        /// POSM 单表来源签名。四张表必须分别保留自己的行数、时间和校验值，不能压缩为跨表 MAX。
+        /// </summary>
+        public sealed record Posm2025DailyTableSignature(
+            int RowCount,
+            DateTime? LastModifiedAt,
+            DateTime? CreatedAt,
+            string Checksum
+        );
+
+        /// <summary>
+        /// 仅供 2025 回填 Runner 使用的 POSM 日快照签名。
+        /// </summary>
+        public sealed record Posm2025DailySnapshotSignature(
+            DateTime Date,
+            Posm2025DailyTableSignature Orders,
+            Posm2025DailyTableSignature Details,
+            Posm2025DailyTableSignature Payments,
+            Posm2025DailyTableSignature SalesReturns
+        );
+
+        /// <summary>
+        /// 仅供 2025 回填 Runner 在同一进程内传递的 HBSales 批量快照。
+        /// 明细不向普通业务调用方暴露，避免其误把快照当作通用查询 API。
+        /// </summary>
+        public sealed class HBSales2025BatchSnapshot
+        {
+            private readonly IReadOnlyDictionary<DateTime, List<ProductStoreDailySourceRow>> _rowsByDate;
+
+            internal HBSales2025BatchSnapshot(
+                IReadOnlyDictionary<DateTime, List<ProductStoreDailySourceRow>> rowsByDate,
+                IReadOnlyDictionary<DateTime, HBSales2025DailySnapshotSignature> signatures
+            )
+            {
+                _rowsByDate = rowsByDate;
+                Signatures = signatures;
+            }
+
+            public IReadOnlyDictionary<DateTime, HBSales2025DailySnapshotSignature> Signatures { get; }
+
+            internal IReadOnlyList<ProductStoreDailySourceRow> GetRows(DateTime date)
+            {
+                return _rowsByDate.TryGetValue(date.Date, out var rows)
+                    ? rows
+                    : throw new InvalidOperationException($"批量快照不包含日期: {date:yyyy-MM-dd}");
+            }
+
+            public HBSales2025DailySnapshotSignature GetSignature(DateTime date)
+            {
+                return Signatures.TryGetValue(date.Date, out var signature)
+                    ? signature
+                    : throw new InvalidOperationException($"批量快照不包含签名: {date:yyyy-MM-dd}");
+            }
+        }
+
+        /// <summary>
+        /// 2025 Runner 私有的 POSM 单日预载结果。业务行只在服务内部可见，避免普通入口误复用。
+        /// </summary>
+        public sealed class Posm2025DailySnapshot
+        {
+            internal Posm2025DailySnapshot(
+                IReadOnlyList<ProductStoreDailySourceRow> detailRows,
+                IReadOnlyList<ProductStoreDailySourceRow> supplementalReturnRows,
+                IReadOnlyList<StoreStatisticPaymentRow> paymentRows,
+                IReadOnlyList<StoreStatisticOrderRow> orderRows,
+                Dictionary<string, string> deviceBranchMap,
+                Posm2025DailySnapshotSignature signature
+            )
+            {
+                DetailRows = detailRows;
+                SupplementalReturnRows = supplementalReturnRows;
+                PaymentRows = paymentRows;
+                OrderRows = orderRows;
+                DeviceBranchMap = deviceBranchMap;
+                Signature = signature;
+            }
+
+            internal IReadOnlyList<ProductStoreDailySourceRow> DetailRows { get; }
+            internal IReadOnlyList<ProductStoreDailySourceRow> SupplementalReturnRows { get; }
+            internal IReadOnlyList<StoreStatisticPaymentRow> PaymentRows { get; }
+            internal IReadOnlyList<StoreStatisticOrderRow> OrderRows { get; }
+            internal Dictionary<string, string> DeviceBranchMap { get; }
+            public Posm2025DailySnapshotSignature Signature { get; }
+        }
+
+        /// <summary>
         /// 商品统计提交串行锁，避免同一实例内并发请求重复提交相同日期。
         /// </summary>
         private static readonly SemaphoreSlim ProductStatisticSubmitLock = new(1, 1);
 
-        private sealed class StoreCostRow
+        internal sealed class StoreCostRow
         {
             public string? StoreCode { get; set; }
             public string? SupplierCode { get; set; }
@@ -150,29 +252,44 @@ namespace BlazorApp.Api.Services
                 new();
         }
 
-        private sealed class ProductStoreDailySourceRow
+        internal sealed class ProductStoreDailySourceRow
         {
+            public bool IsHBSalesSource { get; set; }
             public DateTime Date { get; set; }
             public string? OrderGuid { get; set; }
+            public string? HBSalesOrderNumber { get; set; }
             public string? DetailGuid { get; set; }
             public string? BranchCode { get; set; }
             public string? DeviceCode { get; set; }
+            // 2025 HBSales 预加载快照必须保留四个原始时间，不能只保留回退后的两个展示时间。
+            public DateTime? HBSalesMainLastModifiedAt { get; set; }
+            public DateTime? HBSalesMainCreatedAt { get; set; }
+            public DateTime? HBSalesDetailLastModifiedAt { get; set; }
+            public DateTime? HBSalesDetailCreatedAt { get; set; }
             public DateTime? OrderLastUploadTime { get; set; }
             public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
             public string? SupplierCode { get; set; }
             public string? ProductName { get; set; }
             public string? Barcode { get; set; }
-            public int Quantity { get; set; }
+            public decimal Quantity { get; set; }
             public decimal ActualAmount { get; set; }
             public DateTime? DetailLastUploadTime { get; set; }
+            public DateTime? SourceCreatedAt { get; set; }
+            public DateTime? SourceUpdatedAt { get; set; }
+            public string? DocumentType { get; set; }
         }
 
-        private sealed class StoreStatisticPaymentRow
+        internal sealed class StoreStatisticPaymentRow
         {
+            public string? PaymentGuid { get; set; }
             public string? OrderGuid { get; set; }
             public string? BranchCode { get; set; }
             public string? DeviceCode { get; set; }
             public decimal Amount { get; set; }
+            public DateTime? CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+            public DateTime? LastUploadTime { get; set; }
         }
 
         private sealed class StoreStatisticQuantityRow
@@ -183,11 +300,32 @@ namespace BlazorApp.Api.Services
             public int Quantity { get; set; }
         }
 
-        private sealed class StoreStatisticOrderRow
+        internal sealed class StoreStatisticOrderRow
         {
             public string? OrderGuid { get; set; }
             public string? BranchCode { get; set; }
             public string? DeviceCode { get; set; }
+            public DateTime? OrderTime { get; set; }
+            public int? Status { get; set; }
+            public DateTime? LastUploadTime { get; set; }
+            public DateTime? CreatedAt { get; set; }
+            public DateTime? UpdatedAt { get; set; }
+        }
+
+        private sealed class HBSalesSourceWatermarkRow
+        {
+            public DateTime? MainLastModifiedAt { get; set; }
+            public DateTime? MainCreatedAt { get; set; }
+            public DateTime? DetailLastModifiedAt { get; set; }
+            public DateTime? DetailCreatedAt { get; set; }
+        }
+
+        private sealed class HBSalesStoreAggregateRow
+        {
+            public string? BranchCode { get; set; }
+            public decimal TotalAmount { get; set; }
+            public decimal TotalQuantity { get; set; }
+            public int OrderCount { get; set; }
         }
 
         private sealed class HourlyStatisticSourceRow
@@ -244,11 +382,24 @@ namespace BlazorApp.Api.Services
         /// 数据库命令超时时间（秒）
         /// </summary>
         private const int CommandTimeoutSeconds = 1800;
+        // 2025 runner 的单并发门禁保证相邻统计日不会并发提交，因此可用此有界窗口走主表结账日期索引，
+        // 同时完整覆盖已确认的明细/主表最多三天日期不一致。
+        private const int HBSalesMainCheckoutDateWindowDays = 7;
+        private const int MaxProductStoreDailyBatchDays = 31;
+        // 31 天在无详情日期索引的 HBSales 上一次读入；超过此上限立即失败，避免回填器耗尽内存。
+        private const int MaxHBSales2025BatchSnapshotRows = 1_250_000;
+        private const string ProvisionalFreshStatus = "ProvisionalFresh";
+        internal const int StoreCostProductQueryBatchSize = 500;
 
         /// <summary>
         /// POSM数据库上下文
         /// </summary>
         private readonly POSMSqlSugarContext _posmContext;
+
+        /// <summary>
+        /// HBSalesRecord 数据库上下文；仅 2025 年商品日统计会读取该来源。
+        /// </summary>
+        private readonly HBSalesRecordSqlSugarContext? _hbSalesContext;
 
         /// <summary>
         /// 主数据库上下文
@@ -293,12 +444,14 @@ namespace BlazorApp.Api.Services
         /// <param name="logger">日志记录器</param>
         /// <param name="configuration">配置服务</param>
         /// <param name="serviceScopeFactory">服务作用域工厂</param>
+        /// <param name="hbSalesContext">HBSalesRecord 数据库上下文</param>
         public SalesStatisticsJobService(
             POSMSqlSugarContext posmContext,
             SqlSugarContext context,
             ILogger<SalesStatisticsJobService> logger,
             IConfiguration configuration,
-            IServiceScopeFactory serviceScopeFactory
+            IServiceScopeFactory serviceScopeFactory,
+            HBSalesRecordSqlSugarContext? hbSalesContext = null
         )
         {
             _posmContext = posmContext;
@@ -306,6 +459,7 @@ namespace BlazorApp.Api.Services
             _logger = logger;
             _configuration = configuration;
             _serviceScopeFactory = serviceScopeFactory;
+            _hbSalesContext = hbSalesContext;
             // 从配置中读取最大并发更新数，默认值为5
             _maxConcurrentUpdates = _configuration.GetValue<int>(
                 "ScheduledTasks:MaxConcurrentUpdates",
@@ -817,15 +971,28 @@ namespace BlazorApp.Api.Services
         /// <param name="date">目标日期，为空则更新当天</param>
         public async Task UpdateStoreStatistics(DateTime? date = null)
         {
+            var targetDate = (date ?? DateTime.Now).Date;
             try
             {
-                var targetDate = date ?? DateTime.Now.Date;
-
                 _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
+
+                if (targetDate.Year == 2025)
+                {
+                    // 2025 的分店与商品统计来自双来源，必须在同一事务内同时替换。
+                    await Update2025StoreAndProductStatisticsAtomically(
+                        _context,
+                        _posmContext,
+                        _hbSalesContext,
+                        _logger,
+                        targetDate
+                    );
+                    return;
+                }
 
                 var statisticsList = await BuildStoreStatisticsAsync(
                     _context,
                     _posmContext,
+                    GetHBSalesContextFor2025(targetDate),
                     targetDate,
                     null
                 );
@@ -864,7 +1031,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "更新分店统计数据失败: {Date}", date);
+                _logger.LogError(ex, "更新分店统计数据失败: {Date}", targetDate);
                 throw;
             }
         }
@@ -953,12 +1120,14 @@ namespace BlazorApp.Api.Services
 
         private async Task<bool> RunLeasedProductStoreDailyRefreshAsync(DateTime date)
         {
+            var targetDate = date.Date;
             using var scope = _serviceScopeFactory.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<SqlSugarContext>();
             var posmContext = scope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>();
+            var hbSalesContext = scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>();
             var logger = scope.ServiceProvider.GetRequiredService<ILogger<SalesStatisticsJobService>>();
             var leaseService = scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
-            var dateStr = date.Date.ToString("yyyy-MM-dd");
+            var dateStr = targetDate.ToString("yyyy-MM-dd");
             var leaseTaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType;
             var leaseDuration = TimeSpan.FromHours(2);
             string? leaseToken = null;
@@ -979,7 +1148,6 @@ namespace BlazorApp.Api.Services
                     throw new InvalidOperationException($"统计租约缺少 fencing token: {dateStr}");
                 }
 
-                sourceWatermark = await QueryDailySourceWatermarkAsync(posmContext, date);
                 await leaseService.EnsureActiveAsync(
                     leaseTaskType,
                     dateStr,
@@ -987,15 +1155,40 @@ namespace BlazorApp.Api.Services
                     leaseDuration,
                     "商品分店每日滚动补算"
                 );
-                await UpsertStatisticStateAsync(
-                    context,
-                    SalesStatisticType.ProductStoreDaily,
-                    date,
-                    SalesStatisticRefreshStatus.Running,
-                    sourceWatermark,
-                    null
-                );
-                await UpdateProductStoreDailyStatisticsWithContext(context, posmContext, logger, date);
+                if (targetDate.Year == 2025)
+                {
+                    // 滚动补算同样不能让商品表单独 Running/Failed，原子入口会成对维护状态。
+                    await Update2025StoreAndProductStatisticsAtomically(
+                        context,
+                        posmContext,
+                        hbSalesContext,
+                        logger,
+                        targetDate
+                    );
+                }
+                else
+                {
+                    sourceWatermark = await QueryDailySourceWatermarkAsync(
+                        posmContext,
+                        hbSalesContext,
+                        targetDate
+                    );
+                    await UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.ProductStoreDaily,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Running,
+                        sourceWatermark,
+                        null
+                    );
+                    await UpdateProductStoreDailyStatisticsWithContext(
+                        context,
+                        posmContext,
+                        hbSalesContext,
+                        logger,
+                        targetDate
+                    );
+                }
                 await leaseService.EnsureActiveAsync(
                     leaseTaskType,
                     dateStr,
@@ -1011,14 +1204,17 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await UpsertStatisticStateAsync(
-                    context,
-                    SalesStatisticType.ProductStoreDaily,
-                    date,
-                    SalesStatisticRefreshStatus.Failed,
-                    sourceWatermark,
-                    ex.Message
-                );
+                if (targetDate.Year != 2025)
+                {
+                    await UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.ProductStoreDaily,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Failed,
+                        sourceWatermark,
+                        ex.Message
+                    );
+                }
                 if (!string.IsNullOrWhiteSpace(leaseToken))
                 {
                     await leaseService.CompleteAsync(leaseTaskType, dateStr, leaseToken, false, ex.Message);
@@ -1068,21 +1264,43 @@ namespace BlazorApp.Api.Services
         /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
         public async Task UpdateStoreStatistics(DateTime date, List<string>? branchCodes = null)
         {
+            var targetDate = date.Date;
+            var targetBranchCodes = NormalizeBranchCodes(branchCodes);
             try
             {
                 _logger.LogInformation(
                     "开始更新指定分店统计数据: {Date}, Branches: {Branches}",
-                    date,
-                    branchCodes != null ? string.Join(", ", branchCodes) : "All"
+                    targetDate,
+                    targetBranchCodes.Any() ? string.Join(", ", targetBranchCodes) : "All"
                 );
+
+                if (targetDate.Year == 2025)
+                {
+                    if (targetBranchCodes.Any())
+                    {
+                        throw new InvalidOperationException(
+                            "2025 年不能仅刷新指定分店：该操作会破坏 ProductStoreDaily 与 StoreSales 的双表一致性，请执行全分店刷新"
+                        );
+                    }
+
+                    // null、空集合和空白分店代码均等同全分店，统一进入双表原子刷新。
+                    await Update2025StoreAndProductStatisticsAtomically(
+                        _context,
+                        _posmContext,
+                        _hbSalesContext,
+                        _logger,
+                        targetDate
+                    );
+                    return;
+                }
 
                 var statisticsList = await BuildStoreStatisticsAsync(
                     _context,
                     _posmContext,
-                    date,
+                    GetHBSalesContextFor2025(targetDate),
+                    targetDate,
                     branchCodes
                 );
-                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
 
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => _context.Db.Ado.BeginTranAsync(),
@@ -1090,7 +1308,7 @@ namespace BlazorApp.Api.Services
                     {
                         // 指定分店重算只替换对应分店，避免清掉同日其它分店统计。
                         var deleteable = _context.Db.Deleteable<StoreSalesStatistic>()
-                            .Where(s => s.Date == date);
+                            .Where(s => s.Date == targetDate);
                         if (targetBranchCodes.Any())
                         {
                             deleteable = deleteable.Where(s => targetBranchCodes.Contains(s.BranchCode));
@@ -1116,13 +1334,13 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation(
                     "指定分店统计数据更新完成: {Date}, 总记录: {Total}",
-                    date,
+                    targetDate,
                     statisticsList.Count
                 );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "更新指定分店统计数据失败: {Date}", date);
+                _logger.LogError(ex, "更新指定分店统计数据失败: {Date}", targetDate);
                 throw;
             }
         }
@@ -1463,12 +1681,302 @@ namespace BlazorApp.Api.Services
         public async Task UpdateProductStoreDailyStatistics(DateTime? date = null)
         {
             var targetDate = (date ?? DateTime.Now.Date).Date;
+            if (targetDate.Year == 2025)
+            {
+                // 2025 双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
+                await Update2025StoreAndProductStatisticsAtomically(
+                    _context,
+                    _posmContext,
+                    GetHBSalesContextFor2025(targetDate)!,
+                    _logger,
+                    targetDate
+                );
+                return;
+            }
             await UpdateProductStoreDailyStatisticsWithContext(
                 _context,
                 _posmContext,
+                GetHBSalesContextFor2025(targetDate),
                 _logger,
                 targetDate
             );
+        }
+
+        /// <summary>
+        /// 读取最多 31 个 2025 日期的 HBSales 明细快照，并按详情结账日期切片。
+        /// 此入口只给回填 Runner 使用；普通日刷新继续走自身的单日读取和 post 复核。
+        /// </summary>
+        public async Task<HBSales2025BatchSnapshot> Load2025HBSalesBatchSnapshotAsync(
+            IReadOnlyCollection<DateTime> dates
+        )
+        {
+            var targetDates = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToArray();
+            if (targetDates.Length == 0 || targetDates.Length > MaxProductStoreDailyBatchDays)
+            {
+                throw new ArgumentException(
+                    $"2025 HBSales 批量快照日期必须为 1 至 {MaxProductStoreDailyBatchDays} 天",
+                    nameof(dates)
+                );
+            }
+            if (targetDates.Any(date => date.Year != 2025))
+                throw new ArgumentException("2025 HBSales 批量快照只接受 2025 日期", nameof(dates));
+
+            var rows = await LoadHBSalesProductStoreDailyRowsAsync(
+                GetHBSalesContextFor2025(targetDates[0])!,
+                targetDates[0],
+                targetDates[^1].AddDays(1),
+                MaxHBSales2025BatchSnapshotRows
+            );
+            var targetDateSet = targetDates.ToHashSet();
+            var rowsByDate = targetDates.ToDictionary(date => date, _ => new List<ProductStoreDailySourceRow>());
+            foreach (var row in rows)
+            {
+                if (targetDateSet.Contains(row.Date.Date))
+                    rowsByDate[row.Date.Date].Add(row);
+            }
+
+            var signatures = rowsByDate.ToDictionary(
+                entry => entry.Key,
+                entry => CreateHBSales2025DailySnapshotSignature(entry.Key, entry.Value)
+            );
+            _logger.LogInformation(
+                "已读取 2025 HBSales 批量快照: {StartDate} 至 {EndDate}, 日期数 {DateCount}, 明细数 {RowCount}, 内存上限 {MaxRows}",
+                targetDates[0],
+                targetDates[^1],
+                targetDates.Length,
+                rows.Count,
+                MaxHBSales2025BatchSnapshotRows
+            );
+            return new HBSales2025BatchSnapshot(rowsByDate, signatures);
+        }
+
+        /// <summary>
+        /// 仅给 2025 回填 Runner 使用：同一日一次加载 POSM 的订单、明细、支付、补充退货及设备分店映射。
+        /// </summary>
+        public async Task<Posm2025DailySnapshot> Load2025PosmDailySnapshotAsync(DateTime date)
+        {
+            var targetDate = date.Date;
+            if (targetDate.Year != 2025)
+                throw new ArgumentException("POSM 预载入口只接受 2025 日期", nameof(date));
+
+            var nextDate = targetDate.AddDays(1);
+            var orderRows = await _posmContext.Db.Queryable<SalesOrder>()
+                .Where(order => order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate)
+                .Select(order => new StoreStatisticOrderRow
+                {
+                    OrderGuid = order.OrderGuid,
+                    BranchCode = order.BranchCode,
+                    DeviceCode = order.DeviceCode,
+                    OrderTime = order.OrderTime,
+                    Status = order.Status,
+                    LastUploadTime = order.LastUploadTime,
+                    CreatedAt = order.CreatedTime,
+                    UpdatedAt = order.UpdatedTime,
+                })
+                .ToListAsync();
+            var detailRows = await _posmContext.Db.Queryable<SalesOrder>()
+                .LeftJoin<SalesOrderDetail>((order, detail) => order.OrderGuid == detail.OrderGuid)
+                .Where(order => order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate)
+                .Select((order, detail) => new ProductStoreDailySourceRow
+                {
+                    Date = order.OrderTime!.Value.Date,
+                    OrderGuid = order.OrderGuid,
+                    DetailGuid = detail.OrderDetailGuid,
+                    BranchCode = order.BranchCode,
+                    DeviceCode = order.DeviceCode,
+                    OrderLastUploadTime = order.LastUploadTime,
+                    ProductCode = detail.ProductCode,
+                    SupplierCode = detail.SupplierCode,
+                    ProductName = detail.ProductName,
+                    Barcode = detail.Barcode,
+                    Quantity = detail.Quantity ?? 0m,
+                    ActualAmount = detail.ActualAmount ?? 0m,
+                    DetailLastUploadTime = detail.LastUploadTime,
+                    SourceCreatedAt = detail.CreatedTime,
+                    SourceUpdatedAt = detail.UpdatedTime,
+                })
+                .ToListAsync();
+            var paymentRows = await _posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                    (payment, order) => payment.OrderGuid == order.OrderGuid
+                )
+                .Where((payment, order) => order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate)
+                .Select((payment, order) => new StoreStatisticPaymentRow
+                {
+                    PaymentGuid = payment.PaymentGuid,
+                    OrderGuid = payment.OrderGuid,
+                    BranchCode = order.BranchCode,
+                    DeviceCode = order.DeviceCode,
+                    Amount = payment.Amount ?? 0m,
+                    CreatedAt = payment.CreatedTime,
+                    UpdatedAt = payment.UpdatedTime,
+                    LastUploadTime = payment.LastUploadTime,
+                })
+                .ToListAsync();
+            var detailGuidSet = detailRows
+                .Select(row => row.DetailGuid)
+                .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                .Select(guid => guid!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var supplementalReturnRows = await LoadSupplementalReturnRowsAsync(
+                _posmContext,
+                targetDate,
+                nextDate,
+                detailGuidSet
+            );
+            var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                _posmContext,
+                detailRows.Select(row => row.DeviceCode)
+                    .Concat(paymentRows.Select(row => row.DeviceCode))
+                    .Concat(orderRows.Select(row => row.DeviceCode))
+                    .Concat(supplementalReturnRows.Select(row => row.DeviceCode))
+            );
+            var signature = CreatePosm2025DailySnapshotSignature(
+                targetDate,
+                orderRows,
+                detailRows,
+                paymentRows,
+                supplementalReturnRows
+            );
+            return new Posm2025DailySnapshot(
+                detailRows,
+                supplementalReturnRows,
+                paymentRows,
+                orderRows,
+                deviceBranchMap,
+                signature
+            );
+        }
+
+        /// <summary>
+        /// 使用既有批量快照刷新单个 2025 日期。提交状态先标记为 ProvisionalFresh，
+        /// 必须由 Runner 的批末签名复核后再显式升级为 Fresh。
+        /// </summary>
+        public async Task Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(
+            DateTime date,
+            HBSales2025BatchSnapshot snapshot
+        )
+        {
+            ArgumentNullException.ThrowIfNull(snapshot);
+            var targetDate = date.Date;
+            if (targetDate.Year != 2025)
+                throw new ArgumentException("批量预载入口只接受 2025 日期", nameof(date));
+
+            var expectedSignature = snapshot.GetSignature(targetDate);
+            var snapshotStopwatch = Stopwatch.StartNew();
+            var posmSnapshot = await Load2025PosmDailySnapshotAsync(targetDate);
+            _logger.LogInformation(
+                "2025 Runner POSM snapshot load 完成: {Date}, {ElapsedMilliseconds}ms, orders={Orders}, details={Details}, payments={Payments}, returns={Returns}",
+                targetDate,
+                snapshotStopwatch.ElapsedMilliseconds,
+                posmSnapshot.Signature.Orders.RowCount,
+                posmSnapshot.Signature.Details.RowCount,
+                posmSnapshot.Signature.Payments.RowCount,
+                posmSnapshot.Signature.SalesReturns.RowCount
+            );
+            await Update2025StoreAndProductStatisticsAtomically(
+                _context,
+                _posmContext,
+                GetHBSalesContextFor2025(targetDate),
+                _logger,
+                targetDate,
+                null,
+                snapshot.GetRows(targetDate),
+                expectedSignature,
+                deferHBSalesStabilityToBatchEnd: true,
+                preloadedPosmSnapshot: posmSnapshot
+            );
+        }
+
+        /// <summary>
+        /// 批末签名一致后，把一日双状态从 ProvisionalFresh 成对提升为 Fresh。
+        /// </summary>
+        public async Task Finalize2025BatchSnapshotDateAsync(DateTime date)
+        {
+            var targetDate = date.Date;
+            await ExecuteTransactionSafelyAsync(
+                beginAsync: () => _context.Db.Ado.BeginTranAsync(),
+                workAsync: async () =>
+                {
+                    var states = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                        .Where(state =>
+                            state.Date >= targetDate
+                            && state.Date < targetDate.AddDays(1)
+                            && (state.StatisticType == SalesStatisticType.ProductStoreDaily
+                                || state.StatisticType == SalesStatisticType.StoreSales)
+                        )
+                        .ToListAsync();
+                    var productState = states.FirstOrDefault(state =>
+                        state.StatisticType == SalesStatisticType.ProductStoreDaily
+                    );
+                    var storeState = states.FirstOrDefault(state =>
+                        state.StatisticType == SalesStatisticType.StoreSales
+                    );
+                    if (productState?.Status != ProvisionalFreshStatus
+                        || storeState?.Status != ProvisionalFreshStatus
+                        || productState.LastSourceUploadTime != storeState.LastSourceUploadTime)
+                    {
+                        throw new InvalidOperationException(
+                            $"批末复核前双状态不是成对 ProvisionalFresh: {targetDate:yyyy-MM-dd}"
+                        );
+                    }
+
+                    // 批末确认只升级状态，不重写水位；水位仍精确绑定到预载快照和 POSM pre/post 复核。
+                    productState.Status = SalesStatisticRefreshStatus.Fresh;
+                    productState.ErrorMessage = null;
+                    productState.LastCheckedAtUtc = DateTime.UtcNow;
+                    productState.CompletedAtUtc = DateTime.UtcNow;
+                    storeState.Status = SalesStatisticRefreshStatus.Fresh;
+                    storeState.ErrorMessage = null;
+                    storeState.LastCheckedAtUtc = DateTime.UtcNow;
+                    storeState.CompletedAtUtc = DateTime.UtcNow;
+                    await _context.Db.Updateable(productState).ExecuteCommandAsync();
+                    await _context.Db.Updateable(storeState).ExecuteCommandAsync();
+                },
+                commitAsync: () => _context.Db.Ado.CommitTranAsync(),
+                rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
+                logger: _logger,
+                operationName: "2025 批末稳定性确认"
+            );
+        }
+
+        /// <summary>
+        /// 批末签名不一致时使指定日期不能作为可跳过的 Fresh 断点继续使用。
+        /// </summary>
+        public Task Fail2025BatchSnapshotDatesAsync(
+            IReadOnlyCollection<DateTime> dates,
+            string errorMessage
+        )
+        {
+            return Fail2025BatchSnapshotDatesSequentiallyAsync(dates, errorMessage);
+        }
+
+        private async Task Fail2025BatchSnapshotDatesSequentiallyAsync(
+            IReadOnlyCollection<DateTime> dates,
+            string errorMessage
+        )
+        {
+            foreach (var date in dates.Select(date => date.Date).Distinct().OrderBy(date => date))
+            {
+                await Persist2025AtomicFailureStatesAsync(
+                    _context,
+                    _logger,
+                    date,
+                    null,
+                    new InvalidOperationException(errorMessage)
+                );
+            }
         }
 
         public async Task<ProductStoreDailyRecalculationSubmitResult> SubmitProductStoreDailyRecalculationAsync(
@@ -1483,7 +1991,10 @@ namespace BlazorApp.Api.Services
                 .OrderBy(date => date)
                 .ToList();
             var jobId = Guid.NewGuid();
-            var normalizedMaxConcurrency = NormalizeProductStatisticMaxConcurrency(maxConcurrency);
+            var normalizedMaxConcurrency = ResolveProductStatisticMaxConcurrency(
+                targetDates,
+                maxConcurrency
+            );
 
             if (!targetDates.Any())
             {
@@ -1493,6 +2004,15 @@ namespace BlazorApp.Api.Services
                     Status = SalesStatisticRefreshStatus.Pending,
                     Message = "没有可提交的商品统计日期",
                 };
+            }
+
+            if (targetDates.Count > MaxProductStoreDailyBatchDays)
+            {
+                // 与控制器的 400 校验保持同一条输入语义，服务层也不能被其它调用方绕过。
+                throw new ArgumentException(
+                    $"商品分店每日统计一次最多重算 {MaxProductStoreDailyBatchDays} 天，请分段执行",
+                    nameof(dates)
+                );
             }
 
             List<DateTime> submittedDates;
@@ -1571,6 +2091,17 @@ namespace BlazorApp.Api.Services
             return maxConcurrency < 1 ? 3 : Math.Min(maxConcurrency, 10);
         }
 
+        private static int ResolveProductStatisticMaxConcurrency(
+            IReadOnlyCollection<DateTime> dates,
+            int maxConcurrency
+        )
+        {
+            // 2025 会同时重建分店与商品两张日表；同一批次必须串行，避免不同日期的双来源读取争抢资源。
+            return dates.Any(date => date.Year == 2025)
+                ? 1
+                : NormalizeProductStatisticMaxConcurrency(maxConcurrency);
+        }
+
         public async Task<int> RecoverTimedOutProductStoreDailyRecalculationJobsAsync(
             TimeSpan timeout,
             DateTime? nowUtc = null
@@ -1642,7 +2173,10 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var normalizedMaxConcurrency = NormalizeProductStatisticMaxConcurrency(maxConcurrency);
+                var normalizedMaxConcurrency = ResolveProductStatisticMaxConcurrency(
+                    dates,
+                    maxConcurrency
+                );
                 using var semaphore = new SemaphoreSlim(normalizedMaxConcurrency, normalizedMaxConcurrency);
                 var tasks = dates.Select(async date =>
                 {
@@ -1704,30 +2238,90 @@ namespace BlazorApp.Api.Services
         private async Task UpdateProductStoreDailyStatisticsWithContext(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
             ILogger logger,
-            DateTime date
+            DateTime date,
+            IReadOnlyList<StoreSalesStatistic>? atomicStoreStatistics = null,
+            DateTime? sourceWatermarkOverride = null,
+            Func<Task>? validateSourceWatermarkBeforeCommitAsync = null,
+            IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows = null,
+            string? atomicSuccessStatusOverride = null,
+            Posm2025DailySnapshot? preloadedPosmSnapshot = null
         )
         {
             var targetDate = date.Date;
             var nextDate = targetDate.AddDays(1);
+            var originalCommandTimeout = context.Db.Ado.CommandTimeOut;
+            context.Db.Ado.CommandTimeOut = Math.Max(originalCommandTimeout, CommandTimeoutSeconds);
             try
             {
                 logger.LogInformation("开始更新商品分店每日统计: {Date}", targetDate);
 
                 // POSM 上传水位只和 POSM 自己比较，不和 HBweb UTC 时间直接比较。
-                var lastSourceUploadTime = await posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status != null
-                        && (o.Status == 1 || o.Status == 4)
-                        && o.OrderTime != null
-                        && o.OrderTime >= targetDate
-                        && o.OrderTime < nextDate
-                    )
-                    .MaxAsync(o => o.LastUploadTime);
+                var lastSourceUploadTime = preloadedPosmSnapshot == null
+                    ? await posmContext.Db.Queryable<SalesOrder>()
+                        .Where(o => o.Status != null
+                            && (o.Status == 1 || o.Status == 4)
+                            && o.OrderTime != null
+                            && o.OrderTime >= targetDate
+                            && o.OrderTime < nextDate)
+                        .MaxAsync(o => o.LastUploadTime)
+                    : GetPosmSnapshotWatermark(preloadedPosmSnapshot);
+
+                // 2025 年商品日统计需要将 HBSales 与 POSM 明细并列汇总；其他年份严格保持 POSM-only。
+                var hbSalesRows = targetDate.Year == 2025
+                    ? preloadedHBSalesRows?.ToList()
+                        ?? await LoadHBSalesProductStoreDailyRowsAsync(
+                            hbSalesContext
+                                ?? throw new InvalidOperationException("2025 年商品统计缺少 HBSalesRecord 上下文"),
+                            targetDate,
+                            nextDate
+                        )
+                    : new List<ProductStoreDailySourceRow>();
+
+                if (targetDate.Year == 2025)
+                {
+                    // 技术性零值行不参与统计；非零缺货号行仅允许由三类强键唯一解析，不能按名称或历史记录猜测。
+                    hbSalesRows = hbSalesRows
+                        .Where(row => row.Quantity != 0m || row.ActualAmount != 0m)
+                        .ToList();
+                    await ResolveMissingHBSalesProductCodesAsync(context, hbSalesRows);
+
+                    var invalidHBSalesRows = hbSalesRows
+                        .Where(row =>
+                            string.IsNullOrWhiteSpace(row.BranchCode)
+                            || string.IsNullOrWhiteSpace(row.ProductCode)
+                        )
+                        .ToList();
+                    if (invalidHBSalesRows.Any())
+                    {
+                        var missingFields = new List<string>();
+                        if (invalidHBSalesRows.Any(row => string.IsNullOrWhiteSpace(row.BranchCode)))
+                            missingFields.Add("分店编码");
+                        if (invalidHBSalesRows.Any(row => string.IsNullOrWhiteSpace(row.ProductCode)))
+                            missingFields.Add("商品编码且无法获得唯一商品候选");
+                        throw new InvalidOperationException(
+                            $"2025 HBSales 存在 {invalidHBSalesRows.Count} 条非零来源行缺少{string.Join("或", missingFields)}，不能替换双表统计: {targetDate:yyyy-MM-dd}"
+                        );
+                    }
+                }
+                var hbSalesLastModifiedTime = GetLatestSourceTime(hbSalesRows);
+                lastSourceUploadTime = GetLatestSourceTime(lastSourceUploadTime, hbSalesLastModifiedTime);
+                var missingHBSalesBranchCount = hbSalesRows.Count(row =>
+                    string.IsNullOrWhiteSpace(row.BranchCode)
+                );
+                if (missingHBSalesBranchCount > 0)
+                {
+                    // 缺分店行无法落到日分店统计，只记录诊断，不能擅自改变既有订单或取整口径。
+                    logger.LogWarning(
+                        "2025 HBSales 有 {Count} 条明细缺少分店编码，未写入商品分店统计: {Date}",
+                        missingHBSalesBranchCount,
+                        targetDate.ToString("yyyy-MM-dd")
+                    );
+                }
 
                 // 商品统计以明细表为主；老系统退货也在明细表中，负数会自然冲减。
-                var detailRows = await posmContext
+                var detailRows = preloadedPosmSnapshot?.DetailRows.ToList() ?? await posmContext
                     .Db.Queryable<SalesOrder>()
                     .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid)
                     .Where(o =>
@@ -1760,33 +2354,35 @@ namespace BlazorApp.Api.Services
                     .Select(guid => guid!)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                var supplementalReturnRows = await LoadSupplementalReturnRowsAsync(
-                    posmContext,
-                    targetDate,
-                    nextDate,
-                    detailGuidSet
-                );
+                var supplementalReturnRows = preloadedPosmSnapshot?.SupplementalReturnRows.ToList()
+                    ?? await LoadSupplementalReturnRowsAsync(posmContext, targetDate, nextDate, detailGuidSet);
 
                 var rawRows = detailRows
                     .Concat(supplementalReturnRows)
+                    .Concat(hbSalesRows)
                     .ToList();
                 var supplementalReturnRowSet = supplementalReturnRows.ToHashSet();
                 // 销售明细按支付金额分摊；仅落退货表的补充行继续按退货金额直接冲减。
-                var orderAmountMaps = await LoadOrderAmountMapsAsync(
-                    posmContext,
-                    targetDate,
-                    nextDate,
-                    detailRows,
-                    row => row.OrderGuid,
-                    row => row.ActualAmount
-                );
+                var orderAmountMaps = preloadedPosmSnapshot == null
+                    ? await LoadOrderAmountMapsAsync(posmContext, targetDate, nextDate, detailRows, row => row.OrderGuid, row => row.ActualAmount)
+                    : (
+                        PaymentAmounts: BuildOrderAmountMap(preloadedPosmSnapshot.PaymentRows.Select(row => new OrderAmountRow
+                        {
+                            OrderGuid = row.OrderGuid,
+                            Amount = row.Amount,
+                        })),
+                        DetailAmounts: BuildOrderAmountMap(detailRows.Select(row => new OrderAmountRow
+                        {
+                            OrderGuid = row.OrderGuid,
+                            Amount = row.ActualAmount,
+                        }))
+                    );
 
-                var deviceBranchMap = await LoadDeviceBranchMapAsync(
-                    posmContext,
-                    rawRows
-                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
-                        .Select(row => row.DeviceCode)
-                );
+                var deviceBranchMap = preloadedPosmSnapshot?.DeviceBranchMap
+                    ?? await LoadDeviceBranchMapAsync(
+                        posmContext,
+                        rawRows.Where(row => string.IsNullOrWhiteSpace(row.BranchCode)).Select(row => row.DeviceCode)
+                    );
 
                 var productCodes = rawRows
                     .Select(x => x.ProductCode)
@@ -1800,26 +2396,11 @@ namespace BlazorApp.Api.Services
                     .Distinct()
                     .ToList();
 
-                var storeCosts = productCodes.Any() && branchCodes.Any()
-                    ? await context.Db.Queryable<StoreRetailPrice>()
-                        .Where(p =>
-                            p.ProductCode != null
-                            && p.StoreCode != null
-                            && productCodes.Contains(p.ProductCode)
-                            && branchCodes.Contains(p.StoreCode)
-                            && p.SupplierCode != null
-                            && p.IsDeleted == false
-                            && p.IsActive == true
-                        )
-                        .Select(p => new StoreCostRow
-                        {
-                            StoreCode = p.StoreCode,
-                            SupplierCode = p.SupplierCode,
-                            ProductCode = p.ProductCode,
-                            PurchasePrice = p.PurchasePrice,
-                        })
-                        .ToListAsync()
-                    : new List<StoreCostRow>();
+                var storeCosts = await LoadStoreCostsInBatchesAsync(
+                    context,
+                    productCodes,
+                    branchCodes
+                );
                 var storeCostMap = storeCosts
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.StoreCode)
@@ -1874,7 +2455,7 @@ namespace BlazorApp.Api.Services
                     {
                         Row = x,
                         ResolvedBranchCode = ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
-                        StatisticAmount = supplementalReturnRowSet.Contains(x)
+                        StatisticAmount = x.IsHBSalesSource || supplementalReturnRowSet.Contains(x)
                             ? x.ActualAmount
                             : ResolveStatisticAmount(
                                 x.OrderGuid,
@@ -1896,7 +2477,7 @@ namespace BlazorApp.Api.Services
                 if (unmatchedSupplierRows.Any())
                 {
                     diagnostics.UnmatchedSupplierAmount = unmatchedSupplierRows.Sum(x => x.StatisticAmount);
-                    diagnostics.UnmatchedSupplierQuantity = unmatchedSupplierRows.Sum(x => x.Row.Quantity);
+                    diagnostics.UnmatchedSupplierQuantity = (int)unmatchedSupplierRows.Sum(x => x.Row.Quantity);
                     diagnostics.UnmatchedSupplierProductCount = unmatchedSupplierRows
                         .Select(x => x.Row.ProductCode)
                         .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -1910,7 +2491,7 @@ namespace BlazorApp.Api.Services
                             {
                                 BranchCode = group.Key,
                                 UnmatchedSupplierAmount = group.Sum(x => x.StatisticAmount),
-                                UnmatchedSupplierQuantity = group.Sum(x => x.Row.Quantity),
+                                UnmatchedSupplierQuantity = (int)group.Sum(x => x.Row.Quantity),
                                 UnmatchedSupplierProductCount = group
                                     .Select(x => x.Row.ProductCode)
                                     .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -1930,7 +2511,9 @@ namespace BlazorApp.Api.Services
                     })
                     .Select(group =>
                     {
-                        var quantity = group.Sum(x => x.Row.Quantity);
+                        // HBSales 数量是 decimal；必须先按商品汇总，再按既有年度口径转成整数。
+                        var sourceQuantity = group.Sum(x => x.Row.Quantity);
+                        var quantity = (int)sourceQuantity;
                         var totalAmount = group.Sum(x => x.StatisticAmount);
                         var unitCost = ResolveUnitCost(
                             group.Key.BranchCode,
@@ -1979,7 +2562,7 @@ namespace BlazorApp.Api.Services
                     .Select(group => new ProductStoreDailyBranchRollup(
                         group.Key,
                         group.Sum(x => x.StatisticAmount),
-                        group.Sum(x => x.Row.Quantity)
+                        (int)group.Sum(x => x.Row.Quantity)
                     ))
                     .ToList();
 
@@ -1989,13 +2572,62 @@ namespace BlazorApp.Api.Services
                     statisticsList,
                     diagnostics,
                     lastSourceUploadTime,
-                    supplementalReturnAdjustments
+                    supplementalReturnAdjustments,
+                    atomicStoreStatistics
                 );
+                if (status.Status == SalesStatisticRefreshStatus.Pending && rawRows.Any())
+                {
+                    // 有来源行却没有任何有效商品分店主键时不能当作合法空销售日成功。
+                    status = new ProductStatisticStatusResult(
+                        SalesStatisticRefreshStatus.Failed,
+                        $"商品分店每日统计存在 {rawRows.Count} 条来源记录，但没有可写入的有效分店商品: {targetDate:yyyy-MM-dd}"
+                    );
+                }
+
+                if (atomicStoreStatistics != null && status.Status == SalesStatisticRefreshStatus.Failed)
+                {
+                    // 2025 双表原子入口不能把业务失败当作可提交结果，否则会用空/不完整结果覆盖旧统计。
+                    throw new InvalidOperationException(status.ErrorMessage ?? "2025 商品分店每日统计业务校验失败");
+                }
+
+                if (atomicStoreStatistics != null
+                    && status.Status == SalesStatisticRefreshStatus.Fresh
+                    && !string.IsNullOrWhiteSpace(atomicSuccessStatusOverride))
+                {
+                    // 批量快照在批末复核前绝不能留下可跳过的 Fresh。
+                    status = new ProductStatisticStatusResult(
+                        atomicSuccessStatusOverride,
+                        status.ErrorMessage
+                    );
+                }
+
+                // 原子入口传入的水位已同时覆盖订单头、明细、支付和 HBSales；两类状态必须写同一个值。
+                var effectiveSourceWatermark = sourceWatermarkOverride ?? lastSourceUploadTime;
+
+                if (validateSourceWatermarkBeforeCommitAsync != null)
+                {
+                    // 构建完成后、开启主库事务前再次确认来源快照未漂移。
+                    await validateSourceWatermarkBeforeCommitAsync();
+                }
 
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
+                        if (atomicStoreStatistics != null)
+                        {
+                            // 2025 先替换分店基线，再替换商品日表和两类状态；四项写入必须同一事务提交。
+                            await context.Db.Deleteable<StoreSalesStatistic>()
+                                .Where(s => s.Date == targetDate)
+                                .ExecuteCommandAsync();
+                            if (atomicStoreStatistics.Any())
+                            {
+                                context.Db.Fastest<StoreSalesStatistic>()
+                                    .PageSize(BatchSize)
+                                    .BulkCopy(atomicStoreStatistics.ToList());
+                            }
+                        }
+
                         var deletedCount = await context.Db.Deleteable<ProductStoreDailySalesStatistic>()
                             .Where(s => s.Date == targetDate)
                             .ExecuteCommandAsync();
@@ -2008,7 +2640,25 @@ namespace BlazorApp.Api.Services
                                 .BulkCopy(statisticsList);
                         }
 
-                        await UpsertProductStatisticStateAsync(context, targetDate, status, lastSourceUploadTime);
+                        await UpsertProductStatisticStateAsync(
+                            context,
+                            targetDate,
+                            status,
+                            effectiveSourceWatermark,
+                            overwriteLastSourceUploadTime: atomicStoreStatistics != null
+                        );
+                        if (atomicStoreStatistics != null)
+                        {
+                            await UpsertStatisticStateAsync(
+                                context,
+                                SalesStatisticType.StoreSales,
+                                targetDate,
+                                status.Status,
+                                effectiveSourceWatermark,
+                                status.ErrorMessage,
+                                overwriteLastSourceUploadTime: true
+                            );
+                        }
                     },
                     commitAsync: () => context.Db.Ado.CommitTranAsync(),
                     rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
@@ -2025,14 +2675,217 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await UpsertProductStatisticStateAsync(
-                    context,
-                    targetDate,
-                    new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Failed, ex.Message),
-                    null
-                );
+                if (atomicStoreStatistics == null)
+                {
+                    try
+                    {
+                        await UpsertProductStatisticStateAsync(
+                            context,
+                            targetDate,
+                            new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Failed, ex.Message),
+                            null
+                        );
+                    }
+                    catch (Exception stateException)
+                    {
+                        // 失败状态无法持久化时仅记录附加错误，绝不能覆盖原始统计异常。
+                        logger.LogError(stateException, "写入商品分店每日统计失败状态失败: {Date}", targetDate);
+                    }
+                }
+                else
+                {
+                    // 2025 原子入口统一在外层独立事务成对写 Failed，避免内外层重复或单边落状态。
+                    logger.LogDebug(ex, "2025 双表原子统计失败，交由外层持久化成对失败状态: {Date}", targetDate);
+                }
                 logger.LogError(ex, "更新商品分店每日统计失败: {Date}", targetDate);
                 throw;
+            }
+            finally
+            {
+                context.Db.Ado.CommandTimeOut = originalCommandTimeout;
+            }
+        }
+
+        private async Task Update2025StoreAndProductStatisticsAtomically(
+            SqlSugarContext context,
+            POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
+            ILogger logger,
+            DateTime date,
+            DateTime? sourceWatermarkOverride = null,
+            IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows = null,
+            HBSales2025DailySnapshotSignature? expectedHBSalesSignature = null,
+            bool deferHBSalesStabilityToBatchEnd = false,
+            Posm2025DailySnapshot? preloadedPosmSnapshot = null
+        )
+        {
+            var targetDate = date.Date;
+            DateTime? effectiveSourceWatermark = null;
+            try
+            {
+                var requiredHBSalesContext = hbSalesContext
+                    ?? throw new InvalidOperationException("2025 年统计缺少 HBSalesRecord 上下文");
+                // 先读取明细快照：分店/商品统计和 pre 水位必须基于同一批 HBSales 行，避免额外聚合扫描。
+                var hbSalesRows = preloadedHBSalesRows?.ToList()
+                    ?? await LoadHBSalesProductStoreDailyRowsAsync(
+                        requiredHBSalesContext,
+                        targetDate,
+                        targetDate.AddDays(1)
+                    );
+                if (expectedHBSalesSignature != null)
+                {
+                    var actualSignature = CreateHBSales2025DailySnapshotSignature(
+                        targetDate,
+                        hbSalesRows
+                    );
+                    if (actualSignature != expectedHBSalesSignature)
+                    {
+                        throw new InvalidOperationException(
+                            $"2025 批量预载 HBSales 签名不匹配，拒绝提交: {targetDate:yyyy-MM-dd}"
+                        );
+                    }
+                }
+                // 构建前先固定 POSM 与 HBSales 水位。批量路径只在日内复核 POSM，
+                // HBSales 由批末的同范围签名一次复核，避免每天再扫描千万级详情表。
+                var prePosmSourceWatermark = preloadedPosmSnapshot == null
+                    ? await QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate)
+                    : GetPosmSnapshotWatermark(preloadedPosmSnapshot);
+                var preSourceWatermark = GetLatestSourceTime(
+                    prePosmSourceWatermark,
+                    GetHBSalesSourceWatermark(hbSalesRows)
+                );
+                effectiveSourceWatermark = preSourceWatermark;
+                if (sourceWatermarkOverride.HasValue
+                    && preSourceWatermark != sourceWatermarkOverride)
+                {
+                    throw new InvalidOperationException(
+                        $"2025 双表统计来源水位在调用后已变化，拒绝提交: {targetDate:yyyy-MM-dd}"
+                    );
+                }
+
+                // 事务开始前完成两套来源读取和两张表计算，缩短主库锁定窗口。
+                var storeBuildStopwatch = Stopwatch.StartNew();
+                var storeStatistics = await BuildStoreStatisticsAsync(
+                    context,
+                    posmContext,
+                    requiredHBSalesContext,
+                    targetDate,
+                    null,
+                    hbSalesRows,
+                    preloadedPosmSnapshot
+                );
+                logger.LogInformation("2025 Runner store build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, storeBuildStopwatch.ElapsedMilliseconds);
+                var productBuildStopwatch = Stopwatch.StartNew();
+                await UpdateProductStoreDailyStatisticsWithContext(
+                    context,
+                    posmContext,
+                    requiredHBSalesContext,
+                    logger,
+                    targetDate,
+                    storeStatistics,
+                    effectiveSourceWatermark,
+                    async () =>
+                    {
+                        var postSignatureStopwatch = Stopwatch.StartNew();
+                        if (preloadedPosmSnapshot != null)
+                        {
+                            // 提交前只复核同日来源；四张表逐表比较，任一张漂移都拒绝写入 HBweb。
+                            var postPosmSnapshot = await Load2025PosmDailySnapshotAsync(targetDate);
+                            if (postPosmSnapshot.Signature != preloadedPosmSnapshot.Signature)
+                            {
+                                throw new InvalidOperationException(
+                                    $"2025 Runner POSM 日快照签名发生变化，拒绝提交: {targetDate:yyyy-MM-dd}"
+                                );
+                            }
+                        }
+                        var postSourceWatermark = deferHBSalesStabilityToBatchEnd
+                            // 批量路径把 HBSales 放到批末一次复核；日内仍必须独立复核 POSM。
+                            ? await QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate)
+                            : await QueryDailySourceWatermarkAsync(
+                                posmContext,
+                                requiredHBSalesContext,
+                                targetDate
+                            );
+                        var sourceWatermarkToCompare = deferHBSalesStabilityToBatchEnd
+                            ? prePosmSourceWatermark
+                            : preSourceWatermark;
+                        if (postSourceWatermark != sourceWatermarkToCompare)
+                        {
+                            throw new InvalidOperationException(
+                                $"2025 双表统计构建期间来源水位发生变化，拒绝提交: {targetDate:yyyy-MM-dd}"
+                            );
+                        }
+                        logger.LogInformation("2025 Runner post signature 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, postSignatureStopwatch.ElapsedMilliseconds);
+                    },
+                    hbSalesRows,
+                    deferHBSalesStabilityToBatchEnd ? ProvisionalFreshStatus : null,
+                    preloadedPosmSnapshot
+                );
+                logger.LogInformation("2025 Runner product build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, productBuildStopwatch.ElapsedMilliseconds);
+            }
+            catch (Exception ex)
+            {
+                await Persist2025AtomicFailureStatesAsync(
+                    context,
+                    logger,
+                    targetDate,
+                    effectiveSourceWatermark,
+                    ex
+                );
+                throw;
+            }
+        }
+
+        private async Task Persist2025AtomicFailureStatesAsync(
+            SqlSugarContext context,
+            ILogger logger,
+            DateTime targetDate,
+            DateTime? effectiveSourceWatermark,
+            Exception originalException
+        )
+        {
+            try
+            {
+                // 主统计事务已回滚或尚未开始；此处独立事务保证两类 Failed 状态成对提交。
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        await UpsertProductStatisticStateAsync(
+                            context,
+                            targetDate,
+                            new ProductStatisticStatusResult(
+                                SalesStatisticRefreshStatus.Failed,
+                                originalException.Message
+                            ),
+                            effectiveSourceWatermark,
+                            overwriteLastSourceUploadTime: true
+                        );
+                        await UpsertStatisticStateAsync(
+                            context,
+                            SalesStatisticType.StoreSales,
+                            targetDate,
+                            SalesStatisticRefreshStatus.Failed,
+                            effectiveSourceWatermark,
+                            originalException.Message,
+                            overwriteLastSourceUploadTime: true
+                        );
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "2025 双表统计失败状态写入"
+                );
+            }
+            catch (Exception stateException)
+            {
+                // 状态持久化失败只补充日志；调用方必须仍收到最初的业务或事务异常。
+                logger.LogError(
+                    stateException,
+                    "2025 双表统计失败状态写入失败，保留原始异常: {Date}, OriginalError={OriginalError}",
+                    targetDate,
+                    originalException.Message
+                );
             }
         }
 
@@ -2051,6 +2904,587 @@ namespace BlazorApp.Api.Services
                 return mappedBranch?.Trim() ?? string.Empty;
 
             return string.Empty;
+        }
+
+        private static DateTime? GetPosmSnapshotWatermark(Posm2025DailySnapshot snapshot)
+        {
+            var values = snapshot.OrderRows.Select(row => row.LastUploadTime)
+                .Concat(snapshot.DetailRows.Select(row => GetLatestSourceTime(row.OrderLastUploadTime, row.DetailLastUploadTime)))
+                .Concat(snapshot.PaymentRows.Select(row => row.LastUploadTime))
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+            return values.Count == 0 ? null : values.Max();
+        }
+
+        private HBSalesRecordSqlSugarContext? GetHBSalesContextFor2025(DateTime date)
+        {
+            if (date.Year != 2025)
+                return null;
+
+            // 不允许 2025 在依赖未注册时悄悄退化为 POSM-only，避免全量回填遗漏 HBSales 数据。
+            return _hbSalesContext
+                ?? throw new InvalidOperationException("2025 年商品统计缺少 HBSalesRecord 上下文");
+        }
+
+        internal static async Task<List<StoreCostRow>> LoadStoreCostsInBatchesAsync(
+            SqlSugarContext context,
+            IReadOnlyCollection<string> productCodes,
+            IReadOnlyCollection<string> branchCodes
+        )
+        {
+            if (productCodes.Count == 0 || branchCodes.Count == 0)
+                return new List<StoreCostRow>();
+
+            var normalizedBranchCodes = branchCodes.Distinct(StringComparer.Ordinal).ToList();
+            var rows = new List<StoreCostRow>();
+            foreach (var productCodeBatch in productCodes
+                .Distinct(StringComparer.Ordinal)
+                .Chunk(StoreCostProductQueryBatchSize))
+            {
+                // 超大 IN 条件在 460 万行分店价格表上会导致 SQL Server 优化和并发超时；
+                // 小批量查询继续命中现有 ProductCode + StoreCode 索引，统计口径保持不变。
+                var batch = productCodeBatch.ToList();
+                var batchRows = await context.Db.Queryable<StoreRetailPrice>()
+                    .Where(p =>
+                        p.ProductCode != null
+                        && p.StoreCode != null
+                        && batch.Contains(p.ProductCode)
+                        && normalizedBranchCodes.Contains(p.StoreCode)
+                        && p.SupplierCode != null
+                        && p.IsDeleted == false
+                        && p.IsActive == true
+                    )
+                    .Select(p => new StoreCostRow
+                    {
+                        StoreCode = p.StoreCode,
+                        SupplierCode = p.SupplierCode,
+                        ProductCode = p.ProductCode,
+                        PurchasePrice = p.PurchasePrice,
+                    })
+                    .ToListAsync();
+                rows.AddRange(batchRows);
+            }
+
+            return rows;
+        }
+
+        private static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductStoreDailyRowsAsync(
+            HBSalesRecordSqlSugarContext hbSalesContext,
+            DateTime targetDate,
+            DateTime nextDate,
+            int? maxRows = null
+        )
+        {
+            var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
+            var mainCheckoutDateWindowStart = targetDate.AddDays(
+                -HBSalesMainCheckoutDateWindowDays
+            );
+            var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+            hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
+                originalCommandTimeout,
+                CommandTimeoutSeconds
+            );
+            List<ProductStoreDailySourceRow> rows;
+            try
+            {
+                var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
+                    .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                        main.B销售单号 == detail.B销售单号
+                    )
+                    .Where((main, detail) =>
+                        detail.B结账日期.HasValue
+                        && detail.B结账日期.Value >= targetDate
+                        && detail.B结账日期.Value < nextDate
+                        && main.B结账日期.HasValue
+                        && main.B结账日期.Value >= mainCheckoutDateWindowStart
+                        && main.B结账日期.Value < mainCheckoutDateWindowEnd
+                        &&
+                        // SQL 的 != 会丢掉 NULL；年度口径是只排除类型 2。
+                        (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    )
+                    .Select((main, detail) => new ProductStoreDailySourceRow
+                    {
+                        IsHBSalesSource = true,
+                        Date = detail.B结账日期!.Value.Date,
+                        // 前缀避免与 POSM 的订单号偶然相同而误合并订单数。
+                        OrderGuid = "HBSALES:" + main.B销售单号,
+                        // 分店统计的订单数必须保留源单号的 null 语义，不能从带前缀的显示键反推。
+                        HBSalesOrderNumber = main.B销售单号,
+                        DetailGuid = $"HBSALES:{detail.ID}",
+                        // 与既有 2025 年度统计保持一致：分店以明细记录为准，不从主表补写。
+                        BranchCode = detail.B分店代码,
+                        ProductCode = detail.B产品编号,
+                        ItemNumber = detail.B货号,
+                        SupplierCode = detail.B供应商ID,
+                        ProductName = detail.B商品名,
+                        Barcode = detail.B条形码,
+                        Quantity = detail.B数量 ?? 0m,
+                        ActualAmount = detail.B合计金额 ?? 0m,
+                        // HBSales 使用明细/主表的最后修改时间；创建时间仅作为旧记录的可靠回退。
+                        // 同时保留四个原始时间，供 pre 水位按字段独立 MAX，不能由回退值反推。
+                        HBSalesMainLastModifiedAt = main.FGC_LastModifyDate,
+                        HBSalesMainCreatedAt = main.FGC_CreateDate,
+                        HBSalesDetailLastModifiedAt = detail.FGC_LastModifyDate,
+                        HBSalesDetailCreatedAt = detail.FGC_CreateDate,
+                        OrderLastUploadTime = main.FGC_LastModifyDate ?? main.FGC_CreateDate,
+                        DetailLastUploadTime = detail.FGC_LastModifyDate ?? detail.FGC_CreateDate,
+                        DocumentType = main.B单据类型,
+                    });
+                rows = maxRows.HasValue
+                    ? await query.Take(maxRows.Value + 1).ToListAsync()
+                    : await query.ToListAsync();
+            }
+            finally
+            {
+                // 共享上下文可能被后续查询复用，必须还原调用方原有超时。
+                hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+            }
+
+            if (maxRows.HasValue && rows.Count > maxRows.Value)
+            {
+                throw new InvalidOperationException(
+                    $"2025 HBSales 批量快照超过 {maxRows.Value:N0} 行内存保护上限，请缩小日期范围"
+                );
+            }
+
+            foreach (var row in rows.Where(row =>
+                NormalizeCode(row.DocumentType) == "3" || NormalizeCode(row.DocumentType) == "4"
+            ))
+            {
+                // HBSales 年度统计口径：类型 3/4 为退货/退款，数量和金额统一取反。
+                row.Quantity = -row.Quantity;
+                row.ActualAmount = -row.ActualAmount;
+            }
+
+            return rows;
+        }
+
+        private static HBSales2025DailySnapshotSignature CreateHBSales2025DailySnapshotSignature(
+            DateTime date,
+            IEnumerable<ProductStoreDailySourceRow> rows
+        )
+        {
+            var dayRows = rows.Where(row => row.Date.Date == date.Date).ToList();
+            var mainLastModifiedAt = dayRows.Max(row => row.HBSalesMainLastModifiedAt);
+            var mainCreatedAt = dayRows.Max(row => row.HBSalesMainCreatedAt);
+            var detailLastModifiedAt = dayRows.Max(row => row.HBSalesDetailLastModifiedAt);
+            var detailCreatedAt = dayRows.Max(row => row.HBSalesDetailCreatedAt);
+            using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (var row in dayRows.OrderBy(row => row.HBSalesOrderNumber, StringComparer.Ordinal)
+                         .ThenBy(row => row.DetailGuid, StringComparer.Ordinal)
+                         .ThenBy(row => row.BranchCode, StringComparer.Ordinal)
+                         .ThenBy(row => row.ProductCode, StringComparer.Ordinal))
+            {
+                // 长度前缀和固定字段顺序让 checksum 与 SQL 返回顺序无关，并区分 null、空串及边界拼接。
+                AppendHBSalesSignatureValue(checksum, row.HBSalesOrderNumber);
+                AppendHBSalesSignatureValue(checksum, row.DetailGuid);
+                AppendHBSalesSignatureValue(checksum, row.Date);
+                AppendHBSalesSignatureValue(checksum, row.BranchCode);
+                AppendHBSalesSignatureValue(checksum, row.ProductCode);
+                AppendHBSalesSignatureValue(checksum, row.ItemNumber);
+                AppendHBSalesSignatureValue(checksum, row.Barcode);
+                AppendHBSalesSignatureValue(checksum, row.SupplierCode);
+                AppendHBSalesSignatureValue(checksum, row.ProductName);
+                AppendHBSalesSignatureValue(checksum, row.Quantity);
+                AppendHBSalesSignatureValue(checksum, row.ActualAmount);
+                AppendHBSalesSignatureValue(checksum, row.DocumentType);
+                AppendHBSalesSignatureValue(checksum, row.HBSalesMainLastModifiedAt);
+                AppendHBSalesSignatureValue(checksum, row.HBSalesMainCreatedAt);
+                AppendHBSalesSignatureValue(checksum, row.HBSalesDetailLastModifiedAt);
+                AppendHBSalesSignatureValue(checksum, row.HBSalesDetailCreatedAt);
+            }
+            return new HBSales2025DailySnapshotSignature(
+                date.Date,
+                dayRows.Count,
+                mainLastModifiedAt,
+                mainCreatedAt,
+                detailLastModifiedAt,
+                detailCreatedAt,
+                Convert.ToHexString(checksum.GetHashAndReset())
+            );
+        }
+
+        private static void AppendHBSalesSignatureValue(IncrementalHash checksum, object? value)
+        {
+            var text = value switch
+            {
+                null => "<null>",
+                DateTime dateTime => dateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                decimal decimalValue => decimalValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            };
+            var bytes = Encoding.UTF8.GetBytes(text);
+            checksum.AppendData(BitConverter.GetBytes(bytes.Length));
+            checksum.AppendData(bytes);
+        }
+
+        private static Posm2025DailySnapshotSignature CreatePosm2025DailySnapshotSignature(
+            DateTime date,
+            IEnumerable<StoreStatisticOrderRow> orders,
+            IEnumerable<ProductStoreDailySourceRow> details,
+            IEnumerable<StoreStatisticPaymentRow> payments,
+            IEnumerable<ProductStoreDailySourceRow> salesReturns
+        )
+        {
+            // 每张表独立签名，才能识别某张表单独新增、删除或只改金额/时间的情况。
+            var orderRows = orders.OrderBy(row => row.OrderGuid, StringComparer.Ordinal).ToList();
+            var detailRows = details.OrderBy(row => row.DetailGuid, StringComparer.Ordinal).ToList();
+            var paymentRows = payments.OrderBy(row => row.PaymentGuid, StringComparer.Ordinal).ToList();
+            var returnRows = salesReturns.OrderBy(row => row.DetailGuid, StringComparer.Ordinal).ToList();
+            return new Posm2025DailySnapshotSignature(
+                date.Date,
+                CreatePosmTableSignature(orderRows, row => row.UpdatedAt, row => row.CreatedAt, row =>
+                    [row.OrderGuid, row.OrderTime, row.BranchCode, row.DeviceCode, row.Status, row.LastUploadTime, row.CreatedAt, row.UpdatedAt]),
+                CreatePosmTableSignature(detailRows, row => row.SourceUpdatedAt, row => row.SourceCreatedAt, row =>
+                    [row.OrderGuid, row.DetailGuid, row.ProductCode, row.SupplierCode, row.ProductName, row.Barcode, row.Quantity, row.ActualAmount, row.DetailLastUploadTime, row.SourceCreatedAt, row.SourceUpdatedAt]),
+                CreatePosmTableSignature(paymentRows, row => row.UpdatedAt, row => row.CreatedAt, row =>
+                    [row.PaymentGuid, row.OrderGuid, row.Amount, row.LastUploadTime, row.CreatedAt, row.UpdatedAt]),
+                CreatePosmTableSignature(returnRows, row => row.SourceUpdatedAt, row => row.SourceCreatedAt, row =>
+                    [row.OrderGuid, row.DetailGuid, row.ProductCode, row.Quantity, row.ActualAmount, row.SourceCreatedAt, row.SourceUpdatedAt])
+            );
+        }
+
+        private static Posm2025DailyTableSignature CreatePosmTableSignature<T>(
+            IReadOnlyList<T> rows,
+            Func<T, DateTime?> lastModifiedSelector,
+            Func<T, DateTime?> createdSelector,
+            Func<T, object?[]> valuesSelector
+        )
+        {
+            using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (var row in rows)
+            {
+                foreach (var value in valuesSelector(row))
+                    AppendHBSalesSignatureValue(checksum, value);
+            }
+            return new Posm2025DailyTableSignature(
+                rows.Count,
+                rows.Max(lastModifiedSelector),
+                rows.Max(createdSelector),
+                Convert.ToHexString(checksum.GetHashAndReset())
+            );
+        }
+
+        private static async Task ResolveMissingHBSalesProductCodesAsync(
+            SqlSugarContext context,
+            IReadOnlyList<ProductStoreDailySourceRow> hbSalesRows
+        )
+        {
+            var rowsToResolve = hbSalesRows
+                .Where(row => string.IsNullOrWhiteSpace(row.ProductCode))
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(NormalizeCode(row.ItemNumber))
+                    || !string.IsNullOrWhiteSpace(NormalizeCode(row.Barcode))
+                )
+                .ToList();
+            if (!rowsToResolve.Any())
+            {
+                return;
+            }
+
+            var globalLookupCodes = rowsToResolve
+                .SelectMany(row => new[] { NormalizeCode(row.ItemNumber), NormalizeCode(row.Barcode) })
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var barcodeLookupCodes = rowsToResolve
+                .Select(row => NormalizeCode(row.Barcode))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var globalCandidates = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var branchCandidates = new Dictionary<(string StoreCode, string Barcode), HashSet<string>>();
+            var crossStoreCandidates = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+            void AddGlobalCandidate(string? lookupCode, string? productCode)
+            {
+                var normalizedLookupCode = NormalizeCode(lookupCode);
+                var normalizedProductCode = NormalizeCode(productCode);
+                if (string.IsNullOrWhiteSpace(normalizedLookupCode)
+                    || string.IsNullOrWhiteSpace(normalizedProductCode))
+                {
+                    return;
+                }
+
+                if (!globalCandidates.TryGetValue(normalizedLookupCode, out var candidates))
+                {
+                    candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    globalCandidates[normalizedLookupCode] = candidates;
+                }
+                candidates.Add(normalizedProductCode);
+            }
+
+            void AddStoreCandidate(string? storeCode, string? lookupCode, string? productCode)
+            {
+                var normalizedStoreCode = NormalizeCode(storeCode);
+                var normalizedLookupCode = NormalizeCode(lookupCode);
+                var normalizedProductCode = NormalizeCode(productCode);
+                if (string.IsNullOrWhiteSpace(normalizedStoreCode)
+                    || string.IsNullOrWhiteSpace(normalizedLookupCode)
+                    || string.IsNullOrWhiteSpace(normalizedProductCode))
+                {
+                    return;
+                }
+
+                var branchKey = (
+                    normalizedStoreCode.ToUpperInvariant(),
+                    normalizedLookupCode.ToUpperInvariant()
+                );
+                if (!branchCandidates.TryGetValue(branchKey, out var candidates))
+                {
+                    candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    branchCandidates[branchKey] = candidates;
+                }
+                candidates.Add(normalizedProductCode);
+
+                if (!crossStoreCandidates.TryGetValue(normalizedLookupCode, out var crossStore))
+                {
+                    crossStore = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    crossStoreCandidates[normalizedLookupCode] = crossStore;
+                }
+                crossStore.Add(normalizedProductCode);
+            }
+
+            foreach (var lookupCodeBatch in globalLookupCodes.Chunk(StoreCostProductQueryBatchSize))
+            {
+                // 只查询当前缺码行携带的货号/条码，分批限制 IN 条件大小，避免不受控参数量。
+                var batch = lookupCodeBatch.ToList();
+                var productRows = await context.Db.Queryable<Product>()
+                    .Where(product =>
+                        product.IsDeleted == false
+                        && product.IsActive
+                        && product.ProductCode != null
+                        && (
+                            (product.ItemNumber != null && batch.Contains(product.ItemNumber))
+                            || (product.Barcode != null && batch.Contains(product.Barcode))
+                        )
+                    )
+                    .Select(product => new { product.ItemNumber, product.Barcode, product.ProductCode })
+                    .ToListAsync();
+                foreach (var product in productRows)
+                {
+                    AddGlobalCandidate(product.ItemNumber, product.ProductCode);
+                    AddGlobalCandidate(product.Barcode, product.ProductCode);
+                }
+            }
+
+            foreach (var barcodeBatch in barcodeLookupCodes.Chunk(StoreCostProductQueryBatchSize))
+            {
+                // ProductSetCode 和 StoreMultiCodeProduct 都以条码为强键，后者还必须匹配分店。
+                var batch = barcodeBatch.ToList();
+                var productSetCodeRows = await context.Db.Queryable<ProductSetCode>()
+                    .Where(setCode =>
+                        setCode.IsDeleted == false
+                        && setCode.IsActive
+                        && setCode.ProductCode != null
+                        && setCode.SetBarcode != null
+                        && batch.Contains(setCode.SetBarcode)
+                    )
+                    .Select(setCode => new { setCode.SetBarcode, setCode.ProductCode })
+                    .ToListAsync();
+                foreach (var setCode in productSetCodeRows)
+                {
+                    AddGlobalCandidate(setCode.SetBarcode, setCode.ProductCode);
+                }
+
+                var storeMultiCodeRows = await context.Db.Queryable<StoreMultiCodeProduct>()
+                    .Where(multiCode =>
+                        multiCode.IsDeleted == false
+                        && multiCode.IsActive
+                        && multiCode.StoreCode != null
+                        && multiCode.ProductCode != null
+                        && multiCode.MultiBarcode != null
+                        && batch.Contains(multiCode.MultiBarcode)
+                    )
+                    .Select(multiCode => new
+                    {
+                        multiCode.StoreCode,
+                        multiCode.MultiBarcode,
+                        multiCode.ProductCode,
+                    })
+                    .ToListAsync();
+                foreach (var multiCode in storeMultiCodeRows)
+                {
+                    AddStoreCandidate(multiCode.StoreCode, multiCode.MultiBarcode, multiCode.ProductCode);
+                }
+            }
+
+            foreach (var row in rowsToResolve)
+            {
+                var barcode = NormalizeCode(row.Barcode);
+                var branchKey = (
+                    NormalizeCode(row.BranchCode).ToUpperInvariant(),
+                    barcode.ToUpperInvariant()
+                );
+                if (!string.IsNullOrWhiteSpace(barcode)
+                    && branchCandidates.TryGetValue(branchKey, out var branch))
+                {
+                    // 第一层命中后不可再被全局候选推翻；多候选直接保留为空，不能降级。
+                    if (branch.Count == 1)
+                    {
+                        row.ProductCode = SelectDeterministicProductCode(branch);
+                    }
+                    continue;
+                }
+
+                var global = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var lookupCode in new[]
+                    { NormalizeCode(row.ItemNumber), NormalizeCode(row.Barcode) }
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (globalCandidates.TryGetValue(lookupCode, out var candidates))
+                    {
+                        global.UnionWith(candidates);
+                    }
+                }
+
+                // 第二层将 Product 的货号/条码候选与 ProductSetCode 条码候选合并；冲突同样不能降级。
+                if (global.Count == 1)
+                {
+                    row.ProductCode = SelectDeterministicProductCode(global);
+                    continue;
+                }
+                if (global.Count > 1 || string.IsNullOrWhiteSpace(barcode))
+                {
+                    continue;
+                }
+
+                // 仅前两层均无候选时，才允许跨分店多码条码回退；多候选保持空并由原子路径失败。
+                if (crossStoreCandidates.TryGetValue(barcode, out var crossStore)
+                    && crossStore.Count == 1)
+                {
+                    row.ProductCode = SelectDeterministicProductCode(crossStore);
+                }
+            }
+        }
+
+        private static string SelectDeterministicProductCode(IEnumerable<string> candidates)
+        {
+            return candidates
+                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(code => code, StringComparer.Ordinal)
+                .First();
+        }
+
+        private static DateTime? GetLatestSourceTime(params DateTime?[] timestamps)
+        {
+            var values = timestamps.Where(timestamp => timestamp.HasValue)
+                .Select(timestamp => timestamp!.Value)
+                .ToList();
+            return values.Count == 0 ? null : values.Max();
+        }
+
+        private static DateTime? GetLatestSourceTime(IEnumerable<ProductStoreDailySourceRow> rows)
+        {
+            return GetLatestSourceTime(rows
+                .SelectMany(row => new[] { row.OrderLastUploadTime, row.DetailLastUploadTime })
+                .ToArray());
+        }
+
+        private static DateTime? GetHBSalesSourceWatermark(
+            IEnumerable<ProductStoreDailySourceRow> hbSalesRows
+        )
+        {
+            // 必须分别计算四列的 MAX：LastModify 有值时会遮蔽 Create，不能使用已 coalesce 的统计行时间。
+            return GetLatestSourceTime(
+                GetLatestSourceTime(hbSalesRows.Select(row => row.HBSalesMainLastModifiedAt).ToArray()),
+                GetLatestSourceTime(hbSalesRows.Select(row => row.HBSalesMainCreatedAt).ToArray()),
+                GetLatestSourceTime(hbSalesRows.Select(row => row.HBSalesDetailLastModifiedAt).ToArray()),
+                GetLatestSourceTime(hbSalesRows.Select(row => row.HBSalesDetailCreatedAt).ToArray())
+            );
+        }
+
+        private static async Task<List<HBSalesStoreAggregateRow>> LoadHBSalesStoreAggregatesAsync(
+            HBSalesRecordSqlSugarContext hbSalesContext,
+            DateTime targetDate,
+            DateTime nextDate
+        )
+        {
+            var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
+            var mainCheckoutDateWindowStart = targetDate.AddDays(
+                -HBSalesMainCheckoutDateWindowDays
+            );
+            var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+            hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
+                originalCommandTimeout,
+                CommandTimeoutSeconds
+            );
+            try
+            {
+                return await hbSalesContext.Db.Queryable<SalesOrderMain>()
+                    .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                        main.B销售单号 == detail.B销售单号
+                    )
+                    .Where((main, detail) =>
+                        detail.B结账日期.HasValue
+                        && detail.B结账日期.Value >= targetDate
+                        && detail.B结账日期.Value < nextDate
+                        && main.B结账日期.HasValue
+                        && main.B结账日期.Value >= mainCheckoutDateWindowStart
+                        && main.B结账日期.Value < mainCheckoutDateWindowEnd
+                        && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                        && detail.B分店代码 != null
+                        && detail.B分店代码.Trim() != ""
+                    )
+                    .GroupBy((main, detail) => detail.B分店代码!.Trim())
+                    .Select((main, detail) => new HBSalesStoreAggregateRow
+                    {
+                        BranchCode = detail.B分店代码!.Trim(),
+                        TotalAmount = SqlFunc.AggregateSum(
+                            (detail.B合计金额 ?? 0m) * SqlFunc.IIF(
+                                main.B单据类型 != null
+                                    && (main.B单据类型.Trim() == "3" || main.B单据类型.Trim() == "4"),
+                                -1m,
+                                1m
+                            )
+                        ),
+                        TotalQuantity = SqlFunc.AggregateSum(
+                            (detail.B数量 ?? 0m) * SqlFunc.IIF(
+                                main.B单据类型 != null
+                                    && (main.B单据类型.Trim() == "3" || main.B单据类型.Trim() == "4"),
+                                -1m,
+                                1m
+                            )
+                        ),
+                        OrderCount = SqlFunc.AggregateDistinctCount(main.B销售单号),
+                    })
+                    .ToListAsync();
+            }
+            finally
+            {
+                hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+            }
+        }
+
+        private static List<HBSalesStoreAggregateRow> BuildHBSalesStoreAggregates(
+            IReadOnlyList<ProductStoreDailySourceRow> hbSalesRows
+        )
+        {
+            // 原子刷新从同一份已过滤且已反向的明细派生分店汇总，避免重复扫描 HBSales。
+            return hbSalesRows
+                .Where(row => row.IsHBSalesSource)
+                .Select(row => new
+                {
+                    Row = row,
+                    BranchCode = NormalizeCode(row.BranchCode),
+                })
+                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                .GroupBy(row => row.BranchCode)
+                .Select(group => new HBSalesStoreAggregateRow
+                {
+                    BranchCode = group.Key,
+                    TotalAmount = group.Sum(row => row.Row.ActualAmount),
+                    TotalQuantity = group.Sum(row => row.Row.Quantity),
+                    // SQL DISTINCT COUNT 不计 NULL；空字符串仍是一个有效销售单号。
+                    OrderCount = group
+                        .Select(row => row.Row.HBSalesOrderNumber)
+                        .Where(orderNumber => orderNumber != null)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count(),
+                })
+                .ToList();
         }
 
         internal async Task<IReadOnlyList<ProductStoreDailyBranchRollup>> GetProductStoreDailyReturnAdjustmentsAsync(
@@ -2100,7 +3534,7 @@ namespace BlazorApp.Api.Services
                 .Select(group => new ProductStoreDailyBranchRollup(
                     group.Key,
                     group.Sum(x => x.Row.ActualAmount),
-                    group.Sum(x => x.Row.Quantity)
+                    (int)group.Sum(x => x.Row.Quantity)
                 ))
                 .ToList();
         }
@@ -2169,9 +3603,11 @@ namespace BlazorApp.Api.Services
                     SupplierCode = x.SupplierCode,
                     ProductName = x.ProductName,
                     Barcode = x.Barcode,
-                    Quantity = -(int)Math.Abs(x.ReturnQuantity ?? 0m),
+                    Quantity = -Math.Abs(x.ReturnQuantity ?? 0m),
                     ActualAmount = -Math.Abs(x.ReturnAmount ?? 0m),
                     DetailLastUploadTime = x.ReturnUpdatedTime ?? x.ReturnCreatedTime,
+                    SourceCreatedAt = x.ReturnCreatedTime,
+                    SourceUpdatedAt = x.ReturnUpdatedTime,
                 })
                 .ToList();
         }
@@ -2293,15 +3729,18 @@ namespace BlazorApp.Api.Services
         private async Task<List<StoreSalesStatistic>> BuildStoreStatisticsAsync(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
             DateTime date,
-            List<string>? branchCodes
+            List<string>? branchCodes,
+            IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows = null,
+            Posm2025DailySnapshot? preloadedPosmSnapshot = null
         )
         {
             var targetDate = date.Date;
             var nextDate = targetDate.AddDays(1);
             var targetBranchCodes = NormalizeBranchCodes(branchCodes);
 
-            var paymentRows = await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+            var paymentRows = preloadedPosmSnapshot?.PaymentRows.ToList() ?? await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
                     (pd, so) => pd.OrderGuid == so.OrderGuid
                 )
                 .Where((pd, so) =>
@@ -2320,7 +3759,16 @@ namespace BlazorApp.Api.Services
                 })
                 .ToListAsync();
 
-            var quantityRows = await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+            var quantityRows = preloadedPosmSnapshot?.DetailRows
+                .Select(row => new StoreStatisticQuantityRow
+                {
+                    OrderGuid = row.OrderGuid,
+                    BranchCode = row.BranchCode,
+                    DeviceCode = row.DeviceCode,
+                    Quantity = (int)row.Quantity,
+                })
+                .ToList()
+                ?? await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
                     (d, so) => d.OrderGuid == so.OrderGuid
                 )
                 .Where((d, so) =>
@@ -2339,7 +3787,7 @@ namespace BlazorApp.Api.Services
                 })
                 .ToListAsync();
 
-            var orderRows = await posmContext.Db.Queryable<SalesOrder>()
+            var orderRows = preloadedPosmSnapshot?.OrderRows.ToList() ?? await posmContext.Db.Queryable<SalesOrder>()
                 .Where(so =>
                     so.Status != null
                     && (so.Status == 1 || so.Status == 4)
@@ -2363,7 +3811,7 @@ namespace BlazorApp.Api.Services
                 .Select(code => code!)
                 .Distinct()
                 .ToList();
-            var deviceBranchMap = deviceCodes.Any()
+            var deviceBranchMap = preloadedPosmSnapshot?.DeviceBranchMap ?? (deviceCodes.Any()
                 ? (await posmContext.Db.Queryable<POSM_设备注册信息表>()
                     .Where(d => deviceCodes.Contains(d.系统设备编号))
                     .Select(d => new { d.系统设备编号, d.分店代码 })
@@ -2374,7 +3822,7 @@ namespace BlazorApp.Api.Services
                         x => x.Key,
                         x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
                     )
-                : new Dictionary<string, string>();
+                : new Dictionary<string, string>());
 
             bool IsTargetBranch(string branchCode) =>
                 !string.IsNullOrWhiteSpace(branchCode)
@@ -2435,7 +3883,7 @@ namespace BlazorApp.Api.Services
             var quantityByBranch = resolvedQuantityRows
                 .Where(row => IsTargetBranch(row.BranchCode))
                 .GroupBy(row => row.BranchCode)
-                .ToDictionary(group => group.Key, group => group.Sum(row => row.Quantity));
+                .ToDictionary(group => group.Key, group => (decimal)group.Sum(row => row.Quantity));
 
             var orderCountByBranch = resolvedOrderRows
                 .Where(row => IsTargetBranch(row.BranchCode) && !string.IsNullOrWhiteSpace(row.OrderGuid))
@@ -2444,6 +3892,38 @@ namespace BlazorApp.Api.Services
                     group => group.Key,
                     group => group.Select(row => row.OrderGuid).Distinct().Count()
                 );
+
+            if (targetDate.Year == 2025)
+            {
+                var hbSalesAggregates = preloadedHBSalesRows != null
+                    ? BuildHBSalesStoreAggregates(preloadedHBSalesRows)
+                    : await LoadHBSalesStoreAggregatesAsync(
+                        hbSalesContext
+                            ?? throw new InvalidOperationException("2025 年分店统计缺少 HBSalesRecord 上下文"),
+                        targetDate,
+                        nextDate
+                    );
+                var resolvedHBSalesRows = hbSalesAggregates
+                    .Select(row => new
+                    {
+                        BranchCode = NormalizeCode(row.BranchCode),
+                        row.TotalQuantity,
+                        row.TotalAmount,
+                        row.OrderCount,
+                    })
+                    .Where(row => IsTargetBranch(row.BranchCode))
+                    .ToList();
+
+                foreach (var group in resolvedHBSalesRows.GroupBy(row => row.BranchCode))
+                {
+                    amountByBranch[group.Key] = amountByBranch.GetValueOrDefault(group.Key)
+                        + group.Sum(row => row.TotalAmount);
+                    quantityByBranch[group.Key] = quantityByBranch.GetValueOrDefault(group.Key)
+                        + group.Sum(row => row.TotalQuantity);
+                    orderCountByBranch[group.Key] = orderCountByBranch.GetValueOrDefault(group.Key)
+                        + group.Sum(row => row.OrderCount);
+                }
+            }
 
             var statisticBranchCodes = amountByBranch.Keys
                 .Union(quantityByBranch.Keys)
@@ -2471,7 +3951,7 @@ namespace BlazorApp.Api.Services
                         BranchCode = branchCode,
                         BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = totalAmount,
-                        TotalQuantity = quantityByBranch.GetValueOrDefault(branchCode),
+                        TotalQuantity = (int)quantityByBranch.GetValueOrDefault(branchCode),
                         OrderCount = orderCount,
                         CustomerCount = orderCount,
                         AverageOrderValue = orderCount > 0 ? totalAmount / orderCount : 0m,
@@ -2539,13 +4019,21 @@ namespace BlazorApp.Api.Services
             List<ProductStoreDailySalesStatistic> statisticsList,
             ProductStatisticDiagnostics diagnostics,
             DateTime? lastSourceUploadTime,
-            IReadOnlyList<ProductStoreDailyBranchRollup> supplementalReturnAdjustments
+            IReadOnlyList<ProductStoreDailyBranchRollup> supplementalReturnAdjustments,
+            IReadOnlyList<StoreSalesStatistic>? atomicStoreStatistics = null
         )
         {
-            var existingStoreSales = await context.Db.Queryable<StoreSalesStatistic>()
-                .Where(s => s.Date == targetDate)
-                .Select(s => new { s.BranchCode, s.TotalAmount, s.TotalQuantity })
-                .ToListAsync();
+            var existingStoreSales = atomicStoreStatistics == null
+                ? await context.Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date == targetDate)
+                    .Select(s => new { s.BranchCode, s.TotalAmount, s.TotalQuantity })
+                    .ToListAsync()
+                : atomicStoreStatistics.Select(s => new
+                {
+                    s.BranchCode,
+                    s.TotalAmount,
+                    s.TotalQuantity,
+                }).ToList();
 
             var storeRollups = existingStoreSales
                 .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode))
@@ -2590,11 +4078,18 @@ namespace BlazorApp.Api.Services
             SqlSugarContext context,
             DateTime targetDate,
             ProductStatisticStatusResult status,
-            DateTime? lastSourceUploadTime
+            DateTime? lastSourceUploadTime,
+            bool overwriteLastSourceUploadTime = false
         )
         {
+            var nextDate = targetDate.Date.AddDays(1);
             var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
+                // SQLite/SQL Server 的 DateTime 精度不同，按规范化日期范围读取已有状态。
+                .Where(s =>
+                    s.StatisticType == SalesStatisticType.ProductStoreDaily
+                    && s.Date >= targetDate.Date
+                    && s.Date < nextDate
+                )
                 .FirstAsync();
 
             if (existing == null)
@@ -2612,6 +4107,7 @@ namespace BlazorApp.Api.Services
                 existing.ErrorMessage = status.ErrorMessage;
                 if (
                     status.Status == SalesStatisticRefreshStatus.Fresh
+                    || status.Status == ProvisionalFreshStatus
                     || status.Status == SalesStatisticRefreshStatus.Failed
                 )
                 {
@@ -2622,13 +4118,16 @@ namespace BlazorApp.Api.Services
             }
 
             existing.Status = status.Status;
-            existing.LastSourceUploadTime = lastSourceUploadTime ?? existing.LastSourceUploadTime;
+            existing.LastSourceUploadTime = overwriteLastSourceUploadTime
+                ? lastSourceUploadTime
+                : lastSourceUploadTime ?? existing.LastSourceUploadTime;
             existing.SourceTimeZone = "POSM_LOCAL";
             existing.LastAggregatedAtUtc = DateTime.UtcNow;
             existing.LastCheckedAtUtc = DateTime.UtcNow;
             existing.ErrorMessage = status.ErrorMessage;
             if (
                 status.Status == SalesStatisticRefreshStatus.Fresh
+                || status.Status == ProvisionalFreshStatus
                 || status.Status == SalesStatisticRefreshStatus.Failed
             )
             {
@@ -2643,12 +4142,18 @@ namespace BlazorApp.Api.Services
             DateTime targetDate,
             string status,
             DateTime? lastSourceUploadTime,
-            string? errorMessage
+            string? errorMessage,
+            bool overwriteLastSourceUploadTime = false
         )
         {
             var now = DateTime.UtcNow;
+            var nextDate = targetDate.Date.AddDays(1);
             var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s => s.StatisticType == statisticType && s.Date == targetDate.Date)
+                .Where(s =>
+                    s.StatisticType == statisticType
+                    && s.Date >= targetDate.Date
+                    && s.Date < nextDate
+                )
                 .FirstAsync();
             var isNew = existing == null;
 
@@ -2664,7 +4169,9 @@ namespace BlazorApp.Api.Services
             var state = existing!;
 
             state.Status = status;
-            state.LastSourceUploadTime = lastSourceUploadTime ?? state.LastSourceUploadTime;
+            state.LastSourceUploadTime = overwriteLastSourceUploadTime
+                ? lastSourceUploadTime
+                : lastSourceUploadTime ?? state.LastSourceUploadTime;
             state.LastCheckedAtUtc = now;
             state.ErrorMessage = errorMessage;
             if (status == SalesStatisticRefreshStatus.Running)
@@ -2688,48 +4195,125 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        private static async Task<DateTime?> QueryDailySourceWatermarkAsync(
+        private static async Task<DateTime?> QueryDailyPosmSourceWatermarkAsync(
             POSMSqlSugarContext posmContext,
             DateTime date
         )
         {
             var targetDate = date.Date;
             var nextDate = targetDate.AddDays(1);
-            var watermarks = new List<DateTime?>();
+            var watermarks = new List<DateTime?>
+            {
+                await posmContext.Db.Queryable<SalesOrder>()
+                    .Where(order =>
+                        order.Status != null
+                        && (order.Status == 1 || order.Status == 4)
+                        && order.OrderTime != null
+                        && order.OrderTime >= targetDate
+                        && order.OrderTime < nextDate
+                    )
+                    .MaxAsync(order => order.LastUploadTime),
+                await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                        (payment, order) => payment.OrderGuid == order.OrderGuid
+                    )
+                    .Where((payment, order) =>
+                        order.Status != null
+                        && (order.Status == 1 || order.Status == 4)
+                        && order.OrderTime != null
+                        && order.OrderTime >= targetDate
+                        && order.OrderTime < nextDate
+                    )
+                    .MaxAsync((payment, order) => payment.LastUploadTime),
+                await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+                        (detail, order) => detail.OrderGuid == order.OrderGuid
+                    )
+                    .Where((detail, order) =>
+                        order.Status != null
+                        && (order.Status == 1 || order.Status == 4)
+                        && order.OrderTime != null
+                        && order.OrderTime >= targetDate
+                        && order.OrderTime < nextDate
+                    )
+                    .MaxAsync((detail, order) => detail.LastUploadTime),
+            };
+            var values = watermarks.Where(value => value.HasValue).Select(value => value!.Value).ToList();
+            return values.Count == 0 ? null : values.Max();
+        }
 
-            watermarks.Add(await posmContext.Db.Queryable<SalesOrder>()
-                .Where(order =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync(order => order.LastUploadTime));
+        private static async Task<DateTime?> QueryDailySourceWatermarkAsync(
+            POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
+            DateTime date,
+            IReadOnlyCollection<ProductStoreDailySourceRow>? preloadedHBSalesRows = null
+        )
+        {
+            var targetDate = date.Date;
+            var nextDate = targetDate.AddDays(1);
+            var mainCheckoutDateWindowStart = targetDate.AddDays(
+                -HBSalesMainCheckoutDateWindowDays
+            );
+            var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+            var watermarks = new List<DateTime?>
+            {
+                await QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate),
+            };
 
-            watermarks.Add(await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
-                    (payment, order) => payment.OrderGuid == order.OrderGuid
-                )
-                .Where((payment, order) =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync((payment, order) => payment.LastUploadTime));
-
-            watermarks.Add(await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
-                    (detail, order) => detail.OrderGuid == order.OrderGuid
-                )
-                .Where((detail, order) =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync((detail, order) => detail.LastUploadTime));
+            if (targetDate.Year == 2025)
+            {
+                var requiredHBSalesContext = hbSalesContext
+                    ?? throw new InvalidOperationException("2025 年统计水位查询缺少 HBSalesRecord 上下文");
+                if (preloadedHBSalesRows != null)
+                {
+                    // 仅 pre 阶段复用已加载明细；post 阶段不传此参数，必须重新查库检测漂移。
+                    watermarks.Add(GetHBSalesSourceWatermark(preloadedHBSalesRows));
+                }
+                else
+                {
+                    var originalCommandTimeout = requiredHBSalesContext.Db.Ado.CommandTimeOut;
+                    requiredHBSalesContext.Db.Ado.CommandTimeOut = Math.Max(
+                        originalCommandTimeout,
+                        CommandTimeoutSeconds
+                    );
+                    HBSalesSourceWatermarkRow? hbSalesWatermark;
+                    try
+                    {
+                        hbSalesWatermark = await requiredHBSalesContext.Db.Queryable<SalesOrderMain>()
+                            .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                                main.B销售单号 == detail.B销售单号
+                            )
+                            .Where((main, detail) =>
+                                detail.B结账日期.HasValue
+                                && detail.B结账日期.Value >= targetDate
+                                && detail.B结账日期.Value < nextDate
+                                && main.B结账日期.HasValue
+                                && main.B结账日期.Value >= mainCheckoutDateWindowStart
+                                && main.B结账日期.Value < mainCheckoutDateWindowEnd
+                                && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                            )
+                            .Select((main, detail) => new HBSalesSourceWatermarkRow
+                            {
+                                MainLastModifiedAt = SqlFunc.AggregateMax(main.FGC_LastModifyDate),
+                                MainCreatedAt = SqlFunc.AggregateMax(main.FGC_CreateDate),
+                                DetailLastModifiedAt = SqlFunc.AggregateMax(detail.FGC_LastModifyDate),
+                                DetailCreatedAt = SqlFunc.AggregateMax(detail.FGC_CreateDate),
+                            })
+                            .FirstAsync();
+                    }
+                    finally
+                    {
+                        requiredHBSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+                    }
+                    if (hbSalesWatermark != null)
+                    {
+                        watermarks.Add(GetLatestSourceTime(
+                            hbSalesWatermark.MainLastModifiedAt,
+                            hbSalesWatermark.MainCreatedAt,
+                            hbSalesWatermark.DetailLastModifiedAt,
+                            hbSalesWatermark.DetailCreatedAt
+                        ));
+                    }
+                }
+            }
 
             var values = watermarks
                 .Where(value => value.HasValue)
@@ -4190,6 +5774,12 @@ namespace BlazorApp.Api.Services
                 result.TotalDays
             );
 
+            var fullRefreshMaxConcurrency = ResolveFullRefreshMaxConcurrency(
+                startDate,
+                endMonthLastDay,
+                _maxConcurrentUpdates
+            );
+
             for (var rangeStart = startDate; rangeStart <= endMonthLastDay;)
             {
                 var rangeEnd = rangeStart.AddDays(_maxDaysForConcurrentUpdate - 1);
@@ -4199,7 +5789,11 @@ namespace BlazorApp.Api.Services
                 }
 
                 // 月/季度复查复用同一条带数据库租约的日级全量刷新路径，避免旧批量入口漏表或重复跑。
-                var rangeResult = await BatchFullRefreshConcurrent(rangeStart, rangeEnd);
+                var rangeResult = await BatchFullRefreshConcurrent(
+                    rangeStart,
+                    rangeEnd,
+                    fullRefreshMaxConcurrency
+                );
                 result.ProcessedDays += rangeResult.ProcessedDays;
                 result.FailedDates.AddRange(rangeResult.FailedDates);
                 result.SkippedDates.AddRange(rangeResult.SkippedDates);
@@ -4261,7 +5855,11 @@ namespace BlazorApp.Api.Services
             }
 
             // 确定并发度
-            var concurrency = maxConcurrency ?? _maxConcurrentUpdates;
+            var concurrency = ResolveFullRefreshMaxConcurrency(
+                startDate,
+                endDate,
+                maxConcurrency ?? _maxConcurrentUpdates
+            );
 
             _logger.LogInformation(
                 "开始并发完整刷新统计数据: {StartDate} 至 {EndDate}, 并发度: {Concurrency}",
@@ -4312,6 +5910,8 @@ namespace BlazorApp.Api.Services
                                 scope.ServiceProvider.GetRequiredService<SqlSugarContext>();
                             var posmContext =
                                 scope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>();
+                            var hbSalesContext =
+                                scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>();
                             var logger = scope.ServiceProvider.GetRequiredService<
                                 ILogger<SalesStatisticsJobService>
                             >();
@@ -4322,6 +5922,7 @@ namespace BlazorApp.Api.Services
                             var rangeResult = await FullRefreshDateRangeWithContext(
                                 context,
                                 posmContext,
+                                hbSalesContext,
                                 logger,
                                 leaseService,
                                 dateRange.StartDate,
@@ -4412,11 +6013,23 @@ namespace BlazorApp.Api.Services
             return result;
         }
 
+        private static int ResolveFullRefreshMaxConcurrency(
+            DateTime startDate,
+            DateTime endDate,
+            int configuredConcurrency
+        )
+        {
+            var includes2025 = startDate.Date <= new DateTime(2025, 12, 31)
+                && endDate.Date >= new DateTime(2025, 1, 1);
+            return includes2025 ? 1 : configuredConcurrency;
+        }
+
         /// <summary>
         /// 带上下文全量刷新日期范围（用于并发处理）
         /// </summary>
         /// <param name="context">数据库上下文</param>
         /// <param name="posmContext">POSM数据库上下文</param>
+        /// <param name="hbSalesContext">HBSalesRecord 数据库上下文</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="leaseService">统计任务数据库租约服务</param>
         /// <param name="startDate">开始日期</param>
@@ -4424,6 +6037,7 @@ namespace BlazorApp.Api.Services
         private async Task<FullRefreshRangeExecutionResult> FullRefreshDateRangeWithContext(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
             ILogger logger,
             ScheduledTaskLeaseService leaseService,
             DateTime startDate,
@@ -4467,7 +6081,11 @@ namespace BlazorApp.Api.Services
                             throw new InvalidOperationException($"统计租约缺少 fencing token: {dateStr}");
                         }
 
-                        var sourceWatermark = await QueryDailySourceWatermarkAsync(posmContext, date);
+                        var sourceWatermark = await QueryDailySourceWatermarkAsync(
+                            posmContext,
+                            hbSalesContext,
+                            date
+                        );
 
                         async Task RunStep(
                             string statisticType,
@@ -4538,11 +6156,21 @@ namespace BlazorApp.Api.Services
                             "分时统计",
                             () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                         );
-                        await RunStep(
-                            SalesStatisticType.StoreSales,
-                            "分店统计",
-                            () => UpdateStoreStatisticsWithContext(context, posmContext, logger, date, null)
-                        );
+                        if (date.Year != 2025)
+                        {
+                            await RunStep(
+                                SalesStatisticType.StoreSales,
+                                "分店统计",
+                                () => UpdateStoreStatisticsWithContext(
+                                    context,
+                                    posmContext,
+                                    hbSalesContext,
+                                    logger,
+                                    date,
+                                    null
+                                )
+                            );
+                        }
                         await RunStep(
                             SalesStatisticType.SupplierSales,
                             "供应商统计",
@@ -4556,7 +6184,50 @@ namespace BlazorApp.Api.Services
                         await RunStep(
                             SalesStatisticType.ProductStoreDaily,
                             "商品分店每日统计",
-                            () => UpdateProductStoreDailyStatisticsWithContext(context, posmContext, logger, date),
+                            async () =>
+                            {
+                                if (date.Year == 2025)
+                                {
+                                    // 完整刷新也必须复用 2025 原子入口，不能先独立提交分店统计。
+                                    await Update2025StoreAndProductStatisticsAtomically(
+                                        context,
+                                        posmContext,
+                                        hbSalesContext
+                                            ?? throw new InvalidOperationException(
+                                                "2025 年完整刷新缺少 HBSalesRecord 上下文"
+                                            ),
+                                        logger,
+                                        date,
+                                        sourceWatermark
+                                    );
+                                }
+                                else
+                                {
+                                    await UpdateProductStoreDailyStatisticsWithContext(
+                                        context,
+                                        posmContext,
+                                        hbSalesContext,
+                                        logger,
+                                        date
+                                    );
+                                }
+
+                                var productState = await context.Db
+                                    .Queryable<SalesStatisticRefreshState>()
+                                    .Where(state =>
+                                        state.StatisticType == SalesStatisticType.ProductStoreDaily
+                                        && state.Date == date.Date
+                                    )
+                                    .FirstAsync();
+                                if (productState == null
+                                    || productState.Status == SalesStatisticRefreshStatus.Failed)
+                                {
+                                    throw new InvalidOperationException(
+                                        productState?.ErrorMessage
+                                            ?? $"商品分店每日统计状态缺失: {date:yyyy-MM-dd}"
+                                    );
+                                }
+                            },
                             false
                         );
                         await RunStep(
@@ -4976,12 +6647,14 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="context">数据库上下文</param>
         /// <param name="posmContext">POSM数据库上下文</param>
+        /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅 2025 年使用</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="date">目标日期</param>
         /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
         private async Task UpdateStoreStatisticsWithContext(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
             ILogger logger,
             DateTime date,
             List<string>? branchCodes
@@ -4989,6 +6662,7 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                var targetDate = date.Date;
                 logger.LogInformation(
                     "开始更新指定分店统计数据: {Date}, Branches: {Branches}",
                     date,
@@ -4998,71 +6672,41 @@ namespace BlazorApp.Api.Services
                 var statisticsList = await BuildStoreStatisticsAsync(
                     context,
                     posmContext,
-                    date,
+                    targetDate.Year == 2025
+                        ? hbSalesContext
+                            ?? throw new InvalidOperationException("2025 年分店统计缺少 HBSalesRecord 上下文")
+                        : null,
+                    targetDate,
                     branchCodes
                 );
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        var deleteable = context.Db.Deleteable<StoreSalesStatistic>()
+                            .Where(row => row.Date == targetDate);
+                        if (targetBranchCodes.Any())
+                        {
+                            deleteable = deleteable.Where(row =>
+                                targetBranchCodes.Contains(row.BranchCode)
+                            );
+                        }
 
-                // 查询数据库中已存在的记录
-                var allBranchCodes = statisticsList.Select(s => s.BranchCode).Distinct().ToList();
-                var existingRecords = allBranchCodes.Any()
-                    ? await context
-                        .Db.Queryable<StoreSalesStatistic>()
-                        .Where(s => s.Date == date && allBranchCodes.Contains(s.BranchCode))
-                        .ToListAsync()
-                    : new List<StoreSalesStatistic>();
-
-                // 构建已存在记录的字典，用于快速查找
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.BranchCode}",
-                    s => s
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条分店统计旧记录", deletedCount);
+                        if (statisticsList.Any())
+                        {
+                            context.Db.Fastest<StoreSalesStatistic>()
+                                .PageSize(BatchSize)
+                                .BulkCopy(statisticsList);
+                        }
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "并发分店统计数据更新"
                 );
-
-                var toInsert = new List<StoreSalesStatistic>();
-                var toUpdate = new List<StoreSalesStatistic>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in statisticsList)
-                {
-                    var key = $"{stat.Date}_{stat.BranchCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        // 更新已存在记录的字段值
-                        existing.BranchName = stat.BranchName;
-                        existing.TotalAmount = stat.TotalAmount;
-                        existing.TotalQuantity = stat.TotalQuantity;
-                        existing.OrderCount = stat.OrderCount;
-                        existing.CustomerCount = stat.CustomerCount;
-                        existing.AverageOrderValue = stat.AverageOrderValue;
-                        existing.UpdateTime = stat.UpdateTime;
-                        toUpdate.Add(existing);
-                    }
-                    else
-                    {
-                        // 新记录，加入插入列表
-                        toInsert.Add(stat);
-                    }
-                }
-
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<StoreSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation("批量插入 {Count} 条分店统计记录", toInsert.Count);
-                }
-
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<StoreSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation("批量更新 {Count} 条分店统计记录", toUpdate.Count);
-                }
 
                 logger.LogInformation(
                     "指定分店统计数据更新完成: {Date}, 总记录: {Total}",

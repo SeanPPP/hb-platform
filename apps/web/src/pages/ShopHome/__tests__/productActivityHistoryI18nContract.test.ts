@@ -25,6 +25,7 @@ const requiredKeys = [
   'type',
   'typeOrder',
   'typeSales',
+  'typeSalesDetails',
   'typeSubtotal',
   'orderNo',
   'orderQuantity',

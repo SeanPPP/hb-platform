@@ -5004,6 +5004,7 @@
       "type": "Type",
       "typeOrder": "Order / Shipment",
       "typeSales": "Sales",
+      "typeSalesDetails": "Sales details",
       "typeSubtotal": "Interval total",
       "orderNo": "Order No.",
       "orderQuantity": "Ordered",

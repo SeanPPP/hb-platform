@@ -4,6 +4,7 @@ import {
   getProductActivityHistoryRequestIdentity,
   runProductActivityHistoryRequest,
 } from './productActivityHistoryRequestCoordinator'
+import { buildProductActivityTableRows } from './productActivityHistoryRows'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -47,6 +48,50 @@ function getIdentity(input: {
 }
 
 async function main() {
+  const groupedRows = buildProductActivityTableRows([
+    {
+      recordType: 'salesSubtotal',
+      recordDate: '2026-08-19',
+      periodStartDate: '2026-07-17',
+      periodEndDate: '2026-08-19',
+      salesQuantity: 8,
+      averagePrice: 3.5,
+    },
+    {
+      recordType: 'sales',
+      recordDate: '2026-08-11',
+      periodStartDate: '2026-07-17',
+      periodEndDate: '2026-08-19',
+      salesQuantity: 1,
+      averagePrice: 3.5,
+    },
+    {
+      recordType: 'order',
+      recordDate: '2026-07-17',
+      orderGUID: 'ORDER-1',
+      quantity: 24,
+      allocQuantity: 24,
+    },
+  ])
+  assertEqual(groupedRows.length, 2, '区间小计和订货记录必须保持顶层可见')
+  assertEqual(groupedRows[0]?.recordType, 'salesSubtotal', 'Interval total 必须默认显示')
+  assertEqual(groupedRows[0]?.children?.length, 1, '每日 Sales 必须归入对应区间的折叠子行')
+  assertEqual(groupedRows[0]?.children?.[0]?.recordType, 'sales', '折叠内容只能是每日 Sales')
+  assertEqual(groupedRows[1]?.recordType, 'order', '订货发货记录不得被折叠')
+
+  const continuationRows = buildProductActivityTableRows([
+    {
+      recordType: 'sales',
+      recordDate: '2026-08-10',
+      periodStartDate: '2026-07-17',
+      periodEndDate: '2026-08-19',
+      salesQuantity: 1,
+    },
+  ])
+  assertEqual(continuationRows.length, 1, '分页从每日销量开始时必须生成可展开分组')
+  assertEqual(continuationRows[0]?.isSalesContinuation, true, '续页销售分组必须标记为非小计占位')
+  assertEqual(continuationRows[0]?.children?.length, 1, '续页每日销量仍必须默认收起')
+
   const coordinator = createProductActivityHistoryRequestCoordinator()
   const committed: ActivitySnapshot[] = []
   const errors: string[] = []

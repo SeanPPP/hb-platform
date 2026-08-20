@@ -4739,6 +4739,15 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(2, data.Items.Count(item => item.RecordType == "sales"));
         Assert.Equal(3, data.Items.Count(item => item.RecordType == "salesSubtotal"));
         Assert.Equal("salesSubtotal", data.Items[0].RecordType);
+        Assert.All(
+            data.Items.Where(item => item.RecordType == "sales"),
+            item =>
+            {
+                Assert.NotNull(item.PeriodStartDate);
+                Assert.NotNull(item.PeriodEndDate);
+                Assert.InRange(item.RecordDate!.Value, item.PeriodStartDate!.Value, item.PeriodEndDate!.Value);
+            }
+        );
         Assert.Equal("ORDER-ACT-A", data.Items[1].OrderGUID);
         Assert.True(
             data.Items.FindIndex(item => item.OrderGUID == "ORDER-ACT-B")
@@ -4911,6 +4920,44 @@ public sealed class StoreOrderProductListTests : IDisposable
             item => Assert.Equal(new DateTime(2026, 8, 12), item.RecordDate),
             item => Assert.Equal(new DateTime(2026, 8, 11), item.RecordDate)
         );
+    }
+
+    [Fact]
+    public void GetProductActivityHistoryAsync_单一筛选使用专用投影避免SqlServer全空列类型推断()
+    {
+        var source = File.ReadAllText(
+            FindRepositoryFile("services/backend/BlazorApp.Api/Services/React/StoreOrderReactService.cs")
+        );
+
+        Assert.Contains("if (recordType == \"order\")", source, StringComparison.Ordinal);
+        Assert.Contains("if (recordType == \"sales\")", source, StringComparison.Ordinal);
+
+        var orderMethodStart = source.IndexOf(
+            "private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadOrderActivityRowsAsync(",
+            StringComparison.Ordinal
+        );
+        var salesMethodStart = source.IndexOf(
+            "private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadSalesActivityRowsAsync(",
+            StringComparison.Ordinal
+        );
+        var nextMethodStart = source.IndexOf(
+            "private ISugarQueryable<StoreOrderProductOrderHistoryRow> BuildAggregatedProductOrderHistoryQuery(",
+            StringComparison.Ordinal
+        );
+        Assert.True(orderMethodStart >= 0 && salesMethodStart > orderMethodStart);
+        Assert.True(nextMethodStart > salesMethodStart);
+
+        var orderMethod = source[orderMethodStart..salesMethodStart];
+        var salesMethod = source[salesMethodStart..nextMethodStart];
+        Assert.DoesNotContain("SalesQuantity", orderMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreatedAt", salesMethod, StringComparison.Ordinal);
+        Assert.Contains(
+            "StoreOrderProductSalesActivityHistoryRow",
+            salesMethod,
+            StringComparison.Ordinal
+        );
+        Assert.Contains("PeriodStartDate = intervalStart", salesMethod, StringComparison.Ordinal);
+        Assert.Contains("PeriodEndDate = intervalEnd", salesMethod, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -89,6 +89,19 @@ namespace BlazorApp.Api.Services.React
             public DateTime? PeriodEndDate { get; set; }
         }
 
+        // 单独的销售筛选只投影销售字段，避免 SQL Server 把整列 NULL 的订单字段推断为字符串。
+        private sealed class StoreOrderProductSalesActivityHistoryRow
+        {
+            public string RecordType { get; set; } = "sales";
+            public DateTime? RecordDate { get; set; }
+            public DateTime? SortDate { get; set; }
+            public int SortType { get; set; }
+            public int? SalesQuantity { get; set; }
+            public decimal? AveragePrice { get; set; }
+            public DateTime? PeriodStartDate { get; set; }
+            public DateTime? PeriodEndDate { get; set; }
+        }
+
         private sealed class StoreOrderSalesInterval
         {
             public string AnchorOrderGuid { get; init; } = string.Empty;
@@ -4786,13 +4799,57 @@ namespace BlazorApp.Api.Services.React
                     });
                 }
 
-                var activityQueries = new List<ISugarQueryable<StoreOrderProductActivityHistoryRow>>();
-                if (recordType != "sales" && selectedOrders.Count > 0)
+                var selectedOrderGuids = selectedOrders
+                    .Select(item => item.OrderGUID ?? string.Empty)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .ToList();
+
+                if (recordType == "order")
                 {
-                    var selectedOrderGuids = selectedOrders
-                        .Select(item => item.OrderGUID ?? string.Empty)
-                        .Where(guid => !string.IsNullOrWhiteSpace(guid))
-                        .ToList();
+                    var orderPage = await LoadOrderActivityRowsAsync(
+                        storeCode,
+                        productCode,
+                        selectedOrderGuids,
+                        historyStartDate,
+                        historyEndExclusive,
+                        pageNumber,
+                        pageSize
+                    );
+                    result.Total = orderPage.Total;
+                    result.Items = orderPage.Rows.Select(ToActivityItem).ToList();
+
+                    return new ApiResponse<StoreOrderProductActivityHistoryResultDto>
+                    {
+                        Success = true,
+                        Data = result,
+                    };
+                }
+
+                if (recordType == "sales")
+                {
+                    if (salesContext != null && intervals.Count > 0)
+                    {
+                        var salesPage = await LoadSalesActivityRowsAsync(
+                            salesContext.StoreCode,
+                            productCode,
+                            intervals,
+                            pageNumber,
+                            pageSize
+                        );
+                        result.Total = salesPage.Total;
+                        result.Items = salesPage.Rows.Select(ToActivityItem).ToList();
+                    }
+
+                    return new ApiResponse<StoreOrderProductActivityHistoryResultDto>
+                    {
+                        Success = true,
+                        Data = result,
+                    };
+                }
+
+                var activityQueries = new List<ISugarQueryable<StoreOrderProductActivityHistoryRow>>();
+                if (selectedOrderGuids.Count > 0)
+                {
                     var orderActivityQuery = BuildAggregatedProductOrderHistoryQuery(storeCode, productCode)
                         .Where(item =>
                             selectedOrderGuids.Contains(item.OrderGUID!)
@@ -4823,42 +4880,42 @@ namespace BlazorApp.Api.Services.React
                     activityQueries.Add(orderActivityQuery);
                 }
 
-                if (recordType != "order" && salesContext != null && intervals.Count > 0)
+                if (salesContext != null && intervals.Count > 0)
                 {
-                    var dailySalesQuery = BuildDailySalesQuery(
-                            salesContext.StoreCode,
-                            productCode,
-                            intervals[0].StartDate,
-                            endDate
-                        )
-                        .Select(item => new StoreOrderProductActivityHistoryRow
-                        {
-                            RecordType = "sales",
-                            RecordDate = item.Date,
-                            SortDate = item.Date,
-                            SortType = 0,
-                            CreatedAt = null,
-                            OrderGUID = string.Empty,
-                            OrderNo = null,
-                            OrderDate = null,
-                            OutboundDate = null,
-                            FlowStatus = null,
-                            Quantity = null,
-                            AllocQuantity = null,
-                            SalesQuantity = item.TotalQuantity,
-                            AveragePrice = item.TotalQuantity == 0
-                                ? (decimal?)null
-                                : item.TotalAmount / item.TotalQuantity,
-                            PeriodStartDate = null,
-                            PeriodEndDate = null,
-                        });
-                    activityQueries.Add(dailySalesQuery);
-
                     foreach (var interval in intervals)
                     {
                         var intervalStart = interval.StartDate;
                         var intervalEnd = interval.EndDate;
                         var anchorOrderGuid = interval.AnchorOrderGuid;
+                        var dailySalesQuery = BuildDailySalesQuery(
+                                salesContext.StoreCode,
+                                productCode,
+                                intervalStart,
+                                intervalEnd
+                            )
+                            .Select(item => new StoreOrderProductActivityHistoryRow
+                            {
+                                RecordType = "sales",
+                                RecordDate = item.Date,
+                                SortDate = item.Date,
+                                SortType = 0,
+                                CreatedAt = null,
+                                OrderGUID = string.Empty,
+                                OrderNo = null,
+                                OrderDate = null,
+                                OutboundDate = null,
+                                FlowStatus = null,
+                                Quantity = null,
+                                AllocQuantity = null,
+                                SalesQuantity = item.TotalQuantity,
+                                AveragePrice = item.TotalQuantity == 0
+                                    ? (decimal?)null
+                                    : item.TotalAmount / item.TotalQuantity,
+                                PeriodStartDate = intervalStart,
+                                PeriodEndDate = intervalEnd,
+                            });
+                        activityQueries.Add(dailySalesQuery);
+
                         var subtotalQuery = _db
                             .Queryable<WareHouseOrder>()
                             .LeftJoin<ProductStoreDailySalesStatistic>((order, statistic) =>
@@ -4961,6 +5018,141 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadOrderActivityRowsAsync(
+            string storeCode,
+            string productCode,
+            List<string> selectedOrderGuids,
+            DateTime historyStartDate,
+            DateTime historyEndExclusive,
+            int pageNumber,
+            int pageSize
+        )
+        {
+            if (selectedOrderGuids.Count == 0)
+            {
+                return (0, new List<StoreOrderProductActivityHistoryRow>());
+            }
+
+            // 订单筛选直接读取订单投影；不要补齐全为 NULL 的销售列，否则 SQL Server 会把它们推断为字符串。
+            var query = BuildAggregatedProductOrderHistoryQuery(storeCode, productCode)
+                .Where(item =>
+                    selectedOrderGuids.Contains(item.OrderGUID!)
+                    && item.FlowStatus == 2
+                    && item.OutboundDate != null
+                    && item.OutboundDate >= historyStartDate
+                    && item.OutboundDate < historyEndExclusive
+                );
+            var total = await query.CountAsync();
+            var requestedSkip = (long)(pageNumber - 1) * pageSize;
+            if (requestedSkip >= total || requestedSkip >= int.MaxValue)
+            {
+                return (total, new List<StoreOrderProductActivityHistoryRow>());
+            }
+
+            var rows = await query
+                .OrderBy(item => item.OutboundDate, OrderByType.Desc)
+                .OrderBy(item => item.OrderDate, OrderByType.Desc)
+                .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                .OrderBy(item => item.OrderGUID, OrderByType.Desc)
+                .Skip((int)requestedSkip)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return (total, rows.Select(ToOrderActivityRow).ToList());
+        }
+
+        private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadSalesActivityRowsAsync(
+            string storeCode,
+            string productCode,
+            List<StoreOrderSalesInterval> intervals,
+            int pageNumber,
+            int pageSize
+        )
+        {
+            var activityQueries = new List<ISugarQueryable<StoreOrderProductSalesActivityHistoryRow>>();
+            foreach (var interval in intervals)
+            {
+                var intervalStart = interval.StartDate;
+                var intervalEnd = interval.EndDate;
+                var anchorOrderGuid = interval.AnchorOrderGuid;
+                var dailySalesQuery = BuildDailySalesQuery(
+                        storeCode,
+                        productCode,
+                        intervalStart,
+                        intervalEnd
+                    )
+                    .Select(item => new StoreOrderProductSalesActivityHistoryRow
+                    {
+                        RecordType = "sales",
+                        RecordDate = item.Date,
+                        SortDate = item.Date,
+                        SortType = 0,
+                        SalesQuantity = item.TotalQuantity,
+                        AveragePrice = item.TotalQuantity == 0
+                            ? (decimal?)null
+                            : item.TotalAmount / item.TotalQuantity,
+                        PeriodStartDate = intervalStart,
+                        PeriodEndDate = intervalEnd,
+                    });
+                activityQueries.Add(dailySalesQuery);
+
+                var subtotalQuery = _db
+                    .Queryable<WareHouseOrder>()
+                    .LeftJoin<ProductStoreDailySalesStatistic>((order, statistic) =>
+                        statistic.BranchCode == storeCode
+                        && statistic.ProductCode == productCode
+                        && statistic.Date >= intervalStart
+                        && statistic.Date <= intervalEnd
+                    )
+                    .Where((order, statistic) => order.OrderGUID == anchorOrderGuid)
+                    .GroupBy((order, statistic) => order.OrderGUID)
+                    .Select((order, statistic) => new StoreOrderProductSalesActivityHistoryRow
+                    {
+                        RecordType = "salesSubtotal",
+                        RecordDate = intervalEnd,
+                        SortDate = intervalEnd.AddDays(1).AddTicks(-1),
+                        SortType = 2,
+                        SalesQuantity = SqlFunc.IsNull(
+                            SqlFunc.AggregateSum(statistic.TotalQuantity),
+                            0
+                        ),
+                        AveragePrice = SqlFunc.IsNull(
+                                SqlFunc.AggregateSum(statistic.TotalQuantity),
+                                0
+                            ) == 0
+                            ? (decimal?)null
+                            : SqlFunc.IsNull(
+                                SqlFunc.AggregateSum(statistic.TotalAmount),
+                                0m
+                            )
+                                / SqlFunc.IsNull(
+                                    SqlFunc.AggregateSum(statistic.TotalQuantity),
+                                    0
+                                ),
+                        PeriodStartDate = intervalStart,
+                        PeriodEndDate = intervalEnd,
+                    });
+                activityQueries.Add(subtotalQuery);
+            }
+
+            var mergedQuery = _db.UnionAll(activityQueries.ToArray()).MergeTable();
+            var total = await mergedQuery.CountAsync();
+            var requestedSkip = (long)(pageNumber - 1) * pageSize;
+            if (requestedSkip >= total || requestedSkip >= int.MaxValue)
+            {
+                return (total, new List<StoreOrderProductActivityHistoryRow>());
+            }
+
+            var rows = await mergedQuery
+                .OrderBy(item => item.SortDate, OrderByType.Desc)
+                .OrderBy(item => item.SortType, OrderByType.Desc)
+                .Skip((int)requestedSkip)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return (total, rows.Select(ToSalesActivityRow).ToList());
+        }
+
         private ISugarQueryable<StoreOrderProductOrderHistoryRow> BuildAggregatedProductOrderHistoryQuery(
             string storeCode,
             string productCode
@@ -5059,8 +5251,7 @@ namespace BlazorApp.Api.Services.React
             {
                 RecordType = "order",
                 RecordDate = row.OrderDate?.Date,
-                // OrderDate 为空的订单返回 null 并置底，空日期组再按 CreatedAt/GUID 倒序。
-                SortDate = row.OrderDate,
+                SortDate = row.OutboundDate,
                 SortType = 1,
                 CreatedAt = row.CreatedAt,
                 OrderGUID = row.OrderGUID ?? string.Empty,
@@ -5074,22 +5265,21 @@ namespace BlazorApp.Api.Services.React
         }
 
         private static StoreOrderProductActivityHistoryRow ToSalesActivityRow(
-            StoreOrderDailySalesStatisticRow row
+            StoreOrderProductSalesActivityHistoryRow row
         )
         {
             return new StoreOrderProductActivityHistoryRow
             {
-                RecordType = "sales",
-                RecordDate = row.Date.Date,
-                SortDate = row.Date,
-                SortType = 0,
+                RecordType = row.RecordType,
+                RecordDate = row.RecordDate?.Date,
+                SortDate = row.SortDate,
+                SortType = row.SortType,
                 CreatedAt = null,
                 OrderGUID = string.Empty,
-                SalesQuantity = row.TotalQuantity,
-                AveragePrice =
-                    row.TotalQuantity == 0
-                        ? (decimal?)null
-                        : row.TotalAmount / row.TotalQuantity,
+                SalesQuantity = row.SalesQuantity,
+                AveragePrice = row.AveragePrice,
+                PeriodStartDate = row.PeriodStartDate,
+                PeriodEndDate = row.PeriodEndDate,
             };
         }
 
@@ -5110,8 +5300,8 @@ namespace BlazorApp.Api.Services.React
                 AllocQuantity = row.RecordType == "order" ? row.AllocQuantity : null,
                 SalesQuantity = row.RecordType != "order" ? row.SalesQuantity : null,
                 AveragePrice = row.RecordType != "order" ? row.AveragePrice : null,
-                PeriodStartDate = row.RecordType == "salesSubtotal" ? row.PeriodStartDate : null,
-                PeriodEndDate = row.RecordType == "salesSubtotal" ? row.PeriodEndDate : null,
+                PeriodStartDate = row.RecordType != "order" ? row.PeriodStartDate : null,
+                PeriodEndDate = row.RecordType != "order" ? row.PeriodEndDate : null,
             };
         }
 

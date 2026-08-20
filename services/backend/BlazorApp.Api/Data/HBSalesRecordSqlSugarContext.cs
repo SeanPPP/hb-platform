@@ -43,6 +43,14 @@ namespace BlazorApp.Api.Data
             );
         }
 
+        /// <summary>
+        /// 供本地测试注入已隔离的 SqlSugar 连接；生产仍使用 IConfiguration 构造函数。
+        /// </summary>
+        public HBSalesRecordSqlSugarContext(SqlSugarScope db)
+        {
+            _db = db ?? throw new ArgumentNullException(nameof(db));
+        }
+
         public SqlSugarScope Db => _db;
 
         public SimpleClient<SalesOrderMain> SalesOrderMainDb =>
