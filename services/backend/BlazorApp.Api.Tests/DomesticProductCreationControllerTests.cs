@@ -349,6 +349,124 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateBatchAsync_普通商品与套装父项货号不重复()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+
+            var result = await database.CreateService().CreateBatchAsync(
+                new CreateDomesticProductBatchRequest
+                {
+                    SupplierCode = "HB001",
+                    Items = new List<CreateBatchItemDto>
+                    {
+                        new() { ProductName = "普通商品", ProductType = 0 },
+                        new() { ProductName = "套装父项", ProductType = 1 },
+                    },
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var itemNumbers = result.Data!.Items.Select(item => item.HBProductNo).ToList();
+            Assert.Equal(
+                itemNumbers.Count,
+                itemNumbers.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            );
+        }
+
+        [Fact]
+        public async Task CreateBatchAsync_套装父项与所有子项货号和条码不重复()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+
+            var result = await database.CreateService().CreateBatchAsync(
+                new CreateDomesticProductBatchRequest
+                {
+                    SupplierCode = "HB001",
+                    Items = new List<CreateBatchItemDto>
+                    {
+                        new()
+                        {
+                            ProductName = "套装A",
+                            ProductType = 1,
+                            SubItems = new List<CreateBatchItemDto>
+                            {
+                                new() { ProductName = "套装A子项1", ProductType = 2 },
+                                new() { ProductName = "套装A子项2", ProductType = 2 },
+                            },
+                        },
+                        new()
+                        {
+                            ProductName = "套装B",
+                            ProductType = 1,
+                            SubItems = new List<CreateBatchItemDto>
+                            {
+                                new() { ProductName = "套装B子项1", ProductType = 2 },
+                                new() { ProductName = "套装B子项2", ProductType = 2 },
+                            },
+                        },
+                    },
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var itemNumbers = result
+                .Data!.Items.Select(item => item.HBProductNo)
+                .Concat(
+                    result.Data.Items.SelectMany(item => item.SubItems).Select(item => item.HBProductNo)
+                )
+                .Where(itemNumber => !string.IsNullOrWhiteSpace(itemNumber))
+                .Cast<string>()
+                .ToList();
+            Assert.Equal(
+                itemNumbers.Count,
+                itemNumbers.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            );
+            var barcodes = result
+                .Data.Items.Select(item => item.Barcode)
+                .Concat(result.Data.Items.SelectMany(item => item.SubItems).Select(item => item.Barcode))
+                .Where(barcode => !string.IsNullOrWhiteSpace(barcode))
+                .Cast<string>()
+                .ToList();
+            Assert.Equal(
+                barcodes.Count,
+                barcodes.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            );
+        }
+
+        [Fact]
+        public async Task ItemBarcodeService_并发生成的货号和条码不重复()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            var generator = database.CreateItemBarcodeService();
+
+            var generated = await Task.WhenAll(
+                Enumerable
+                    .Range(0, 4)
+                    .Select(_ =>
+                        generator.GenerateItemNumberAndBarcodeAsync(
+                            "HB001",
+                            ProductTypeEnum.Normal
+                        )
+                    )
+            );
+
+            Assert.Equal(
+                generated.Length,
+                generated
+                    .Select(item => item.itemNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+            Assert.Equal(
+                generated.Length,
+                generated
+                    .Select(item => item.barcode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+        }
+
+        [Fact]
         public async Task CreateBatchAsync_历史写入失败时回滚主档关系和创建日志()
         {
             using var database = new DomesticProductCreationTestDatabase();
@@ -944,6 +1062,7 @@ namespace BlazorApp.Api.Tests
                 Db.CodeFirst.InitTables(
                     typeof(ChinaSupplier),
                     typeof(DomesticProduct),
+                    typeof(ItemBarcodeReservation),
                     typeof(DomesticSetProduct),
                     typeof(DomesticProductCreationLog),
                     typeof(Product),

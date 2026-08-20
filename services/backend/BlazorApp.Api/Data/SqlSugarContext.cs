@@ -478,6 +478,7 @@ namespace BlazorApp.Api.Data
                 typeof(ChinaSupplier),
                 typeof(HBLocalSupplier),
                 typeof(DomesticProduct),
+                typeof(ItemBarcodeReservation),
                 typeof(SysPermission),
                 typeof(SysRolePermission),
                 typeof(SysUserPermission),
