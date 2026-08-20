@@ -292,6 +292,7 @@ function createEmptyAccess() {
     canViewReports: false,
     canViewSalesIntelligence: false,
     canViewProductMovementReport: false,
+    canViewProductSalesAnalysis: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
@@ -361,6 +362,9 @@ function buildAccess(currentUser) {
   const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
+  const currentExactPermissionSet = new Set(
+    (currentUser.exactPermissions ?? []).map((item) => item.toLowerCase())
+  );
   const hasPermission = (permission) => {
     if (isAdmin) return true;
     return getEquivalentPermissionCodes(permission).some((code) => currentPermissionSet.has(code));
@@ -419,6 +423,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
+  const canViewProductSalesAnalysis = isAdmin || currentExactPermissionSet.has(P.Reports.ProductMovementView.toLowerCase());
   const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
@@ -516,6 +521,7 @@ function buildAccess(currentUser) {
     canViewReports,
     canViewSalesIntelligence,
     canViewProductMovementReport,
+    canViewProductSalesAnalysis,
     canExportData,
     canModifyPrice,
     canDeletePrice,

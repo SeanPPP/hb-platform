@@ -623,6 +623,15 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
             "PosHandheldUpdatePolicy__OtaChannel=pos-handheld-production",
             compose
         );
+        // Android 原生候选在查询构建表前会校验包名与签名信任根，生产必须显式注入。
+        Assert.Contains(
+            "PosHandheldUpdatePolicy__AndroidPackageName=com.hbweb.poshandheld",
+            compose
+        );
+        Assert.Contains(
+            "PosHandheldUpdatePolicy__AndroidSigningCertificateSha256=${POS_HANDHELD_ANDROID_SIGNING_CERTIFICATE_SHA256:?required}",
+            compose
+        );
     }
 
     public void Dispose()

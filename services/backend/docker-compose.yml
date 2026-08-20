@@ -74,6 +74,8 @@ services:
       - EasWebhook__ProjectAppKeys__hb-pos-handheld=pos-handheld
       # 手持端策略候选必须绑定独立 EAS 项目和固定 OTA channel；不在此开启旧配置式全局策略。
       - PosHandheldUpdatePolicy__EasProjectName=hb-pos-handheld
+      - PosHandheldUpdatePolicy__AndroidPackageName=com.hbweb.poshandheld
+      - PosHandheldUpdatePolicy__AndroidSigningCertificateSha256=${POS_HANDHELD_ANDROID_SIGNING_CERTIFICATE_SHA256:?required}
       - PosHandheldUpdatePolicy__OtaChannel=pos-handheld-production
       - EasWebhook__AcceptedProfiles__0=preview
       - EasWebhook__AcceptedProfiles__1=production

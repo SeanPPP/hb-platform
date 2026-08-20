@@ -90,5 +90,43 @@ assert(
     && pageSource.includes("'posAdmin.suppliers.syncToHqConfirm'"),
   '写入 HQ 前应显示影响范围确认',
 )
+assert(
+  pageSource.includes('const tableRegionRef = useRef<HTMLDivElement>(null)'),
+  '供应商表格区域应通过 tableRegionRef 测量实际高度',
+)
+assert(
+  pageSource.includes('ref={tableRegionRef}')
+    && pageSource.includes("flex: 1, minHeight: 0, overflow: 'hidden'"),
+  '表格区域应占满剩余高度且裁剪溢出，避免固定列进入分页条',
+)
+assert(
+  pageSource.includes("region.querySelector('.ant-table-thead')")
+    && pageSource.includes('const tableHeaderHeight = readOuterHeight(tableHeader)'),
+  'scroll.y 应扣除表头外部高度（scroll.y 只包含表体）',
+)
+assert(
+  pageSource.includes('tableBody.offsetHeight - tableBody.clientHeight'),
+  'scroll.y 应扣除 .ant-table-body 横向滚动条高度',
+)
+assert(
+  pageSource.includes('window.requestAnimationFrame')
+    && pageSource.includes("window.addEventListener('resize', scheduleCalc)"),
+  '高度测量应通过 requestAnimationFrame 调度并监听窗口尺寸变化',
+)
+assert(
+  pageSource.includes('new ResizeObserver(scheduleCalc)')
+    && pageSource.includes('observer.disconnect()'),
+  '可用时应使用 ResizeObserver 观察相关区域并在卸载时清理',
+)
+assert(
+  pageSource.includes('Math.abs(current - nextScrollY) > 4'),
+  '仅当高度变化超过小阈值时才更新 scroll.y',
+)
+assert(
+  pageSource.includes("position: 'relative'")
+    && pageSource.includes('zIndex: 3')
+    && pageSource.includes('flexShrink: 0'),
+  '分页条应置顶于固定列之上且不可被压缩',
+)
 
 console.log('localSupplierService.test: ok')

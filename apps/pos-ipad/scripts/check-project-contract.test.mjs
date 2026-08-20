@@ -42,6 +42,11 @@ assert.match(
 assert.match(appConfigSource, /com\.hbweb\.posipad/);
 assert.match(appConfigSource, /supportedInterfaceOrientations/);
 assert.match(appConfigSource, /UIRequiresFullScreen/);
+assert.match(
+  appConfigSource,
+  /isTabletOnly:\s*true/,
+  "HB POS 必须生成仅支持 iPad 的原生二进制，不能要求 iPhone App Store 截图。",
+);
 assert.match(appConfigSource, /useSQLCipher:\s*true/);
 assert.match(
   appConfigSource,
@@ -64,6 +69,31 @@ assert.equal(
 assert.equal(easConfig.build.development.developmentClient, true);
 assert.equal(easConfig.build.preview.distribution, "internal");
 assert.equal(easConfig.build.production.distribution, "store");
+assert.equal(
+  easConfig.cli.appVersionSource,
+  "remote",
+  "动态 app.config.ts 必须使用 EAS 远程 build number，才能安全自动递增生产构建。",
+);
+assert.equal(
+  easConfig.build.production.autoIncrement,
+  true,
+  "生产 Store 构建必须自动递增远程 build number。",
+);
+assert.equal(
+  easConfig.build.production.env.EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID,
+  "b6491153-83a0-4fe0-9016-49e61e69ed97",
+  "Production 远端构建必须能解析固定的 EAS projectId。",
+);
+assert.equal(
+  easConfig.build.production.env.EXPO_PUBLIC_HBPOS_UPDATES_URL,
+  "https://u.expo.dev/b6491153-83a0-4fe0-9016-49e61e69ed97",
+  "Production 远端构建必须固定到同一 EAS Updates URL。",
+);
+assert.equal(
+  easConfig.submit.production.ios.ascAppId,
+  "6802176079",
+  "HB POS 生产提交必须固定到 com.hbweb.posipad 对应的 App Store Connect 记录。",
+);
 
 const introspectedConfig = JSON.parse(
   execFileSync("npx", ["expo", "config", "--type", "introspect", "--json"], {
@@ -72,6 +102,11 @@ const introspectedConfig = JSON.parse(
   }),
 );
 assert.equal(introspectedConfig.version, "0.2.0");
+assert.equal(
+  introspectedConfig.ios?.isTabletOnly,
+  true,
+  "Expo 最终配置必须把 TARGETED_DEVICE_FAMILY 收窄为 iPad。",
+);
 assert.deepEqual(introspectedConfig.runtimeVersion, {
   policy: "appVersion",
 });

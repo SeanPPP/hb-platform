@@ -174,6 +174,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     bundleIdentifier: "com.hbweb.posipad",
     buildNumber: "1",
     supportsTablet: true,
+    // HB POS 是门店 iPad 专用应用；避免 App Store 将二进制识别为通用 App 并要求 iPhone 素材。
+    isTabletOnly: true,
     requireFullScreen: true,
     infoPlist: {
       UIRequiresFullScreen: true,

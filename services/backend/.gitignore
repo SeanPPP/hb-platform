@@ -381,3 +381,6 @@ DOCKER_DEPLOYMENT.md
 # Docker 相关
 .dockerignore
 docker-compose.override.yml
+
+# 一次性 2025 商品统计回填工具，仅保留在本地工作区
+Hb2025ProductBackfillTmp/

@@ -336,6 +336,7 @@ function createEmptyAccess() {
     canViewReports: false,
     canViewSalesIntelligence: false,
     canViewProductMovementReport: false,
+    canViewProductSalesAnalysis: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
@@ -405,6 +406,9 @@ function buildAccess(currentUser) {
   const isAdmin = hasRole("Admin") || hasRole("\u7BA1\u7406\u5458") || hasRole("SuperAdmin") || hasRole("\u8D85\u7EA7\u7BA1\u7406\u5458");
   const isWarehouseManager = hasRole("WarehouseManager") || hasRole("\u4ED3\u5E93\u7ECF\u7406");
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()));
+  const currentExactPermissionSet = new Set(
+    (currentUser.exactPermissions ?? []).map((item) => item.toLowerCase())
+  );
   const hasPermission = (permission) => {
     if (isAdmin) return true;
     return getEquivalentPermissionCodes(permission).some((code) => currentPermissionSet.has(code));
@@ -463,6 +467,7 @@ function buildAccess(currentUser) {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete);
   const canViewReports = isAdmin || hasPermission(P.Reports.View);
   const canViewProductMovementReport = isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View);
+  const canViewProductSalesAnalysis = isAdmin || currentExactPermissionSet.has(P.Reports.ProductMovementView.toLowerCase());
   const canViewSalesIntelligence = canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View);
   const canExportData = isAdmin || hasPermission(P.Reports.Export);
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify);
@@ -560,6 +565,7 @@ function buildAccess(currentUser) {
     canViewReports,
     canViewSalesIntelligence,
     canViewProductMovementReport,
+    canViewProductSalesAnalysis,
     canExportData,
     canModifyPrice,
     canDeletePrice,
@@ -917,6 +923,8 @@ function buildRolePreviewAccess(permissionState) {
     username: permissionState.roleName,
     email: "",
     permissions: permissionState.effectivePermissionCodes,
+    // 商品销量分析等精确契约节点只读原始未展开权限，不能用 effective 展开结果冒充。
+    exactPermissions: permissionState.explicitPermissionCodes,
     roleNames,
     storeNames: []
   };
@@ -950,6 +958,7 @@ var accessKeyPermissionMap = {
   canViewReports: [P.Reports.View],
   canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView, P.LocalPurchase.View],
   canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
+  canViewProductSalesAnalysis: [P.Reports.ProductMovementView],
   canViewAustralianSuppliers: [P.AustralianSuppliers.View],
   canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
   canManageStoreProducts: [P.StoreProducts.View],
@@ -1016,6 +1025,8 @@ var webMenuPreviewRoutes = [
       { path: "/executive-sales-intelligence/overview", title: "menu.salesData", accessKey: "canViewReports" },
       { path: "/executive-sales-intelligence/sales-detail-v2", title: "menu.salesDetail", accessKey: "canViewReports" },
       { path: "/executive-sales-intelligence/product-movement-report", title: "menu.productMovementReport", accessKey: "canViewProductMovementReport" },
+      { path: "/executive-sales-intelligence/warehouse-product-flow-analysis", title: "menu.warehouseProductFlowAnalysis", accessKey: "canViewProductSalesAnalysis" },
+      { path: "/executive-sales-intelligence/local-product-sales-analysis", title: "menu.localProductSalesAnalysis", accessKey: "canManageLocalPurchase" },
       { path: "/executive-sales-intelligence/purchase-amount-dashboard", title: "menu.purchaseAmountDashboard", accessKey: "canManageLocalPurchase" }
     ]
   },
@@ -2421,5 +2432,103 @@ assertEqual(
   localPurchaseViewOnlyAccess.canPushLocalPurchaseToHq,
   false,
   "LocalPurchase.View should not unlock HQ write actions"
+);
+var exactProductMovementAnalysisAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView],
+    exactPermissions: [P.Reports.ProductMovementView]
+  })
+);
+assertEqual(
+  exactProductMovementAnalysisAccess.canViewProductSalesAnalysis,
+  true,
+  "exactPermissions \u542B Reports.ProductMovement.View \u65F6\u5E94\u5141\u8BB8\u5546\u54C1\u9500\u91CF\u5206\u6790"
+);
+var exactReportsViewOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView, P.Reports.View],
+    exactPermissions: [P.Reports.View]
+  })
+);
+assertEqual(
+  exactReportsViewOnlyAccess.canViewProductSalesAnalysis,
+  false,
+  "exactPermissions \u53EA\u6709 Reports.View \u65F6\u5E94\u62D2\u7EDD\u5546\u54C1\u9500\u91CF\u5206\u6790\uFF0C\u5373\u4F7F\u5C55\u5F00 permissions \u5DF2\u542B ProductMovementView"
+);
+assertEqual(
+  exactReportsViewOnlyAccess.canViewProductMovementReport,
+  true,
+  "Reports.View \u5E94\u7EE7\u7EED\u517C\u5BB9\u5546\u54C1\u79FB\u52A8\u62A5\u8868\uFF0C\u4E0D\u53D7 exact \u5951\u7EA6\u5F71\u54CD"
+);
+var exactPermissionsMissingAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView]
+  })
+);
+assertEqual(
+  exactPermissionsMissingAccess.canViewProductSalesAnalysis,
+  false,
+  "exactPermissions \u5B57\u6BB5\u7F3A\u5931\u65F6\u975E\u7BA1\u7406\u5458\u5E94\u62D2\u7EDD\u5546\u54C1\u9500\u91CF\u5206\u6790"
+);
+var superAdminExactMissingAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ["\u8D85\u7EA7\u7BA1\u7406\u5458"],
+    permissions: [],
+    exactPermissions: []
+  })
+);
+assertEqual(
+  superAdminExactMissingAccess.canViewProductSalesAnalysis,
+  true,
+  "\u8D85\u7EA7\u7BA1\u7406\u5458\u522B\u540D\u5373\u4F7F exactPermissions \u4E3A\u7A7A\u4E5F\u5E94\u5141\u8BB8\u5546\u54C1\u9500\u91CF\u5206\u6790"
+);
+var productMovementExactPreviewAccess = buildRolePreviewAccess({
+  roleGuid: "product-movement-exact-role",
+  roleName: "ProductMovementExactRole",
+  isSuperAdmin: false,
+  implicitAllPermissions: false,
+  explicitPermissionCodes: [P.Reports.ProductMovementView],
+  effectivePermissionCodes: [P.Reports.ProductMovementView]
+});
+assertEqual(
+  productMovementExactPreviewAccess.canViewProductSalesAnalysis,
+  true,
+  "\u89D2\u8272\u9884\u89C8 explicit \u542B Reports.ProductMovement.View \u65F6\u5E94\u5141\u8BB8\u5546\u54C1\u9500\u91CF\u5206\u6790"
+);
+assertEqual(
+  productMovementExactPreviewAccess.canViewProductMovementReport,
+  true,
+  "\u89D2\u8272\u9884\u89C8 Reports.ProductMovement.View \u5E94\u7EE7\u7EED\u5141\u8BB8\u5546\u54C1\u79FB\u52A8\u62A5\u8868"
+);
+var reportsViewExpandedPreviewAccess = buildRolePreviewAccess({
+  roleGuid: "reports-view-expanded-role",
+  roleName: "ReportsViewExpandedRole",
+  isSuperAdmin: false,
+  implicitAllPermissions: false,
+  explicitPermissionCodes: [P.Reports.View],
+  effectivePermissionCodes: [P.Reports.View, P.Reports.ProductMovementView]
+});
+assertEqual(
+  reportsViewExpandedPreviewAccess.canViewProductSalesAnalysis,
+  false,
+  "\u89D2\u8272\u9884\u89C8 explicit \u53EA\u6709 Reports.View \u65F6\u5E94\u62D2\u7EDD\u5546\u54C1\u9500\u91CF\u5206\u6790\uFF0C\u5373\u4F7F effective \u5DF2\u5C55\u5F00\u542B ProductMovementView"
+);
+assertEqual(
+  reportsViewExpandedPreviewAccess.canViewProductMovementReport,
+  true,
+  "\u89D2\u8272\u9884\u89C8 Reports.View \u5C55\u5F00\u5E94\u7EE7\u7EED\u5141\u8BB8\u5546\u54C1\u79FB\u52A8\u62A5\u8868"
+);
+var superAdminExactEmptyPreviewAccess = buildRolePreviewAccess({
+  roleGuid: "super-admin-exact-empty-role",
+  roleName: "CustomSuperAdmin",
+  isSuperAdmin: true,
+  implicitAllPermissions: true,
+  explicitPermissionCodes: [],
+  effectivePermissionCodes: []
+});
+assertEqual(
+  superAdminExactEmptyPreviewAccess.canViewProductSalesAnalysis,
+  true,
+  "\u8D85\u7EA7\u7BA1\u7406\u5458\u89D2\u8272\u9884\u89C8\u5373\u4F7F explicit \u4E3A\u7A7A\u4E5F\u5E94\u5141\u8BB8\u5546\u54C1\u9500\u91CF\u5206\u6790"
 );
 console.log("access.permission.test: ok");

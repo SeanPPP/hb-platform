@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": "21.3.0",
-    "appVersionSource": "local"
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -30,11 +30,17 @@
       "channel": "pos-ipad-production",
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "production"
+        "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "production",
+        "EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID": "b6491153-83a0-4fe0-9016-49e61e69ed97",
+        "EXPO_PUBLIC_HBPOS_UPDATES_URL": "https://u.expo.dev/b6491153-83a0-4fe0-9016-49e61e69ed97"
       }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6802176079"
+      }
+    }
   }
 }

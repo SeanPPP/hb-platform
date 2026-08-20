@@ -500,6 +500,13 @@ async function createStore(payload) {
   }
   return mapStoreDetail(unwrapApiData(response));
 }
+async function batchUpdateStores(payload) {
+  const response = await request_default.patch(
+    "/api/stores/batch",
+    payload
+  );
+  return unwrapApiData(response);
+}
 async function syncStoreToHq(guid) {
   const response = await request_default.post(`/api/stores/guid/${guid}/sync-hq`);
   if (response.success === false) {
@@ -570,6 +577,7 @@ try {
     pageSize: 50,
     brandName: "Hot Bargain",
     isActive: true,
+    timeZoneId: "Australia/Sydney",
     sortField: "brandName",
     sortOrder: "desc"
   });
@@ -581,10 +589,18 @@ try {
       ["pageSize", "50"],
       ["brandName", "Hot Bargain"],
       ["isActive", "true"],
+      ["timeZoneId", "Australia/Sydney"],
       ["sortField", "brandName"],
       ["sortOrder", "desc"]
     ],
-    "\u5206\u5E97\u5217\u8868\u67E5\u8BE2\u5E94\u8BE5\u900F\u4F20\u54C1\u724C\u3001\u72B6\u6001\u548C\u6392\u5E8F\u53C2\u6570"
+    "\u5206\u5E97\u5217\u8868\u67E5\u8BE2\u5E94\u8BE5\u900F\u4F20\u54C1\u724C\u3001\u72B6\u6001\u3001\u65F6\u533A\u548C\u6392\u5E8F\u53C2\u6570"
+  );
+  requestedUrl = "";
+  await getStores({ timeZoneId: "__unset__" });
+  assertDeepEqual(
+    Array.from(new URL(requestedUrl, "http://localhost").searchParams.entries()),
+    [["timeZoneId", "__unset__"]],
+    "\u5206\u5E97\u5217\u8868\u67E5\u8BE2\u5E94\u8BE5\u900F\u4F20\u672A\u8BBE\u7F6E\u65F6\u533A\u7B5B\u9009\u6807\u8BC6"
   );
   let nextCodeUrl = "";
   globalThis.fetch = async (input) => {
@@ -693,6 +709,73 @@ try {
     failed = error instanceof Error && error.message === "\u540C\u6B65HQ\u5206\u5E97\u5931\u8D25";
   }
   assertDeepEqual(failed, true, "\u540C\u6B65HQ\u5206\u5E97\u4E1A\u52A1\u5931\u8D25\u65F6\u5E94\u629B\u51FA\u540E\u7AEF\u9519\u8BEF\u6D88\u606F");
+  let capturedBatchUrl = "";
+  let capturedBatchInit;
+  globalThis.fetch = async (input, init) => {
+    capturedBatchUrl = String(input);
+    capturedBatchInit = init;
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        requestedCount: 2,
+        updatedCount: 2,
+        updatedStoreGuids: ["store-1", "store-2"]
+      }
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  const batchPayload = {
+    storeGuids: ["store-1", "store-2"],
+    fields: ["abn", "isActive"],
+    abn: null,
+    isActive: false
+  };
+  const batchResult = await batchUpdateStores(batchPayload);
+  assertDeepEqual(
+    {
+      path: new URL(capturedBatchUrl, "http://localhost").pathname,
+      method: capturedBatchInit?.method,
+      body: JSON.parse(String(capturedBatchInit?.body)),
+      result: batchResult
+    },
+    {
+      path: "/api/stores/batch",
+      method: "PATCH",
+      body: batchPayload,
+      result: {
+        requestedCount: 2,
+        updatedCount: 2,
+        updatedStoreGuids: ["store-1", "store-2"]
+      }
+    },
+    "\u6279\u91CF\u4FEE\u6539\u5206\u5E97\u5E94\u4F7F\u7528 PATCH \u8DEF\u5F84\u5E76\u539F\u6837\u4FDD\u7559 null \u4E0E false"
+  );
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    success: false,
+    message: "\u90E8\u5206\u5206\u5E97\u4E0D\u5B58\u5728\u6216\u5DF2\u5220\u9664",
+    errorCode: "STORE_BATCH_TARGET_INVALID",
+    data: {
+      requestedCount: 2,
+      updatedCount: 0,
+      updatedStoreGuids: []
+    }
+  }), {
+    status: 409,
+    headers: { "Content-Type": "application/json" }
+  });
+  let batchFailure = "";
+  try {
+    await batchUpdateStores(batchPayload);
+  } catch (error) {
+    batchFailure = error instanceof Error ? error.message : "";
+  }
+  assertDeepEqual(
+    batchFailure,
+    "\u90E8\u5206\u5206\u5E97\u4E0D\u5B58\u5728\u6216\u5DF2\u5220\u9664",
+    "\u6279\u91CF\u4FEE\u6539\u4E1A\u52A1\u9519\u8BEF\u5E94\u4FDD\u7559\u540E\u7AEF\u9519\u8BEF\u6D88\u606F"
+  );
 } finally {
   globalThis.fetch = originalFetch;
 }

@@ -60,6 +60,7 @@ export default function SupplierManagementPage() {
   const [editForm] = Form.useForm()
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
+  const tableRegionRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const listRequestGuardRef = useRef(createLatestRequestGuard())
   const mountedRef = useRef(false)
@@ -108,17 +109,72 @@ export default function SupplierManagementPage() {
   }, [page, pageSize, keyword, status, sortBy, sortOrder])
 
   useLayoutEffect(() => {
-    const calc = () => {
-      const containerH = wrapRef.current?.clientHeight || window.innerHeight
-      const tbarH = toolbarRef.current?.getBoundingClientRect().height || 0
-      const pagerH = pagerRef.current?.getBoundingClientRect().height || 0
-      const available = containerH - tbarH - pagerH - 8
-      setTableScrollY(available > 200 ? available : 200)
+    let frameId: number | null = null
+
+    const readOuterHeight = (element: HTMLElement | null) => {
+      if (!element) {
+        return 0
+      }
+
+      const style = window.getComputedStyle(element)
+      const marginTop = Number.parseFloat(style.marginTop) || 0
+      const marginBottom = Number.parseFloat(style.marginBottom) || 0
+      return Math.ceil(element.getBoundingClientRect().height + marginTop + marginBottom)
     }
-    calc()
-    window.addEventListener('resize', calc)
-    return () => window.removeEventListener('resize', calc)
-  }, [pageSize, total])
+
+    const calc = () => {
+      const region = tableRegionRef.current
+      if (!region) {
+        return
+      }
+
+      const tableHeader = region.querySelector('.ant-table-thead') as HTMLElement | null
+      const tableBody = region.querySelector('.ant-table-body') as HTMLElement | null
+      const tableHeaderHeight = readOuterHeight(tableHeader)
+      const horizontalScrollbarHeight = tableBody ? Math.max(0, tableBody.offsetHeight - tableBody.clientHeight) : 0
+      // scroll.y 只代表表体高度，不包含表头；扣除表头与横向滚动条高度，
+      // 避免固定“操作”列继续画到底部分页区域。
+      const available = Math.floor(region.clientHeight - tableHeaderHeight - horizontalScrollbarHeight - 8)
+      const nextScrollY = available > 200 ? available : 200
+      // 仅在高度变化超过小阈值时更新，避免无意义重渲染。
+      setTableScrollY((current) => (
+        current === undefined || Math.abs(current - nextScrollY) > 4 ? nextScrollY : current
+      ))
+    }
+
+    const scheduleCalc = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null
+        calc()
+      })
+    }
+
+    scheduleCalc()
+    window.addEventListener('resize', scheduleCalc)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        if (frameId != null) window.cancelAnimationFrame(frameId)
+        window.removeEventListener('resize', scheduleCalc)
+      }
+    }
+
+    const observer = new ResizeObserver(scheduleCalc)
+    for (const element of [wrapRef.current, toolbarRef.current, tableRegionRef.current, pagerRef.current]) {
+      if (element) {
+        observer.observe(element)
+      }
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', scheduleCalc)
+      observer.disconnect()
+    }
+  }, [data.length, pageSize, total])
 
   const handleSyncFromHq = async () => {
     setSyncingFromHq(true)
@@ -301,7 +357,7 @@ export default function SupplierManagementPage() {
         }}
       >
         <div ref={toolbarRef} style={{ padding: 16 }} />
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Table
             rowKey="localSupplierCode"
             loading={loading}
@@ -408,7 +464,9 @@ export default function SupplierManagementPage() {
             alignItems: 'center',
             width: '100%',
             background: '#fff',
-            zIndex: 1,
+            position: 'relative',
+            zIndex: 3,
+            flexShrink: 0,
           }}
         >
           <div />

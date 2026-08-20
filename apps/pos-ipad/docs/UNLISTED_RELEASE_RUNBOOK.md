@@ -29,6 +29,24 @@
 2. Preview Build：用于门店设备注册、sandbox 支付和完整真机矩阵。
 3. Production Build：仅在发布冻结条件满足后创建，并上传 TestFlight。
 
+App Review 必须使用专用审核门店和真实后端账号：首次启动仍执行真实设备注册与审批，
+登录仍提交真实员工收银条码并按 `UserStore`、角色和分店 POS 权限授权。禁止为审核加入
+合成商品、模拟交易、DEMO 小票或绕过设备门禁的独立运行时。审核门店必须与营业门店
+的订单、支付、库存、报表和财务数据隔离；Apple 新设备若仍依赖临时人工审批，不得
+提交审核。
+
+无人值守设备审批只允许使用 `PosIpadAppReview` 服务端门禁，并同时满足：专用审核
+门店、精确 `iPadOS`、UTC 有效期、`MaxActiveDevices=1`、每轮新建的 `GrantId` 和一次性设备开通码 SHA-256
+校验。开通码必须是至少 16 个字符的高熵随机值。明文不得写入仓库、构建配置或日志，只能填入 App Store Connect 的
+App Review Information；审核结束后应立即将 `Enabled` 设回 `false` 并核对审核设备
+记录。设备开通码只批准设备，不能替代真实员工收银条码和后续 POS 权限校验。
+`MaxActiveDevices` 只统计独立 grant 消费表中仍启用/锁定的审核设备，不得把审核店已有的
+普通测试设备计入上限；一次性约束以 `GrantId` 主键为准。
+生产仍处于 `CashierAuthorization:Mode=Audit` 时，启用 `PosIpadAppReview` 会仅对其
+grant 消费表中精确匹配 `StoreCode + DeviceCode + HardwareId` 的审核设备停止 Audit 与
+emergency 绕过并强制实时员工条码身份和权限复核；同店既有设备及其他分店保持既有兼容行为。审核专店
+不得配置为空，也不得复用营业分店代码。本轮审核专店为 `1042`（`testStore`）。
+
 原生模块、Expo SDK 或 native dependency 变化时必须提升应用版本，从而提升当前
 基于 `appVersion` 的 `runtimeVersion`，再创建新的二进制。只有与当前
 `runtimeVersion` 兼容的 JavaScript/资源修复才能通过 EAS Update 发布。
@@ -79,7 +97,11 @@ npx eas-cli submit --platform ios --profile production
 ## 5. App Review 与 Unlisted 申请
 
 1. 先完成正常 App Review；审核说明需明确这是注册设备才能使用的门店 POS，
-   提供可审核的演示账号/流程和硬件依赖说明。
+   提供可审核的演示账号/流程和硬件依赖说明。元数据与审核说明分别以
+   `APP_STORE_METADATA_DRAFT.md`、`APP_STORE_REVIEW_NOTES_DRAFT.md` 为受控草稿；
+   隐私与加密问卷分别使用 `APP_STORE_PRIVACY_DRAFT.md`、
+   `APP_STORE_EXPORT_COMPLIANCE_DRAFT.md` 复核。所有内容都必须逐项核对最终二进制
+   后才能粘贴到 App Store Connect。
 2. 二进制通过审核后，由组织账号提交 Apple Unlisted App Distribution 申请。
 3. 获得 Unlisted 链接后先在非生产设备验证安装、深链、首次注册、最低版本门禁和
    强制更新。

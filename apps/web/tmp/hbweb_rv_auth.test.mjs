@@ -441,9 +441,10 @@ async function refreshSession() {
 }
 function normalizeCurrentUser(user) {
   const stores = user.stores ?? user.Stores;
-  const { Stores: _stores, ...rest } = user;
+  const { Stores: _stores, ExactPermissions: _exactPermissions, ...rest } = user;
   return {
     ...rest,
+    exactPermissions: user.exactPermissions ?? user.ExactPermissions,
     stores: stores?.map((store) => ({
       storeGUID: store.storeGUID ?? store.StoreGUID ?? "",
       storeName: store.storeName ?? store.StoreName ?? "",
@@ -522,6 +523,34 @@ assertEqual(
   userWithCamelStoreFlags.stores?.[0]?.isActive,
   true,
   "Current user stores should keep camelCase active store status"
+);
+var userWithPascalExactPermissions = normalizeCurrentUser({
+  userGUID: "current-user-guid",
+  username: "exact",
+  email: "exact@example.com",
+  permissions: ["Reports.View", "Reports.ProductMovement.View"],
+  ExactPermissions: ["Reports.View"],
+  roleNames: ["User"],
+  storeNames: []
+});
+assertEqual(
+  userWithPascalExactPermissions.exactPermissions?.join(","),
+  "Reports.View",
+  "Current user exact permissions should normalize PascalCase ExactPermissions"
+);
+var userWithCamelExactPermissions = normalizeCurrentUser({
+  userGUID: "current-user-guid",
+  username: "exact",
+  email: "exact@example.com",
+  permissions: ["Reports.ProductMovement.View"],
+  exactPermissions: ["Reports.ProductMovement.View"],
+  roleNames: ["User"],
+  storeNames: []
+});
+assertEqual(
+  userWithCamelExactPermissions.exactPermissions?.join(","),
+  "Reports.ProductMovement.View",
+  "Current user exact permissions should keep camelCase exactPermissions"
 );
 var originalFetch = globalThis.fetch;
 var refreshRequests = [];
