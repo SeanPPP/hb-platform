@@ -44,7 +44,9 @@ public sealed class ServiceRegistrationSharedHeldOrderTests
         using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IHttpClientFactory>()
             .CreateClient(nameof(ISharedHeldOrderApiClient));
-        Assert.Equal(ServiceRegistration.GetApiBaseAddress(), client.BaseAddress);
+        Assert.Equal(
+            provider.GetRequiredService<ApiRuntimeEndpointState>().CurrentAddress,
+            client.BaseAddress);
 
         var handler = provider.GetRequiredService<IHttpMessageHandlerFactory>()
             .CreateHandler(nameof(ISharedHeldOrderApiClient));

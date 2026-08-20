@@ -350,6 +350,53 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
+    public async Task Linkly_settlement_command_handles_non_caller_timeout_without_escaping_execute()
+    {
+        var settlementService = new FakeLinklySettlementService
+        {
+            SettleException = new TaskCanceledException("settlement lookup timed out")
+        };
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            linklySettlementService: settlementService,
+            confirmLinklySettlementAsync: _ => Task.FromResult(true));
+
+        await viewModel.LoadAsync();
+        await viewModel.SettleAndPrintCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, settlementService.SettleCallCount);
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal("settlement lookup timed out", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Linkly_settlement_command_propagates_caller_cancellation()
+    {
+        var settlementStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settlementService = new FakeLinklySettlementService
+        {
+            WaitForCancellation = true,
+            SettlementStarted = settlementStarted
+        };
+        var viewModel = new DailyCloseViewModel(
+            new FakeDailyCloseService(),
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            linklySettlementService: settlementService,
+            confirmLinklySettlementAsync: _ => Task.FromResult(true));
+
+        await viewModel.LoadAsync();
+        var execution = viewModel.SettleAndPrintCommand.ExecuteAsync(null);
+        await settlementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        viewModel.SettleAndPrintCommand.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
     public async Task Linkly_settlement_command_stays_enabled_when_an_unknown_record_exists_for_safe_backend_recovery()
     {
         var viewModel = new DailyCloseViewModel(
@@ -572,15 +619,32 @@ public sealed class DailyCloseViewModelTests
 
         public int ResolveCallCount { get; private set; }
 
-        public Task<LinklySettlementExecutionResult> SettleAndPrintAsync(
+        public Exception? SettleException { get; init; }
+
+        public bool WaitForCancellation { get; init; }
+
+        public TaskCompletionSource<bool>? SettlementStarted { get; init; }
+
+        public async Task<LinklySettlementExecutionResult> SettleAndPrintAsync(
             PosSessionState session,
             DateTime businessDate,
             CancellationToken cancellationToken = default)
         {
             SettleCallCount++;
+            SettlementStarted?.TrySetResult(true);
+            if (WaitForCancellation)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            if (SettleException is not null)
+            {
+                throw SettleException;
+            }
+
             if (_settlements.FirstOrDefault(item => item.Status == LocalLinklySettlementStatus.Pending) is { } pending)
             {
-                return Task.FromResult(new LinklySettlementExecutionResult(pending, PrintResult: null));
+                return new LinklySettlementExecutionResult(pending, PrintResult: null);
             }
 
             var settlement = new LocalLinklySettlementRecord(
@@ -603,7 +667,7 @@ public sealed class DailyCloseViewModelTests
                 1,
                 LastPrintError: null);
             _settlements.Insert(0, settlement);
-            return Task.FromResult(new LinklySettlementExecutionResult(settlement, new ReceiptPrintResult(true, "printed")));
+            return new LinklySettlementExecutionResult(settlement, new ReceiptPrintResult(true, "printed"));
         }
 
         public Task<ReceiptPrintResult> ReprintAsync(

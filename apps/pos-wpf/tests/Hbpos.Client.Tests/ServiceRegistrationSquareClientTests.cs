@@ -60,7 +60,9 @@ public sealed class ServiceRegistrationSquareClientTests
 
         var clientFactory = provider.GetRequiredService<IHttpClientFactory>();
         var handlerFactory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
-        var expectedBaseAddress = ServiceRegistration.GetApiBaseAddress();
+        var expectedBaseAddress = provider
+            .GetRequiredService<ApiRuntimeEndpointState>()
+            .CurrentAddress;
 
         AssertSquareTerminalClientRegistration(
             clientFactory,

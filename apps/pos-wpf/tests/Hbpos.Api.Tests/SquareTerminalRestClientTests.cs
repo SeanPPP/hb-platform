@@ -11,6 +11,41 @@ namespace Hbpos.Api.Tests;
 public sealed class SquareTerminalRestClientTests
 {
     [Fact]
+    public async Task GetRefundAsync_SendsExpectedSandboxRequest()
+    {
+        var handler = new CapturingHandler(_ => CreateJsonResponse(
+            """
+            {
+              "refund": {
+                "id": "refund-1",
+                "status": "COMPLETED",
+                "payment_id": "payment-1",
+                "amount_money": { "amount": 99, "currency": "AUD" },
+                "updated_at": "2026-08-17T04:53:22Z"
+              }
+            }
+            """));
+        using var httpClient = new HttpClient(handler);
+        var client = new HttpSquareTerminalRestClient(
+            httpClient,
+            Options.Create(new SquareTerminalRestOptions()));
+
+        var refund = await client.GetRefundAsync(
+            "Sandbox",
+            "secret-square-token",
+            "refund-1",
+            CancellationToken.None);
+
+        Assert.NotNull(refund);
+        Assert.Equal("COMPLETED", refund.Status);
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal(
+            "https://connect.squareupsandbox.com/v2/refunds/refund-1",
+            handler.LastRequest!.RequestUri!.AbsoluteUri);
+        Assert.Equal(HttpMethod.Get, handler.LastRequest.Method);
+    }
+
+    [Fact]
     public async Task GetLocationsAsync_UsesConfiguredSquareVersionHeader()
     {
         var handler = new CapturingHandler(_ => CreateJsonResponse(

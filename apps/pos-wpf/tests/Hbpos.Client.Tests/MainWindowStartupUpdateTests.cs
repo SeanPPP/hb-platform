@@ -18,6 +18,7 @@ public sealed class MainWindowStartupUpdateTests
             : AppUpdateCoordinatorResult.FromStatus(status, "policy unavailable");
 
         var result = await MainWindow.RunStartupAppUpdateCheckCoreAsync(
+            previewMode: false,
             () =>
             {
                 checkCallCount++;
@@ -39,6 +40,7 @@ public sealed class MainWindowStartupUpdateTests
         Exception? reportedException = null;
 
         var result = await MainWindow.RunStartupAppUpdateCheckCoreAsync(
+            previewMode: false,
             () =>
             {
                 checkCallCount++;
@@ -50,6 +52,31 @@ public sealed class MainWindowStartupUpdateTests
         Assert.Equal(1, checkCallCount);
         Assert.IsType<HttpRequestException>(reportedException);
         Assert.Equal(AppUpdateCoordinatorStatus.CheckFailed, result.Status);
+        Assert.True(MainWindow.ShouldContinueStartupAfterAppUpdateCheck(result));
+    }
+
+    [Fact]
+    public async Task RunStartupAppUpdateCheckCoreAsync_skips_the_entire_update_chain_in_preview()
+    {
+        var checkCallCount = 0;
+        var exceptionReportCount = 0;
+        var failureReportCount = 0;
+
+        var result = await MainWindow.RunStartupAppUpdateCheckCoreAsync(
+            previewMode: true,
+            () =>
+            {
+                checkCallCount++;
+                return Task.FromResult(AppUpdateCoordinatorResult.FromStatus(
+                    AppUpdateCoordinatorStatus.ForceReady));
+            },
+            _ => exceptionReportCount++,
+            _ => failureReportCount++);
+
+        Assert.Equal(AppUpdateCoordinatorStatus.NoUpdate, result.Status);
+        Assert.Equal(0, checkCallCount);
+        Assert.Equal(0, exceptionReportCount);
+        Assert.Equal(0, failureReportCount);
         Assert.True(MainWindow.ShouldContinueStartupAfterAppUpdateCheck(result));
     }
 

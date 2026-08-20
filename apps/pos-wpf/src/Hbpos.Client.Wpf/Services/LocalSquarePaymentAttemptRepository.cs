@@ -54,9 +54,13 @@ public sealed record SquarePaymentAttemptContext(
     Guid AttemptGuid,
     string IdempotencyKey,
     Func<string, string?, DateTimeOffset, CancellationToken, Task>? BindCheckoutAsync = null,
-    string? SubmissionToken = null)
+    string? SubmissionToken = null,
+    Func<string, string, DateTimeOffset, CancellationToken, Task>? BindRefundAsync = null,
+    Func<string, string, DateTimeOffset, CardTerminalEnvironment, CancellationToken, Task>? BindRefundEvidenceAsync = null)
 {
     public bool CanBindCheckout => BindCheckoutAsync is not null;
+
+    public bool CanBindRefund => BindRefundEvidenceAsync is not null || BindRefundAsync is not null;
 }
 
 public interface ISquarePaymentAttemptContextAccessor
@@ -124,6 +128,14 @@ public interface ILocalSquarePaymentAttemptRepository
         await MarkCheckoutCreatedAsync(attemptGuid, checkoutId, checkoutStatus, updatedAt, cancellationToken);
         return true;
     }
+
+    Task<bool> TryRecordRefundResponseAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string refundId,
+        string refundStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default);
 
     async Task<bool> TryMarkRefundPaymentVerifiedAsync(
         Guid attemptGuid,
@@ -423,6 +435,41 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$CheckoutId", checkoutId);
                 command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
                 command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+                command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+            },
+            cancellationToken);
+    }
+
+    public async Task<bool> TryRecordRefundResponseAsync(
+        Guid attemptGuid,
+        string submissionToken,
+        string refundId,
+        string refundStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteRefundSubmissionUpdateAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                PaymentId = $RefundId,
+                PaymentStatus = $RefundStatus,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND Status IN ($RecoveringStatus, $UnknownStatus)
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+            """,
+            attemptGuid,
+            submissionToken,
+            command =>
+            {
+                command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+                command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+                command.Parameters.AddWithValue("$UnknownStatus", LocalSquarePaymentAttemptStatus.Unknown.ToString());
+                command.Parameters.AddWithValue("$RefundId", refundId);
+                command.Parameters.AddWithValue("$RefundStatus", refundStatus);
                 command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
             },
             cancellationToken);

@@ -52,32 +52,55 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         }
 
         var rulesToEvaluate = SelectRulesToEvaluate(applicableRules);
-        var discountsByLine = new Dictionary<CartLine, decimal>();
-
+        var plans = new List<PromotionEvaluationPlan>();
         foreach (var rule in rulesToEvaluate)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var ruleProductWeights = BuildRuleProductWeights(rule);
             if (ruleProductWeights.Count == 0)
             {
                 continue;
             }
 
-            var ruleUnits = ExpandRuleUnits(eligibleLines, ruleProductWeights);
-            var applicationCount = ruleUnits.Count / rule.ApplyQuantity;
-            if (rule.MaxApplicationsPerOrder is int maxApplications)
+            var budget = PromotionComputationBudget.CalculateRule(
+                rule.Id,
+                eligibleLines.Select(line => new PromotionBudgetLine(
+                    NormalizeProductCode(line.ProductCode),
+                    line.Quantity)),
+                ruleProductWeights,
+                rule.ApplyQuantity,
+                rule.MaxApplicationsPerOrder);
+            plans.Add(new PromotionEvaluationPlan(rule, ruleProductWeights, budget));
+        }
+
+        // 所有选中规则先统一预检；任一超限都不允许留下部分自动促销结果。
+        PromotionComputationBudget.EnsureOrderLimit(plans.Select(plan => plan.Budget));
+        var discountsByLine = new Dictionary<CartLine, decimal>();
+
+        foreach (var plan in plans)
+        {
+            if (plan.Budget.WorkUnits <= 0)
             {
-                applicationCount = Math.Min(applicationCount, maxApplications);
+                continue;
             }
 
-            for (var applicationIndex = 0; applicationIndex < applicationCount; applicationIndex++)
+            // 与 Web 端评估保持一致：每条非排他规则独立按购物车顺序分组，不跨规则消费同一份展开单位。
+            var selectedUnits = new List<RuleUnit>(
+                Math.Min(plan.Rule.ApplyQuantity, checked((int)plan.Budget.WorkUnits)));
+            foreach (var unit in EnumerateRuleUnits(
+                         eligibleLines,
+                         plan.ProductWeights,
+                         plan.Budget.WorkUnits))
             {
-                // 与 Web 端评估保持一致：每条非排他规则独立按购物车顺序分组，不跨规则消费同一份展开单位。
-                var selectedUnits = ruleUnits
-                    .Skip(applicationIndex * rule.ApplyQuantity)
-                    .Take(rule.ApplyQuantity)
-                    .ToArray();
+                selectedUnits.Add(unit);
+                if (selectedUnits.Count != plan.Rule.ApplyQuantity)
+                {
+                    continue;
+                }
 
-                AddGroupDiscount(discountsByLine, selectedUnits, rule.FixedPrice);
+                cancellationToken.ThrowIfCancellationRequested();
+                AddGroupDiscount(discountsByLine, selectedUnits, plan.Rule.FixedPrice);
+                selectedUnits.Clear();
             }
         }
 
@@ -145,13 +168,12 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         return weights;
     }
 
-    private static List<RuleUnit> ExpandRuleUnits(
+    private static IEnumerable<RuleUnit> EnumerateRuleUnits(
         IReadOnlyList<CartLine> lines,
-        IReadOnlyDictionary<string, int> ruleProductWeights)
+        IReadOnlyDictionary<string, int> ruleProductWeights,
+        long workUnits)
     {
-        var expandedUnits = new List<RuleUnit>();
-        var nextExpandedId = 0;
-
+        long emittedUnits = 0;
         foreach (var line in lines)
         {
             var productCode = NormalizeProductCode(line.ProductCode);
@@ -160,24 +182,24 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
                 continue;
             }
 
-            var quantity = decimal.ToInt32(line.Quantity);
-            for (var quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
+            var quantity = decimal.ToInt64(line.Quantity);
+            for (long quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
             {
                 // Web 端的权重语义是按 qty * UnitWeight 展开同价单位，每个展开单位自身权重都视为 1。
                 for (var weightIndex = 0; weightIndex < unitWeight; weightIndex++)
                 {
-                    expandedUnits.Add(new RuleUnit(
-                        nextExpandedId++,
+                    yield return new RuleUnit(
                         line,
-                        productCode,
                         line.UnitPrice,
-                        quantityIndex,
-                        weightIndex));
+                        quantityIndex);
+                    emittedUnits++;
+                    if (emittedUnits >= workUnits)
+                    {
+                        yield break;
+                    }
                 }
             }
         }
-
-        return expandedUnits;
     }
 
     private static void AddGroupDiscount(
@@ -221,13 +243,13 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         }
 
         var remainingDiscount = groupDiscount;
+        var remainingAmount = decimal.Round(
+            groupedLines.Sum(item => item.Amount),
+            2,
+            MidpointRounding.AwayFromZero);
         for (var index = 0; index < groupedLines.Length && remainingDiscount > 0m; index++)
         {
             var group = groupedLines[index];
-            var remainingAmount = decimal.Round(
-                groupedLines.Skip(index).Sum(item => item.Amount),
-                2,
-                MidpointRounding.AwayFromZero);
             if (remainingAmount <= 0m)
             {
                 break;
@@ -237,15 +259,19 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
                 ? remainingDiscount
                 : decimal.Round(remainingDiscount * group.Amount / remainingAmount, 2, MidpointRounding.AwayFromZero);
             lineDiscount = Math.Clamp(lineDiscount, 0m, Math.Min(remainingDiscount, group.MaxAdditionalDiscount));
-            if (lineDiscount <= 0m)
+            if (lineDiscount > 0m)
             {
-                continue;
+                discountsByLine[group.Line] = discountsByLine.TryGetValue(group.Line, out var currentDiscount)
+                    ? decimal.Round(currentDiscount + lineDiscount, 2, MidpointRounding.AwayFromZero)
+                    : lineDiscount;
+                remainingDiscount -= lineDiscount;
             }
 
-            discountsByLine[group.Line] = discountsByLine.TryGetValue(group.Line, out var currentDiscount)
-                ? decimal.Round(currentDiscount + lineDiscount, 2, MidpointRounding.AwayFromZero)
-                : lineDiscount;
-            remainingDiscount -= lineDiscount;
+            // Amount 均已按分币舍入；递减与旧实现每轮 Skip(index).Sum 的结果一致，且避免 O(n²)。
+            remainingAmount = decimal.Round(
+                remainingAmount - group.Amount,
+                2,
+                MidpointRounding.AwayFromZero);
         }
     }
 
@@ -265,15 +291,17 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         return (productCode ?? string.Empty).Trim();
     }
 
+    private sealed record PromotionEvaluationPlan(
+        PromotionRuleDto Rule,
+        IReadOnlyDictionary<string, int> ProductWeights,
+        PromotionRuleBudget Budget);
+
     private sealed record RuleUnit(
-        int Id,
         CartLine Line,
-        string ProductCode,
         decimal UnitPrice,
-        int SortOrder,
-        int ExpandedIndex);
+        long SortOrder);
 
     private sealed record RuleUnitGroupKey(
         CartLine Line,
-        int SortOrder);
+        long SortOrder);
 }

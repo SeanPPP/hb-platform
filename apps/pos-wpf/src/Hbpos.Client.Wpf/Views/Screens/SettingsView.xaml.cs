@@ -8,12 +8,45 @@ namespace Hbpos.Client.Wpf.Views.Screens;
 public partial class SettingsView : UserControl
 {
     private SettingsViewModel? _viewModel;
+    private bool _isViewLoaded;
 
     public SettingsView()
     {
         InitializeComponent();
-        DataContextChanged += (_, _) => AttachViewModel(DataContext as SettingsViewModel);
+        Loaded += SettingsViewLoaded;
+        Unloaded += SettingsViewUnloaded;
+        DataContextChanged += SettingsViewDataContextChanged;
+    }
+
+    private void SettingsViewLoaded(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (_isViewLoaded)
+        {
+            return;
+        }
+
+        _isViewLoaded = true;
         AttachViewModel(DataContext as SettingsViewModel);
+    }
+
+    private void SettingsViewUnloaded(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (!_isViewLoaded && _viewModel is null)
+        {
+            return;
+        }
+
+        _isViewLoaded = false;
+        // 页面离开视觉树后解除 VM 强事件，同时清空字段引用。
+        AttachViewModel(null);
+    }
+
+    private void SettingsViewDataContextChanged(object sender, System.Windows.DependencyPropertyChangedEventArgs e)
+    {
+        if (_isViewLoaded)
+        {
+            AttachViewModel(e.NewValue as SettingsViewModel);
+        }
     }
 
     private void LinklyCloudPasswordBox_PasswordChanged(object sender, System.Windows.RoutedEventArgs e)

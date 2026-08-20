@@ -1,5 +1,6 @@
 using Hbpos.Client.Wpf.Services;
 using System.Threading;
+using System.Windows.Threading;
 
 namespace Hbpos.Client.Tests;
 
@@ -29,7 +30,7 @@ public sealed class SingleInstanceStartupGuardTests
     }
 
     [Fact]
-    public void TryAcquire_returns_startup_in_progress_when_startup_gate_is_held()
+    public async Task TryAcquire_returns_startup_in_progress_when_startup_gate_is_held()
     {
         var options = CreateOptions();
         using var startupGate = new Semaphore(1, 1, options.StartupGateName);
@@ -40,7 +41,7 @@ public sealed class SingleInstanceStartupGuardTests
 
         try
         {
-            var result = guard.TryAcquire(previewMode: false);
+            var result = await guard.TryAcquireAsync(previewMode: false);
 
             Assert.False(result.CanStart);
             Assert.Equal(SingleInstanceStartupStatus.AnotherStartupInProgress, result.Status);
@@ -55,7 +56,7 @@ public sealed class SingleInstanceStartupGuardTests
     }
 
     [Fact]
-    public void TryAcquire_kills_existing_process_when_graceful_close_does_not_exit()
+    public async Task TryAcquire_kills_existing_process_when_graceful_close_does_not_exit()
     {
         var options = CreateOptions();
         var process = new FakeRunningProcess(11, @"C:\HBPOS\Hbpos.Client.Wpf.exe")
@@ -66,7 +67,7 @@ public sealed class SingleInstanceStartupGuardTests
         var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", [process]);
         var guard = new SingleInstanceStartupGuard(provider, options);
 
-        using var lease = guard.TryAcquire(previewMode: false).Lease;
+        using var lease = (await guard.TryAcquireAsync(previewMode: false)).Lease;
 
         Assert.NotNull(lease);
         Assert.Equal(1, process.CloseMainWindowCallCount);
@@ -75,7 +76,7 @@ public sealed class SingleInstanceStartupGuardTests
     }
 
     [Fact]
-    public void TryAcquire_does_not_kill_when_graceful_close_exits()
+    public async Task TryAcquire_does_not_kill_when_graceful_close_exits()
     {
         var options = CreateOptions();
         var process = new FakeRunningProcess(11, @"C:\HBPOS\Hbpos.Client.Wpf.exe")
@@ -86,11 +87,144 @@ public sealed class SingleInstanceStartupGuardTests
         var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", [process]);
         var guard = new SingleInstanceStartupGuard(provider, options);
 
-        using var lease = guard.TryAcquire(previewMode: false).Lease;
+        using var lease = (await guard.TryAcquireAsync(previewMode: false)).Lease;
 
         Assert.NotNull(lease);
         Assert.Equal(1, process.CloseMainWindowCallCount);
         Assert.False(process.KillCalled);
+    }
+
+    [Fact]
+    public async Task TryAcquire_returns_acquired_when_running_mutex_was_abandoned_and_lease_release_allows_reacquire()
+    {
+        var options = CreateOptions();
+        var process = new FakeRunningProcess(11, @"C:\HBPOS\Hbpos.Client.Wpf.exe");
+        var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", [process]);
+        var guard = new SingleInstanceStartupGuard(provider, options);
+
+        // 让另一个线程持有真实命名互斥体并在退出前不释放所有权，模拟 Windows 的 abandoned mutex。
+        using var threadStarted = new ManualResetEventSlim();
+        Mutex? abandonedOwner = null;
+        var abandoningThread = new Thread(() =>
+        {
+            abandonedOwner = new Mutex(true, options.RunningInstanceMutexName);
+            threadStarted.Set();
+        });
+        abandoningThread.Start();
+        threadStarted.Wait();
+        abandoningThread.Join();
+
+        var result = await guard.TryAcquireAsync(previewMode: false);
+
+        Assert.Equal(SingleInstanceStartupStatus.Acquired, result.Status);
+        Assert.True(result.CanStart);
+        Assert.NotNull(result.Lease);
+
+        // lease 释放后，同一命名互斥体可再次获得（所有权已归还）。
+        result.Lease!.Dispose();
+        using var reacquired = new Mutex(false, options.RunningInstanceMutexName);
+        Assert.True(reacquired.WaitOne(TimeSpan.FromSeconds(5)));
+        reacquired.ReleaseMutex();
+        abandonedOwner!.Dispose();
+    }
+
+    [Fact]
+    public Task TryAcquireAsync_yields_while_waiting_for_graceful_process_exit()
+    {
+        return RunOnStaDispatcherAsync(async () =>
+        {
+            var options = CreateOptions();
+            var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exitCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var process = new FakeRunningProcess(11, @"C:\HBPOS\Hbpos.Client.Wpf.exe")
+            {
+                CloseMainWindowResult = true,
+                WaitForExitAsyncHandler = _ =>
+                {
+                    waitStarted.TrySetResult();
+                    return exitCompleted.Task;
+                }
+            };
+            var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", [process]);
+            var guard = new SingleInstanceStartupGuard(provider, options);
+
+            var acquireTask = guard.TryAcquireAsync(previewMode: false);
+            await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.False(acquireTask.IsCompleted);
+            exitCompleted.SetResult(true);
+            using var lease = (await acquireTask.WaitAsync(TimeSpan.FromSeconds(2))).Lease;
+            Assert.NotNull(lease);
+            Assert.False(process.KillCalled);
+        });
+    }
+
+    [Fact]
+    public async Task TryAcquireAsync_releases_startup_gate_when_process_wait_faults()
+    {
+        var options = CreateOptions();
+        var process = new FakeRunningProcess(11, @"C:\HBPOS\Hbpos.Client.Wpf.exe")
+        {
+            CloseMainWindowResult = true,
+            WaitForExitAsyncHandler = _ => Task.FromException<bool>(new InvalidOperationException("wait failed"))
+        };
+        var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", [process]);
+        var guard = new SingleInstanceStartupGuard(provider, options);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => guard.TryAcquireAsync(previewMode: false));
+
+        using var reacquiredGate = new Semaphore(1, 1, options.StartupGateName);
+        Assert.True(reacquiredGate.WaitOne(TimeSpan.Zero));
+        reacquiredGate.Release();
+    }
+
+    [Fact]
+    public async Task TryAcquireAsync_releases_startup_gate_when_running_mutex_times_out()
+    {
+        var options = CreateOptions();
+        using var ownerReady = new ManualResetEventSlim();
+        using var releaseOwner = new ManualResetEventSlim();
+        Exception? ownerFailure = null;
+        var ownerThread = new Thread(() =>
+        {
+            try
+            {
+                using var ownedMutex = new Mutex(false, options.RunningInstanceMutexName);
+                ownedMutex.WaitOne();
+                ownerReady.Set();
+                releaseOwner.Wait();
+                ownedMutex.ReleaseMutex();
+            }
+            catch (Exception ex)
+            {
+                ownerFailure = ex;
+                ownerReady.Set();
+            }
+        });
+        ownerThread.Start();
+        ownerReady.Wait();
+
+        try
+        {
+            Assert.Null(ownerFailure);
+            var provider = new FakeProcessProvider(10, @"C:\HBPOS\Hbpos.Client.Wpf.exe", []);
+            var guard = new SingleInstanceStartupGuard(provider, options);
+
+            var result = await guard.TryAcquireAsync(previewMode: false);
+
+            Assert.Equal(SingleInstanceStartupStatus.ExistingInstanceCouldNotBeStopped, result.Status);
+            Assert.Null(result.Lease);
+            using var reacquiredGate = new Semaphore(1, 1, options.StartupGateName);
+            Assert.True(reacquiredGate.WaitOne(TimeSpan.Zero));
+            reacquiredGate.Release();
+        }
+        finally
+        {
+            releaseOwner.Set();
+            Assert.True(ownerThread.Join(TimeSpan.FromSeconds(5)), "Mutex owner thread did not shut down.");
+        }
+
+        Assert.Null(ownerFailure);
     }
 
     private static SingleInstanceStartupGuardOptions CreateOptions()
@@ -102,6 +236,47 @@ public sealed class SingleInstanceStartupGuardTests
             TimeSpan.FromMilliseconds(1),
             TimeSpan.FromMilliseconds(1),
             TimeSpan.FromMilliseconds(1));
+    }
+
+    private static async Task RunOnStaDispatcherAsync(Func<Task> action)
+    {
+        var dispatcherReady = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+                dispatcherReady.TrySetResult(dispatcher);
+                Dispatcher.Run();
+            }
+            catch (Exception ex)
+            {
+                dispatcherReady.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Hbpos.Client.Tests.SingleInstanceDispatcher"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var operation = dispatcher.InvokeAsync(action, DispatcherPriority.Normal);
+            await await operation.Task;
+        }
+        finally
+        {
+            if (!dispatcher.HasShutdownStarted)
+            {
+                dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
+            }
+
+            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+        }
     }
 
     private sealed class FakeProcessProvider : IRunningProcessProvider
@@ -146,6 +321,8 @@ public sealed class SingleInstanceStartupGuardTests
 
         public bool WaitForExitResult { get; init; }
 
+        public Func<TimeSpan, Task<bool>>? WaitForExitAsyncHandler { get; init; }
+
         public int CloseMainWindowCallCount { get; private set; }
 
         public bool KillCalled { get; private set; }
@@ -158,10 +335,13 @@ public sealed class SingleInstanceStartupGuardTests
             return CloseMainWindowResult;
         }
 
-        public bool WaitForExit(TimeSpan timeout)
+        public async Task<bool> WaitForExitAsync(TimeSpan timeout)
         {
-            HasExited = WaitForExitResult;
-            return WaitForExitResult;
+            var result = WaitForExitAsyncHandler is null
+                ? WaitForExitResult
+                : await WaitForExitAsyncHandler(timeout);
+            HasExited = result;
+            return result;
         }
 
         public void Kill(bool entireProcessTree)

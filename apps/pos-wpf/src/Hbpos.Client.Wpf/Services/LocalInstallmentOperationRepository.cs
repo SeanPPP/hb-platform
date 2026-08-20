@@ -59,6 +59,23 @@ public interface ILocalInstallmentOperationRepository
         string? failureMessage = null,
         CancellationToken cancellationToken = default);
 
+    Task<bool> TryRecordRefundEvidenceAsync(
+        Guid refundStepGuid,
+        IReadOnlyCollection<LocalInstallmentRefundStepState> expected,
+        string refundReference,
+        string providerEnvironment,
+        string cardTransactionsJson,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> TryResetRefundStepAfterDeclineAsync(
+        Guid refundStepGuid,
+        IReadOnlyCollection<LocalInstallmentRefundStepState> expected,
+        string nextIdempotencyKey,
+        DateTimeOffset updatedAt,
+        string? failureMessage = null,
+        CancellationToken cancellationToken = default);
+
     Task<bool> ResolveRefundStepAsync(
         Guid refundStepGuid,
         InstallmentRefundSupervisorResolution resolution,
@@ -361,6 +378,96 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
         return affected == 1;
     }
 
+    public async Task<bool> TryRecordRefundEvidenceAsync(
+        Guid refundStepGuid,
+        IReadOnlyCollection<LocalInstallmentRefundStepState> expected,
+        string refundReference,
+        string providerEnvironment,
+        string cardTransactionsJson,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        if (expected.Count == 0)
+        {
+            throw new ArgumentException("退款证据写入必须指定期望状态。", nameof(expected));
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            UPDATE LocalInstallmentRefundSteps
+            SET RefundReference = COALESCE(RefundReference, $RefundReference),
+                ProviderEnvironment = COALESCE(ProviderEnvironment, $ProviderEnvironment),
+                CardTransactionsJson = $CardTransactionsJson,
+                UpdatedAt = $UpdatedAt
+            WHERE RefundStepGuid = $RefundStepGuid
+              AND State IN ({string.Join(", ", expected.Select((_, index) => "$Expected" + index))})
+              AND (RefundReference IS NULL OR RefundReference = $RefundReference)
+              AND (ProviderEnvironment IS NULL OR ProviderEnvironment = $ProviderEnvironment);
+            """;
+        command.Parameters.AddWithValue("$RefundReference", refundReference);
+        command.Parameters.AddWithValue("$ProviderEnvironment", providerEnvironment);
+        command.Parameters.AddWithValue("$CardTransactionsJson", cardTransactionsJson);
+        command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$RefundStepGuid", refundStepGuid.ToString());
+        var index = 0;
+        foreach (var state in expected)
+        {
+            command.Parameters.AddWithValue("$Expected" + index++, state.ToString());
+        }
+
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return affected == 1;
+    }
+
+    public async Task<bool> TryResetRefundStepAfterDeclineAsync(
+        Guid refundStepGuid,
+        IReadOnlyCollection<LocalInstallmentRefundStepState> expected,
+        string nextIdempotencyKey,
+        DateTimeOffset updatedAt,
+        string? failureMessage = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (expected.Count == 0)
+        {
+            throw new ArgumentException("退款拒绝重置必须指定期望状态。", nameof(expected));
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            UPDATE LocalInstallmentRefundSteps
+            SET State = $Prepared,
+                IdempotencyKey = $NextIdempotencyKey,
+                RefundReference = NULL,
+                ProviderEnvironment = NULL,
+                CardTransactionsJson = NULL,
+                FailureMessage = $FailureMessage,
+                UpdatedAt = $UpdatedAt
+            WHERE RefundStepGuid = $RefundStepGuid
+              AND State IN ({string.Join(", ", expected.Select((_, index) => "$Expected" + index))});
+            """;
+        command.Parameters.AddWithValue("$Prepared", LocalInstallmentRefundStepState.Prepared.ToString());
+        command.Parameters.AddWithValue("$NextIdempotencyKey", nextIdempotencyKey);
+        command.Parameters.AddWithValue("$FailureMessage", (object?)failureMessage ?? DBNull.Value);
+        command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$RefundStepGuid", refundStepGuid.ToString());
+        var index = 0;
+        foreach (var state in expected)
+        {
+            command.Parameters.AddWithValue("$Expected" + index++, state.ToString());
+        }
+
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return affected == 1;
+    }
+
     public Task<bool> ResolveRefundStepAsync(
         Guid refundStepGuid,
         InstallmentRefundSupervisorResolution resolution,
@@ -423,10 +530,23 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
         command.CommandText = """
             UPDATE LocalInstallmentRefundSteps
             SET State = $State,
-                -- 中文注释：主管确认银行明确未退款后，下一次 Linkly 重试必须生成并持久化全新 TxnRef。
+                -- 中文注释：主管确认银行明确未退款后，下一次 provider 重试必须使用全新幂等身份。
+                IdempotencyKey = CASE
+                    WHEN $SupervisorDecision = $ConfirmNotRefunded THEN $RetryIdempotencyKey
+                    ELSE IdempotencyKey
+                END,
                 RefundReference = CASE
                     WHEN $SupervisorDecision = $ConfirmNotRefunded THEN NULL
                     ELSE COALESCE($RefundReference, RefundReference)
+                END,
+                ProviderEnvironment = CASE
+                    WHEN $SupervisorDecision = $ConfirmNotRefunded THEN NULL
+                    ELSE ProviderEnvironment
+                END,
+                CardTransactionsJson = CASE
+                    WHEN $SupervisorDecision = $ConfirmNotRefunded
+                         AND (OriginalReference LIKE 'SQ:%' OR ProviderEnvironment IS NOT NULL) THEN NULL
+                    ELSE CardTransactionsJson
                 END,
                 SupervisorDecision = $SupervisorDecision,
                 SupervisorUserId = $SupervisorUserId,
@@ -445,6 +565,7 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
               );
             """;
         command.Parameters.AddWithValue("$State", next.ToString());
+        command.Parameters.AddWithValue("$RetryIdempotencyKey", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("$RefundReference", (object?)resolution.RefundReference ?? DBNull.Value);
         command.Parameters.AddWithValue("$SupervisorDecision", resolution.Decision.ToString());
         command.Parameters.AddWithValue("$ConfirmNotRefunded", InstallmentRefundSupervisorDecision.ConfirmNotRefunded.ToString());
@@ -569,11 +690,11 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
         command.CommandText = """
             INSERT INTO LocalInstallmentRefundSteps
             (RefundStepGuid, OperationGuid, OriginalPaymentGuid, Method, Amount, OriginalReference, IdempotencyKey, State,
-             RefundReference, CardTransactionsJson, FailureMessage, SupervisorDecision, SupervisorUserId, SupervisorReason,
+             RefundReference, ProviderEnvironment, CardTransactionsJson, FailureMessage, SupervisorDecision, SupervisorUserId, SupervisorReason,
              SupervisorEvidence, ResolvedAt, CreatedAt, UpdatedAt)
             VALUES
             ($RefundStepGuid, $OperationGuid, $OriginalPaymentGuid, $Method, $Amount, $OriginalReference, $IdempotencyKey, $State,
-             $RefundReference, $CardTransactionsJson, $FailureMessage, $SupervisorDecision, $SupervisorUserId, $SupervisorReason,
+             $RefundReference, $ProviderEnvironment, $CardTransactionsJson, $FailureMessage, $SupervisorDecision, $SupervisorUserId, $SupervisorReason,
              $SupervisorEvidence, $ResolvedAt, $CreatedAt, $UpdatedAt);
             """;
         AddRefundStepParameters(command, step);
@@ -668,6 +789,7 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$IdempotencyKey", step.IdempotencyKey);
         command.Parameters.AddWithValue("$State", step.State.ToString());
         command.Parameters.AddWithValue("$RefundReference", (object?)step.RefundReference ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ProviderEnvironment", (object?)step.ProviderEnvironment ?? DBNull.Value);
         command.Parameters.AddWithValue("$CardTransactionsJson", (object?)step.CardTransactionsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$FailureMessage", (object?)step.FailureMessage ?? DBNull.Value);
         command.Parameters.AddWithValue("$SupervisorDecision", step.SupervisorDecision?.ToString() ?? (object)DBNull.Value);
@@ -715,7 +837,8 @@ public sealed class LocalInstallmentOperationRepository(LocalSqliteStore store) 
         ReadNullableString(reader, "SupervisorEvidence"),
         ReadNullableDateTimeOffset(reader, "ResolvedAt"),
         ReadDateTimeOffset(reader, "CreatedAt"),
-        ReadDateTimeOffset(reader, "UpdatedAt"));
+        ReadDateTimeOffset(reader, "UpdatedAt"),
+        ReadNullableString(reader, "ProviderEnvironment"));
 
     private static Guid ReadGuid(SqliteDataReader reader, string name) => Guid.Parse(ReadString(reader, name));
     private static Guid? ReadNullableGuid(SqliteDataReader reader, string name)

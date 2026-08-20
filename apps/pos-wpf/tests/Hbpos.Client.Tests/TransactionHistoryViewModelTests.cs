@@ -385,6 +385,44 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task LoadAsync_handles_remote_timeout_without_throwing()
+    {
+        const string timeoutMessage = "The request timed out.";
+        var remoteOrders = new CapturingRemoteOrderHistoryService();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+        viewModel.IsOnlineSourceSelected = true;
+        remoteOrders.QueryException = new TaskCanceledException(timeoutMessage);
+
+        var exception = await Record.ExceptionAsync(() => viewModel.LoadAsync());
+
+        Assert.Null(exception);
+        Assert.Empty(viewModel.Orders);
+        Assert.Equal(timeoutMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task LoadAsync_propagates_caller_cancellation()
+    {
+        var remoteOrders = new CapturingRemoteOrderHistoryService();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+        viewModel.IsOnlineSourceSelected = true;
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+        remoteOrders.QueryException = new OperationCanceledException(cancellationSource.Token);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => viewModel.LoadAsync(cancellationSource.Token));
+    }
+
+    [Fact]
     public async Task Local_history_merges_local_and_suspended_orders_and_sorts_descending()
     {
         var localOrderGuid = Guid.NewGuid();
@@ -619,9 +657,21 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
-    public async Task Remote_history_shows_reprint_hidden_and_hides_recall()
+    public async Task Remote_history_shows_reprint_and_hides_recall()
     {
         var orderGuid = Guid.NewGuid();
+        var remoteReceipt = new ReceiptDetails(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.Now,
+            12m,
+            0m,
+            12m,
+            [new ReceiptPreviewLine("Remote Tea", "930002", 1m, 12m, 0m, 12m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)]);
+        var reprintRequested = false;
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
             new CapturingSuspendedOrderService(),
@@ -644,7 +694,42 @@ public sealed class TransactionHistoryViewModelTests
                 ]),
                 Receipts =
                 {
-                    [orderGuid] = new ReceiptDetails(
+                    [orderGuid] = remoteReceipt
+                }
+            },
+            CreateSession());
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        viewModel.IsOnlineSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.False(viewModel.IsRecallVisible);
+        Assert.True(viewModel.IsReprintVisible);
+        Assert.False(viewModel.RecallSelectedCommand.CanExecute(null));
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+        Assert.Same(remoteReceipt, viewModel.SelectedReceipt);
+        Assert.Equal(
+            orderGuid.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
+
+        viewModel.ReprintCommand.Execute(null);
+
+        Assert.True(reprintRequested);
+    }
+
+    [Fact]
+    public async Task Remote_history_without_receipt_details_hides_reprint()
+    {
+        var orderGuid = Guid.NewGuid();
+        var reprintRequested = false;
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService
+            {
+                QueryResult = new RemoteOrderHistoryResult(
+                [
+                    new RemoteOrderHistorySummary(
                         orderGuid,
                         "S001",
                         "POS-01",
@@ -653,22 +738,265 @@ public sealed class TransactionHistoryViewModelTests
                         12m,
                         0m,
                         12m,
-                        [new ReceiptPreviewLine("Remote Tea", "930002", 1m, 12m, 0m, 12m)],
-                        [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)])
-                }
+                        1,
+                        "Cash",
+                        "Synced")
+                ])
             },
+            CreateSession());
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        viewModel.IsOnlineSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.False(viewModel.IsReprintVisible);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.ReprintCommand.Execute(null);
+
+        Assert.False(reprintRequested);
+    }
+
+    [Fact]
+    public async Task Source_switch_blocks_reprint_while_new_source_loads()
+    {
+        var orderGuid = Guid.NewGuid();
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryGate = new TaskCompletionSource<RemoteOrderHistoryResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reprintRequested = false;
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    5m,
+                    0m,
+                    5m,
+                    "Synced",
+                    1,
+                    "Cash")
+            ],
+            Receipts =
+            {
+                [orderGuid] = new ReceiptDetails(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    5m,
+                    0m,
+                    5m,
+                    [new ReceiptPreviewLine("Receipt Tea", "930001", 1m, 5m, 0m, 5m)],
+                    [new ReceiptPaymentLine(PaymentMethodKind.Cash, 5m, null)])
+            }
+        };
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryHandler = (_, _) =>
+            {
+                queryStarted.TrySetResult();
+                return queryGate.Task;
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        await viewModel.LoadAsync();
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.IsOnlineSourceSelected = true;
+        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(orderGuid, viewModel.SelectedOrder?.OrderGuid);
+        Assert.Equal(orderGuid, viewModel.SelectedReceipt?.OrderGuid);
+        Assert.False(viewModel.IsReprintVisible);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.ReprintCommand.Execute(null);
+        Assert.False(reprintRequested);
+
+        queryGate.SetResult(new RemoteOrderHistoryResult([]));
+        await viewModel.LoadAsync();
+    }
+
+    [Fact]
+    public async Task Remote_history_ignores_stale_receipt_after_selection_changes()
+    {
+        var firstOrderGuid = Guid.NewGuid();
+        var secondOrderGuid = Guid.NewGuid();
+        var soldAt = DateTimeOffset.Now;
+        var firstReceipt = new ReceiptDetails(
+            firstOrderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            12m,
+            0m,
+            12m,
+            [new ReceiptPreviewLine("First Item", "930002", 1m, 12m, 0m, 12m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)]);
+        var secondReceipt = new ReceiptDetails(
+            secondOrderGuid,
+            "S001",
+            "POS-02",
+            "Bob",
+            soldAt.AddMinutes(-1),
+            8m,
+            0m,
+            8m,
+            [new ReceiptPreviewLine("Second Item", "930003", 1m, 8m, 0m, 8m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 8m, null)]);
+        var firstReceiptGate = new TaskCompletionSource<ReceiptDetails?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryResult = new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    firstOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    soldAt,
+                    12m,
+                    0m,
+                    12m,
+                    1,
+                    "Cash",
+                    "Synced"),
+                new RemoteOrderHistorySummary(
+                    secondOrderGuid,
+                    "S001",
+                    "POS-02",
+                    "Bob",
+                    soldAt.AddMinutes(-1),
+                    8m,
+                    0m,
+                    8m,
+                    1,
+                    "Cash",
+                    "Synced")
+            ])
+        };
+        remoteOrders.DetailsHandler = (orderGuid, _) =>
+        {
+            if (orderGuid == firstOrderGuid)
+            {
+                firstRequestStarted.TrySetResult();
+                return firstReceiptGate.Task;
+            }
+
+            return Task.FromResult<ReceiptDetails?>(
+                orderGuid == secondOrderGuid ? secondReceipt : null);
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+
+        viewModel.IsOnlineSourceSelected = true;
+        var initialLoad = viewModel.LoadAsync();
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        viewModel.SelectedOrder = Assert.Single(
+            viewModel.Orders,
+            order => order.OrderGuid == secondOrderGuid);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.SelectedReceipt, secondReceipt));
+
+        firstReceiptGate.SetResult(firstReceipt);
+        await initialLoad;
+
+        Assert.Equal(secondOrderGuid, viewModel.SelectedOrder?.OrderGuid);
+        Assert.Same(secondReceipt, viewModel.SelectedReceipt);
+        Assert.True(viewModel.IsReprintVisible);
+        Assert.Equal(
+            secondOrderGuid.ToString("D"),
+            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
+    }
+
+    [Fact]
+    public async Task Remote_history_selection_handles_details_timeout_without_unobserved_exception()
+    {
+        var firstOrderGuid = Guid.NewGuid();
+        var secondOrderGuid = Guid.NewGuid();
+        var soldAt = DateTimeOffset.Now;
+        var firstReceipt = new ReceiptDetails(
+            firstOrderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            12m,
+            0m,
+            12m,
+            [new ReceiptPreviewLine("First Item", "930002", 1m, 12m, 0m, 12m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)]);
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryResult = new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    firstOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    soldAt,
+                    12m,
+                    0m,
+                    12m,
+                    1,
+                    "Cash",
+                    "Synced"),
+                new RemoteOrderHistorySummary(
+                    secondOrderGuid,
+                    "S001",
+                    "POS-02",
+                    "Bob",
+                    soldAt.AddMinutes(-1),
+                    8m,
+                    0m,
+                    8m,
+                    1,
+                    "Cash",
+                    "Synced")
+            ])
+        };
+        remoteOrders.DetailsHandler = (orderGuid, _) => orderGuid == firstOrderGuid
+            ? Task.FromResult<ReceiptDetails?>(firstReceipt)
+            : Task.FromException<ReceiptDetails?>(new TaskCanceledException("request timeout"));
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
             CreateSession());
 
         viewModel.IsOnlineSourceSelected = true;
         await viewModel.LoadAsync();
 
-        Assert.False(viewModel.IsRecallVisible);
-        Assert.False(viewModel.IsReprintVisible);
-        Assert.False(viewModel.RecallSelectedCommand.CanExecute(null));
+        viewModel.SelectedOrder = Assert.Single(
+            viewModel.Orders,
+            order => order.OrderGuid == secondOrderGuid);
+        await WaitUntilAsync(() => viewModel.StatusMessage == "Order details load timed out. Please try again.");
+
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.Empty(viewModel.ReceiptPreviewRows);
         Assert.False(viewModel.ReprintCommand.CanExecute(null));
-        Assert.Equal(
-            orderGuid.ToString("D"),
-            Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
     }
 
     [Fact]
@@ -961,6 +1289,65 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Installment_history_with_local_receipt_allows_reprint()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-REPRINT", "王五", "0400555666", paidAmount: 40m, outstandingAmount: 80m);
+        var localOrder = CreateLocalInstallmentOrder(order);
+        var reprintRequested = false;
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: new CapturingInstallmentOrderService
+            {
+                Orders = [order],
+                LocalOrders = { [order.OrderId] = localOrder }
+            });
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var receipt = Assert.IsType<ReceiptDetails>(viewModel.SelectedReceipt);
+        Assert.Equal(order.OrderId, receipt.OrderGuid);
+        Assert.True(viewModel.IsReprintVisible);
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.ReprintCommand.Execute(null);
+
+        Assert.True(reprintRequested);
+    }
+
+    [Fact]
+    public async Task Installment_history_without_local_receipt_hides_reprint()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-NO-RECEIPT", "赵六", "0400777888", paidAmount: 20m, outstandingAmount: 100m);
+        var reprintRequested = false;
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: new CapturingInstallmentOrderService
+            {
+                Orders = [order]
+            });
+        viewModel.ReprintRequested += (_, _) => reprintRequested = true;
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.False(viewModel.IsReprintVisible);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+
+        viewModel.ReprintCommand.Execute(null);
+
+        Assert.False(reprintRequested);
+    }
+
+    [Fact]
     public async Task Installment_history_paid_off_order_hides_continue_payment()
     {
         var order = CreateInstallmentOrder("IO-20260703-0002", "李四", "0400333444", paidAmount: 120m, outstandingAmount: 0m);
@@ -1020,6 +1407,62 @@ public sealed class TransactionHistoryViewModelTests
 
         Assert.Equal(order.OrderId, installmentService.LastConfirmPickupOrderId);
         Assert.Equal("confirmed", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Installment_history_pickup_timeout_is_handled_as_unknown_result()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-TIMEOUT", "BBB", "0430990026", paidAmount: 55m, outstandingAmount: 0m);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            ConfirmPickupException = new TaskCanceledException("request timeout")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+
+        var exception = await Record.ExceptionAsync(
+            () => viewModel.ConfirmInstallmentPickupCommand.ExecuteAsync(row));
+
+        Assert.Null(exception);
+        Assert.Equal(order.OrderId, installmentService.LastConfirmPickupOrderId);
+        Assert.Contains("结果可能已提交", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.False(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
+        await viewModel.ConfirmInstallmentPickupCommand.ExecuteAsync(row);
+        Assert.Equal(1, installmentService.ConfirmPickupCallCount);
+    }
+
+    [Fact]
+    public async Task Installment_history_restart_lock_disables_pickup_confirmation()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-LOCKED", "BBB", "0430990026", paidAmount: 55m, outstandingAmount: 0m);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LockedInstallments = new HashSet<Guid> { order.OrderId }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.False(row.CanConfirmInstallmentPickup);
+        Assert.False(viewModel.IsConfirmInstallmentPickupVisible);
+        Assert.False(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
     }
 
     [Fact]
@@ -1296,6 +1739,29 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal(holdGuid, take.HoldGuid);
         Assert.Empty(coordinator.LocalRecalls);
         Assert.True(returnedToPos);
+    }
+
+    [Fact]
+    public async Task Held_remote_recall_timeout_is_handled_without_escaping_command()
+    {
+        var coordinator = new CapturingSharedHeldOrderCoordinator
+        {
+            TakeRemoteHandler = (_, _) => Task.FromException<SharedHeldOrderTakeResult>(
+                new TaskCanceledException("held recall timed out"))
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: coordinator);
+        var row = HeldHistoryRow(Guid.NewGuid(), canRecall: true, canRemoteRecall: true);
+
+        var exception = await Record.ExceptionAsync(() => viewModel.RecallOrderCommand.ExecuteAsync(row));
+
+        Assert.Null(exception);
+        Assert.Single(coordinator.RemoteTakes);
+        Assert.Equal("held recall timed out", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -1682,6 +2148,40 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Held_delete_timeout_keeps_staged_state_without_escaping_command()
+    {
+        var holdGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            StageDelete = (actualHoldGuid, _, _, _) => new SharedHeldOrderDeleteStage(actualHoldGuid, true),
+            CompleteDelete = (_, _, _, _) => throw new InvalidOperationException("must not complete")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            confirmationDialogService: new CapturingConfirmationDialogService
+            {
+                HeldOrderCancellationResult = true
+            },
+            sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
+            {
+                Cancel = (_, _) => Task.FromException<SharedHeldOrderCancelResponse>(
+                    new TaskCanceledException("held delete timed out"))
+            },
+            sharedHeldOrderRepository: repository);
+        var row = HeldHistoryRow(holdGuid, canDeleteHeldOrder: true);
+
+        var exception = await Record.ExceptionAsync(() => viewModel.DeleteHeldOrderCommand.ExecuteAsync(row));
+
+        Assert.Null(exception);
+        Assert.Single(repository.DeleteStages);
+        Assert.Empty(repository.DeleteCompletions);
+        Assert.Equal("held delete timed out", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Held_delete_cancelled_confirmation_does_not_stage_or_call_server()
     {
         var holdGuid = Guid.NewGuid();
@@ -1823,6 +2323,33 @@ public sealed class TransactionHistoryViewModelTests
         Assert.False(viewModel.IsForceReleaseReasonPromptOpen);
         Assert.Equal("force release failed", viewModel.StatusMessage);
         Assert.Single(coordinator.ForceReleases);
+    }
+
+    [Fact]
+    public async Task Force_release_timeout_is_handled_without_escaping_command()
+    {
+        var claimGuid = Guid.NewGuid();
+        var coordinator = new CapturingSharedHeldOrderCoordinator
+        {
+            ForceReleaseHandler = (_, _, _, _) => Task.FromException(
+                new TaskCanceledException("force release timed out"))
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderCoordinator: coordinator);
+        var row = HeldHistoryRow(Guid.NewGuid(), heldClaimId: claimGuid, canForceRelease: true);
+
+        viewModel.ForceReleaseHeldOrderCommand.Execute(row);
+        viewModel.ForceReleaseReason = "银行超时核对";
+        var exception = await Record.ExceptionAsync(() => viewModel.ConfirmForceReleaseCommand.ExecuteAsync(null));
+
+        Assert.Null(exception);
+        Assert.Single(coordinator.ForceReleases);
+        Assert.Equal("force release timed out", viewModel.StatusMessage);
+        Assert.False(viewModel.IsForceReleaseReasonPromptOpen);
     }
 
     [Fact]
@@ -2149,6 +2676,59 @@ public sealed class TransactionHistoryViewModelTests
         var refreshed = Assert.Single(viewModel.Orders);
         Assert.False(refreshed.CanShare);
         Assert.Equal("Awaiting share", refreshed.ShareStatusLabel);
+    }
+
+    [Fact]
+    public async Task Held_share_request_timeout_is_handled_without_escaping_command()
+    {
+        var holdGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            RequestShare = (_, _, _, _) => throw new TaskCanceledException("share request timed out")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderRepository: repository);
+        var row = HeldHistoryRow(holdGuid, canShare: true);
+
+        var exception = await Record.ExceptionAsync(() => viewModel.ShareHeldOrderCommand.ExecuteAsync(row));
+
+        Assert.Null(exception);
+        Assert.False(row.Share.IsBusy);
+        Assert.Equal("share request timed out", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Held_share_worker_timeout_is_observed_and_reported()
+    {
+        var holdGuid = Guid.NewGuid();
+        var repository = new CapturingSharedHeldOrderRepository
+        {
+            RequestShare = (_, _, _, _) => SharedHeldOrderShareRequestResult.Requested
+        };
+        var worker = new CapturingSharedHeldOrderPublicationWorker
+        {
+            RunException = new TaskCanceledException("share worker timed out")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            sharedHeldOrderRepository: repository,
+            sharedHeldOrderPublicationWorker: worker);
+        var row = HeldHistoryRow(holdGuid, canShare: true);
+        viewModel.Orders.Add(row);
+
+        await viewModel.ShareHeldOrderCommand.ExecuteAsync(row);
+        var publicationTask = Assert.IsAssignableFrom<Task>(viewModel.LastSharePublicationTask);
+        var exception = await Record.ExceptionAsync(() => publicationTask);
+
+        Assert.Null(exception);
+        Assert.Equal("share worker timed out", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -2587,18 +3167,39 @@ public sealed class TransactionHistoryViewModelTests
     {
         public RemoteOrderHistoryResult QueryResult { get; init; } = new([]);
 
+        public Exception? QueryException { get; set; }
+
+        public Func<RemoteOrderHistoryQuery, CancellationToken, Task<RemoteOrderHistoryResult>>? QueryHandler { get; set; }
+
         public Dictionary<Guid, ReceiptDetails> Receipts { get; } = [];
+
+        public Func<Guid, CancellationToken, Task<ReceiptDetails?>>? DetailsHandler { get; set; }
 
         public RemoteOrderHistoryQuery? LastQuery { get; private set; }
 
         public Task<RemoteOrderHistoryResult> QueryAsync(RemoteOrderHistoryQuery query, CancellationToken cancellationToken = default)
         {
             LastQuery = query;
+            if (QueryHandler is not null)
+            {
+                return QueryHandler(query, cancellationToken);
+            }
+
+            if (QueryException is not null)
+            {
+                return Task.FromException<RemoteOrderHistoryResult>(QueryException);
+            }
+
             return Task.FromResult(QueryResult);
         }
 
         public Task<ReceiptDetails?> GetDetailsAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
+            if (DetailsHandler is not null)
+            {
+                return DetailsHandler(orderGuid, cancellationToken);
+            }
+
             return Task.FromResult(Receipts.TryGetValue(orderGuid, out var receipt) ? receipt : null);
         }
 
@@ -2727,6 +3328,17 @@ public sealed class TransactionHistoryViewModelTests
 
         public Guid? LastConfirmPickupOrderId { get; private set; }
 
+        public int ConfirmPickupCallCount { get; private set; }
+
+        public Exception? ConfirmPickupException { get; init; }
+
+        public InstallmentOrderActionResult? ConfirmPickupResult { get; init; }
+
+        public IReadOnlySet<Guid> LockedInstallments { get; init; } = new HashSet<Guid>();
+
+        public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(LockedInstallments);
+
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Orders);
@@ -2789,10 +3401,48 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
+            ConfirmPickupCallCount++;
             LastConfirmPickupOrderId = orderId;
+            if (ConfirmPickupException is not null)
+            {
+                return Task.FromException<InstallmentOrderActionResult>(ConfirmPickupException);
+            }
+
             var order = Orders.FirstOrDefault(order => order.OrderId == orderId);
-            return Task.FromResult(new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
+            return Task.FromResult(ConfirmPickupResult ?? new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
         }
+    }
+
+    private static HistoryOrderListItem HeldHistoryRow(
+        Guid holdGuid,
+        bool canRecall = false,
+        bool canRemoteRecall = false,
+        bool canDeleteHeldOrder = false,
+        bool canShare = false,
+        Guid? heldClaimId = null,
+        bool canForceRelease = false)
+    {
+        return new HistoryOrderListItem(
+            holdGuid,
+            TransactionHistorySource.HeldOrders,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            1,
+            "Cash",
+            "Held",
+            IsSuspendedOrder: true,
+            CanRecall: canRecall,
+            IsHeldOrder: true,
+            HeldClaimId: heldClaimId,
+            CanForceRelease: canForceRelease,
+            CanRemoteRecall: canRemoteRecall,
+            CanDeleteHeldOrder: canDeleteHeldOrder,
+            CanShare: canShare);
     }
 
     private static SuspendedOrderSummary HeldSummary(
@@ -2898,6 +3548,8 @@ public sealed class TransactionHistoryViewModelTests
 
         public List<(Guid HoldGuid, Guid ClaimGuid, string Reason, PosSessionState Session)> ForceReleases { get; } = [];
 
+        public Func<Guid, PosSessionState, Task<SharedHeldOrderTakeResult>>? TakeRemoteHandler { get; set; }
+
         public Func<Guid, Guid, string, PosSessionState, Task>? ForceReleaseHandler { get; set; }
 
         public Task<SharedHeldOrderTakeResult> TakeRemoteHoldAsync(
@@ -2907,10 +3559,11 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             RemoteTakes.Add((holdGuid, session));
-            return Task.FromResult(new SharedHeldOrderTakeResult(
-                Guid.NewGuid(),
-                holdGuid,
-                RestoredToCart: true));
+            return TakeRemoteHandler?.Invoke(holdGuid, session)
+                ?? Task.FromResult(new SharedHeldOrderTakeResult(
+                    Guid.NewGuid(),
+                    holdGuid,
+                    RestoredToCart: true));
         }
 
         public Task<SharedHeldOrderTakeResult> RecallLocalPublicationAsync(
@@ -2966,13 +3619,17 @@ public sealed class TransactionHistoryViewModelTests
     {
         public List<(string StoreCode, string? DeviceCode)> Runs { get; } = [];
 
+        public Exception? RunException { get; init; }
+
         public Task<SharedHeldOrderPublicationRunResult> RunOnceAsync(
             string storeCode,
             string? deviceCode = null,
             CancellationToken cancellationToken = default)
         {
             Runs.Add((storeCode, deviceCode));
-            return Task.FromResult(new SharedHeldOrderPublicationRunResult(0, 0, 0, 0, 0, 0));
+            return RunException is null
+                ? Task.FromResult(new SharedHeldOrderPublicationRunResult(0, 0, 0, 0, 0, 0))
+                : Task.FromException<SharedHeldOrderPublicationRunResult>(RunException);
         }
     }
 

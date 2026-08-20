@@ -88,10 +88,14 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
             payments,
             order.TenderedAmount,
             order.ChangeAmount,
-            RefundVoucher: TryCreateRefundVoucher(order.Payments));
+            RefundVoucher: ReceiptRefundVoucherMapper.TryCreate(payments));
     }
+}
 
-    private static RefundVoucherReceipt? TryCreateRefundVoucher(IEnumerable<LocalPayment> payments)
+internal static class ReceiptRefundVoucherMapper
+{
+    // 本地与远程详情统一按小票付款行判断，避免两条收据路径的退款券语义漂移。
+    public static RefundVoucherReceipt? TryCreate(IEnumerable<ReceiptPaymentLine> payments)
     {
         var paymentList = payments.ToList();
         if (paymentList.Count != 1)

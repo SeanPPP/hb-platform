@@ -594,7 +594,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
                     execution.PrintResult?.Message ?? "Unknown printer error.")
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             if (!auditRecorded)
             {

@@ -447,6 +447,31 @@ public sealed class SquareController(
             backendService => backendService.CreateRefundAsync(request with { Environment = validation.Environment! }, cancellationToken));
     }
 
+    [Authorize(Policy = CashierAuthorizationPolicies.Returns)]
+    [HttpGet("refunds/{refundId}")]
+    public async Task<ActionResult<ApiResult<SquareRefundResponse?>>> GetRefund(
+        string refundId,
+        [FromQuery] string environment,
+        CancellationToken cancellationToken)
+    {
+        var validation = await ValidateEnvironmentAndTokenAsync<SquareRefundResponse?>(
+            "refund-status",
+            environment,
+            includeTokenPayload: false,
+            cancellationToken);
+        if (validation.Result is not null)
+        {
+            return validation.Result;
+        }
+
+        return await ExecuteBackendAsync(
+            "refund-status",
+            backendService => backendService.GetRefundAsync(
+                validation.Environment!,
+                refundId,
+                cancellationToken));
+    }
+
     [AllowAnonymous]
     [HttpPost("webhooks")]
     public async Task<ActionResult<ApiResult<SquareWebhookAcceptedResponse>>> ReceiveWebhook(

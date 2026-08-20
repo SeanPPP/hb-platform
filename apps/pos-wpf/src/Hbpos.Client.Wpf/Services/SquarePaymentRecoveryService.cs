@@ -112,6 +112,21 @@ public sealed class SquarePaymentRecoveryService(
                 return RestoreSupervisorApprovedRetry(cart, refundAttempt);
             }
 
+            if (!string.IsNullOrWhiteSpace(refundAttempt.PaymentId) &&
+                !string.IsNullOrWhiteSpace(refundAttempt.SubmissionToken))
+            {
+                var automaticRecovery = await TryRecoverSquareRefundAsync(
+                    cart,
+                    session,
+                    settings,
+                    refundAttempt,
+                    cancellationToken);
+                if (automaticRecovery is not null)
+                {
+                    return automaticRecovery;
+                }
+            }
+
             if (refundAttempt.Status == LocalSquarePaymentAttemptStatus.Pending)
             {
                 await RunLocalStoreAsync(
@@ -335,6 +350,133 @@ public sealed class SquarePaymentRecoveryService(
             payment.MaskedCardNumber,
             payment.AuthCode,
             cancellationToken);
+    }
+
+    private async Task<CardPaymentRecoveryResult?> TryRecoverSquareRefundAsync(
+        PosCartService cart,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        LocalSquarePaymentAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        SquareRefundStatusResult refund;
+        try
+        {
+            refund = await squareTerminalPaymentClient.GetRefundAsync(
+                settings,
+                attempt.PaymentId!,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"refund lookup failed attemptGuid={attempt.AttemptGuid} refundId={attempt.PaymentId} error={ex.GetType().Name}");
+            return null;
+        }
+
+        string? originalPaymentId = null;
+        try
+        {
+            var originalReference = DeserializeDraft(attempt).OriginalReference;
+            if (!string.IsNullOrWhiteSpace(originalReference) &&
+                originalReference.Trim().StartsWith("SQ:", StringComparison.OrdinalIgnoreCase))
+            {
+                originalPaymentId = originalReference.Trim()[3..].Trim();
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            // 草稿损坏时不能自动认定退款终态，保留主管核对路径。
+        }
+
+        if (!string.Equals(refund.RefundId, attempt.PaymentId, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(originalPaymentId) ||
+            !string.Equals(refund.PaymentId, originalPaymentId, StringComparison.Ordinal) ||
+            refund.AmountCents != attempt.AmountCents ||
+            !string.Equals(refund.Currency, attempt.Currency, StringComparison.OrdinalIgnoreCase))
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"refund identity mismatch attemptGuid={attempt.AttemptGuid} refundId={attempt.PaymentId}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                DialogDetails: BuildRefundDialogDetails(attempt),
+                RefundDetails: BuildRefundDetails(attempt));
+        }
+
+        if (string.Equals(refund.Status, "PENDING", StringComparison.OrdinalIgnoreCase))
+        {
+            var recorded = await RunLocalStoreAsync(
+                () => attemptRepository.TryRecordRefundResponseAsync(
+                    attempt.AttemptGuid,
+                    attempt.SubmissionToken!,
+                    refund.RefundId,
+                    refund.Status,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+            if (!recorded)
+            {
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                    DialogDetails: BuildRefundDialogDetails(attempt),
+                    RefundDetails: BuildRefundDetails(attempt));
+            }
+
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Checking,
+                T("cardRecovery.refund.squarePending", "Square is still processing the refund. Do not refund again; run recovery later."),
+                DialogDetails: BuildRefundDialogDetails(attempt),
+                RefundDetails: BuildRefundDetails(attempt));
+        }
+
+        if (!string.Equals(refund.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                DialogDetails: BuildRefundDialogDetails(attempt),
+                RefundDetails: BuildRefundDetails(attempt));
+        }
+
+        var completedAt = DateTimeOffset.UtcNow;
+        var persisted = await RunLocalStoreAsync(
+            () => attemptRepository.TryMarkRefundPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                refund.RefundId,
+                refund.Status,
+                responseCode: null,
+                responseText: "Square refund status confirmed by lookup.",
+                completedAt,
+                CancellationToken.None),
+            CancellationToken.None);
+        if (!persisted)
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                DialogDetails: BuildRefundDialogDetails(attempt),
+                RefundDetails: BuildRefundDetails(attempt));
+        }
+
+        var verifiedAttempt = attempt with
+        {
+            Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+            PaymentStatus = refund.Status,
+            ResponseCode = null,
+            ResponseText = "Square refund status confirmed by lookup.",
+            CompletedAt = completedAt,
+            UpdatedAt = completedAt
+        };
+        return await CompleteSupervisorConfirmedRefundAsync(
+            cart,
+            session,
+            verifiedAttempt,
+            CancellationToken.None);
     }
 
     public async Task<CardRefundSupervisorResolutionResult> ResolveRefundAsync(

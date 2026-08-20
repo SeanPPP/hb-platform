@@ -686,6 +686,32 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
+    public async Task GetRefund_ReturnsCurrentRefundStatusThroughBackend()
+    {
+        var backendService = new CapturingSquareTerminalBackendService();
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 8, 17, 4, 0, 0, TimeSpan.Zero));
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ =>
+                Task.FromResult<SquareTokenResponse?>(expected)),
+            backendService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync(
+            "/api/v1/square/refunds/refund-001?environment=Production");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareRefundResponse?>>();
+        Assert.NotNull(apiResult);
+        Assert.True(apiResult.Success);
+        Assert.Equal("COMPLETED", apiResult.Data?.Status);
+        Assert.Equal(1, backendService.GetRefundCalls);
+    }
+
+    [Fact]
     public async Task ReceiveWebhook_PassesRawBodyHeadersAndNotificationUrlToBackendService()
     {
         const string signature = "test-signature";
@@ -891,6 +917,9 @@ public sealed class SquareControllerTests
 
                 services.RemoveAll<IOperationAuditSchemaInitializer>();
                 services.AddSingleton<IOperationAuditSchemaInitializer>(new TestNoOpOperationAuditSchemaInitializer());
+
+                services.RemoveAll<IOrderSyncSchemaInitializer>();
+                services.AddSingleton<IOrderSyncSchemaInitializer>(new TestNoOpOrderSyncSchemaInitializer());
 
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton(schemaInitializer ?? new NoOpSquareTokenSchemaInitializer());
@@ -1151,6 +1180,11 @@ public sealed class SquareControllerTests
             throw exceptionFactory();
         }
 
+        public Task<SquareRefundResponse?> GetRefundAsync(string environment, string refundId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
         public Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(SquareWebhookRequest request, CancellationToken cancellationToken)
         {
             throw exceptionFactory();
@@ -1174,6 +1208,8 @@ public sealed class SquareControllerTests
         public int GetPaymentCalls { get; private set; }
 
         public int CreateRefundCalls { get; private set; }
+
+        public int GetRefundCalls { get; private set; }
 
         public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(string environment, CancellationToken cancellationToken)
         {
@@ -1252,6 +1288,17 @@ public sealed class SquareControllerTests
                 Status: "PENDING",
                 PaymentId: request.PaymentId,
                 AmountMoney: request.AmountMoney));
+        }
+
+        public Task<SquareRefundResponse?> GetRefundAsync(string environment, string refundId, CancellationToken cancellationToken)
+        {
+            GetRefundCalls++;
+            return Task.FromResult<SquareRefundResponse?>(new SquareRefundResponse(
+                refundId,
+                environment,
+                Status: "COMPLETED",
+                PaymentId: "payment-001",
+                AmountMoney: new SquareMoneyDto(1000, "AUD")));
         }
 
         public Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(SquareWebhookRequest request, CancellationToken cancellationToken)

@@ -347,6 +347,7 @@ public sealed class LocalizationAndSettingsTests
         Assert.Equal("History", localization.T("shell.page.history"));
         Assert.Equal("Local", localization.T("history.source.local"));
         Assert.Equal("Pending recall", localization.T("history.status.pendingRecall"));
+        Assert.Equal("Order details load timed out. Please try again.", localization.T("history.detailsLoadTimeout"));
         Assert.Equal("History", localization.T("pos.terminal.actions.history"));
         Assert.Equal("Settings", localization.T("pos.terminal.actions.settings"));
         Assert.Equal("Customer Display", localization.T("pos.terminal.actions.customerDisplay"));
@@ -357,6 +358,7 @@ public sealed class LocalizationAndSettingsTests
         Assert.Equal("\u5386\u53F2", localization.T("shell.page.history"));
         Assert.Equal("\u672C\u5730", localization.T("history.source.local"));
         Assert.Equal("\u5F85\u53D6\u56DE", localization.T("history.status.pendingRecall"));
+        Assert.Equal("订单详情加载超时，请重试。", localization.T("history.detailsLoadTimeout"));
         Assert.Equal("\u5386\u53F2", localization.T("pos.terminal.actions.history"));
         Assert.Equal("\u8BBE\u7F6E", localization.T("pos.terminal.actions.settings"));
         Assert.Equal("\u5BA2\u663E", localization.T("pos.terminal.actions.customerDisplay"));

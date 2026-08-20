@@ -124,7 +124,7 @@ internal sealed class SingleInstanceStartupGuard
         _options = options;
     }
 
-    public SingleInstanceStartupResult TryAcquire(bool previewMode)
+    public async Task<SingleInstanceStartupResult> TryAcquireAsync(bool previewMode)
     {
         if (previewMode)
         {
@@ -139,18 +139,24 @@ internal sealed class SingleInstanceStartupGuard
             return SingleInstanceStartupResult.AnotherStartupInProgress();
         }
 
+        Mutex? runningInstance = null;
+        var runningInstanceHeld = false;
         try
         {
             using var processes = _processProvider.GetSiblingProcesses();
             var replaceableProcesses = SingleInstanceProcessSelector.FindReplaceableProcesses(_processProvider, processes.Items);
             ConsoleLog.Write("startup-guard", $"replaceable process count={replaceableProcesses.Count}");
-            StopExistingInstances(replaceableProcesses);
+            // 不使用 ConfigureAwait(false)：后续 Mutex 必须回到调用上下文获得并由同一 UI 线程释放。
+            await StopExistingInstancesAsync(replaceableProcesses);
 
-            var runningInstance = new Mutex(false, _options.RunningInstanceMutexName);
-            if (!runningInstance.WaitOne(_options.RunningInstanceWaitTimeout))
+            runningInstance = new Mutex(false, _options.RunningInstanceMutexName);
+            runningInstanceHeld = await WaitForRunningInstanceAsync(runningInstance);
+
+            if (!runningInstanceHeld)
             {
                 ConsoleLog.Write("startup-guard", "existing instance did not release the running mutex before timeout");
                 runningInstance.Dispose();
+                runningInstance = null;
                 startupGate.Release();
                 startupGate.Dispose();
                 return SingleInstanceStartupResult.ExistingInstanceCouldNotBeStopped();
@@ -160,13 +166,26 @@ internal sealed class SingleInstanceStartupGuard
         }
         catch
         {
-            startupGate.Release();
-            startupGate.Dispose();
+            // 超时之外的异常：同时释放 startup gate 与已创建的 mutex 句柄，避免句柄泄漏。
+            try
+            {
+                if (runningInstanceHeld && runningInstance is not null)
+                {
+                    runningInstance.ReleaseMutex();
+                }
+            }
+            finally
+            {
+                runningInstance?.Dispose();
+                startupGate.Release();
+                startupGate.Dispose();
+            }
+
             throw;
         }
     }
 
-    private void StopExistingInstances(IReadOnlyList<IRunningProcess> processes)
+    private async Task StopExistingInstancesAsync(IReadOnlyList<IRunningProcess> processes)
     {
         foreach (var process in processes)
         {
@@ -177,7 +196,7 @@ internal sealed class SingleInstanceStartupGuard
 
             ConsoleLog.Write("startup-guard", $"requesting close for pid={process.Id}");
             var closeRequested = process.CloseMainWindow();
-            if (closeRequested && process.WaitForExit(_options.GracefulCloseTimeout))
+            if (closeRequested && await process.WaitForExitAsync(_options.GracefulCloseTimeout))
             {
                 ConsoleLog.Write("startup-guard", $"pid={process.Id} exited after close request");
                 continue;
@@ -191,7 +210,44 @@ internal sealed class SingleInstanceStartupGuard
 
             ConsoleLog.Write("startup-guard", $"killing pid={process.Id}");
             process.Kill(entireProcessTree: true);
-            process.WaitForExit(_options.KillWaitTimeout);
+            await process.WaitForExitAsync(_options.KillWaitTimeout);
+        }
+    }
+
+    private async Task<bool> WaitForRunningInstanceAsync(Mutex runningInstance)
+    {
+        var timer = Stopwatch.StartNew();
+        var timeout = _options.RunningInstanceWaitTimeout < TimeSpan.Zero
+            ? TimeSpan.Zero
+            : _options.RunningInstanceWaitTimeout;
+        var maximumPollDelay = TimeSpan.FromMilliseconds(50);
+
+        while (true)
+        {
+            try
+            {
+                if (runningInstance.WaitOne(TimeSpan.Zero))
+                {
+                    return true;
+                }
+            }
+            catch (AbandonedMutexException)
+            {
+                // 仅 running mutex 的遗弃可按成功处理：Windows 已把所有权授予当前线程。
+                ConsoleLog.Write(
+                    "startup-guard",
+                    "warning: running instance mutex was abandoned; Windows granted ownership, continuing startup");
+                return true;
+            }
+
+            var remaining = timeout - timer.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return false;
+            }
+
+            // 每次只做零等待 Mutex 获取，延迟期间让 WPF Dispatcher 继续处理消息。
+            await Task.Delay(remaining < maximumPollDelay ? remaining : maximumPollDelay);
         }
     }
 }
@@ -274,7 +330,7 @@ internal interface IRunningProcess : IDisposable
 
     bool CloseMainWindow();
 
-    bool WaitForExit(TimeSpan timeout);
+    Task<bool> WaitForExitAsync(TimeSpan timeout);
 
     void Kill(bool entireProcessTree);
 }
@@ -361,11 +417,24 @@ internal sealed class SystemRunningProcess : IRunningProcess
         }
     }
 
-    public bool WaitForExit(TimeSpan timeout)
+    public async Task<bool> WaitForExitAsync(TimeSpan timeout)
     {
         try
         {
-            return _process.WaitForExit((int)Math.Clamp(timeout.TotalMilliseconds, 0, int.MaxValue));
+            if (HasExited)
+            {
+                return true;
+            }
+
+            var timeoutMilliseconds = Math.Clamp(timeout.TotalMilliseconds, 0, int.MaxValue);
+            using var timeoutCancellation = new CancellationTokenSource(
+                TimeSpan.FromMilliseconds(timeoutMilliseconds));
+            await _process.WaitForExitAsync(timeoutCancellation.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return HasExited;
         }
         catch (Exception)
         {

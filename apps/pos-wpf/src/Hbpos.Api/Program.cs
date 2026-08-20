@@ -105,6 +105,9 @@ using (var scope = app.Services.CreateScope())
 
     if (HasConnectionString(app.Configuration, "PosmConnection", "HBPOSMConnection"))
     {
+        var orderSyncSchemaInitializer = scope.ServiceProvider.GetRequiredService<IOrderSyncSchemaInitializer>();
+        await orderSyncSchemaInitializer.InitializeAsync();
+
         var operationAuditSchemaInitializer = scope.ServiceProvider.GetRequiredService<IOperationAuditSchemaInitializer>();
         await operationAuditSchemaInitializer.InitializeAsync();
 

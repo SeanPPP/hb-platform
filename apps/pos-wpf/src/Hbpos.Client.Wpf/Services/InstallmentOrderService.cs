@@ -214,6 +214,14 @@ public sealed class InstallmentOrderService(
             return InstallmentWriteResult<InstallmentConfirmPickupResponse>.OnlineRequired("OnlineRequired");
         }
 
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecutePickupAsync(session, request, cancellationToken);
+            return operation.Succeeded && operation.Response is not null && operation.LocalOrder is not null
+                ? InstallmentWriteResult<InstallmentConfirmPickupResponse>.Success(operation.Response, operation.LocalOrder, operation.Message)
+                : InstallmentWriteResult<InstallmentConfirmPickupResponse>.OnlineRequired(operation.Message ?? "提货确认结果未知，请刷新核对。");
+        }
+
         var response = await apiClient.ConfirmPickupAsync(request, cancellationToken);
         var localOrder = await SaveSnapshotAsync(response.Details, cancellationToken);
         return InstallmentWriteResult<InstallmentConfirmPickupResponse>.Success(response, localOrder);
@@ -441,19 +449,44 @@ public sealed class InstallmentOrderService(
 
     public async Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
     {
-        var result = await ConfirmPickupAsync(
-            session,
-            new InstallmentConfirmPickupRequest(
-                orderId,
-                session.StoreCode,
-                session.DeviceCode,
-                session.CashierId,
-                session.CashierName,
-                DateTimeOffset.Now,
-                OperationGuid: orderId,
-                IdempotencyKey: $"{orderId:D}:pickup"),
-            cancellationToken);
-        return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? result.Status.ToString(), result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
+        if (!session.IsOnline)
+        {
+            return new InstallmentOrderActionResult(false, "OnlineRequired");
+        }
+
+        var request = new InstallmentConfirmPickupRequest(
+            orderId,
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            session.CashierName,
+            DateTimeOffset.Now,
+            OperationGuid: orderId,
+            IdempotencyKey: $"{orderId:D}:pickup");
+
+        if (installmentOperations is not null)
+        {
+            var operation = await installmentOperations.ExecutePickupAsync(session, request, cancellationToken);
+            return new InstallmentOrderActionResult(
+                operation.Succeeded,
+                operation.Message ?? (operation.Succeeded ? "分期单已确认提货。" : "提货确认未完成。"),
+                operation.LocalOrder is null ? null : MapSummary(operation.LocalOrder),
+                operation.RequiresReview);
+        }
+
+        try
+        {
+            var result = await ConfirmPickupAsync(session, request, cancellationToken);
+            return new InstallmentOrderActionResult(result.Status == InstallmentWriteStatus.Succeeded, result.Message ?? result.Status.ToString(), result.LocalOrder is null ? null : MapSummary(result.LocalOrder));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HTTP 超时发生时服务端可能已经确认提货，必须进入人工核对而不是允许重复提交。
+            return new InstallmentOrderActionResult(
+                false,
+                "提货确认请求超时，结果可能已提交；请刷新核对，勿重复确认提货。",
+                RequiresReview: true);
+        }
     }
 
     private async Task<LocalInstallmentOrder> SaveSnapshotAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)

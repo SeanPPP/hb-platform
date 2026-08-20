@@ -1171,6 +1171,70 @@ public sealed class PosCartServiceTests
         Assert.Empty(cart.Lines);
     }
 
+    [Fact]
+    public void Automatic_promotion_budget_exceeded_clears_only_promotion_discounts_and_keeps_cart_usable()
+    {
+        var cart = new PosCartService();
+        var promotionLine = cart.AddItem(CreateItem(
+            productCode: "SKU-BUDGET-PROMO",
+            lookupCode: "SKU-BUDGET-PROMO",
+            price: 10m));
+        var manualLine = cart.AddItem(CreateItem(
+            productCode: "SKU-BUDGET-MANUAL",
+            lookupCode: "SKU-BUDGET-MANUAL",
+            price: 10m));
+        var catalogLine = cart.AddItem(CreateItem(
+            productCode: "SKU-BUDGET-CATALOG",
+            lookupCode: "SKU-BUDGET-CATALOG",
+            price: 10m,
+            discountRate: 0.2m));
+        Assert.True(cart.SetLineDiscountAmount(manualLine, 2m));
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 1,
+                fixedPrice: 5m,
+                products: [new CatalogPromotionProductDto("SKU-BUDGET-PROMO", 1)])
+        ]);
+        Assert.True(promotionLine.IsAutomaticPromotionDiscount);
+
+        Assert.True(cart.SetLineQuantity(
+            promotionLine,
+            PromotionComputationBudget.MaxWorkUnitsPerRule + 1));
+
+        Assert.False(promotionLine.IsAutomaticPromotionDiscount);
+        Assert.Equal(0m, promotionLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, manualLine.DiscountSource);
+        Assert.Equal(2m, manualLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Catalog, catalogLine.DiscountSource);
+        Assert.Equal(2m, catalogLine.DiscountAmount);
+        Assert.False(cart.IsEmpty);
+        Assert.False(cart.HasNonIntegerQuantity);
+    }
+
+    [Fact]
+    public void Automatic_promotion_large_quantity_with_max_applications_only_consumes_required_bundle()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(
+            productCode: "SKU-BUDGET-CAPPED",
+            lookupCode: "SKU-BUDGET-CAPPED",
+            price: 10m));
+        Assert.True(cart.SetLineQuantity(line, 1_000_000m));
+
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                products: [new CatalogPromotionProductDto("SKU-BUDGET-CAPPED", 1)],
+                maxApplicationsPerOrder: 1)
+        ]);
+
+        Assert.True(line.IsAutomaticPromotionDiscount);
+        Assert.Equal(5m, line.DiscountAmount);
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",

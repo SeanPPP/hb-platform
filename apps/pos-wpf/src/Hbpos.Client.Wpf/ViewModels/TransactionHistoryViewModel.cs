@@ -152,6 +152,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly Dictionary<HeldOrderViewScope, IReadOnlyDictionary<Guid, LocalHeldRow>> _heldLocalRowsCache = [];
     private IReadOnlyList<SharedHeldOrderListItemDto> _heldRemoteRowsCache = [];
     private IReadOnlySet<Guid> _heldSyntheticRemoteClaimGuids = new HashSet<Guid>();
+    private readonly HashSet<Guid> _lockedInstallmentGuids = [];
+    private bool _isInstallmentRecoveryStateUnknown;
     private bool _heldRemoteCacheReady;
     private ITimer? _heldAutoRefreshTimer;
 
@@ -181,6 +183,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     [ObservableProperty]
     private HistoryOrderListItem? _selectedOrder;
+
+    [ObservableProperty]
+    private ReceiptDetails? _selectedReceipt;
 
     [ObservableProperty]
     private decimal _previewSubtotal;
@@ -610,8 +615,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
             await LoadSelectedReceiptAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (
+            ex is not OperationCanceledException ||
+            !cancellationToken.IsCancellationRequested)
         {
+            // HttpClient 超时也会表现为取消异常；仅让调用方主动取消继续向上传播。
             Orders.Clear();
             ClearReceiptPreview();
             StatusMessage = ex.Message;
@@ -692,7 +700,34 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
-        _ = LoadSelectedReceiptAsync(CancellationToken.None);
+        _ = LoadSelectedReceiptSafelyAsync(value);
+    }
+
+    private async Task LoadSelectedReceiptSafelyAsync(HistoryOrderListItem? expectedOrder)
+    {
+        try
+        {
+            await LoadSelectedReceiptAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            if (!ReferenceEquals(SelectedOrder, expectedOrder))
+            {
+                return;
+            }
+
+            // 属性变更回调不能把故障 Task 留在后台；HttpClient 超时在这里统一转为可见状态。
+            ClearReceiptPreview();
+            StatusMessage = ex is OperationCanceledException
+                ? T("history.detailsLoadTimeout")
+                : ex.Message;
+        }
+    }
+
+    partial void OnSelectedReceiptChanged(ReceiptDetails? value)
+    {
+        ReprintCommand?.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsReprintVisible));
     }
 
     partial void OnSessionChanged(PosSessionState value)
@@ -1539,10 +1574,19 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task<IReadOnlyList<HistoryOrderListItem>> LoadInstallmentOrdersAsync(CancellationToken cancellationToken)
     {
+        _isInstallmentRecoveryStateUnknown = true;
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         var orders = await _installmentOrderService.SearchAsync(
             Session,
             NormalizeKeyword(SearchText),
             cancellationToken);
+        var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session, cancellationToken);
+        _lockedInstallmentGuids.Clear();
+        _lockedInstallmentGuids.UnionWith(lockedInstallments);
+        _isInstallmentRecoveryStateUnknown = false;
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         var from = ParseDateFrom(DateFrom);
         var to = ParseDateTo(DateTo);
         return orders
@@ -1571,7 +1615,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 InstallmentOrder: order,
                 IsInstallmentOrder: true,
                 CanContinueInstallmentPayment: order.CanAddRepayment,
-                CanConfirmInstallmentPickup: order.CanConfirmPickup,
+                CanConfirmInstallmentPickup: order.CanConfirmPickup && !_lockedInstallmentGuids.Contains(order.OrderId),
                 CustomerPhone: order.CustomerPhone,
                 DisplayCulture: CurrentDisplayCulture))
             .ToList();
@@ -1579,25 +1623,41 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task LoadSelectedReceiptAsync(CancellationToken cancellationToken)
     {
-        if (SelectedOrder is null)
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null)
         {
             ClearReceiptPreview();
             return;
         }
 
-        if (SelectedOrder.IsInstallmentOrder)
+        // 远程订单必须使用当前已加载的小票直接补打；切换订单时先使旧详情失效，避免打印错单。
+        SelectedReceipt = null;
+
+        if (selectedOrder.IsInstallmentOrder)
         {
-            // 中文注释：分期历史只更新屏幕预览，不触发实际打印。
-            var installmentDetails = await LoadInstallmentPreviewDetailsAsync(SelectedOrder.OrderGuid, cancellationToken);
+            // 分期历史使用本地快照映射正式小票；详情完整时同一对象同时供预览和补打使用。
+            var installmentDetails = await LoadInstallmentPreviewDetailsAsync(selectedOrder.OrderGuid, cancellationToken);
+            if (!ReferenceEquals(SelectedOrder, selectedOrder))
+            {
+                return;
+            }
+
             if (installmentDetails is not null)
             {
                 // 中文注释：有本地分期快照时复用正式小票映射，右侧预览才能显示正常抬头和提货信息。
                 var installmentReceipt = InstallmentReceiptMapper.CreateReceipt(installmentDetails);
+                var previewSettings = await LoadPreviewSettingsAsync(cancellationToken);
+                if (!ReferenceEquals(SelectedOrder, selectedOrder))
+                {
+                    return;
+                }
+
+                SelectedReceipt = installmentReceipt;
                 ReceiptLines.ReplaceWith(installmentReceipt.Lines);
                 Payments.ReplaceWith(installmentReceipt.Payments);
                 ReceiptPreviewRows.ReplaceWith(BuildPreviewRows(
                     installmentReceipt,
-                    await LoadPreviewSettingsAsync(cancellationToken)));
+                    previewSettings));
                 PreviewSubtotal = installmentReceipt.TotalAmount;
                 PreviewDiscount = installmentReceipt.DiscountAmount;
                 PreviewTotal = installmentReceipt.ActualAmount;
@@ -1610,24 +1670,29 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
             ReceiptLines.Clear();
             Payments.Clear();
-            ReceiptPreviewRows.ReplaceWith(BuildInstallmentPreviewRows(SelectedOrder, installmentDetails));
-            PreviewSubtotal = SelectedOrder.TotalAmount;
-            PreviewDiscount = SelectedOrder.InstallmentOrder?.PaidAmount ?? 0m;
-            PreviewTotal = SelectedOrder.ActualAmount;
-            PreviewOrderId = SelectedOrder.DisplayOrderId;
-            PreviewSoldAt = SelectedOrder.SoldAtDisplay;
+            ReceiptPreviewRows.ReplaceWith(BuildInstallmentPreviewRows(selectedOrder, installmentDetails));
+            PreviewSubtotal = selectedOrder.TotalAmount;
+            PreviewDiscount = selectedOrder.InstallmentOrder?.PaidAmount ?? 0m;
+            PreviewTotal = selectedOrder.ActualAmount;
+            PreviewOrderId = selectedOrder.DisplayOrderId;
+            PreviewSoldAt = selectedOrder.SoldAtDisplay;
             return;
         }
 
-        ReceiptDetails? receipt = SelectedOrder.IsSuspendedOrder
-            ? await GetSuspendedReceiptAsync(SelectedOrder.OrderGuid, cancellationToken)
-            : SelectedOrder.Source switch
+        ReceiptDetails? receipt = selectedOrder.IsSuspendedOrder
+            ? await GetSuspendedReceiptAsync(selectedOrder.OrderGuid, cancellationToken)
+            : selectedOrder.Source switch
             {
                 TransactionHistorySource.RemoteOrders => _remoteOrderHistoryService is null
                     ? null
-                    : await _remoteOrderHistoryService.GetDetailsAsync(SelectedOrder.OrderGuid, cancellationToken),
-                _ => _receiptQueryService is null ? null : await _receiptQueryService.GetReceiptAsync(SelectedOrder.OrderGuid, cancellationToken)
+                    : await _remoteOrderHistoryService.GetDetailsAsync(selectedOrder.OrderGuid, cancellationToken),
+                _ => _receiptQueryService is null ? null : await _receiptQueryService.GetReceiptAsync(selectedOrder.OrderGuid, cancellationToken)
             };
+
+        if (!ReferenceEquals(SelectedOrder, selectedOrder))
+        {
+            return;
+        }
 
         if (receipt is null)
         {
@@ -1635,11 +1700,18 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
+        var receiptPreviewSettings = await LoadPreviewSettingsAsync(cancellationToken);
+        if (!ReferenceEquals(SelectedOrder, selectedOrder))
+        {
+            return;
+        }
+
+        SelectedReceipt = receipt;
         ReceiptLines.ReplaceWith(receipt.Lines);
         Payments.ReplaceWith(receipt.Payments);
         ReceiptPreviewRows.ReplaceWith(BuildPreviewRows(
             receipt,
-            await LoadPreviewSettingsAsync(cancellationToken)));
+            receiptPreviewSettings));
         PreviewSubtotal = receipt.TotalAmount;
         PreviewDiscount = receipt.DiscountAmount;
         PreviewTotal = receipt.ActualAmount;
@@ -1680,13 +1752,28 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private bool CanConfirmInstallmentPickup(HistoryOrderListItem? order)
     {
         return Session.IsOnline &&
+            !_isInstallmentRecoveryStateUnknown &&
             order?.InstallmentOrder is not null &&
+            !_lockedInstallmentGuids.Contains(order.InstallmentOrder.OrderId) &&
             order.CanConfirmInstallmentPickup;
     }
 
     private bool CanReprintSelected()
     {
-        return SelectedOrder is { IsSuspendedOrder: false, Source: TransactionHistorySource.LocalOrders };
+        if (SelectedOrder is not { } selectedOrder || selectedOrder.Source != SelectedSource)
+        {
+            return false;
+        }
+
+        return selectedOrder switch
+        {
+            { IsSuspendedOrder: false, Source: TransactionHistorySource.LocalOrders } => true,
+            { IsSuspendedOrder: false, Source: TransactionHistorySource.RemoteOrders } remoteOrder =>
+                SelectedReceipt?.OrderGuid == remoteOrder.OrderGuid,
+            { IsSuspendedOrder: false, Source: TransactionHistorySource.InstallmentOrders } installmentOrder =>
+                SelectedReceipt?.OrderGuid == installmentOrder.OrderGuid,
+            _ => false
+        };
     }
 
     private async Task RecallSelectedAsync()
@@ -1824,8 +1911,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 await _onSuspendedOrderRecalledAsync();
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // 此入口未接收调用方取消令牌；取消异常只能来自内部超时，必须转为可见失败状态。
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.OrderRecall,
@@ -1943,8 +2031,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             await LoadAsync();
             StatusMessage = T("history.held.deleted");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // 删除流程固定使用 CancellationToken.None；HTTP 超时也必须保留暂存状态并允许重试。
             var failureMessage = ex.Message;
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
@@ -2081,7 +2170,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 StatusMessage = T("history.held.shareIneligible");
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             StatusMessage = ex.Message;
         }
@@ -2132,7 +2221,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                     CancellationToken.None);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             // 请求已持久化：worker 单轮失败不影响共享意图，hosted service 会重试。
             StatusMessage = ex.Message;
@@ -2251,8 +2340,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             StatusMessage = T("history.held.forceReleased");
             await LoadAsync();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // 强制释放使用 CancellationToken.None；内部 HTTP 超时应留在可重试状态，不能逃逸到 Dispatcher。
             StatusMessage = ex.Message;
         }
         finally
@@ -2361,9 +2451,36 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
         using var authorizationActivation = authorization.Activate();
 
-        // 中文注释：历史页提货入口复用分期中心同一接口，成功后刷新列表和右侧预览状态。
-        var result = await _installmentOrderService.ConfirmPickupAsync(orderSnapshot!.InstallmentOrder!.OrderId, Session);
+        InstallmentOrderActionResult result;
+        try
+        {
+            // 中文注释：历史页提货入口复用分期中心同一接口，成功后刷新列表和右侧预览状态。
+            result = await _installmentOrderService.ConfirmPickupAsync(orderSnapshot!.InstallmentOrder!.OrderId, Session);
+        }
+        catch (OperationCanceledException)
+        {
+            LockInstallmentPickup(orderSnapshot!.InstallmentOrder!.OrderId);
+            if (ReferenceEquals(SelectedOrder, orderSnapshot))
+            {
+                StatusMessage = "分期提货确认超时，结果可能已提交，请刷新后核对，勿重复操作。";
+            }
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(SelectedOrder, orderSnapshot))
+            {
+                StatusMessage = ex.Message;
+            }
+            return;
+        }
+
         StatusMessage = result.Message;
+        if (result.RequiresReview)
+        {
+            // 服务层已将未知结果持久化；本页立即同步锁，防止刷新前再次提交。
+            LockInstallmentPickup(orderSnapshot!.InstallmentOrder!.OrderId);
+        }
         if (result.Succeeded)
         {
             var message = result.Message;
@@ -2375,14 +2492,36 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    private void LockInstallmentPickup(Guid installmentGuid)
+    {
+        _lockedInstallmentGuids.Add(installmentGuid);
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
+    }
+
     private async Task ReprintSelectedAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || !CanReprintSelected())
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.History.Reprint, "reprint-selected");
         if (authorization is null)
         {
             return;
         }
         using var authorizationActivation = authorization.Activate();
+
+        // 授权等待期间可能切换订单；补打只能继续处理最初已校验的同一张订单。
+        if (SelectedOrder?.OrderGuid != selectedOrder.OrderGuid ||
+            SelectedOrder.Source != selectedOrder.Source ||
+            SelectedSource != selectedOrder.Source ||
+            !CanReprintSelected())
+        {
+            return;
+        }
 
         ReprintRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -2461,6 +2600,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private void ClearReceiptPreview()
     {
+        SelectedReceipt = null;
         ReceiptLines.Clear();
         Payments.Clear();
         ReceiptPreviewRows.Clear();
@@ -2583,6 +2723,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "TransactionHistory" => "Transaction History",
             "success.receiptPreview" => "Receipt Preview",
             "history.reprint" => "Reprint",
+            "history.detailsLoadTimeout" => "Order details load timed out. Please try again.",
             "history.reuploadCompleted" => "Reupload completed: {0} succeeded, {1} failed.",
             "history.reuploadRangeEmpty" => "No eligible local orders were found for the selected date range.",
             "history.reuploadRangeCancelled" => "Date-range reupload cancelled.",

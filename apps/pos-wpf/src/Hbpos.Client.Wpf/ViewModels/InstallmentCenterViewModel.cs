@@ -26,6 +26,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private Guid _repaymentPaymentGuid = Guid.NewGuid();
     private string? _repaymentIdempotencyKey;
     private readonly HashSet<Guid> _lockedInstallmentGuids = [];
+    private bool _isRecoveryStateUnknown;
+    private Guid? _refundStepsInstallmentGuid;
 
     [ObservableProperty] private PosSessionState _session;
     [ObservableProperty] private PosCartServiceSnapshot? _cartSnapshot;
@@ -138,7 +140,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     public bool IsCancelWithRefundEnabled => CanCancelWithRefund();
     public bool IsVoidCancelEnabled => CanVoidCancel();
     public bool IsConfirmPickupEnabled => CanConfirmPickup();
-    public bool IsSelectedOrderLocked => SelectedOrder is not null && _lockedInstallmentGuids.Contains(SelectedOrder.OrderId);
+    public bool IsSelectedOrderLocked => SelectedOrder is not null &&
+        (_isRecoveryStateUnknown || _lockedInstallmentGuids.Contains(SelectedOrder.OrderId));
     public bool HasRefundStepsForReview => RefundStepsForReview.Count > 0 && IsRefundSupervisorAuthorized;
     public bool IsSupervisorResolutionEnabled => CanResolveRefundBySupervisor();
 
@@ -150,6 +153,11 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     {
         RepaymentAmount = value?.OutstandingAmount ?? 0m;
         ResetRepaymentOperation();
+        // 切换订单时立即撤销旧退款步骤的归属，等待新订单查询完成前禁止主管操作。
+        _refundStepsInstallmentGuid = null;
+        RefundStepsForReview.Clear();
+        SelectedRefundStep = null;
+        OnPropertyChanged(nameof(HasRefundStepsForReview));
         OnPropertyChanged(nameof(SelectedOrderNumberText));
         OnPropertyChanged(nameof(SelectedOrderCustomerText));
         OnPropertyChanged(nameof(SelectedOrderOutstandingText));
@@ -182,15 +190,23 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     public async Task LoadAsync()
     {
-        await RecoverPendingOperationsAsync();
-        await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
+        var recoveryWarning = await RecoverPendingOperationsAsync();
+        await LoadCoreAsync(
+            () => _installmentOrderService.GetOrdersAsync(Session),
+            "installment.center.status.loaded",
+            "Loaded {0} installment orders.",
+            recoveryWarning);
     }
     public async Task SearchAsync() => await LoadCoreAsync(() => _installmentOrderService.SearchAsync(Session, SearchText), "installment.center.status.searched", "Found {0} installment orders.");
 
     public async Task RecoverAsync()
     {
-        await RecoverPendingOperationsAsync();
-        await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
+        var recoveryWarning = await RecoverPendingOperationsAsync();
+        await LoadCoreAsync(
+            () => _installmentOrderService.GetOrdersAsync(Session),
+            "installment.center.status.loaded",
+            "Loaded {0} installment orders.",
+            recoveryWarning);
     }
 
     public void Prepare(PosSessionState session, PosCartServiceSnapshot? cartSnapshot)
@@ -273,16 +289,33 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = authorization.Activate();
 
+        if (_isRecoveryStateUnknown)
+        {
+            SetLiteralStatus("分期恢复状态未知，创建入口已锁定；请刷新核对后重试。");
+            return;
+        }
+
         await _showCreateAsync(CartSnapshot);
     }
     private bool CanCreateInstallment()
     {
         // 中文说明：创建入口只要求当前有可分期订单；提交阶段会继续校验在线状态并给出明确提示。
-        return !IsBusy && CartSnapshot is { ActualAmount: > 0m };
+        return !IsBusy && !_isRecoveryStateUnknown && CartSnapshot is { ActualAmount: > 0m };
     }
 
     private async Task AddRepaymentAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || !CanAddRepayment())
+        {
+            return;
+        }
+
+        var paymentGuid = _repaymentPaymentGuid;
+        var method = RepaymentMethod;
+        var amount = RepaymentAmount;
+        var reference = RepaymentReference;
+        var voucherToken = RepaymentVoucherToken;
         using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Installments.AddRepayment, "add-repayment");
         if (permissionGrant is null)
         {
@@ -290,16 +323,28 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = permissionGrant.Activate();
 
-        if (SelectedOrder is null) return;
+        // 授权期间可能切换订单或修改补款草稿；任何漂移都必须重新发起，避免写入错误订单。
+        if (SelectedOrder?.OrderId != selectedOrder.OrderId ||
+            IsSelectedOrderLocked ||
+            !selectedOrder.CanAddRepayment ||
+            _repaymentPaymentGuid != paymentGuid ||
+            RepaymentMethod != method ||
+            RepaymentAmount != amount ||
+            !string.Equals(RepaymentReference, reference, StringComparison.Ordinal) ||
+            !string.Equals(RepaymentVoucherToken, voucherToken, StringComparison.Ordinal) ||
+            !CanAddRepayment())
+        {
+            return;
+        }
 
-        var orderId = SelectedOrder.OrderId;
+        var orderId = selectedOrder.OrderId;
         var payment = new InstallmentPaymentDraft(
-            _repaymentPaymentGuid,
-            RepaymentMethod,
-            RepaymentAmount,
-            Normalize(RepaymentReference),
-            Normalize(RepaymentVoucherToken),
-            IdempotencyKey: _repaymentIdempotencyKey ??= $"{orderId:D}:repayment:{_repaymentPaymentGuid:D}");
+            paymentGuid,
+            method,
+            amount,
+            Normalize(reference),
+            Normalize(voucherToken),
+            IdempotencyKey: _repaymentIdempotencyKey ??= $"{orderId:D}:repayment:{paymentGuid:D}");
 
         var result = await RunOrderActionAsync(
             () => _installmentOrderService.AddRepaymentAsync(new InstallmentOrderRepaymentRequest(orderId, Session, payment)),
@@ -323,6 +368,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         (RepaymentMethod != PaymentMethodKind.Voucher || (!string.IsNullOrWhiteSpace(RepaymentReference) && !string.IsNullOrWhiteSpace(RepaymentVoucherToken)));
     private async Task CancelWithRefundAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || !CanCancelWithRefund())
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "cancel-with-refund");
         if (authorization is null)
         {
@@ -330,9 +381,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = authorization.Activate();
 
-        if (SelectedOrder is not null)
+        // 授权返回后再次确认原订单仍被选中且未被恢复锁定。
+        if (SelectedOrder?.OrderId == selectedOrder.OrderId &&
+            !IsSelectedOrderLocked &&
+            selectedOrder.CanCancelWithRefund)
         {
-            var orderId = SelectedOrder.OrderId;
+            var orderId = selectedOrder.OrderId;
             await RunOrderActionAsync(
                 () => _installmentOrderService.CancelWithRefundAsync(orderId, Session),
                 OperationAuditTypes.InstallmentRepaymentCancel,
@@ -344,6 +398,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private bool CanCancelWithRefund() => !IsBusy && !IsOffline && !IsSelectedOrderLocked && SelectedOrder is { CanCancelWithRefund: true };
     private async Task VoidCancelAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null)
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "void-cancel");
         if (authorization is null)
         {
@@ -351,9 +411,12 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = authorization.Activate();
 
-        if (SelectedOrder is not null)
+        // 授权期间可能切换订单；只有原订单仍被选中且锁状态明确时才允许写入。
+        if (SelectedOrder?.OrderId == selectedOrder.OrderId &&
+            !IsSelectedOrderLocked &&
+            selectedOrder.CanVoidCancel)
         {
-            var orderId = SelectedOrder.OrderId;
+            var orderId = selectedOrder.OrderId;
             await RunOrderActionAsync(
                 () => _installmentOrderService.VoidCancelAsync(orderId, Session, VoidReason),
                 OperationAuditTypes.InstallmentRepaymentCancel,
@@ -362,9 +425,15 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
     }
 
-    private bool CanVoidCancel() => !IsBusy && !IsOffline && SelectedOrder is { CanVoidCancel: true };
+    private bool CanVoidCancel() => !IsBusy && !IsOffline && !IsSelectedOrderLocked && SelectedOrder is { CanVoidCancel: true };
     private async Task ConfirmPickupAsync()
     {
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null)
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.ConfirmPickup, "confirm-pickup");
         if (authorization is null)
         {
@@ -372,23 +441,51 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
         using var authorizationActivation = authorization.Activate();
 
-        if (SelectedOrder is not null)
+        // 提货同样必须在授权完成后重新确认选择和锁状态，避免未知金融操作期间推进终态。
+        if (SelectedOrder?.OrderId == selectedOrder.OrderId &&
+            !IsSelectedOrderLocked &&
+            selectedOrder.CanConfirmPickup)
         {
-            await RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(SelectedOrder.OrderId, Session));
+            var result = await RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(selectedOrder.OrderId, Session));
+            if (result.RequiresReview)
+            {
+                // durable operation 已落盘；同步内存锁，避免等待下一次加载期间再次点击。
+                _lockedInstallmentGuids.Add(selectedOrder.OrderId);
+                OnPropertyChanged(nameof(IsSelectedOrderLocked));
+                RaiseSelectionStateChanged();
+            }
         }
     }
 
-    private bool CanConfirmPickup() => !IsBusy && !IsOffline && SelectedOrder is { CanConfirmPickup: true };
+    private bool CanConfirmPickup() => !IsBusy && !IsOffline && !IsSelectedOrderLocked && SelectedOrder is { CanConfirmPickup: true };
 
     private async Task ResolveRefundBySupervisorAsync()
     {
+        var selectedOrder = SelectedOrder;
+        var selectedRefundStep = SelectedRefundStep;
+        if (selectedOrder is null ||
+            selectedRefundStep is null ||
+            _refundStepsInstallmentGuid != selectedOrder.OrderId)
+        {
+            return;
+        }
+
         using var authorization = await AuthorizeAsync(Permissions.PosTerminal.Installments.Cancel, "supervisor-refund-resolution");
-        if (authorization is null || SelectedOrder is null || SelectedRefundStep is null)
+        if (authorization is null)
         {
             return;
         }
 
         using var authorizationActivation = authorization.Activate();
+        // 主管授权期间若选择、步骤归属或锁状态发生变化，旧步骤不得作用到新订单。
+        if (SelectedOrder?.OrderId != selectedOrder.OrderId ||
+            SelectedRefundStep?.RefundStepGuid != selectedRefundStep.RefundStepGuid ||
+            _refundStepsInstallmentGuid != selectedOrder.OrderId ||
+            !IsSelectedOrderLocked)
+        {
+            return;
+        }
+
         var authorizer = OperationAuthorizationScope.CurrentAuthorizingSession ?? Session.CashierSession;
         var decision = SupervisorRefundDecision;
         var resolution = new InstallmentRefundSupervisorResolution(
@@ -399,11 +496,13 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             Normalize(SupervisorRefundReference),
             authorizer?.UserGuid ?? Session.CashierSession?.UserGuid,
             authorizer?.CashierName ?? Session.CashierName);
+        var resolutionSaved = false;
 
         try
         {
             IsBusy = true;
-            var resolved = await _installmentOrderService.ResolveRefundStepAsync(SelectedRefundStep.RefundStepGuid, resolution);
+            var resolved = await _installmentOrderService.ResolveRefundStepAsync(selectedRefundStep.RefundStepGuid, resolution);
+            resolutionSaved = resolved;
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.InstallmentRepaymentCancel,
@@ -411,7 +510,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
                 Session,
                 reasonCode: decision.ToString(),
                 safeMessage: $"reason={resolution.Reason}; evidence={resolution.Evidence ?? "-"}; refundReference={resolution.RefundReference ?? "-"}",
-                orderGuid: SelectedOrder.OrderId.ToString("D"));
+                orderGuid: selectedOrder.OrderId.ToString("D"));
             if (!resolved)
             {
                 SetLiteralStatus("该退款步骤正在处理或已结案，保持锁定。 ");
@@ -420,7 +519,7 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
             if (decision != InstallmentRefundSupervisorDecision.ContinueWaiting)
             {
-                var result = await _installmentOrderService.ResumeCancelAfterSupervisorAsync(SelectedRefundStep.OperationGuid, SelectedOrder.OrderNumber, Session);
+                var result = await _installmentOrderService.ResumeCancelAfterSupervisorAsync(selectedRefundStep.OperationGuid, selectedOrder.OrderNumber, Session);
                 SetLiteralStatus(result.Message);
                 if (result.Succeeded && result.Order is not null)
                 {
@@ -436,6 +535,20 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         {
             SetLiteralStatus(exception.Message);
         }
+        catch (OperationCanceledException exception)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.InstallmentRepaymentCancel,
+                resolutionSaved ? "SupervisorRecoveryFailed" : "SupervisorResolutionUnknown",
+                Session,
+                reasonCode: decision.ToString(),
+                safeMessage: exception.GetType().Name,
+                orderGuid: selectedOrder.OrderId.ToString("D"));
+            SetLiteralStatus(resolutionSaved
+                ? "主管裁决已保存但恢复查询超时，退款保持锁定，请刷新核对。"
+                : "主管裁决请求超时，结果未知，退款保持锁定，请刷新核对。");
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             OperationAuditEvents.RecordAction(
@@ -445,19 +558,25 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
                 Session,
                 reasonCode: decision.ToString(),
                 safeMessage: exception.GetType().Name,
-                orderGuid: SelectedOrder.OrderId.ToString("D"));
+                orderGuid: selectedOrder.OrderId.ToString("D"));
             SetLiteralStatus("主管结案未保存，退款保持锁定。 ");
         }
         finally
         {
             IsBusy = false;
-            await RefreshSupervisorRefundStepsSafelyAsync(SelectedOrder.OrderId);
+            await RefreshSupervisorRefundStepsSafelyAsync(selectedOrder.OrderId);
             await RefreshLockedInstallmentsSafelyAsync();
         }
     }
 
     private bool CanResolveRefundBySupervisor() =>
-        !IsBusy && !IsOffline && IsRefundSupervisorAuthorized && IsSelectedOrderLocked && SelectedRefundStep is not null;
+        !IsBusy &&
+        !IsOffline &&
+        IsRefundSupervisorAuthorized &&
+        IsSelectedOrderLocked &&
+        SelectedOrder is not null &&
+        SelectedRefundStep is not null &&
+        _refundStepsInstallmentGuid == SelectedOrder.OrderId;
 
     private bool TryRequirePermission(string permissionCode)
     {
@@ -565,17 +684,18 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
     }
 
-    private async Task RecoverPendingOperationsAsync()
+    private async Task<string?> RecoverPendingOperationsAsync()
     {
         if (!Session.IsOnline)
         {
-            return;
+            return null;
         }
 
         try
         {
             var recovered = await _installmentOrderService.RecoverPendingOperationsAsync(Session);
             var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session);
+            _isRecoveryStateUnknown = false;
             _lockedInstallmentGuids.Clear();
             _lockedInstallmentGuids.UnionWith(lockedInstallments);
             OnPropertyChanged(nameof(IsSelectedOrderLocked));
@@ -587,34 +707,71 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
                 SetLiteralStatus($"{locked} 个分期支付结果未知，已锁定，请勿重复收款。");
             }
         }
+        catch (OperationCanceledException)
+        {
+            // 恢复请求超时不代表远端操作未完成；优先刷新锁，刷新失败时保留现有锁集合。
+            _isRecoveryStateUnknown = true;
+            await RefreshLockedInstallmentsSafelyAsync();
+            const string timeoutStatus = "分期恢复超时，操作保持锁定，请勿重复收款；请刷新核对。";
+            SetLiteralStatus(timeoutStatus);
+            return timeoutStatus;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            SetLiteralStatus($"分期恢复失败：{ex.GetType().Name}。请勿重复收款。");
+            _isRecoveryStateUnknown = true;
+            await RefreshLockedInstallmentsSafelyAsync();
+            var failureStatus = $"分期恢复失败：{ex.GetType().Name}。操作保持锁定，请勿重复收款；请刷新核对。";
+            SetLiteralStatus(failureStatus);
+            return failureStatus;
         }
+
+        return null;
     }
 
     private async Task RefreshSupervisorRefundStepsSafelyAsync(Guid? installmentGuid)
     {
+        if (SelectedOrder?.OrderId != installmentGuid)
+        {
+            return;
+        }
+
         try
         {
             var steps = installmentGuid is null
                 ? []
                 : await _installmentOrderService.GetRefundStepsForReviewAsync(installmentGuid.Value);
+            if (SelectedOrder?.OrderId != installmentGuid)
+            {
+                return;
+            }
+
             RefundStepsForReview.ReplaceWith(steps);
+            _refundStepsInstallmentGuid = installmentGuid;
             SelectedRefundStep = RefundStepsForReview.FirstOrDefault();
             OnPropertyChanged(nameof(HasRefundStepsForReview));
             RaiseSelectionStateChanged();
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            if (SelectedOrder?.OrderId != installmentGuid)
+            {
+                return;
+            }
+
             RefundStepsForReview.Clear();
+            _refundStepsInstallmentGuid = null;
             SelectedRefundStep = null;
             OnPropertyChanged(nameof(HasRefundStepsForReview));
             ConsoleLog.WriteError("InstallmentSupervisor", "failed to load refund review steps", null, exception);
         }
+        catch (OperationCanceledException exception)
+        {
+            // 超时时保留已有复核步骤，避免把仍需主管核对的退款误显示为已清空。
+            ConsoleLog.WriteError("InstallmentSupervisor", "timed out while loading refund review steps", null, exception);
+        }
     }
 
-    private async Task RefreshLockedInstallmentsSafelyAsync()
+    private async Task<bool> RefreshLockedInstallmentsSafelyAsync()
     {
         try
         {
@@ -623,10 +780,25 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
             _lockedInstallmentGuids.UnionWith(lockedInstallments);
             OnPropertyChanged(nameof(IsSelectedOrderLocked));
             RaiseSelectionStateChanged();
+            return true;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            // 锁状态无法读取时必须 fail-closed，防止未知支付/退款重新开放操作入口。
+            _isRecoveryStateUnknown = true;
+            OnPropertyChanged(nameof(IsSelectedOrderLocked));
+            RaiseSelectionStateChanged();
             ConsoleLog.WriteError("InstallmentSupervisor", "failed to refresh installment locks", null, exception);
+            return false;
+        }
+        catch (OperationCanceledException exception)
+        {
+            // 首次加载可能没有可保留的锁集合，因此同时设置全局未知状态并关闭操作入口。
+            _isRecoveryStateUnknown = true;
+            OnPropertyChanged(nameof(IsSelectedOrderLocked));
+            RaiseSelectionStateChanged();
+            ConsoleLog.WriteError("InstallmentSupervisor", "timed out while refreshing installment locks", null, exception);
+            return false;
         }
     }
 

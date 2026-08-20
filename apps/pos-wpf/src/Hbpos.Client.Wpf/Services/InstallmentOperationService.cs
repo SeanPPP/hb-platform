@@ -38,6 +38,15 @@ public interface IInstallmentOperationService
         string? reason = null,
         CancellationToken cancellationToken = default);
 
+    Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+            false,
+            Message: "安全提货确认服务未配置。",
+            RequiresReview: true));
+
     Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverAsync(
         PosSessionState session,
         CancellationToken cancellationToken = default);
@@ -74,7 +83,8 @@ public sealed class InstallmentOperationService(
     ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
     ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null,
     ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
-    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null) : IInstallmentOperationService
+    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null,
+    ISquareTerminalPaymentClient? squareTerminalPaymentClient = null) : IInstallmentOperationService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan ApiClaimLease = TimeSpan.FromMinutes(2);
@@ -212,6 +222,92 @@ public sealed class InstallmentOperationService(
         var approvedOperation = ready.Operation!;
         var approvedRequest = Deserialize<InstallmentAppendPaymentRequest>(approvedOperation.RequestJson);
         return await SubmitRepaymentAsync(approvedOperation, approvedRequest, cancellationToken);
+    }
+
+    public Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.Run(() => ExecutePickupCoreAsync(session, request, cancellationToken), CancellationToken.None);
+
+    private async Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> ExecutePickupCoreAsync(
+        PosSessionState session,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken)
+    {
+        var operationGuid = request.OperationGuid == Guid.Empty ? request.InstallmentGuid : request.OperationGuid;
+        request = request with
+        {
+            OperationGuid = operationGuid,
+            IdempotencyKey = string.IsNullOrWhiteSpace(request.IdempotencyKey)
+                ? $"{operationGuid:D}:pickup"
+                : request.IdempotencyKey.Trim()
+        };
+        var operation = await repository.CreateOrGetAsync(CreateOperation(
+            operationGuid,
+            LocalInstallmentOperationKind.Pickup,
+            request.InstallmentGuid,
+            null,
+            request.StoreCode,
+            request.DeviceCode,
+            request.CashierId,
+            request.IdempotencyKey!,
+            JsonSerializer.Serialize(request, JsonOptions)), cancellationToken);
+
+        if (operation.Kind != LocalInstallmentOperationKind.Pickup ||
+            operation.InstallmentGuid != request.InstallmentGuid ||
+            !string.Equals(operation.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(operation.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货操作身份与本地记录不一致，保持锁定等待核对。",
+                RequiresReview: true);
+        }
+
+        if (operation.State == LocalInstallmentOperationState.Completed &&
+            !string.IsNullOrWhiteSpace(operation.ResponseJson))
+        {
+            var completed = Deserialize<InstallmentConfirmPickupResponse>(operation.ResponseJson);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                true,
+                completed,
+                ToLocalOrder(completed.Details),
+                "分期单已确认提货。");
+        }
+
+        // API 已发出或结果未知时只能由恢复流程重放同一幂等请求，普通点击不得再次 POST。
+        if (operation.State is LocalInstallmentOperationState.ApiSubmitting or LocalInstallmentOperationState.ResultUnknown)
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认结果未知，已锁定；请刷新恢复，勿重复确认。",
+                RequiresReview: true);
+        }
+
+        if (operation.State == LocalInstallmentOperationState.Prepared)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.TerminalApproved,
+                DateTimeOffset.UtcNow,
+                cancellationToken: cancellationToken);
+            operation = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        }
+
+        if (operation.State != LocalInstallmentOperationState.TerminalApproved)
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认正在恢复或已结束，请刷新核对。",
+                RequiresReview: true);
+        }
+
+        return await SubmitPickupAsync(
+            operation,
+            Deserialize<InstallmentConfirmPickupRequest>(operation.RequestJson),
+            cancellationToken);
     }
 
     public Task<InstallmentOperationResult<InstallmentCancelResponse>> ExecuteCancelAsync(
@@ -362,6 +458,15 @@ public sealed class InstallmentOperationService(
                     }
                     if (resumedCancel is not null)
                     {
+                        // 中文注释：Square 已落 refundId 的步骤只能查询同一笔退款；重启恢复绝不再次 POST。
+                        var rejectedRefundReset = await RecoverSquareRefundStepsAsync(resumedCancel, resumedSteps, session, cancellationToken);
+                        resumedSteps = await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None);
+                        if ((rejectedRefundReset || HasSquareRejectedRefundReset(resumedSteps)) &&
+                            await TryFinalizeRejectedCancelRecoveryAsync(resumedCancel, resumedSteps))
+                        {
+                            results.Add(new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.Failed, false, "Square 退款已明确拒绝，可重新发起取消。"));
+                            continue;
+                        }
                         await TryResolveCancelClaimAsync(
                             resumedCancel,
                             InstallmentCancelClaimResolveOutcome.Unknown,
@@ -405,6 +510,12 @@ public sealed class InstallmentOperationService(
 
             if (operation.State == LocalInstallmentOperationState.Prepared)
             {
+                if (operation.Kind == LocalInstallmentOperationKind.Pickup)
+                {
+                    results.Add(await RecoverPickupAsync(operation, cancellationToken));
+                    continue;
+                }
+
                 if (operation.Kind == LocalInstallmentOperationKind.Repayment)
                 {
                     results.Add(await RecoverRepaymentAsync(operation, session, cancellationToken));
@@ -422,6 +533,7 @@ public sealed class InstallmentOperationService(
                     LocalInstallmentOperationKind.Create => await RecoverCreateAsync(operation, session, cancellationToken),
                     LocalInstallmentOperationKind.Repayment => await RecoverRepaymentAsync(operation, session, cancellationToken),
                     LocalInstallmentOperationKind.Cancel => await RecoverCancelAsync(operation, session, cancellationToken),
+                    LocalInstallmentOperationKind.Pickup => await RecoverPickupAsync(operation, cancellationToken),
                     _ => new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, "退款步骤需由取消操作处理。")
                 };
                 results.Add(result);
@@ -463,9 +575,11 @@ public sealed class InstallmentOperationService(
             return false;
         }
 
-        var environment = cardTerminalSettingsProvider is null
-            ? "Unknown"
-            : (await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken)).Environment.ToString();
+        var environment = !string.IsNullOrWhiteSpace(step.ProviderEnvironment)
+            ? step.ProviderEnvironment
+            : cardTerminalSettingsProvider is null
+                ? "Unknown"
+                : (await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken)).Environment.ToString();
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildInstallmentRefundSupervisorJournal(
             operation,
@@ -1800,6 +1914,7 @@ public sealed class InstallmentOperationService(
     {
         try
         {
+            using var squareRefundScope = BeginSquareRefundAttempt(step);
             PaymentAuthorizationResult authorization = step.Method switch
             {
                 PaymentMethodKind.Card => cardTerminalClient is IIdempotentCardRefundClient idempotentRefundClient
@@ -1810,14 +1925,36 @@ public sealed class InstallmentOperationService(
             };
             if (authorization.ResultUnknown)
             {
-                await repository.TryTransitionRefundStepAsync(step.RefundStepGuid, [LocalInstallmentRefundStepState.TerminalSubmitting], LocalInstallmentRefundStepState.ResultUnknown, DateTimeOffset.UtcNow, failureMessage: authorization.Message ?? "退款结果未知。", cancellationToken: CancellationToken.None);
+                await repository.TryTransitionRefundStepAsync(
+                    step.RefundStepGuid,
+                    [LocalInstallmentRefundStepState.TerminalSubmitting],
+                    LocalInstallmentRefundStepState.ResultUnknown,
+                    DateTimeOffset.UtcNow,
+                    refundReference: authorization.Reference,
+                    cardTransactionsJson: SerializeTransactions(authorization.CardTransactions),
+                    failureMessage: authorization.Message ?? "退款结果未知。",
+                    cancellationToken: CancellationToken.None);
                 return new InstallmentOperationResult<bool>(false, Message: "退款结果未知，等待主管结案。", RequiresReview: true);
             }
 
             if (!authorization.Approved)
             {
                 // 明确拒绝意味着该退款没有金融副作用，回到 Prepared 供下一次取消安全重试。
-                await repository.TryTransitionRefundStepAsync(step.RefundStepGuid, [LocalInstallmentRefundStepState.TerminalSubmitting], LocalInstallmentRefundStepState.Prepared, DateTimeOffset.UtcNow, failureMessage: authorization.Message, cancellationToken: CancellationToken.None);
+                if (TryParseSquarePaymentId(step.OriginalReference, out _))
+                {
+                    // Square 会在明确 FAILED/REJECTED 前先绑定 refundId；重试前必须原子清除这笔终结证据。
+                    await repository.TryResetRefundStepAfterDeclineAsync(
+                        step.RefundStepGuid,
+                        [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+                        Guid.NewGuid().ToString("N"),
+                        DateTimeOffset.UtcNow,
+                        authorization.Message,
+                        CancellationToken.None);
+                }
+                else
+                {
+                    await repository.TryTransitionRefundStepAsync(step.RefundStepGuid, [LocalInstallmentRefundStepState.TerminalSubmitting], LocalInstallmentRefundStepState.Prepared, DateTimeOffset.UtcNow, failureMessage: authorization.Message, cancellationToken: CancellationToken.None);
+                }
                 return new InstallmentOperationResult<bool>(false, Message: authorization.Message ?? "退款未获批准。");
             }
 
@@ -1974,6 +2111,35 @@ public sealed class InstallmentOperationService(
 
         var result = await SubmitCreateAsync(operation, request, cancellationToken, allowStaleApiSubmittingClaim: true);
         return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, result.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown, result.Succeeded, result.Message);
+    }
+
+    private async Task<InstallmentOperationRecoveryResult> RecoverPickupAsync(
+        LocalInstallmentOperation operation,
+        CancellationToken cancellationToken)
+    {
+        if (operation.State == LocalInstallmentOperationState.Prepared)
+        {
+            await repository.TryTransitionAsync(
+                operation.OperationGuid,
+                [LocalInstallmentOperationState.Prepared],
+                LocalInstallmentOperationState.TerminalApproved,
+                DateTimeOffset.UtcNow,
+                cancellationToken: cancellationToken);
+            operation = await repository.GetAsync(operation.OperationGuid, cancellationToken) ?? operation;
+        }
+
+        var request = Deserialize<InstallmentConfirmPickupRequest>(operation.RequestJson);
+        var result = await SubmitPickupAsync(
+            operation,
+            request,
+            cancellationToken,
+            allowStaleApiSubmittingClaim: operation.State == LocalInstallmentOperationState.ApiSubmitting);
+        return new InstallmentOperationRecoveryResult(
+            operation.OperationGuid,
+            operation.Kind,
+            result.Succeeded ? LocalInstallmentOperationState.Completed : LocalInstallmentOperationState.ResultUnknown,
+            result.Succeeded,
+            result.Message);
     }
 
     private async Task<InstallmentOperationRecoveryResult> RecoverRepaymentAsync(LocalInstallmentOperation operation, PosSessionState session, CancellationToken cancellationToken)
@@ -2179,6 +2345,13 @@ public sealed class InstallmentOperationService(
     private async Task<InstallmentOperationRecoveryResult> RecoverCancelAsync(LocalInstallmentOperation operation, PosSessionState session, CancellationToken cancellationToken)
     {
         var steps = await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken);
+        var rejectedRefundReset = await RecoverSquareRefundStepsAsync(operation, steps, session, cancellationToken);
+        steps = await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken);
+        if ((rejectedRefundReset || HasSquareRejectedRefundReset(steps)) &&
+            await TryFinalizeRejectedCancelRecoveryAsync(operation, steps))
+        {
+            return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, LocalInstallmentOperationState.Failed, false, "Square 退款已明确拒绝，可重新发起取消。");
+        }
         if (!steps.All(IsRefundApproved))
         {
             return new InstallmentOperationRecoveryResult(operation.OperationGuid, operation.Kind, operation.State, false, "退款未全部确认，保持锁定。" );
@@ -2429,6 +2602,305 @@ public sealed class InstallmentOperationService(
 
     private static bool HasCardRefundEvidence(PaymentAuthorizationResult authorization) =>
         !string.IsNullOrWhiteSpace(authorization.Reference) && authorization.CardTransactions is { Count: > 0 };
+
+    private IDisposable? BeginSquareRefundAttempt(LocalInstallmentRefundStep step)
+    {
+        if (squarePaymentAttemptContextAccessor is null ||
+            !TryParseSquarePaymentId(step.OriginalReference, out _))
+        {
+            return null;
+        }
+
+        var context = new SquarePaymentAttemptContext(
+            step.RefundStepGuid,
+            ResolveRefundIdempotencyKey(step),
+            BindRefundEvidenceAsync: async (refundId, status, updatedAt, environment, _) =>
+            {
+                // 中文注释：POST 一旦返回 refundId，先用独立取消令牌落盘，再允许终态查询或方法返回。
+                var refundReference = $"SQRF:{refundId}";
+                var persisted = await repository.TryRecordRefundEvidenceAsync(
+                    step.RefundStepGuid,
+                    [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+                    refundReference,
+                    environment.ToString(),
+                    SerializeSquareRefundEvidence(refundId, status, step.Amount, updatedAt),
+                    updatedAt,
+                    cancellationToken: CancellationToken.None);
+                if (!persisted)
+                {
+                    var current = await repository.GetRefundStepAsync(step.RefundStepGuid, CancellationToken.None);
+                    if (current is null ||
+                        !string.Equals(current.RefundReference, refundReference, StringComparison.Ordinal) ||
+                        !string.Equals(current.ProviderEnvironment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("Square refund identity could not be persisted safely.");
+                    }
+                }
+            });
+        return squarePaymentAttemptContextAccessor.Begin(context);
+    }
+
+    private async Task<InstallmentOperationResult<InstallmentConfirmPickupResponse>> SubmitPickupAsync(
+        LocalInstallmentOperation operation,
+        InstallmentConfirmPickupRequest request,
+        CancellationToken cancellationToken,
+        bool allowStaleApiSubmittingClaim = false)
+    {
+        if (!await ClaimApiAsync(operation.OperationGuid, allowStaleApiSubmittingClaim, cancellationToken))
+        {
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认正在恢复或结果未知。",
+                RequiresReview: true);
+        }
+
+        try
+        {
+            var response = await apiClient.ConfirmPickupAsync(request, cancellationToken);
+            var local = ToLocalOrder(response.Details);
+            if (!await repository.CompleteWithSnapshotAsync(
+                    operation.OperationGuid,
+                    [LocalInstallmentOperationState.ApiSubmitting],
+                    local,
+                    JsonSerializer.Serialize(response, JsonOptions),
+                    false,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken))
+            {
+                return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                    false,
+                    Message: "提货确认已提交，本地快照正在安全恢复。",
+                    RequiresReview: true);
+            }
+
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                true,
+                response,
+                local,
+                "分期单已确认提货。");
+        }
+        catch (OperationCanceledException)
+        {
+            await MarkApiUnknownAsync(operation.OperationGuid, "提货确认 API 调用已取消，结果未知。", CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认请求超时，结果可能已提交；已锁定，请刷新恢复，勿重复确认提货。",
+                RequiresReview: true);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await MarkApiUnknownAsync(operation.OperationGuid, exception.Message, CancellationToken.None);
+            return new InstallmentOperationResult<InstallmentConfirmPickupResponse>(
+                false,
+                Message: "提货确认结果未知，已锁定；请刷新恢复，勿重复确认提货。",
+                RequiresReview: true);
+        }
+    }
+
+    private async Task<bool> RecoverSquareRefundStepsAsync(
+        LocalInstallmentOperation operation,
+        IReadOnlyList<LocalInstallmentRefundStep> steps,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        if (cardTerminalSettingsProvider is null || squareTerminalPaymentClient is null ||
+            !string.Equals(operation.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(operation.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var candidates = steps.Where(step =>
+            step.State is LocalInstallmentRefundStepState.TerminalSubmitting or LocalInstallmentRefundStepState.ResultUnknown &&
+            TryParseSquarePaymentId(step.OriginalReference, out _) &&
+            TryParseSquareRefundId(step.RefundReference, out _)).ToList();
+        if (candidates.Count == 0)
+        {
+            return false;
+        }
+
+        CardTerminalSettings settings;
+        try
+        {
+            settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ConsoleLog.Write("InstallmentRecovery", $"Square settings lookup failed operationGuid={operation.OperationGuid} error={exception.GetType().Name}");
+            foreach (var step in candidates)
+            {
+                await MarkSquareRefundUnknownAsync(step, "Square 环境配置读取失败，保持锁定。", cancellationToken: CancellationToken.None);
+            }
+            return false;
+        }
+
+        var rejectedRefundReset = false;
+        foreach (var step in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            TryParseSquarePaymentId(step.OriginalReference, out var paymentId);
+            TryParseSquareRefundId(step.RefundReference, out var refundId);
+
+            var recoverySettings = settings;
+            if (!string.IsNullOrWhiteSpace(step.ProviderEnvironment))
+            {
+                if (!Enum.TryParse<CardTerminalEnvironment>(step.ProviderEnvironment, ignoreCase: true, out var providerEnvironment))
+                {
+                    await MarkSquareRefundUnknownAsync(step, "Square 原退款环境无效，保持锁定。", cancellationToken: CancellationToken.None);
+                    continue;
+                }
+
+                // 后端按 environment 选择对应 Square 凭据；恢复必须使用创建退款时落盘的环境。
+                recoverySettings = settings with
+                {
+                    Environment = providerEnvironment,
+                    SquareApiBaseUrl = CardTerminalSettings.GetSquareApiBaseUrl(providerEnvironment)
+                };
+            }
+
+            SquareRefundStatusResult refund;
+            try
+            {
+                refund = await squareTerminalPaymentClient.GetRefundAsync(recoverySettings, refundId!, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                ConsoleLog.Write("InstallmentRecovery", $"Square refund lookup failed refundStepGuid={step.RefundStepGuid} refundId={refundId} error={exception.GetType().Name}");
+                await MarkSquareRefundUnknownAsync(step, "Square 退款查询失败，保持锁定。", cancellationToken: CancellationToken.None);
+                continue;
+            }
+
+            if (!string.Equals(refund.RefundId, refundId, StringComparison.Ordinal) ||
+                !string.Equals(refund.PaymentId, paymentId, StringComparison.Ordinal) ||
+                refund.AmountCents != ToExactCents(step.Amount) ||
+                !string.Equals(refund.Currency, "AUD", StringComparison.OrdinalIgnoreCase))
+            {
+                // 响应身份不可信时不得覆盖已落盘的权威 refundId。
+                await MarkSquareRefundUnknownAsync(step, "Square 退款身份、原付款、金额或币种不匹配，保持锁定。", cancellationToken: CancellationToken.None);
+                continue;
+            }
+
+            if (string.Equals(refund.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+            {
+                await repository.TryTransitionRefundStepAsync(
+                    step.RefundStepGuid,
+                    [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+                    LocalInstallmentRefundStepState.Approved,
+                    refund.UpdatedAt ?? DateTimeOffset.UtcNow,
+                    refundReference: $"SQRF:{refund.RefundId}",
+                    cardTransactionsJson: SerializeSquareRefundEvidence(refund.RefundId, refund.Status, step.Amount, refund.UpdatedAt),
+                    cancellationToken: CancellationToken.None);
+                continue;
+            }
+
+            if (string.Equals(refund.Status, "FAILED", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(refund.Status, "REJECTED", StringComparison.OrdinalIgnoreCase))
+            {
+                // 身份与金额均已核验的拒绝终态没有退款副作用；清除旧身份并轮换幂等键后才允许人工重试。
+                rejectedRefundReset |= await repository.TryResetRefundStepAfterDeclineAsync(
+                    step.RefundStepGuid,
+                    [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+                    Guid.NewGuid().ToString("N"),
+                    refund.UpdatedAt ?? DateTimeOffset.UtcNow,
+                    $"Square 退款状态为 {refund.Status}。",
+                    CancellationToken.None);
+                continue;
+            }
+
+            var message = string.Equals(refund.Status, "PENDING", StringComparison.OrdinalIgnoreCase)
+                ? "Square 退款仍在处理中，保持锁定并稍后恢复。"
+                : $"Square 退款状态为 {refund.Status}，仅 COMPLETED 可自动确认，保持锁定。";
+            await MarkSquareRefundUnknownAsync(step, message, refund, CancellationToken.None);
+        }
+
+        return rejectedRefundReset;
+    }
+
+    private async Task<bool> TryFinalizeRejectedCancelRecoveryAsync(
+        LocalInstallmentOperation operation,
+        IReadOnlyList<LocalInstallmentRefundStep> steps)
+    {
+        if (steps.Count == 0 || steps.Any(IsRefundApproved) ||
+            steps.Any(step => step.State != LocalInstallmentRefundStepState.Prepared))
+        {
+            return false;
+        }
+
+        var declined = await TryResolveCancelClaimAsync(
+            operation,
+            InstallmentCancelClaimResolveOutcome.Declined,
+            [],
+            CancellationToken.None);
+        if (!declined)
+        {
+            return false;
+        }
+
+        var failed = await repository.TryTransitionAsync(
+            operation.OperationGuid,
+            [LocalInstallmentOperationState.TerminalSubmitting, LocalInstallmentOperationState.ResultUnknown],
+            LocalInstallmentOperationState.Failed,
+            DateTimeOffset.UtcNow,
+            failureMessage: "Square 退款已明确拒绝，可重新发起取消。",
+            cancellationToken: CancellationToken.None);
+        return failed ||
+            (await repository.GetAsync(operation.OperationGuid, CancellationToken.None))?.State == LocalInstallmentOperationState.Failed;
+    }
+
+    private static bool HasSquareRejectedRefundReset(IReadOnlyList<LocalInstallmentRefundStep> steps) =>
+        steps.Any(step =>
+            step.State == LocalInstallmentRefundStepState.Prepared &&
+            TryParseSquarePaymentId(step.OriginalReference, out _) &&
+            (string.Equals(step.FailureMessage, "Square 退款状态为 FAILED。", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(step.FailureMessage, "Square 退款状态为 REJECTED。", StringComparison.OrdinalIgnoreCase)));
+
+    private Task<bool> MarkSquareRefundUnknownAsync(
+        LocalInstallmentRefundStep step,
+        string message,
+        SquareRefundStatusResult? refund = null,
+        CancellationToken cancellationToken = default) =>
+        repository.TryTransitionRefundStepAsync(
+            step.RefundStepGuid,
+            [LocalInstallmentRefundStepState.TerminalSubmitting, LocalInstallmentRefundStepState.ResultUnknown],
+            LocalInstallmentRefundStepState.ResultUnknown,
+            refund?.UpdatedAt ?? DateTimeOffset.UtcNow,
+            refundReference: refund is null ? null : $"SQRF:{refund.RefundId}",
+            cardTransactionsJson: refund is null ? null : SerializeSquareRefundEvidence(refund.RefundId, refund.Status, step.Amount, refund.UpdatedAt),
+            failureMessage: message,
+            cancellationToken: cancellationToken);
+
+    private static string SerializeSquareRefundEvidence(string refundId, string status, decimal amount, DateTimeOffset? occurredAt = null) =>
+        JsonSerializer.Serialize<IReadOnlyList<CardTransactionDto>>(
+            [new CardTransactionDto("Square", refundId, null, null, null, null, null, null, status, null, occurredAt ?? DateTimeOffset.UtcNow, amount, null)],
+            JsonOptions);
+
+    private static string? SerializeTransactions(IReadOnlyList<CardTransactionDto>? transactions) =>
+        transactions is null ? null : JsonSerializer.Serialize(transactions, JsonOptions);
+
+    private static bool TryParseSquarePaymentId(string? reference, out string? paymentId) =>
+        TryParseSquareReference(reference, "SQ:", out paymentId);
+
+    private static bool TryParseSquareRefundId(string? reference, out string? refundId) =>
+        TryParseSquareReference(reference, "SQRF:", out refundId);
+
+    private static bool TryParseSquareReference(string? reference, string prefix, out string? value)
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return false;
+        }
+
+        var trimmed = reference.Trim();
+        if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        value = trimmed[prefix.Length..].Trim();
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
     private static bool IsLinklyRefundStep(LocalInstallmentRefundStep step) =>
         step.Method == PaymentMethodKind.Card &&
         (DeserializeTransactions(step.CardTransactionsJson)?.Any(transaction =>

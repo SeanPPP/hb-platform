@@ -115,6 +115,7 @@ public static class SharedHeldOrderMappingReasons
     public const string OpenItemLine = "OpenItemLineNotSupported";
     public const string PromotionRulesMissing = "PromotionRulesMissing";
     public const string PromotionRulesMismatch = "PromotionRulesMismatch";
+    public const string PromotionBudgetExceeded = "PromotionBudgetExceeded";
     public const string CatalogDiscountPromotionConflict = "CatalogDiscountPromotionConflict";
     public const string InvalidSnapshot = "InvalidSnapshot";
 }

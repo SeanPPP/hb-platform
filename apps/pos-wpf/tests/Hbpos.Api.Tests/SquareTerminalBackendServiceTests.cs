@@ -435,6 +435,40 @@ public sealed class SquareTerminalBackendServiceTests
     }
 
     [Fact]
+    public async Task GetRefundAsync_UsesActiveTokenAndReturnsCurrentStatus()
+    {
+        var tokenService = new RecordingSquareTokenService(new SquareTokenResponse(
+            "Production",
+            "token-refund-status",
+            DateTimeOffset.UtcNow));
+        var restClient = new FakeSquareTerminalRestClient
+        {
+            GetRefundAsyncHandler = (environment, accessToken, refundId, _) =>
+            {
+                Assert.Equal("Production", environment);
+                Assert.Equal("token-refund-status", accessToken);
+                Assert.Equal("refund-001", refundId);
+                return Task.FromResult<SquareRefundResponse?>(new SquareRefundResponse(
+                    refundId,
+                    environment,
+                    Status: "COMPLETED",
+                    PaymentId: "payment-001",
+                    AmountMoney: new SquareMoneyDto(500, "AUD")));
+            }
+        };
+        var service = new SquareTerminalBackendService(tokenService, restClient);
+
+        var response = await service.GetRefundAsync(
+            "production",
+            "refund-001",
+            CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("COMPLETED", response.Status);
+        Assert.Equal("payment-001", response.PaymentId);
+    }
+
+    [Fact]
     public async Task AcceptWebhookAsync_WhenSignatureKeyMissing_ThrowsStableForbiddenException()
     {
         var service = new SquareTerminalBackendService(
@@ -827,6 +861,8 @@ public sealed class SquareTerminalBackendServiceTests
 
         public Func<string, string, SquareRefundRequest, CancellationToken, Task<SquareRefundResponse>>? CreateRefundAsyncHandler { get; init; }
 
+        public Func<string, string, string, CancellationToken, Task<SquareRefundResponse?>>? GetRefundAsyncHandler { get; init; }
+
         public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(string environment, string accessToken, CancellationToken cancellationToken)
         {
             return GetLocationsAsyncHandler?.Invoke(environment, accessToken, cancellationToken)
@@ -891,6 +927,12 @@ public sealed class SquareTerminalBackendServiceTests
         {
             return CreateRefundAsyncHandler?.Invoke(environment, accessToken, request, cancellationToken)
                 ?? Task.FromResult(new SquareRefundResponse("refund-default", environment));
+        }
+
+        public Task<SquareRefundResponse?> GetRefundAsync(string environment, string accessToken, string refundId, CancellationToken cancellationToken)
+        {
+            return GetRefundAsyncHandler?.Invoke(environment, accessToken, refundId, cancellationToken)
+                ?? Task.FromResult<SquareRefundResponse?>(null);
         }
     }
 

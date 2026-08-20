@@ -133,6 +133,111 @@ public sealed class LinklySettlementServiceTests
     }
 
     [Fact]
+    public async Task Initial_settlement_propagates_caller_cancellation_and_keeps_pending_lock()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-caller-cancel-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var businessDate = DateTime.Today;
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalLinklySettlementRepository(store);
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.LocalIp
+            };
+            using var cancellation = new CancellationTokenSource();
+            var terminal = new FakeLinklyTerminalClient(new LinklySettlementResult(true, "must not complete"))
+            {
+                SettlementExceptionFactory = token =>
+                {
+                    cancellation.Cancel();
+                    return new OperationCanceledException(token);
+                }
+            };
+            var service = new LinklySettlementService(
+                terminal,
+                new FixedCardTerminalSettingsProvider(settings),
+                repository,
+                new FakeLinklyBankReceiptPrinter(),
+                new FakeLinklyBackendTerminalClient());
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => service.SettleAndPrintAsync(session, businessDate, cancellation.Token));
+            var stored = Assert.Single(await service.GetHistoryAsync(session, businessDate));
+
+            Assert.Equal(1, terminal.SettlementCallCount);
+            Assert.Equal(LocalLinklySettlementStatus.Pending, stored.Status);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Initial_settlement_timeout_is_persisted_as_unknown_without_resubmission()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-timeout-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var businessDate = DateTime.Today;
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalLinklySettlementRepository(store);
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.LocalIp
+            };
+            var terminal = new FakeLinklyTerminalClient(new LinklySettlementResult(true, "must not complete"))
+            {
+                SettlementExceptionFactory = _ => new TaskCanceledException("terminal request timed out")
+            };
+            var service = new LinklySettlementService(
+                terminal,
+                new FixedCardTerminalSettingsProvider(settings),
+                repository,
+                new FakeLinklyBankReceiptPrinter(),
+                new FakeLinklyBackendTerminalClient());
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+            var result = await service.SettleAndPrintAsync(session, businessDate);
+            var stored = Assert.Single(await service.GetHistoryAsync(session, businessDate));
+
+            Assert.True(result.ResultUnknown);
+            Assert.Equal(LocalLinklySettlementStatus.Unknown, stored.Status);
+            Assert.Equal(1, terminal.SettlementCallCount);
+
+            var blocked = await service.SettleAndPrintAsync(session, businessDate);
+            Assert.True(blocked.ResultUnknown);
+            Assert.Equal(1, terminal.SettlementCallCount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task Default_unknown_submission_state_is_persisted_as_unknown_without_resubmission()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-default-state-{Guid.NewGuid():N}.db");
@@ -767,6 +872,115 @@ public sealed class LinklySettlementServiceTests
     }
 
     [Fact]
+    public async Task Resumable_settlement_lookup_timeout_returns_original_record_without_resubmission_or_overwrite()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-resumable-timeout-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var businessDate = DateTime.Today;
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalLinklySettlementRepository(store);
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync
+            };
+            var terminal = new FakeLinklyTerminalClient(new LinklySettlementResult(true, "must not be submitted"));
+            var backend = new FakeLinklyBackendTerminalClient
+            {
+                GetResumableSettlementException = new TaskCanceledException("resumable settlement lookup timed out")
+            };
+            var service = new LinklySettlementService(
+                terminal,
+                new FixedCardTerminalSettingsProvider(settings),
+                repository,
+                new FakeLinklyBankReceiptPrinter(),
+                backend);
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+            var unresolved = await CreateUnknownSettlementAsync(repository, session, businessDate, providerSessionId: null);
+
+            var result = await service.SettleAndPrintAsync(session, businessDate);
+            var stored = Assert.Single(await service.GetHistoryAsync(session, businessDate));
+
+            Assert.True(result.ResultUnknown);
+            Assert.Equal(unresolved.SettlementGuid, result.Settlement.SettlementGuid);
+            Assert.Equal(unresolved.SettlementGuid, stored.SettlementGuid);
+            Assert.Equal(LocalLinklySettlementStatus.Unknown, stored.Status);
+            Assert.Equal(1, backend.GetResumableSettlementCallCount);
+            Assert.Equal(0, terminal.SettlementCallCount);
+            Assert.Equal(0, backend.AcknowledgeSettlementCallCount);
+            Assert.Equal(0, backend.MarkReceiptPrintedCallCount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Resumable_settlement_lookup_callercancelled_propagates_without_blocking()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-resumable-cancel-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var businessDate = DateTime.Today;
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalLinklySettlementRepository(store);
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync
+            };
+            using var cts = new CancellationTokenSource();
+            var terminal = new FakeLinklyTerminalClient(new LinklySettlementResult(true, "must not be submitted"));
+            var backend = new FakeLinklyBackendTerminalClient
+            {
+                ResumableSettlementExceptionFactory = token =>
+                {
+                    cts.Cancel();
+                    return new OperationCanceledException(token);
+                }
+            };
+            var service = new LinklySettlementService(
+                terminal,
+                new FixedCardTerminalSettingsProvider(settings),
+                repository,
+                new FakeLinklyBankReceiptPrinter(),
+                backend);
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+            await CreateUnknownSettlementAsync(repository, session, businessDate, providerSessionId: null);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => service.SettleAndPrintAsync(session, businessDate, cts.Token));
+
+            Assert.Equal(1, backend.GetResumableSettlementCallCount);
+            Assert.Equal(0, terminal.SettlementCallCount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task Concurrent_settlement_attempts_create_only_one_pending_record_and_call_the_terminal_once()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-concurrent-{Guid.NewGuid():N}.db");
@@ -1068,6 +1282,8 @@ public sealed class LinklySettlementServiceTests
 
         public TaskCompletionSource<LinklySettlementResult>? DeferredSettlementResult { get; set; }
 
+        public Func<CancellationToken, Exception>? SettlementExceptionFactory { get; set; }
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(string host, int port, TimeSpan timeout, CancellationToken cancellationToken = default) =>
             Task.FromResult(new LinklyConnectionTestResult(true));
 
@@ -1075,6 +1291,11 @@ public sealed class LinklySettlementServiceTests
         {
             SettlementCallCount++;
             SettlementStarted?.TrySetResult();
+            if (SettlementExceptionFactory is not null)
+            {
+                return Task.FromException<LinklySettlementResult>(SettlementExceptionFactory(cancellationToken));
+            }
+
             return DeferredSettlementResult?.Task ?? Task.FromResult(Result);
         }
 
@@ -1136,6 +1357,10 @@ public sealed class LinklySettlementServiceTests
 
         public Exception? AcknowledgeSettlementException { get; set; }
 
+        public Exception? GetResumableSettlementException { get; set; }
+
+        public Func<CancellationToken, Exception>? ResumableSettlementExceptionFactory { get; set; }
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(CardTerminalEnvironment environment, CancellationToken cancellationToken = default) =>
             Task.FromResult(new LinklyConnectionTestResult(true));
 
@@ -1150,7 +1375,14 @@ public sealed class LinklySettlementServiceTests
         {
             GetResumableSettlementCallCount++;
             LastResumableSettlementSettings = settings;
-            return Task.FromResult(ResumableSettlement);
+            if (ResumableSettlementExceptionFactory is not null)
+            {
+                return Task.FromException<LinklyCloudBackendSessionResponse?>(ResumableSettlementExceptionFactory(cancellationToken));
+            }
+
+            return GetResumableSettlementException is null
+                ? Task.FromResult(ResumableSettlement)
+                : Task.FromException<LinklyCloudBackendSessionResponse?>(GetResumableSettlementException);
         }
 
         public Task AcknowledgeSettlementAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default)

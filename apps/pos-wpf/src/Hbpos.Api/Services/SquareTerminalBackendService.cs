@@ -199,6 +199,20 @@ public sealed class SquareTerminalBackendService(
         return await restClient.CreateRefundAsync(context.Environment, context.AccessToken, request, cancellationToken);
     }
 
+    public async Task<SquareRefundResponse?> GetRefundAsync(
+        string environment,
+        string refundId,
+        CancellationToken cancellationToken)
+    {
+        // 退款终态查询统一由后端持有 Square token，POS 不直连 Square。
+        var context = await GetRequestContextAsync(environment, cancellationToken);
+        return await restClient.GetRefundAsync(
+            context.Environment,
+            context.AccessToken,
+            refundId,
+            cancellationToken);
+    }
+
     public Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(
         SquareWebhookRequest request,
         CancellationToken cancellationToken)

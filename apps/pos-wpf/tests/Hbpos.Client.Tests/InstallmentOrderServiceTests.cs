@@ -579,6 +579,61 @@ public sealed class InstallmentOrderServiceTests
         }
     }
 
+    [Fact]
+    public async Task ConfirmPickupAsync_returns_requires_review_when_api_times_out_without_caller_cancellation()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient
+            {
+                ConfirmPickupException = new TaskCanceledException("pickup API timed out")
+            };
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            var result = await service.ConfirmPickupAsync(CreateActiveDetails().InstallmentGuid, CreateOnlineSession());
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            Assert.Contains("结果可能已提交", result.Message, StringComparison.Ordinal);
+            Assert.Contains("刷新核对", result.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task ConfirmPickupAsync_propagates_caller_cancellation()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var service = new InstallmentOrderService(repository, new StubInstallmentApiClient());
+            using var cancellation = new CancellationTokenSource();
+
+            await schema.InitializeAsync();
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                service.ConfirmPickupAsync(CreateActiveDetails().InstallmentGuid, CreateOnlineSession(), cancellation.Token));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static PosSessionState CreateOfflineSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", false, 0);
@@ -882,6 +937,8 @@ public sealed class InstallmentOrderServiceTests
 
         public InstallmentConfirmPickupResponse? ConfirmPickupResponse { get; set; }
 
+        public Exception? ConfirmPickupException { get; set; }
+
         public InstallmentCancelResponse? CancelResponse { get; set; }
 
         public InstallmentVoidResponse? VoidResponse { get; set; }
@@ -927,6 +984,12 @@ public sealed class InstallmentOrderServiceTests
         {
             ConfirmPickupCallCount++;
             LastConfirmPickupRequest = request;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ConfirmPickupException is not null)
+            {
+                return Task.FromException<InstallmentConfirmPickupResponse>(ConfirmPickupException);
+            }
+
             return Task.FromResult(ConfirmPickupResponse ?? throw new InvalidOperationException("ConfirmPickupResponse was not configured."));
         }
 

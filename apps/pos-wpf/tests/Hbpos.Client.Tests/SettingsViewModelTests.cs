@@ -46,6 +46,64 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Payment_terminal_settings_content_supports_vertical_touch_panning()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "SettingsView.xaml");
+        var document = System.Xml.Linq.XDocument.Load(xamlPath);
+        var paymentSection = document
+            .Descendants()
+            .Single(element =>
+                element.Name.LocalName == "Grid" &&
+                element.Attribute("Visibility")?.Value.Contains(
+                    "IsPaymentTerminalSelected",
+                    StringComparison.Ordinal) == true);
+        var contentScrollViewer = paymentSection
+            .Ancestors()
+            .First(element => element.Name.LocalName == "ScrollViewer");
+        var xamlNamespace = System.Xml.Linq.XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml");
+        var singleLineInputStyles = new[]
+        {
+            "SettingsFieldTextBoxStyle",
+            "SettingsFieldPasswordBoxStyle"
+        }.Select(styleKey => document
+            .Descendants()
+            .Single(element =>
+                element.Name.LocalName == "Style" &&
+                element.Attribute(xamlNamespace + "Key")?.Value == styleKey));
+        var multilineTextBoxes = document
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "TextBox" &&
+                element.Attribute("AcceptsReturn")?.Value == "True")
+            .ToArray();
+
+        Assert.Equal("VerticalOnly", contentScrollViewer.Attribute("PanningMode")?.Value);
+        Assert.Equal("0.0008", contentScrollViewer.Attribute("PanningDeceleration")?.Value);
+        Assert.Equal("1.0", contentScrollViewer.Attribute("PanningRatio")?.Value);
+        Assert.Equal("False", contentScrollViewer.Attribute("CanContentScroll")?.Value);
+        Assert.Equal("Disabled", contentScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value);
+        Assert.All(singleLineInputStyles, style =>
+        {
+            var panningModeSetter = style
+                .Elements()
+                .Single(element => element.Attribute("Property")?.Value == "ScrollViewer.PanningMode");
+
+            Assert.Equal("None", panningModeSetter.Attribute("Value")?.Value);
+        });
+        Assert.Equal(2, multilineTextBoxes.Length);
+        Assert.All(multilineTextBoxes, textBox =>
+            Assert.Equal("VerticalFirst", textBox.Attribute("ScrollViewer.PanningMode")?.Value));
+    }
+
+    [Fact]
     public async Task LoadAsync_loads_shared_api_server_settings()
     {
         var apiServerSettings = new ApiServerSettingsViewModel(

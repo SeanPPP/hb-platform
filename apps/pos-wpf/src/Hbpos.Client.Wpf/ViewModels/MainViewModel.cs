@@ -154,6 +154,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public SpecialProductsViewModel? CachedSpecialProductsScreen => _screenNavigator.CachedSpecialProductsScreen;
 
+    public TransactionHistoryViewModel? CachedTransactionHistoryScreen => _screenNavigator.TransactionHistory;
+
+    public SettingsViewModel? CachedSettingsScreen => _screenNavigator.Settings;
+
     public AppUpdateState AppUpdate { get; }
 
     public IOperationAuthorizationService? OperationAuthorization => _operationAuthorizationService;
@@ -835,10 +839,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool IsSpecialProductsScreenActive => ReferenceEquals(CurrentScreen, CachedSpecialProductsScreen);
 
+    public bool IsTransactionHistoryScreenActive => ReferenceEquals(CurrentScreen, CachedTransactionHistoryScreen);
+
+    public bool IsSettingsScreenActive => ReferenceEquals(CurrentScreen, CachedSettingsScreen);
+
     public bool IsFallbackScreenActive => CurrentScreen is not null &&
         !IsPosTerminalScreenActive &&
         !IsCashPaymentScreenActive &&
-        !IsSpecialProductsScreenActive;
+        !IsSpecialProductsScreenActive &&
+        !IsTransactionHistoryScreenActive &&
+        !IsSettingsScreenActive;
 
     public bool IsCashierLoginOverlayOpen =>
         CurrentScreen is not null &&
@@ -1662,9 +1672,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CachedPosTerminalScreen));
         OnPropertyChanged(nameof(CachedCashPaymentScreen));
         OnPropertyChanged(nameof(CachedSpecialProductsScreen));
+        OnPropertyChanged(nameof(CachedTransactionHistoryScreen));
+        OnPropertyChanged(nameof(CachedSettingsScreen));
         OnPropertyChanged(nameof(IsPosTerminalScreenActive));
         OnPropertyChanged(nameof(IsCashPaymentScreenActive));
         OnPropertyChanged(nameof(IsSpecialProductsScreenActive));
+        OnPropertyChanged(nameof(IsTransactionHistoryScreenActive));
+        OnPropertyChanged(nameof(IsSettingsScreenActive));
         OnPropertyChanged(nameof(IsFallbackScreenActive));
         OnPropertyChanged(nameof(ActivePageTitleText));
     }
@@ -2342,18 +2356,39 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.ResetForNewTransaction();
     }
 
-    private async void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
+    private void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
     {
-        using var grant = await AuthorizeShellOperationAsync(
-            Permissions.PosTerminal.Receipt.PrintLast,
-            "print-payment-success-receipt");
-        if (grant is null)
-        {
-            return;
-        }
+        _ = HandlePaymentSuccessPrintReceiptRequestedAsync();
+    }
 
-        using var activation = grant.Activate();
-        await PrintPaymentSuccessReceiptAsync();
+    private async Task HandlePaymentSuccessPrintReceiptRequestedAsync()
+    {
+        try
+        {
+            using var grant = await AuthorizeShellOperationAsync(
+                Permissions.PosTerminal.Receipt.PrintLast,
+                "print-payment-success-receipt");
+            if (grant is null)
+            {
+                return;
+            }
+
+            using var activation = grant.Activate();
+            await PrintPaymentSuccessReceiptAsync();
+        }
+        catch (Exception ex)
+        {
+            // 事件桥不得让授权、查询或打印异常逃逸到 Dispatcher，否则 WPF 会按未处理异常退出。
+            var safeMessage = ex.GetType().Name;
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                safeMessage);
+            ConsoleLog.WriteError(
+                "ReceiptPrint",
+                $"payment success receipt print failed error={safeMessage}",
+                exception: ex);
+        }
     }
 
     private void OnCustomerDisplayClosed(object? sender, EventArgs e)
@@ -2979,9 +3014,33 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             // 只有打印服务返回结果后才记录补打成功或失败，避免把点击动作误记成已打印。
-            var result = await _receiptCoordinator.PrintReceiptAsync(
-                selectedOrder.OrderGuid,
-                ReceiptPrintReason.Reprint);
+            ReceiptPrintResult result;
+            if (selectedOrder.Source is
+                TransactionHistorySource.RemoteOrders or
+                TransactionHistorySource.InstallmentOrders)
+            {
+                if (history.SelectedReceipt is not { } loadedReceipt ||
+                    loadedReceipt.OrderGuid != selectedOrder.OrderGuid)
+                {
+                    var message = _localization.T("receipt.print.noReceiptFound");
+                    StatusMessage = string.Format(
+                        _localization.CurrentCulture,
+                        _localization.T("receipt.print.failed"),
+                        message);
+                    result = new ReceiptPrintResult(false, message, selectedOrder.OrderGuid);
+                }
+                else
+                {
+                    // 远程订单和分期订单都不能回退到普通本地订单查询，直接打印历史页已加载的完整小票。
+                    result = await _receiptCoordinator.PrintReceiptAsync(loadedReceipt, ReceiptPrintReason.Reprint);
+                }
+            }
+            else
+            {
+                result = await _receiptCoordinator.PrintReceiptAsync(
+                    selectedOrder.OrderGuid,
+                    ReceiptPrintReason.Reprint);
+            }
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.ReceiptReprint,
@@ -2994,13 +3053,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
+            var safeMessage = ex.GetType().Name;
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                safeMessage);
             OperationAuditEvents.RecordAction(
                 _operationAuditLogger,
                 OperationAuditTypes.ReceiptReprint,
                 "Failed",
                 Session,
                 reasonCode: "HISTORY_EXCEPTION",
-                safeMessage: ex.GetType().Name,
+                safeMessage: safeMessage,
                 orderGuid: selectedOrder.OrderGuid.ToString("D"),
                 correlationId: correlation.CorrelationId,
                 traceId: correlation.TraceId);
@@ -3009,7 +3073,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 $"history receipt reprint failed error={ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            throw;
+            // 历史补打由 async void 事件桥触发；异常已审计并展示后必须在此终止，避免逃逸到 Dispatcher 导致应用退出。
         }
     }
 

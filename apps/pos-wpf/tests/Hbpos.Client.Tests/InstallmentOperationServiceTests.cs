@@ -641,6 +641,342 @@ public sealed class InstallmentOperationServiceTests
     }
 
     [Fact]
+    public async Task Square_pending_refund_persists_identity_and_restart_get_completes_without_second_post()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var context = new SquarePaymentAttemptContextAccessor();
+            var lookup = new MutableSquareRefundStatusClient(
+                new SquareRefundStatusResult("refund-pending", "PENDING", "payment-001", 4000, "AUD"));
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Square,
+                Environment = CardTerminalEnvironment.Sandbox,
+                SquareDeviceId = "device:TEST-DEVICE",
+                SquareLocationId = "TEST-LOCATION"
+            };
+            var terminal = new PendingSquareRefundTerminal(context, settings.Environment);
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                squarePaymentAttemptContextAccessor: context,
+                squareTerminalPaymentClient: lookup);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(first.Succeeded);
+            Assert.True(first.RequiresReview);
+            Assert.Equal(1, terminal.RefundCalls);
+            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            var pendingStep = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.ResultUnknown, pendingStep.State);
+            Assert.Equal("SQRF:refund-pending", pendingStep.RefundReference);
+            Assert.Equal(CardTerminalEnvironment.Sandbox.ToString(), pendingStep.ProviderEnvironment);
+            Assert.Contains("PENDING", pendingStep.CardTransactionsJson);
+
+            var restartedContext = new SquarePaymentAttemptContextAccessor();
+            var restartedTerminal = new PendingSquareRefundTerminal(restartedContext, CardTerminalEnvironment.Production);
+            var restartedSettings = settings with { Environment = CardTerminalEnvironment.Production };
+            var restartedService = new InstallmentOperationService(
+                new LocalInstallmentOperationRepository(new LocalSqliteStore(path)),
+                api,
+                restartedTerminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(restartedSettings),
+                squarePaymentAttemptContextAccessor: restartedContext,
+                squareTerminalPaymentClient: lookup);
+
+            var pendingRecovery = Assert.Single(await restartedService.RecoverAsync(Session));
+
+            Assert.False(pendingRecovery.ReplayedApi);
+            Assert.Equal(1, lookup.GetRefundCalls);
+            Assert.Equal(1, terminal.RefundCalls);
+            Assert.Equal(0, restartedTerminal.RefundCalls);
+            Assert.Equal(CardTerminalEnvironment.Sandbox, Assert.Single(lookup.RequestedEnvironments));
+            Assert.Equal(
+                LocalInstallmentRefundStepState.ResultUnknown,
+                Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid)).State);
+
+            lookup.Result = new SquareRefundStatusResult(
+                "refund-pending",
+                "COMPLETED",
+                "payment-001",
+                4000,
+                "AUD",
+                DateTimeOffset.UtcNow);
+            var completedRecovery = Assert.Single(await restartedService.RecoverAsync(Session));
+
+            Assert.True(completedRecovery.ReplayedApi);
+            Assert.Equal(2, lookup.GetRefundCalls);
+            Assert.Equal(1, terminal.RefundCalls);
+            Assert.Equal(0, restartedTerminal.RefundCalls);
+            Assert.Equal(1, api.CommitCancelClaimCalls);
+            Assert.Equal(LocalInstallmentOperationState.Completed, (await repository.GetAsync(operation.OperationGuid))!.State);
+            Assert.Equal(
+                LocalInstallmentRefundStepState.Completed,
+                Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid)).State);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Square_completed_refund_with_mismatched_id_keeps_original_identity_for_next_recovery()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var context = new SquarePaymentAttemptContextAccessor();
+            var terminal = new PendingSquareRefundTerminal(context, CardTerminalEnvironment.Production);
+            var lookup = new MutableSquareRefundStatusClient(
+                new SquareRefundStatusResult("refund-other", "COMPLETED", "payment-001", 4000, "AUD"));
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Square,
+                SquareDeviceId = "device:TEST-DEVICE",
+                SquareLocationId = "TEST-LOCATION"
+            };
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                squarePaymentAttemptContextAccessor: context,
+                squareTerminalPaymentClient: lookup);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            var firstRecovery = Assert.Single(await service.RecoverAsync(Session));
+            var secondRecovery = Assert.Single(await service.RecoverAsync(Session));
+
+            Assert.False(first.Succeeded);
+            Assert.False(firstRecovery.ReplayedApi);
+            Assert.False(secondRecovery.ReplayedApi);
+            Assert.Equal(2, lookup.GetRefundCalls);
+            Assert.All(lookup.RequestedRefundIds, refundId => Assert.Equal("refund-pending", refundId));
+            Assert.Equal(1, terminal.RefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operation.OperationGuid))!.State);
+            var step = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.ResultUnknown, step.State);
+            Assert.Equal("SQRF:refund-pending", step.RefundReference);
+            Assert.Contains("不匹配", step.FailureMessage);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Square_refund_callback_persists_identity_when_recovery_moves_step_to_unknown()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var context = new SquarePaymentAttemptContextAccessor();
+            var terminal = new GatedSquareRefundTerminal(context, CardTerminalEnvironment.Sandbox);
+            var lookup = new MutableSquareRefundStatusClient(
+                new SquareRefundStatusResult("refund-pending", "PENDING", "payment-001", 4000, "AUD"));
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Square,
+                Environment = CardTerminalEnvironment.Sandbox
+            };
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                squarePaymentAttemptContextAccessor: context,
+                squareTerminalPaymentClient: lookup);
+
+            var cancelTask = service.ExecuteCancelAsync(order, Session, "客户取消");
+            await terminal.RefundStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var recovery = await service.RecoverAsync(Session);
+            terminal.ReleaseCallback.TrySetResult();
+            var cancel = await cancelTask;
+
+            Assert.False(cancel.Succeeded);
+            Assert.True(cancel.RequiresReview);
+            Assert.False(Assert.Single(recovery).ReplayedApi);
+            Assert.Equal(1, terminal.RefundCalls);
+            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            var step = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.ResultUnknown, step.State);
+            Assert.Equal("SQRF:refund-pending", step.RefundReference);
+            Assert.Equal(CardTerminalEnvironment.Sandbox.ToString(), step.ProviderEnvironment);
+            Assert.Contains("PENDING", step.CardTransactionsJson);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Square_settings_failure_keeps_refund_locked_without_aborting_recovery()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var operation = CreateCancelOperation(order, LocalInstallmentOperationState.ResultUnknown);
+            var now = DateTimeOffset.UtcNow;
+            var step = new LocalInstallmentRefundStep(
+                Guid.NewGuid(), operation.OperationGuid, order.Payments[0].PaymentGuid, PaymentMethodKind.Card, 40m,
+                "SQ:payment-001", "refund-idempotency", LocalInstallmentRefundStepState.ResultUnknown,
+                "SQRF:refund-pending", "[]", null, null, null, null, null, null, now, now,
+                CardTerminalEnvironment.Sandbox.ToString());
+            await repository.CreateCancelOrGetAsync(operation, [step]);
+            var service = new InstallmentOperationService(
+                repository,
+                new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) },
+                new CountingTerminal(approve: true),
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new ThrowingCardTerminalSettingsProvider(),
+                squareTerminalPaymentClient: new MutableSquareRefundStatusClient(
+                    new SquareRefundStatusResult("refund-pending", "COMPLETED", "payment-001", 4000, "AUD")));
+
+            var recovered = await service.RecoverAsync(Session);
+
+            Assert.False(Assert.Single(recovered).ReplayedApi);
+            var saved = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.ResultUnknown, saved.State);
+            Assert.Contains("环境配置读取失败", saved.FailureMessage);
+            Assert.Equal("SQRF:refund-pending", saved.RefundReference);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Square_rejected_refund_clears_evidence_and_rotates_idempotency_key()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var context = new SquarePaymentAttemptContextAccessor();
+            var terminal = new RejectedSquareRefundTerminal(context, CardTerminalEnvironment.Production);
+            var settings = CardTerminalSettings.FromEnvironment() with { Processor = CardProcessorKind.Square };
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                squarePaymentAttemptContextAccessor: context);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
+            var saved = Assert.Single(await repository.GetRefundStepsAsync(operationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.Prepared, saved.State);
+            Assert.Null(saved.RefundReference);
+            Assert.Null(saved.ProviderEnvironment);
+            Assert.Null(saved.CardTransactionsJson);
+            Assert.Contains("REJECTED", saved.FailureMessage);
+            Assert.NotEqual(Assert.Single(terminal.IdempotencyKeys), saved.IdempotencyKey);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Square_recovery_rejected_status_clears_identity_and_does_not_query_old_refund_again()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var order = CreateSquareCancelOrder();
+            var api = new RecordingInstallmentApi
+            {
+                CancelResponse = CreateCancelResponse(order),
+                DeclinedCancelResolveFailuresRemaining = 1
+            };
+            var context = new SquarePaymentAttemptContextAccessor();
+            var terminal = new PendingSquareRefundTerminal(context, CardTerminalEnvironment.Production);
+            var lookup = new MutableSquareRefundStatusClient(
+                new SquareRefundStatusResult("refund-pending", "REJECTED", "payment-001", 4000, "AUD", DateTimeOffset.UtcNow));
+            var settings = CardTerminalSettings.FromEnvironment() with { Processor = CardProcessorKind.Square };
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                squarePaymentAttemptContextAccessor: context,
+                squareTerminalPaymentClient: lookup);
+
+            var first = await service.ExecuteCancelAsync(order, Session, "客户取消");
+            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            var pending = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            var originalIdempotencyKey = pending.IdempotencyKey;
+
+            var rejectedRecovery = Assert.Single(await service.RecoverAsync(Session));
+            var finalizedRecovery = Assert.Single(await service.RecoverAsync(Session));
+            var thirdRecovery = await service.RecoverAsync(Session);
+
+            Assert.False(first.Succeeded);
+            Assert.False(rejectedRecovery.ReplayedApi);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, rejectedRecovery.State);
+            Assert.Equal(LocalInstallmentOperationState.Failed, finalizedRecovery.State);
+            Assert.Empty(thirdRecovery);
+            Assert.Equal(1, lookup.GetRefundCalls);
+            var saved = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.Prepared, saved.State);
+            Assert.Null(saved.RefundReference);
+            Assert.Null(saved.ProviderEnvironment);
+            Assert.Null(saved.CardTransactionsJson);
+            Assert.Contains("REJECTED", saved.FailureMessage);
+            Assert.NotEqual(originalIdempotencyKey, saved.IdempotencyKey);
+            Assert.Equal(1, terminal.RefundCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            Assert.Equal(InstallmentCancelClaimResolveOutcome.Declined, api.CancelResolveOutcomes.Last());
+            Assert.Equal(LocalInstallmentOperationState.Failed, (await repository.GetAsync(operation.OperationGuid))!.State);
+
+            var retry = await service.ExecuteCancelAsync(order, Session, "重新取消");
+
+            Assert.False(retry.Succeeded);
+            Assert.Equal(2, terminal.RefundCalls);
+            Assert.Equal(2, api.CreatedCancelOperationGuids.Count);
+            Assert.NotEqual(api.CreatedCancelOperationGuids[0], api.CreatedCancelOperationGuids[1]);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
     public async Task Restarted_cancel_marks_submitting_refund_step_unknown_and_keeps_it_locked()
     {
         var path = CreateTempDatabasePath();
@@ -1260,6 +1596,74 @@ public sealed class InstallmentOperationServiceTests
         }
     }
 
+    [Fact]
+    public async Task Pickup_timeout_is_locked_and_restart_replays_only_the_same_idempotent_request()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var installmentGuid = Guid.NewGuid();
+            var request = new InstallmentConfirmPickupRequest(
+                installmentGuid,
+                Session.StoreCode,
+                Session.DeviceCode,
+                Session.CashierId,
+                Session.CashierName,
+                DateTimeOffset.UtcNow,
+                OperationGuid: installmentGuid,
+                IdempotencyKey: $"{installmentGuid:D}:pickup");
+            var firstApi = new RecordingInstallmentApi
+            {
+                PickupException = new TaskCanceledException("pickup timeout")
+            };
+            var firstService = CreateService(repository, firstApi, new CountingTerminal(approve: true));
+
+            var first = await firstService.ExecutePickupAsync(Session, request);
+            var repeatedClick = await firstService.ExecutePickupAsync(Session, request);
+
+            Assert.False(first.Succeeded);
+            Assert.True(first.RequiresReview);
+            Assert.False(repeatedClick.Succeeded);
+            Assert.True(repeatedClick.RequiresReview);
+            Assert.Equal(1, firstApi.PickupCalls);
+            var unknown = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            Assert.Equal(LocalInstallmentOperationKind.Pickup, unknown.Kind);
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, unknown.State);
+            Assert.Contains(installmentGuid, await firstService.GetLockedInstallmentGuidsAsync(Session));
+
+            var pickedUpAt = DateTimeOffset.UtcNow;
+            var details = CreateDetails(installmentGuid, InstallmentStatus.PickedUp) with
+            {
+                PaidAmount = 120m,
+                BalanceAmount = 0m,
+                PickupInfo = new InstallmentPickupInfoDto(pickedUpAt, Session.CashierName, null)
+            };
+            var restartedApi = new RecordingInstallmentApi
+            {
+                PickupResponse = new InstallmentConfirmPickupResponse(
+                    installmentGuid,
+                    InstallmentStatus.PickedUp,
+                    pickedUpAt,
+                    details)
+            };
+            var restartedService = CreateService(repository, restartedApi, new CountingTerminal(approve: true));
+
+            var recovery = Assert.Single(await restartedService.RecoverAsync(Session));
+
+            Assert.True(recovery.ReplayedApi);
+            Assert.Equal(1, restartedApi.PickupCalls);
+            Assert.Equal(request.OperationGuid, restartedApi.LastPickupRequest!.OperationGuid);
+            Assert.Equal(request.IdempotencyKey, restartedApi.LastPickupRequest.IdempotencyKey);
+            Assert.Equal(LocalInstallmentOperationState.Completed, (await repository.GetAsync(installmentGuid))!.State);
+            Assert.Empty(await restartedService.GetLockedInstallmentGuidsAsync(Session));
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main", "POS-01", "C001", "Alice", true, 0);
 
     private static async Task<LocalInstallmentOperationRepository> CreateRepositoryAsync(string path)
@@ -1367,6 +1771,28 @@ public sealed class InstallmentOperationServiceTests
             BalanceAmount = 50m
         };
         return new LocalInstallmentOrder(details.InstallmentGuid, details.InstallmentGuid, details.InstallmentNumber, details.StoreCode, details.DeviceCode, details.CashierId, details.CashierName, details.CustomerName, details.CustomerPhone, details.CreatedAt, DateTimeOffset.UtcNow, details.TotalAmount, details.MinimumDownPayment, details.DownPaymentAmount, details.PaidAmount, details.BalanceAmount, details.Status, details.Lines, details.Payments, details.PickupInfo, details.Note, details.CancellationInfo);
+    }
+
+    private static LocalInstallmentOrder CreateSquareCancelOrder()
+    {
+        var order = CreateLocalOrder();
+        var now = DateTimeOffset.UtcNow;
+        var payment = new InstallmentPaymentDto(
+            Guid.Parse("12345678-2222-3333-4444-555555555555"),
+            PaymentMethodKind.Card,
+            40m,
+            "SQ:payment-001",
+            InstallmentPaymentStatus.Recorded,
+            now,
+            "C001",
+            "POS-01",
+            [new CardTransactionDto("Square", "payment-001", null, null, null, null, null, null, "COMPLETED", null, now, 40m, null)]);
+        return order with
+        {
+            Payments = [payment],
+            PaidAmount = payment.Amount,
+            BalanceAmount = order.TotalAmount - payment.Amount
+        };
     }
 
     private static LocalInstallmentOrder CreateSupportedCancelOrder()
@@ -1676,6 +2102,161 @@ public sealed class InstallmentOperationServiceTests
             Task.FromResult(new PaymentAuthorizationResult(false, null, "network lost", ResultUnknown: true, Processor: "Linkly"));
     }
 
+    private sealed class PendingSquareRefundTerminal(
+        ISquarePaymentAttemptContextAccessor context,
+        CardTerminalEnvironment environment) : ICardTerminalClient, IIdempotentCardRefundClient
+    {
+        public int RefundCalls { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            RefundAsync(amount, session, originalReference, null, cancellationToken);
+
+        public async Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string? idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            RefundCalls++;
+            var attempt = context.Current ?? throw new InvalidOperationException("Square refund context was not available.");
+            await BindRefundEvidenceAsync(attempt, "refund-pending", "PENDING", environment);
+            return new PaymentAuthorizationResult(
+                false,
+                "SQRF:refund-pending",
+                "Square refund is pending.",
+                amount,
+                [new CardTransactionDto("Square", "refund-pending", null, null, null, null, null, null, "PENDING", null, DateTimeOffset.UtcNow, amount, null)],
+                Processor: "Square",
+                ResponseText: "PENDING",
+                ResultUnknown: true);
+        }
+    }
+
+    private sealed class GatedSquareRefundTerminal(
+        ISquarePaymentAttemptContextAccessor context,
+        CardTerminalEnvironment environment) : ICardTerminalClient, IIdempotentCardRefundClient
+    {
+        public TaskCompletionSource RefundStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseCallback { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int RefundCalls { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            RefundAsync(amount, session, originalReference, null, cancellationToken);
+
+        public async Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string? idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            RefundCalls++;
+            var attempt = context.Current ?? throw new InvalidOperationException("Square refund context was not available.");
+            RefundStarted.TrySetResult();
+            await ReleaseCallback.Task.WaitAsync(cancellationToken);
+            await BindRefundEvidenceAsync(attempt, "refund-pending", "PENDING", environment);
+            return new PaymentAuthorizationResult(
+                false,
+                "SQRF:refund-pending",
+                "Square refund is pending.",
+                amount,
+                [new CardTransactionDto("Square", "refund-pending", null, null, null, null, null, null, "PENDING", null, DateTimeOffset.UtcNow, amount, null)],
+                Processor: "Square",
+                ResponseText: "PENDING",
+                ResultUnknown: true);
+        }
+    }
+
+    private sealed class RejectedSquareRefundTerminal(
+        ISquarePaymentAttemptContextAccessor context,
+        CardTerminalEnvironment environment) : ICardTerminalClient, IIdempotentCardRefundClient
+    {
+        public List<string> IdempotencyKeys { get; } = [];
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PaymentAuthorizationResult(false));
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            RefundAsync(amount, session, originalReference, null, cancellationToken);
+
+        public async Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string? idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            IdempotencyKeys.Add(Assert.IsType<string>(idempotencyKey));
+            var attempt = context.Current ?? throw new InvalidOperationException("Square refund context was not available.");
+            await BindRefundEvidenceAsync(attempt, "refund-rejected", "REJECTED", environment);
+            return new PaymentAuthorizationResult(
+                false,
+                "SQRF:refund-rejected",
+                "Square refund status is REJECTED.",
+                Processor: "Square",
+                ResponseText: "REJECTED");
+        }
+    }
+
+    private static Task BindRefundEvidenceAsync(
+        SquarePaymentAttemptContext attempt,
+        string refundId,
+        string status,
+        CardTerminalEnvironment environment)
+    {
+        var updatedAt = DateTimeOffset.UtcNow;
+        return attempt.BindRefundEvidenceAsync is not null
+            ? attempt.BindRefundEvidenceAsync(refundId, status, updatedAt, environment, CancellationToken.None)
+            : attempt.BindRefundAsync!(refundId, status, updatedAt, CancellationToken.None);
+    }
+
+    private sealed class ThrowingCardTerminalSettingsProvider : ICardTerminalSettingsProvider
+    {
+        public Task<CardTerminalSettings> GetSettingsAsync(CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("settings unavailable");
+    }
+
+    private sealed class MutableSquareRefundStatusClient(SquareRefundStatusResult result) : ISquareTerminalPaymentClient
+    {
+        public SquareRefundStatusResult Result { get; set; } = result;
+        public int GetRefundCalls { get; private set; }
+        public List<string> RequestedRefundIds { get; } = [];
+        public List<CardTerminalEnvironment> RequestedEnvironments { get; } = [];
+
+        public Task<SquareCheckoutStatusResult> GetCheckoutAsync(CardTerminalSettings settings, string checkoutId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SquarePaymentStatusResult> GetPaymentAsync(CardTerminalSettings settings, string paymentId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SquareRefundStatusResult> GetRefundAsync(CardTerminalSettings settings, string refundId, CancellationToken cancellationToken = default)
+        {
+            GetRefundCalls++;
+            RequestedRefundIds.Add(refundId);
+            RequestedEnvironments.Add(settings.Environment);
+            return Task.FromResult(Result);
+        }
+    }
+
     private sealed class MissingAuthorizedAmountTerminal : ICardTerminalClient
     {
         public int AuthorizeCalls { get; private set; }
@@ -1841,10 +2422,13 @@ public sealed class InstallmentOperationServiceTests
         public InstallmentAppendPaymentResponse? AppendResponse { get; init; }
         public Exception? CancelException { get; init; }
         public InstallmentCancelResponse? CancelResponse { get; init; }
+        public Exception? PickupException { get; init; }
+        public InstallmentConfirmPickupResponse? PickupResponse { get; init; }
         public TaskCompletionSource? AppendGate { get; init; }
         public TaskCompletionSource AppendStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int AppendCalls { get; private set; }
         public int CancelCalls { get; private set; }
+        public int PickupCalls { get; private set; }
         public int CreateCancelClaimCalls { get; private set; }
         public int BeginCancelRefundCalls { get; private set; }
         public int GetCancelClaimCalls { get; private set; }
@@ -1853,6 +2437,7 @@ public sealed class InstallmentOperationServiceTests
         public Exception? CancelClaimBeginException { get; init; }
         public Exception? CancelClaimGetException { get; init; }
         public Exception? CancelClaimResolveException { get; init; }
+        public int DeclinedCancelResolveFailuresRemaining { get; set; }
         public InstallmentCancelClaimStatus? CancelClaimStatusAfterBeginException { get; init; }
         public bool LoseFirstCancelCommitResponse { get; init; }
         public Exception? CancelClaimCommitException { get; init; }
@@ -1862,6 +2447,7 @@ public sealed class InstallmentOperationServiceTests
         public InstallmentCancelClaimCreateRequest? LastCancelClaimCreateRequest { get; private set; }
         public InstallmentCancelClaimCommitRequest? LastCancelClaimCommitRequest { get; private set; }
         public InstallmentAppendPaymentRequest? LastAppendRequest { get; private set; }
+        public InstallmentConfirmPickupRequest? LastPickupRequest { get; private set; }
         private readonly Dictionary<Guid, InstallmentCancelClaimDto> _cancelClaims = [];
 
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -1876,7 +2462,17 @@ public sealed class InstallmentOperationServiceTests
             return AppendResponse ?? throw new NotSupportedException();
         }
 
-        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<InstallmentConfirmPickupResponse> ConfirmPickupAsync(InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
+        {
+            PickupCalls++;
+            LastPickupRequest = request;
+            if (PickupException is not null)
+            {
+                return Task.FromException<InstallmentConfirmPickupResponse>(PickupException);
+            }
+
+            return Task.FromResult(PickupResponse ?? throw new NotSupportedException());
+        }
 
         public Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new InstallmentRepaymentCapabilitiesResponse(true, false, false, 120, true, false, 120));
@@ -1953,6 +2549,11 @@ public sealed class InstallmentOperationServiceTests
         {
             CancelResolveOutcomes.Add(request.Outcome);
             CancelResolveRequests.Add(request);
+            if (request.Outcome == InstallmentCancelClaimResolveOutcome.Declined && DeclinedCancelResolveFailuresRemaining > 0)
+            {
+                DeclinedCancelResolveFailuresRemaining--;
+                return Task.FromException<InstallmentCancelClaimDto>(new HttpRequestException("temporary resolve failure"));
+            }
             if (CancelClaimResolveException is not null)
             {
                 return Task.FromException<InstallmentCancelClaimDto>(CancelClaimResolveException);

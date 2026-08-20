@@ -10,21 +10,60 @@ namespace Hbpos.Client.Wpf.Views.Screens;
 public partial class PaymentView : UserControl
 {
     private INotifyPropertyChanged? _viewModelNotifications;
+    private bool _isViewLoaded;
 
     public PaymentView()
     {
         InitializeComponent();
+        Loaded += PaymentViewLoaded;
+        Unloaded += PaymentViewUnloaded;
         DataContextChanged += PaymentViewDataContextChanged;
+    }
+
+    private void PaymentViewLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_isViewLoaded)
+        {
+            return;
+        }
+
+        _isViewLoaded = true;
+        AttachViewModel(DataContext as INotifyPropertyChanged);
+    }
+
+    private void PaymentViewUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_isViewLoaded && _viewModelNotifications is null)
+        {
+            return;
+        }
+
+        _isViewLoaded = false;
+        // 缓存页仅 Hidden 时不会走到这里；真正 Unloaded 才解除强事件并清空引用。
+        AttachViewModel(null);
     }
 
     private void PaymentViewDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
+        if (_isViewLoaded)
+        {
+            AttachViewModel(e.NewValue as INotifyPropertyChanged);
+        }
+    }
+
+    private void AttachViewModel(INotifyPropertyChanged? viewModelNotifications)
+    {
+        if (ReferenceEquals(_viewModelNotifications, viewModelNotifications))
+        {
+            return;
+        }
+
         if (_viewModelNotifications is not null)
         {
             _viewModelNotifications.PropertyChanged -= PaymentViewModelPropertyChanged;
         }
 
-        _viewModelNotifications = e.NewValue as INotifyPropertyChanged;
+        _viewModelNotifications = viewModelNotifications;
         if (_viewModelNotifications is not null)
         {
             _viewModelNotifications.PropertyChanged += PaymentViewModelPropertyChanged;

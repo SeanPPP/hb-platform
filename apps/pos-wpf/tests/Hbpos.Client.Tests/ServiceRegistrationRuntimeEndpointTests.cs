@@ -1,6 +1,9 @@
 using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System.Globalization;
+using System.Resources;
 
 namespace Hbpos.Client.Tests;
 
@@ -39,15 +42,105 @@ public sealed class ServiceRegistrationRuntimeEndpointTests
     }
 
     [Fact]
+    public void Preview_api_address_ignores_user_and_process_configuration()
+    {
+        var address = ServiceRegistration.ResolveInitialApiBaseAddress(
+            previewMode: true,
+            "https://saved.example.test/pos-api/",
+            "https://launcher.example.test/pos-api/");
+
+        Assert.Equal(ServiceRegistration.PreviewApiBaseAddress, address.AbsoluteUri);
+    }
+
+    [Fact]
+    public void Normal_startup_preserves_user_over_process_address_priority()
+    {
+        var address = ServiceRegistration.ResolveInitialApiBaseAddress(
+            previewMode: false,
+            "https://saved.example.test/pos-api/",
+            "https://launcher.example.test/pos-api/");
+
+        Assert.Equal("https://saved.example.test/pos-api/", address.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("not-a-uri")]
+    [InlineData("/relative")]
+    [InlineData("ftp://localhost/pos-api/")]
+    [InlineData("http://api.example.test/pos-api/")]
+    [InlineData("https://user:password@api.example.test/pos-api/")]
+    [InlineData("https://api.example.test/pos-api/?token=secret")]
+    [InlineData("https://api.example.test/pos-api/#fragment")]
+    public void Invalid_normal_startup_api_address_throws_safe_configuration_exception(string configuredAddress)
+    {
+        var exception = Assert.Throws<ApiBaseAddressConfigurationException>(() =>
+            ServiceRegistration.ResolveInitialApiBaseAddress(
+                previewMode: false,
+                configuredAddress,
+                "https://valid-process.example.test/pos-api/"));
+
+        Assert.IsType<ArgumentException>(exception.InnerException);
+        Assert.Contains("HBPOS_API_BASE_URL", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(configuredAddress, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Invalid_api_configuration_has_localized_safe_startup_prompt()
+    {
+        var exception = Assert.Throws<ApiBaseAddressConfigurationException>(() =>
+            ServiceRegistration.ResolveApiBaseAddress("not-a-uri", null));
+        var resources = new ResourceManager(
+            "Hbpos.Client.Wpf.Resources.Strings",
+            typeof(App).Assembly);
+
+        foreach (var cultureName in new[] { "en-US", "zh-CN" })
+        {
+            var culture = CultureInfo.GetCultureInfo(cultureName);
+            var presentation = App.CreateStartupFailurePresentation(
+                exception,
+                key => resources.GetString(key, culture) ?? $"[[{key}]]");
+
+            Assert.NotNull(presentation);
+            Assert.DoesNotContain("[[", presentation!.Title, StringComparison.Ordinal);
+            Assert.Contains("HBPOS_API_BASE_URL", presentation.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("not-a-uri", presentation.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Null(App.CreateStartupFailurePresentation(
+            new InvalidOperationException("unrelated"),
+            static key => key));
+    }
+
+    [Fact]
     public void Runtime_endpoint_starts_with_the_resolved_api_address()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CentralLogging:Enabled"] = "true",
+                    ["CentralLogging:ApiKey"] = "preview-test-key",
+                    ["CentralLogging:IngestUrl"] = "https://logs.example.test/api/system/logs/ingest"
+                })
+                .Build());
         services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
         using var provider = services.BuildServiceProvider();
 
+        var expectedAddress = new Uri(ServiceRegistration.PreviewApiBaseAddress);
+
         Assert.Equal(
-            ServiceRegistration.GetApiBaseAddress(),
+            expectedAddress,
             provider.GetRequiredService<ApiRuntimeEndpointState>().CurrentAddress);
+        Assert.Equal(
+            expectedAddress,
+            provider.GetRequiredService<IHttpClientFactory>()
+                .CreateClient(nameof(IAppUpdateApiClient))
+                .BaseAddress);
+        var applicationLogOptions = provider.GetRequiredService<ApplicationLogOptions>();
+        Assert.False(applicationLogOptions.Enabled);
+        Assert.Null(applicationLogOptions.IngestUri);
+        Assert.False(applicationLogOptions.IsConfigured);
     }
 
     [Fact]

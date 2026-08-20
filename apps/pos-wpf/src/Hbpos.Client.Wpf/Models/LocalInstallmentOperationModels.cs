@@ -10,7 +10,8 @@ public enum LocalInstallmentOperationKind
     Create = 1,
     Repayment = 2,
     Cancel = 3,
-    Refund = 4
+    Refund = 4,
+    Pickup = 5
 }
 
 /// <summary>
@@ -81,7 +82,8 @@ public sealed record LocalInstallmentRefundStep(
     string? SupervisorEvidence,
     DateTimeOffset? ResolvedAt,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? ProviderEnvironment = null);
 
 public sealed record InstallmentRefundSupervisorResolution(
     InstallmentRefundSupervisorDecision Decision,

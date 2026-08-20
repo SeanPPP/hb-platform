@@ -849,7 +849,25 @@ public sealed class CashPaymentWorkflowService(
                                 CancellationToken.None),
                         CancellationToken.None);
                 },
-                squareAttempt.SubmissionToken));
+                squareAttempt.SubmissionToken,
+                (refundId, refundStatus, updatedAt, _) =>
+                {
+                    // Square 已返回 refundId 即代表退款已受理；必须先持久化，重启后只能查询，不能重复 POST。
+                    squareSubmissionObserved = true;
+                    return RunLocalStoreAsync(
+                        () => !string.IsNullOrWhiteSpace(squareAttempt.SubmissionToken)
+                            ? RequireRefundCasAsync(
+                                squarePaymentAttemptRepository!.TryRecordRefundResponseAsync(
+                                    squareAttempt.AttemptGuid,
+                                    squareAttempt.SubmissionToken!,
+                                    refundId,
+                                    refundStatus,
+                                    updatedAt,
+                                    CancellationToken.None))
+                            : Task.FromException(
+                                new InvalidOperationException("Square 退款缺少 submission token，无法持久化退款响应。")),
+                        CancellationToken.None);
+                }));
         try
         {
             authorization = isRefund && refundIdempotencyKey is not null
