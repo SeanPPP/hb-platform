@@ -5,6 +5,7 @@ import { createBrowserRouter, Navigate, Route, RouterProvider, Routes, useLocati
 import GlobalErrorBoundary from './components/GlobalErrorBoundary'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
+import BrowserExtensionPrivacyPage from './pages/BrowserExtensionPrivacy'
 import LoginPage from './pages/Login'
 import MobilePrivacyPage from './pages/MobilePrivacy'
 import { isPublicAppPath } from './pages/MobilePrivacy/publicPath'
@@ -60,6 +61,7 @@ function AppBootstrap() {
         path="/login"
         element={currentUser ? <Navigate to={homePage} replace /> : <LoginPage />}
       />
+      <Route path="/privacy/browser-extension" element={<BrowserExtensionPrivacyPage />} />
       <Route path="/privacy/mobile" element={<MobilePrivacyPage />} />
       <Route
         path={WEB_NO_ACCESS_PATH}
