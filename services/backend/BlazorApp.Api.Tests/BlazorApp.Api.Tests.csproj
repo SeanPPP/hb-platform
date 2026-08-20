@@ -84,10 +84,14 @@
     <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
+    <Compile Include="ProductSalesAnalysisLogicTests.cs" />
+    <Compile Include="ProductSalesAnalysisServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesReportServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesAuthorizationPipelineTests.cs" />
     <Compile Include="BrowserExtensionTests.cs" />
     <Compile Include="BrowserExtensionRankingTests.cs" />
+    <Compile Include="WarehouseProductRecordQueryServiceTests.cs" />
+    <Compile Include="WarehouseProductRecordAuthorizationTests.cs" />
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />

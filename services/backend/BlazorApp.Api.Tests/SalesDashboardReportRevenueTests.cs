@@ -2292,7 +2292,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             service,
             NullLogger<SalesDashboardController>.Instance,
             userService,
-            Mock.Of<ISalesDashboardCacheWarmer>()
+            Mock.Of<ISalesDashboardCacheWarmer>(),
+            Mock.Of<IRoleService>()
         );
         controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
         return controller;

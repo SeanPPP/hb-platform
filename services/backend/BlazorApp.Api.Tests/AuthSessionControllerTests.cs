@@ -4,15 +4,19 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using BlazorApp.Api.Controllers;
+using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
 using Xunit;
@@ -40,7 +44,7 @@ public sealed class AuthSessionControllerTests : IDisposable
         });
 
         _db.CodeFirst.InitTables<User, Role, UserRole, SysRolePermission>();
-        _db.CodeFirst.InitTables<SysUserPermission>();
+        _db.CodeFirst.InitTables<SysUserPermission, SysPermission>();
     }
 
     [Fact]
@@ -378,7 +382,11 @@ public sealed class AuthSessionControllerTests : IDisposable
                 )
             );
 
-        var controller = CreateController(Mock.Of<IAuthService>(), userService: userService.Object);
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: userService.Object
+        );
         controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
             new ClaimsIdentity(
                 new[]
@@ -430,7 +438,11 @@ public sealed class AuthSessionControllerTests : IDisposable
             .Setup(service => service.GetUserStoresAsync("direct-permission-user"))
             .ReturnsAsync(ApiResponse<List<UserStoreDto>>.OK(new List<UserStoreDto>(), "获取用户分店成功"));
 
-        var controller = CreateController(Mock.Of<IAuthService>(), userService: userService.Object);
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: userService.Object
+        );
         controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
             new ClaimsIdentity(
                 new[]
@@ -446,6 +458,213 @@ public sealed class AuthSessionControllerTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Contains(Permissions.Dashboard.View, result.Data!.Permissions);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_ExactPermissions_ReturnsRawRoleCodeWithExpandedPermissions()
+    {
+        await SeedAuthUserAsync("exact-user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Reports.View);
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "exact-user-1");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.Contains(Permissions.Reports.View, result.Data!.Permissions);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.Permissions);
+        Assert.Contains(Permissions.Reports.View, result.Data.ExactPermissions);
+        Assert.DoesNotContain(
+            Permissions.Reports.ProductMovementView,
+            result.Data.ExactPermissions
+        );
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_ExactPermissions_IncludesDirectUserPermission()
+    {
+        await SeedAuthUserAsync("exact-user-2", "role-user-2", "User");
+        await _db.Insertable(
+            new SysUserPermission
+            {
+                Id = "exact-user-2-product-movement",
+                UserGuid = "exact-user-2",
+                PermissionCode = Permissions.Reports.ProductMovementView,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "exact-user-2");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data!.ExactPermissions);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.Permissions);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_SuperAdmin_ExactReturnsAllPermissions()
+    {
+        await SeedAuthUserAsync("exact-admin-1", "role-admin", "管理员");
+        await InsertPermissionAsync(Permissions.Reports.View);
+        await InsertPermissionAsync(Permissions.Reports.ProductMovementView);
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "exact-admin-1");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.Contains(Permissions.Reports.View, result.Data!.ExactPermissions);
+        Assert.Contains(Permissions.Reports.ProductMovementView, result.Data.ExactPermissions);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_DisabledRole_ExcludesRoleAndPermissionsFromMenuFields()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "disabled-role-user",
+                Username = "disabled-role-user",
+                Email = "disabled-role-user@example.com",
+                PasswordHash = "hashed",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new Role
+            {
+                RoleGUID = "disabled-role",
+                RoleName = "MenuRole",
+                IsActive = false,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new UserRole
+            {
+                UserRoleGUID = "disabled-role-user-disabled-role",
+                UserGUID = "disabled-role-user",
+                RoleGUID = "disabled-role",
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await InsertRolePermissionAsync("disabled-role", Permissions.Reports.ProductMovementView);
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "disabled-role-user");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain("MenuRole", result.Data!.RoleNames);
+        Assert.Empty(result.Data.Roles);
+        Assert.DoesNotContain(Permissions.Reports.ProductMovementView, result.Data.Permissions);
+        Assert.DoesNotContain(Permissions.Reports.ProductMovementView, result.Data.ExactPermissions);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_SoftDeletedUserRole_ExcludesRoleAndPermissionsFromMenuFields()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "soft-deleted-role-user",
+                Username = "soft-deleted-role-user",
+                Email = "soft-deleted-role-user@example.com",
+                PasswordHash = "hashed",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new Role
+            {
+                RoleGUID = "soft-deleted-role",
+                RoleName = "MenuRole",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new UserRole
+            {
+                UserRoleGUID = "soft-deleted-role-user-soft-deleted-role",
+                UserGUID = "soft-deleted-role-user",
+                RoleGUID = "soft-deleted-role",
+                IsDeleted = true,
+            }
+        ).ExecuteCommandAsync();
+        await InsertRolePermissionAsync("soft-deleted-role", Permissions.Reports.ProductMovementView);
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "soft-deleted-role-user");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain("MenuRole", result.Data!.RoleNames);
+        Assert.Empty(result.Data.Roles);
+        Assert.DoesNotContain(Permissions.Reports.ProductMovementView, result.Data.Permissions);
+        Assert.DoesNotContain(Permissions.Reports.ProductMovementView, result.Data.ExactPermissions);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_InactiveUser_FailsClosed()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "inactive-user",
+                Username = "inactive-user",
+                Email = "inactive-user@example.com",
+                PasswordHash = "hashed",
+                IsActive = false,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        var controller = CreateController(
+            Mock.Of<IAuthService>(),
+            roleService: CreateRoleService(),
+            userService: CreateEmptyUserService()
+        );
+        SetCurrentUser(controller, "inactive-user");
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.False(result.Success);
     }
 
     public void Dispose()
@@ -530,5 +749,106 @@ public sealed class AuthSessionControllerTests : IDisposable
         dbField!.SetValue(context, db);
 
         return context;
+    }
+
+    private async Task SeedAuthUserAsync(string userGuid, string roleGuid, string roleName)
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = userGuid,
+                Username = userGuid,
+                Email = $"{userGuid}@example.test",
+                PasswordHash = "hashed",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        await _db.Insertable(
+            new Role
+            {
+                RoleGUID = roleGuid,
+                RoleName = roleName,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        await _db.Insertable(
+            new UserRole
+            {
+                UserRoleGUID = $"{userGuid}-{roleGuid}",
+                UserGUID = userGuid,
+                RoleGUID = roleGuid,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task InsertRolePermissionAsync(string roleGuid, string permissionCode)
+    {
+        await _db.Insertable(
+            new SysRolePermission
+            {
+                Id = $"{roleGuid}-{permissionCode}",
+                RoleGuid = roleGuid,
+                PermissionCode = permissionCode,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task InsertPermissionAsync(string code)
+    {
+        await _db.Insertable(
+            new SysPermission
+            {
+                Id = code,
+                Code = code,
+                Name = code,
+                Category = "test",
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private static void SetCurrentUser(AuthController controller, string userGuid)
+    {
+        controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim("userId", userGuid),
+                    new Claim(ClaimTypes.NameIdentifier, userGuid),
+                },
+                "TestAuthType"
+            )
+        );
+    }
+
+    private RoleService CreateRoleService()
+    {
+        return new RoleService(
+            CreateSqlSugarContext(_db),
+            NullLogger<RoleService>.Instance,
+            new HttpContextAccessor()
+        );
+    }
+
+    private static IUserService CreateEmptyUserService()
+    {
+        var userService = new Mock<IUserService>();
+        userService
+            .Setup(service => service.GetUserStoresAsync(It.IsAny<string>()))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto>(),
+                    "获取用户分店成功"
+                )
+            );
+        return userService.Object;
     }
 }

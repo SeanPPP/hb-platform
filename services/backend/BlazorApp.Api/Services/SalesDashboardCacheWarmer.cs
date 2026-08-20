@@ -67,14 +67,13 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public Task ClearCacheAsync()
         {
-            var keysToClear = SalesDashboardCacheKeys.ActiveKeys.ToList();
+            var keysToClear = SalesDashboardCacheKeys.ClearActiveKeysAndGetKeysToClear().ToList();
 
             foreach (var key in keysToClear)
             {
                 _cache.Remove(key);
             }
 
-            SalesDashboardCacheKeys.ClearActiveKeys();
             _logger.LogInformation("已清除 {Count} 个销售仪表板缓存", keysToClear.Count);
 
             return Task.CompletedTask;

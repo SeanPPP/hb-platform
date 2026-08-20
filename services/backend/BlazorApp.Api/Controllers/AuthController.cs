@@ -197,7 +197,7 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                // 从JWT令牌中获取用户ID
+                // 从JWT令牌中获取用户ID（JWT 仅用于身份，不用于角色/权限判定）
                 var userIdClaim = User.FindFirst("userId") ?? User.FindFirst("sub");
                 if (userIdClaim == null)
                 {
@@ -206,44 +206,54 @@ namespace BlazorApp.Api.Controllers
 
                 var userId = userIdClaim.Value;
 
-                // 查询用户完整信息（包含角色信息）
+                // 查询用户基础信息（角色仅用于构建 Roles DTO，权限以实时快照为准）
                 var user = await _dbContext
                     .Db.Queryable<User>()
                     .Includes(u => u.Roles) // 包含角色信息
                     .FirstAsync(u => u.UserGUID == userId);
 
-                if (user == null)
+                // 活动用户检查 fail closed：停用或软删除用户不得读取任何会话载荷。
+                if (user == null || !user.IsActive || user.IsDeleted)
                 {
                     return ApiResponse<UserDto>.Error("用户不存在");
                 }
 
-                // 🔐 获取用户所有权限（从所有角色中聚合）
-                var allPermissions = new List<string>();
-                if (user.Roles != null && user.Roles.Any())
+                // 会话角色/权限以实时快照为唯一来源，避免停用/软删除角色被聚合进菜单权限。
+                var snapshotResult = await _roleService.GetUserPermissionSnapshotAsync(userId);
+                if (snapshotResult?.Success != true || snapshotResult.Data == null)
                 {
-                    foreach (var role in user.Roles)
-                    {
-                        // 查询该角色的权限
-                        var rolePermissionsResult = await _roleService.GetRolePermissionsForAuthorizationAsync(
-                            role.RoleGUID
-                        );
-                        if (rolePermissionsResult.Success && rolePermissionsResult.Data != null)
-                        {
-                            allPermissions.AddRange(rolePermissionsResult.Data);
-                        }
-                    }
+                    return ApiResponse<UserDto>.Error("获取用户权限失败");
                 }
-                // 用户直接授权与角色授权共同决定当前会话权限，避免权限管理页显示已授权但前端拿不到入口权限。
-                allPermissions.AddRange(await GetDirectUserPermissionCodesAsync(userId));
 
-                // 获取用户的分店信息
-                _logger.LogInformation("GetCurrentUser: userId={UserId}, roles={Roles}",
-                    userId, string.Join(",", user.Roles?.Select(r => r.RoleName) ?? new List<string>()));
+                var snapshot = snapshotResult.Data;
+                var snapshotRoleNames = new HashSet<string>(
+                    snapshot.RoleNames ?? new List<string>(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+                // Roles DTO 只保留快照中的活动角色，并再次过滤停用/软删除，防止过期导航关系泄漏。
+                var roles = (user.Roles ?? new List<Role>())
+                    .Where(role =>
+                        role.IsActive
+                        && !role.IsDeleted
+                        && snapshotRoleNames.Contains(role.RoleName)
+                    )
+                    .Select(role => new RoleDto
+                    {
+                        RoleGUID = role.RoleGUID,
+                        RoleName = role.RoleName,
+                        Description = role.Description,
+                        IsActive = role.IsActive,
+                        CreatedAt = role.CreatedAt,
+                        UpdatedAt = role.UpdatedAt ?? role.CreatedAt,
+                        UserCount = 0, // 这里不需要计算用户数
+                    })
+                    .ToList();
 
                 var storesResult = await _userService.GetUserStoresAsync(userId);
-                var userStores = storesResult.Success ? storesResult.Data ?? new List<UserStoreDto>() : new List<UserStoreDto>();
-
-                _logger.LogInformation("GetCurrentUser: userId={UserId}, found {StoreCount} stores", userId, userStores.Count);
+                var userStores = storesResult.Success
+                    ? storesResult.Data ?? new List<UserStoreDto>()
+                    : new List<UserStoreDto>();
 
                 // 构建返回数据
                 var userDto = new UserDto
@@ -256,20 +266,10 @@ namespace BlazorApp.Api.Controllers
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt,
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
-                    Roles =
-                        user.Roles?.Select(r => new RoleDto
-                            {
-                                RoleGUID = r.RoleGUID,
-                                RoleName = r.RoleName,
-                                Description = r.Description,
-                                IsActive = r.IsActive,
-                                CreatedAt = r.CreatedAt,
-                                UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
-                                UserCount = 0, // 这里不需要计算用户数
-                            })
-                            .ToList() ?? new List<RoleDto>(),
-                    RoleNames = user.Roles?.Select(r => r.RoleName).ToList() ?? new List<string>(),
-                    Permissions = Permissions.ExpandPermissionCodes(allPermissions).ToList(), // 🔐 添加权限列表（去重并补齐兼容权限）
+                    Roles = roles,
+                    RoleNames = snapshot.RoleNames?.ToList() ?? new List<string>(),
+                    Permissions = snapshot.PermissionCodes?.ToList() ?? new List<string>(),
+                    ExactPermissions = snapshot.ExactPermissionCodes?.ToList() ?? new List<string>(),
                     StoreNames = userStores.Select(s => s.StoreName).ToList(),
                     Stores = userStores,
                 };

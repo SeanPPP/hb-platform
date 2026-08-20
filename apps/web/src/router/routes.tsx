@@ -83,6 +83,7 @@ import ContainerAllocationSalesPage from '../pages/Warehouse/ContainerAllocation
 import ContainersPage from '../pages/Warehouse/Containers'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
+import WarehouseProductRecordsPage from '../pages/Warehouse/ProductRecords'
 import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
 import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
@@ -477,6 +478,18 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouseProducts',
         },
         element: <WarehouseProductsPage />,
+      },
+      {
+        path: '/warehouse/products/:productCode/records',
+        meta: {
+          title: 'menu.warehouseProductRecords',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouseProducts',
+          activeMenu: '/warehouse/products',
+          dynamicTitle: () => i18n.t('menu.warehouseProductRecords'),
+        },
+        element: <WarehouseProductRecordsPage />,
       },
       {
         path: '/warehouse/categories',

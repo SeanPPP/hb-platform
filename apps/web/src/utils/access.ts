@@ -63,6 +63,7 @@ function createEmptyAccess(): AccessControl {
     canViewReports: false,
     canViewSalesIntelligence: false,
     canViewProductMovementReport: false,
+    canViewProductSalesAnalysis: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
@@ -140,6 +141,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasRole('超级管理员')
   const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()))
+  const currentExactPermissionSet = new Set(
+    (currentUser.exactPermissions ?? []).map((item) => item.toLowerCase()),
+  )
 
   const hasPermission = (permission: string) => {
     if (isAdmin) return true
@@ -226,6 +230,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
   const canViewProductMovementReport =
     isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
+  // 商品销量分析是精确权限契约节点：只读 exactPermissions，不做 Reports.View 别名展开，
+  // 字段缺失时非管理员拒绝，超级管理员别名由 isAdmin 兼容放行。
+  const canViewProductSalesAnalysis =
+    isAdmin || currentExactPermissionSet.has(P.Reports.ProductMovementView.toLowerCase())
   // 销售看板是多个独立报表的父级；仅有本地进货权限时也必须能进入父菜单。
   const canViewSalesIntelligence =
     canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View)
@@ -384,6 +392,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewReports,
     canViewSalesIntelligence,
     canViewProductMovementReport,
+    canViewProductSalesAnalysis,
     canExportData,
     canModifyPrice,
     canDeletePrice,

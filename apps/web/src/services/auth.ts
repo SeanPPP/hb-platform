@@ -18,6 +18,8 @@ type CurrentUserStoreApiDto = Partial<UserStoreDto> & {
 type CurrentUserApiDto = Omit<CurrentUser, 'stores'> & {
   stores?: CurrentUserStoreApiDto[]
   Stores?: CurrentUserStoreApiDto[]
+  exactPermissions?: string[]
+  ExactPermissions?: string[]
 }
 
 export async function login(payload: LoginRequest) {
@@ -53,10 +55,11 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 
 export function normalizeCurrentUser(user: CurrentUserApiDto): CurrentUser {
   const stores = user.stores ?? user.Stores
-  const { Stores: _stores, ...rest } = user
+  const { Stores: _stores, ExactPermissions: _exactPermissions, ...rest } = user
 
   return {
     ...rest,
+    exactPermissions: user.exactPermissions ?? user.ExactPermissions,
     stores: stores?.map((store) => ({
       storeGUID: store.storeGUID ?? store.StoreGUID ?? '',
       storeName: store.storeName ?? store.StoreName ?? '',

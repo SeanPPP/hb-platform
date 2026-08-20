@@ -74,6 +74,38 @@ assertEqual(
   'Current user stores should keep camelCase active store status',
 )
 
+const userWithPascalExactPermissions = normalizeCurrentUser({
+  userGUID: 'current-user-guid',
+  username: 'exact',
+  email: 'exact@example.com',
+  permissions: ['Reports.View', 'Reports.ProductMovement.View'],
+  ExactPermissions: ['Reports.View'],
+  roleNames: ['User'],
+  storeNames: [],
+})
+
+assertEqual(
+  userWithPascalExactPermissions.exactPermissions?.join(','),
+  'Reports.View',
+  'Current user exact permissions should normalize PascalCase ExactPermissions',
+)
+
+const userWithCamelExactPermissions = normalizeCurrentUser({
+  userGUID: 'current-user-guid',
+  username: 'exact',
+  email: 'exact@example.com',
+  permissions: ['Reports.ProductMovement.View'],
+  exactPermissions: ['Reports.ProductMovement.View'],
+  roleNames: ['User'],
+  storeNames: [],
+})
+
+assertEqual(
+  userWithCamelExactPermissions.exactPermissions?.join(','),
+  'Reports.ProductMovement.View',
+  'Current user exact permissions should keep camelCase exactPermissions',
+)
+
 const originalFetch = globalThis.fetch
 const refreshRequests: Array<{ input: string; init?: RequestInit }> = []
 

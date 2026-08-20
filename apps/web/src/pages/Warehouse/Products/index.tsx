@@ -9,6 +9,7 @@ import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/tab
 import type { CSSProperties, HTMLAttributes, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
 import { getSupplierOptions, } from '../../../services/domesticProductService';
@@ -847,6 +848,7 @@ export default function WarehouseProductsPage() {
         },
     }));
     const { access, currentUser } = useAuthStore();
+    const navigate = useNavigate();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const canManageWarehouseStorePriceSync = access.isAdmin || access.isWarehouseManager;
     const canInlineEditWarehouseProduct = currentUser?.roleNames?.some((roleName) =>
@@ -2463,6 +2465,9 @@ export default function WarehouseProductsPage() {
             {access.canManageWarehouseProducts ? (<Button type="link" icon={<HistoryOutlined />} onClick={() => setChangeHistoryProduct(record)}>
                 {t('warehouse.changeHistory.action', '修改记录')}
               </Button>) : null}
+            {access.canManageWarehouseProducts && (access.canViewContainers || access.canViewProductSalesAnalysis) ? (<Button type="link" icon={<SearchOutlined />} onClick={() => navigate(`/warehouse/products/${encodeURIComponent(record.productCode)}/records`)}>
+                {t('warehouseProductRecords.entry', '数据查询')}
+              </Button>) : null}
             {canManageProductDetails(record.productType) ? (<Button type="link" icon={<GiftOutlined />} onClick={() => void handleOpenSetItems(record)}>
                 {getProductDetailsActionLabel(record.productType, t)}
               </Button>) : (<Tooltip title={getProductDetailsDisabledHint(t)}>
@@ -2472,7 +2477,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canManageWarehouseProducts, access.canWriteProduct, canInlineEditWarehouseProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, inlineEditingCell, inlineSavingCellKey, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
+    ], [access.canManageWarehouseProducts, access.canViewContainers, access.canViewProductSalesAnalysis, access.canWriteProduct, canInlineEditWarehouseProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, inlineEditingCell, inlineSavingCellKey, localSupplierFilterOptions, localSupplierNameMap, navigate, productTypeOptions, t, togglingProductCodes]);
     const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
     useEffect(() => {
         setColumnOrder((current) => {

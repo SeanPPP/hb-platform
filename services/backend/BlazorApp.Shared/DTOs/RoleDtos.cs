@@ -248,6 +248,10 @@ namespace BlazorApp.Shared.DTOs
         public bool IsSuperAdmin { get; set; }
         public List<string> RoleNames { get; set; } = new();
         public List<string> PermissionCodes { get; set; } = new();
+        /// <summary>
+        /// 用户精确权限代码（未展开别名）。供必须保持精确权限边界的接口使用。
+        /// </summary>
+        public List<string> ExactPermissionCodes { get; set; } = new();
     }
 
     /// <summary>

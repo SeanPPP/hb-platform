@@ -121,6 +121,11 @@ namespace BlazorApp.Shared.DTOs
         /// 用户权限列表（从所有角色中聚合）
         /// </summary>
         public List<string> Permissions { get; set; } = new();
+        /// <summary>
+        /// 用户精确权限代码（角色权限 + 用户直接权限的原始代码，未展开别名）；超级管理员返回所有权限。
+        /// JSON 序列化为 exactPermissions，供前端精确权限契约使用。
+        /// </summary>
+        public List<string> ExactPermissions { get; set; } = new();
     }
 
     /// <summary>

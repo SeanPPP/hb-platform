@@ -18,6 +18,7 @@ export interface CurrentUser {
   fullName?: string
   phone?: string
   permissions: string[]
+  exactPermissions?: string[]
   roleNames: string[]
   storeNames: string[]
   stores?: UserStoreDto[]
@@ -55,6 +56,7 @@ export interface AccessControl {
   canViewReports: boolean
   canViewSalesIntelligence: boolean
   canViewProductMovementReport: boolean
+  canViewProductSalesAnalysis: boolean
   canExportData: boolean
   canModifyPrice: boolean
   canDeletePrice: boolean

@@ -175,5 +175,46 @@ namespace BlazorApp.Api.Interfaces.React
             int pageIndex = 1,
             int pageSize = 50
         );
+
+        /// <summary>
+        /// 获取商品销量分析可选供应商。
+        /// </summary>
+        Task<ProductSalesAnalysisResponse<ProductSalesAnalysisOptionsDto>> GetProductSalesAnalysisOptionsAsync(
+            ProductSalesAnalysisFilterDto filter,
+            List<string>? branchCodes
+        );
+
+        Task<
+            ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+        > GetProductSalesAnalysisCandidatesAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes
+        );
+
+        Task<
+            ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+        > GetProductSalesAnalysisSummaryAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        );
+
+        Task<ProductSalesAnalysisResponse<List<ProductSalesDailyDto>>> GetProductSalesAnalysisProductDailyAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        );
+
+        Task<ProductSalesAnalysisResponse<List<ProductSalesBranchDto>>> GetProductSalesAnalysisBranchesAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        );
+
+        Task<ProductSalesAnalysisResponse<List<ProductSalesBranchDailyDto>>> GetProductSalesAnalysisBranchDailyAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        );
     }
 }

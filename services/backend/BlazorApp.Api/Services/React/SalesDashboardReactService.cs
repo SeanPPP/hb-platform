@@ -13,6 +13,7 @@ using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Primitives;
 using SqlSugar;
 using ScheduledTaskStatus = BlazorApp.Shared.Models.HBweb.TaskStatus;
 
@@ -32,6 +33,101 @@ namespace BlazorApp.Api.Services.React
         public int? MinOrderQuantity { get; set; }
     }
 
+    /// <summary>
+    /// 商品销量分析参数错误。控制器捕获后返回 400，前端可按 message 识别。
+    /// </summary>
+    public sealed class ProductSalesAnalysisValidationException : Exception
+    {
+        public ProductSalesAnalysisValidationException(string message)
+            : base(message)
+        {
+        }
+    }
+
+    internal class ProductSalesAggregateRow
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public decimal SalesAmount { get; set; }
+    }
+
+    internal class ProductSalesDailyRow
+    {
+        public DateTime Date { get; set; }
+        public int Quantity { get; set; }
+        public decimal SalesAmount { get; set; }
+    }
+
+    internal class ProductSalesBranchRow
+    {
+        public string BranchCode { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public decimal SalesAmount { get; set; }
+    }
+
+    internal class ProductSalesBranchDailyRow
+    {
+        public DateTime Date { get; set; }
+        public int Quantity { get; set; }
+        public decimal SalesAmount { get; set; }
+    }
+
+    internal class ProductSalesSupplierRow
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
+    }
+
+    internal sealed class ChinaSupplierProductMapRow
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string ChinaSupplierCode { get; set; } = string.Empty;
+    }
+
+    internal sealed class ProductSalesProductInfo
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public string? EnglishName { get; set; }
+        public string? ImageUrl { get; set; }
+    }
+
+    internal sealed class ProductSalesAnalysisQueryContext
+    {
+        public DateTime StartDate { get; set; }
+        public DateTime EndDate { get; set; }
+        public List<string>? BranchCodes { get; set; }
+        public List<string> AustralianSupplierCodes { get; set; } = new();
+        public HashSet<string> ChinaSupplierCodes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> AllChinaSupplierCodes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> ChinaSupplierNameMap { get; set; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> ChinaProductMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public string? Keyword { get; set; }
+    }
+
+    internal sealed class ProductSalesChinaCatalog
+    {
+        public HashSet<string> Codes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> Names { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    internal sealed class ProductSalesSupplierQueryPlan
+    {
+        public bool IsUnfiltered { get; init; }
+        public List<string> DirectSupplierCodes { get; init; } = new();
+        public List<string> LegacyProductCodes { get; init; } = new();
+    }
+
+    internal sealed class ProductSalesSupplierResolution
+    {
+        public HashSet<string> AustralianCodes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> ChinaCodes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public bool ChinaSupplierUnmapped { get; set; }
+    }
+
     internal class BestSellerAggregateRow
     {
         public string ProductCode { get; set; } = string.Empty;
@@ -45,7 +141,8 @@ namespace BlazorApp.Api.Services.React
     internal sealed record ProductStatisticStatusSnapshot(
         string Status,
         string? Message,
-        string CacheVersion
+        string CacheVersion,
+        DateTime? UpdatedAt
     );
 
     internal class BestSellerBranchAggregateRow
@@ -127,14 +224,19 @@ namespace BlazorApp.Api.Services.React
         private readonly IMemoryCache _cache;
         private readonly IServiceScopeFactory? _serviceScopeFactory;
 
+        // 测试专用：在 cache miss 捕获代际后、写入缓存前触发，用于交错测试模拟 ClearActiveKeys 切代。
+        internal Action? ProductSalesAnalysisCacheWriteInterceptor { get; set; }
+
         private static readonly TimeSpan SUMMARY_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan RANKING_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
+        private static readonly TimeSpan PRODUCT_SALES_ANALYSIS_CACHE_DURATION = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan REPORT_STATISTICS_REFRESH_WAIT = TimeSpan.FromMilliseconds(2200);
         private static readonly TimeSpan STATISTICS_RUNNING_STALE_AFTER = TimeSpan.FromMinutes(90);
         private const int REPORT_STATISTICS_REFRESH_MAX_DAYS = 35;
         private const int LEGACY_CHINA_SUPPLIER_PRODUCT_FILTER_LIMIT = 2000;
+        private const int PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE = 500;
         private const string CHINA_LOCAL_SUPPLIER_CODE = "200";
         private const string CHINA_LOCAL_SUPPLIER_FALLBACK_NAME = "hotbargain";
         private static readonly ConcurrentDictionary<string, byte> REPORT_STATISTICS_REFRESHING_KEYS = new();
@@ -4168,46 +4270,73 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private async Task<Dictionary<string, string>> GetChinaSupplierProductMapAsync(
+        internal async Task<Dictionary<string, string>> GetChinaSupplierProductMapAsync(
             IEnumerable<string>? chinaSupplierCodes = null
         )
         {
             var supplierCodes = NormalizeCodes(chinaSupplierCodes);
-            var query = _posmContext
-                .Db.Queryable<PosmProductSupplierMapping>()
-                .Where(m =>
-                    !m.IsDeleted
-                    && m.LocalSupplierCode == "200"
-                    && m.ChinaSupplierCode != null
-                    && m.ChinaSupplierCode != ""
-                );
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            if (supplierCodes.Any())
+            // 未指定国内供应商代码时读取全部 200 映射；否则按每批最多 500 个代码分次 Contains 再合并。
+            if (!supplierCodes.Any())
             {
-                query = query.Where(m =>
-                    m.ChinaSupplierCode != null && supplierCodes.Contains(m.ChinaSupplierCode)
-                );
+                var allRows = await _posmContext
+                    .Db.Queryable<PosmProductSupplierMapping>()
+                    .Where(m =>
+                        !m.IsDeleted
+                        && m.LocalSupplierCode == "200"
+                        && m.ChinaSupplierCode != null
+                        && m.ChinaSupplierCode != ""
+                    )
+                    .Select(m => new ChinaSupplierProductMapRow
+                    {
+                        ProductCode = m.ProductCode,
+                        ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
+                    })
+                    .ToListAsync();
+                MergeChinaSupplierProductMap(result, allRows);
+                return result;
             }
 
-            var rows = await query
-                .Select(m => new
-                {
-                    m.ProductCode,
-                    ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
-                })
-                .ToListAsync();
+            foreach (var batch in BatchProductSalesCodes(supplierCodes))
+            {
+                var batchCodes = batch.ToList();
+                var rows = await _posmContext
+                    .Db.Queryable<PosmProductSupplierMapping>()
+                    .Where(m =>
+                        !m.IsDeleted
+                        && m.LocalSupplierCode == "200"
+                        && m.ChinaSupplierCode != null
+                        && batchCodes.Contains(m.ChinaSupplierCode)
+                    )
+                    .Select(m => new ChinaSupplierProductMapRow
+                    {
+                        ProductCode = m.ProductCode,
+                        ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
+                    })
+                    .ToListAsync();
+                MergeChinaSupplierProductMap(result, rows);
+            }
 
-            return rows
-                .Where(row =>
+            return result;
+        }
+
+        private static void MergeChinaSupplierProductMap(
+            Dictionary<string, string> target,
+            IEnumerable<ChinaSupplierProductMapRow> rows
+        )
+        {
+            foreach (var row in rows)
+            {
+                if (
                     !string.IsNullOrWhiteSpace(row.ProductCode)
                     && !string.IsNullOrWhiteSpace(row.ChinaSupplierCode)
                 )
-                .GroupBy(row => row.ProductCode)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.First().ChinaSupplierCode,
-                    StringComparer.OrdinalIgnoreCase
-                );
+                {
+                    if (!target.ContainsKey(row.ProductCode))
+                        target[row.ProductCode] = row.ChinaSupplierCode;
+                }
+            }
         }
 
         private async Task<HashSet<string>> GetChinaSupplierCodeSetAsync(
@@ -4228,6 +4357,40 @@ namespace BlazorApp.Api.Services.React
             }
 
             return codes;
+        }
+
+        /// <summary>
+        /// 商品销量分析专用国内供应商目录：包含停用/软删除记录，保证期间直写历史代码
+        /// 仍能按国内供应商口径识别并保留历史名称；不影响旧报表 active-only 共享 helper。
+        /// </summary>
+        private async Task<ProductSalesChinaCatalog> GetProductSalesChinaCatalogAsync()
+        {
+            var rows = await _context
+                .Db.Queryable<ChinaSupplier>()
+                .Where(s => s.SupplierCode != null && s.SupplierCode != "")
+                .Select(s => new
+                {
+                    SupplierCode = s.SupplierCode ?? string.Empty,
+                    SupplierName = s.SupplierName ?? string.Empty,
+                })
+                .ToListAsync();
+
+            var catalog = new ProductSalesChinaCatalog();
+            foreach (var group in rows
+                .Where(row => !string.IsNullOrWhiteSpace(row.SupplierCode))
+                .GroupBy(row => row.SupplierCode.Trim(), StringComparer.OrdinalIgnoreCase))
+            {
+                var code = group.Key;
+                var name = group
+                    .Select(row => string.IsNullOrWhiteSpace(row.SupplierName) ? code : row.SupplierName.Trim())
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .First();
+
+                catalog.Codes.Add(code);
+                catalog.Names[code] = name;
+            }
+
+            return catalog;
         }
 
         private static string? ResolveChinaSupplierCodeFromStatistic(
@@ -5613,7 +5776,8 @@ namespace BlazorApp.Api.Services.React
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Pending,
                     "商品统计尚未回填完整。",
-                    "none"
+                    "none",
+                    null
                 );
             }
 
@@ -5628,13 +5792,19 @@ namespace BlazorApp.Api.Services.React
             var cacheVersion = Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(cacheVersionSource))
             );
+            var statisticUpdatedAt = states
+                .Where(state => state.CompletedAtUtc.HasValue || state.LastAggregatedAtUtc.HasValue)
+                .Select(state => state.CompletedAtUtc ?? state.LastAggregatedAtUtc)
+                .DefaultIfEmpty()
+                .Max();
 
             if (states.Any(s => s.Status == SalesStatisticRefreshStatus.Failed))
             {
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Failed,
                     states.FirstOrDefault(s => s.Status == SalesStatisticRefreshStatus.Failed)?.ErrorMessage,
-                    cacheVersion
+                    cacheVersion,
+                    statisticUpdatedAt
                 );
             }
 
@@ -5643,7 +5813,8 @@ namespace BlazorApp.Api.Services.React
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Pending,
                     "商品统计正在重算中。",
-                    cacheVersion
+                    cacheVersion,
+                    statisticUpdatedAt
                 );
             }
 
@@ -5652,7 +5823,8 @@ namespace BlazorApp.Api.Services.React
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Stale,
                     "商品统计正在等待延迟上传数据补算。",
-                    cacheVersion
+                    cacheVersion,
+                    statisticUpdatedAt
                 );
             }
 
@@ -5661,7 +5833,8 @@ namespace BlazorApp.Api.Services.React
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Pending,
                     "商品统计正在生成中。",
-                    cacheVersion
+                    cacheVersion,
+                    statisticUpdatedAt
                 );
             }
 
@@ -5671,17 +5844,1527 @@ namespace BlazorApp.Api.Services.React
                 return new ProductStatisticStatusSnapshot(
                     SalesStatisticRefreshStatus.Pending,
                     "日期范围内仍有商品统计未生成。",
-                    cacheVersion
+                    cacheVersion,
+                    statisticUpdatedAt
                 );
             }
 
             // Best Sellers 请求链路只读统计状态表；源数据水位由统计任务写入状态，避免页面触发 POSM 重查询。
 
+            // 只有日期覆盖完整且所有状态都明确为 Fresh 时才返回 Fresh。
+            // 未知枚举或 Fresh 与未知状态混合必须按 Pending 处理，避免误判为可用指标。
+            if (
+                !states.All(s =>
+                    string.Equals(
+                        s.Status,
+                        SalesStatisticRefreshStatus.Fresh,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+            )
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "商品统计状态存在未知或混合状态，暂不返回指标。",
+                    cacheVersion,
+                    statisticUpdatedAt
+                );
+            }
+
             return new ProductStatisticStatusSnapshot(
                 SalesStatisticRefreshStatus.Fresh,
                 null,
-                cacheVersion
+                cacheVersion,
+                statisticUpdatedAt
             );
+        }
+
+        public async Task<ProductSalesAnalysisResponse<ProductSalesAnalysisOptionsDto>> GetProductSalesAnalysisOptionsAsync(
+            ProductSalesAnalysisFilterDto filter,
+            List<string>? branchCodes
+        )
+        {
+            var (startDate, endDate) = ValidateProductSalesAnalysisDateRange(
+                filter.StartDate,
+                filter.EndDate,
+                DateTime.UtcNow
+            );
+            var expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+            var status = await GetProductStatisticStatusAsync(startDate, endDate);
+            var emptyOptions = new ProductSalesAnalysisOptionsDto();
+            if (status.Status != SalesStatisticRefreshStatus.Fresh || branchCodes is { Count: 0 })
+                return CreateProductSalesAnalysisResponse(status, emptyOptions);
+
+            // 选项只受日期、授权分店与统计水位影响，不受关键字或当前供应商过滤影响。
+            var cacheKey = SalesDashboardCacheKeys.ProductSalesAnalysisOptions(
+                startDate,
+                endDate,
+                branchCodes,
+                status.CacheVersion
+            );
+            if (
+                _cache.TryGetValue<ProductSalesAnalysisResponse<ProductSalesAnalysisOptionsDto>>(
+                    cacheKey,
+                    out var cached
+                )
+                && cached != null
+            )
+            {
+                return cached;
+            }
+
+            var options = await QueryProductSalesAnalysisOptionsAsync(startDate, endDate, branchCodes);
+            var response = CreateProductSalesAnalysisResponse(status, options);
+            CacheProductSalesAnalysis(cacheKey, response, expectedGeneration);
+            return response;
+        }
+
+        private async Task<ProductSalesAnalysisOptionsDto> QueryProductSalesAnalysisOptionsAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string>? branchCodes
+        )
+        {
+            // 期间实际出现的供应商与商品编码（仅在授权分店范围），不回扫 POSM 销售明细。
+            var statisticQuery = _context
+                .Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s =>
+                    s.Date >= startDate
+                    && s.Date <= endDate
+                    && s.SupplierCode != ""
+                );
+            if (branchCodes is { Count: > 0 } allowedBranches)
+            {
+                statisticQuery = statisticQuery.Where(s => allowedBranches.Contains(s.BranchCode));
+            }
+
+            // 直接去重到 SQL 端，避免 366 天每日/分店重复行全量传回内存。
+            var periodRows = await statisticQuery
+                .Select(s => new { s.SupplierCode, s.ProductCode })
+                .Distinct()
+                .ToListAsync();
+
+            var periodSupplierCodes = periodRows
+                .Select(row => row.SupplierCode.Trim())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 国内供应商目录（含软删除/停用记录）用于识别直写国内代码；主数据只补名称。
+            var chinaCatalog = await GetProductSalesChinaCatalogAsync();
+            var chinaCodeSet = chinaCatalog.Codes;
+            var chinaNameMap = chinaCatalog.Names;
+
+            var australianNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var localSuppliers = await _context
+                .Db.Queryable<HBLocalSupplier>()
+                .Where(s => s.LocalSupplierCode != "")
+                .Select(s => new { s.LocalSupplierCode, s.Name })
+                .ToListAsync();
+            foreach (var row in localSuppliers)
+            {
+                var code = row.LocalSupplierCode.Trim();
+                if (string.IsNullOrWhiteSpace(code))
+                    continue;
+                if (!australianNameMap.ContainsKey(code))
+                    australianNameMap[code] = string.IsNullOrWhiteSpace(row.Name) ? code : row.Name.Trim();
+            }
+
+            // 旧 200 通过 POSM 商品映射还原国内供应商；缺失映射不生成国内选项。
+            var legacyProductCodes = periodRows
+                .Where(row =>
+                    IsChinaLocalSupplierCode(row.SupplierCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .Select(row => row.ProductCode.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var legacyChinaMap = legacyProductCodes.Count > 0
+                ? await GetChinaSupplierProductMapForProductsAsync(legacyProductCodes)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var australianCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var supplierCode in periodSupplierCodes)
+            {
+                if (IsChinaLocalSupplierCode(supplierCode))
+                    continue; // 旧 200 由商品映射处理
+                if (chinaCodeSet.Contains(supplierCode))
+                    chinaCodes.Add(supplierCode);
+                else
+                    australianCodes.Add(supplierCode);
+            }
+
+            foreach (var chinaCode in legacyChinaMap.Values)
+            {
+                if (!string.IsNullOrWhiteSpace(chinaCode))
+                    chinaCodes.Add(chinaCode.Trim());
+            }
+
+            return new ProductSalesAnalysisOptionsDto
+            {
+                AustralianSuppliers = australianCodes
+                    .Select(code => new ProductSalesSupplierRefDto
+                    {
+                        Code = code,
+                        Name = australianNameMap.TryGetValue(code, out var name) ? name : code,
+                    })
+                    .OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                ChinaSuppliers = chinaCodes
+                    .Select(code => new ProductSalesSupplierRefDto
+                    {
+                        Code = code,
+                        Name = chinaNameMap.TryGetValue(code, out var name) ? name : code,
+                    })
+                    .OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+            };
+        }
+
+        public async Task<
+            ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+        > GetProductSalesAnalysisCandidatesAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes
+        )
+        {
+            return await GetProductSalesAnalysisProductsAsync(request, branchCodes, "candidates");
+        }
+
+        public async Task<
+            ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+        > GetProductSalesAnalysisSummaryAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        )
+        {
+            return await GetProductSalesAnalysisProductsAsync(
+                request,
+                branchCodes,
+                "summary",
+                allowNonFreshData
+            );
+        }
+
+        public async Task<ProductSalesAnalysisResponse<List<ProductSalesDailyDto>>> GetProductSalesAnalysisProductDailyAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        )
+        {
+            var emptyData = new List<ProductSalesDailyDto>();
+            var (startDate, endDate) = ValidateProductSalesAnalysisDateRange(
+                request.Filter.StartDate,
+                request.Filter.EndDate,
+                DateTime.UtcNow
+            );
+            var status = await GetProductStatisticStatusAsync(startDate, endDate);
+            var isFresh = string.Equals(
+                status.Status,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            // 空授权分店始终返回空数据，绕过模式也不放宽。
+            if (branchCodes is { Count: 0 })
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            // 默认 fail-closed；仅 allowNonFreshData=true 时才用当前统计表继续计算。
+            if (!isFresh && !allowNonFreshData)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            var context = await BuildProductSalesAnalysisQueryContextAsync(request, branchCodes, startDate, endDate);
+
+            // 非 Fresh 绕过模式不得读取或写入 ProductSalesAnalysis 缓存；Fresh 模式缓存行为不变。
+            string? cacheKey = null;
+            long expectedGeneration = 0;
+            if (isFresh)
+            {
+                expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+                cacheKey = SalesDashboardCacheKeys.ProductSalesAnalysisProductDaily(
+                    request,
+                    branchCodes,
+                    status.CacheVersion
+                );
+                if (
+                    _cache.TryGetValue<ProductSalesAnalysisResponse<List<ProductSalesDailyDto>>>(
+                        cacheKey,
+                        out var cached
+                    )
+                    && cached != null
+                )
+                {
+                    return cached;
+                }
+            }
+
+            var productCodes = await ResolveScopeProductCodesAsync(request, context);
+            if (productCodes.Count == 0)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            var rows = await QueryProductSalesDailyRowsAsync(productCodes, context);
+            var series = BuildProductDailySeries(rows, startDate, endDate);
+            var response = CreateProductSalesAnalysisResponse(status, series);
+            if (isFresh)
+                CacheProductSalesAnalysis(cacheKey!, response, expectedGeneration);
+            return response;
+        }
+
+        public async Task<ProductSalesAnalysisResponse<List<ProductSalesBranchDto>>> GetProductSalesAnalysisBranchesAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        )
+        {
+            var emptyData = new List<ProductSalesBranchDto>();
+            var (startDate, endDate) = ValidateProductSalesAnalysisDateRange(
+                request.Filter.StartDate,
+                request.Filter.EndDate,
+                DateTime.UtcNow
+            );
+            var status = await GetProductStatisticStatusAsync(startDate, endDate);
+            var isFresh = string.Equals(
+                status.Status,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            // 空授权分店始终返回空数据，绕过模式也不放宽。
+            if (branchCodes is { Count: 0 })
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            // 默认 fail-closed；仅 allowNonFreshData=true 时才用当前统计表继续计算。
+            if (!isFresh && !allowNonFreshData)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            var context = await BuildProductSalesAnalysisQueryContextAsync(request, branchCodes, startDate, endDate);
+
+            // 非 Fresh 绕过模式不得读取或写入 ProductSalesAnalysis 缓存；Fresh 模式缓存行为不变。
+            string? cacheKey = null;
+            long expectedGeneration = 0;
+            if (isFresh)
+            {
+                expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+                cacheKey = SalesDashboardCacheKeys.ProductSalesAnalysisBranches(
+                    request,
+                    branchCodes,
+                    status.CacheVersion
+                );
+                if (
+                    _cache.TryGetValue<ProductSalesAnalysisResponse<List<ProductSalesBranchDto>>>(
+                        cacheKey,
+                        out var cached
+                    )
+                    && cached != null
+                )
+                {
+                    return cached;
+                }
+            }
+
+            var productCodes = await ResolveScopeProductCodesAsync(request, context);
+            if (productCodes.Count == 0)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            var rows = await QueryProductSalesBranchRowsAsync(productCodes, context);
+            var branchCodesInRows = rows.Select(x => x.BranchCode).Where(x => !string.IsNullOrWhiteSpace(x)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storeNameMap = await GetStoreNameMapAsync(branchCodesInRows);
+            var items = rows
+                .OrderBy(x => x.BranchCode, StringComparer.OrdinalIgnoreCase)
+                .Select(row => new ProductSalesBranchDto
+                {
+                    BranchCode = row.BranchCode,
+                    BranchName = storeNameMap.TryGetValue(row.BranchCode, out var name) ? name : null,
+                    Metrics = BuildProductSalesMetrics(row.Quantity, row.SalesAmount),
+                })
+                .ToList();
+
+            var response = CreateProductSalesAnalysisResponse(status, items);
+            if (isFresh)
+                CacheProductSalesAnalysis(cacheKey!, response, expectedGeneration);
+            return response;
+        }
+
+        public async Task<ProductSalesAnalysisResponse<List<ProductSalesBranchDailyDto>>> GetProductSalesAnalysisBranchDailyAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            bool allowNonFreshData = false
+        )
+        {
+            var emptyData = new List<ProductSalesBranchDailyDto>();
+            var (startDate, endDate) = ValidateProductSalesAnalysisDateRange(
+                request.Filter.StartDate,
+                request.Filter.EndDate,
+                DateTime.UtcNow
+            );
+            var status = await GetProductStatisticStatusAsync(startDate, endDate);
+            var isFresh = string.Equals(
+                status.Status,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            // 空授权分店始终返回空数据，绕过模式也不放宽。
+            if (branchCodes is { Count: 0 })
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            // 默认 fail-closed；仅 allowNonFreshData=true 时才用当前统计表继续计算。
+            if (!isFresh && !allowNonFreshData)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            if (string.IsNullOrWhiteSpace(request.BranchCode))
+                throw new ProductSalesAnalysisValidationException("branch-daily 需要 branchCode。");
+
+            var context = await BuildProductSalesAnalysisQueryContextAsync(request, branchCodes, startDate, endDate);
+
+            // 非 Fresh 绕过模式不得读取或写入 ProductSalesAnalysis 缓存；Fresh 模式缓存行为不变。
+            string? cacheKey = null;
+            long expectedGeneration = 0;
+            if (isFresh)
+            {
+                expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+                cacheKey = SalesDashboardCacheKeys.ProductSalesAnalysisBranchDaily(
+                    request,
+                    branchCodes,
+                    status.CacheVersion
+                );
+                if (
+                    _cache.TryGetValue<ProductSalesAnalysisResponse<List<ProductSalesBranchDailyDto>>>(
+                        cacheKey,
+                        out var cached
+                    )
+                    && cached != null
+                )
+                {
+                    return cached;
+                }
+            }
+
+            var productCodes = await ResolveScopeProductCodesAsync(request, context);
+            if (productCodes.Count == 0)
+                return CreateProductSalesAnalysisResponse(status, emptyData);
+
+            var rows = await QueryProductSalesBranchDailyRowsAsync(productCodes, context, request.BranchCode.Trim());
+            var series = BuildBranchDailySeries(rows, startDate, endDate);
+            var response = CreateProductSalesAnalysisResponse(status, series);
+            if (isFresh)
+                CacheProductSalesAnalysis(cacheKey!, response, expectedGeneration);
+            return response;
+        }
+
+        private async Task<
+            ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+        > GetProductSalesAnalysisProductsAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            string cacheSegment,
+            bool allowNonFreshData = false
+        )
+        {
+            var emptyPage = new ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>();
+            var (startDate, endDate) = ValidateProductSalesAnalysisDateRange(
+                request.Filter.StartDate,
+                request.Filter.EndDate,
+                DateTime.UtcNow
+            );
+            var status = await GetProductStatisticStatusAsync(startDate, endDate);
+            var isFresh = string.Equals(
+                status.Status,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            // 空授权分店始终返回空数据，绕过模式也不放宽。
+            if (branchCodes is { Count: 0 })
+                return CreateProductSalesAnalysisResponse(status, emptyPage);
+
+            // 默认 fail-closed；仅 allowNonFreshData=true 时才用当前统计表继续计算。
+            if (!isFresh && !allowNonFreshData)
+                return CreateProductSalesAnalysisResponse(status, emptyPage);
+
+            var context = await BuildProductSalesAnalysisQueryContextAsync(request, branchCodes, startDate, endDate);
+
+            // 非 Fresh 绕过模式不得读取或写入 ProductSalesAnalysis 缓存；Fresh 模式缓存行为不变。
+            string? cacheKey = null;
+            long expectedGeneration = 0;
+            if (isFresh)
+            {
+                expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+                cacheKey = string.Equals(cacheSegment, "summary", StringComparison.OrdinalIgnoreCase)
+                    ? SalesDashboardCacheKeys.ProductSalesAnalysisSummary(request, branchCodes, status.CacheVersion)
+                    : SalesDashboardCacheKeys.ProductSalesAnalysisCandidates(request, branchCodes, status.CacheVersion);
+                if (
+                    _cache.TryGetValue<
+                        ProductSalesAnalysisResponse<ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>>
+                    >(cacheKey, out var cached)
+                    && cached != null
+                )
+                {
+                    return cached;
+                }
+            }
+
+            var queries = await BuildProductSalesAnalysisQueriesAsync(context);
+            var isSummary = string.Equals(cacheSegment, "summary", StringComparison.OrdinalIgnoreCase);
+            var includedProductCodes = isSummary
+                && string.Equals(request.Selection.Mode, "included", StringComparison.OrdinalIgnoreCase)
+                    ? request.Selection.IncludedProductCodes
+                    : null;
+            // 显式选择必须先把商品条件下推到 SQL，并按 500 个代码分批，避免先聚合筛选全集。
+            var allAggregates = await QueryProductSalesAggregatesAsync(queries, includedProductCodes);
+            // 候选列表始终展示完整筛选结果，只有汇总及下钻接口应用选择语义。
+            var selected = isSummary
+                ? ApplyProductSalesSelection(
+                    allAggregates,
+                    request.Selection.Mode,
+                    request.Selection.IncludedProductCodes,
+                    request.Selection.ExcludedProductCodes
+                )
+                : allAggregates;
+            var paged = SortAndPageProductSalesAggregates(
+                selected,
+                request.PageNumber,
+                request.PageSize,
+                request.SortBy,
+                request.SortDirection
+            );
+            var items = await EnrichProductSalesRowsAsync(paged.Items, context);
+            var data = new ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>
+            {
+                Items = items,
+                Total = paged.Total,
+                PageNumber = paged.PageNumber,
+                PageSize = paged.PageSize,
+            };
+
+            var response = CreateProductSalesAnalysisResponse(status, data);
+            if (isFresh)
+                CacheProductSalesAnalysis(cacheKey!, response, expectedGeneration);
+            return response;
+        }
+
+        internal static (DateTime StartDate, DateTime EndDate) ValidateProductSalesAnalysisDateRange(
+            DateTime startDate,
+            DateTime endDate,
+            DateTime utcNow
+        )
+        {
+            if (startDate == DateTime.MinValue || endDate == DateTime.MinValue)
+                throw new ProductSalesAnalysisValidationException("开始日期和结束日期不能为空。");
+
+            var start = startDate.Date;
+            var end = endDate.Date;
+            if (start > end)
+                throw new ProductSalesAnalysisValidationException("开始日期不能晚于结束日期。");
+
+            // 布里斯班无夏令时，固定 UTC+10。
+            var brisbaneToday = utcNow.AddHours(10).Date;
+            if (end > brisbaneToday)
+                throw new ProductSalesAnalysisValidationException("结束日期不能晚于今天。");
+
+            var dayCount = (int)(end - start).TotalDays + 1;
+            if (dayCount > 366)
+                throw new ProductSalesAnalysisValidationException("日期范围不能超过 366 个自然日。");
+
+            return (start, end);
+        }
+
+        internal static decimal? CalculateAverageUnitPrice(int quantity, decimal salesAmount)
+        {
+            return quantity == 0 ? null : salesAmount / quantity;
+        }
+
+        internal static List<ProductSalesAggregateRow> ApplyProductSalesSelection(
+            List<ProductSalesAggregateRow> rows,
+            string? selectionMode,
+            IEnumerable<string>? includedCodes,
+            IEnumerable<string>? excludedCodes
+        )
+        {
+            var mode = string.IsNullOrWhiteSpace(selectionMode)
+                ? "allFiltered"
+                : selectionMode.Trim();
+
+            if (string.Equals(mode, "included", StringComparison.OrdinalIgnoreCase))
+            {
+                var included = NormalizeCodes(includedCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                return rows.Where(row => included.Contains(row.ProductCode)).ToList();
+            }
+
+            var excluded = NormalizeCodes(excludedCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return rows.Where(row => !excluded.Contains(row.ProductCode)).ToList();
+        }
+
+        internal static ProductSalesAnalysisPagedDto<ProductSalesAggregateRow> SortAndPageProductSalesAggregates(
+            List<ProductSalesAggregateRow> rows,
+            int pageNumber,
+            int pageSize,
+            string? sortBy,
+            string? sortDirection
+        )
+        {
+            var normalizedPageNumber = pageNumber <= 0 ? 1 : pageNumber;
+            var normalizedPageSize = pageSize <= 0 ? 50 : Math.Min(pageSize, 500);
+            var ascending = string.Equals(sortDirection, "asc", StringComparison.OrdinalIgnoreCase);
+            var sortField = string.IsNullOrWhiteSpace(sortBy) ? "quantity" : sortBy.Trim();
+
+            IOrderedEnumerable<ProductSalesAggregateRow> ordered = sortField.ToLowerInvariant() switch
+            {
+                "salesamount" => ascending
+                    ? rows.OrderBy(row => row.SalesAmount)
+                    : rows.OrderByDescending(row => row.SalesAmount),
+                "productcode" => ascending
+                    ? rows.OrderBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderByDescending(row => row.ProductCode, StringComparer.OrdinalIgnoreCase),
+                _ => ascending
+                    ? rows.OrderBy(row => row.Quantity)
+                    : rows.OrderByDescending(row => row.Quantity),
+            };
+
+            ordered = ordered.ThenBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase);
+            var items = ordered
+                .Skip((normalizedPageNumber - 1) * normalizedPageSize)
+                .Take(normalizedPageSize)
+                .ToList();
+
+            return new ProductSalesAnalysisPagedDto<ProductSalesAggregateRow>
+            {
+                Items = items,
+                Total = rows.Count,
+                PageNumber = normalizedPageNumber,
+                PageSize = normalizedPageSize,
+            };
+        }
+
+        internal static List<ProductSalesDailyDto> BuildProductDailySeries(
+            IEnumerable<ProductSalesDailyRow> rows,
+            DateTime startDate,
+            DateTime endDate
+        )
+        {
+            var metricsByDate = rows
+                .GroupBy(row => row.Date.Date)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new ProductSalesDailyRow
+                    {
+                        Date = group.Key,
+                        Quantity = group.Sum(x => x.Quantity),
+                        SalesAmount = group.Sum(x => x.SalesAmount),
+                    }
+                );
+
+            var series = new List<ProductSalesDailyDto>();
+            for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
+            {
+                metricsByDate.TryGetValue(date, out var row);
+                series.Add(new ProductSalesDailyDto
+                {
+                    Date = date,
+                    Metrics = BuildProductSalesMetrics(row?.Quantity ?? 0, row?.SalesAmount ?? 0m),
+                });
+            }
+
+            return series;
+        }
+
+        internal static List<ProductSalesBranchDailyDto> BuildBranchDailySeries(
+            IEnumerable<ProductSalesBranchDailyRow> rows,
+            DateTime startDate,
+            DateTime endDate
+        )
+        {
+            var metricsByDate = rows
+                .GroupBy(row => row.Date.Date)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new ProductSalesBranchDailyRow
+                    {
+                        Date = group.Key,
+                        Quantity = group.Sum(x => x.Quantity),
+                        SalesAmount = group.Sum(x => x.SalesAmount),
+                    }
+                );
+
+            var series = new List<ProductSalesBranchDailyDto>();
+            for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
+            {
+                metricsByDate.TryGetValue(date, out var row);
+                series.Add(new ProductSalesBranchDailyDto
+                {
+                    Date = date,
+                    Metrics = BuildProductSalesMetrics(row?.Quantity ?? 0, row?.SalesAmount ?? 0m),
+                });
+            }
+
+            return series;
+        }
+
+        private static ProductSalesAnalysisMetricsDto BuildProductSalesMetrics(int quantity, decimal salesAmount)
+        {
+            return new ProductSalesAnalysisMetricsDto
+            {
+                Quantity = quantity,
+                SalesAmount = salesAmount,
+                AverageUnitPrice = CalculateAverageUnitPrice(quantity, salesAmount),
+            };
+        }
+
+        private static ProductSalesAnalysisResponse<T> CreateProductSalesAnalysisResponse<T>(
+            ProductStatisticStatusSnapshot status,
+            T? data
+        )
+        {
+            return new ProductSalesAnalysisResponse<T>
+            {
+                StatisticStatus = status.Status,
+                StatisticMessage = status.Message,
+                StatisticUpdatedAt = status.UpdatedAt,
+                CacheVersion = status.CacheVersion,
+                Data = data,
+            };
+        }
+
+        private void CacheProductSalesAnalysis<T>(
+            string cacheKey,
+            ProductSalesAnalysisResponse<T> response,
+            long expectedGeneration
+        )
+        {
+            ProductSalesAnalysisCacheWriteInterceptor?.Invoke();
+
+            SalesDashboardCacheKeys.TryExecuteProductSalesAnalysisCacheWrite(
+                cacheKey,
+                expectedGeneration,
+                (registrationToken, expirationToken) =>
+                {
+                    var cacheOptions = BuildProductSalesAnalysisCacheOptions(
+                        cacheKey,
+                        PRODUCT_SALES_ANALYSIS_CACHE_DURATION,
+                        registrationToken,
+                        expirationToken
+                    );
+                    _cache.Set(cacheKey, response, cacheOptions);
+                }
+            );
+        }
+
+        internal static MemoryCacheEntryOptions CreateProductSalesAnalysisCacheOptions(
+            string cacheKey,
+            TimeSpan absoluteExpiration
+        )
+        {
+            return CreateProductSalesAnalysisCacheOptions(cacheKey, absoluteExpiration, out _);
+        }
+
+        internal static MemoryCacheEntryOptions CreateProductSalesAnalysisCacheOptions(
+            string cacheKey,
+            TimeSpan absoluteExpiration,
+            out long registrationToken
+        )
+        {
+            registrationToken = SalesDashboardCacheKeys.RegisterProductSalesAnalysisKey(
+                cacheKey,
+                out var expirationToken
+            );
+            return BuildProductSalesAnalysisCacheOptions(
+                cacheKey,
+                absoluteExpiration,
+                registrationToken,
+                expirationToken
+            );
+        }
+
+        private static MemoryCacheEntryOptions BuildProductSalesAnalysisCacheOptions(
+            string cacheKey,
+            TimeSpan absoluteExpiration,
+            long registrationToken,
+            IChangeToken expirationToken
+        )
+        {
+            return new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(absoluteExpiration)
+                .AddExpirationToken(expirationToken)
+                .RegisterPostEvictionCallback(
+                    OnProductSalesAnalysisCacheEvicted,
+                    new ProductSalesAnalysisCacheEvictionState(cacheKey, registrationToken)
+                );
+        }
+
+        private static void OnProductSalesAnalysisCacheEvicted(
+            object key,
+            object? value,
+            EvictionReason reason,
+            object? state
+        )
+        {
+            if (state is ProductSalesAnalysisCacheEvictionState registration)
+            {
+                SalesDashboardCacheKeys.UnregisterProductSalesAnalysisKey(
+                    registration.CacheKey,
+                    registration.RegistrationToken
+                );
+            }
+        }
+
+        private sealed class ProductSalesAnalysisCacheEvictionState
+        {
+            public ProductSalesAnalysisCacheEvictionState(string cacheKey, long registrationToken)
+            {
+                CacheKey = cacheKey;
+                RegistrationToken = registrationToken;
+            }
+
+            public string CacheKey { get; }
+
+            public long RegistrationToken { get; }
+        }
+
+        private async Task<ProductSalesAnalysisQueryContext> BuildProductSalesAnalysisQueryContextAsync(
+            ProductSalesAnalysisRequest request,
+            List<string>? branchCodes,
+            DateTime startDate,
+            DateTime endDate
+        )
+        {
+            var australianSupplierCodes = NormalizeCodes(request.Filter.AustralianSupplierCodes);
+            var chinaSupplierCodes = NormalizeCodes(request.Filter.ChinaSupplierCodes)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var chinaCatalog = await GetProductSalesChinaCatalogAsync();
+            var chinaProductMap = chinaSupplierCodes.Any()
+                ? await GetChinaSupplierProductMapAsync(chinaSupplierCodes)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            return new ProductSalesAnalysisQueryContext
+            {
+                StartDate = startDate,
+                EndDate = endDate,
+                BranchCodes = branchCodes,
+                AustralianSupplierCodes = australianSupplierCodes,
+                ChinaSupplierCodes = chinaSupplierCodes,
+                AllChinaSupplierCodes = chinaCatalog.Codes,
+                ChinaSupplierNameMap = chinaCatalog.Names,
+                ChinaProductMap = chinaProductMap,
+                Keyword = request.Filter.Keyword,
+            };
+        }
+
+        private Task<ISugarQueryable<ProductStoreDailySalesStatistic>> BuildProductSalesAnalysisBaseQueryAsync(
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var query = _context
+                .Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date >= context.StartDate && s.Date <= context.EndDate);
+
+            if (context.BranchCodes is { Count: > 0 } branchCodes)
+            {
+                query = query.Where(s => branchCodes.Contains(s.BranchCode));
+            }
+
+            return Task.FromResult(query);
+        }
+
+        private async Task<List<ISugarQueryable<ProductStoreDailySalesStatistic>>> BuildProductSalesAnalysisQueriesAsync(
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var baseQuery = await BuildProductSalesAnalysisBaseQueryAsync(context);
+            var supplierQueries = BuildProductSalesSupplierQueries(
+                baseQuery,
+                BuildProductSalesSupplierQueryPlan(context)
+            );
+
+            if (string.IsNullOrWhiteSpace(context.Keyword))
+                return supplierQueries;
+
+            return await ApplyProductSalesKeywordFilterAsync(
+                supplierQueries,
+                baseQuery,
+                context.Keyword
+            );
+        }
+
+        internal static ProductSalesSupplierQueryPlan BuildProductSalesSupplierQueryPlan(
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var hasAustralian = context.AustralianSupplierCodes.Count > 0;
+            var hasChina = context.ChinaSupplierCodes.Count > 0;
+            if (!hasAustralian && !hasChina)
+            {
+                return new ProductSalesSupplierQueryPlan { IsUnfiltered = true };
+            }
+
+            var includesAllChina = context.AustralianSupplierCodes.Any(IsChinaLocalSupplierCode);
+            var directSupplierCodes = BuildAustralianSupplierFilterCodes(
+                    context.AustralianSupplierCodes,
+                    context.AllChinaSupplierCodes
+                )
+                .Concat(context.ChinaSupplierCodes)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var legacyProductCodes = hasChina && !includesAllChina
+                ? context.ChinaProductMap.Keys
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : new List<string>();
+
+            return new ProductSalesSupplierQueryPlan
+            {
+                DirectSupplierCodes = directSupplierCodes,
+                LegacyProductCodes = legacyProductCodes,
+            };
+        }
+
+        private static List<ISugarQueryable<ProductStoreDailySalesStatistic>> BuildProductSalesSupplierQueries(
+            ISugarQueryable<ProductStoreDailySalesStatistic> baseQuery,
+            ProductSalesSupplierQueryPlan plan
+        )
+        {
+            if (plan.IsUnfiltered)
+            {
+                return new List<ISugarQueryable<ProductStoreDailySalesStatistic>> { baseQuery };
+            }
+
+            var queries = new List<ISugarQueryable<ProductStoreDailySalesStatistic>>();
+            foreach (var chunk in plan.DirectSupplierCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+            {
+                var supplierCodes = chunk.ToList();
+                queries.Add(baseQuery.Clone().Where(s => supplierCodes.Contains(s.SupplierCode)));
+            }
+
+            foreach (var chunk in plan.LegacyProductCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+            {
+                var productCodes = chunk.ToList();
+                queries.Add(
+                    baseQuery
+                        .Clone()
+                        .Where(s =>
+                            s.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE
+                            && productCodes.Contains(s.ProductCode)
+                        )
+                );
+            }
+
+            return queries;
+        }
+
+        private static List<string> BuildAustralianSupplierFilterCodes(
+            List<string> supplierCodes,
+            HashSet<string> chinaSupplierCodes
+        )
+        {
+            if (!supplierCodes.Any(IsChinaLocalSupplierCode))
+                return supplierCodes;
+
+            return supplierCodes
+                .Where(code => !IsChinaLocalSupplierCode(code))
+                .Concat(new[] { CHINA_LOCAL_SUPPLIER_CODE })
+                .Concat(chinaSupplierCodes)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private async Task<List<ISugarQueryable<ProductStoreDailySalesStatistic>>> ApplyProductSalesKeywordFilterAsync(
+            List<ISugarQueryable<ProductStoreDailySalesStatistic>> supplierQueries,
+            ISugarQueryable<ProductStoreDailySalesStatistic> baseQuery,
+            string keyword
+        )
+        {
+            var searchText = keyword.Trim();
+            var searchProductCodes = (await GetProductCodesForKeywordAsync(searchText))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var statisticBarcodeProductCodes = await baseQuery
+                .Clone()
+                .Where(s => s.Barcode != null && s.Barcode.Contains(searchText))
+                .Select(s => s.ProductCode)
+                .Distinct()
+                .ToListAsync();
+            foreach (var productCode in statisticBarcodeProductCodes)
+            {
+                if (!string.IsNullOrWhiteSpace(productCode))
+                    searchProductCodes.Add(productCode.Trim());
+            }
+
+            var queries = new List<ISugarQueryable<ProductStoreDailySalesStatistic>>();
+            foreach (var supplierQuery in supplierQueries)
+            {
+                foreach (var chunk in searchProductCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+                {
+                    var productCodes = chunk.ToList();
+                    queries.Add(
+                        supplierQuery.Clone().Where(s => productCodes.Contains(s.ProductCode))
+                    );
+                }
+            }
+
+            return queries;
+        }
+
+        private async Task<List<string>> GetProductCodesForKeywordAsync(string keyword)
+        {
+            if (string.IsNullOrWhiteSpace(keyword))
+                return new List<string>();
+
+            var searchText = keyword.Trim();
+            return (await _context
+                    .Db.Queryable<Product>()
+                    .Where(p =>
+                        (p.ItemNumber != null && p.ItemNumber.Contains(searchText))
+                        || (p.Barcode != null && p.Barcode.Contains(searchText))
+                        || p.ProductName.Contains(searchText)
+                        || (p.EnglishName != null && p.EnglishName.Contains(searchText))
+                    )
+                    .Select(p => p.ProductCode ?? string.Empty)
+                    .ToListAsync())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        internal static List<List<string>> BatchProductSalesCodes(IEnumerable<string>? productCodes)
+        {
+            return NormalizeCodes(productCodes)
+                .Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE)
+                .Select(chunk => chunk.ToList())
+                .ToList();
+        }
+
+        private async Task<List<ProductSalesAggregateRow>> QueryProductSalesAggregatesAsync(
+            IEnumerable<ISugarQueryable<ProductStoreDailySalesStatistic>> queries,
+            IEnumerable<string>? productCodes = null
+        )
+        {
+            var merged = new Dictionary<string, ProductSalesAggregateRow>(StringComparer.OrdinalIgnoreCase);
+            var productCodeBatches = productCodes == null
+                ? null
+                : BatchProductSalesCodes(productCodes);
+            if (productCodeBatches is { Count: 0 })
+                return new List<ProductSalesAggregateRow>();
+
+            async Task MergeQueryAsync(ISugarQueryable<ProductStoreDailySalesStatistic> aggregateQuery)
+            {
+                var rows = await aggregateQuery
+                    .GroupBy(s => s.ProductCode)
+                    .Select(s => new ProductSalesAggregateRow
+                    {
+                        ProductCode = s.ProductCode,
+                        Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                        SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    })
+                    .ToListAsync();
+                MergeProductSalesAggregateRows(merged, rows);
+            }
+
+            foreach (var query in queries)
+            {
+                if (productCodeBatches == null)
+                {
+                    await MergeQueryAsync(query.Clone());
+                    continue;
+                }
+
+                foreach (var batch in productCodeBatches)
+                {
+                    await MergeQueryAsync(
+                        query.Clone().Where(s => batch.Contains(s.ProductCode))
+                    );
+                }
+            }
+
+            return merged.Values.ToList();
+        }
+
+        internal static List<string> ResolveScopeProductCodes(ProductSalesAnalysisRequest request)
+        {
+            var mode = string.IsNullOrWhiteSpace(request.Scope?.Mode)
+                ? string.Empty
+                : request.Scope.Mode.Trim();
+            if (string.Equals(mode, "currentProduct", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(request.Scope?.ProductCode))
+                    throw new ProductSalesAnalysisValidationException("currentProduct 范围需要 productCode。");
+
+                return new List<string> { request.Scope.ProductCode.Trim() };
+            }
+
+            if (string.Equals(mode, "selectedProducts", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.Equals(request.Selection.Mode, "included", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new List<string>();
+                }
+
+                return ResolveSelectedProductCodes(request.Selection, Array.Empty<string>());
+            }
+
+            throw new ProductSalesAnalysisValidationException("scope.mode 仅支持 currentProduct 或 selectedProducts。");
+        }
+
+        internal static List<string> ResolveSelectedProductCodes(
+            ProductSalesAnalysisSelectionDto selection,
+            IEnumerable<string> filteredProductCodes
+        )
+        {
+            var mode = string.IsNullOrWhiteSpace(selection.Mode)
+                ? "allFiltered"
+                : selection.Mode.Trim();
+            if (string.Equals(mode, "included", StringComparison.OrdinalIgnoreCase))
+            {
+                return NormalizeCodes(selection.IncludedProductCodes);
+            }
+
+            if (!string.Equals(mode, "allFiltered", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ProductSalesAnalysisValidationException(
+                    "selection.mode 仅支持 allFiltered 或 included。"
+                );
+            }
+
+            var excluded = NormalizeCodes(selection.ExcludedProductCodes)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return NormalizeCodes(filteredProductCodes)
+                .Where(code => !excluded.Contains(code))
+                .ToList();
+        }
+
+        private async Task<List<string>> ResolveScopeProductCodesAsync(
+            ProductSalesAnalysisRequest request,
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            if (!string.Equals(request.Scope?.Mode, "selectedProducts", StringComparison.OrdinalIgnoreCase))
+            {
+                return ResolveScopeProductCodes(request);
+            }
+
+            if (string.Equals(request.Selection.Mode, "included", StringComparison.OrdinalIgnoreCase))
+            {
+                return ResolveSelectedProductCodes(request.Selection, Array.Empty<string>());
+            }
+
+            var queries = await BuildProductSalesAnalysisQueriesAsync(context);
+            var filteredRows = await QueryProductSalesAggregatesAsync(queries);
+            return ResolveSelectedProductCodes(
+                request.Selection,
+                filteredRows.Select(row => row.ProductCode)
+            );
+        }
+
+        private async Task<List<ProductSalesDailyRow>> QueryProductSalesDailyRowsAsync(
+            List<string> productCodes,
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var merged = new Dictionary<DateTime, ProductSalesDailyRow>();
+            var queries = await BuildProductSalesAnalysisQueriesAsync(context);
+            foreach (var query in queries)
+            {
+                foreach (var chunk in productCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+                {
+                    var rows = await query
+                        .Clone()
+                        .Where(s => chunk.Contains(s.ProductCode))
+                        .GroupBy(s => s.Date)
+                        .Select(s => new ProductSalesDailyRow
+                        {
+                            Date = s.Date,
+                            Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+                    MergeProductSalesDailyRows(merged, rows);
+                }
+            }
+
+            return merged.Values.ToList();
+        }
+
+        private async Task<List<ProductSalesBranchRow>> QueryProductSalesBranchRowsAsync(
+            List<string> productCodes,
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var merged = new Dictionary<string, ProductSalesBranchRow>(StringComparer.OrdinalIgnoreCase);
+            var queries = await BuildProductSalesAnalysisQueriesAsync(context);
+            foreach (var query in queries)
+            {
+                foreach (var chunk in productCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+                {
+                    var rows = await query
+                        .Clone()
+                        .Where(s => chunk.Contains(s.ProductCode))
+                        .GroupBy(s => s.BranchCode)
+                        .Select(s => new ProductSalesBranchRow
+                        {
+                            BranchCode = s.BranchCode,
+                            Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+                    MergeProductSalesBranchRows(merged, rows);
+                }
+            }
+
+            return merged.Values.ToList();
+        }
+
+        private async Task<List<ProductSalesBranchDailyRow>> QueryProductSalesBranchDailyRowsAsync(
+            List<string> productCodes,
+            ProductSalesAnalysisQueryContext context,
+            string branchCode
+        )
+        {
+            var merged = new Dictionary<DateTime, ProductSalesBranchDailyRow>();
+            var queries = await BuildProductSalesAnalysisQueriesAsync(context);
+            foreach (var query in queries)
+            {
+                foreach (var chunk in productCodes.Chunk(PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE))
+                {
+                    var rows = await query
+                        .Clone()
+                        .Where(s => s.BranchCode == branchCode && chunk.Contains(s.ProductCode))
+                        .GroupBy(s => s.Date)
+                        .Select(s => new ProductSalesBranchDailyRow
+                        {
+                            Date = s.Date,
+                            Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+                    MergeProductSalesBranchDailyRows(merged, rows);
+                }
+            }
+
+            return merged.Values.ToList();
+        }
+
+        private static void MergeProductSalesAggregateRows(
+            Dictionary<string, ProductSalesAggregateRow> target,
+            IEnumerable<ProductSalesAggregateRow> rows
+        )
+        {
+            foreach (var row in rows)
+            {
+                if (target.TryGetValue(row.ProductCode, out var existing))
+                {
+                    existing.Quantity += row.Quantity;
+                    existing.SalesAmount += row.SalesAmount;
+                }
+                else
+                {
+                    target[row.ProductCode] = new ProductSalesAggregateRow
+                    {
+                        ProductCode = row.ProductCode,
+                        Quantity = row.Quantity,
+                        SalesAmount = row.SalesAmount,
+                    };
+                }
+            }
+        }
+
+        private static void MergeProductSalesDailyRows(
+            Dictionary<DateTime, ProductSalesDailyRow> target,
+            IEnumerable<ProductSalesDailyRow> rows
+        )
+        {
+            foreach (var row in rows)
+            {
+                if (target.TryGetValue(row.Date.Date, out var existing))
+                {
+                    existing.Quantity += row.Quantity;
+                    existing.SalesAmount += row.SalesAmount;
+                }
+                else
+                {
+                    target[row.Date.Date] = new ProductSalesDailyRow
+                    {
+                        Date = row.Date.Date,
+                        Quantity = row.Quantity,
+                        SalesAmount = row.SalesAmount,
+                    };
+                }
+            }
+        }
+
+        private static void MergeProductSalesBranchRows(
+            Dictionary<string, ProductSalesBranchRow> target,
+            IEnumerable<ProductSalesBranchRow> rows
+        )
+        {
+            foreach (var row in rows)
+            {
+                if (target.TryGetValue(row.BranchCode, out var existing))
+                {
+                    existing.Quantity += row.Quantity;
+                    existing.SalesAmount += row.SalesAmount;
+                }
+                else
+                {
+                    target[row.BranchCode] = new ProductSalesBranchRow
+                    {
+                        BranchCode = row.BranchCode,
+                        Quantity = row.Quantity,
+                        SalesAmount = row.SalesAmount,
+                    };
+                }
+            }
+        }
+
+        private static void MergeProductSalesBranchDailyRows(
+            Dictionary<DateTime, ProductSalesBranchDailyRow> target,
+            IEnumerable<ProductSalesBranchDailyRow> rows
+        )
+        {
+            foreach (var row in rows)
+            {
+                if (target.TryGetValue(row.Date.Date, out var existing))
+                {
+                    existing.Quantity += row.Quantity;
+                    existing.SalesAmount += row.SalesAmount;
+                }
+                else
+                {
+                    target[row.Date.Date] = new ProductSalesBranchDailyRow
+                    {
+                        Date = row.Date.Date,
+                        Quantity = row.Quantity,
+                        SalesAmount = row.SalesAmount,
+                    };
+                }
+            }
+        }
+
+        private async Task<List<ProductSalesProductRowDto>> EnrichProductSalesRowsAsync(
+            List<ProductSalesAggregateRow> rows,
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            if (rows.Count == 0)
+                return new List<ProductSalesProductRowDto>();
+
+            var productCodes = rows
+                .Select(row => row.ProductCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var productInfos = await GetProductSalesProductInfosAsync(productCodes);
+            var supplierRows = await QueryProductSalesSupplierRowsAsync(productCodes, context);
+            var chinaProductMap = await GetChinaSupplierProductMapForProductsAsync(productCodes);
+            var resolutions = ResolveProductSalesSupplierRows(supplierRows, chinaProductMap, context.AllChinaSupplierCodes);
+
+            var australianCodes = resolutions.Values
+                .SelectMany(x => x.AustralianCodes)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var australianNameMap = await GetAustralianSupplierNameMapAsync(australianCodes);
+            var chinaNameMap = new Dictionary<string, string>(
+                context.ChinaSupplierNameMap,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            return rows.Select(row =>
+            {
+                productInfos.TryGetValue(row.ProductCode, out var productInfo);
+                resolutions.TryGetValue(row.ProductCode, out var resolution);
+                resolution ??= new ProductSalesSupplierResolution();
+
+                var chinaSuppliers = resolution.ChinaCodes
+                    .Select(code => new ProductSalesSupplierRefDto
+                    {
+                        Code = code,
+                        Name = chinaNameMap.TryGetValue(code, out var name) ? name : code,
+                    })
+                    .OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (resolution.ChinaSupplierUnmapped)
+                {
+                    chinaSuppliers.Add(new ProductSalesSupplierRefDto
+                    {
+                        Code = CHINA_LOCAL_SUPPLIER_CODE,
+                        Name = "国内供应商未映射",
+                    });
+                }
+
+                return new ProductSalesProductRowDto
+                {
+                    ProductCode = row.ProductCode,
+                    ItemNumber = productInfo?.ItemNumber,
+                    Barcode = productInfo?.Barcode,
+                    ProductName = productInfo?.ProductName,
+                    EnglishName = productInfo?.EnglishName,
+                    ImageUrl = productInfo?.ImageUrl,
+                    AustralianSuppliers = resolution.AustralianCodes
+                        .Select(code => new ProductSalesSupplierRefDto
+                        {
+                            Code = code,
+                            Name = australianNameMap.TryGetValue(code, out var name) ? name : code,
+                        })
+                        .OrderBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    ChinaSuppliers = chinaSuppliers,
+                    ChinaSupplierUnmapped = resolution.ChinaSupplierUnmapped,
+                    Metrics = BuildProductSalesMetrics(row.Quantity, row.SalesAmount),
+                };
+            }).ToList();
+        }
+
+        private async Task<Dictionary<string, ProductSalesProductInfo>> GetProductSalesProductInfosAsync(
+            List<string> productCodes
+        )
+        {
+            var result = new Dictionary<string, ProductSalesProductInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var chunk in productCodes.Chunk(500))
+            {
+                var rows = await _context
+                    .Db.Queryable<Product>()
+                    .Where(p => p.ProductCode != null && chunk.Contains(p.ProductCode))
+                    .Select(p => new ProductSalesProductInfo
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ItemNumber = p.ItemNumber,
+                        Barcode = p.Barcode,
+                        ProductName = p.ProductName,
+                        EnglishName = p.EnglishName,
+                        ImageUrl = p.ProductImage,
+                    })
+                    .ToListAsync();
+
+                foreach (var row in rows.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+                {
+                    if (!result.ContainsKey(row.ProductCode))
+                        result[row.ProductCode] = row;
+                }
+            }
+
+            return result;
+        }
+
+        private async Task<List<ProductSalesSupplierRow>> QueryProductSalesSupplierRowsAsync(
+            List<string> productCodes,
+            ProductSalesAnalysisQueryContext context
+        )
+        {
+            var result = new HashSet<(string ProductCode, string SupplierCode)>();
+            var baseQuery = _context
+                .Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date >= context.StartDate && s.Date <= context.EndDate);
+            if (context.BranchCodes is { Count: > 0 } branchCodes)
+            {
+                baseQuery = baseQuery.Where(s => branchCodes.Contains(s.BranchCode));
+            }
+
+            foreach (var chunk in productCodes.Chunk(500))
+            {
+                var rows = await baseQuery
+                    .Clone()
+                    .Where(s => chunk.Contains(s.ProductCode))
+                    .GroupBy(s => new { s.ProductCode, s.SupplierCode })
+                    .Select(s => new ProductSalesSupplierRow
+                    {
+                        ProductCode = s.ProductCode,
+                        SupplierCode = s.SupplierCode,
+                    })
+                    .ToListAsync();
+                foreach (var row in rows)
+                {
+                    result.Add((row.ProductCode, row.SupplierCode));
+                }
+            }
+
+            return result
+                .Select(x => new ProductSalesSupplierRow
+                {
+                    ProductCode = x.ProductCode,
+                    SupplierCode = x.SupplierCode,
+                })
+                .ToList();
+        }
+
+        private async Task<Dictionary<string, string>> GetChinaSupplierProductMapForProductsAsync(
+            List<string> productCodes
+        )
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var chunk in productCodes.Chunk(500))
+            {
+                var rows = await _posmContext
+                    .Db.Queryable<PosmProductSupplierMapping>()
+                    .Where(m =>
+                        !m.IsDeleted
+                        && m.LocalSupplierCode == "200"
+                        && m.ChinaSupplierCode != null
+                        && m.ChinaSupplierCode != ""
+                        && chunk.Contains(m.ProductCode)
+                    )
+                    .Select(m => new
+                    {
+                        m.ProductCode,
+                        ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
+                    })
+                    .ToListAsync();
+
+                foreach (var row in rows.Where(x =>
+                    !string.IsNullOrWhiteSpace(x.ProductCode)
+                    && !string.IsNullOrWhiteSpace(x.ChinaSupplierCode)
+                ))
+                {
+                    if (!result.ContainsKey(row.ProductCode))
+                        result[row.ProductCode] = row.ChinaSupplierCode;
+                }
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, ProductSalesSupplierResolution> ResolveProductSalesSupplierRows(
+            IEnumerable<ProductSalesSupplierRow> supplierRows,
+            Dictionary<string, string> chinaProductMap,
+            HashSet<string> allChinaSupplierCodes
+        )
+        {
+            var result = new Dictionary<string, ProductSalesSupplierResolution>(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in supplierRows)
+            {
+                if (!result.TryGetValue(row.ProductCode, out var resolution))
+                {
+                    resolution = new ProductSalesSupplierResolution();
+                    result[row.ProductCode] = resolution;
+                }
+
+                if (IsChinaLocalSupplierCode(row.SupplierCode))
+                {
+                    if (
+                        chinaProductMap.TryGetValue(row.ProductCode, out var mappedCode)
+                        && !string.IsNullOrWhiteSpace(mappedCode)
+                    )
+                    {
+                        resolution.ChinaCodes.Add(mappedCode);
+                    }
+                    else
+                    {
+                        resolution.ChinaSupplierUnmapped = true;
+                    }
+                }
+                else if (allChinaSupplierCodes.Contains(row.SupplierCode))
+                {
+                    resolution.ChinaCodes.Add(row.SupplierCode);
+                }
+                else
+                {
+                    resolution.AustralianCodes.Add(row.SupplierCode);
+                }
+            }
+
+            return result;
         }
 
         private static string? ResolveCostSource(List<BestSellerBranchSaleDto> branchSales)

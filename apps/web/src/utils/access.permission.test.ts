@@ -1476,4 +1476,111 @@ assertEqual(
   'LocalPurchase.View should not unlock HQ write actions',
 )
 
+// --- 精确权限契约：商品销量分析只读 exactPermissions，不展开别名 ---
+const exactProductMovementAnalysisAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView],
+    exactPermissions: [P.Reports.ProductMovementView],
+  }),
+)
+assertEqual(
+  exactProductMovementAnalysisAccess.canViewProductSalesAnalysis,
+  true,
+  'exactPermissions 含 Reports.ProductMovement.View 时应允许商品销量分析',
+)
+
+const exactReportsViewOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView, P.Reports.View],
+    exactPermissions: [P.Reports.View],
+  }),
+)
+assertEqual(
+  exactReportsViewOnlyAccess.canViewProductSalesAnalysis,
+  false,
+  'exactPermissions 只有 Reports.View 时应拒绝商品销量分析，即使展开 permissions 已含 ProductMovementView',
+)
+assertEqual(
+  exactReportsViewOnlyAccess.canViewProductMovementReport,
+  true,
+  'Reports.View 应继续兼容商品移动报表，不受 exact 契约影响',
+)
+
+const exactPermissionsMissingAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView],
+  }),
+)
+assertEqual(
+  exactPermissionsMissingAccess.canViewProductSalesAnalysis,
+  false,
+  'exactPermissions 字段缺失时非管理员应拒绝商品销量分析',
+)
+
+const superAdminExactMissingAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['超级管理员'],
+    permissions: [],
+    exactPermissions: [],
+  }),
+)
+assertEqual(
+  superAdminExactMissingAccess.canViewProductSalesAnalysis,
+  true,
+  '超级管理员别名即使 exactPermissions 为空也应允许商品销量分析',
+)
+
+// --- 角色预览精确权限契约：exactPermissions 必须来自原始未展开的 explicitPermissionCodes ---
+const productMovementExactPreviewAccess = buildRolePreviewAccess({
+  roleGuid: 'product-movement-exact-role',
+  roleName: 'ProductMovementExactRole',
+  isSuperAdmin: false,
+  implicitAllPermissions: false,
+  explicitPermissionCodes: [P.Reports.ProductMovementView],
+  effectivePermissionCodes: [P.Reports.ProductMovementView],
+})
+assertEqual(
+  productMovementExactPreviewAccess.canViewProductSalesAnalysis,
+  true,
+  '角色预览 explicit 含 Reports.ProductMovement.View 时应允许商品销量分析',
+)
+assertEqual(
+  productMovementExactPreviewAccess.canViewProductMovementReport,
+  true,
+  '角色预览 Reports.ProductMovement.View 应继续允许商品移动报表',
+)
+
+const reportsViewExpandedPreviewAccess = buildRolePreviewAccess({
+  roleGuid: 'reports-view-expanded-role',
+  roleName: 'ReportsViewExpandedRole',
+  isSuperAdmin: false,
+  implicitAllPermissions: false,
+  explicitPermissionCodes: [P.Reports.View],
+  effectivePermissionCodes: [P.Reports.View, P.Reports.ProductMovementView],
+})
+assertEqual(
+  reportsViewExpandedPreviewAccess.canViewProductSalesAnalysis,
+  false,
+  '角色预览 explicit 只有 Reports.View 时应拒绝商品销量分析，即使 effective 已展开含 ProductMovementView',
+)
+assertEqual(
+  reportsViewExpandedPreviewAccess.canViewProductMovementReport,
+  true,
+  '角色预览 Reports.View 展开应继续允许商品移动报表',
+)
+
+const superAdminExactEmptyPreviewAccess = buildRolePreviewAccess({
+  roleGuid: 'super-admin-exact-empty-role',
+  roleName: 'CustomSuperAdmin',
+  isSuperAdmin: true,
+  implicitAllPermissions: true,
+  explicitPermissionCodes: [],
+  effectivePermissionCodes: [],
+})
+assertEqual(
+  superAdminExactEmptyPreviewAccess.canViewProductSalesAnalysis,
+  true,
+  '超级管理员角色预览即使 explicit 为空也应允许商品销量分析',
+)
+
 console.log('access.permission.test: ok')

@@ -1890,6 +1890,92 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        /// <summary>
+        /// 检查用户是否显式拥有指定权限。此入口不展开权限别名，供必须保持精确权限边界的接口使用。
+        /// </summary>
+        public async Task<ApiResponse<bool>> UserHasExactPermissionAsync(
+            string userGuid,
+            string permission
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(userGuid) || string.IsNullOrWhiteSpace(permission))
+                {
+                    return ApiResponse<bool>.OK(false, "用户没有该权限");
+                }
+
+                var db = _context.Db;
+                var superAdminRoleNames = Permissions.SuperAdminRoleNames.ToList();
+                var hasSuperAdminRole = await db.Queryable<UserRole>()
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
+                    .Where(
+                        (ur, u, r) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                            && superAdminRoleNames.Contains(r.RoleName)
+                    )
+                    .AnyAsync();
+                if (hasSuperAdminRole)
+                {
+                    return ApiResponse<bool>.OK(true, "Admin 默认拥有所有权限");
+                }
+
+                var hasDirectPermission = await db.Queryable<SysUserPermission>()
+                    .InnerJoin<User>((up, u) => up.UserGuid == u.UserGUID)
+                    .Where(
+                        (up, u) =>
+                            up.UserGuid == userGuid
+                            && !up.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && up.PermissionCode == permission
+                    )
+                    .AnyAsync();
+                if (hasDirectPermission)
+                {
+                    return ApiResponse<bool>.OK(true, "用户拥有该权限");
+                }
+
+                var hasRolePermission = await db.Queryable<UserRole>()
+                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
+                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
+                    .InnerJoin<SysRolePermission>((ur, u, r, rp) => ur.RoleGUID == rp.RoleGuid)
+                    .Where(
+                        (ur, u, r, rp) =>
+                            ur.UserGUID == userGuid
+                            && !ur.IsDeleted
+                            && u.IsActive
+                            && !u.IsDeleted
+                            && r.IsActive
+                            && !r.IsDeleted
+                            && !rp.IsDeleted
+                            && rp.PermissionCode == permission
+                    )
+                    .AnyAsync();
+
+                return ApiResponse<bool>.OK(
+                    hasRolePermission,
+                    hasRolePermission ? "用户拥有该权限" : "用户没有该权限"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "检查用户精确权限失败，UserGUID: {UserGUID}, Permission: {Permission}",
+                    userGuid,
+                    permission
+                );
+                return ApiResponse<bool>.Error("检查用户权限失败", "CHECK_USER_PERMISSION_FAILED");
+            }
+        }
+
         public async Task<ApiResponse<UserPermissionSnapshotDto>> GetUserPermissionSnapshotAsync(
             string userGuid
         )
@@ -1927,12 +2013,14 @@ namespace BlazorApp.Api.Services
                 var isSuperAdmin = roleNames.Any(IsSuperAdminRoleName);
 
                 List<string> permissionCodes;
+                List<string> exactCodes;
                 if (isSuperAdmin)
                 {
                     permissionCodes = await db.Queryable<SysPermission>()
                         .Where(item => !item.IsDeleted)
                         .Select(item => item.Code)
                         .ToListAsync();
+                    exactCodes = permissionCodes.ToList();
                 }
                 else
                 {
@@ -1953,6 +2041,10 @@ namespace BlazorApp.Api.Services
                         .Select(item => item.PermissionCode)
                         .ToListAsync();
 
+                    exactCodes = explicitCodes
+                        .Concat(directCodes)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
                     permissionCodes = Permissions.ExpandPermissionCodes(
                         explicitCodes.Concat(directCodes)
                     ).ToList();
@@ -1965,6 +2057,9 @@ namespace BlazorApp.Api.Services
                         IsSuperAdmin = isSuperAdmin,
                         RoleNames = roleNames,
                         PermissionCodes = permissionCodes
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList(),
+                        ExactPermissionCodes = exactCodes
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList(),
                     },

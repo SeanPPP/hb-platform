@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -21,6 +22,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILogger<SalesDashboardController> _logger;
         private readonly IUserService _userService;
         private readonly ISalesDashboardCacheWarmer _cacheWarmer;
+        private readonly IRoleService _roleService;
 
         /// <summary>
         /// 构造函数
@@ -29,17 +31,20 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="logger">日志记录器</param>
         /// <param name="userService">用户服务</param>
         /// <param name="cacheWarmer">销售仪表盘缓存预热服务</param>
+        /// <param name="roleService">角色与精确权限服务</param>
         public SalesDashboardController(
             ISalesDashboardReactService service,
             ILogger<SalesDashboardController> logger,
             IUserService userService,
-            ISalesDashboardCacheWarmer cacheWarmer
+            ISalesDashboardCacheWarmer cacheWarmer,
+            IRoleService roleService
         )
         {
             _service = service;
             _logger = logger;
             _userService = userService;
             _cacheWarmer = cacheWarmer;
+            _roleService = roleService;
         }
 
         /// <summary>
@@ -127,6 +132,59 @@ namespace BlazorApp.Api.Controllers.React
                     .Distinct()
                     .ToList()
                 ?? new List<string>();
+        }
+
+        private async Task<bool> HasExactProductSalesAnalysisPermissionAsync()
+        {
+            var userGuid = HttpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrWhiteSpace(userGuid))
+                return false;
+
+            var result = await _roleService.UserHasExactPermissionAsync(
+                userGuid,
+                Permissions.Reports.ProductMovementView
+            );
+            return result.Success && result.Data;
+        }
+
+        /// <summary>
+        /// 商品销量分析接口专用的分店范围解析。
+        /// 全分店身份只能来自实时权限快照中的活动、未删除角色名，不能信任 JWT 旧角色 claim；
+        /// 非全分店用户只取 IUserService 返回的授权分店；用户有效但分店为空时视为“授权成功、分店范围为空”，
+        /// 把空 List 交给 service 走 Fresh 类型化空信封。快照失败、用户读取失败或缺用户 ID 时 fail closed。
+        /// </summary>
+        private async Task<(bool HasAccess, List<string>? BranchCodes)> ResolveProductSalesAnalysisBranchCodesAsync()
+        {
+            var userGuid = HttpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrWhiteSpace(userGuid))
+                return (false, new List<string>());
+
+            // 实时快照为全分店判定的唯一来源；防御性处理未返回快照任务的情况，保持 fail closed。
+            var snapshotTask = _roleService.GetUserPermissionSnapshotAsync(userGuid);
+            if (snapshotTask == null)
+                return (false, new List<string>());
+
+            var snapshotResult = await snapshotTask;
+            if (snapshotResult?.Success != true || snapshotResult.Data == null)
+                return (false, new List<string>());
+
+            var roleNames = snapshotResult.Data.RoleNames ?? new List<string>();
+            var hasFullStoreRole = roleNames.Any(role =>
+                Permissions.SuperAdminRoleNames.Contains(role, StringComparer.OrdinalIgnoreCase)
+                || Permissions.WarehouseManagerRoleNames.Contains(role, StringComparer.OrdinalIgnoreCase)
+            );
+
+            if (hasFullStoreRole)
+                return (true, null);
+
+            var userResult = await _userService.GetUserByGuidAsync(userGuid);
+            if (userResult?.Success != true || userResult.Data == null)
+                return (false, new List<string>());
+
+            var storeCodes = NormalizeBranchCodes(
+                userResult.Data.Stores?.Select(store => store.StoreCode)
+            );
+            return (true, storeCodes);
         }
 
         /// <summary>
@@ -1313,6 +1371,204 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetBestSellers failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取商品销量分析可选供应商
+        /// GET api/react/v1/dashboard/product-sales-analysis/options
+        /// </summary>
+        [HttpGet("product-sales-analysis/options")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisOptions(
+            [FromQuery] ProductSalesAnalysisFilterDto filter
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisOptionsAsync(filter, branchScope.BranchCodes);
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisOptions failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("product-sales-analysis/candidates")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisCandidates(
+            [FromBody] ProductSalesAnalysisRequest request
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisCandidatesAsync(request, branchScope.BranchCodes);
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisCandidates failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("product-sales-analysis/summary")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisSummary(
+            [FromBody] ProductSalesAnalysisRequest request,
+            [FromQuery] bool allowNonFreshData = false
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisSummaryAsync(
+                    request,
+                    branchScope.BranchCodes,
+                    allowNonFreshData
+                );
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisSummary failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("product-sales-analysis/product-daily")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisProductDaily(
+            [FromBody] ProductSalesAnalysisRequest request,
+            [FromQuery] bool allowNonFreshData = false
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisProductDailyAsync(
+                    request,
+                    branchScope.BranchCodes,
+                    allowNonFreshData
+                );
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisProductDaily failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("product-sales-analysis/branches")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisBranches(
+            [FromBody] ProductSalesAnalysisRequest request,
+            [FromQuery] bool allowNonFreshData = false
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisBranchesAsync(
+                    request,
+                    branchScope.BranchCodes,
+                    allowNonFreshData
+                );
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisBranches failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("product-sales-analysis/branch-daily")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetProductSalesAnalysisBranchDaily(
+            [FromBody] ProductSalesAnalysisRequest request,
+            [FromQuery] bool allowNonFreshData = false
+        )
+        {
+            try
+            {
+                if (!await HasExactProductSalesAnalysisPermissionAsync())
+                    return Forbid();
+
+                var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var result = await _service.GetProductSalesAnalysisBranchDailyAsync(
+                    request,
+                    branchScope.BranchCodes,
+                    allowNonFreshData
+                );
+                return Ok(result);
+            }
+            catch (ProductSalesAnalysisValidationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetProductSalesAnalysisBranchDaily failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

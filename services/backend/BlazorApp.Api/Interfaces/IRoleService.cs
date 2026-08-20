@@ -182,6 +182,11 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> UserHasPermissionAsync(string userGuid, string permission);
 
         /// <summary>
+        /// 检查用户是否显式拥有指定权限，不展开历史权限别名；超级管理员仍拥有全部权限。
+        /// </summary>
+        Task<ApiResponse<bool>> UserHasExactPermissionAsync(string userGuid, string permission);
+
+        /// <summary>
         /// 获取用户当前激活角色聚合后的权限快照
         /// </summary>
         /// <param name="userGuid">用户GUID</param>
