@@ -6,6 +6,7 @@ import GlobalErrorBoundary from './components/GlobalErrorBoundary'
 import AdminLayout from './layout/AdminLayout'
 import ShopLayout from './layout/ShopLayout'
 import BrowserExtensionPrivacyPage from './pages/BrowserExtensionPrivacy'
+import HbSupplierOrderSupportPage from './pages/HbSupplierOrderSupport'
 import LoginPage from './pages/Login'
 import MobilePrivacyPage from './pages/MobilePrivacy'
 import { isPublicAppPath } from './pages/MobilePrivacy/publicPath'
@@ -63,6 +64,7 @@ function AppBootstrap() {
       />
       <Route path="/privacy/browser-extension" element={<BrowserExtensionPrivacyPage />} />
       <Route path="/privacy/mobile" element={<MobilePrivacyPage />} />
+      <Route path="/support/hb-supplier-order" element={<HbSupplierOrderSupportPage />} />
       <Route
         path={WEB_NO_ACCESS_PATH}
         element={

@@ -109,7 +109,7 @@ BrowserExtension__SafariStoreUrl=https://apps.apple.com/app/...
 
 ### Safari
 
-使用 `../supplier-order-safari-extension` 的 Xcode 工程配置 Apple 开发团队并归档。Safari 16.4–18.3 通过 Mac App Store 分发；Developer ID 签名并公证的扩展要求 Safari 18.4+。正式链接生成前，后端 `SafariStoreUrl` 保持空值。
+使用 `../supplier-order-safari-extension` 的 iOS-only Xcode 工程为 iPhone 和 iPad 创建 Release Archive，再通过 App Store Connect 内部 TestFlight 和 iOS App Store 分发。项目不包含 macOS target，并显式关闭 Apple Silicon Mac 的 “Designed for iPhone/iPad” 兼容分发；App Store Connect 中也必须取消 Mac availability。正式 Unlisted 链接生成前，后端 `SafariStoreUrl` 保持空值。
 
 正式图标源稿位于 `assets/icon-master.svg`，浏览器所需的 16/32/48/128px PNG 位于 `src/icons/`，构建时会复制到三个浏览器产物；本仓库不包含任何凭据或商店密钥。
 
@@ -122,7 +122,7 @@ BrowserExtension__SafariStoreUrl=https://apps.apple.com/app/...
 ## 自动更新与补丁回滚
 
 - 商店安装版由 Chrome Web Store / Edge Add-ons 自动推送更新，无需用户操作。
-- 补丁流程：修改代码 → `npm test` 全绿 → `npm run build` 重新生成三包 → Safari 项目同步 Resources → 递增 `package.json` 版本 → 上传对应商店审核。
+- 补丁流程：先递增共享 `package.json` 语义版本；Safari TestFlight 重传只递增独立 Xcode build number。然后运行 `npm test`、`npm run build` 重新生成三包、同步 Safari Resources、执行 Safari 测试与 Release Archive，最后上传对应商店审核。
 - 商店版不能降低版本号。回滚流程是恢复上一版本代码，递增一个更高的补丁版本，重新测试、构建并提交审核；本地加载版可直接重新加载旧构建目录。
 
 ## 测试

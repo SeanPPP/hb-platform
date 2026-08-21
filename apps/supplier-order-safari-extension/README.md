@@ -51,6 +51,16 @@ HB_IOS_SIMULATOR_ID=<simulator-uuid> ./script/build_and_run.sh --verify
 4. 在设备的“设置 → Safari → 扩展”中启用扩展并授予站点权限。
 5. 在 Safari 扩展菜单、Hot Bargain `/shop` 页面或供应商商品按钮中打开助手。
 
-## 发布边界
+## Archive、TestFlight 与 App Store Connect
 
-当前项目只完成开发与测试配置，不自动归档、上传 TestFlight 或提交 App Store。正式发布前仍需配置 App Store Connect、签名、隐私信息和商店素材；不得把账号凭据或证书提交到仓库。
+发布目标仅包含 iPhone/iPad App 与 Safari Extension，不得增加或恢复 macOS target。商店版本跟随共享扩展版本 1.2.0，TestFlight 构建号使用独立正整数；重传时只递增 Xcode 的 CURRENT_PROJECT_VERSION。
+
+先运行完整发布前检查并创建 Release Archive：
+
+```bash
+HB_APPLE_DEVELOPMENT_TEAM=<当前团队ID> npm run archive
+```
+
+归档输出为 `build/HB Supplier Order.xcarchive`，完成后脚本会核对显示名、版本、构建号、Bundle ID、加密声明、签名以及“仅包含 iOS App 与 Safari Extension”的产物结构。首次提交使用 Xcode 已登录账号和 Automatic Signing；Team ID 只通过当前命令环境注入，不得把 Team ID、证书、描述文件、App Store Connect 凭据或审核账号密码写入仓库。归档完成后在 Xcode Organizer 中依次执行 Validate App 和 Distribute App → App Store Connect → Upload。
+
+仓库内 `release/` 固化 App Store metadata、App Privacy、Review Notes、TestFlight 双设备清单、截图要求和 Unlisted 申请文本。创建记录时使用 Australia only、Free、Business、Manual Release 与内部 TestFlight。实体 iPhone 和 iPad 均通过后再提交正式 App Review 和 Unlisted 请求；两者同时批准前不得手动公开发布。

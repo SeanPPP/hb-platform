@@ -1,4 +1,9 @@
-const PUBLIC_APP_PATHS = new Set(['/login', '/privacy/browser-extension', '/privacy/mobile'])
+const PUBLIC_APP_PATHS = new Set([
+  '/login',
+  '/privacy/browser-extension',
+  '/privacy/mobile',
+  '/support/hb-supplier-order',
+])
 
 export function isPublicAppPath(pathname: string) {
   const normalizedPath = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname

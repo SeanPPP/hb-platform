@@ -303,6 +303,10 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
+                var setSubItemGroups = new List<(
+                    BatchCreatedItemDto createdItem,
+                    List<CreateBatchItemDto> relatedSubItems
+                )>();
                 foreach (var createdItem in responseItems.Where(x => x.ProductType == 1))
                 {
                     var hasNestedSubItems = nestedSubItemsBySetProductCode.TryGetValue(
@@ -316,13 +320,23 @@ namespace BlazorApp.Api.Services
                     if (!relatedSubItems.Any())
                         continue;
 
-                    var subCodes =
-                        await _itemBarcodeService.GenerateBatchSetItemNumbersAndBarcodesAsync(
-                            createdItem.HBProductNo,
-                            ProductTypeEnum.Set,
-                            relatedSubItems.Count
-                        );
+                    setSubItemGroups.Add((createdItem, relatedSubItems));
+                }
 
+                var subCodeGroups = setSubItemGroups.Any()
+                    ? await _itemBarcodeService.GenerateBatchSetItemGroupsAndBarcodesAsync(
+                        setSubItemGroups
+                            .Select(group =>
+                                (group.createdItem.HBProductNo, group.relatedSubItems.Count)
+                            )
+                            .ToList()
+                    )
+                    : new List<List<(string itemNumber, string barcode)>>();
+
+                for (var groupIndex = 0; groupIndex < setSubItemGroups.Count; groupIndex++)
+                {
+                    var (createdItem, relatedSubItems) = setSubItemGroups[groupIndex];
+                    var subCodes = subCodeGroups[groupIndex];
                     for (var i = 0; i < relatedSubItems.Count && i < subCodes.Count; i++)
                     {
                         var subItem = relatedSubItems[i];

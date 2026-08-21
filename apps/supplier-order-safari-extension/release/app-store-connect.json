@@ -1,0 +1,22 @@
+{
+  "appName": "HB Supplier Order",
+  "fallbackAppName": "HB Supplier Ordering",
+  "bundleId": "com.hotbargain.supplierorder.safari",
+  "extensionBundleId": "com.hotbargain.supplierorder.safari.Extension",
+  "sku": "HB-SUPPLIER-ORDER-IOS-2026",
+  "version": "1.2.0",
+  "buildNumber": 1,
+  "primaryLanguage": "en-AU",
+  "category": "BUSINESS",
+  "territories": [
+    "AUS"
+  ],
+  "price": "FREE",
+  "releaseType": "MANUAL",
+  "initialDistributionMethod": "PUBLIC",
+  "distributionIntent": "UNLISTED",
+  "macAvailability": false,
+  "privacyUrl": "https://hotbargain.vip/privacy/browser-extension",
+  "supportUrl": "https://hotbargain.vip/support/hb-supplier-order",
+  "copyright": "2026 HOT BARGAIN INTERNATIONAL PTY LTD"
+}

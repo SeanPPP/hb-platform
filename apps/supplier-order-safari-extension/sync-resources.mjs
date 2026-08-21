@@ -41,4 +41,4 @@ if (updatedProject !== projectSource) {
   writeFileSync(XCODE_PROJECT, updatedProject);
 }
 console.log(`已同步 ${SOURCE} -> ${TARGET}`);
-console.log(`已同步 Xcode 版本: ${manifest.version}`);
+console.log(`已同步 Xcode 商店版本: ${manifest.version}`);

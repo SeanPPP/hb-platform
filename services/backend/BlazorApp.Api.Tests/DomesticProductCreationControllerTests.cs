@@ -434,6 +434,73 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateBatchAsync_二十四组套装子项保持父子对应且全局唯一()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            var items = Enumerable
+                .Range(1, 24)
+                .Select(parentIndex =>
+                    new CreateBatchItemDto
+                    {
+                        ProductName = $"套装{parentIndex}",
+                        ProductType = 1,
+                        SubItems = Enumerable
+                            .Range(1, 3)
+                            .Select(childIndex =>
+                                new CreateBatchItemDto
+                                {
+                                    ProductName = $"套装{parentIndex}子项{childIndex}",
+                                    ProductType = 2,
+                                }
+                            )
+                            .ToList(),
+                    }
+                )
+                .ToList();
+
+            var result = await database.CreateService().CreateBatchAsync(
+                new CreateDomesticProductBatchRequest
+                {
+                    SupplierCode = "HB001",
+                    Items = items,
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(96, result.Data!.TotalCreated);
+            Assert.Equal(24, result.Data.Items.Count);
+            Assert.All(result.Data.Items, parent =>
+            {
+                Assert.Equal(3, parent.SubItems.Count);
+                Assert.All(parent.SubItems, child =>
+                    Assert.StartsWith(parent.HBProductNo + "-", child.HBProductNo)
+                );
+            });
+
+            var createdItems = result
+                .Data.Items.Select(item => (item.HBProductNo, item.Barcode))
+                .Concat(
+                    result.Data.Items.SelectMany(item => item.SubItems)
+                        .Select(item => (item.HBProductNo, item.Barcode))
+                )
+                .ToList();
+            Assert.Equal(
+                createdItems.Count,
+                createdItems
+                    .Select(item => item.HBProductNo)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+            Assert.Equal(
+                createdItems.Count,
+                createdItems
+                    .Select(item => item.Barcode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+        }
+
+        [Fact]
         public async Task ItemBarcodeService_并发生成的货号和条码不重复()
         {
             using var database = new DomesticProductCreationTestDatabase();
@@ -459,6 +526,83 @@ namespace BlazorApp.Api.Tests
             );
             Assert.Equal(
                 generated.Length,
+                generated
+                    .Select(item => item.barcode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+        }
+
+        [Fact]
+        public async Task ItemBarcodeService_多组套装子项一次预留且货号条码唯一()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            var generator = database.CreateItemBarcodeService();
+
+            var requests = Enumerable
+                .Range(1, 24)
+                .Select(index => ($"HB001-{index:D3}", 3))
+                .ToList();
+            var groups = await generator.GenerateBatchSetItemGroupsAndBarcodesAsync(
+                requests
+            );
+
+            Assert.Equal(24, groups.Count);
+            Assert.All(groups, group => Assert.Equal(3, group.Count));
+            for (var index = 0; index < groups.Count; index++)
+            {
+                Assert.All(
+                    groups[index],
+                    item => Assert.StartsWith(requests[index].Item1 + "-", item.itemNumber)
+                );
+            }
+
+            var generated = groups.SelectMany(group => group).ToList();
+            Assert.Equal(
+                generated.Count,
+                generated
+                    .Select(item => item.itemNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+            Assert.Equal(
+                generated.Count,
+                generated
+                    .Select(item => item.barcode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+            Assert.Equal(
+                generated.Count * 2,
+                await database.Db.Queryable<ItemBarcodeReservation>().CountAsync()
+            );
+        }
+
+        [Fact]
+        public async Task ItemBarcodeService_多组子项合计超过一千时分段生成仍保持唯一()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            var generator = database.CreateItemBarcodeService();
+            var requests = Enumerable
+                .Range(1, 101)
+                .Select(index => ($"HB001-{index:D3}", 10))
+                .ToList();
+
+            var groups = await generator.GenerateBatchSetItemGroupsAndBarcodesAsync(
+                requests
+            );
+
+            var generated = groups.SelectMany(group => group).ToList();
+            Assert.Equal(1010, generated.Count);
+            Assert.Equal(
+                generated.Count,
+                generated
+                    .Select(item => item.itemNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count()
+            );
+            Assert.Equal(
+                generated.Count,
                 generated
                     .Select(item => item.barcode)
                     .Distinct(StringComparer.OrdinalIgnoreCase)

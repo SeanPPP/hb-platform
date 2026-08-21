@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { synchronizeXcodeProjectVersions } from '../project-version.mjs';
 
@@ -14,7 +15,7 @@ test('iOS Safari 项目版本、bundle ID 与部署目标保持一致', () => {
 
   assert.equal(pkg.version, sharedPkg.version);
   assert.equal(project.match(new RegExp(`MARKETING_VERSION = ${pkg.version.replaceAll('.', '\\.')};`, 'g'))?.length, 4);
-  assert.equal(project.match(new RegExp(`CURRENT_PROJECT_VERSION = ${pkg.version.replaceAll('.', '\\.')};`, 'g'))?.length, 4);
+  assert.equal(project.match(/CURRENT_PROJECT_VERSION = 1;/g)?.length, 4);
   assert.ok(!project.includes('MACOSX_DEPLOYMENT_TARGET'));
   assert.ok(!project.includes('SDKROOT = macosx'));
   assert.ok(!project.includes('IPHONEOS_DEPLOYMENT_TARGET = 15.0'));
@@ -28,6 +29,14 @@ test('iOS Safari 项目版本、bundle ID 与部署目标保持一致', () => {
   assert.equal(
     project.match(/PRODUCT_BUNDLE_IDENTIFIER = com\.hotbargain\.supplierorder\.safari\.Extension;/g)?.length,
     2,
+  );
+  assert.equal(
+    project.match(/INFOPLIST_KEY_CFBundleDisplayName = "HB Supplier Order";/g)?.length,
+    4,
+  );
+  assert.equal(
+    project.match(/SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;/g)?.length,
+    4,
   );
   assert.ok(viewController.includes('import UIKit'));
   assert.ok(!viewController.includes('import Cocoa'));
@@ -56,7 +65,7 @@ test('宿主启用说明页按系统语言提供中英文资源', () => {
   assert.ok(project.includes('zh-Hant.lproj/Main.html'));
 });
 
-test('资源同步会把 manifest 版本写入全部 Xcode 构建配置', () => {
+test('资源同步只更新商店版本并保留独立递增构建号', () => {
   const source = [
     'MARKETING_VERSION = 1.2.0;',
     'CURRENT_PROJECT_VERSION = 7;',
@@ -67,12 +76,63 @@ test('资源同步会把 manifest 版本写入全部 Xcode 构建配置', () => 
   const updated = synchronizeXcodeProjectVersions(source, '1.3.4');
 
   assert.equal(updated.match(/MARKETING_VERSION = 1\.3\.4;/g)?.length, 2);
-  assert.equal(updated.match(/CURRENT_PROJECT_VERSION = 1\.3\.4;/g)?.length, 2);
-  assert.throws(
-    () => synchronizeXcodeProjectVersions('MARKETING_VERSION = 1.0.0;', '1.3.4'),
-    /CURRENT_PROJECT_VERSION/,
+  assert.equal(updated.match(/CURRENT_PROJECT_VERSION = 7;/g)?.length, 2);
+  assert.equal(
+    synchronizeXcodeProjectVersions('MARKETING_VERSION = 1.0.0;', '1.3.4'),
+    'MARKETING_VERSION = 1.3.4;',
   );
   assert.throws(() => synchronizeXcodeProjectVersions(source, '1.3.4-beta'), /版本格式/);
+});
+
+test('TestFlight 发布配置包含宿主元数据、公开入口和不透明 App Icon', () => {
+  const pkg = readJson('package.json');
+  const hostInfo = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Info.plist');
+  const baseHostPage = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Resources/Base.lproj/Main.html');
+  const simplifiedHostPage = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Resources/zh-Hans.lproj/Main.html');
+  const releaseMetadata = readJson('release/app-store-connect.json');
+  const archiveScript = read('script/archive.sh');
+  const iconPath = 'xcode/HB Supplier Order Safari/HB Supplier Order Safari/Assets.xcassets/AppIcon.appiconset/universal-icon-1024@1x.png';
+  const iconMetadata = execFileSync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', '-g', 'hasAlpha', iconPath], {
+    encoding: 'utf8',
+  });
+
+  assert.match(hostInfo, /<key>CFBundleDisplayName<\/key>\s*<string>HB Supplier Order<\/string>/);
+  assert.match(hostInfo, /<key>ITSAppUsesNonExemptEncryption<\/key>\s*<false\/>/);
+  for (const page of [baseHostPage, simplifiedHostPage]) {
+    assert.ok(page.includes('https://hotbargain.vip/support/hb-supplier-order'));
+    assert.ok(page.includes('https://hotbargain.vip/privacy/browser-extension'));
+  }
+  assert.match(iconMetadata, /pixelWidth:\s+1024/);
+  assert.match(iconMetadata, /pixelHeight:\s+1024/);
+  assert.match(iconMetadata, /hasAlpha:\s+no/);
+  assert.equal(pkg.scripts.archive, 'npm test && bash script/archive.sh');
+  assert.ok(archiveScript.includes('-configuration Release'));
+  assert.ok(archiveScript.includes('generic/platform=iOS'));
+  assert.ok(archiveScript.includes('HB_APPLE_DEVELOPMENT_TEAM'));
+  assert.ok(archiveScript.includes('DEVELOPMENT_TEAM='));
+  assert.ok(archiveScript.includes('archive'));
+  assert.ok(archiveScript.includes('node verify-archive.mjs'));
+  assert.ok(existsSync('verify-archive.mjs'));
+  assert.deepEqual(releaseMetadata, {
+    appName: 'HB Supplier Order',
+    fallbackAppName: 'HB Supplier Ordering',
+    bundleId: 'com.hotbargain.supplierorder.safari',
+    extensionBundleId: 'com.hotbargain.supplierorder.safari.Extension',
+    sku: 'HB-SUPPLIER-ORDER-IOS-2026',
+    version: '1.2.0',
+    buildNumber: 1,
+    primaryLanguage: 'en-AU',
+    category: 'BUSINESS',
+    territories: ['AUS'],
+    price: 'FREE',
+    releaseType: 'MANUAL',
+    initialDistributionMethod: 'PUBLIC',
+    distributionIntent: 'UNLISTED',
+    macAvailability: false,
+    privacyUrl: 'https://hotbargain.vip/privacy/browser-extension',
+    supportUrl: 'https://hotbargain.vip/support/hb-supplier-order',
+    copyright: '2026 HOT BARGAIN INTERNATIONAL PTY LTD',
+  });
 });
 
 test('Xcode Resources 是最新 Safari 构建快照', () => {

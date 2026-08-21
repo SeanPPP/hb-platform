@@ -9,6 +9,7 @@
     "test": "node --test",
     "build:resources": "npm --prefix ../supplier-order-extension run build && node sync-resources.mjs",
     "build": "npm run build:resources",
-    "build:xcode": "npm run build:resources && xcodebuild -project \"xcode/HB Supplier Order Safari/HB Supplier Order Safari.xcodeproj\" -scheme \"HB Supplier Order Safari\" -configuration Debug -destination \"generic/platform=iOS Simulator\" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build"
+    "build:xcode": "npm run build:resources && xcodebuild -project \"xcode/HB Supplier Order Safari/HB Supplier Order Safari.xcodeproj\" -scheme \"HB Supplier Order Safari\" -configuration Debug -destination \"generic/platform=iOS Simulator\" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build",
+    "archive": "npm test && bash script/archive.sh"
   }
 }

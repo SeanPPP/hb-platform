@@ -20,15 +20,10 @@ export function synchronizeXcodeProjectVersions(projectSource, version) {
     throw new Error(`Safari 扩展版本格式无效: ${version}`);
   }
 
-  // 商店展示版本与构建版本均跟随扩展 manifest，避免三个发布位置发生漂移。
-  const withMarketingVersion = replaceBuildSetting(
+  // 扩展语义版本只同步到商店展示版本；TestFlight 重传仅递增独立构建号。
+  return replaceBuildSetting(
     projectSource,
     'MARKETING_VERSION',
-    normalizedVersion,
-  );
-  return replaceBuildSetting(
-    withMarketingVersion,
-    'CURRENT_PROJECT_VERSION',
     normalizedVersion,
   );
 }

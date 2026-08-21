@@ -663,4 +663,35 @@ public sealed class BrowserExtensionProfileCatalogTests
         Assert.Empty(release.SafariStoreUrl);
         Assert.StartsWith("https://", release.EdgeStoreUrl, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Release_ExposesConfiguredHttpsSafariStoreUrl()
+    {
+        var release = BrowserExtensionProfileCatalog.BuildRelease(
+            new BrowserExtensionOptions
+            {
+                SafariStoreUrl = "https://apps.apple.com/au/app/hb-supplier-order/id1234567890",
+            }
+        );
+
+        Assert.Equal(
+            "https://apps.apple.com/au/app/hb-supplier-order/id1234567890",
+            release.SafariStoreUrl
+        );
+    }
+
+    [Fact]
+    public void DockerCompose_MapsSafariStoreUrlFromServerEnvironment()
+    {
+        var composePath = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "../../../../docker-compose.yml")
+        );
+        var compose = File.ReadAllText(composePath);
+
+        Assert.Contains(
+            "BrowserExtension__SafariStoreUrl=${BROWSER_EXTENSION_SAFARI_STORE_URL:-}",
+            compose,
+            StringComparison.Ordinal
+        );
+    }
 }

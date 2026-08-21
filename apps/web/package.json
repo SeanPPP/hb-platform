@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build --config vite.config.ts",
     "preview": "vite preview --config vite.config.ts --host 0.0.0.0",
     "test:mobile-privacy-public-route": "npx --yes tsx src/pages/MobilePrivacy/publicPath.test.ts",
+    "test:hb-supplier-order-support": "npx --yes tsx src/pages/HbSupplierOrderSupport/supportPage.test.ts",
     "boomup:download-images": "node scripts/boomup-download-images.mjs",
     "boomup:download-images:smoke": "node scripts/boomup-download-images-smoke.mjs",
     "jemark:download-images": "node scripts/jemark-download-images.mjs",

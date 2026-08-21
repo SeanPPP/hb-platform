@@ -139,6 +139,94 @@ namespace BlazorApp.Api.Services
             );
         }
 
+        /// <summary>
+        /// 一次性生成多组套装子项货号和条码，所有结果在同一事务内完成唯一性预留。
+        /// </summary>
+        public async Task<
+            List<List<(string itemNumber, string barcode)>>
+        > GenerateBatchSetItemGroupsAndBarcodesAsync(
+            IReadOnlyList<(string baseItemNumber, int count)> groups
+        )
+        {
+            ArgumentNullException.ThrowIfNull(groups);
+            if (groups.Count == 0)
+                return new List<List<(string itemNumber, string barcode)>>();
+
+            foreach (var group in groups)
+            {
+                if (string.IsNullOrWhiteSpace(group.baseItemNumber))
+                    throw new ArgumentException("基础商品货号不能为空", nameof(groups));
+                if (group.count <= 0)
+                    throw new ArgumentException("生成数量必须大于0", nameof(groups));
+                if (group.count > 100)
+                    throw new ArgumentException("单组批量生成套装数量不能超过100", nameof(groups));
+            }
+
+            var supplierCodes = groups
+                .Select(group => ExtractSupplierCodeFromItemNumber(group.baseItemNumber))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (supplierCodes.Count != 1)
+                throw new ArgumentException("多组套装子项必须属于同一供应商", nameof(groups));
+
+            var totalCount = groups.Sum(group => group.count);
+            var supplierCode = supplierCodes[0];
+            var generated = await GenerateAndReserveAsync(
+                supplierCode,
+                async db =>
+                {
+                    // 一次读取供应商已有编号和条码，避免按每个父套装重复查询、加锁和提交。
+                    var existingItemNumbers = await LoadExistingItemNumbersAsync(db, supplierCode);
+                    var existingBarcodes = await LoadExistingBarcodesAsync(
+                        db,
+                        BuildBarcodePrefix(supplierCode, ProductTypeEnum.Set)
+                    );
+                    var barcodes = new List<string>(totalCount);
+                    while (barcodes.Count < totalCount)
+                    {
+                        // 条码帮助类单批最多生成 1000 个；仅在内存中分段，数据库事务仍只有一次。
+                        var chunkCount = Math.Min(1000, totalCount - barcodes.Count);
+                        var chunk = BarcodeHelper.GenerateBatchEAN13Barcodes(
+                            supplierCode,
+                            (int)ProductTypeEnum.Set,
+                            existingBarcodes,
+                            chunkCount,
+                            true
+                        );
+                        barcodes.AddRange(chunk);
+                        existingBarcodes.AddRange(chunk);
+                    }
+
+                    var flattened = new List<(string itemNumber, string barcode)>(totalCount);
+                    var barcodeIndex = 0;
+                    foreach (var group in groups)
+                    {
+                        var itemNumbers = ItemNumberHelper.GenerateBatchSetItemNumbers(
+                            group.baseItemNumber,
+                            group.count,
+                            existingItemNumbers
+                        );
+                        existingItemNumbers.AddRange(itemNumbers);
+                        foreach (var itemNumber in itemNumbers)
+                        {
+                            flattened.Add((itemNumber, barcodes[barcodeIndex++]));
+                        }
+                    }
+
+                    return flattened;
+                }
+            );
+
+            var result = new List<List<(string itemNumber, string barcode)>>(groups.Count);
+            var offset = 0;
+            foreach (var group in groups)
+            {
+                result.Add(generated.GetRange(offset, group.count));
+                offset += group.count;
+            }
+            return result;
+        }
+
         private Task<List<(string itemNumber, string barcode)>> GenerateMainItemNumbersAndBarcodesAsync(
             string supplierCode,
             ProductTypeEnum productType,
