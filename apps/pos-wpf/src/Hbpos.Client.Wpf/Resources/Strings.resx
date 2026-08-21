@@ -277,6 +277,8 @@
   <data name="payment.card.error.overlay.activeSession.recover" xml:space="preserve"><value>Recover previous</value></data>
   <data name="payment.card.error.overlay.activeSession.close" xml:space="preserve"><value>Close</value></data>
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve"><value>Recovering previous Linkly transaction...</value></data>
+  <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve"><value>Move to recovery center and start a new sale</value></data>
+  <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve"><value>Moving the card transaction to the recovery center...</value></data>
   <data name="payment.card.error.overlay.fallback.title" xml:space="preserve"><value>Use Backup Card Payment?</value></data>
   <data name="payment.card.error.overlay.fallback.message" xml:space="preserve"><value>The selected Linkly mode is unavailable and no transaction was submitted. Switch to {0}?</value></data>
   <data name="payment.card.error.overlay.fallback.use" xml:space="preserve"><value>Use backup mode</value></data>

@@ -651,7 +651,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
-            setPaymentRecoveryBlocked: (blocked, message) => CashPayment?.SetCardRecoveryBlocked(blocked, message),
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
@@ -738,6 +737,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 vm.PaymentCompleted += OnPaymentCompleted;
                 vm.PropertyChanged += OnCashPaymentPropertyChanged;
+                var cardRecoveryPresenter = _cardRecoveryPresenter!;
+                vm.ConfigureCardPaymentHandoff(
+                    cardRecoveryPresenter.PrepareCardPaymentHandoffAsync,
+                    cardRecoveryPresenter.HandoffCardPaymentAsync);
             },
             onPaymentDisposed: vm =>
             {

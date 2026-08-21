@@ -22,7 +22,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
-    private readonly PaymentNavigationActions _navigationActions;
+    private PaymentNavigationActions _navigationActions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
 
@@ -48,7 +48,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private string? _installmentDraftFingerprint;
     private Guid? _installmentDraftPaymentGuid;
     private string? _installmentDraftCardIdempotencyKey;
-    private bool _externalCardRecoveryBlocked;
     private int _shutdownStarted;
     private bool _disposed;
 
@@ -135,7 +134,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
+        Action? openCardRecoveryCenter = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -151,7 +153,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onInstallmentOrderCreatedAsync,
             confirmInstallmentFullFirstPaymentAsync,
             operationAuditLogger,
-            operationAuthorizationService)
+            operationAuthorizationService,
+            prepareCardPaymentHandoffAsync,
+            handoffCardPaymentAsync,
+            openCardRecoveryCenter)
     {
     }
 
@@ -170,7 +175,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
+        Action? openCardRecoveryCenter = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -191,7 +199,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPaymentAsync);
+            confirmInstallmentFullFirstPaymentAsync,
+            prepareCardPaymentHandoffAsync,
+            handoffCardPaymentAsync,
+            openCardRecoveryCenter);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _cardSession = new CardPaymentSession(this);
         _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
@@ -221,6 +232,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
         BackToPosCommand = new RelayCommand(BackToPos, CanBackToPos);
         ShowInstallmentCenterCommand = new AsyncRelayCommand(ShowInstallmentCenterAsync, CanShowInstallmentCenter);
+        OpenCardRecoveryCenterCommand = new RelayCommand(
+            () => _navigationActions.OpenCardRecoveryCenter?.Invoke(),
+            () => !IsShuttingDown && _navigationActions.OpenCardRecoveryCenter is not null);
         CloseCardPaymentErrorOverlayCommand = new RelayCommand(CloseCardPaymentErrorOverlay);
         CardPaymentErrorPrimaryActionCommand = new AsyncRelayCommand(
             ExecuteCardPaymentErrorPrimaryActionAsync,
@@ -304,6 +318,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public IRelayCommand BackToPosCommand { get; }
 
     public IRelayCommand ShowInstallmentCenterCommand { get; }
+
+    public IRelayCommand OpenCardRecoveryCenterCommand { get; }
 
     public IRelayCommand CloseCardPaymentErrorOverlayCommand { get; }
 
@@ -559,11 +575,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherChangeAmount = 0m;
         _paymentEntryVersion++;
         _cardSession.ResetManualCancellationState();
-        _cardSession.SetResultUnknownRecoveryRequired(_externalCardRecoveryBlocked);
+        // 新订单只继承进程关闭状态；历史卡交易恢复状态不得跨订单锁住付款页。
+        _cardSession.SetResultUnknownRecoveryRequired(false);
         _cardSession.Cancel();
         _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = _externalCardRecoveryBlocked;
+        IsPaymentInteractionLocked = IsShuttingDown;
         _installmentRepaymentOrder = null;
         IsInstallmentSwitchLocked = false;
         IsInstallmentPaymentEnabled = false;
@@ -635,6 +652,45 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         // 中文注释：恢复已批准卡 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
         RefreshCart();
         SetStatus("payment.status.cardTenderAdded", statusMessage);
+        NotifyPaymentCommandStates();
+    }
+
+    internal void CompleteCardPaymentHandoff()
+    {
+        // 安全移交只清理当前活动订单和付款页投影；持久化 attempt、草稿、tender 与终端证据由恢复中心继续持有。
+        _paymentEntryVersion++;
+        _pendingVoucherUploadOrderGuid = null;
+        _pendingVoucherTenderedAmount = 0m;
+        _pendingVoucherChangeAmount = 0m;
+        PaymentTenders.Clear();
+        VoucherCodeText = string.Empty;
+        VoucherEntryText = string.Empty;
+        IsVoucherEntryDialogOpen = false;
+        TenderAmountText = string.Empty;
+        SelectedPaymentMethod = PaymentMethodKind.Cash;
+        CardPaymentErrorOverlay = null;
+        _cart.Clear();
+        RefreshCart();
+        IsPaymentInteractionLocked = IsShuttingDown;
+        SetStatus(GetReadyStatusKey());
+        NotifyPaymentCommandStates();
+        _navigationActions.BackToPos?.Invoke();
+    }
+
+    internal CardPaymentHandoffRequest CreateCardPaymentHandoffRequest() =>
+        new(Session, _cart.CreateSnapshot(), PaymentTenders.ToArray(), ActualAmount);
+
+    internal void ConfigureCardPaymentHandoff(
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>> prepareAsync,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>> handoffAsync,
+        Action? openRecoveryCenter = null)
+    {
+        _navigationActions = _navigationActions with
+        {
+            PrepareCardPaymentHandoffAsync = prepareAsync,
+            HandoffCardPaymentAsync = handoffAsync,
+            OpenCardRecoveryCenter = openRecoveryCenter
+        };
         NotifyPaymentCommandStates();
     }
 
@@ -1092,7 +1148,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             cardPaymentCts?.IsCancellationRequested == true &&
             (!result.Succeeded || result.Tender is null))
         {
-            _cardSession.TryHandleCancelledResult(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
+            await _cardSession.TryHandleCancelledResultAsync(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
             if (result.CardResult?.RequiresRecovery != true)
             {
                 await ReleaseVoucherTendersAfterCardFailureAsync();
@@ -1131,7 +1187,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             if (isCard)
             {
                 var resultUnknown = result.CardResult?.RequiresRecovery == true;
-                _cardSession.TryHandleFailedResult(result);
+                await _cardSession.TryHandleFailedResultAsync(result);
                 if (!resultUnknown)
                 {
                     await ReleaseVoucherTendersAfterCardFailureAsync();
@@ -1511,21 +1567,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             // 结算期间若发现已批准卡款无法安全落盘，finally 不能覆盖待恢复锁。
             IsPaymentInteractionLocked =
                 IsShuttingDown ||
-                _cardSession.HasUnknownResult ||
-                IsCardRecoveryBlocked;
+                _cardSession.HasUnknownResult;
         }
     }
 
-    internal bool IsCardRecoveryBlocked => _externalCardRecoveryBlocked;
-
-    internal void SetCardRecoveryBlocked(bool blocked, string? statusMessage = null)
+    internal void SetCurrentCardRecoveryRequired(bool required, string? statusMessage = null)
     {
-        _externalCardRecoveryBlocked = blocked;
-        _cardSession.SetResultUnknownRecoveryRequired(blocked);
-        IsPaymentInteractionLocked = blocked || IsShuttingDown || _cardSession.IsActive;
+        _cardSession.SetResultUnknownRecoveryRequired(required);
+        IsPaymentInteractionLocked = required || IsShuttingDown || _cardSession.IsActive;
         if (!string.IsNullOrWhiteSpace(statusMessage))
         {
-            SetStatus(blocked ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
+            SetStatus(required ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
         }
 
         NotifyPaymentCommandStates();
@@ -1577,7 +1629,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"approved card order persistence unknown operation={operationType} error={ex.InnerException?.GetType().Name ?? ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            SetCardRecoveryBlocked(true, ex.Message);
+            SetCurrentCardRecoveryRequired(true, ex.Message);
             return;
         }
         catch (PaymentUploadFailedException ex)
@@ -2887,6 +2939,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancelCommand.NotifyCanExecuteChanged();
         BackToPosCommand.NotifyCanExecuteChanged();
         ShowInstallmentCenterCommand.NotifyCanExecuteChanged();
+        OpenCardRecoveryCenterCommand.NotifyCanExecuteChanged();
+        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsCancelPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmPaymentVisible));
     }

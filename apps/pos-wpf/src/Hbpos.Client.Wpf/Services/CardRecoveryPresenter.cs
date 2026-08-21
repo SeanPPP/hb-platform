@@ -31,7 +31,6 @@ internal sealed class CardRecoveryPresenter
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly PosCartService _cart;
     private readonly Action<string?>? _setStatusMessage;
-    private readonly Action<bool, string?>? _setPaymentRecoveryBlocked;
     private readonly Func<Window?>? _getOwner;
     private readonly Func<Task>? _navigateToPaymentOnDraft;
     private readonly Func<PosSessionState>? _getSession;
@@ -92,7 +91,6 @@ internal sealed class CardRecoveryPresenter
         _mainChildViewModelFactory = mainChildViewModelFactory;
         _cart = cart;
         _setStatusMessage = setStatusMessage;
-        _setPaymentRecoveryBlocked = setPaymentRecoveryBlocked;
         _getOwner = getOwner;
         _navigateToPaymentOnDraft = navigateToPaymentOnDraft;
         _getSession = getSession;
@@ -126,6 +124,43 @@ internal sealed class CardRecoveryPresenter
 
     public CardRecoveryResultDialogViewModel? CardRecoveryResultDialog { get; set; }
 
+    public async Task<CardPaymentHandoffCandidate?> PrepareCardPaymentHandoffAsync(
+        CardPaymentHandoffRequest request)
+    {
+        if (_cardPaymentRecoveryService is null)
+        {
+            return null;
+        }
+
+        var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(request.Session, CancellationToken.None);
+        return CardPaymentHandoffQualification.SelectCandidate(openAttempts, request);
+    }
+
+    public async Task<bool> HandoffCardPaymentAsync(
+        CardPaymentHandoffCandidate candidate,
+        CardPaymentHandoffRequest request)
+    {
+        if (_cardPaymentRecoveryService is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(request.Session, CancellationToken.None);
+            // 确认瞬间再次定点核验，避免队列刷新、GUID 漂移或草稿损坏后误清当前订单。
+            return CardPaymentHandoffQualification.CandidateStillMatches(openAttempts, candidate, request);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "CardRecovery",
+                $"card payment handoff confirmation failed attemptGuid={candidate.AttemptGuid} error={ex.GetType().Name}",
+                exception: ex);
+            return false;
+        }
+    }
+
     public bool IsCardRecoveryResultDialogOpen { get; set; }
 
     // ---- Commands ----
@@ -149,7 +184,6 @@ internal sealed class CardRecoveryPresenter
             return false;
         }
 
-        _setPaymentRecoveryBlocked?.Invoke(true, "Checking the previous card transaction. Please do not collect payment again.");
         var recoveryTask = _cardPaymentRecoveryTask;
         if (recoveryTask is null)
         {
@@ -377,7 +411,6 @@ internal sealed class CardRecoveryPresenter
             if (!result.Succeeded)
             {
                 dialog.RefundResolutionMessage = result.Message;
-                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
                 return;
             }
 
@@ -386,7 +419,6 @@ internal sealed class CardRecoveryPresenter
             if (result.LockRetained)
             {
                 dialog.RefundResolutionMessage = result.Message;
-                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
                 return;
             }
 
@@ -397,12 +429,10 @@ internal sealed class CardRecoveryPresenter
             }
             else
             {
-                _setPaymentRecoveryBlocked?.Invoke(false, result.Message);
             }
         }
         catch (OperationCanceledException)
         {
-            _setPaymentRecoveryBlocked?.Invoke(true, dialog.Message);
         }
         catch (Exception ex)
         {
@@ -411,7 +441,6 @@ internal sealed class CardRecoveryPresenter
                 $"resolve card payment failed attemptGuid={details.AttemptGuid} decision={decision} error={ex.GetType().Name}",
                 exception: ex);
             dialog.RefundResolutionMessage = _localization.T("cardRecovery.payment.resolveFailed");
-            _setPaymentRecoveryBlocked?.Invoke(true, dialog.RefundResolutionMessage);
         }
         finally
         {
@@ -482,8 +511,6 @@ internal sealed class CardRecoveryPresenter
             result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
                 ? _localization.T("payment.status.completedWarning")
                 : result.Message;
-        var blocked = result.Outcome is CardPaymentRecoveryOutcome.Checking or CardPaymentRecoveryOutcome.Unknown;
-        _setPaymentRecoveryBlocked?.Invoke(blocked, statusMessage);
         if (!string.IsNullOrWhiteSpace(statusMessage))
         {
             _setStatusMessage?.Invoke(statusMessage);

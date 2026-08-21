@@ -765,6 +765,12 @@
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve">
     <value>正在恢复上一笔 Linkly 交易...</value>
   </data>
+  <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve">
+    <value>移至异常中心并开始新单</value>
+  </data>
+  <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve">
+    <value>正在将银行卡交易移至异常中心...</value>
+  </data>
   <data name="payment.card.error.overlay.fallback.title" xml:space="preserve">
     <value>是否使用备用刷卡方式？</value>
   </data>
