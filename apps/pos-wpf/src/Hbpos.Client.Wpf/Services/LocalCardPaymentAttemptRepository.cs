@@ -230,7 +230,7 @@ public interface ILocalCardPaymentAttemptRepository
         string deviceCode,
         string environment,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>([]);
+        throw new NotSupportedException("Open attempt queue is not wired for this repository.");
 
     Task<bool> ResolveRefundAsync(
         CardRefundAttemptResolution resolution,

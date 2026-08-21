@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.Models;
 using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Tests;
@@ -986,6 +987,107 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task Square_payment_resolution_persists_three_state_cas_and_journal()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var resolvedAt = DateTimeOffset.Parse("2026-07-28T10:00:00+10:00");
+
+            await schema.InitializeAsync();
+
+            var confirmedAttempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("40000000-0000-0000-0000-000000000001"),
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                operationKind: "Sale");
+            await repository.CreateAsync(confirmedAttempt);
+            var confirmed = await repository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    confirmedAttempt.AttemptGuid,
+                    CardRecoverySupervisorDecision.ConfirmProcessed,
+                    "Confirmed paid",
+                    "Bank matched",
+                    "ref-1",
+                    confirmedAttempt.Status,
+                    confirmedAttempt.UpdatedAt,
+                    resolvedAt),
+                CreateSquareSaleJournal(confirmedAttempt.AttemptGuid, "ConfirmProcessed", "Confirmed paid"));
+            var confirmedSaved = await repository.GetAttemptAsync(confirmedAttempt.AttemptGuid);
+            Assert.True(confirmed);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, confirmedSaved!.Status);
+            Assert.Equal("SUPERVISOR_CONFIRMED_PAID", confirmedSaved.ResponseCode);
+            Assert.Equal("SUPERVISOR_CONFIRMED_PAID", confirmedSaved.PaymentId);
+
+            var duplicate = await repository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    confirmedAttempt.AttemptGuid,
+                    CardRecoverySupervisorDecision.ConfirmProcessed,
+                    "Duplicate",
+                    Evidence: null,
+                    PaymentReference: null,
+                    confirmedAttempt.Status,
+                    confirmedAttempt.UpdatedAt,
+                    resolvedAt),
+                CreateSquareSaleJournal(confirmedAttempt.AttemptGuid, "ConfirmProcessed", "Duplicate"));
+            Assert.False(duplicate);
+
+            var notPaidAttempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("40000000-0000-0000-0000-000000000002"),
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                operationKind: "Sale") with
+            {
+                CheckoutId = "CHECKOUT-NOTPAID"
+            };
+            await repository.CreateAsync(notPaidAttempt);
+            var notPaid = await repository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    notPaidAttempt.AttemptGuid,
+                    CardRecoverySupervisorDecision.ConfirmNotProcessed,
+                    "Not paid",
+                    "Bank returned nothing",
+                    PaymentReference: null,
+                    notPaidAttempt.Status,
+                    notPaidAttempt.UpdatedAt,
+                    resolvedAt),
+                CreateSquareSaleJournal(notPaidAttempt.AttemptGuid, "ConfirmNotProcessed", "Not paid"));
+            var notPaidSaved = await repository.GetAttemptAsync(notPaidAttempt.AttemptGuid);
+            Assert.True(notPaid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, notPaidSaved!.Status);
+            Assert.Equal("SUPERVISOR_CONFIRMED_NOT_PAID", notPaidSaved.ResponseCode);
+            Assert.Null(notPaidSaved.CheckoutId);
+
+            var waitingAttempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("40000000-0000-0000-0000-000000000003"),
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                operationKind: "Sale");
+            await repository.CreateAsync(waitingAttempt);
+            var waiting = await repository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    waitingAttempt.AttemptGuid,
+                    CardRecoverySupervisorDecision.ContinueWaiting,
+                    "Keep waiting",
+                    Evidence: null,
+                    PaymentReference: null,
+                    waitingAttempt.Status,
+                    waitingAttempt.UpdatedAt,
+                    resolvedAt),
+                CreateSquareSaleJournal(waitingAttempt.AttemptGuid, "ContinueWaiting", "Keep waiting"));
+            var waitingSaved = await repository.GetAttemptAsync(waitingAttempt.AttemptGuid);
+            Assert.True(waiting);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, waitingSaved!.Status);
+            Assert.Equal("SUPERVISOR_CONTINUE_WAITING", waitingSaved.ResponseCode);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static LocalCardPaymentAttempt CreateAttempt(
         Guid? attemptGuid = null,
         string storeCode = "S001",
@@ -1066,6 +1168,35 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             null,
             null,
             operationKind);
+    }
+
+    private static LocalFinancialSupervisorResolution CreateSquareSaleJournal(
+        Guid attemptGuid,
+        string decision,
+        string reason)
+    {
+        return new LocalFinancialSupervisorResolution(
+            Guid.NewGuid(),
+            LocalFinancialSupervisorResolutionTarget.ActiveSession,
+            "Square",
+            "Production",
+            "S001",
+            "POS-01",
+            attemptGuid,
+            null,
+            null,
+            "CHECKOUT-1",
+            decision,
+            "C001",
+            null,
+            "Alice",
+            reason,
+            null,
+            null,
+            null,
+            DateTimeOffset.Parse("2026-07-28T10:00:00+10:00"),
+            Guid.NewGuid(),
+            "{}");
     }
 
     private static string CreateTempDatabasePath()

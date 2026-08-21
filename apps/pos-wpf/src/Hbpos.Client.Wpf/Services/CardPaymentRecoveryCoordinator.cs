@@ -95,13 +95,15 @@ public sealed class CardPaymentRecoveryCoordinator(
         CancellationToken cancellationToken = default)
     {
         await ReplaySupervisorAuditAsync(cancellationToken);
-        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        return settings.Processor switch
-        {
-            CardProcessorKind.Linkly => await linklyRecoveryService.ListOpenAsync(session, cancellationToken),
-            CardProcessorKind.Square => await squareRecoveryService.ListOpenAsync(session, cancellationToken),
-            _ => []
-        };
+        // 双 provider 队列：同时列出 Linkly 与 Square 的未结 attempt，全局按更新时间排序，
+        // 使配置切换后另一 provider 的历史异常仍然可见。
+        var linklyItems = await linklyRecoveryService.ListOpenAsync(session, cancellationToken);
+        var squareItems = await squareRecoveryService.ListOpenAsync(session, cancellationToken);
+        return linklyItems
+            .Concat(squareItems)
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenByDescending(item => item.CreatedAt)
+            .ToArray();
     }
 
     public async Task<CardPaymentRecoveryResult> RecoverAsync(
@@ -111,12 +113,6 @@ public sealed class CardPaymentRecoveryCoordinator(
         CancellationToken cancellationToken = default)
     {
         await ReplaySupervisorAuditAsync(cancellationToken);
-        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        if (settings.Processor != key.Processor)
-        {
-            return CardPaymentRecoveryResult.None;
-        }
-
         return key.Processor switch
         {
             CardProcessorKind.Linkly => await linklyRecoveryService.RecoverAttemptAsync(
@@ -143,15 +139,7 @@ public sealed class CardPaymentRecoveryCoordinator(
         PosSessionState session,
         CancellationToken cancellationToken = default)
     {
-        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        if (settings.Processor != key.Processor)
-        {
-            return new CardRecoveryResolutionResult(
-                false,
-                "The selected attempt does not belong to the active provider.",
-                LockRetained: true);
-        }
-
+        await ReplaySupervisorAuditAsync(cancellationToken);
         return key.Processor switch
         {
             CardProcessorKind.Linkly => await linklyRecoveryService.ResolveAttemptAsync(

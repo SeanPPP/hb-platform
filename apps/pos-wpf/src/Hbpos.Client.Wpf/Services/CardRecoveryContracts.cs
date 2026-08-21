@@ -19,7 +19,16 @@ public sealed record CardRecoveryQueueItem(
     string Environment,
     string Status,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    string? OrderDraftJson = null,
+    string? SessionId = null,
+    string? TxnRef = null,
+    string? CheckoutId = null,
+    string? ResponseCode = null,
+    string? ResponseText = null,
+    string? PaymentReference = null,
+    string? PaymentId = null,
+    Guid? OperationGuid = null)
 {
     public CardRecoveryAttemptKey Key => new(Processor, AttemptGuid);
 }

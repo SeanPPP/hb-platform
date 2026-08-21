@@ -139,11 +139,6 @@ public sealed class SquarePaymentRecoveryService(
         CancellationToken cancellationToken = default)
     {
         var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        if (settings.Processor != CardProcessorKind.Square)
-        {
-            return [];
-        }
-
         var attempts = await RunLocalStoreAsync(
             () => attemptRepository.GetOpenAttemptsAsync(
                 session.StoreCode,
@@ -163,7 +158,16 @@ public sealed class SquarePaymentRecoveryService(
                 attempt.Environment,
                 attempt.Status.ToString(),
                 attempt.CreatedAt,
-                attempt.UpdatedAt))
+                attempt.UpdatedAt,
+                attempt.OrderDraftJson,
+                null,
+                null,
+                attempt.CheckoutId,
+                attempt.ResponseCode,
+                attempt.ResponseText,
+                null,
+                attempt.PaymentId,
+                attempt.OperationGuid))
             .ToArray();
     }
 
@@ -174,11 +178,6 @@ public sealed class SquarePaymentRecoveryService(
         CancellationToken cancellationToken = default)
     {
         var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        if (settings.Processor != CardProcessorKind.Square)
-        {
-            return CardPaymentRecoveryResult.None;
-        }
-
         var attempt = await RunLocalStoreAsync(
             () => attemptRepository.GetAttemptAsync(attemptGuid, cancellationToken),
             cancellationToken);
@@ -209,11 +208,6 @@ public sealed class SquarePaymentRecoveryService(
         CancellationToken cancellationToken = default)
     {
         var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
-        if (settings.Processor != CardProcessorKind.Square)
-        {
-            return new CardRecoveryResolutionResult(false, "The selected attempt does not belong to Square.");
-        }
-
         var attempt = await RunLocalStoreAsync(
             () => attemptRepository.GetAttemptAsync(attemptGuid, cancellationToken),
             cancellationToken);
@@ -227,31 +221,240 @@ public sealed class SquarePaymentRecoveryService(
                 "The unresolved attempt no longer matches this terminal and cannot be changed.");
         }
 
-        if (!string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
         {
+            var refundResult = await ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Square,
+                    MapRefundDecision(decision),
+                    reason,
+                    evidence,
+                    reference),
+                cart,
+                session,
+                cancellationToken);
             return new CardRecoveryResolutionResult(
-                false,
-                "Square sale attempts cannot be resolved from the recovery center.",
-                LockRetained: true);
+                refundResult.Succeeded,
+                refundResult.Message,
+                refundResult.RecoveryResult,
+                refundResult.RetryAllowed,
+                refundResult.LockRetained);
         }
 
-        var refundResult = await ResolveRefundAsync(
-            new CardRefundSupervisorResolution(
-                attempt.AttemptGuid,
-                CardProcessorKind.Square,
-                MapRefundDecision(decision),
-                reason,
-                evidence,
-                reference),
+        return await ResolveSquareSaleAsync(
+            attempt,
+            decision,
+            reason,
+            evidence,
+            reference,
             cart,
             session,
             cancellationToken);
-        return new CardRecoveryResolutionResult(
-            refundResult.Succeeded,
-            refundResult.Message,
-            refundResult.RecoveryResult,
-            refundResult.RetryAllowed,
-            refundResult.LockRetained);
+    }
+
+    private async Task<CardRecoveryResolutionResult> ResolveSquareSaleAsync(
+        LocalSquarePaymentAttempt attempt,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        var draft = TryDeserializeDraft(attempt);
+        if (decision == CardRecoverySupervisorDecision.ConfirmProcessed && draft is null)
+        {
+            return new CardRecoveryResolutionResult(
+                false,
+                "The Square payment draft is incomplete and cannot be completed.",
+                LockRetained: true);
+        }
+
+        if (decision == CardRecoverySupervisorDecision.ConfirmNotProcessed)
+        {
+            if (draft is null)
+            {
+                return new CardRecoveryResolutionResult(
+                    false,
+                    "The Square payment draft is invalid and cannot be restored.",
+                    LockRetained: true);
+            }
+
+            if (!cart.IsEmpty)
+            {
+                return new CardRecoveryResolutionResult(
+                    false,
+                    "Suspend or clear the current cart before restoring this Square payment so it cannot be overwritten.",
+                    LockRetained: true);
+            }
+        }
+
+        var resolvedAt = DateTimeOffset.UtcNow;
+        var journal = BuildSquareSaleSupervisorJournal(
+            attempt,
+            decision,
+            reason,
+            evidence,
+            reference,
+            session,
+            resolvedAt);
+        var applied = await RunLocalStoreAsync(
+            () => attemptRepository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    attempt.AttemptGuid,
+                    decision,
+                    reason,
+                    evidence,
+                    reference,
+                    attempt.Status,
+                    attempt.UpdatedAt,
+                    resolvedAt),
+                journal,
+                CancellationToken.None),
+            CancellationToken.None);
+        if (!applied)
+        {
+            return new CardRecoveryResolutionResult(
+                false,
+                "The Square payment state changed before the supervisor decision was saved. Run recovery again.",
+                LockRetained: true);
+        }
+
+        if (supervisorAuditReplay is not null)
+        {
+            await supervisorAuditReplay.PersistAfterCommitAsync(journal, CancellationToken.None);
+        }
+
+        var updatedAttempt = await RunLocalStoreAsync(
+            () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, CancellationToken.None),
+            CancellationToken.None) ?? attempt;
+
+        if (decision == CardRecoverySupervisorDecision.ContinueWaiting)
+        {
+            return new CardRecoveryResolutionResult(
+                true,
+                T("cardRecovery.square.supervisorWaiting", "The Square payment remains locked. Run recovery again after the bank result is available."),
+                LockRetained: true);
+        }
+
+        if (decision == CardRecoverySupervisorDecision.ConfirmNotProcessed)
+        {
+            var restored = RestoreSquareSaleApprovedRetry(cart, updatedAttempt);
+            return new CardRecoveryResolutionResult(
+                true,
+                restored.Message,
+                restored,
+                RetryAllowed: true);
+        }
+
+        // ConfirmProcessed：用持久化完整 draft 独立完成订单，绝不触碰当前活动新购物车。
+        var completed = await CompleteVerifiedAttemptAsync(
+            new PosCartService(),
+            updatedAttempt,
+            draft!,
+            updatedAttempt.PaymentId ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+            updatedAttempt.PaymentStatus ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+            cardBrand: null,
+            maskedCardNumber: null,
+            authCode: null,
+            cancellationToken);
+        return new CardRecoveryResolutionResult(true, completed.Message, completed);
+    }
+
+    private CardPaymentRecoveryResult RestoreSquareSaleApprovedRetry(
+        PosCartService cart,
+        LocalSquarePaymentAttempt attempt)
+    {
+        if (!cart.IsEmpty)
+        {
+            return new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.Unknown, CurrentCartNotEmptyMessage());
+        }
+
+        var draft = DeserializeDraft(attempt);
+        cart.RestoreSnapshot(draft.CartSnapshot);
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            T("cardRecovery.square.notPaidRetryAllowed", "The bank confirmed that no payment was processed. The original order is ready to retry with the same operation."),
+            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+            RestoredTenders: draft.CurrentTenders);
+    }
+
+    private static CardPaymentOrderDraft? TryDeserializeDraft(LocalSquarePaymentAttempt attempt)
+    {
+        try
+        {
+            return DeserializeDraft(attempt);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static LocalFinancialSupervisorResolution BuildSquareSaleSupervisorJournal(
+        LocalSquarePaymentAttempt attempt,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosSessionState session,
+        DateTimeOffset resolvedAt)
+    {
+        var authorizer = OperationAuthorizationScope.CurrentAuthorizingSession ?? session.CashierSession;
+        var operatorCashierId = authorizer?.CashierId ?? session.CashierId;
+        var operatorUserGuid = authorizer?.UserGuid ?? session.CashierSession?.UserGuid;
+        var operatorName = authorizer?.CashierName ?? session.CashierName;
+        var resolutionGuid = Guid.NewGuid();
+        var auditEventId = Guid.NewGuid();
+        var auditEvent = new OperationAuditEventDto
+        {
+            EventId = auditEventId,
+            OccurredAtUtc = resolvedAt,
+            OperationType = "CARD_PAYMENT_SUPERVISOR_RESOLUTION",
+            Outcome = "Succeeded",
+            CashierId = operatorCashierId,
+            UserGuid = operatorUserGuid,
+            CashierName = operatorName,
+            StoreCode = attempt.StoreCode,
+            DeviceCode = attempt.DeviceCode,
+            CorrelationId = attempt.AttemptGuid.ToString("D"),
+            PaymentMethod = CardProcessorKind.Square.ToString(),
+            ReasonCode = decision.ToString(),
+            SafeMessage = reason,
+            PaymentAmount = Math.Abs(attempt.Amount),
+            Properties = new Dictionary<string, string?>
+            {
+                ["attemptGuid"] = attempt.AttemptGuid.ToString("D"),
+                ["operationGuid"] = attempt.OperationGuid?.ToString("D"),
+                ["checkoutId"] = attempt.CheckoutId,
+                ["evidence"] = evidence,
+                ["financialReference"] = reference
+            }
+        };
+        return new LocalFinancialSupervisorResolution(
+            resolutionGuid,
+            LocalFinancialSupervisorResolutionTarget.ActiveSession,
+            CardProcessorKind.Square.ToString(),
+            attempt.Environment,
+            attempt.StoreCode,
+            attempt.DeviceCode,
+            attempt.AttemptGuid,
+            null,
+            attempt.OperationGuid,
+            attempt.CheckoutId ?? attempt.IdempotencyKey,
+            decision.ToString(),
+            operatorCashierId,
+            operatorUserGuid,
+            operatorName,
+            reason,
+            evidence,
+            reference,
+            null,
+            resolvedAt,
+            auditEventId,
+            JsonSerializer.Serialize(auditEvent, JsonOptions));
     }
 
     private static CardRefundSupervisorDecision MapRefundDecision(CardRecoverySupervisorDecision decision) => decision switch

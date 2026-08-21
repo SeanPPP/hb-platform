@@ -94,6 +94,16 @@ public sealed class SquarePaymentAttemptContextAccessor : ISquarePaymentAttemptC
     }
 }
 
+public sealed record SquarePaymentResolution(
+    Guid AttemptGuid,
+    CardRecoverySupervisorDecision Decision,
+    string Reason,
+    string? Evidence,
+    string? PaymentReference,
+    LocalSquarePaymentAttemptStatus ExpectedStatus,
+    DateTimeOffset ExpectedUpdatedAt,
+    DateTimeOffset ResolvedAt);
+
 public interface ILocalSquarePaymentAttemptRepository
 {
     Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default);
@@ -264,7 +274,7 @@ public interface ILocalSquarePaymentAttemptRepository
         string deviceCode,
         string environment,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>([]);
+        throw new NotSupportedException("Open attempt queue is not wired for this repository.");
 
     Task<bool> ResolveRefundAsync(
         CardRefundAttemptResolution resolution,
@@ -276,6 +286,12 @@ public interface ILocalSquarePaymentAttemptRepository
         LocalFinancialSupervisorResolution journal,
         CancellationToken cancellationToken = default) =>
         ResolveRefundAsync(resolution, cancellationToken);
+
+    Task<bool> ResolvePaymentWithJournalAsync(
+        SquarePaymentResolution resolution,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
 
     Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default);
 }
@@ -658,6 +674,131 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         }
 
         return ResolveRefundCoreAsync(resolution, journal, cancellationToken);
+    }
+
+    public async Task<bool> ResolvePaymentWithJournalAsync(
+        SquarePaymentResolution resolution,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        if (journal.Target != LocalFinancialSupervisorResolutionTarget.ActiveSession ||
+            journal.AttemptGuid != resolution.AttemptGuid)
+        {
+            throw new ArgumentException("主管结案 journal 与 Square 付款 attempt 不匹配。", nameof(journal));
+        }
+
+        var sql = resolution.Decision switch
+        {
+            CardRecoverySupervisorDecision.ConfirmProcessed => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    PaymentId = $PaymentId,
+                    PaymentStatus = $PaymentStatus,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    CompletedAt = $ResolvedAt,
+                    ResolvedAt = $ResolvedAt,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Sale'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                """,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    CheckoutId = NULL,
+                    CheckoutStatus = NULL,
+                    CancelReason = NULL,
+                    PaymentId = NULL,
+                    PaymentStatus = NULL,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    CompletedAt = NULL,
+                    OrderCompletedAt = NULL,
+                    ResolvedAt = NULL,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Sale'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                """,
+            _ => """
+                UPDATE LocalSquarePaymentAttempts
+                SET Status = $Status,
+                    ResponseCode = $ResponseCode,
+                    ResponseText = $ResponseText,
+                    UpdatedAt = $ResolvedAt
+                WHERE AttemptGuid = $AttemptGuid
+                  AND OperationKind = 'Sale'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                """
+        };
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$AttemptGuid", resolution.AttemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", resolution.Decision switch
+        {
+            CardRecoverySupervisorDecision.ConfirmProcessed => LocalSquarePaymentAttemptStatus.PaymentVerified.ToString(),
+            CardRecoverySupervisorDecision.ConfirmNotProcessed => LocalSquarePaymentAttemptStatus.Pending.ToString(),
+            _ => LocalSquarePaymentAttemptStatus.Recovering.ToString()
+        });
+        command.Parameters.AddWithValue(
+            "$PaymentId",
+            resolution.Decision == CardRecoverySupervisorDecision.ConfirmProcessed
+                ? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
+                : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "$PaymentStatus",
+            resolution.Decision == CardRecoverySupervisorDecision.ConfirmProcessed
+                ? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
+                : DBNull.Value);
+        command.Parameters.AddWithValue("$ResponseCode", resolution.Decision switch
+        {
+            CardRecoverySupervisorDecision.ConfirmProcessed => ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed => ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            _ => ActiveSessionSupervisorResolutionCodes.ContinueWaiting
+        });
+        command.Parameters.AddWithValue("$ResponseText", BuildPaymentResolutionText(resolution));
+        command.Parameters.AddWithValue("$ResolvedAt", resolution.ResolvedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ExpectedStatus", resolution.ExpectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", resolution.ExpectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$ResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        await LocalFinancialSupervisorResolutionRepository.InsertAsync(
+            connection,
+            transaction,
+            journal,
+            cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    private static string BuildPaymentResolutionText(SquarePaymentResolution resolution)
+    {
+        var reason = Normalize(resolution.Reason) ?? string.Empty;
+        var evidence = Normalize(resolution.Evidence);
+        return evidence is null
+            ? reason
+            : string.IsNullOrWhiteSpace(reason)
+                ? $"Evidence: {evidence}"
+                : $"{reason} Evidence: {evidence}";
     }
 
     private async Task<bool> ResolveRefundCoreAsync(
