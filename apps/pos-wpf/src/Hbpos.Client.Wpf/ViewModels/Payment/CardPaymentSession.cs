@@ -23,6 +23,8 @@ internal sealed class CardPaymentSession
     private bool _discardLateCardResultAfterManualCancel;
     private bool _cardPaymentResultUnknownRequiresRecovery;
     private CardPaymentHandoffCandidate? _cardPaymentHandoffCandidate;
+    private CardRecoveryAttemptKey? _recoveryAttemptKey;
+    private Guid? _recoveryOrderGuid;
     private string? _unknownResultStatusKey;
     private string? _unknownResultStatusMessage;
     private TaskCompletionSource<bool>? _pendingLinklyFallbackPrompt;
@@ -41,6 +43,10 @@ internal sealed class CardPaymentSession
     public bool IsAwaitingLateResult => _awaitingLateCardResultAfterManualCancel;
     public bool HasPendingFallbackPrompt => _pendingLinklyFallbackPrompt is not null;
 
+    public CardRecoveryAttemptKey? RecoveryAttemptKey => _recoveryAttemptKey;
+
+    public Guid? RecoveryOrderGuid => _recoveryOrderGuid;
+
     // ── State accessors (used by PaymentViewModel) ──
 
     public void SetResultUnknownRecoveryRequired(bool value)
@@ -49,6 +55,8 @@ internal sealed class CardPaymentSession
         if (!value)
         {
             _cardPaymentHandoffCandidate = null;
+            _recoveryAttemptKey = null;
+            _recoveryOrderGuid = null;
             _unknownResultStatusKey = null;
             _unknownResultStatusMessage = null;
         }
@@ -60,6 +68,9 @@ internal sealed class CardPaymentSession
 
     public CancellationTokenSource BeginCardPayment()
     {
+        _cardPaymentHandoffCandidate = null;
+        _recoveryAttemptKey = null;
+        _recoveryOrderGuid = null;
         _cardPaymentCancellationRequested = false;
         _awaitingLateCardResultAfterManualCancel = false;
         _discardLateCardResultAfterManualCancel = false;
@@ -272,13 +283,23 @@ internal sealed class CardPaymentSession
         {
             _cardPaymentResultUnknownRequiresRecovery = true;
             _cardPaymentHandoffCandidate = null;
+            _recoveryAttemptKey = result.RecoveryAttemptKey is { AttemptGuid: var attemptGuid } key &&
+                attemptGuid != Guid.Empty
+                ? key
+                : null;
+            _recoveryOrderGuid = result.RecoveryOrderGuid is { } orderGuid && orderGuid != Guid.Empty
+                ? orderGuid
+                : null;
             _unknownResultStatusKey = result.StatusKey;
             _unknownResultStatusMessage = result.StatusMessage;
             _vm.IsPaymentInteractionLocked = true;
             RestoreUnknownResultStatus();
             ResetManualCancellationState();
             ShowOverlayIfTerminalError(result);
-            await PrepareCardPaymentHandoffAsync();
+            if (_recoveryAttemptKey is not null && _recoveryOrderGuid is not null)
+            {
+                await PrepareCardPaymentHandoffAsync();
+            }
             _vm.NotifyPaymentCommandStates();
             return true;
         }
@@ -423,6 +444,8 @@ internal sealed class CardPaymentSession
 
             _cardPaymentResultUnknownRequiresRecovery = false;
             _cardPaymentHandoffCandidate = null;
+            _recoveryAttemptKey = null;
+            _recoveryOrderGuid = null;
             _unknownResultStatusKey = null;
             _unknownResultStatusMessage = null;
             _vm.CompleteCardPaymentHandoff();

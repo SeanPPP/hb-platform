@@ -660,11 +660,6 @@ public sealed class SquarePaymentRecoveryService(
             !string.IsNullOrWhiteSpace(attempt.PaymentId) &&
             !string.IsNullOrWhiteSpace(attempt.PaymentStatus))
         {
-            if (TryDeferForCurrentCart(cart, attempt, "payment-already-verified", out var deferredResult))
-            {
-                return deferredResult;
-            }
-
             return await CompleteVerifiedAttemptAsync(
                 attempt,
                 draft,
@@ -703,13 +698,13 @@ public sealed class SquarePaymentRecoveryService(
             return new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.Checking, checkingMessage);
         }
 
-        if (TryDeferForCurrentCart(cart, attempt, $"checkout-final-{checkoutStatus.Status}", out var finalDeferredResult))
-        {
-            return finalDeferredResult;
-        }
-
         if (string.Equals(checkoutStatus.Status, "CANCELED", StringComparison.OrdinalIgnoreCase))
         {
+            if (TryDeferForCurrentCart(cart, attempt, "checkout-final-CANCELED", out var deferredResult))
+            {
+                return deferredResult;
+            }
+
             cart.RestoreSnapshot(draft.CartSnapshot);
             await RunLocalStoreAsync(
                 () => attemptRepository.UpdateCheckoutStatusAsync(

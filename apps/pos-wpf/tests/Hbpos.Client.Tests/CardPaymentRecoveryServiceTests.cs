@@ -55,7 +55,14 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.True(await scope.Repository.TryActivateClaimAsync(
             claimId, "prepare-card", "activate-card", serverRevision: null, "2026-07-28T00:00:01.000Z"));
 
-        var attempt = CreateAttempt(sessionId: "SESSION-001", txnRef: "TXN-001");
+        var draft = CreateDraft();
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-001",
+            txnRef: "TXN-001",
+            draft: draft with
+            {
+                CartSnapshot = draft.CartSnapshot with { SharedHeldOrderClaimId = claimId }
+            });
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
@@ -64,7 +71,7 @@ public sealed class CardPaymentRecoveryServiceTests
         };
         var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
 
-        // 当前 UI 购物车为空：恢复必须使用 draft 中冻结的 CartSnapshot 解析来源。
+        // 当前 UI 购物车为空：恢复必须使用 draft 中冻结的 durable claim binding 解析来源。
         var result = await service.RecoverLatestAsync(new PosCartService(), Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
@@ -189,10 +196,15 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.True(await scope.Repository.TryActivateClaimAsync(
             claimId, "prepare-card-local", "activate-card-local", serverRevision: null, "2026-07-28T00:00:01.000Z"));
 
+        var draft = CreateDraft();
         var attempt = CreateAttempt(
             sessionId: null,
             txnRef: "LOCAL-TXN-001",
-            connectionMode: LinklyConnectionMode.LocalIp);
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft with
+            {
+                CartSnapshot = draft.CartSnapshot with { SharedHeldOrderClaimId = claimId }
+            });
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient();
@@ -1258,7 +1270,7 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
-    public async Task RecoverLatestAsync_approved_with_non_empty_current_cart_defers_without_saving_or_acknowledging()
+    public async Task RecoverLatestAsync_approved_with_non_empty_current_cart_completes_old_order_without_overwriting_cart()
     {
         var attempt = CreateAttempt(sessionId: "SESSION-001", txnRef: "TXN-001");
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
@@ -1272,13 +1284,13 @@ public sealed class CardPaymentRecoveryServiceTests
 
         var result = await service.RecoverLatestAsync(cart, Session);
 
-        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
         Assert.Single(cart.Lines);
         Assert.Equal("CURRENT-SKU", cart.Lines[0].ProductCode);
-        Assert.Equal(0, orders.SaveCount);
-        Assert.Equal(0, backend.AcknowledgeCallCount);
-        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
-        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.NotNull(attempts.AcknowledgedAt);
     }
 
     [Theory]
@@ -1308,7 +1320,7 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
-    public async Task RecoverLatestAsync_square_verified_with_non_empty_current_cart_defers_without_saving_or_completing()
+    public async Task RecoverLatestAsync_square_verified_with_non_empty_current_cart_completes_old_order_without_overwriting_cart()
     {
         var attempt = CreateSquareAttempt(
             LocalSquarePaymentAttemptStatus.PaymentVerified,
@@ -1322,13 +1334,12 @@ public sealed class CardPaymentRecoveryServiceTests
 
         var result = await service.RecoverLatestAsync(cart, Session);
 
-        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
-        Assert.Contains("current cart already contains items", result.Message);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
         Assert.Single(cart.Lines);
         Assert.Equal("CURRENT-SKU", cart.Lines[0].ProductCode);
-        Assert.Equal(0, orders.SaveCount);
-        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
-        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(1, attempts.MarkOrderCompletedCount);
         Assert.Equal(0, attempts.MarkFailedCount);
     }
 

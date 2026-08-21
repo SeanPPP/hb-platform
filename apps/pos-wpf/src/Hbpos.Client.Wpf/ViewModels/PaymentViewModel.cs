@@ -678,7 +678,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     }
 
     internal CardPaymentHandoffRequest CreateCardPaymentHandoffRequest() =>
-        new(Session, _cart.CreateSnapshot(), PaymentTenders.ToArray(), ActualAmount);
+        new(
+            Session,
+            _cart.CreateSnapshot(),
+            PaymentTenders.ToArray(),
+            ActualAmount,
+            _cardSession.RecoveryAttemptKey,
+            _cardSession.RecoveryOrderGuid);
 
     internal void ConfigureCardPaymentHandoff(
         Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>> prepareAsync,

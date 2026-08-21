@@ -726,6 +726,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _confirmationDialogService,
             _customerDisplayOrchestrator,
             _linklyFallbackPromptCoordinator,
+            _cardPaymentRecoveryService,
+            HandleCardRecoveryCenterResultAsync,
             SyncCatalogAndReloadAsync,
             ResetCatalogAndReloadAsync,
             _checkForAppUpdateAsync,
@@ -740,7 +742,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var cardRecoveryPresenter = _cardRecoveryPresenter!;
                 vm.ConfigureCardPaymentHandoff(
                     cardRecoveryPresenter.PrepareCardPaymentHandoffAsync,
-                    cardRecoveryPresenter.HandoffCardPaymentAsync);
+                    async (candidate, request) =>
+                    {
+                        var handedOff = await cardRecoveryPresenter.HandoffCardPaymentAsync(candidate, request);
+                        if (handedOff)
+                        {
+                            await RefreshCardRecoveryCountAsync();
+                        }
+
+                        return handedOff;
+                    },
+                    () => _ = _screenNavigator.ShowCardRecoveryCenterAsync());
             },
             onPaymentDisposed: vm =>
             {
@@ -1382,7 +1394,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onOpenCashDrawerAsync: OpenCashDrawerAsync,
             onExitApplicationAsync: ExitApplicationAsync,
             tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync,
-            onLockCashierAsync: LockCashierAsync);
+            onLockCashierAsync: LockCashierAsync,
+            onOpenCardRecoveryCenterAsync: _screenNavigator.ShowCardRecoveryCenterAsync);
         // POS 页面在启动或重注册后才创建，考勤面板必须在此处随新页面挂载。
         PosTerminal.AttendanceQrPanel = _attendanceQrPanel;
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
@@ -2331,13 +2344,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (Session.CashierSession is null)
         {
-            // 启动恢复会触发状态弹窗和小票打印，必须等收银员身份建立后再执行。
+            // 启动阶段只统计异常数量；等收银员身份建立后再按当前门店、设备与环境查询。
             _startupCardRecoveryPendingAfterCashierLogin = true;
             return;
         }
 
         _startupCardRecoveryPendingAfterCashierLogin = false;
-        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await RefreshCardRecoveryCountAsync();
     }
 
     private async Task RecoverPendingStartupCardPaymentAttemptAfterLoginAsync()
@@ -2347,9 +2360,72 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // pending 只消费一次，避免切换/重复登录时重复恢复同一笔启动交易。
+        // pending 只消费一次；这里只刷新提示数量，不查询终端、不恢复订单，也不弹阻断对话框。
         _startupCardRecoveryPendingAfterCashierLogin = false;
-        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await RefreshCardRecoveryCountAsync();
+    }
+
+    private async Task RefreshCardRecoveryCountAsync()
+    {
+        if (_cardPaymentRecoveryService is null || PosTerminal is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(Session, CancellationToken.None);
+            PosTerminal.CardRecoveryOpenCount = openAttempts.Count;
+        }
+        catch (Exception ex)
+        {
+            // 异常中心不可用不能阻断收银；保留现有数量并记录诊断，稍后可在专门页面手动刷新。
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"startup queue scan failed store={Session.StoreCode} device={Session.DeviceCode} error={ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private async Task HandleCardRecoveryCenterResultAsync(CardPaymentRecoveryResult result)
+    {
+        if (result.UpdatedSession is not null)
+        {
+            Session = result.UpdatedSession;
+        }
+
+        StatusMessage = result.Message;
+        if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted)
+        {
+            // 旧单由持久化快照独立完成；这里只刷新壳层状态，绝不跳成功页或清理正在进行的新购物车。
+            if (result.Order is not null)
+            {
+                _lastCompletedOrder = result.Order;
+            }
+
+            PosTerminal?.RefreshCart();
+            CashPayment?.RefreshCart();
+            await RefreshPendingSyncAsync();
+            return;
+        }
+
+        if (result.Outcome != CardPaymentRecoveryOutcome.DraftRestored)
+        {
+            return;
+        }
+
+        // 未付款旧单只会在当前购物车为空时由恢复服务还原；回到支付页继续，不触碰其他活动订单。
+        _screenNavigator.PrepareCachedCashPaymentScreen();
+        CashPayment?.PrepareForEntry(Session);
+        if (result.RestoredTenders is { Count: > 0 })
+        {
+            CashPayment?.RestoreRecoveredPaymentTenders(result.RestoredTenders, result.Message);
+        }
+        else
+        {
+            CashPayment?.RefreshCart();
+        }
+
+        CurrentScreen = CashPayment;
     }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;

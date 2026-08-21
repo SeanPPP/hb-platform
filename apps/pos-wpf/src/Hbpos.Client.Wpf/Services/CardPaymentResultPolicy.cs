@@ -64,7 +64,6 @@ public sealed class LinklyCardPaymentResultPolicy : ICardPaymentResultPolicy
         return result.StatusKey switch
         {
             "payment.card.resultUnknown" or
-            "linkly.backend.activeSessionRequiresRecovery" or
             "linkly.backend.resultUnknown" or
             "linkly.backend.cancelledUnknown" or
             "linkly.cloud.resultUnknown" => new(

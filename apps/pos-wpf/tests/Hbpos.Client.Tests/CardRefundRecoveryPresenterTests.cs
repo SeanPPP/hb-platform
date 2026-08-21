@@ -77,7 +77,7 @@ public sealed class CardRefundRecoveryPresenterTests
     }
 
     [Fact]
-    public async Task Resolve_payment_uses_audit_permission_and_authorizing_supervisor_identity()
+    public async Task Resolve_payment_uses_audit_permission_and_authorizing_supervisor_identity_without_global_lock()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var authorization = new StubOperationAuthorizationService(CreateCashier(
@@ -118,11 +118,11 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.Equal("Bank portal shows approved", resolution.Evidence);
         Assert.Equal(string.Empty, resolution.Reason);
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
-        Assert.Contains(lockChanges, change => !change.Blocked);
+        Assert.Empty(lockChanges);
     }
 
     [Fact]
-    public async Task Resolve_payment_continue_waiting_keeps_dialog_and_payment_locked()
+    public async Task Resolve_payment_continue_waiting_keeps_dialog_without_global_payment_lock()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var authorization = new StubOperationAuthorizationService(CreateCashier(
@@ -152,12 +152,12 @@ public sealed class CardRefundRecoveryPresenterTests
 
         Assert.True(presenter.IsCardRecoveryResultDialogOpen);
         Assert.Equal("Continue waiting for the bank.", dialog.RefundResolutionMessage);
-        Assert.Contains(lockChanges, change => change.Blocked);
+        Assert.Empty(lockChanges);
         Assert.Equal(CardPaymentSupervisorDecision.ContinueWaiting, recovery.PaymentResolution?.Decision);
     }
 
     [Fact]
-    public async Task Active_session_unknown_exposes_supervisor_resolution_and_close_keeps_payment_locked()
+    public async Task Active_session_unknown_exposes_supervisor_resolution_and_close_without_global_payment_lock()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var recovery = new StubRecoveryService
@@ -184,11 +184,11 @@ public sealed class CardRefundRecoveryPresenterTests
         presenter.CloseCardRecoveryResultDialogCommand.Execute(null);
 
         Assert.False(await recoveryTask);
-        Assert.Contains(lockChanges, change => change.Blocked);
+        Assert.Empty(lockChanges);
     }
 
     [Fact]
-    public async Task Active_session_continue_waiting_keeps_supervisor_dialog_and_payment_locked()
+    public async Task Active_session_continue_waiting_keeps_supervisor_dialog_without_global_payment_lock()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var recovery = new StubRecoveryService
@@ -219,7 +219,7 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.True(presenter.IsCardRecoveryResultDialogOpen);
         Assert.False(recoveryTask.IsCompleted);
         Assert.Equal("Continue waiting for the active session.", dialog.RefundResolutionMessage);
-        Assert.Contains(lockChanges, change => change.Blocked);
+        Assert.Empty(lockChanges);
 
         presenter.CloseCardRecoveryResultDialogCommand.Execute(null);
         Assert.False(await recoveryTask);

@@ -12,8 +12,19 @@ internal static class CardPaymentHandoffQualification
         IReadOnlyList<CardRecoveryQueueItem> openAttempts,
         CardPaymentHandoffRequest request)
     {
+        if (request.RecoveryAttemptKey is not { AttemptGuid: var attemptGuid } key ||
+            attemptGuid == Guid.Empty ||
+            request.RecoveryOrderGuid is not { } orderGuid ||
+            orderGuid == Guid.Empty)
+        {
+            return null;
+        }
+
         var matches = openAttempts
-            .Where(item => IsMatchingAttempt(item, request))
+            .Where(item =>
+                item.Processor == key.Processor &&
+                item.AttemptGuid == key.AttemptGuid &&
+                IsMatchingAttempt(item, request))
             .Take(2)
             .ToArray();
         return matches.Length == 1
@@ -35,6 +46,10 @@ internal static class CardPaymentHandoffQualification
         CardPaymentHandoffRequest request)
     {
         if (item.AttemptGuid == Guid.Empty ||
+            request.RecoveryAttemptKey is not { } key ||
+            request.RecoveryOrderGuid is not { } expectedOrderGuid ||
+            item.Processor != key.Processor ||
+            item.AttemptGuid != key.AttemptGuid ||
             string.Equals(item.OperationKind, "ActiveSession", StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(item.OrderDraftJson) ||
             !string.Equals(item.StoreCode, request.Session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
@@ -55,6 +70,7 @@ internal static class CardPaymentHandoffQualification
 
         if (draft is null ||
             draft.OrderGuid == Guid.Empty ||
+            draft.OrderGuid != expectedOrderGuid ||
             draft.Session is null ||
             draft.CartSnapshot?.Lines is not { Count: > 0 } ||
             draft.CurrentTenders is null ||

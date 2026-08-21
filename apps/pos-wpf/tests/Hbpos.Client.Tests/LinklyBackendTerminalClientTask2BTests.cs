@@ -45,7 +45,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_returns_result_unknown_and_skips_new_charge_when_preflight_takeover_fails()
+    public async Task PurchaseAsync_returns_not_submitted_and_skips_new_charge_when_preflight_takeover_fails()
     {
         var requests = new List<HttpRequestMessage>();
         var accessor = new LinklyPaymentAttemptContextAccessor();
@@ -66,7 +66,8 @@ public sealed class LinklyBackendTerminalClientTask2BTests
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
         Assert.False(result.Approved);
-        Assert.True(result.ResultUnknown);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.DoesNotContain(requests, request => request.Method == HttpMethod.Post);
     }
 
@@ -151,7 +152,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 or 4 =>
                     new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
-                3 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD")),
+                3 or 5 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD")),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
             };
         });
@@ -166,8 +167,45 @@ public sealed class LinklyBackendTerminalClientTask2BTests
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
         Assert.False(result.Approved);
-        Assert.True(result.ResultUnknown);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.Equal(["conflict-session-1"], takeoverInvocations);
+        Assert.Equal(2, requests.Count(request => request.Method == HttpMethod.Post));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_captures_different_session_after_second_conflict_without_third_start()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var takeoverInvocations = new List<string?>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new RecordingHandler((request, _) =>
+        {
+            requests.Add(CloneRequest(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 or 4 =>
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                3 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD-1")),
+                5 => JsonResponse(ActiveSessionJson("conflict-session-2", "TXN-OLD-2")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, accessor);
+        using var scope = accessor.Begin(CreateContext(
+            takeOver: (_, activeStatus, _) =>
+            {
+                takeoverInvocations.Add(activeStatus.SessionId);
+                return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
+            }));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
+        Assert.Equal(["conflict-session-1", "conflict-session-2"], takeoverInvocations);
         Assert.Equal(2, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
@@ -196,7 +234,38 @@ public sealed class LinklyBackendTerminalClientTask2BTests
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
         Assert.False(result.Approved);
-        Assert.True(result.ResultUnknown);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
+        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_mark_new_attempt_unknown_when_conflict_session_lookup_fails()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new RecordingHandler((request, _) =>
+        {
+            requests.Add(CloneRequest(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 =>
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                3 => throw new HttpRequestException("Active session lookup failed."),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, accessor);
+        using var scope = accessor.Begin(CreateContext(
+            takeOver: (_, _, _) => Task.FromResult(LinklyActiveSessionTakeoverResult.Success)));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
@@ -220,8 +289,66 @@ public sealed class LinklyBackendTerminalClientTask2BTests
                 return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
             }));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+        await Assert.ThrowsAsync<CardTerminalNotSubmittedException>(
             () => client.PurchaseAsync(10m, CreateSession(), CreateSettings(), callerCts.Token));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_treats_cancellation_returned_from_preflight_takeover_as_not_submitted()
+    {
+        using var callerCts = new CancellationTokenSource();
+        var requests = new List<HttpRequestMessage>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new RecordingHandler((request, _) =>
+        {
+            requests.Add(CloneRequest(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => JsonResponse(ActiveSessionJson("active-session-1", "TXN-OLD")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, accessor);
+        using var scope = accessor.Begin(CreateContext(
+            takeOver: (_, _, _) =>
+            {
+                callerCts.Cancel();
+                return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
+            }));
+
+        await Assert.ThrowsAsync<CardTerminalNotSubmittedException>(
+            () => client.PurchaseAsync(10m, CreateSession(), CreateSettings(), callerCts.Token));
+
+        Assert.DoesNotContain(requests, request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_unknown_when_caller_cancels_after_start_request_is_sent()
+    {
+        using var callerCts = new CancellationTokenSource();
+        var requests = new List<HttpRequestMessage>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new RecordingHandler((request, _) =>
+        {
+            requests.Add(CloneRequest(request));
+            if (request.Method == HttpMethod.Post)
+            {
+                callerCts.Cancel();
+                throw new OperationCanceledException(callerCts.Token);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+        var client = CreateClient(handler, accessor);
+        using var scope = accessor.Begin(CreateContext(takeOver: null));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings(), callerCts.Token);
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.cancelledUnknown", result.StatusKey);
+        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
     private static LinklyBackendTerminalClient CreateClient(

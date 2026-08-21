@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.IO;
+using BlazorApp.Shared.Constants;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Tests;
@@ -423,6 +425,46 @@ public sealed class CardRecoveryCenterTests
         Assert.True(result.Succeeded);
         Assert.NotNull(repository.LastPaymentResolution);
         Assert.Equal(attempt.AttemptGuid, repository.LastPaymentResolution!.AttemptGuid);
+    }
+
+    [Fact]
+    public async Task Linkly_ResolveAttemptAsync_uses_one_shot_supervisor_as_resolution_operator()
+    {
+        var attempt = CreateLinklyAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000058"),
+            LocalCardPaymentAttemptStatus.Recovering,
+            "ActiveSession",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            sessionId: "SESSION-AUTH");
+        var repository = new FakeLinklyAttemptRepository(attempt);
+        var service = CreateLinklyService(repository);
+        var requester = CreateCashierSession("C001", "USER-C001", "Alice");
+        var supervisor = CreateCashierSession("SUP-1", "USER-SUP-1", "Manager");
+        var session = Session with { CashierSession = requester };
+        using var authorization = new OperationAuthorizationScope(
+            requester,
+            Permissions.PosTerminal.Audit.View,
+            "CardRecoveryCenter",
+            "confirm-paid");
+        authorization.SetAuthorizingSession(supervisor);
+        using var active = authorization.Activate();
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ContinueWaiting,
+            "wait",
+            evidence: null,
+            reference: null,
+            new PosCartService(),
+            session);
+
+        Assert.True(result.Succeeded);
+        Assert.NotNull(repository.LastPaymentResolution);
+        Assert.NotNull(repository.LastPaymentJournal);
+        Assert.Equal("SUP-1", repository.LastPaymentJournal!.OperatorCashierId);
+        Assert.Equal("USER-SUP-1", repository.LastPaymentJournal.OperatorUserGuid);
+        Assert.Equal("Manager", repository.LastPaymentJournal.OperatorName);
     }
 
     [Fact]
@@ -854,6 +896,25 @@ public sealed class CardRecoveryCenterTests
         Assert.Equal(0, repository.TerminalizeNotPaidCount);
     }
 
+    private static CashierSessionDto CreateCashierSession(
+        string cashierId,
+        string userGuid,
+        string cashierName) =>
+        new(
+            cashierId,
+            userGuid,
+            cashierName,
+            Session.StoreCode,
+            Session.DeviceCode,
+            ["Supervisor"],
+            [Permissions.PosTerminal.Audit.View],
+            [Session.StoreCode],
+            IsSuperAdmin: false,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false,
+            AuthorizationToken: $"token-{cashierId}",
+            AuthorizationExpiresAtUtc: DateTimeOffset.UtcNow.AddHours(1));
+
     private static CardPaymentRecoveryService CreateLinklyService(
         FakeLinklyAttemptRepository repository,
         ILinklyBackendTerminalClient? backend = null,
@@ -1125,6 +1186,8 @@ public sealed class CardRecoveryCenterTests
 
         public ActiveSessionResolution? LastPaymentResolution { get; private set; }
 
+        public LocalFinancialSupervisorResolution? LastPaymentJournal { get; private set; }
+
         public Task<LocalCardPaymentAttempt?> GetAttemptAsync(
             Guid attemptGuid,
             CancellationToken cancellationToken = default)
@@ -1171,6 +1234,7 @@ public sealed class CardRecoveryCenterTests
             CancellationToken cancellationToken = default)
         {
             LastPaymentResolution = resolution;
+            LastPaymentJournal = journal;
             return Task.FromResult(true);
         }
 

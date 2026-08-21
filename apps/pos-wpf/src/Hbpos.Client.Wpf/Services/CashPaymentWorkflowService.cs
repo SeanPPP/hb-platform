@@ -694,7 +694,9 @@ public sealed class CashPaymentWorkflowService(
             {
                 return CreateCardFailureResult(
                     "payment.card.resultUnknown",
-                    "A matching card refund is already in progress or requires supervisor reconciliation.");
+                    "A matching card refund is already in progress or requires supervisor reconciliation.",
+                    recoveryAttempt: attempt,
+                    squareRecoveryAttempt: squareAttempt);
             }
 
             var durableRefundConfigured = cardTerminalSettingsProvider is not null &&
@@ -721,7 +723,9 @@ public sealed class CashPaymentWorkflowService(
             {
                 return CreateCardFailureResult(
                     "payment.card.resultUnknown",
-                    "The card refund adapter cannot safely reuse the persisted attempt.");
+                    "The card refund adapter cannot safely reuse the persisted attempt.",
+                    recoveryAttempt: attempt,
+                    squareRecoveryAttempt: squareAttempt);
             }
 
             try
@@ -743,7 +747,8 @@ public sealed class CashPaymentWorkflowService(
                     {
                         return CreateCardFailureResult(
                             "payment.card.resultUnknown",
-                            "The card refund attempt is already being processed or was reconciled.");
+                            "The card refund attempt is already being processed or was reconciled.",
+                            recoveryAttempt: attempt);
                     }
 
                     attempt = attempt with
@@ -771,7 +776,8 @@ public sealed class CashPaymentWorkflowService(
                     {
                         return CreateCardFailureResult(
                             "payment.card.resultUnknown",
-                            "The card refund attempt is already being processed or was reconciled.");
+                            "The card refund attempt is already being processed or was reconciled.",
+                            squareRecoveryAttempt: squareAttempt);
                     }
 
                     squareAttempt = squareAttempt with
@@ -890,6 +896,7 @@ public sealed class CashPaymentWorkflowService(
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
+            var definitelyNotSubmitted = ex is CardTerminalNotSubmittedException;
             LocalCardPaymentAttempt? linklyAttemptAfterException;
             LocalSquarePaymentAttempt? squareAttemptAfterException;
             try
@@ -907,22 +914,29 @@ public sealed class CashPaymentWorkflowService(
             }
             catch (Exception readException) when (readException is not OutOfMemoryException and not StackOverflowException)
             {
-                // 异常时无法可靠读取提交边界，必须保守锁定，不能让 UI 将其当作普通失败并释放券。
                 LogCardRecoveryWarning("read-attempt", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, readException);
+                if (definitelyNotSubmitted && cancellationToken.IsCancellationRequested)
+                {
+                    return CreateCardFailureResult("payment.status.cardCancelled");
+                }
+
+                // 未收到“提交前取消”信号且无法可靠读取提交边界时，必须保守锁定。
                 return CreateCardFailureResult("payment.card.resultUnknown");
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
-            var wasSubmitted = linklySubmissionObserved ||
+            var wasSubmitted = !definitelyNotSubmitted && (
+                linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
-                !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId);
+                !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
             {
                 // 终端已接单后任何异常都不能被当成失败并允许重新收款。
+                var recoveryPersistenceSucceeded = true;
                 try
                 {
                     if (linklyAttemptAfterException is not null &&
@@ -982,54 +996,91 @@ public sealed class CashPaymentWorkflowService(
                 }
                 catch (Exception persistException) when (persistException is not OutOfMemoryException and not StackOverflowException)
                 {
+                    recoveryPersistenceSucceeded = false;
                     LogCardRecoveryWarning("persist-recovery", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, persistException);
                 }
 
-                return CreateCardFailureResult("payment.card.resultUnknown");
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    recoveryAttempt: recoveryPersistenceSucceeded ? linklyAttemptAfterException : null,
+                    squareRecoveryAttempt: recoveryPersistenceSucceeded ? squareAttemptAfterException : null);
             }
 
             try
             {
                 if (attempt is not null)
                 {
+                    var attemptStatus = ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                        ? LocalCardPaymentAttemptStatus.Cancelled
+                        : LocalCardPaymentAttemptStatus.Failed;
+                    var attemptMessage = ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                        ? "Card payment was canceled before terminal submission."
+                        : "Card terminal request failed before terminal submission.";
                     await RunLocalStoreAsync(
-                        () => cardPaymentAttemptRepository!.UpdateOutcomeAsync(
-                            attempt.AttemptGuid,
-                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
-                                ? LocalCardPaymentAttemptStatus.Cancelled
-                                : LocalCardPaymentAttemptStatus.Failed,
-                            null,
-                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
-                                ? "Card payment was canceled before terminal submission."
-                                : "Card terminal request failed before terminal submission.",
-                            null,
-                            DateTimeOffset.UtcNow,
-                            CancellationToken.None),
+                        () => refundSubmissionToken is not null
+                            ? RequireRefundCasAsync(
+                                cardPaymentAttemptRepository!.TryUpdateRefundOutcomeAsync(
+                                    attempt.AttemptGuid,
+                                    refundSubmissionToken,
+                                    attemptStatus,
+                                    null,
+                                    attemptMessage,
+                                    null,
+                                    DateTimeOffset.UtcNow,
+                                    CancellationToken.None))
+                            : cardPaymentAttemptRepository!.UpdateOutcomeAsync(
+                                attempt.AttemptGuid,
+                                attemptStatus,
+                                null,
+                                attemptMessage,
+                                null,
+                                DateTimeOffset.UtcNow,
+                                CancellationToken.None),
                         CancellationToken.None);
                 }
 
                 if (squareAttempt is not null)
                 {
+                    var squareStatus = ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                        ? LocalSquarePaymentAttemptStatus.Canceled
+                        : LocalSquarePaymentAttemptStatus.Failed;
+                    var squareMessage = ex is OperationCanceledException && cancellationToken.IsCancellationRequested
+                        ? "Card payment was canceled before terminal submission."
+                        : "Card terminal request failed before terminal submission.";
                     await RunLocalStoreAsync(
-                        () => squarePaymentAttemptRepository!.MarkFailedAsync(
-                            squareAttempt.AttemptGuid,
-                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
-                                ? LocalSquarePaymentAttemptStatus.Canceled
-                                : LocalSquarePaymentAttemptStatus.Failed,
-                            null,
-                            null,
-                            null,
-                            ex is OperationCanceledException && cancellationToken.IsCancellationRequested
-                                ? "Card payment was canceled before terminal submission."
-                                : "Card terminal request failed before terminal submission.",
-                            DateTimeOffset.UtcNow,
-                            CancellationToken.None),
+                        () => refundSubmissionToken is not null
+                            ? RequireRefundCasAsync(
+                                squarePaymentAttemptRepository!.TryMarkRefundFailedAsync(
+                                    squareAttempt.AttemptGuid,
+                                    refundSubmissionToken,
+                                    squareStatus,
+                                    null,
+                                    null,
+                                    null,
+                                    squareMessage,
+                                    DateTimeOffset.UtcNow,
+                                    CancellationToken.None,
+                                    cancelReason: null))
+                            : squarePaymentAttemptRepository!.MarkFailedAsync(
+                                squareAttempt.AttemptGuid,
+                                squareStatus,
+                                null,
+                                null,
+                                null,
+                                squareMessage,
+                                DateTimeOffset.UtcNow,
+                                CancellationToken.None),
                         CancellationToken.None);
                 }
             }
             catch (Exception persistException) when (persistException is not OutOfMemoryException and not StackOverflowException)
             {
                 LogCardRecoveryWarning("persist-failure", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, persistException);
+                if (definitelyNotSubmitted && cancellationToken.IsCancellationRequested)
+                {
+                    return CreateCardFailureResult("payment.status.cardCancelled");
+                }
+
                 return CreateCardFailureResult("payment.card.resultUnknown");
             }
 
@@ -1067,6 +1118,7 @@ public sealed class CashPaymentWorkflowService(
             if (hasUnresolvedSquareAttempt)
             {
                 const string squareResultUnknownMessage = "Square checkout result could not be confirmed. Recovery is required.";
+                var squareRecoveryPersisted = false;
                 try
                 {
                     await MarkSquareAttemptRequiresRecoveryAsync(
@@ -1074,13 +1126,17 @@ public sealed class CashPaymentWorkflowService(
                         authorization,
                         squareResultUnknownMessage,
                         refundSubmissionToken);
+                    squareRecoveryPersisted = true;
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     LogCardRecoveryWarning("persist-square-recovery", squareAttempt.AttemptGuid, ex);
                 }
 
-                return CreateCardFailureResult("payment.card.resultUnknown", squareResultUnknownMessage);
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    squareResultUnknownMessage,
+                    squareRecoveryAttempt: squareRecoveryPersisted ? squareAttempt : null);
             }
 
             await RunLocalStoreAsync(
@@ -1117,15 +1173,20 @@ public sealed class CashPaymentWorkflowService(
         if (authorization.ResultUnknown)
         {
             const string resultUnknownMessage = "Card terminal result could not be confirmed. Recovery is required.";
+            LocalCardPaymentAttempt? persistedLinklyRecovery = null;
+            LocalSquarePaymentAttempt? persistedSquareRecovery = null;
             try
             {
                 if (attempt is not null)
                 {
-                    await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
+                    if (await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
                         attempt.AttemptGuid,
                         authorization,
                         CancellationToken.None,
-                        refundSubmissionToken: refundSubmissionToken);
+                        refundSubmissionToken: refundSubmissionToken))
+                    {
+                        persistedLinklyRecovery = attempt;
+                    }
                 }
 
                 await MarkSquareAttemptRequiresRecoveryAsync(
@@ -1133,24 +1194,37 @@ public sealed class CashPaymentWorkflowService(
                     authorization,
                     resultUnknownMessage,
                     refundSubmissionToken);
+                persistedSquareRecovery = squareAttempt;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 LogCardRecoveryWarning("persist-result-unknown", attempt?.AttemptGuid ?? squareAttempt?.AttemptGuid, ex);
             }
 
-            return CreateCardFailureResult("payment.card.resultUnknown", resultUnknownMessage);
+            return CreateCardFailureResult(
+                "payment.card.resultUnknown",
+                resultUnknownMessage,
+                recoveryAttempt: persistedLinklyRecovery,
+                squareRecoveryAttempt: persistedSquareRecovery);
         }
 
         if (!authorization.Approved)
         {
             if (attempt is not null)
             {
-                await UpdateCardPaymentAttemptAfterAuthorizationAsync(
-                    attempt.AttemptGuid,
-                    authorization,
-                    CancellationToken.None,
-                    refundSubmissionToken: refundSubmissionToken);
+                try
+                {
+                    await UpdateCardPaymentAttemptAfterAuthorizationAsync(
+                        attempt.AttemptGuid,
+                        authorization,
+                        CancellationToken.None,
+                        refundSubmissionToken: refundSubmissionToken);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    // 接管旧 session 失败时本次新交易确定未提交；本地终态写失败也不能伪造 ResultUnknown 锁。
+                    LogCardRecoveryWarning("persist-definitive-not-submitted", attempt.AttemptGuid, ex);
+                }
             }
 
             return CreateCardFailureResult(
@@ -1166,6 +1240,7 @@ public sealed class CashPaymentWorkflowService(
         if (authorizedAmount <= 0m)
         {
             const string nonPositiveAmountMessage = "Card terminal approved a non-positive amount. Supervisor review is required.";
+            LocalCardPaymentAttempt? persistedLinklyRecovery = null;
             if (attempt is not null)
             {
                 if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
@@ -1178,6 +1253,8 @@ public sealed class CashPaymentWorkflowService(
                 {
                     return CreateCardFailureResult("payment.card.resultUnknown", nonPositiveAmountMessage);
                 }
+
+                persistedLinklyRecovery = attempt;
             }
 
             await MarkSquareAttemptRequiresRecoveryAsync(
@@ -1185,12 +1262,17 @@ public sealed class CashPaymentWorkflowService(
                 authorization,
                 nonPositiveAmountMessage,
                 refundSubmissionToken);
-            return CreateCardFailureResult("payment.card.resultUnknown", nonPositiveAmountMessage);
+            return CreateCardFailureResult(
+                "payment.card.resultUnknown",
+                nonPositiveAmountMessage,
+                recoveryAttempt: persistedLinklyRecovery,
+                squareRecoveryAttempt: squareAttempt);
         }
 
         if (authorizedAmount > remainingAmount)
         {
             const string exceedsRemainingMessage = "Card terminal authorized amount exceeded the remaining amount.";
+            LocalCardPaymentAttempt? persistedLinklyRecovery = null;
             if (attempt is not null)
             {
                 if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
@@ -1203,6 +1285,8 @@ public sealed class CashPaymentWorkflowService(
                 {
                     return CreateCardFailureResult("payment.card.resultUnknown", exceedsRemainingMessage);
                 }
+
+                persistedLinklyRecovery = attempt;
             }
 
             await MarkSquareAttemptRequiresRecoveryAsync(
@@ -1210,12 +1294,17 @@ public sealed class CashPaymentWorkflowService(
                 authorization,
                 exceedsRemainingMessage,
                 refundSubmissionToken);
-            return CreateCardFailureResult("payment.card.resultUnknown", exceedsRemainingMessage);
+            return CreateCardFailureResult(
+                "payment.card.resultUnknown",
+                exceedsRemainingMessage,
+                recoveryAttempt: persistedLinklyRecovery,
+                squareRecoveryAttempt: squareAttempt);
         }
 
         if (authorizedAmount != amount)
         {
             const string amountMismatchMessage = "Card terminal authorized amount did not match the requested amount.";
+            LocalCardPaymentAttempt? persistedLinklyRecovery = null;
             if (attempt is not null)
             {
                 if (!await TryPersistCardPaymentAttemptAfterFinancialResultAsync(
@@ -1228,6 +1317,8 @@ public sealed class CashPaymentWorkflowService(
                 {
                     return CreateCardFailureResult("payment.card.resultUnknown", amountMismatchMessage);
                 }
+
+                persistedLinklyRecovery = attempt;
             }
 
             await MarkSquareAttemptRequiresRecoveryAsync(
@@ -1235,7 +1326,11 @@ public sealed class CashPaymentWorkflowService(
                 authorization,
                 amountMismatchMessage,
                 refundSubmissionToken);
-            return CreateCardFailureResult("payment.card.resultUnknown", amountMismatchMessage);
+            return CreateCardFailureResult(
+                "payment.card.resultUnknown",
+                amountMismatchMessage,
+                recoveryAttempt: persistedLinklyRecovery,
+                squareRecoveryAttempt: squareAttempt);
         }
 
         if (attempt is not null)
@@ -1273,7 +1368,10 @@ public sealed class CashPaymentWorkflowService(
                     authorization,
                     missingSquareEvidenceMessage,
                     refundSubmissionToken);
-                return CreateCardFailureResult("payment.card.resultUnknown", missingSquareEvidenceMessage);
+                return CreateCardFailureResult(
+                    "payment.card.resultUnknown",
+                    missingSquareEvidenceMessage,
+                    squareRecoveryAttempt: squareAttempt);
             }
 
             try
@@ -1334,10 +1432,63 @@ public sealed class CashPaymentWorkflowService(
     private PaymentTenderAttemptResult CreateCardFailureResult(
         string statusKey,
         string? statusMessage = null,
-        bool isTerminalDecline = false)
+        bool isTerminalDecline = false,
+        LocalCardPaymentAttempt? recoveryAttempt = null,
+        LocalSquarePaymentAttempt? squareRecoveryAttempt = null)
     {
-        return _cardPaymentResultPolicyResolver.Apply(
+        var result = _cardPaymentResultPolicyResolver.Apply(
             PaymentTenderAttemptResult.Fail(statusKey, statusMessage, isTerminalDecline));
+        if (TryCreateRecoveryIdentity(recoveryAttempt, squareRecoveryAttempt, out var key, out var orderGuid))
+        {
+            result = result with
+            {
+                RecoveryAttemptKey = key,
+                RecoveryOrderGuid = orderGuid
+            };
+        }
+
+        return result;
+    }
+
+    private static bool TryCreateRecoveryIdentity(
+        LocalCardPaymentAttempt? attempt,
+        LocalSquarePaymentAttempt? squareAttempt,
+        out CardRecoveryAttemptKey key,
+        out Guid orderGuid)
+    {
+        key = default;
+        orderGuid = Guid.Empty;
+        if ((attempt is null) == (squareAttempt is null))
+        {
+            return false;
+        }
+
+        var draftJson = attempt?.OrderDraftJson ?? squareAttempt!.OrderDraftJson;
+        CardPaymentOrderDraft? draft;
+        try
+        {
+            draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(draftJson, CardAttemptJsonOptions);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (draft is null ||
+            draft.OrderGuid == Guid.Empty ||
+            draft.Session is null ||
+            draft.CartSnapshot?.Lines is not { Count: > 0 } ||
+            draft.CurrentTenders is null ||
+            draft.CreatedAt == default)
+        {
+            return false;
+        }
+
+        key = attempt is not null
+            ? new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid)
+            : new CardRecoveryAttemptKey(CardProcessorKind.Square, squareAttempt!.AttemptGuid);
+        orderGuid = draft.OrderGuid;
+        return true;
     }
 
     private async Task MarkSquareAttemptRequiresRecoveryAsync(
@@ -2109,7 +2260,7 @@ public sealed class CashPaymentWorkflowService(
     }
 
     /// <summary>
-    /// 接管旧 Linkly 活动会话：创建独立 ActiveSession attempt、查询至终态、完整证据落库、
+    /// 接管旧 Linkly 活动会话：精确关联权威 attempt、查询至终态、完整证据落库、
     /// 最后 acknowledge/release。落库失败或 ack 失败都返回 Failed，绝不发起新扣款。
     /// </summary>
     private async Task<LinklyActiveSessionTakeoverResult> TakeOverActiveSessionForNewPaymentAsync(
@@ -2126,8 +2277,10 @@ public sealed class CashPaymentWorkflowService(
 
         try
         {
-            // 1. 关联/创建独立旧 ActiveSession attempt；新 AttemptGuid 绝不覆盖本次新付款 attempt。
-            var activeAttempt = await PersistActiveSessionAttemptAsync(
+            EnsureActiveSessionScopeMatches(settings, session, activeStatus, expectedSessionId: activeStatus.SessionId);
+
+            // 1. 优先关联已有 Sale/Refund/ActiveSession；仅无权威记录时创建 generic ActiveSession。
+            var activeAttempt = await FindOrCreateActiveSessionAttemptAsync(
                 settings,
                 session,
                 activeStatus,
@@ -2144,16 +2297,91 @@ public sealed class CashPaymentWorkflowService(
                     "The previous Linkly session is still pending and could not be cleared safely.");
             }
 
+            EnsureActiveSessionScopeMatches(settings, session, finalStatus, activeStatus.SessionId);
+            if (!string.IsNullOrWhiteSpace(activeStatus.TxnRef) &&
+                !string.IsNullOrWhiteSpace(finalStatus.TxnRef) &&
+                !string.Equals(
+                    activeStatus.TxnRef.Trim(),
+                    finalStatus.TxnRef.Trim(),
+                    StringComparison.Ordinal))
+            {
+                return LinklyActiveSessionTakeoverResult.Failed(
+                    "The previous Linkly session identity changed during recovery and was not acknowledged.");
+            }
+
+            var finalTxnRef = NormalizeOptional(finalStatus.TxnRef) ??
+                NormalizeOptional(activeStatus.TxnRef) ??
+                NormalizeOptional(activeAttempt.TxnRef);
+            var isRefundAttempt = string.Equals(
+                activeAttempt.OperationKind,
+                "Refund",
+                StringComparison.Ordinal);
+            var refundSubmissionToken = NormalizeOptional(activeAttempt.SubmissionToken);
+            if (isRefundAttempt && refundSubmissionToken is null)
+            {
+                return LinklyActiveSessionTakeoverResult.Failed(
+                    "The previous Linkly refund is missing its submission identity and was not acknowledged.");
+            }
+
+            var outcome = MapActiveSessionOutcome(finalStatus);
+            if (outcome == LocalCardPaymentAttemptStatus.Approved &&
+                !LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
+                    finalStatus,
+                    finalTxnRef,
+                    activeAttempt.Amount,
+                    activeAttempt.TxnType))
+            {
+                return LinklyActiveSessionTakeoverResult.Failed(
+                    "The previous Linkly approval evidence does not match the persisted transaction and was not acknowledged.");
+            }
+
+            if (string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal) &&
+                outcome == LocalCardPaymentAttemptStatus.Approved)
+            {
+                // 无订单草稿的 generic 记录不能自动完成旧单；ack 后继续留在异常中心等待主管核实。
+                outcome = LocalCardPaymentAttemptStatus.RequiresReview;
+            }
+
             // 3. 完整最终 status/response/session/txn 证据落库成功后才允许 ack。
+            var completedAt = DateTimeOffset.UtcNow;
             await RunLocalStoreAsync(
-                () => cardPaymentAttemptRepository.UpdateOutcomeAsync(
-                    activeAttempt.AttemptGuid,
-                    MapActiveSessionOutcome(finalStatus),
-                    finalStatus.ResponseCode,
-                    finalStatus.ResponseText,
-                    NormalizeOptional(finalStatus.TxnRef),
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None),
+                () => isRefundAttempt
+                    ? RequireRefundCasAsync(
+                        cardPaymentAttemptRepository.TryUpdateRefundSessionAsync(
+                            activeAttempt.AttemptGuid,
+                            refundSubmissionToken!,
+                            finalStatus.SessionId,
+                            finalTxnRef,
+                            completedAt,
+                            CancellationToken.None))
+                    : cardPaymentAttemptRepository.UpdateSessionAsync(
+                        activeAttempt.AttemptGuid,
+                        finalStatus.SessionId,
+                        finalTxnRef,
+                        completedAt,
+                        CancellationToken.None),
+                CancellationToken.None);
+
+            await RunLocalStoreAsync(
+                () => isRefundAttempt
+                    ? RequireRefundCasAsync(
+                        cardPaymentAttemptRepository.TryUpdateRefundOutcomeAsync(
+                            activeAttempt.AttemptGuid,
+                            refundSubmissionToken!,
+                            outcome,
+                            finalStatus.ResponseCode,
+                            finalStatus.ResponseText,
+                            finalTxnRef,
+                            completedAt,
+                            CancellationToken.None))
+                    : cardPaymentAttemptRepository.UpdateOutcomeAsync(
+                        activeAttempt.AttemptGuid,
+                        outcome,
+                        finalStatus.ResponseCode,
+                        finalStatus.ResponseText,
+                        finalTxnRef,
+                        completedAt,
+                        CancellationToken.None),
                 CancellationToken.None);
 
             // 4. acknowledge/release；先终端 ack 再本地标记，失败即禁止新扣款。
@@ -2183,7 +2411,7 @@ public sealed class CashPaymentWorkflowService(
         }
     }
 
-    private async Task<LocalCardPaymentAttempt> PersistActiveSessionAttemptAsync(
+    private async Task<LocalCardPaymentAttempt> FindOrCreateActiveSessionAttemptAsync(
         CardTerminalSettings settings,
         PosSessionState session,
         LinklyCloudBackendSessionResponse status,
@@ -2194,15 +2422,75 @@ public sealed class CashPaymentWorkflowService(
             throw new InvalidOperationException("Linkly active session does not contain a SessionId.");
         }
 
+        var openAttempts = await RunLocalStoreAsync(
+            () => cardPaymentAttemptRepository!.GetOpenAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                settings.Environment.ToString(),
+                CancellationToken.None),
+            CancellationToken.None);
+        var normalizedSessionId = status.SessionId.Trim();
+        var sessionMatches = openAttempts
+            .Where(candidate => string.Equals(
+                NormalizeOptional(candidate.SessionId),
+                normalizedSessionId,
+                StringComparison.Ordinal))
+            .Take(2)
+            .ToArray();
+        if (sessionMatches.Length > 1)
+        {
+            throw new InvalidOperationException("Multiple open Linkly attempts match the active SessionId.");
+        }
+
+        if (sessionMatches.Length == 1)
+        {
+            var matched = sessionMatches[0];
+            if (!string.IsNullOrWhiteSpace(status.TxnRef) &&
+                !string.IsNullOrWhiteSpace(matched.TxnRef) &&
+                !string.Equals(status.TxnRef.Trim(), matched.TxnRef.Trim(), StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("The active Linkly SessionId matches an attempt with a different TxnRef.");
+            }
+
+            return matched;
+        }
+
+        var normalizedTxnRef = NormalizeOptional(status.TxnRef);
+        if (normalizedTxnRef is not null)
+        {
+            var txnMatches = openAttempts
+                .Where(candidate => string.Equals(
+                    NormalizeOptional(candidate.TxnRef),
+                    normalizedTxnRef,
+                    StringComparison.Ordinal))
+                .Take(2)
+                .ToArray();
+            if (txnMatches.Length > 1)
+            {
+                throw new InvalidOperationException("Multiple open Linkly attempts match the active TxnRef.");
+            }
+
+            if (txnMatches.Length == 1)
+            {
+                if (!string.IsNullOrWhiteSpace(txnMatches[0].SessionId))
+                {
+                    throw new InvalidOperationException(
+                        "The active Linkly TxnRef matches an attempt with a different SessionId.");
+                }
+
+                return txnMatches[0];
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
         var attempt = new LocalCardPaymentAttempt(
             Guid.NewGuid(),
-            status.SessionId.Trim(),
-            NormalizeOptional(status.TxnRef),
+            normalizedSessionId,
+            normalizedTxnRef,
             CardProcessorKind.Linkly.ToString(),
             settings.Environment.ToString(),
             nameof(LinklyConnectionMode.CloudBackendAsync),
-            "P",
+            "U",
             ToDecimalAmount(status.CardTransaction?.AmountCents),
             LocalCardPaymentAttemptStatus.Recovering,
             "{}",
@@ -2225,7 +2513,8 @@ public sealed class CashPaymentWorkflowService(
 
     private static bool IsTerminalActiveSessionStatus(LinklyCloudBackendSessionResponse status)
     {
-        return string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
+        return LinklyBackendTerminalClient.IsApprovedFinalTransaction(status) ||
+            string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, "NotSubmitted", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
@@ -2234,8 +2523,7 @@ public sealed class CashPaymentWorkflowService(
 
     private static LocalCardPaymentAttemptStatus MapActiveSessionOutcome(LinklyCloudBackendSessionResponse status)
     {
-        if (string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase) &&
-            status.TransactionSuccess == true)
+        if (LinklyBackendTerminalClient.IsApprovedFinalTransaction(status))
         {
             return LocalCardPaymentAttemptStatus.Approved;
         }
@@ -2257,6 +2545,24 @@ public sealed class CashPaymentWorkflowService(
         }
 
         return LocalCardPaymentAttemptStatus.Failed;
+    }
+
+    private static void EnsureActiveSessionScopeMatches(
+        CardTerminalSettings settings,
+        PosSessionState session,
+        LinklyCloudBackendSessionResponse status,
+        string? expectedSessionId)
+    {
+        if (string.IsNullOrWhiteSpace(status.SessionId) ||
+            !string.Equals(status.Environment, settings.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(status.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(status.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(expectedSessionId) &&
+             !string.Equals(status.SessionId, expectedSessionId, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                "The Linkly active session does not belong to the current store, device, environment, and session identity.");
+        }
     }
 
     private static decimal ToDecimalAmount(long? amountCents)
@@ -2836,7 +3142,9 @@ public sealed record PaymentTenderAttemptResult(
     PaymentTender? Tender = null,
     string? StatusMessage = null,
     bool IsTerminalDecline = false,
-    CardPaymentResultDisposition? CardResult = null)
+    CardPaymentResultDisposition? CardResult = null,
+    CardRecoveryAttemptKey? RecoveryAttemptKey = null,
+    Guid? RecoveryOrderGuid = null)
 {
     public static PaymentTenderAttemptResult Success(PaymentTender tender, string statusKey, string? statusMessage = null)
     {

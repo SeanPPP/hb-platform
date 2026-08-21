@@ -90,6 +90,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     [ObservableProperty]
     private int _statusPulseToken;
 
+    [ObservableProperty]
+    private int _cardRecoveryOpenCount;
+
     public PosTerminalViewModel(
         LocalSellableItemIndex priceIndex,
         PosCartService cart,
@@ -124,7 +127,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Func<Task>? onLockCashierAsync = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>>? searchCatalogMatches = null,
-        Func<Guid, PosSessionState, CancellationToken, Task>? releaseSharedHeldOrderAsync = null)
+        Func<Guid, PosSessionState, CancellationToken, Task>? releaseSharedHeldOrderAsync = null,
+        Func<Task>? onOpenCardRecoveryCenterAsync = null)
     {
         _priceIndex = priceIndex;
         _searchCatalogMatches = searchCatalogMatches ?? ((storeCode, query, cancellationToken) =>
@@ -149,7 +153,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             onOpenCashDrawerAsync,
             onExitApplicationAsync,
             onReregisterDeviceAsync,
-            onLockCashierAsync);
+            onLockCashierAsync,
+            onOpenCardRecoveryCenterAsync);
         _scanController = new PosTerminalScanController(cart);
         _session = session;
         _localization = localization;
@@ -201,6 +206,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenDailyCloseCommand = new AsyncRelayCommand(OpenDailyCloseAsync);
         OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
         OpenCustomerDisplayCommand = new AsyncRelayCommand(OpenCustomerDisplayAsync);
+        OpenCardRecoveryCenterCommand = new AsyncRelayCommand(
+            OpenCardRecoveryCenterAsync,
+            () => _actions.OpenCardRecoveryCenterAsync is not null);
         PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
         OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
         LockCashierCommand = new AsyncRelayCommand(LockCashierAsync);
@@ -267,6 +275,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public IRelayCommand OpenCustomerDisplayCommand { get; }
 
+    public IAsyncRelayCommand OpenCardRecoveryCenterCommand { get; }
+
     public IAsyncRelayCommand PrintLastReceiptCommand { get; }
 
     public IAsyncRelayCommand OpenCashDrawerCommand { get; }
@@ -330,6 +340,10 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public string OnlineText => T(Session.IsOnline ? "pos.status.online" : "pos.status.offline");
 
     public string PendingSyncText => Format("pos.status.pendingSync", Session.PendingSyncCount);
+
+    public bool HasOpenCardRecoveryAttempts => CardRecoveryOpenCount > 0;
+
+    public string CardRecoveryOpenText => Format("cardRecovery.center.openCount", CardRecoveryOpenCount);
 
     public string StatusMessage => _statusText ?? Format(_statusKey, _statusArgs);
 
@@ -411,6 +425,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
+    }
+
+    partial void OnCardRecoveryOpenCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(HasOpenCardRecoveryAttempts));
+        OnPropertyChanged(nameof(CardRecoveryOpenText));
     }
 
     public void LoadMatches(IEnumerable<SellableItemDto> items)
@@ -1364,6 +1384,23 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
+    private async Task OpenCardRecoveryCenterAsync()
+    {
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Payment.View,
+            "open-card-recovery-center");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+        if (_actions.OpenCardRecoveryCenterAsync is not null)
+        {
+            await _actions.OpenCardRecoveryCenterAsync();
+        }
+    }
+
     private async Task OpenDailyCloseAsync()
     {
         using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.DailyClose.View, "open-daily-close");
@@ -2192,6 +2229,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(ReregisterDeviceText));
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
+        OnPropertyChanged(nameof(CardRecoveryOpenText));
         OnPropertyChanged(nameof(StatusMessage));
     }
 }

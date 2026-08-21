@@ -9,6 +9,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
         xmlns:views="clr-namespace:Hbpos.Client.Wpf.Views.Screens"
+        xmlns:rootViews="clr-namespace:Hbpos.Client.Wpf.Views"
         xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
         mc:Ignorable="d"
         AutomationProperties.AutomationId="PosMainWindow"
@@ -92,6 +93,9 @@
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:PaymentViewModel}">
             <views:PaymentView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:CardRecoveryCenterViewModel}">
+            <rootViews:CardRecoveryCenterView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:InstallmentCenterViewModel}">
             <views:InstallmentCenterView />

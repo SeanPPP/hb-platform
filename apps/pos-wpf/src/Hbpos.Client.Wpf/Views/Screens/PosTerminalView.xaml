@@ -1156,7 +1156,7 @@
 
             <ContentControl Grid.Row="1"
                             Margin="12,0,12,12"
-                            MaxHeight="96"
+                            MaxHeight="154"
                             Padding="12"
                             Template="{StaticResource PosStatusCardTemplate}"
                             Tag="{Binding StatusPulseToken, NotifyOnTargetUpdated=True}">
@@ -1169,6 +1169,43 @@
                     <Border Style="{StaticResource PosWarningPillStyle}" Margin="0,10,0,0" HorizontalAlignment="Left">
                         <TextBlock Text="{Binding PendingSyncText}" Foreground="#8A4B00" FontSize="11" />
                     </Border>
+                    <Button Margin="0,10,0,0"
+                            MinHeight="44"
+                            Padding="10,6"
+                            HorizontalContentAlignment="Stretch"
+                            Background="#FFFFF4E5"
+                            BorderBrush="#FFF59E0B"
+                            BorderThickness="1"
+                            Command="{Binding OpenCardRecoveryCenterCommand}"
+                            Visibility="{Binding HasOpenCardRecoveryAttempts, Converter={StaticResource BoolToVis}}"
+                            AutomationProperties.Name="{Binding CardRecoveryOpenText}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                     Width="18"
+                                                     Height="18"
+                                                     Foreground="#FFB45309"
+                                                     VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1"
+                                       Margin="8,0"
+                                       Text="{Binding CardRecoveryOpenText}"
+                                       TextWrapping="Wrap"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="#FF7C2D12"
+                                       VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Grid.Column="2"
+                                                     Kind="ChevronRight"
+                                                     Width="18"
+                                                     Height="18"
+                                                     Foreground="#FFB45309"
+                                                     VerticalAlignment="Center" />
+                        </Grid>
+                    </Button>
                 </StackPanel>
             </ContentControl>
 

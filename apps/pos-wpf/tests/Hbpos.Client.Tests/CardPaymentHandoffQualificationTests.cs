@@ -9,6 +9,8 @@ namespace Hbpos.Client.Tests;
 
 public sealed class CardPaymentHandoffQualificationTests
 {
+    private static readonly Guid AttemptGuid = Guid.Parse("20000000-0000-0000-0000-000000000001");
+    private static readonly Guid OrderGuid = Guid.Parse("30000000-0000-0000-0000-000000000001");
     private static readonly PosSessionState Session = new(
         "POS",
         "S001",
@@ -24,7 +26,7 @@ public sealed class CardPaymentHandoffQualificationTests
     {
         var request = CreateRequest();
         var matching = CreateQueueItem(
-            Guid.Parse("20000000-0000-0000-0000-000000000001"),
+            AttemptGuid,
             SerializeDraft(request));
 
         var candidate = CardPaymentHandoffQualification.SelectCandidate([matching], request);
@@ -39,22 +41,48 @@ public sealed class CardPaymentHandoffQualificationTests
     public void SelectCandidate_rejects_missing_or_invalid_draft(string? draftJson)
     {
         var request = CreateRequest();
-        var item = CreateQueueItem(Guid.NewGuid(), draftJson);
+        var item = CreateQueueItem(AttemptGuid, draftJson);
 
         Assert.Null(CardPaymentHandoffQualification.SelectCandidate([item], request));
     }
 
     [Fact]
-    public void SelectCandidate_rejects_incomplete_or_ambiguous_draft()
+    public void SelectCandidate_rejects_incomplete_exact_draft()
     {
         var request = CreateRequest();
         var incompleteDraft = CreateDraft(request) with { OrderGuid = Guid.Empty };
-        var first = CreateQueueItem(Guid.NewGuid(), JsonSerializer.Serialize(incompleteDraft));
-        var duplicateA = CreateQueueItem(Guid.NewGuid(), SerializeDraft(request));
-        var duplicateB = CreateQueueItem(Guid.NewGuid(), SerializeDraft(request));
+        var item = CreateQueueItem(AttemptGuid, JsonSerializer.Serialize(incompleteDraft));
 
-        Assert.Null(CardPaymentHandoffQualification.SelectCandidate([first], request));
-        Assert.Null(CardPaymentHandoffQualification.SelectCandidate([duplicateA, duplicateB], request));
+        Assert.Null(CardPaymentHandoffQualification.SelectCandidate([item], request));
+    }
+
+    [Fact]
+    public void SelectCandidate_uses_exact_key_and_ignores_identical_unrelated_attempts()
+    {
+        var request = CreateRequest();
+        var unrelated = CreateQueueItem(Guid.NewGuid(), SerializeDraft(request));
+        var exact = CreateQueueItem(AttemptGuid, SerializeDraft(request));
+
+        var candidate = CardPaymentHandoffQualification.SelectCandidate([unrelated, exact], request);
+
+        Assert.Equal(new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, AttemptGuid), candidate);
+    }
+
+    [Fact]
+    public void SelectCandidate_rejects_missing_wrong_provider_key_or_order_guid()
+    {
+        var exact = CreateQueueItem(AttemptGuid, SerializeDraft(CreateRequest()));
+
+        Assert.Null(CardPaymentHandoffQualification.SelectCandidate([exact], CreateRequest(includeIdentity: false)));
+        Assert.Null(CardPaymentHandoffQualification.SelectCandidate(
+            [exact],
+            CreateRequest(processor: CardProcessorKind.Square)));
+        Assert.Null(CardPaymentHandoffQualification.SelectCandidate(
+            [exact],
+            CreateRequest(attemptGuid: Guid.NewGuid())));
+        Assert.Null(CardPaymentHandoffQualification.SelectCandidate(
+            [exact],
+            CreateRequest(orderGuid: Guid.NewGuid())));
     }
 
     [Fact]
@@ -62,7 +90,7 @@ public sealed class CardPaymentHandoffQualificationTests
     {
         var request = CreateRequest();
         var item = CreateQueueItem(
-            Guid.Parse("20000000-0000-0000-0000-000000000002"),
+            AttemptGuid,
             SerializeDraft(request));
         var missing = new CardPaymentHandoffCandidate(
             item.Processor,
@@ -76,7 +104,11 @@ public sealed class CardPaymentHandoffQualificationTests
             request));
     }
 
-    private static CardPaymentHandoffRequest CreateRequest()
+    private static CardPaymentHandoffRequest CreateRequest(
+        bool includeIdentity = true,
+        CardProcessorKind processor = CardProcessorKind.Linkly,
+        Guid? attemptGuid = null,
+        Guid? orderGuid = null)
     {
         var snapshot = new PosCartSnapshot(
         [
@@ -95,7 +127,13 @@ public sealed class CardPaymentHandoffQualificationTests
                 PriceSourceKind.StoreRetailPrice,
                 "Store price")
         ]);
-        return new CardPaymentHandoffRequest(Session, snapshot, [], 10m);
+        return new CardPaymentHandoffRequest(
+            Session,
+            snapshot,
+            [],
+            10m,
+            includeIdentity ? new CardRecoveryAttemptKey(processor, attemptGuid ?? AttemptGuid) : null,
+            includeIdentity ? orderGuid ?? OrderGuid : null);
     }
 
     private static string SerializeDraft(CardPaymentHandoffRequest request) =>
@@ -103,7 +141,7 @@ public sealed class CardPaymentHandoffQualificationTests
 
     private static CardPaymentOrderDraft CreateDraft(CardPaymentHandoffRequest request) =>
         new(
-            Guid.Parse("30000000-0000-0000-0000-000000000001"),
+            request.RecoveryOrderGuid ?? OrderGuid,
             request.Session,
             request.CartSnapshot,
             request.CurrentTenders,

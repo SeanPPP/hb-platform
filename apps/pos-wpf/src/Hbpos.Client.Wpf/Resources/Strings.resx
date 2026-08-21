@@ -1067,4 +1067,55 @@
   <data name="cardRecovery.payment.action.confirmNotPaid" xml:space="preserve"><value>Confirm not paid</value></data>
   <data name="cardRecovery.payment.authorizationRequired" xml:space="preserve"><value>Supervisor authorization is required to resolve this payment.</value></data>
   <data name="cardRecovery.payment.resolveFailed" xml:space="preserve"><value>The payment resolution could not be saved. Keep the payment locked and try again.</value></data>
+  <data name="shell.page.cardRecovery" xml:space="preserve"><value>Card transaction recovery</value></data>
+  <data name="cardRecovery.center.title" xml:space="preserve"><value>Card transaction recovery</value></data>
+  <data name="cardRecovery.center.subtitle" xml:space="preserve"><value>Review each uncertain card result before retrying or resolving it.</value></data>
+  <data name="cardRecovery.center.openCount" xml:space="preserve"><value>{0} card transactions need attention</value></data>
+  <data name="cardRecovery.center.list.title" xml:space="preserve"><value>Open card transactions</value></data>
+  <data name="cardRecovery.center.list.empty" xml:space="preserve"><value>No card transactions need attention.</value></data>
+  <data name="cardRecovery.center.detail.title" xml:space="preserve"><value>Transaction evidence</value></data>
+  <data name="cardRecovery.center.detail.empty" xml:space="preserve"><value>Select a card transaction to review its evidence.</value></data>
+  <data name="cardRecovery.center.field.type" xml:space="preserve"><value>TYPE</value></data>
+  <data name="cardRecovery.center.field.channel" xml:space="preserve"><value>CHANNEL</value></data>
+  <data name="cardRecovery.center.field.amount" xml:space="preserve"><value>AMOUNT</value></data>
+  <data name="cardRecovery.center.field.cashier" xml:space="preserve"><value>ORIGINAL CASHIER</value></data>
+  <data name="cardRecovery.center.field.products" xml:space="preserve"><value>Original product snapshot</value></data>
+  <data name="cardRecovery.center.field.time" xml:space="preserve"><value>LAST UPDATED</value></data>
+  <data name="cardRecovery.center.field.session" xml:space="preserve"><value>SESSION</value></data>
+  <data name="cardRecovery.center.field.txn" xml:space="preserve"><value>TRANSACTION</value></data>
+  <data name="cardRecovery.center.field.responseCode" xml:space="preserve"><value>RESPONSE CODE</value></data>
+  <data name="cardRecovery.center.field.responseText" xml:space="preserve"><value>RESPONSE</value></data>
+  <data name="cardRecovery.center.field.status" xml:space="preserve"><value>STATUS</value></data>
+  <data name="cardRecovery.center.field.attempt" xml:space="preserve"><value>ATTEMPT</value></data>
+  <data name="cardRecovery.center.field.environment" xml:space="preserve"><value>ENVIRONMENT</value></data>
+  <data name="cardRecovery.center.field.reference" xml:space="preserve"><value>REFERENCE</value></data>
+  <data name="cardRecovery.center.product.name" xml:space="preserve"><value>PRODUCT</value></data>
+  <data name="cardRecovery.center.product.code" xml:space="preserve"><value>CODE</value></data>
+  <data name="cardRecovery.center.product.quantity" xml:space="preserve"><value>QTY</value></data>
+  <data name="cardRecovery.center.product.unitPrice" xml:space="preserve"><value>UNIT PRICE</value></data>
+  <data name="cardRecovery.center.product.unavailable" xml:space="preserve"><value>The original product snapshot is unavailable. Use the transaction evidence above.</value></data>
+  <data name="cardRecovery.center.resolution.title" xml:space="preserve"><value>Supervisor resolution</value></data>
+  <data name="cardRecovery.center.resolution.instructions" xml:space="preserve"><value>Confirm the bank or terminal evidence for this selected transaction. Each manual decision requires one-time supervisor authorization.</value></data>
+  <data name="cardRecovery.center.input.reason" xml:space="preserve"><value>Supervisor reason or note</value></data>
+  <data name="cardRecovery.center.input.evidence" xml:space="preserve"><value>Bank or terminal evidence</value></data>
+  <data name="cardRecovery.center.input.reference" xml:space="preserve"><value>Payment or settlement reference</value></data>
+  <data name="cardRecovery.center.action.back" xml:space="preserve"><value>Back</value></data>
+  <data name="cardRecovery.center.action.refresh" xml:space="preserve"><value>Refresh</value></data>
+  <data name="cardRecovery.center.action.recover" xml:space="preserve"><value>Check selected transaction</value></data>
+  <data name="cardRecovery.center.action.confirmPaid" xml:space="preserve"><value>Confirm paid</value></data>
+  <data name="cardRecovery.center.action.confirmNotPaid" xml:space="preserve"><value>Confirm not paid</value></data>
+  <data name="cardRecovery.center.action.continueWaiting" xml:space="preserve"><value>Continue waiting</value></data>
+  <data name="cardRecovery.center.status.ready" xml:space="preserve"><value>Review an open card transaction.</value></data>
+  <data name="cardRecovery.center.status.loaded" xml:space="preserve"><value>Loaded {0} open card transactions.</value></data>
+  <data name="cardRecovery.center.status.empty" xml:space="preserve"><value>No card transactions need attention.</value></data>
+  <data name="cardRecovery.center.status.unavailable" xml:space="preserve"><value>Card transaction recovery is unavailable.</value></data>
+  <data name="cardRecovery.center.status.authorizationRequired" xml:space="preserve"><value>Authorization is required.</value></data>
+  <data name="cardRecovery.center.status.selectionChanged" xml:space="preserve"><value>The selected transaction changed. Select it again before continuing.</value></data>
+  <data name="cardRecovery.center.status.recoverNoResult" xml:space="preserve"><value>The selected transaction is no longer open.</value></data>
+  <data name="cardRecovery.center.status.resolveNoResult" xml:space="preserve"><value>The resolution returned no message.</value></data>
+  <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>Could not refresh card transactions. {0}</value></data>
+  <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>Could not check the selected transaction. {0}</value></data>
+  <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>Could not save the supervisor decision. {0}</value></data>
+  <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>The card transaction center encountered an unexpected error. {0}</value></data>
+  <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
 </root>

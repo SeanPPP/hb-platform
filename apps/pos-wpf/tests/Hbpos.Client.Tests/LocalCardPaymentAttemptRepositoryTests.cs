@@ -853,6 +853,13 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 sessionId: "SESSION-DONE",
                 updatedAt: baseTime.AddMinutes(6),
                 acknowledgedAt: baseTime.AddMinutes(6));
+            var activeAcknowledgedReview = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000011"),
+                status: LocalCardPaymentAttemptStatus.RequiresReview,
+                operationKind: "ActiveSession",
+                sessionId: "SESSION-APPROVED-REVIEW",
+                updatedAt: baseTime.AddMinutes(6).AddSeconds(30),
+                acknowledgedAt: baseTime.AddMinutes(6).AddSeconds(30));
             var otherCashier = CreateAttempt(
                 attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000008"),
                 cashierId: "C999",
@@ -879,6 +886,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 refundFailed,
                 activeOpen,
                 activeAcknowledged,
+                activeAcknowledgedReview,
                 otherCashier,
                 otherDevice,
                 otherEnvironment
@@ -892,6 +900,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.Equal(
                 [
                     otherCashier.AttemptGuid,
+                    activeAcknowledgedReview.AttemptGuid,
                     activeOpen.AttemptGuid,
                     refundOpen.AttemptGuid,
                     saleApproved.AttemptGuid,
@@ -900,7 +909,8 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 open.Select(attempt => attempt.AttemptGuid).ToArray());
             Assert.DoesNotContain(open, attempt => attempt.Status == LocalCardPaymentAttemptStatus.Declined);
             Assert.DoesNotContain(open, attempt => attempt.Status == LocalCardPaymentAttemptStatus.Failed);
-            Assert.DoesNotContain(open, attempt => attempt.OperationKind == "ActiveSession" && attempt.AcknowledgedAt is not null);
+            Assert.DoesNotContain(open, attempt => attempt.AttemptGuid == activeAcknowledged.AttemptGuid);
+            Assert.Contains(open, attempt => attempt.AttemptGuid == activeAcknowledgedReview.AttemptGuid);
         }
         finally
         {

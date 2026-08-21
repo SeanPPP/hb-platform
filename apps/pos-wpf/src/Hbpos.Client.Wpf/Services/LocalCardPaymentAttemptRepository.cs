@@ -1333,7 +1333,13 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND Environment = $Environment
               AND OperationKind IN ('Sale', 'Refund', 'ActiveSession')
               AND (
-                    (OperationKind = 'ActiveSession' AND AcknowledgedAt IS NULL)
+                    (
+                        OperationKind = 'ActiveSession'
+                        AND (
+                            AcknowledgedAt IS NULL
+                            OR Status IN ($ApprovedStatus, $RequiresReviewStatus)
+                        )
+                    )
                     OR (
                         OperationKind = 'Refund'
                         AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
@@ -1356,6 +1362,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
         command.Parameters.AddWithValue("$Environment", environment);
         command.Parameters.AddWithValue("$OrderCompletedStatus", LocalCardPaymentAttemptStatus.OrderCompleted.ToString());
+        command.Parameters.AddWithValue("$ApprovedStatus", LocalCardPaymentAttemptStatus.Approved.ToString());
+        command.Parameters.AddWithValue("$RequiresReviewStatus", LocalCardPaymentAttemptStatus.RequiresReview.ToString());
         command.Parameters.AddWithValue("$SupervisorPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
         command.Parameters.AddWithValue("$SupervisorNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
         for (var i = 0; i < TerminalStatuses.Length; i++)

@@ -20,6 +20,33 @@ namespace Hbpos.Client.Tests;
 public sealed class PosTerminalCashPaymentViewModelTests
 {
     [Fact]
+    public async Task Pos_terminal_card_recovery_status_opens_center_and_displays_queue_count()
+    {
+        var opened = false;
+        var localization = new LocalizationService();
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            localization: localization,
+            onOpenCardRecoveryCenterAsync: () =>
+            {
+                opened = true;
+                return Task.CompletedTask;
+            })
+        {
+            CardRecoveryOpenCount = 2
+        };
+
+        await viewModel.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
+
+        Assert.True(opened);
+        Assert.True(viewModel.HasOpenCardRecoveryAttempts);
+        Assert.Contains("2", viewModel.CardRecoveryOpenText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Pos_terminal_open_history_command_invokes_navigation_callback()
     {
         var opened = false;
@@ -4577,11 +4604,18 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
                 PreserveStatus: true)));
+        var prepareCalls = 0;
         var viewModel = new PaymentViewModel(
             cart,
             workflow,
             Session,
-            recoverPreviousCardTransactionAsync: () => Task.FromResult(true));
+            recoverPreviousCardTransactionAsync: () => Task.FromResult(true),
+            prepareCardPaymentHandoffAsync: _ =>
+            {
+                prepareCalls++;
+                return Task.FromResult<CardPaymentHandoffCandidate?>(
+                    new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, Guid.NewGuid()));
+            });
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
 
@@ -4590,6 +4624,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
         Assert.True(viewModel.IsPaymentInteractionLocked);
         Assert.Single(cart.Lines);
+        Assert.Equal(0, prepareCalls);
     }
 
     [Fact]
@@ -4607,15 +4642,24 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CardResult: new CardPaymentResultDisposition(
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
-                PreserveStatus: true)));
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("10000000-0000-0000-0000-000000000158")),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000158")));
         var candidate = new CardPaymentHandoffCandidate(
             CardProcessorKind.Linkly,
             Guid.Parse("10000000-0000-0000-0000-000000000158"));
+        CardPaymentHandoffRequest? preparedRequest = null;
         var viewModel = new PaymentViewModel(
             cart,
             workflow,
             Session,
-            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            prepareCardPaymentHandoffAsync: request =>
+            {
+                preparedRequest = request;
+                return Task.FromResult<CardPaymentHandoffCandidate?>(candidate);
+            },
             handoffCardPaymentAsync: (_, _) => Task.FromResult(true));
         bool? enabledAtLastNotification = null;
         viewModel.CardPaymentErrorPrimaryActionCommand.CanExecuteChanged += (_, _) =>
@@ -4627,6 +4671,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.CardPaymentErrorOverlay!.HasPrimaryAction);
         Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
         Assert.True(enabledAtLastNotification);
+        Assert.Equal(
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, candidate.AttemptGuid),
+            preparedRequest?.RecoveryAttemptKey);
+        Assert.Equal(
+            Guid.Parse("20000000-0000-0000-0000-000000000158"),
+            preparedRequest?.RecoveryOrderGuid);
     }
 
     [Fact]
@@ -4660,7 +4710,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CardResult: new CardPaymentResultDisposition(
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
-                PreserveStatus: true)));
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("10000000-0000-0000-0000-000000000159")),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000159")));
         var candidate = new CardPaymentHandoffCandidate(
             CardProcessorKind.Linkly,
             Guid.Parse("10000000-0000-0000-0000-000000000159"));
@@ -4722,7 +4776,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CardResult: new CardPaymentResultDisposition(
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
-                PreserveStatus: true)));
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("10000000-0000-0000-0000-000000000160")),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000160")));
         var returnedToPos = false;
         var viewModel = new PaymentViewModel(
             cart,
@@ -4761,7 +4819,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CardResult: new CardPaymentResultDisposition(
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
-                PreserveStatus: true)));
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("10000000-0000-0000-0000-000000000160")),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000160")));
         var candidate = new CardPaymentHandoffCandidate(
             CardProcessorKind.Linkly,
             Guid.Parse("10000000-0000-0000-0000-000000000160"));
@@ -4793,14 +4855,17 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
+        var attemptGuid = Guid.NewGuid();
         workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
             false,
             "payment.card.resultUnknown",
             CardResult: new CardPaymentResultDisposition(
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
-                PreserveStatus: true)));
-        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, Guid.NewGuid());
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid),
+            RecoveryOrderGuid: Guid.NewGuid()));
+        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid);
         var handoffCalls = 0;
         var viewModel = new PaymentViewModel(
             cart,

@@ -2715,4 +2715,55 @@
   <data name="cardRecovery.payment.action.confirmNotPaid" xml:space="preserve"><value>确认未付款</value></data>
   <data name="cardRecovery.payment.authorizationRequired" xml:space="preserve"><value>处理该付款需要主管授权。</value></data>
   <data name="cardRecovery.payment.resolveFailed" xml:space="preserve"><value>付款结案保存失败。请保持锁定并重试。</value></data>
+  <data name="shell.page.cardRecovery" xml:space="preserve"><value>卡交易异常中心</value></data>
+  <data name="cardRecovery.center.title" xml:space="preserve"><value>卡交易异常中心</value></data>
+  <data name="cardRecovery.center.subtitle" xml:space="preserve"><value>重试或结案前，请逐笔核对结果不确定的卡交易。</value></data>
+  <data name="cardRecovery.center.openCount" xml:space="preserve"><value>{0} 笔卡交易待处理</value></data>
+  <data name="cardRecovery.center.list.title" xml:space="preserve"><value>待处理卡交易</value></data>
+  <data name="cardRecovery.center.list.empty" xml:space="preserve"><value>当前没有待处理的卡交易。</value></data>
+  <data name="cardRecovery.center.detail.title" xml:space="preserve"><value>交易证据</value></data>
+  <data name="cardRecovery.center.detail.empty" xml:space="preserve"><value>请选择一笔卡交易查看证据。</value></data>
+  <data name="cardRecovery.center.field.type" xml:space="preserve"><value>类型</value></data>
+  <data name="cardRecovery.center.field.channel" xml:space="preserve"><value>渠道</value></data>
+  <data name="cardRecovery.center.field.amount" xml:space="preserve"><value>金额</value></data>
+  <data name="cardRecovery.center.field.cashier" xml:space="preserve"><value>原收银员</value></data>
+  <data name="cardRecovery.center.field.products" xml:space="preserve"><value>原商品快照</value></data>
+  <data name="cardRecovery.center.field.time" xml:space="preserve"><value>最后更新时间</value></data>
+  <data name="cardRecovery.center.field.session" xml:space="preserve"><value>会话</value></data>
+  <data name="cardRecovery.center.field.txn" xml:space="preserve"><value>交易号</value></data>
+  <data name="cardRecovery.center.field.responseCode" xml:space="preserve"><value>响应码</value></data>
+  <data name="cardRecovery.center.field.responseText" xml:space="preserve"><value>响应内容</value></data>
+  <data name="cardRecovery.center.field.status" xml:space="preserve"><value>状态</value></data>
+  <data name="cardRecovery.center.field.attempt" xml:space="preserve"><value>尝试标识</value></data>
+  <data name="cardRecovery.center.field.environment" xml:space="preserve"><value>环境</value></data>
+  <data name="cardRecovery.center.field.reference" xml:space="preserve"><value>参考号</value></data>
+  <data name="cardRecovery.center.product.name" xml:space="preserve"><value>商品</value></data>
+  <data name="cardRecovery.center.product.code" xml:space="preserve"><value>编码</value></data>
+  <data name="cardRecovery.center.product.quantity" xml:space="preserve"><value>数量</value></data>
+  <data name="cardRecovery.center.product.unitPrice" xml:space="preserve"><value>单价</value></data>
+  <data name="cardRecovery.center.product.unavailable" xml:space="preserve"><value>原商品快照不可用，请依据上方交易证据核对。</value></data>
+  <data name="cardRecovery.center.resolution.title" xml:space="preserve"><value>主管结案</value></data>
+  <data name="cardRecovery.center.resolution.instructions" xml:space="preserve"><value>请核对当前所选交易的银行或终端证据。每次人工决定均需要一次性主管授权。</value></data>
+  <data name="cardRecovery.center.input.reason" xml:space="preserve"><value>主管原因或备注</value></data>
+  <data name="cardRecovery.center.input.evidence" xml:space="preserve"><value>银行或终端证据</value></data>
+  <data name="cardRecovery.center.input.reference" xml:space="preserve"><value>付款或结算参考号</value></data>
+  <data name="cardRecovery.center.action.back" xml:space="preserve"><value>返回</value></data>
+  <data name="cardRecovery.center.action.refresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="cardRecovery.center.action.recover" xml:space="preserve"><value>查询所选交易</value></data>
+  <data name="cardRecovery.center.action.confirmPaid" xml:space="preserve"><value>确认已付款</value></data>
+  <data name="cardRecovery.center.action.confirmNotPaid" xml:space="preserve"><value>确认未付款</value></data>
+  <data name="cardRecovery.center.action.continueWaiting" xml:space="preserve"><value>继续等待</value></data>
+  <data name="cardRecovery.center.status.ready" xml:space="preserve"><value>请选择一笔待处理卡交易进行核对。</value></data>
+  <data name="cardRecovery.center.status.loaded" xml:space="preserve"><value>已加载 {0} 笔待处理卡交易。</value></data>
+  <data name="cardRecovery.center.status.empty" xml:space="preserve"><value>当前没有待处理的卡交易。</value></data>
+  <data name="cardRecovery.center.status.unavailable" xml:space="preserve"><value>卡交易异常中心暂不可用。</value></data>
+  <data name="cardRecovery.center.status.authorizationRequired" xml:space="preserve"><value>执行此操作需要授权。</value></data>
+  <data name="cardRecovery.center.status.selectionChanged" xml:space="preserve"><value>所选交易已变化，请重新选择后再继续。</value></data>
+  <data name="cardRecovery.center.status.recoverNoResult" xml:space="preserve"><value>所选交易已不在待处理列表中。</value></data>
+  <data name="cardRecovery.center.status.resolveNoResult" xml:space="preserve"><value>结案操作没有返回消息。</value></data>
+  <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>刷新卡交易失败。{0}</value></data>
+  <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>查询所选交易失败。{0}</value></data>
+  <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>保存主管决定失败。{0}</value></data>
+  <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>卡交易异常中心发生意外错误。{0}</value></data>
+  <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
 </root>

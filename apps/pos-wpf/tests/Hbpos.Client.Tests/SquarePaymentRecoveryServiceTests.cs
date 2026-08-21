@@ -8,8 +8,8 @@ using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 namespace Hbpos.Client.Tests;
 
 /// <summary>
-/// Square 批准恢复完成路径：必须用 payment draft 冻结的 CartSnapshot 解析取单来源，
-/// 与 Active 未绑定 claim 逐行匹配才绑定；当前 UI 空车绝不参与匹配。
+/// Square 批准恢复完成路径：必须用 payment draft 冻结的 durable claim binding 解析取单来源；
+/// 当前 UI 购物车内容绝不参与来源匹配。
 /// </summary>
 public sealed class SquarePaymentRecoveryServiceTests
 {
@@ -34,12 +34,21 @@ public sealed class SquarePaymentRecoveryServiceTests
         Assert.True(await scope.Repository.TryActivateClaimAsync(
             claimId, "prepare-sq", "activate-sq", serverRevision: null, "2026-07-28T00:00:01.000Z"));
 
+        var draft = CreateDraft();
         var attempts = new FakeSquarePaymentAttemptRepository(
-            CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, "CHECKOUT-001"));
+            CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, "CHECKOUT-001") with
+            {
+                OrderDraftJson = JsonSerializer.Serialize(
+                    draft with
+                    {
+                        CartSnapshot = draft.CartSnapshot with { SharedHeldOrderClaimId = claimId }
+                    },
+                    JsonOptions)
+            });
         var orders = new FakeLocalOrderRepository();
         var service = CreateService(attempts, orders, new FakeSquareTerminalPaymentClient(), scope.Repository);
 
-        // 当前 UI 购物车为空：Square 批准恢复必须使用 draft 中冻结的 CartSnapshot 解析来源。
+        // 当前 UI 购物车为空：Square 批准恢复必须使用 draft 中冻结的 durable claim binding 解析来源。
         var result = await service.RecoverLatestAsync(new PosCartService(), Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);

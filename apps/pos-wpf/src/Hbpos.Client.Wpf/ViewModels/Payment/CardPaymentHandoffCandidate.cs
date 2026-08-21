@@ -11,4 +11,6 @@ public sealed record CardPaymentHandoffRequest(
     PosSessionState Session,
     PosCartSnapshot CartSnapshot,
     IReadOnlyList<PaymentTender> CurrentTenders,
-    decimal ActualAmount);
+    decimal ActualAmount,
+    CardRecoveryAttemptKey? RecoveryAttemptKey = null,
+    Guid? RecoveryOrderGuid = null);

@@ -617,23 +617,6 @@ public sealed class CardPaymentRecoveryService(
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
         }
 
-        if (!cart.IsEmpty)
-        {
-            ConsoleLog.Write(
-                "CardRecovery",
-                $"recover deferred current-cart-not-empty attemptGuid={attempt.AttemptGuid} sessionId={LogValue(attempt.SessionId)} statusSessionId={LogValue(status.SessionId)} outcome={status.Status}");
-            LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "current-cart-not-empty");
-            // 宸茶ˉ缁?session 鐨勬仮澶嶉」浠嶉渶淇濇寔 Recovering锛岄伩鍏嶇敤鎴锋竻绌鸿喘鐗╄溅鍚庢棤娉曞啀娆℃仮澶嶃€?
-            await RunLocalStoreAsync(
-                () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
-                cancellationToken);
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."),
-                DialogDetails: BuildDialogDetails(attempt, status),
-                PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-        }
-
         if (IsApproved(status))
         {
             var result = await CompleteApprovedAttemptAsync(cart, session, settings, attempt, draft, status, cancellationToken);
@@ -646,6 +629,23 @@ public sealed class CardPaymentRecoveryService(
             return result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
                 ? result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") }
                 : result with { PaymentSupervisorDetails = BuildPaymentSupervisorDetails(attempt) };
+        }
+
+        if (!cart.IsEmpty)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover deferred current-cart-not-empty attemptGuid={attempt.AttemptGuid} sessionId={LogValue(attempt.SessionId)} statusSessionId={LogValue(status.SessionId)} outcome={status.Status}");
+            LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "current-cart-not-empty");
+            // 只有需要恢复旧草稿的未付款结果才要求当前购物车为空；已付款整单在独立 recovery cart 中完成。
+            await RunLocalStoreAsync(
+                () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
+                cancellationToken);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."),
+                DialogDetails: BuildDialogDetails(attempt, status),
+                PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
         }
 
         if (IsDeclinedOrFailed(status))
@@ -796,15 +796,16 @@ public sealed class CardPaymentRecoveryService(
                 refundResult.LockRetained);
         }
 
+        var authorizer = OperationAuthorizationScope.CurrentAuthorizingSession ?? session.CashierSession;
         var paymentResult = await ResolvePaymentAsync(
             new CardPaymentSupervisorResolution(
                 attempt.AttemptGuid,
                 CardProcessorKind.Linkly,
                 MapPaymentDecision(decision),
                 reason,
-                session.CashierSession?.CashierId ?? session.CashierId,
-                session.CashierSession?.UserGuid,
-                session.CashierName,
+                authorizer?.CashierId ?? session.CashierId,
+                authorizer?.UserGuid ?? session.CashierSession?.UserGuid,
+                authorizer?.CashierName ?? session.CashierName,
                 evidence,
                 reference),
             cart,
@@ -1039,7 +1040,21 @@ public sealed class CardPaymentRecoveryService(
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
         }
 
-        if ((authorization.Approved || HasLocalFinalResult(authorization)) && !cart.IsEmpty)
+        if (authorization.Approved)
+        {
+            var result = await CompleteApprovedLocalAttemptAsync(cart, currentSession, attempt, draft, authorization, cancellationToken);
+            var reason = result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? "local-approved-order-completed"
+                : result.Outcome == CardPaymentRecoveryOutcome.DraftRestored
+                    ? "local-approved-tender-restored"
+                    : "local-approved-requires-review";
+            LogRecoveryResult(settings, attempt, null, result.Outcome, reason);
+            return result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") }
+                : result with { PaymentSupervisorDetails = BuildPaymentSupervisorDetails(attempt) };
+        }
+
+        if (HasLocalFinalResult(authorization) && !cart.IsEmpty)
         {
             ConsoleLog.Write(
                 "CardRecovery",
@@ -1053,20 +1068,6 @@ public sealed class CardPaymentRecoveryService(
                 T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."),
                 DialogDetails: BuildDialogDetails(attempt, authorization),
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-        }
-
-        if (authorization.Approved)
-        {
-            var result = await CompleteApprovedLocalAttemptAsync(cart, currentSession, attempt, draft, authorization, cancellationToken);
-            var reason = result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
-                ? "local-approved-order-completed"
-                : result.Outcome == CardPaymentRecoveryOutcome.DraftRestored
-                    ? "local-approved-tender-restored"
-                    : "local-approved-requires-review";
-            LogRecoveryResult(settings, attempt, null, result.Outcome, reason);
-            return result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
-                ? result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") }
-                : result with { PaymentSupervisorDetails = BuildPaymentSupervisorDetails(attempt) };
         }
 
         if (HasLocalFinalResult(authorization))

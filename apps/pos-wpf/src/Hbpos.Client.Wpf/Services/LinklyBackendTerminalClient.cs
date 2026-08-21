@@ -432,23 +432,29 @@ public sealed class LinklyBackendTerminalClient(
 
         var keepDialogOpen = false;
         var transactionSubmitted = false;
+        var activeSessionConflictDetected = false;
         var activeSessionTakeoverAttempted = false;
+        string? lastTakenOverSessionId = null;
         CancellationTokenSource? transactionTimeoutCts = null;
         Log($"transaction request start txnType={txnType} environment={settings.Environment} componentVersion={GetComponentVersion()}");
 
         try
         {
-            using var preSubmitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            // 提交交易前的健康检查使用 HTTP 超时，不占用 Linkly 业务等待窗口。
-            preSubmitCts.CancelAfter(LinklyTimeoutPolicy.HttpTimeout);
             var fallbackTxnRef = BuildTxnRef(session);
-            var readiness = await CheckBackendReadinessAsync(settings, preSubmitCts.Token);
+            BackendReadinessResult readiness;
+            using (var readinessCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                // 每个提交前 HTTP 操作单独计时，旧会话接管耗时不能吃掉后续查询窗口。
+                readinessCts.CancelAfter(LinklyTimeoutPolicy.HttpTimeout);
+                readiness = await CheckBackendReadinessAsync(settings, readinessCts.Token);
+            }
+
             if (!readiness.IsReady)
             {
                 return FallbackAllowed("linkly.backend.unavailable", readiness.Message);
             }
 
-            var preflightActive = await GetActiveSessionAsync(settings, preSubmitCts.Token);
+            var preflightActive = await GetActiveSessionWithHttpTimeoutAsync(settings, cancellationToken);
             if (preflightActive is not null)
             {
                 // 发现活动中的 Linkly session 时先接管（查询/落库/ack），成功后才允许新扣款。
@@ -461,6 +467,11 @@ public sealed class LinklyBackendTerminalClient(
                 if (preflightBlock is not null)
                 {
                     return preflightBlock;
+                }
+
+                if (preflightAttempted)
+                {
+                    lastTakenOverSessionId = NormalizeOptional(preflightActive.SessionId);
                 }
             }
 
@@ -481,7 +492,11 @@ public sealed class LinklyBackendTerminalClient(
                 {
                     try
                     {
-                        // transactionSubmitted 只在真正 POST 前设置；409 拒绝发生在 session 创建前，结果仍为未提交。
+                        // 已取消的调用不能先跨入“可能已提交”边界；通过检查后再标记 POST 风险窗口。
+                        cancellationToken.ThrowIfCancellationRequested();
+                        transactionTimeoutCts.Token.ThrowIfCancellationRequested();
+                        // 每次 POST 都重新进入可能已提交区间；若服务端明确返回 409，catch 会立刻撤销该标记。
+                        activeSessionConflictDetected = false;
                         transactionSubmitted = true;
                         status = await StartTransactionAsync(request, transactionTimeoutCts.Token);
                         await NotifyPaymentAttemptSessionStartedAsync(status, cancellationToken);
@@ -489,24 +504,48 @@ public sealed class LinklyBackendTerminalClient(
                     }
                     catch (LinklyBackendHttpException startEx) when (startEx.HttpStatus == HttpStatusCode.Conflict)
                     {
-                        if (activeSessionTakeoverAttempted)
-                        {
-                            // 第二次 409：已接管过仍冲突，直接拒绝，不再重复读取/接管。
-                            var repeatedMessage = T(
-                                "linkly.backend.activeSessionRequiresRecovery",
-                                "Current terminal still has an unfinished card transaction. Recover it before starting a new payment.");
-                            await PresentFinalFailureAsync("backend-active-unavailable", repeatedMessage, cancellationToken);
-                            return ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(repeatedMessage));
-                        }
-
+                        // 409 是服务端明确拒绝创建新 session；此后的异常只属于旧会话查询/接管，
+                        // 不能把当前新 attempt 误记为未知，也不能允许切换 Linkly 通道继续扣款。
+                        transactionSubmitted = false;
+                        activeSessionConflictDetected = true;
                         // 409 表示后端发现活动 session；重新读取它并走与 preflight 相同的接管函数。
-                        var conflictActive = await GetActiveSessionAsync(settings, preSubmitCts.Token);
+                        var conflictActive = await GetActiveSessionWithHttpTimeoutAsync(settings, cancellationToken);
                         if (conflictActive is null)
                         {
                             var message = T("linkly.backend.activeSessionUnavailable", "Current terminal has an unfinished card transaction, but no recoverable active session was returned. Try again later.");
                             await PresentFinalFailureAsync("backend-active-unavailable", message, cancellationToken);
                             keepDialogOpen = true;
                             return new PaymentAuthorizationResult(false, null, message);
+                        }
+
+                        if (activeSessionTakeoverAttempted)
+                        {
+                            // 第二次 409 仍要读取权威活动会话。若终端已经切换到另一笔旧会话，
+                            // 先定点接管并落库该会话，但本次新 attempt 不再执行第三次 POST。
+                            var conflictSessionId = NormalizeOptional(conflictActive.SessionId);
+                            if (!string.Equals(
+                                    conflictSessionId,
+                                    lastTakenOverSessionId,
+                                    StringComparison.Ordinal))
+                            {
+                                var (secondConflictBlock, _) = await TakeOverActiveSessionOrBlockAsync(
+                                    settings,
+                                    conflictActive,
+                                    cancellationToken,
+                                    activeSessionTakeoverAttempted: false);
+                                if (secondConflictBlock is not null)
+                                {
+                                    return secondConflictBlock;
+                                }
+
+                                lastTakenOverSessionId = conflictSessionId;
+                            }
+
+                            var repeatedMessage = T(
+                                "linkly.backend.activeSessionRequiresRecovery",
+                                "Current terminal still has an unfinished card transaction. Recover it before starting a new payment.");
+                            await PresentFinalFailureAsync("backend-active-unavailable", repeatedMessage, cancellationToken);
+                            return ActiveSessionRecoveryRequired(repeatedMessage);
                         }
 
                         var (conflictBlock, conflictAttempted) = await TakeOverActiveSessionOrBlockAsync(
@@ -520,7 +559,17 @@ public sealed class LinklyBackendTerminalClient(
                             return conflictBlock;
                         }
 
-                        // 接管成功后重试一次；若再次 409，activeSessionTakeoverAttempted 已为 true，将直接拒绝。
+                        if (conflictAttempted)
+                        {
+                            lastTakenOverSessionId = NormalizeOptional(conflictActive.SessionId);
+                        }
+
+                        // 首次 409 明确未创建本次新交易；旧会话接管完成后，为唯一一次重试建立完整的新业务等待窗口。
+                        transactionTimeoutCts.Dispose();
+                        transactionTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        transactionTimeoutCts.CancelAfter(_businessWait);
+
+                        // 接管成功后只重试一次；若再次 409，会读取并登记权威会话，但不会第三次 POST。
                     }
                 }
             }
@@ -570,6 +619,21 @@ public sealed class LinklyBackendTerminalClient(
                 "Stopped waiting for the ANZ Linkly Cloud backend card result. The transaction may have reached the terminal; recover the previous transaction or confirm the result in Linkly before retrying.");
             return ResultUnknown("linkly.backend.cancelledUnknown", message);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested && !transactionSubmitted)
+        {
+            // 明确告诉 workflow：取消发生在本次新交易 POST 之前。退款 claim 只是本地 fencing，
+            // 不能因此把本次新付款/退款误记为已提交或 ResultUnknown。
+            throw new CardTerminalNotSubmittedException(ex, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && transactionSubmitted)
+        {
+            // POST 已进入 HTTP 管线后，即使调用方同时取消，也无法证明后端没有创建会话。
+            // 必须保守落入异常中心，禁止把它当作普通取消后再次扣款。
+            var message = T(
+                "linkly.backend.cancelledUnknown",
+                "Stopped waiting for the ANZ Linkly Cloud backend card result. The transaction may have reached the terminal; recover the previous transaction or confirm the result in Linkly before retrying.");
+            return ResultUnknown("linkly.backend.cancelledUnknown", message);
+        }
         catch (OperationCanceledException) when (dialogService.LocalCancelToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             var message = T(
@@ -582,7 +646,9 @@ public sealed class LinklyBackendTerminalClient(
             var message = T("linkly.backend.timeout", "ANZ Linkly Cloud transaction timed out.");
             await PresentFinalFailureAsync("backend-timeout", message, cancellationToken);
             keepDialogOpen = true;
-            return transactionSubmitted
+            return activeSessionConflictDetected
+                ? ActiveSessionRecoveryRequired(message)
+                : transactionSubmitted
                 ? ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message))
                 : FallbackAllowed("linkly.backend.timeout", message);
         }
@@ -598,8 +664,10 @@ public sealed class LinklyBackendTerminalClient(
                 "Waiting for the ANZ Linkly Cloud backend response was cancelled before the transaction result could be confirmed.");
             await PresentFinalFailureAsync("backend-wait-cancelled", message, cancellationToken);
             keepDialogOpen = true;
-            // 濠电偞鍨堕幐鎾磻閹剧粯鐓涢柛鎰硶缁辩増鎱ㄥ鍫㈢暤鐎殿喕鍗抽獮姗€宕橀幓鎺擃吋缂傚倸鍊风粈浣烘崲閹达絻浜瑰ù锝呮贡椤╂煡鏌曢崼婵囧櫣闁绘挸鍊块弻娑橆潩椤掍焦宕冲銈呮禋閸撶喖寮鍥︽勃闁绘劦鍓氱€氭娊姊洪棃鈺侇洭濠⒀勵殜瀹?HTTP 闂備礁鎲￠悷锕傛偋濡ゅ啰鐭撻梺鍨儑閳绘洟鏌ｉ弮鍫缂佺姵鍨甸—鍐Χ閸偄鏁界紓浣虹帛瀹€鎼佺嵁閹邦厽濯撮柧蹇氼潐鐏忔繈姊洪崫鍕靛剱缂侇喖绉撮敃銏ゎ敇閵忊€冲壒闂侀潧顦介崹宕囩矆婢舵劖鈷戞い鎺嗗亾闁诲繑绻堝畷銏ゅΧ婢跺鍘掗悗骞垮劚閹峰危婵犳碍鐓欑痪鏉款槺缁嬬粯銇勯幋鐐垫噰濠?
-            return transactionSubmitted
+            // 只有新交易可能已提交时才进入未知结果；409 后仍处于旧会话接管阶段。
+            return activeSessionConflictDetected
+                ? ActiveSessionRecoveryRequired(message)
+                : transactionSubmitted
                 ? ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message))
                 : FallbackAllowed("linkly.backend.waitCancelled", message);
         }
@@ -608,7 +676,9 @@ public sealed class LinklyBackendTerminalClient(
             var message = T("linkly.backend.communicationFailed", "ANZ Linkly Cloud backend communication failed.");
             await PresentFinalFailureAsync("backend-http-error", message, cancellationToken);
             keepDialogOpen = true;
-            return transactionSubmitted
+            return activeSessionConflictDetected
+                ? ActiveSessionRecoveryRequired(message)
+                : transactionSubmitted
                 ? ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message))
                 : FallbackAllowed("linkly.backend.communicationFailed", message);
         }
@@ -617,7 +687,9 @@ public sealed class LinklyBackendTerminalClient(
             var message = T("linkly.backend.invalidResponse", "ANZ Linkly Cloud backend returned an invalid response.");
             await PresentFinalFailureAsync("backend-json-error", message, cancellationToken);
             keepDialogOpen = true;
-            return transactionSubmitted
+            return activeSessionConflictDetected
+                ? ActiveSessionRecoveryRequired(message)
+                : transactionSubmitted
                 ? ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message))
                 : FallbackAllowed("linkly.backend.invalidResponse", message);
         }
@@ -632,6 +704,13 @@ public sealed class LinklyBackendTerminalClient(
             }
         }
     }
+
+    private static PaymentAuthorizationResult ActiveSessionRecoveryRequired(string message) =>
+        new(
+            false,
+            null,
+            message,
+            StatusKey: "linkly.backend.activeSessionRequiresRecovery");
 
     public Task<LinklyCloudBackendSessionResponse> ResumeSessionUntilFinalAsync(
         CardTerminalSettings settings,
@@ -727,7 +806,14 @@ public sealed class LinklyBackendTerminalClient(
             ? T("linkly.backend.activeSessionRequiresRecovery", "Current terminal already has an unfinished card transaction. Recover the previous transaction before starting a new payment.")
             : takeover.Message;
         await PresentFinalFailureAsync(activeStatus.SessionId, message, cancellationToken);
-        return (ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message)), true);
+        // 旧 session 未能释放时，本次新交易尚未提交；不能制造新的 ResultUnknown 锁。
+        return (
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                message,
+                StatusKey: "linkly.backend.activeSessionRequiresRecovery"),
+            true);
     }
 
     private async Task<PaymentAuthorizationResult> RejectActiveSessionForNewPaymentAsync(
@@ -1669,6 +1755,15 @@ public sealed class LinklyBackendTerminalClient(
         return status;
     }
 
+    private async Task<LinklyCloudBackendSessionResponse?> GetActiveSessionWithHttpTimeoutAsync(
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(LinklyTimeoutPolicy.HttpTimeout);
+        return await GetActiveSessionAsync(settings, timeoutCts.Token);
+    }
+
     private async Task<LinklyCloudBackendSessionResponse?> GetResumableSessionCoreAsync(
         CardTerminalSettings settings,
         CancellationToken cancellationToken)
@@ -2312,6 +2407,18 @@ public sealed class LinklyBackendTerminalClient(
         return transactionSuccess == true || notificationSuccess == true;
     }
 
+    internal static bool IsApprovedFinalTransaction(LinklyCloudBackendSessionResponse status)
+    {
+        if (!IsCompletedOrPendingSuccess(status))
+        {
+            return false;
+        }
+
+        // 统一沿用 backend 的批准证据分类：受保护响应码优先，并兼容已验证的交易通知。
+        return IsSuccessfulTransaction(status.TransactionSuccess, status.ResponseCode, notificationSuccess: null) ||
+            HasVerifiedApprovedTransactionNotification(status);
+    }
+
     private static LinklyReceiptApproval? TryReadReceiptApproval(LinklyCloudBackendSessionResponse status)
     {
         if (!string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase))
@@ -2818,6 +2925,46 @@ public sealed class LinklyBackendTerminalClient(
 
     private static bool HasVerifiedApprovedTransactionNotification(LinklyCloudBackendSessionResponse status)
     {
+        return TryReadVerifiedApprovedTransactionNotification(status, out _);
+    }
+
+    internal static bool HasPendingApprovalEvidenceMatchingAttempt(
+        LinklyCloudBackendSessionResponse status,
+        string? expectedTxnRef,
+        decimal expectedAmount,
+        string? expectedTxnType)
+    {
+        if (!string.Equals(status.Status, StatusPending, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!TryReadVerifiedApprovedTransactionNotification(status, out var evidence))
+        {
+            return false;
+        }
+
+        var normalizedExpectedTxnRef = NormalizeOptional(expectedTxnRef);
+        if (normalizedExpectedTxnRef is null ||
+            !string.Equals(evidence.TxnRef, normalizedExpectedTxnRef, StringComparison.Ordinal) ||
+            decimal.Round(evidence.Amount, 2, MidpointRounding.AwayFromZero) !=
+            decimal.Round(Math.Abs(expectedAmount), 2, MidpointRounding.AwayFromZero))
+        {
+            return false;
+        }
+
+        var notificationTxnType = NormalizeOptional(evidence.TxnType);
+        var normalizedExpectedTxnType = NormalizeOptional(expectedTxnType);
+        return notificationTxnType is null ||
+            normalizedExpectedTxnType is null ||
+            string.Equals(notificationTxnType, normalizedExpectedTxnType, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryReadVerifiedApprovedTransactionNotification(
+        LinklyCloudBackendSessionResponse status,
+        out VerifiedTransactionNotificationEvidence evidence)
+    {
+        evidence = default;
         var protectedResponseCode = NormalizeOptional(status.ResponseCode);
         var protectedResponseText = NormalizeOptional(status.ResponseText);
         var notification = string.IsNullOrWhiteSpace(protectedResponseCode)
@@ -2844,18 +2991,34 @@ public sealed class LinklyBackendTerminalClient(
                 return false;
             }
 
-            return IsSuccessfulTransaction(
+            var amount = ReadDecimal(response, "AmtPurchase");
+            var resolvedTxnRef = notificationTxnRef ?? persistedTxnRef;
+            if (!IsSuccessfulTransaction(
                 status.TransactionSuccess,
                 protectedResponseCode ?? responseCode,
-                ReadBool(response, "Success")) &&
-                ReadDecimal(response, "AmtPurchase") is not null &&
-                !string.IsNullOrWhiteSpace(notificationTxnRef ?? persistedTxnRef);
+                ReadBool(response, "Success")) ||
+                amount is null ||
+                string.IsNullOrWhiteSpace(resolvedTxnRef))
+            {
+                return false;
+            }
+
+            evidence = new VerifiedTransactionNotificationEvidence(
+                resolvedTxnRef,
+                amount.Value,
+                ReadString(response, "TxnType"));
+            return true;
         }
         catch (JsonException)
         {
             return false;
         }
     }
+
+    private readonly record struct VerifiedTransactionNotificationEvidence(
+        string TxnRef,
+        decimal Amount,
+        string? TxnType);
 
     private static bool IsCancelledStatus(string? status)
     {

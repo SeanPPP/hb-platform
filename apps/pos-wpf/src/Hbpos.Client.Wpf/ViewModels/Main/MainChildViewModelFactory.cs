@@ -226,6 +226,29 @@ internal sealed class MainChildViewModelFactory
             _receiptPrinterSettingsStore);
     }
 
+    public CardRecoveryCenterViewModel CreateCardRecoveryCenterViewModel(
+        ICardPaymentRecoveryService recoveryService,
+        PosSessionState session,
+        Action onBack,
+        Action<int> onOpenCountChanged,
+        Func<CardPaymentRecoveryResult, Task> onRecoveryResultHandledAsync)
+    {
+        if (_operationAuthorizationService is null)
+        {
+            throw new InvalidOperationException("卡交易异常中心需要操作授权服务。");
+        }
+
+        return new CardRecoveryCenterViewModel(
+            recoveryService,
+            _cart,
+            session,
+            _operationAuthorizationService,
+            _localization,
+            onBack,
+            onOpenCountChanged,
+            onRecoveryResultHandledAsync);
+    }
+
     public PosTerminalViewModel CreatePosTerminalViewModel(
         PosSessionState session,
         Action? onOpenPayment,
@@ -246,7 +269,8 @@ internal sealed class MainChildViewModelFactory
         Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync = null,
         Func<Task>? onExitApplicationAsync = null,
         Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null,
-        Func<Task>? onLockCashierAsync = null)
+        Func<Task>? onLockCashierAsync = null,
+        Func<Task>? onOpenCardRecoveryCenterAsync = null)
     {
         return new PosTerminalViewModel(
             _priceIndex,
@@ -279,6 +303,7 @@ internal sealed class MainChildViewModelFactory
             operationAuditLogger: _operationAuditLogger,
             onLockCashierAsync: onLockCashierAsync,
             operationAuthorizationService: _operationAuthorizationService,
+            onOpenCardRecoveryCenterAsync: onOpenCardRecoveryCenterAsync,
             releaseSharedHeldOrderAsync: _sharedHeldOrderCoordinator is null
                 ? null
                 : (claimId, currentSession, cancellationToken) =>
