@@ -1,5 +1,6 @@
 using System.Globalization;
 using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Linkly;
 using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -70,11 +71,25 @@ public static class ActiveSessionSupervisorResolutionCodes
     public const string ContinueWaiting = "SUPERVISOR_CONTINUE_WAITING";
 }
 
+/// <summary>
+/// Linkly 活动会话接管结果。后端终端客户端只负责编排（恢复/查询/新扣款），
+/// 旧会话的最终证据落库与 acknowledge 由 workflow/repository 通过窄回调完成。
+/// </summary>
+public sealed record LinklyActiveSessionTakeoverResult(
+    bool Succeeded,
+    string? Message = null)
+{
+    public static LinklyActiveSessionTakeoverResult Success { get; } = new(true);
+
+    public static LinklyActiveSessionTakeoverResult Failed(string message) => new(false, message);
+}
+
 public sealed record LinklyPaymentAttemptContext(
     Guid AttemptGuid,
     Func<string, string?, DateTimeOffset, CancellationToken, Task> BindSessionAsync,
     string? TxnRef = null,
-    string? SubmissionToken = null);
+    string? SubmissionToken = null,
+    Func<CardTerminalSettings, LinklyCloudBackendSessionResponse, CancellationToken, Task<LinklyActiveSessionTakeoverResult>>? TakeOverActiveSessionAsync = null);
 
 public interface ILinklyPaymentAttemptContextAccessor
 {

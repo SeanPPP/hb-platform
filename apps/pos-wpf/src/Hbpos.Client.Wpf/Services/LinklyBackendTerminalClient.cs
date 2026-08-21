@@ -432,6 +432,7 @@ public sealed class LinklyBackendTerminalClient(
 
         var keepDialogOpen = false;
         var transactionSubmitted = false;
+        var activeSessionTakeoverAttempted = false;
         CancellationTokenSource? transactionTimeoutCts = null;
         Log($"transaction request start txnType={txnType} environment={settings.Environment} componentVersion={GetComponentVersion()}");
 
@@ -447,11 +448,20 @@ public sealed class LinklyBackendTerminalClient(
                 return FallbackAllowed("linkly.backend.unavailable", readiness.Message);
             }
 
-            var activeStatus = await GetActiveSessionAsync(settings, preSubmitCts.Token);
-            if (activeStatus is not null)
+            var preflightActive = await GetActiveSessionAsync(settings, preSubmitCts.Token);
+            if (preflightActive is not null)
             {
-                // 发现活动中的 Linkly session 时，先恢复或拒绝新交易，避免同一终端重复提交。
-                return await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken);
+                // 发现活动中的 Linkly session 时先接管（查询/落库/ack），成功后才允许新扣款。
+                var (preflightBlock, preflightAttempted) = await TakeOverActiveSessionOrBlockAsync(
+                    settings,
+                    preflightActive,
+                    cancellationToken,
+                    activeSessionTakeoverAttempted);
+                activeSessionTakeoverAttempted |= preflightAttempted;
+                if (preflightBlock is not null)
+                {
+                    return preflightBlock;
+                }
             }
 
             var request = new LinklyCloudBackendTransactionRequest(
@@ -466,24 +476,53 @@ public sealed class LinklyBackendTerminalClient(
                 transactionTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 // 交易提交后使用完整业务等待窗口，避免过早中断已提交交易。
                 transactionTimeoutCts.CancelAfter(_businessWait);
-                transactionSubmitted = true;
-                status = await StartTransactionAsync(request, transactionTimeoutCts.Token);
-                await NotifyPaymentAttemptSessionStartedAsync(status, cancellationToken);
-            }
-            catch (LinklyBackendHttpException ex) when (ex.HttpStatus == HttpStatusCode.Conflict)
-            {
-                // 409 表示后端发现活动 session；重新读取它作为恢复入口。
-                activeStatus = await GetActiveSessionAsync(settings, preSubmitCts.Token);
-                if (activeStatus is null)
-                {
-                    var message = T("linkly.backend.activeSessionUnavailable", "Current terminal has an unfinished card transaction, but no recoverable active session was returned. Try again later.");
-                    await PresentFinalFailureAsync("backend-active-unavailable", message, cancellationToken);
-                    keepDialogOpen = true;
-                    return new PaymentAuthorizationResult(false, null, message);
-                }
 
-                // 新交易不能覆盖未完成 session，必须让收银员先恢复上一笔。
-                return await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken);
+                while (true)
+                {
+                    try
+                    {
+                        // transactionSubmitted 只在真正 POST 前设置；409 拒绝发生在 session 创建前，结果仍为未提交。
+                        transactionSubmitted = true;
+                        status = await StartTransactionAsync(request, transactionTimeoutCts.Token);
+                        await NotifyPaymentAttemptSessionStartedAsync(status, cancellationToken);
+                        break;
+                    }
+                    catch (LinklyBackendHttpException startEx) when (startEx.HttpStatus == HttpStatusCode.Conflict)
+                    {
+                        if (activeSessionTakeoverAttempted)
+                        {
+                            // 第二次 409：已接管过仍冲突，直接拒绝，不再重复读取/接管。
+                            var repeatedMessage = T(
+                                "linkly.backend.activeSessionRequiresRecovery",
+                                "Current terminal still has an unfinished card transaction. Recover it before starting a new payment.");
+                            await PresentFinalFailureAsync("backend-active-unavailable", repeatedMessage, cancellationToken);
+                            return ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(repeatedMessage));
+                        }
+
+                        // 409 表示后端发现活动 session；重新读取它并走与 preflight 相同的接管函数。
+                        var conflictActive = await GetActiveSessionAsync(settings, preSubmitCts.Token);
+                        if (conflictActive is null)
+                        {
+                            var message = T("linkly.backend.activeSessionUnavailable", "Current terminal has an unfinished card transaction, but no recoverable active session was returned. Try again later.");
+                            await PresentFinalFailureAsync("backend-active-unavailable", message, cancellationToken);
+                            keepDialogOpen = true;
+                            return new PaymentAuthorizationResult(false, null, message);
+                        }
+
+                        var (conflictBlock, conflictAttempted) = await TakeOverActiveSessionOrBlockAsync(
+                            settings,
+                            conflictActive,
+                            cancellationToken,
+                            activeSessionTakeoverAttempted);
+                        activeSessionTakeoverAttempted |= conflictAttempted;
+                        if (conflictBlock is not null)
+                        {
+                            return conflictBlock;
+                        }
+
+                        // 接管成功后重试一次；若再次 409，activeSessionTakeoverAttempted 已为 true，将直接拒绝。
+                    }
+                }
             }
             catch (LinklyBackendHttpException ex) when (IsBackendStartRejectedBeforeSession(ex))
             {
@@ -639,6 +678,56 @@ public sealed class LinklyBackendTerminalClient(
                 LogValue(lastStatus.Status));
             throw new LinklyBackendResultUnknownException(BuildResultUnknownMessage(detail));
         }
+    }
+
+    private async Task<(PaymentAuthorizationResult? Block, bool TakeoverAttempted)> TakeOverActiveSessionOrBlockAsync(
+        CardTerminalSettings settings,
+        LinklyCloudBackendSessionResponse activeStatus,
+        CancellationToken cancellationToken,
+        bool activeSessionTakeoverAttempted)
+    {
+        if (IsSettlementOperation(activeStatus))
+        {
+            // 结算不是卡片/退款活动会话，直接返回可编辑的未提交结果，不接管也不发起新扣款。
+            var settlementMessage = T(
+                "linkly.backend.activeSettlementBlocksPayment",
+                "Current terminal already has an unfinished Linkly settlement. Resolve that settlement before starting a new card payment.");
+            await PresentFinalFailureAsync(activeStatus.SessionId, settlementMessage, cancellationToken);
+            return (
+                new PaymentAuthorizationResult(
+                    false,
+                    null,
+                    settlementMessage,
+                    StatusKey: "linkly.backend.activeSettlementBlocksPayment",
+                    FallbackAllowed: true),
+                false);
+        }
+
+        if (activeSessionTakeoverAttempted)
+        {
+            // 同一个新 attempt 只允许接管一次；第二次冲突直接拒绝，避免无限重试。
+            return (await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken), true);
+        }
+
+        var takeOver = paymentAttemptContextAccessor?.Current?.TakeOverActiveSessionAsync;
+        if (takeOver is null)
+        {
+            // 未接入 workflow 接管回调时保持旧行为：拒绝并提示恢复。
+            return (await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken), true);
+        }
+
+        // 回调内部的真实 caller 取消不会被吞：OperationCanceledException 自然向外传播。
+        var takeover = await takeOver(settings, activeStatus, cancellationToken);
+        if (takeover.Succeeded)
+        {
+            return (null, true);
+        }
+
+        var message = string.IsNullOrWhiteSpace(takeover.Message)
+            ? T("linkly.backend.activeSessionRequiresRecovery", "Current terminal already has an unfinished card transaction. Recover the previous transaction before starting a new payment.")
+            : takeover.Message;
+        await PresentFinalFailureAsync(activeStatus.SessionId, message, cancellationToken);
+        return (ResultUnknown("linkly.backend.resultUnknown", BuildResultUnknownMessage(message)), true);
     }
 
     private async Task<PaymentAuthorizationResult> RejectActiveSessionForNewPaymentAsync(

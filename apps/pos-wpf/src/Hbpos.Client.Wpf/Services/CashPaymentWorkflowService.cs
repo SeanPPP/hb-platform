@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Orders;
@@ -821,7 +822,13 @@ public sealed class CashPaymentWorkflowService(
                         CancellationToken.None);
                 },
                 attempt.TxnRef,
-                refundSubmissionToken));
+                refundSubmissionToken,
+                TakeOverActiveSessionAsync: (settings, activeStatus, cancellationToken) =>
+                    TakeOverActiveSessionForNewPaymentAsync(
+                        settings,
+                        activeStatus,
+                        session,
+                        cancellationToken)));
         using var squareAttemptScope = squareAttempt is null || squarePaymentAttemptContextAccessor is null
             ? null
             : squarePaymentAttemptContextAccessor.Begin(new SquarePaymentAttemptContext(
@@ -2099,6 +2106,167 @@ public sealed class CashPaymentWorkflowService(
                 "CardRecovery",
                 $"payment completion acknowledge failed attemptGuid={attemptGuid} sessionId={sessionId} error={ex.GetType().Name}");
         }
+    }
+
+    /// <summary>
+    /// 接管旧 Linkly 活动会话：创建独立 ActiveSession attempt、查询至终态、完整证据落库、
+    /// 最后 acknowledge/release。落库失败或 ack 失败都返回 Failed，绝不发起新扣款。
+    /// </summary>
+    private async Task<LinklyActiveSessionTakeoverResult> TakeOverActiveSessionForNewPaymentAsync(
+        CardTerminalSettings settings,
+        LinklyCloudBackendSessionResponse activeStatus,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        if (cardPaymentAttemptRepository is null || linklyBackendTerminalClient is null)
+        {
+            return LinklyActiveSessionTakeoverResult.Failed(
+                "The card recovery store is unavailable, so the previous Linkly session could not be cleared.");
+        }
+
+        try
+        {
+            // 1. 关联/创建独立旧 ActiveSession attempt；新 AttemptGuid 绝不覆盖本次新付款 attempt。
+            var activeAttempt = await PersistActiveSessionAttemptAsync(
+                settings,
+                session,
+                activeStatus,
+                cancellationToken);
+
+            // 2. Resume/query 至确定终态。
+            var finalStatus = await linklyBackendTerminalClient.ResumeSessionUntilFinalAsync(
+                settings,
+                activeStatus,
+                cancellationToken);
+            if (!IsTerminalActiveSessionStatus(finalStatus))
+            {
+                return LinklyActiveSessionTakeoverResult.Failed(
+                    "The previous Linkly session is still pending and could not be cleared safely.");
+            }
+
+            // 3. 完整最终 status/response/session/txn 证据落库成功后才允许 ack。
+            await RunLocalStoreAsync(
+                () => cardPaymentAttemptRepository.UpdateOutcomeAsync(
+                    activeAttempt.AttemptGuid,
+                    MapActiveSessionOutcome(finalStatus),
+                    finalStatus.ResponseCode,
+                    finalStatus.ResponseText,
+                    NormalizeOptional(finalStatus.TxnRef),
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+
+            // 4. acknowledge/release；先终端 ack 再本地标记，失败即禁止新扣款。
+            await linklyBackendTerminalClient.AcknowledgeSessionAsync(
+                settings,
+                finalStatus.SessionId,
+                cancellationToken);
+            await RunLocalStoreAsync(
+                () => cardPaymentAttemptRepository.MarkAcknowledgedAsync(
+                    activeAttempt.AttemptGuid,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+
+            return LinklyActiveSessionTakeoverResult.Success;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 真实 caller 取消不能被吞为失败；向上传播由 backend client 的异常处理决定语义。
+            throw;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogCardRecoveryWarning("take-over-active-session", null, ex);
+            return LinklyActiveSessionTakeoverResult.Failed(
+                "The previous Linkly session could not be cleared safely. Do not charge again until it is resolved.");
+        }
+    }
+
+    private async Task<LocalCardPaymentAttempt> PersistActiveSessionAttemptAsync(
+        CardTerminalSettings settings,
+        PosSessionState session,
+        LinklyCloudBackendSessionResponse status,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(status.SessionId))
+        {
+            throw new InvalidOperationException("Linkly active session does not contain a SessionId.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var attempt = new LocalCardPaymentAttempt(
+            Guid.NewGuid(),
+            status.SessionId.Trim(),
+            NormalizeOptional(status.TxnRef),
+            CardProcessorKind.Linkly.ToString(),
+            settings.Environment.ToString(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            "P",
+            ToDecimalAmount(status.CardTransaction?.AmountCents),
+            LocalCardPaymentAttemptStatus.Recovering,
+            "{}",
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            status.ResponseCode,
+            status.ResponseText,
+            null,
+            now,
+            now,
+            null,
+            null,
+            OperationKind: "ActiveSession",
+            OperationGuid: Guid.NewGuid());
+        return await RunLocalStoreAsync(
+            () => cardPaymentAttemptRepository!.CreateOrGetActiveSessionAsync(attempt, CancellationToken.None),
+            CancellationToken.None);
+    }
+
+    private static bool IsTerminalActiveSessionStatus(LinklyCloudBackendSessionResponse status)
+    {
+        return string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.Status, "NotSubmitted", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.Status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.Status, "Canceled", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static LocalCardPaymentAttemptStatus MapActiveSessionOutcome(LinklyCloudBackendSessionResponse status)
+    {
+        if (string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase) &&
+            status.TransactionSuccess == true)
+        {
+            return LocalCardPaymentAttemptStatus.Approved;
+        }
+
+        var text = $"{status.Status} {status.ResponseText}".ToUpperInvariant();
+        if (text.Contains("TIMEOUT", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.TimedOut;
+        }
+
+        if (text.Contains("CANCEL", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.Cancelled;
+        }
+
+        if (text.Contains("DECLIN", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.Declined;
+        }
+
+        return LocalCardPaymentAttemptStatus.Failed;
+    }
+
+    private static decimal ToDecimalAmount(long? amountCents)
+    {
+        return amountCents is long cents ? decimal.Round(cents / 100m, 2, MidpointRounding.AwayFromZero) : 0m;
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private async Task MarkCompletedSquareAttemptsAsync(
