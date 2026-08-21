@@ -341,7 +341,7 @@ public sealed class SquarePaymentRecoveryService(
 
         if (decision == CardRecoverySupervisorDecision.ConfirmNotProcessed)
         {
-            var restored = RestoreSquareSaleApprovedRetry(cart, updatedAttempt);
+            var restored = await RecoverSupervisorNotPaidSaleAsync(cart, updatedAttempt, cancellationToken);
             var restoredSucceeded = restored.Outcome == CardPaymentRecoveryOutcome.DraftRestored;
             return new CardRecoveryResolutionResult(
                 restoredSucceeded,
@@ -369,16 +369,46 @@ public sealed class SquarePaymentRecoveryService(
             LockRetained: !completedSucceeded);
     }
 
-    private CardPaymentRecoveryResult RestoreSquareSaleApprovedRetry(
+    private static bool IsSupervisorNotPaidSale(LocalSquarePaymentAttempt attempt) =>
+        string.Equals(attempt.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, StringComparison.Ordinal);
+
+    private async Task<CardPaymentRecoveryResult> RecoverSupervisorNotPaidSaleAsync(
         PosCartService cart,
-        LocalSquarePaymentAttempt attempt)
+        LocalSquarePaymentAttempt attempt,
+        CancellationToken cancellationToken)
     {
         if (!cart.IsEmpty)
         {
-            return new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.Unknown, CurrentCartNotEmptyMessage());
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidCartNotEmpty", "The previous Square payment was confirmed not paid, but the current cart is not empty. Clear the current cart before restoring the original order."));
         }
 
-        var draft = DeserializeDraft(attempt);
+        var draft = TryDeserializeDraft(attempt);
+        if (draft is null)
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."));
+        }
+
+        // 先 CAS 终态化旧 attempt，成功后才恢复 draft，避免重复恢复或宣称已释放却未落库。
+        var terminated = await RunLocalStoreAsync(
+            () => attemptRepository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None),
+            CancellationToken.None);
+        if (!terminated)
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidTerminalizeFailed", "The previous Square payment could not be finalized. Run recovery again."));
+        }
+
         cart.RestoreSnapshot(draft.CartSnapshot);
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
@@ -540,6 +570,13 @@ public sealed class SquarePaymentRecoveryService(
         LocalSquarePaymentAttempt attempt,
         CancellationToken cancellationToken)
     {
+        // 主管确认未付款：在 MarkRecovering/远端 checkout 查询之前恢复并终态化，
+        // 避免缺 CheckoutId 遮蔽该主管状态导致永久 Unknown。
+        if (IsSupervisorNotPaidSale(attempt))
+        {
+            return await RecoverSupervisorNotPaidSaleAsync(cart, attempt, cancellationToken);
+        }
+
         await RunLocalStoreAsync(
             () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
             cancellationToken);

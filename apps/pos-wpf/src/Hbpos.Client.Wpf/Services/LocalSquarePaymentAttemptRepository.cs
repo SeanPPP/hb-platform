@@ -293,6 +293,14 @@ public interface ILocalSquarePaymentAttemptRepository
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Square payment resolution is not wired for this repository.");
 
+    Task<bool> TryTerminalizeNotPaidAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Square not-paid terminalization is not wired for this repository.");
+
     Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default);
 }
 
@@ -788,6 +796,38 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return true;
+    }
+
+    public async Task<bool> TryTerminalizeNotPaidAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        // 主管确认未付款后：只有仍处于 ConfirmedNotPaid 且 Status/UpdatedAt 未变才 CAS 终态化，
+        // 使该 attempt 从异常队列消失，后续重刷创建全新 AttemptGuid/幂等键。
+        command.CommandText = """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                ResolvedAt = $ResolvedAt,
+                UpdatedAt = $ResolvedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Sale'
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND ResponseCode = $ConfirmedNotPaidCode;
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
+        command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ConfirmedNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     private static string BuildPaymentResolutionText(SquarePaymentResolution resolution)
