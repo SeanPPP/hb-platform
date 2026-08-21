@@ -9,6 +9,8 @@ namespace BlazorApp.Shared.Helper
     /// </summary>
     public static class ItemNumberHelper
     {
+        private const int MaxMainItemSequence = 999;
+
         /// <summary>
         /// 生成普通商品货号
         /// 格式：供应商编码+001 (如：HB001-001, HB002-001)
@@ -44,6 +46,7 @@ namespace BlazorApp.Shared.Helper
             }
 
             // 生成下一个序号
+            EnsureMainItemSequenceCapacity(maxSequence, 1, supplierCode, hasPrefix: false);
             var nextSequence = maxSequence + 1;
             return $"{supplierCode}-{nextSequence:D3}";
         }
@@ -90,6 +93,7 @@ namespace BlazorApp.Shared.Helper
             }
 
             // 生成下一个序号
+            EnsureMainItemSequenceCapacity(maxSequence, 1, baseCode, hasPrefix: true);
             var nextSequence = maxSequence + 1;
             return $"{baseCode}-{nextSequence:D3}";
         }
@@ -302,6 +306,8 @@ namespace BlazorApp.Shared.Helper
                 }
             }
 
+            EnsureMainItemSequenceCapacity(maxSequence, count, supplierCode, hasPrefix: false);
+
             // 生成指定数量的货号
             for (int i = 1; i <= count; i++)
             {
@@ -358,6 +364,8 @@ namespace BlazorApp.Shared.Helper
                 }
             }
 
+            EnsureMainItemSequenceCapacity(maxSequence, count, baseCode, hasPrefix: true);
+
             // 生成指定数量的货号
             for (int i = 1; i <= count; i++)
             {
@@ -366,6 +374,24 @@ namespace BlazorApp.Shared.Helper
             }
 
             return result;
+        }
+
+        private static void EnsureMainItemSequenceCapacity(
+            int maxSequence,
+            int requestedCount,
+            string baseCode,
+            bool hasPrefix
+        )
+        {
+            // D3 仅保证最少三位，不会阻止生成 1000；必须在格式化前显式守住编码段上限。
+            if ((long)maxSequence + requestedCount <= MaxMainItemSequence)
+                return;
+
+            var maxItemNumber = $"{baseCode}-{MaxMainItemSequence:D3}";
+            var nextAction = hasPrefix ? "请选择或创建其他前缀码" : "请选择或创建前缀码";
+            throw new InvalidOperationException(
+                $"货号编码段已满（最大 {maxItemNumber}），{nextAction}"
+            );
         }
 
         /// <summary>

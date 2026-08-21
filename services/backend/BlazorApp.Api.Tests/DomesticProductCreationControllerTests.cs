@@ -501,6 +501,137 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void ItemNumberHelper_编码段边界内仍可生成999()
+        {
+            Assert.Equal(
+                "HB150-999",
+                ItemNumberHelper.GenerateItemNumber("HB150", new List<string> { "HB150-998" })
+            );
+            Assert.Equal(
+                new[] { "HB150-998", "HB150-999" },
+                ItemNumberHelper.GenerateBatchItemNumbers(
+                    "HB150",
+                    2,
+                    new List<string> { "HB150-997" }
+                )
+            );
+            Assert.Equal(
+                "HB150-A-999",
+                ItemNumberHelper.GenerateItemNumberWithPrefix(
+                    "HB150",
+                    "A",
+                    new List<string> { "HB150-A-998" }
+                )
+            );
+            Assert.Equal(
+                new[] { "HB150-A-998", "HB150-A-999" },
+                ItemNumberHelper.GenerateBatchItemNumbersWithPrefix(
+                    "HB150",
+                    "A",
+                    2,
+                    new List<string> { "HB150-A-997" }
+                )
+            );
+        }
+
+        [Fact]
+        public void ItemNumberHelper_无前缀到999后提示选择前缀码()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                ItemNumberHelper.GenerateItemNumber(
+                    "HB150",
+                    new List<string> { "HB150-999" }
+                )
+            );
+
+            Assert.Contains("编码段已满", exception.Message);
+            Assert.Contains("选择或创建前缀码", exception.Message);
+        }
+
+        [Fact]
+        public void ItemNumberHelper_无前缀批量跨越999时整体拒绝()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                ItemNumberHelper.GenerateBatchItemNumbers(
+                    "HB150",
+                    2,
+                    new List<string> { "HB150-998" }
+                )
+            );
+
+            Assert.Contains("HB150-999", exception.Message);
+            Assert.Contains("选择或创建前缀码", exception.Message);
+        }
+
+        [Fact]
+        public void ItemNumberHelper_带前缀到999后提示选择其他前缀码()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                ItemNumberHelper.GenerateItemNumberWithPrefix(
+                    "HB150",
+                    "A",
+                    new List<string> { "HB150-A-999" }
+                )
+            );
+
+            Assert.Contains("编码段已满", exception.Message);
+            Assert.Contains("选择或创建其他前缀码", exception.Message);
+        }
+
+        [Fact]
+        public void ItemNumberHelper_带前缀批量跨越999时整体拒绝()
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                ItemNumberHelper.GenerateBatchItemNumbersWithPrefix(
+                    "HB150",
+                    "A",
+                    2,
+                    new List<string> { "HB150-A-998" }
+                )
+            );
+
+            Assert.Contains("HB150-A-999", exception.Message);
+            Assert.Contains("选择或创建其他前缀码", exception.Message);
+        }
+
+        [Fact]
+        public async Task ItemBarcodeService_编码段已满时并发请求返回容量提示且不创建预留()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            await database.Db.Insertable(
+                new DomesticProduct
+                {
+                    ProductCode = "existing-hb150-999",
+                    SupplierCode = "HB150",
+                    ProductName = "现有商品",
+                    HBProductNo = "HB150-999",
+                    Barcode = "9527815009998",
+                    ProductType = 0,
+                    IsActive = true,
+                }
+            ).ExecuteCommandAsync();
+            var generator = database.CreateItemBarcodeService();
+
+            var exceptions = await Task.WhenAll(
+                Enumerable.Range(0, 2).Select(_ => Record.ExceptionAsync(() =>
+                    generator.GenerateItemNumberAndBarcodeAsync(
+                        "HB150",
+                        ProductTypeEnum.Normal
+                    )
+                ))
+            );
+
+            Assert.All(exceptions, exception =>
+            {
+                var capacityException = Assert.IsType<InvalidOperationException>(exception);
+                Assert.Contains("编码段已满", capacityException.Message);
+                Assert.DoesNotContain("duplicate", capacityException.Message, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("UNIQUE", capacityException.Message, StringComparison.OrdinalIgnoreCase);
+            });
+            Assert.Equal(0, await database.Db.Queryable<ItemBarcodeReservation>().CountAsync());
+        }
+
+        [Fact]
         public async Task ItemBarcodeService_并发生成的货号和条码不重复()
         {
             using var database = new DomesticProductCreationTestDatabase();
