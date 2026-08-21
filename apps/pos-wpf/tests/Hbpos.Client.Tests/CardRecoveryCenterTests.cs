@@ -740,6 +740,91 @@ public sealed class CardRecoveryCenterTests
         Assert.Equal("ref-1", transaction.TxnRef);
     }
 
+    [Fact]
+    public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_restore_failure_keeps_attempt_open()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000066"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraft(quantity: 0m));
+        var repository = new FakeSquareAttemptRepository(attempt);
+        var service = CreateSquareService(repository);
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed,
+            "not paid",
+            "bank none",
+            reference: null,
+            new PosCartService(),
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+        var open = await service.ListOpenAsync(Session);
+        Assert.Single(open);
+    }
+
+    [Fact]
+    public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_terminalize_failure_keeps_attempt_open()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000067"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraft());
+        var repository = new FakeSquareAttemptRepository(attempt)
+        {
+            TerminalizeException = new IOException("database busy")
+        };
+        var service = CreateSquareService(repository);
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed,
+            "not paid",
+            "bank none",
+            reference: null,
+            new PosCartService(),
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        var open = await service.ListOpenAsync(Session);
+        Assert.Single(open);
+    }
+
+    [Fact]
+    public async Task Square_RecoverAttemptAsync_sale_confirm_not_processed_does_not_recover_twice()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000068"),
+            LocalSquarePaymentAttemptStatus.Pending,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraft()) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid
+        };
+        var repository = new FakeSquareAttemptRepository(attempt);
+        var service = CreateSquareService(repository);
+
+        var first = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, first.Outcome);
+        Assert.Equal(1, repository.TerminalizeNotPaidCount);
+
+        var second = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        Assert.Equal(CardPaymentRecoveryOutcome.None, second.Outcome);
+        Assert.Equal(1, repository.TerminalizeNotPaidCount);
+    }
+
     private static CardPaymentRecoveryService CreateLinklyService(
         FakeLinklyAttemptRepository repository,
         ILinklyBackendTerminalClient? backend = null,
@@ -836,7 +921,7 @@ public sealed class CardRecoveryCenterTests
             operationKind);
     }
 
-    private static string SerializeDraft()
+    private static string SerializeDraft(decimal quantity = 1m)
     {
         var snapshot = new PosCartSnapshot(
         [
@@ -848,7 +933,7 @@ public sealed class CardRecoveryCenterTests
                 "930010",
                 "ITEM-10",
                 null,
-                1m,
+                quantity,
                 10m,
                 0m,
                 null,
@@ -1054,6 +1139,8 @@ public sealed class CardRecoveryCenterTests
 
         public Guid? LastTerminalizedAttemptGuid { get; private set; }
 
+        public Exception? TerminalizeException { get; set; }
+
         public Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
             string storeCode,
             string deviceCode,
@@ -1129,6 +1216,11 @@ public sealed class CardRecoveryCenterTests
             DateTimeOffset resolvedAt,
             CancellationToken cancellationToken = default)
         {
+            if (TerminalizeException is not null)
+            {
+                throw TerminalizeException;
+            }
+
             TerminalizeNotPaidCount++;
             LastTerminalizedAttemptGuid = attemptGuid;
             var existing = _attempts.FirstOrDefault(attempt => attempt.AttemptGuid == attemptGuid);

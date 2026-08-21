@@ -189,6 +189,12 @@ public sealed class SquarePaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
+        // 终态 attempt 不可再恢复；双保险之一，避免 Abandoned 等终态被重复恢复。
+        if (IsTerminalSquareStatus(attempt.Status))
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
         if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
         {
             return await RecoverRefundAttemptAsync(cart, session, settings, attempt, cancellationToken);
@@ -373,6 +379,13 @@ public sealed class SquarePaymentRecoveryService(
         string.Equals(attempt.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, StringComparison.Ordinal);
 
+    private static bool IsTerminalSquareStatus(LocalSquarePaymentAttemptStatus status) =>
+        status is LocalSquarePaymentAttemptStatus.Canceled or
+            LocalSquarePaymentAttemptStatus.TimedOut or
+            LocalSquarePaymentAttemptStatus.Failed or
+            LocalSquarePaymentAttemptStatus.OrderCompleted or
+            LocalSquarePaymentAttemptStatus.Abandoned;
+
     private async Task<CardPaymentRecoveryResult> RecoverSupervisorNotPaidSaleAsync(
         PosCartService cart,
         LocalSquarePaymentAttempt attempt,
@@ -393,15 +406,41 @@ public sealed class SquarePaymentRecoveryService(
                 T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."));
         }
 
-        // 先 CAS 终态化旧 attempt，成功后才恢复 draft，避免重复恢复或宣称已释放却未落库。
-        var terminated = await RunLocalStoreAsync(
-            () => attemptRepository.TryTerminalizeNotPaidAsync(
-                attempt.AttemptGuid,
-                attempt.Status,
-                attempt.UpdatedAt,
-                DateTimeOffset.UtcNow,
-                CancellationToken.None),
-            CancellationToken.None);
+        // 先安全恢复购物车，恢复完成后才 CAS 终态；恢复失败保持记录开放，避免 attempt 已消失但订单未恢复。
+        try
+        {
+            cart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"not-paid restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidRestoreFailed", "The previous Square payment could not be restored. Run recovery again."));
+        }
+
+        bool terminated;
+        try
+        {
+            terminated = await RunLocalStoreAsync(
+                () => attemptRepository.TryTerminalizeNotPaidAsync(
+                    attempt.AttemptGuid,
+                    attempt.Status,
+                    attempt.UpdatedAt,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"not-paid terminalize failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            terminated = false;
+        }
+
         if (!terminated)
         {
             return new CardPaymentRecoveryResult(
@@ -409,7 +448,6 @@ public sealed class SquarePaymentRecoveryService(
                 T("cardRecovery.square.notPaidTerminalizeFailed", "The previous Square payment could not be finalized. Run recovery again."));
         }
 
-        cart.RestoreSnapshot(draft.CartSnapshot);
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.square.notPaidRetryAllowed", "The bank confirmed that no payment was processed. The original order is ready to retry with the same operation."),

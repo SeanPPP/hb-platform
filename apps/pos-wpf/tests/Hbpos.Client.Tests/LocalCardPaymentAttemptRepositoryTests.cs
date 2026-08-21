@@ -1088,6 +1088,50 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task Square_TryTerminalizeNotPaid_rejects_already_terminal_attempt()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("50000000-0000-0000-0000-000000000001"),
+                status: LocalSquarePaymentAttemptStatus.Pending,
+                operationKind: "Sale") with
+            {
+                ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid
+            };
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            var resolvedAt = DateTimeOffset.Parse("2026-07-28T10:00:00+10:00");
+            var first = await repository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                resolvedAt);
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.True(first);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved!.Status);
+
+            var second = await repository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                resolvedAt.AddMinutes(1));
+            Assert.False(second);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static LocalCardPaymentAttempt CreateAttempt(
         Guid? attemptGuid = null,
         string storeCode = "S001",
