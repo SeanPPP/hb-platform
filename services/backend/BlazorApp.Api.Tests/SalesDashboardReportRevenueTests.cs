@@ -13,6 +13,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using BlazorApp.Shared.Models.HBSalesRecord;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authorization;
@@ -34,41 +35,56 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 {
     private readonly string _localDbPath;
     private readonly string _posmDbPath;
+    private readonly string _hbSalesDbPath;
     private readonly SqliteConnection _localConnection;
     private readonly SqliteConnection _posmConnection;
+    private readonly SqliteConnection _hbSalesConnection;
     private readonly SqlSugarClient _localDb;
     private readonly SqlSugarClient _posmDb;
+    private readonly SqlSugarScope _hbSalesDb;
 
     public SalesDashboardReportRevenueTests()
     {
         _localDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
         _posmDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+        _hbSalesDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
         _localConnection = new SqliteConnection($"Data Source={_localDbPath}");
         _posmConnection = new SqliteConnection($"Data Source={_posmDbPath}");
+        _hbSalesConnection = new SqliteConnection($"Data Source={_hbSalesDbPath}");
         _localConnection.Open();
         _posmConnection.Open();
+        _hbSalesConnection.Open();
 
         _localDb = new SqlSugarClient(CreateConnectionConfig(_localConnection.ConnectionString));
         _posmDb = new SqlSugarClient(CreateConnectionConfig(_posmConnection.ConnectionString));
+        _hbSalesDb = new SqlSugarScope(CreateConnectionConfig(_hbSalesConnection.ConnectionString));
         _localDb.CodeFirst.InitTables(
             typeof(Store),
+            typeof(WarehouseProduct),
+            typeof(StoreRetailPrice),
             typeof(StoreSalesStatistic),
             typeof(HourlySalesStatistic),
             typeof(ProductStoreDailySalesStatistic),
+            typeof(SalesStatisticRefreshState),
             typeof(AustralianSupplierStoreSalesDetail),
             typeof(ChinaSupplierStoreSalesDetail),
             typeof(StoreSupplierSalesDetail),
             typeof(HBLocalSupplier),
             typeof(ChinaSupplier),
-            typeof(Product)
+            typeof(Product),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
         );
         CreateScheduledTaskLogTable(_localDb);
         _posmDb.CodeFirst.InitTables(
             typeof(SalesOrder),
             typeof(SalesOrderDetail),
+            typeof(SalesReturnRecord),
             typeof(PaymentDetail),
-            typeof(PosmProductSupplierMapping)
+            typeof(PosmProductSupplierMapping),
+            typeof(POSM_设备注册信息表)
         );
+        _hbSalesDb.CodeFirst.InitTables(typeof(SalesOrderMain), typeof(SalesOrderDetailRecord));
     }
 
     [Fact]
@@ -2240,6 +2256,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var services = new ServiceCollection()
             .AddSingleton(localContext)
             .AddSingleton(posmContext)
+            .AddSingleton(new HBSalesRecordSqlSugarContext(_hbSalesDb))
             .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
             .AddSingleton<ILogger<SalesStatisticsJobService>>(
                 NullLogger<SalesStatisticsJobService>.Instance
@@ -2353,7 +2370,9 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     {
         _localConnection.Dispose();
         _posmConnection.Dispose();
+        _hbSalesConnection.Dispose();
         if (File.Exists(_localDbPath)) SqliteTempFileCleanup.DeleteIfExists(_localDbPath);
         if (File.Exists(_posmDbPath)) SqliteTempFileCleanup.DeleteIfExists(_posmDbPath);
+        if (File.Exists(_hbSalesDbPath)) SqliteTempFileCleanup.DeleteIfExists(_hbSalesDbPath);
     }
 }

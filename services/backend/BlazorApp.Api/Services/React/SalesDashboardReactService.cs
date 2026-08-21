@@ -3843,6 +3843,9 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
+            // 2025 年门店统计与商品门店日统计必须全分店原子刷新，不能沿用报表的分店筛选。
+            static bool RequiresAllBranchRefresh(DateTime date) => date.Year == 2025;
+
             return await RefreshMissingStatisticsAsync(
                 "store",
                 "分店营业额",
@@ -3850,8 +3853,13 @@ namespace BlazorApp.Api.Services.React
                 branchCodes,
                 (service, date) => service.UpdateStoreStatistics(
                     date,
-                    branchCodes.Count > 0 ? branchCodes : null
-                )
+                    RequiresAllBranchRefresh(date)
+                        ? null
+                        : branchCodes.Count > 0
+                            ? branchCodes
+                            : null
+                ),
+                RequiresAllBranchRefresh
             );
         }
 
@@ -4004,7 +4012,8 @@ namespace BlazorApp.Api.Services.React
             string label,
             IEnumerable<DateTime> missingDates,
             List<string> branchCodes,
-            Func<SalesStatisticsJobService, DateTime, Task> refreshAsync
+            Func<SalesStatisticsJobService, DateTime, Task> refreshAsync,
+            Func<DateTime, bool>? requiresAllBranchRefresh = null
         )
         {
             var dates = missingDates
@@ -4028,7 +4037,11 @@ namespace BlazorApp.Api.Services.React
                 .Select(date => new
                 {
                     Date = date,
-                    Key = BuildReportStatisticsRefreshKey(kind, date, branchKey),
+                    Key = BuildReportStatisticsRefreshKey(
+                        kind,
+                        date,
+                        requiresAllBranchRefresh?.Invoke(date) == true ? "ALL" : branchKey
+                    ),
                 })
                 .Where(item => REPORT_STATISTICS_REFRESHING_KEYS.TryAdd(item.Key, 0))
                 .ToList();
