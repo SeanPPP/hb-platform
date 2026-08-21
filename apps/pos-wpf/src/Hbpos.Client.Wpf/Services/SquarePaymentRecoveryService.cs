@@ -297,7 +297,7 @@ public sealed class SquarePaymentRecoveryService(
                 verifiedSucceeded,
                 verified.Message,
                 verified,
-                LockRetained: !verifiedSucceeded);
+                LockRetained: !verifiedSucceeded || verified.HasPostCommitWarning);
         }
 
         if (IsTerminalSquareStatus(attempt.Status))
@@ -439,7 +439,7 @@ public sealed class SquarePaymentRecoveryService(
             completedSucceeded,
             completed.Message,
             completed,
-            LockRetained: !completedSucceeded);
+            LockRetained: !completedSucceeded || completed.HasPostCommitWarning);
     }
 
     private static bool IsSupervisorNotPaidSale(LocalSquarePaymentAttempt attempt) =>
@@ -465,19 +465,19 @@ public sealed class SquarePaymentRecoveryService(
                 T("cardRecovery.square.notPaidCartNotEmpty", "The previous Square payment was confirmed not paid, but the current cart is not empty. Clear the current cart before restoring the original order."));
         }
 
-        var draft = TryDeserializeDraft(attempt);
-        if (draft is null)
+        var deserializedDraft = TryDeserializeDraft(attempt);
+        if (deserializedDraft is null)
         {
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."));
         }
 
-        // 先在临时购物车完整验证快照，避免逐行恢复污染真实购物车；临时购物车无外部订阅者，不触发外部副作用。
-        var validationCart = new PosCartService();
+        ValidatedSquareRecoveryDraft validatedDraft;
         try
         {
-            validationCart.RestoreSnapshot(draft.CartSnapshot);
+            // 在触碰活动购物车前物化并验证全部必需嵌套字段、快照和 tender 计算。
+            validatedDraft = ValidateAndMaterializeDraft(deserializedDraft);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -488,6 +488,8 @@ public sealed class SquarePaymentRecoveryService(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.square.notPaidRestoreFailed", "The previous Square payment could not be restored. Run recovery again."));
         }
+
+        var draft = validatedDraft.Draft;
 
         // 验证通过后恢复到真实购物车；事件 handler 异常同样不得让 attempt 提前终态。
         try
@@ -537,7 +539,7 @@ public sealed class SquarePaymentRecoveryService(
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.square.notPaidRetryAllowed", "The bank confirmed that no payment was processed. The original order is ready to retry with the same operation."),
-            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+            TenderedAmount: validatedDraft.CurrentTenderTotal,
             RestoredTenders: draft.CurrentTenders);
     }
 
@@ -547,7 +549,7 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.Clear();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Clear 会先清空内部状态再通知订阅者；即使订阅者失败，也保留已完成的精确回滚。
             ConsoleLog.Write(
@@ -741,12 +743,30 @@ public sealed class SquarePaymentRecoveryService(
             return await RecoverSupervisorNotPaidSaleAsync(cart, attempt, cancellationToken);
         }
 
-        await RunLocalStoreAsync(
-            () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
-            cancellationToken);
-        attempt = await RunLocalStoreAsync(
-            () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
-            cancellationToken) ?? attempt;
+        try
+        {
+            await RunLocalStoreAsync(
+                () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
+                cancellationToken);
+            attempt = await RunLocalStoreAsync(
+                () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
+                cancellationToken) ?? attempt;
+        }
+        catch (InvalidOperationException)
+        {
+            var concurrentAttempt = await RunLocalStoreAsync(
+                () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
+                cancellationToken);
+            if (concurrentAttempt is null ||
+                !IsSupervisorPaidSale(concurrentAttempt) &&
+                !IsSupervisorNotPaidSale(concurrentAttempt))
+            {
+                // 只把仓储 guarded update 的主管结案竞态降级为重读；其他状态错误保持原异常。
+                throw;
+            }
+
+            attempt = concurrentAttempt;
+        }
         if (attempt.Status == LocalSquarePaymentAttemptStatus.PaymentVerified ||
             IsSupervisorPaidSale(attempt))
         {
@@ -866,10 +886,9 @@ public sealed class SquarePaymentRecoveryService(
 
             try
             {
-                var validationCart = new PosCartService();
-                validationCart.RestoreSnapshot(draft.CartSnapshot);
+                draft = ValidateAndMaterializeDraft(draft).Draft;
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 ConsoleLog.Write(
                     "SquareRecovery",
@@ -899,7 +918,53 @@ public sealed class SquarePaymentRecoveryService(
                     T("cardRecovery.square.stateChanged", "The Square payment state changed while the bank result was being checked. Run recovery again."));
             }
 
-            cart.RestoreSnapshot(draft.CartSnapshot);
+            try
+            {
+                cart.RestoreSnapshot(draft.CartSnapshot);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // CAS 已阻断主管竞态；真实购物车通知失败时精确撤销本次快照，并用受主管结案保护的
+                // 仓储写入把 attempt 从 Canceled 重开为 Unknown，保留后续恢复/对账入口。
+                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                try
+                {
+                    await RunLocalStoreAsync(
+                        () => attemptRepository.MarkFailedAsync(
+                            attempt.AttemptGuid,
+                            LocalSquarePaymentAttemptStatus.Unknown,
+                            checkoutStatus.Status,
+                            attempt.PaymentStatus,
+                            responseCode: null,
+                            responseText: "Canceled checkout cart restore failed.",
+                            resolvedAt: DateTimeOffset.UtcNow,
+                            cancellationToken: CancellationToken.None,
+                            cancelReason: checkoutStatus.CancelReason),
+                        CancellationToken.None);
+                }
+                catch (InvalidOperationException)
+                {
+                    var latestOutcome = await TryHandleSupervisorResolvedSaleAfterLookupAsync(
+                        cart,
+                        attempt,
+                        draft,
+                        CancellationToken.None);
+                    if (latestOutcome is not null)
+                    {
+                        return latestOutcome;
+                    }
+
+                    throw;
+                }
+
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"canceled checkout cart restore failed and attempt reopened attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage());
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 Format("cardRecovery.square.cancelled", "The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.", checkoutStatus.CancelReason ?? "CANCELED"));
@@ -1309,9 +1374,9 @@ public sealed class SquarePaymentRecoveryService(
         CardPaymentOrderDraft draft;
         try
         {
-            draft = DeserializeDraft(attempt);
+            draft = ValidateAndMaterializeDraft(DeserializeDraft(attempt)).Draft;
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        catch (Exception ex) when (IsInvalidDraftException(ex))
         {
             ConsoleLog.Write(
                 "SquareRecovery",
@@ -1330,12 +1395,30 @@ public sealed class SquarePaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        var cardTender = new PaymentTender(
-            PaymentMethodKind.Card,
-            -Math.Abs(draft.CardAmount),
-            CardRefundReference.Format(attempt.PaymentId, draft.OriginalReference),
-            IdempotencyKey: $"SQUARE_ATTEMPT:{attempt.AttemptGuid:N}");
-        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
+        IReadOnlyList<PaymentTender> tenders;
+        decimal tenderedAmount;
+        try
+        {
+            var cardTender = new PaymentTender(
+                PaymentMethodKind.Card,
+                -Math.Abs(draft.CardAmount),
+                CardRefundReference.Format(attempt.PaymentId, draft.OriginalReference),
+                IdempotencyKey: $"SQUARE_ATTEMPT:{attempt.AttemptGuid:N}");
+            tenders = draft.CurrentTenders.Concat([cardTender]).ToArray();
+            // tender 物化与计算必须在任何活动购物车写入之前完成。
+            tenderedAmount = tenders.Sum(tender => tender.Amount);
+        }
+        catch (Exception ex) when (IsInvalidDraftException(ex))
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"confirmed refund tender invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
+                DialogDetails: dialogDetails);
+        }
+
         if (IsApprovedTenderPartial(draft, tenders))
         {
             if (!cart.IsEmpty)
@@ -1346,27 +1429,12 @@ public sealed class SquarePaymentRecoveryService(
                     DialogDetails: dialogDetails);
             }
 
-            try
-            {
-                var validationCart = new PosCartService();
-                validationCart.RestoreSnapshot(draft.CartSnapshot);
-            }
-            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
-            {
-                ConsoleLog.Write(
-                    "SquareRecovery",
-                    $"partial confirmed refund draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
-                return new CardPaymentRecoveryResult(
-                    CardPaymentRecoveryOutcome.Unknown,
-                    T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
-                    DialogDetails: dialogDetails);
-            }
-
+            // ValidateAndMaterializeDraft 已在活动购物车写入前完成快照和 tender 全量验证。
             cart.RestoreSnapshot(draft.CartSnapshot);
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
-                TenderedAmount: tenders.Sum(tender => tender.Amount),
+                TenderedAmount: tenderedAmount,
                 DialogDetails: dialogDetails,
                 RestoredTenders: tenders);
         }
@@ -1421,7 +1489,7 @@ public sealed class SquarePaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ConsoleLog.Write(
                 "SquareRecovery",
@@ -1442,7 +1510,7 @@ public sealed class SquarePaymentRecoveryService(
                     CancellationToken.None),
                 CancellationToken.None);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             hasPostCommitWarning = true;
             ConsoleLog.Write(
@@ -1454,7 +1522,7 @@ public sealed class SquarePaymentRecoveryService(
             CardPaymentRecoveryOutcome.OrderCompleted,
             T("cardRecovery.refund.confirmedCompleted", "The confirmed card refund was recovered and the return was saved."),
             order,
-            tenders.Sum(tender => tender.Amount),
+            tenderedAmount,
             checkoutResult.ChangeAmount,
             currentSession,
             dialogDetails,
@@ -1473,14 +1541,12 @@ public sealed class SquarePaymentRecoveryService(
                 DialogDetails: BuildRefundDialogDetails(attempt));
         }
 
-        CardPaymentOrderDraft draft;
+        ValidatedSquareRecoveryDraft validatedDraft;
         try
         {
-            draft = DeserializeDraft(attempt);
-            var validationCart = new PosCartService();
-            validationCart.RestoreSnapshot(draft.CartSnapshot);
+            validatedDraft = ValidateAndMaterializeDraft(DeserializeDraft(attempt));
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        catch (Exception ex) when (IsInvalidDraftException(ex))
         {
             ConsoleLog.Write(
                 "SquareRecovery",
@@ -1491,11 +1557,12 @@ public sealed class SquarePaymentRecoveryService(
                 DialogDetails: BuildRefundDialogDetails(attempt));
         }
 
+        var draft = validatedDraft.Draft;
         cart.RestoreSnapshot(draft.CartSnapshot);
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),
-            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+            TenderedAmount: validatedDraft.CurrentTenderTotal,
             DialogDetails: BuildRefundDialogDetails(attempt),
             RestoredTenders: draft.CurrentTenders);
     }
@@ -1529,6 +1596,52 @@ public sealed class SquarePaymentRecoveryService(
             originalReference);
     }
 
+    private static ValidatedSquareRecoveryDraft ValidateAndMaterializeDraft(CardPaymentOrderDraft draft)
+    {
+        if (draft.Session is null ||
+            draft.CartSnapshot is null ||
+            draft.CartSnapshot.Lines is null ||
+            draft.CurrentTenders is null)
+        {
+            throw new InvalidOperationException("Square payment order draft is missing required nested data.");
+        }
+
+        var lines = draft.CartSnapshot.Lines.ToArray();
+        if (lines.Any(line => line is null))
+        {
+            throw new InvalidOperationException("Square payment order draft contains an invalid cart line.");
+        }
+
+        var currentTenders = draft.CurrentTenders.ToArray();
+        if (currentTenders.Any(tender => tender is null))
+        {
+            throw new InvalidOperationException("Square payment order draft contains an invalid tender.");
+        }
+
+        var materializedDraft = draft with
+        {
+            CartSnapshot = draft.CartSnapshot with { Lines = lines },
+            CurrentTenders = currentTenders
+        };
+
+        // 临时购物车无外部订阅者；先完整验证语义，再允许任何活动购物车写入。
+        var validationCart = new PosCartService();
+        validationCart.RestoreSnapshot(materializedDraft.CartSnapshot);
+        var currentTenderTotal = currentTenders.Sum(tender => tender.Amount);
+        return new ValidatedSquareRecoveryDraft(materializedDraft, currentTenderTotal);
+    }
+
+    private static bool IsInvalidDraftException(Exception exception) =>
+        exception is JsonException or
+            InvalidOperationException or
+            ArgumentException or
+            NullReferenceException or
+            ArithmeticException;
+
+    private sealed record ValidatedSquareRecoveryDraft(
+        CardPaymentOrderDraft Draft,
+        decimal CurrentTenderTotal);
+
     private static bool IsApprovedTenderPartial(
         CardPaymentOrderDraft draft,
         IReadOnlyList<PaymentTender> tenders)
@@ -1551,40 +1664,41 @@ public sealed class SquarePaymentRecoveryService(
         string? authCode,
         CancellationToken cancellationToken)
     {
-        var recoveryCart = new PosCartService();
-        recoveryCart.RestoreSnapshot(draft.CartSnapshot);
-        var cardTender = new PaymentTender(
-            PaymentMethodKind.Card,
-            Math.Abs(draft.CardAmount),
-            $"SQ:{paymentId}",
-            CardTransactions:
-            [
-                new CardTransactionDto(
-                    "Square",
-                    paymentId,
-                    authCode,
-                    cardBrand,
-                    null,
-                    maskedCardNumber,
-                    null,
-                    null,
-                    paymentStatus,
-                    null,
-                    DateTimeOffset.UtcNow,
-                    Math.Abs(draft.CardAmount),
-                    null)
-            ],
-            IdempotencyKey: $"SQUARE_ATTEMPT:{attempt.AttemptGuid:N}");
-        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
-        var cashTenderedAmount = tenders
-            .Where(tender => tender.Method == PaymentMethodKind.Cash)
-            .Sum(tender => tender.Amount);
         PaymentCheckoutResult checkoutResult;
         try
         {
+            draft = ValidateAndMaterializeDraft(draft).Draft;
+            var recoveryCart = new PosCartService();
+            recoveryCart.RestoreSnapshot(draft.CartSnapshot);
+            var cardTender = new PaymentTender(
+                PaymentMethodKind.Card,
+                Math.Abs(draft.CardAmount),
+                $"SQ:{paymentId}",
+                CardTransactions:
+                [
+                    new CardTransactionDto(
+                        "Square",
+                        paymentId,
+                        authCode,
+                        cardBrand,
+                        null,
+                        maskedCardNumber,
+                        null,
+                        null,
+                        paymentStatus,
+                        null,
+                        DateTimeOffset.UtcNow,
+                        Math.Abs(draft.CardAmount),
+                        null)
+                ],
+                IdempotencyKey: $"SQUARE_ATTEMPT:{attempt.AttemptGuid:N}");
+            var tenders = draft.CurrentTenders.Concat([cardTender]).ToArray();
+            var cashTenderedAmount = tenders
+                .Where(tender => tender.Method == PaymentMethodKind.Cash)
+                .Sum(tender => tender.Amount);
             checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ConsoleLog.Write(
                 "SquareRecovery",
@@ -1621,7 +1735,7 @@ public sealed class SquarePaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ConsoleLog.Write(
                 "SquareRecovery",
@@ -1638,7 +1752,7 @@ public sealed class SquarePaymentRecoveryService(
                 () => attemptRepository.MarkOrderCompletedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, CancellationToken.None),
                 CancellationToken.None);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             hasPostCommitWarning = true;
             ConsoleLog.Write(

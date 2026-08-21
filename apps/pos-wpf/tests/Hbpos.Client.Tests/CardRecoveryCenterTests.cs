@@ -881,6 +881,114 @@ public sealed class CardRecoveryCenterTests
     }
 
     [Fact]
+    public async Task Square_ResolveAttemptAsync_verified_sale_finalize_warning_retains_lock()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000072"),
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            checkoutId: "CHECKOUT-VERIFIED-WARNING",
+            paymentId: "PAYMENT-VERIFIED-WARNING",
+            draftJson: SerializeDraft()) with
+        {
+            PaymentStatus = "COMPLETED"
+        };
+        var repository = new FakeSquareAttemptRepository(attempt)
+        {
+            MarkOrderCompletedException = new IOException("attempt finalization failed")
+        };
+        var orders = new FakeOrderRepository();
+        var service = CreateSquareService(repository, orderRepository: orders);
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed,
+            "stale decision",
+            "stale evidence",
+            reference: null,
+            new PosCartService(),
+            Session);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.RecoveryResult?.Outcome);
+        Assert.True(result.RecoveryResult!.HasPostCommitWarning);
+        Assert.NotNull(orders.SavedOrder);
+    }
+
+    [Fact]
+    public async Task Square_ResolveAttemptAsync_confirm_processed_finalize_warning_retains_lock()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000073"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraft());
+        var repository = new FakeSquareAttemptRepository(attempt)
+        {
+            MarkOrderCompletedException = new IOException("attempt finalization failed")
+        };
+        var orders = new FakeOrderRepository();
+        var service = CreateSquareService(repository, orderRepository: orders);
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmProcessed,
+            "paid",
+            "bank matched",
+            "PAYMENT-CONFIRMED-WARNING",
+            new PosCartService(),
+            Session);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.RecoveryResult?.Outcome);
+        Assert.True(result.RecoveryResult!.HasPostCommitWarning);
+        Assert.NotNull(orders.SavedOrder);
+    }
+
+    [Fact]
+    public async Task Square_ResolveAttemptAsync_confirm_processed_semantically_invalid_snapshot_returns_unknown_and_keeps_attempt_open()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000074"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraftWithInvalidSecondLine());
+        var repository = new FakeSquareAttemptRepository(attempt);
+        var orders = new FakeOrderRepository();
+        var service = CreateSquareService(repository, orderRepository: orders);
+        var currentCart = CreateNonEmptyCart();
+
+        CardRecoveryResolutionResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.ResolveAttemptAsync(
+                attempt.AttemptGuid,
+                CardRecoverySupervisorDecision.ConfirmProcessed,
+                "paid",
+                "bank matched",
+                "PAYMENT-CONFIRMED-BAD-SNAPSHOT",
+                currentCart,
+                Session);
+        });
+
+        Assert.Null(exception);
+        Assert.False(result!.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(0, repository.MarkOrderCompletedCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, (await repository.GetAttemptAsync(attempt.AttemptGuid))!.Status);
+        Assert.Equal("SKU-NEW", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Fact]
     public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_restore_failure_keeps_attempt_open()
     {
         var attempt = CreateSquareAttempt(
@@ -1413,6 +1521,8 @@ public sealed class CardRecoveryCenterTests
 
         public Exception? TerminalizeException { get; set; }
 
+        public Exception? MarkOrderCompletedException { get; set; }
+
         public bool TerminalizeResult { get; set; } = true;
 
         public Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
@@ -1549,6 +1659,11 @@ public sealed class CardRecoveryCenterTests
         public Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default)
         {
             MarkOrderCompletedCount++;
+            if (MarkOrderCompletedException is not null)
+            {
+                throw MarkOrderCompletedException;
+            }
+
             return Task.CompletedTask;
         }
 
