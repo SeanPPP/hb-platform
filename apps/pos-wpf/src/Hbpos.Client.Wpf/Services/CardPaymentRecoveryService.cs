@@ -1122,7 +1122,7 @@ public sealed class CardPaymentRecoveryService(
             () => attemptRepository.GetAttemptAsync(normalized.AttemptGuid, cancellationToken),
             cancellationToken);
         if (attempt is null ||
-            settings.Processor != CardProcessorKind.Linkly ||
+            !string.Equals(attempt.Processor, CardProcessorKind.Linkly.ToString(), StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(attempt.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(attempt.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
@@ -1236,7 +1236,6 @@ public sealed class CardPaymentRecoveryService(
         var sessionKey = NormalizeOptional(attempt?.SessionId) ?? NormalizeOptional(attempt?.TxnRef);
         if (attempt is null ||
             sessionKey is null ||
-            settings.Processor != CardProcessorKind.Linkly ||
             !string.Equals(attempt.Processor, CardProcessorKind.Linkly.ToString(), StringComparison.OrdinalIgnoreCase) ||
             attempt.OperationKind is not ("Sale" or "ActiveSession") ||
             !string.Equals(attempt.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||

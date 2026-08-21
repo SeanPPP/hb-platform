@@ -291,7 +291,7 @@ public interface ILocalSquarePaymentAttemptRepository
         SquarePaymentResolution resolution,
         LocalFinancialSupervisorResolution journal,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult(false);
+        throw new NotSupportedException("Square payment resolution is not wired for this repository.");
 
     Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default);
 }
@@ -755,7 +755,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue(
             "$PaymentId",
             resolution.Decision == CardRecoverySupervisorDecision.ConfirmProcessed
-                ? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
+                ? resolution.PaymentReference ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
                 : DBNull.Value);
         command.Parameters.AddWithValue(
             "$PaymentStatus",

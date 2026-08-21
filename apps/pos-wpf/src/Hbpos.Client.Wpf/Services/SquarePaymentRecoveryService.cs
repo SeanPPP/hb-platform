@@ -342,16 +342,17 @@ public sealed class SquarePaymentRecoveryService(
         if (decision == CardRecoverySupervisorDecision.ConfirmNotProcessed)
         {
             var restored = RestoreSquareSaleApprovedRetry(cart, updatedAttempt);
+            var restoredSucceeded = restored.Outcome == CardPaymentRecoveryOutcome.DraftRestored;
             return new CardRecoveryResolutionResult(
-                true,
+                restoredSucceeded,
                 restored.Message,
                 restored,
-                RetryAllowed: true);
+                RetryAllowed: restoredSucceeded,
+                LockRetained: !restoredSucceeded);
         }
 
         // ConfirmProcessed：用持久化完整 draft 独立完成订单，绝不触碰当前活动新购物车。
         var completed = await CompleteVerifiedAttemptAsync(
-            new PosCartService(),
             updatedAttempt,
             draft!,
             updatedAttempt.PaymentId ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
@@ -360,7 +361,12 @@ public sealed class SquarePaymentRecoveryService(
             maskedCardNumber: null,
             authCode: null,
             cancellationToken);
-        return new CardRecoveryResolutionResult(true, completed.Message, completed);
+        var completedSucceeded = completed.Outcome == CardPaymentRecoveryOutcome.OrderCompleted;
+        return new CardRecoveryResolutionResult(
+            completedSucceeded,
+            completed.Message,
+            completed,
+            LockRetained: !completedSucceeded);
     }
 
     private CardPaymentRecoveryResult RestoreSquareSaleApprovedRetry(
@@ -569,7 +575,6 @@ public sealed class SquarePaymentRecoveryService(
             }
 
             return await CompleteVerifiedAttemptAsync(
-                cart,
                 attempt,
                 draft,
                 attempt.PaymentId!,
@@ -716,7 +721,6 @@ public sealed class SquarePaymentRecoveryService(
                 CancellationToken.None),
             CancellationToken.None);
         return await CompleteVerifiedAttemptAsync(
-            cart,
             attempt,
             draft,
             payment.PaymentId,
@@ -875,7 +879,6 @@ public sealed class SquarePaymentRecoveryService(
             () => attemptRepository.GetAttemptAsync(normalized.AttemptGuid, cancellationToken),
             cancellationToken);
         if (attempt is null ||
-            settings.Processor != CardProcessorKind.Square ||
             !string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(attempt.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(attempt.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
@@ -1133,7 +1136,6 @@ public sealed class SquarePaymentRecoveryService(
     }
 
     private async Task<CardPaymentRecoveryResult> CompleteVerifiedAttemptAsync(
-        PosCartService cart,
         LocalSquarePaymentAttempt attempt,
         CardPaymentOrderDraft draft,
         string paymentId,

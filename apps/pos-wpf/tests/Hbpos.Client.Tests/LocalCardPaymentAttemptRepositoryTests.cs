@@ -1021,7 +1021,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.True(confirmed);
             Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, confirmedSaved!.Status);
             Assert.Equal("SUPERVISOR_CONFIRMED_PAID", confirmedSaved.ResponseCode);
-            Assert.Equal("SUPERVISOR_CONFIRMED_PAID", confirmedSaved.PaymentId);
+            Assert.Equal("ref-1", confirmedSaved.PaymentId);
 
             var duplicate = await repository.ResolvePaymentWithJournalAsync(
                 new SquarePaymentResolution(
