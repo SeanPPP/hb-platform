@@ -817,22 +817,34 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        // 主管确认未付款后：只有仍处于 ConfirmedNotPaid 且 Status/UpdatedAt 未变才 CAS 终态化，
-        // 使该 attempt 从异常队列消失，后续重刷创建全新 AttemptGuid/幂等键。
+        // 同一个版本 CAS 同时服务主管确认未付款与 Square 自动取消：主管结案转 Abandoned，
+        // 无主管响应的自动取消转 Canceled；任何主管已付款/等待响应都会使 CAS 失败。
         command.CommandText = """
             UPDATE LocalSquarePaymentAttempts
-            SET Status = $Status,
+            SET Status = CASE
+                    WHEN ResponseCode = $ConfirmedNotPaidCode THEN $AbandonedStatus
+                    ELSE $CanceledStatus
+                END,
+                CheckoutStatus = CASE
+                    WHEN COALESCE(ResponseCode, '') = '' THEN $CanceledCheckoutStatus
+                    ELSE CheckoutStatus
+                END,
                 ResolvedAt = $ResolvedAt,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Sale'
               AND Status = $ExpectedStatus
               AND UpdatedAt = $ExpectedUpdatedAt
-              AND ResponseCode = $ConfirmedNotPaidCode
+              AND (
+                    ResponseCode = $ConfirmedNotPaidCode
+                    OR COALESCE(ResponseCode, '') = ''
+                  )
               AND Status IN ($PendingStatus, $RecoveringStatus);
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
-        command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
+        command.Parameters.AddWithValue("$AbandonedStatus", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
+        command.Parameters.AddWithValue("$CanceledStatus", LocalSquarePaymentAttemptStatus.Canceled.ToString());
+        command.Parameters.AddWithValue("$CanceledCheckoutStatus", "CANCELED");
         command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
@@ -1079,21 +1091,29 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
 
     public async Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default)
     {
-        await ExecuteUpdateAsync(
+        var affected = await ExecuteUpdateCountAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET Status = $Status,
                 OrderCompletedAt = $CompletedAt,
                 UpdatedAt = $CompletedAt
-            WHERE AttemptGuid = $AttemptGuid;
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $PaymentVerifiedStatus;
             """,
             command =>
             {
                 command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
                 command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.OrderCompleted.ToString());
+                command.Parameters.AddWithValue("$PaymentVerifiedStatus", LocalSquarePaymentAttemptStatus.PaymentVerified.ToString());
                 command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
             },
             cancellationToken);
+        if (affected != 1)
+        {
+            // 主管 ConfirmedPaid 同样持久化为 PaymentVerified，因此该条件既保护错误状态，
+            // 又保留已付款订单在崩溃后的幂等收尾路径。
+            throw new InvalidOperationException("仅已验证付款的 Square attempt 可以完成订单。");
+        }
     }
 
     public async Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(

@@ -106,6 +106,39 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Square_MarkOrderCompleted_rejects_attempt_that_is_not_payment_verified()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000099"),
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                operationKind: "Sale");
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                repository.MarkOrderCompletedAsync(
+                    attempt.AttemptGuid,
+                    attempt.UpdatedAt.AddMinutes(1)));
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, saved!.Status);
+            Assert.Null(saved.OrderCompletedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Square_attempt_repository_mark_failed_persists_cancel_reason_with_failure_fields()
     {
         var databasePath = CreateTempDatabasePath();
@@ -1221,6 +1254,46 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, notPaidSaved!.Status);
             Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, notPaidSaved.ResponseCode);
             Assert.Equal("Bank confirmed no charge", notPaidSaved.ResponseText);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Square_TryTerminalizeNotPaid_uses_version_cas_for_automatic_canceled_checkout()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("50000000-0000-0000-0000-000000000002"),
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                operationKind: "Sale");
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            var stale = await repository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt.AddSeconds(-1),
+                attempt.UpdatedAt.AddMinutes(1));
+            var applied = await repository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.UpdatedAt.AddMinutes(1));
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+
+            Assert.False(stale);
+            Assert.True(applied);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, saved!.Status);
         }
         finally
         {
