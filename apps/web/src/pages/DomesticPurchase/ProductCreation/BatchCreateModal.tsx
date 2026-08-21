@@ -24,7 +24,7 @@ import {
   Table,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import {
   createBatch,
@@ -48,7 +48,7 @@ import {
 } from './batchCreateRules'
 import type { BatchAddMode, DraftPreviewItem, DraftProductItem, DraftSetSubItem } from './batchCreateRules'
 import PrefixCodeManageModal from './PrefixCodeManageModal'
-import { buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
+import { applySetTemplateDraft, buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
 
 type ProductItem = DraftProductItem
 type SetSubItem = DraftSetSubItem
@@ -83,9 +83,11 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [loading, setLoading] = useState(false)
   const [suppliers, setSuppliers] = useState<Array<{ supplierCode: string; supplierName: string }>>([])
   const [prefixCodes, setPrefixCodes] = useState<Array<{ prefixCode: string; prefixName: string; prefixDescription?: string }>>([])
-  const [products, setProducts] = useState<ProductItem[]>([
+  const [products, setProducts] = useState<ProductItem[]>(() => [
     createDraftProduct(ProductCreationType.NORMAL, 0),
   ])
+  // 记录系统自动占位行，避免套用模板时误删用户手动添加的空白行。
+  const automaticPlaceholderKeyRef = useRef(products[0]?.key)
   const [submitting, setSubmitting] = useState(false)
   const [manageModalVisible, setManageModalVisible] = useState(false)
   const [selectedSupplier, setSelectedSupplier] = useState<{ code: string; name: string } | null>(null)
@@ -133,7 +135,9 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setSuppliers([])
     setPrefixCodes([])
     setSelectedSupplier(null)
-    setProducts([createEmptyProduct(ProductCreationType.NORMAL, 0)])
+    const automaticPlaceholder = createEmptyProduct(ProductCreationType.NORMAL, 0)
+    automaticPlaceholderKeyRef.current = automaticPlaceholder.key
+    setProducts([automaticPlaceholder])
     setManageModalVisible(false)
     setBatchAddVisible(false)
     setBatchAddCount(5)
@@ -225,7 +229,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         return
       }
       const draft = createSetDraftFromTemplate(response.data, products.length)
-      setProducts((current) => [...current, draft])
+      setProducts((current) => applySetTemplateDraft(current, draft, automaticPlaceholderKeyRef.current))
       setExpandedRowKeys((keys) => Array.from(new Set([...keys, draft.key])))
       setSelectedSetTemplateId(undefined)
     } catch (error) {

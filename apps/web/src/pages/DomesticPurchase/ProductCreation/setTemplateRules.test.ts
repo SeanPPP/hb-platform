@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
-import { buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
+import { createDraftProduct } from './batchCreateRules'
+import { applySetTemplateDraft, buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
 
 const template = {
   templateId: 'template-1',
@@ -33,6 +34,44 @@ assert.deepEqual(
   ],
 )
 assert.notEqual(draft.subItems?.[0], template.subItems[1])
+
+const deterministicKey = (prefix: string, index: number) => `${prefix}-${index}`
+const emptyNormalDraft = createDraftProduct(ProductCreationType.NORMAL, 0, undefined, deterministicKey)
+const emptySetDraft = createDraftProduct(ProductCreationType.SET, 1, undefined, deterministicKey)
+const manualEmptyNormalDraft = { ...emptyNormalDraft, key: 'manual-empty-normal' }
+
+assert.deepEqual(
+  applySetTemplateDraft(
+    [emptyNormalDraft, manualEmptyNormalDraft, emptySetDraft],
+    draft,
+    emptyNormalDraft.key,
+  ).map((item) => item.key),
+  [manualEmptyNormalDraft.key, emptySetDraft.key, draft.key],
+)
+
+const filledNormalDraft = { ...emptyNormalDraft, key: 'filled-normal', productName: '已填写普通商品' }
+const adjustedEmptySetDraft = { ...emptySetDraft, key: 'adjusted-empty-set', createCount: 2, setQuantity: 2 }
+const zeroPriceDraft = { ...emptyNormalDraft, key: 'zero-price', privateLabelPrice: 0 }
+const filledSubItemDraft = {
+  ...emptySetDraft,
+  key: 'filled-sub-item',
+  subItems: [{ key: 'filled-sub-item-1', productName: '已填写子项', privateLabelPrice: null }],
+}
+assert.deepEqual(
+  applySetTemplateDraft(
+    [filledNormalDraft, emptySetDraft, adjustedEmptySetDraft, zeroPriceDraft, filledSubItemDraft],
+    draft,
+    filledNormalDraft.key,
+  ).map((item) => item.key),
+  [
+    filledNormalDraft.key,
+    emptySetDraft.key,
+    adjustedEmptySetDraft.key,
+    zeroPriceDraft.key,
+    filledSubItemDraft.key,
+    draft.key,
+  ],
+)
 
 template.subItems[1].productName = '模板后来被修改'
 assert.equal(draft.subItems?.[0].productName, '第一个子项')

@@ -31,6 +31,25 @@ export function createSetDraftFromTemplate(
   }
 }
 
+export function applySetTemplateDraft(
+  products: DraftProductItem[],
+  templateDraft: DraftProductItem,
+  automaticPlaceholderKey?: string,
+): DraftProductItem[] {
+  const hasDraftContent = (product: DraftProductItem) => Boolean(
+    product.productName?.trim()
+    || product.privateLabelPrice != null
+    || product.setPrice != null
+    || product.subItems?.some((subItem) => subItem.productName?.trim() || subItem.privateLabelPrice != null)
+  )
+
+  // 仅清理系统自动创建且仍为空白的首行，手动新增的空白行必须保留。
+  const retainedProducts = products.filter((product) => (
+    product.key !== automaticPlaceholderKey || hasDraftContent(product)
+  ))
+  return [...retainedProducts, templateDraft]
+}
+
 export type SetTemplateValidationError = 'missing_set_product_name' | 'missing_sub_items' | 'missing_sub_item_name' | 'missing_sub_item_price' | 'invalid_sub_item_price'
 
 export function validateSetTemplateProduct(product: DraftProductItem): SetTemplateValidationError | undefined {
