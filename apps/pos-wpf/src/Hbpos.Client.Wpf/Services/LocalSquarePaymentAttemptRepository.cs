@@ -603,9 +603,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND (
-                    OperationKind <> 'Refund'
-                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $PaymentResolvedCode1,
+                    $PaymentResolvedCode2
                   );
             """,
             command =>
@@ -711,6 +713,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Sale'
                   AND Status = $ExpectedStatus
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
                 """,
@@ -731,6 +734,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Sale'
                   AND Status = $ExpectedStatus
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
                 """,
@@ -743,6 +747,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Sale'
                   AND Status = $ExpectedStatus
+                  AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
                 """
@@ -782,6 +787,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", resolution.ExpectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
         command.Parameters.AddWithValue("$ResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$ReviewStatus1", LocalSquarePaymentAttemptStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus2", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus3", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus4", LocalSquarePaymentAttemptStatus.CheckoutCompleted.ToString());
+        command.Parameters.AddWithValue("$ReviewStatus5", LocalSquarePaymentAttemptStatus.Unknown.ToString());
 
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
         {
@@ -965,9 +975,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CancelReason = COALESCE($CancelReason, CancelReason),
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND (
-                    OperationKind <> 'Refund'
-                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $PaymentResolvedCode1,
+                    $PaymentResolvedCode2
                   );
             """,
             command =>
@@ -1001,9 +1013,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CompletedAt = $CompletedAt,
                 UpdatedAt = $CompletedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND (
-                    OperationKind <> 'Refund'
-                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $PaymentResolvedCode1,
+                    $PaymentResolvedCode2
                   );
             """,
             command =>
@@ -1042,9 +1056,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResolvedAt = $ResolvedAt,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND (
-                    OperationKind <> 'Refund'
-                    OR COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $PaymentResolvedCode1,
+                    $PaymentResolvedCode2
                   );
             """,
             command =>
@@ -1274,6 +1290,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
     {
         command.Parameters.AddWithValue("$ResolvedCode1", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
         command.Parameters.AddWithValue("$ResolvedCode2", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+        command.Parameters.AddWithValue("$PaymentResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$PaymentResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
     }
 
     private static void AddAttemptParameters(SqliteCommand command, LocalSquarePaymentAttempt attempt)
