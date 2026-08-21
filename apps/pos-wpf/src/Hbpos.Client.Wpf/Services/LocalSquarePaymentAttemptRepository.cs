@@ -259,6 +259,13 @@ public interface ILocalSquarePaymentAttemptRepository
         string environment,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>([]);
+
     Task<bool> ResolveRefundAsync(
         CardRefundAttemptResolution resolution,
         CancellationToken cancellationToken = default) =>
@@ -969,6 +976,43 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
         command.Parameters.AddWithValue("$Environment", environment);
         command.Parameters.AddWithValue("$OperationKind", "Refund");
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
+
+        var attempts = new List<LocalSquarePaymentAttempt>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            attempts.Add(ReadAttempt(reader));
+        }
+
+        return attempts;
+    }
+
+    public async Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        // Square 异常中心队列：同一终端/环境跨收银员列出全部未结 Sale 与 Refund。
+        command.CommandText = """
+            SELECT *
+            FROM LocalSquarePaymentAttempts
+            WHERE StoreCode = $StoreCode
+              AND DeviceCode = $DeviceCode
+              AND Environment = $Environment
+              AND OperationKind IN ('Sale', 'Refund')
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+            ORDER BY UpdatedAt DESC, CreatedAt DESC;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", storeCode);
+        command.Parameters.AddWithValue("$DeviceCode", deviceCode);
+        command.Parameters.AddWithValue("$Environment", environment);
         for (var i = 0; i < TerminalStatuses.Length; i++)
         {
             command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);

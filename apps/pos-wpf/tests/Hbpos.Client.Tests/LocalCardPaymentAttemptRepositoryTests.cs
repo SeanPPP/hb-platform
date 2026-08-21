@@ -805,6 +805,187 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task Linkly_GetOpenAttemptsAsync_returns_all_open_sale_refund_and_active_session_attempts_across_cashiers()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var baseTime = DateTimeOffset.Parse("2026-06-05T09:00:00+10:00");
+
+            var salePending = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000001"),
+                status: LocalCardPaymentAttemptStatus.Pending,
+                updatedAt: baseTime);
+            var saleApproved = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000002"),
+                status: LocalCardPaymentAttemptStatus.Approved,
+                updatedAt: baseTime.AddMinutes(1));
+            var saleDeclined = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000003"),
+                status: LocalCardPaymentAttemptStatus.Declined,
+                updatedAt: baseTime.AddMinutes(2));
+            var refundOpen = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000004"),
+                status: LocalCardPaymentAttemptStatus.RequiresReview,
+                operationKind: "Refund",
+                updatedAt: baseTime.AddMinutes(3));
+            var refundFailed = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000005"),
+                status: LocalCardPaymentAttemptStatus.Failed,
+                operationKind: "Refund",
+                updatedAt: baseTime.AddMinutes(4));
+            var activeOpen = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000006"),
+                status: LocalCardPaymentAttemptStatus.Pending,
+                operationKind: "ActiveSession",
+                sessionId: "SESSION-OPEN",
+                updatedAt: baseTime.AddMinutes(5));
+            var activeAcknowledged = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000007"),
+                status: LocalCardPaymentAttemptStatus.Cancelled,
+                operationKind: "ActiveSession",
+                sessionId: "SESSION-DONE",
+                updatedAt: baseTime.AddMinutes(6),
+                acknowledgedAt: baseTime.AddMinutes(6));
+            var otherCashier = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000008"),
+                cashierId: "C999",
+                status: LocalCardPaymentAttemptStatus.Recovering,
+                updatedAt: baseTime.AddMinutes(7));
+            var otherDevice = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000009"),
+                deviceCode: "POS-99",
+                status: LocalCardPaymentAttemptStatus.Pending,
+                updatedAt: baseTime.AddMinutes(8));
+            var otherEnvironment = CreateAttempt(
+                attemptGuid: Guid.Parse("10000000-0000-0000-0000-000000000010"),
+                environment: "Production",
+                status: LocalCardPaymentAttemptStatus.Pending,
+                updatedAt: baseTime.AddMinutes(9));
+
+            await schema.InitializeAsync();
+            foreach (var attempt in new[]
+            {
+                salePending,
+                saleApproved,
+                saleDeclined,
+                refundOpen,
+                refundFailed,
+                activeOpen,
+                activeAcknowledged,
+                otherCashier,
+                otherDevice,
+                otherEnvironment
+            })
+            {
+                await repository.CreateAsync(attempt);
+            }
+
+            var open = await repository.GetOpenAttemptsAsync("S001", "POS-01", "sandbox");
+
+            Assert.Equal(
+                [
+                    otherCashier.AttemptGuid,
+                    activeOpen.AttemptGuid,
+                    refundOpen.AttemptGuid,
+                    saleApproved.AttemptGuid,
+                    salePending.AttemptGuid
+                ],
+                open.Select(attempt => attempt.AttemptGuid).ToArray());
+            Assert.DoesNotContain(open, attempt => attempt.Status == LocalCardPaymentAttemptStatus.Declined);
+            Assert.DoesNotContain(open, attempt => attempt.Status == LocalCardPaymentAttemptStatus.Failed);
+            Assert.DoesNotContain(open, attempt => attempt.OperationKind == "ActiveSession" && attempt.AcknowledgedAt is not null);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Square_GetOpenAttemptsAsync_returns_all_open_sale_and_refund_attempts_across_cashiers()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var baseTime = DateTimeOffset.Parse("2026-06-05T09:00:00+10:00");
+
+            var salePending = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000001"),
+                status: LocalSquarePaymentAttemptStatus.Pending,
+                updatedAt: baseTime);
+            var saleFailed = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000002"),
+                status: LocalSquarePaymentAttemptStatus.Failed,
+                updatedAt: baseTime.AddMinutes(1));
+            var refundOpen = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000003"),
+                status: LocalSquarePaymentAttemptStatus.Unknown,
+                operationKind: "Refund",
+                updatedAt: baseTime.AddMinutes(2));
+            var refundCanceled = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000004"),
+                status: LocalSquarePaymentAttemptStatus.Canceled,
+                operationKind: "Refund",
+                updatedAt: baseTime.AddMinutes(3));
+            var otherCashier = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000005"),
+                cashierId: "C999",
+                status: LocalSquarePaymentAttemptStatus.Recovering,
+                updatedAt: baseTime.AddMinutes(4));
+            var otherDevice = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000006"),
+                deviceCode: "POS-99",
+                status: LocalSquarePaymentAttemptStatus.Pending,
+                updatedAt: baseTime.AddMinutes(5));
+            var otherEnvironment = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("20000000-0000-0000-0000-000000000007"),
+                environment: "Sandbox",
+                status: LocalSquarePaymentAttemptStatus.Pending,
+                updatedAt: baseTime.AddMinutes(6));
+
+            await schema.InitializeAsync();
+            foreach (var attempt in new[]
+            {
+                salePending,
+                saleFailed,
+                refundOpen,
+                refundCanceled,
+                otherCashier,
+                otherDevice,
+                otherEnvironment
+            })
+            {
+                await repository.CreateAsync(attempt);
+            }
+
+            var open = await repository.GetOpenAttemptsAsync("S001", "POS-01", "Production");
+
+            Assert.Equal(
+                [
+                    otherCashier.AttemptGuid,
+                    refundOpen.AttemptGuid,
+                    salePending.AttemptGuid
+                ],
+                open.Select(attempt => attempt.AttemptGuid).ToArray());
+            Assert.DoesNotContain(open, attempt => attempt.Status == LocalSquarePaymentAttemptStatus.Failed);
+            Assert.DoesNotContain(open, attempt => attempt.OperationKind == "Refund" && attempt.Status == LocalSquarePaymentAttemptStatus.Canceled);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static LocalCardPaymentAttempt CreateAttempt(
         Guid? attemptGuid = null,
         string storeCode = "S001",

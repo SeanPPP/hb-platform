@@ -90,6 +90,95 @@ public sealed class CardPaymentRecoveryCoordinator(
                 LockRetained: true));
     }
 
+    public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        await ReplaySupervisorAuditAsync(cancellationToken);
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        return settings.Processor switch
+        {
+            CardProcessorKind.Linkly => await linklyRecoveryService.ListOpenAsync(session, cancellationToken),
+            CardProcessorKind.Square => await squareRecoveryService.ListOpenAsync(session, cancellationToken),
+            _ => []
+        };
+    }
+
+    public async Task<CardPaymentRecoveryResult> RecoverAsync(
+        CardRecoveryAttemptKey key,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        await ReplaySupervisorAuditAsync(cancellationToken);
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        if (settings.Processor != key.Processor)
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => await linklyRecoveryService.RecoverAttemptAsync(
+                key.AttemptGuid,
+                cart,
+                session,
+                cancellationToken),
+            CardProcessorKind.Square => await squareRecoveryService.RecoverAttemptAsync(
+                key.AttemptGuid,
+                cart,
+                session,
+                cancellationToken),
+            _ => CardPaymentRecoveryResult.None
+        };
+    }
+
+    public async Task<CardRecoveryResolutionResult> ResolveAsync(
+        CardRecoveryAttemptKey key,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        if (settings.Processor != key.Processor)
+        {
+            return new CardRecoveryResolutionResult(
+                false,
+                "The selected attempt does not belong to the active provider.",
+                LockRetained: true);
+        }
+
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => await linklyRecoveryService.ResolveAttemptAsync(
+                key.AttemptGuid,
+                decision,
+                reason,
+                evidence,
+                reference,
+                cart,
+                session,
+                cancellationToken),
+            CardProcessorKind.Square => await squareRecoveryService.ResolveAttemptAsync(
+                key.AttemptGuid,
+                decision,
+                reason,
+                evidence,
+                reference,
+                cart,
+                session,
+                cancellationToken),
+            _ => new CardRecoveryResolutionResult(
+                false,
+                "The provider is not supported.",
+                LockRetained: true)
+        };
+    }
+
     private async Task ReplaySupervisorAuditAsync(CancellationToken cancellationToken)
     {
         if (supervisorAuditReplay is not null)

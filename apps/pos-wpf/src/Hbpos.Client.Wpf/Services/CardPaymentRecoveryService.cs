@@ -272,6 +272,32 @@ public interface ICardPaymentRecoveryService
             false,
             "Card payment supervisor resolution is unavailable.",
             LockRetained: true));
+
+    Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([]);
+
+    Task<CardPaymentRecoveryResult> RecoverAsync(
+        CardRecoveryAttemptKey key,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(CardPaymentRecoveryResult.None);
+
+    Task<CardRecoveryResolutionResult> ResolveAsync(
+        CardRecoveryAttemptKey key,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CardRecoveryResolutionResult(
+            false,
+            "Card recovery resolution is unavailable.",
+            LockRetained: true));
 }
 
 public sealed class CardPaymentRecoveryService(
@@ -344,47 +370,12 @@ public sealed class CardPaymentRecoveryService(
         var refundAttempt = refundAttempts.FirstOrDefault();
         if (refundAttempt is not null)
         {
-            if (string.Equals(
-                    refundAttempt.ResponseCode,
-                    CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
-                    StringComparison.Ordinal))
-            {
-                return await CompleteSupervisorConfirmedRefundAsync(
-                    cart,
-                    session,
-                    refundAttempt,
-                    cancellationToken);
-            }
-
-            if (refundAttempt.Status == LocalCardPaymentAttemptStatus.Pending &&
-                string.Equals(
-                    refundAttempt.ResponseCode,
-                    CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
-                    StringComparison.Ordinal))
-            {
-                return RestoreSupervisorApprovedRetry(cart, refundAttempt);
-            }
-
-            // 未经主管核对的退款不能自动重发；启动恢复只维持锁并呈现三态结案入口。
-            if (refundAttempt.Status == LocalCardPaymentAttemptStatus.Pending)
-            {
-                await RunLocalStoreAsync(
-                    () => attemptRepository.MarkRecoveringAsync(
-                        refundAttempt.AttemptGuid,
-                        DateTimeOffset.UtcNow,
-                        CancellationToken.None),
-                    CancellationToken.None);
-            }
-
-            ConsoleLog.Write(
-                "CardRecovery",
-                $"open refund requires reconciliation attemptGuid={refundAttempt.AttemptGuid} txnRef={LogValue(refundAttempt.TxnRef)} amount={refundAttempt.Amount:0.00}");
-            LogRecoveryResult(settings, refundAttempt, null, CardPaymentRecoveryOutcome.Unknown, "refund-requires-reconciliation");
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile the terminal and the original sale."),
-                DialogDetails: BuildDialogDetails(refundAttempt),
-                RefundDetails: BuildRefundDetails(refundAttempt, CardProcessorKind.Linkly));
+            return await RecoverRefundAttemptAsync(
+                cart,
+                session,
+                settings,
+                refundAttempt,
+                cancellationToken);
         }
 
         if (mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp)
@@ -408,6 +399,73 @@ public sealed class CardPaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
+        return await RecoverSaleAttemptAsync(
+            cart,
+            session,
+            settings,
+            mode,
+            attempt,
+            cancellationToken);
+    }
+
+    private async Task<CardPaymentRecoveryResult> RecoverRefundAttemptAsync(
+        PosCartService cart,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        LocalCardPaymentAttempt refundAttempt,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(
+                refundAttempt.ResponseCode,
+                CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
+                StringComparison.Ordinal))
+        {
+            return await CompleteSupervisorConfirmedRefundAsync(
+                cart,
+                session,
+                refundAttempt,
+                cancellationToken);
+        }
+
+        if (refundAttempt.Status == LocalCardPaymentAttemptStatus.Pending &&
+            string.Equals(
+                refundAttempt.ResponseCode,
+                CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+                StringComparison.Ordinal))
+        {
+            return RestoreSupervisorApprovedRetry(cart, refundAttempt);
+        }
+
+        // 未经主管核对的退款不能自动重发；启动恢复只维持锁并呈现三态结案入口。
+        if (refundAttempt.Status == LocalCardPaymentAttemptStatus.Pending)
+        {
+            await RunLocalStoreAsync(
+                () => attemptRepository.MarkRecoveringAsync(
+                    refundAttempt.AttemptGuid,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+        }
+
+        ConsoleLog.Write(
+            "CardRecovery",
+            $"open refund requires reconciliation attemptGuid={refundAttempt.AttemptGuid} txnRef={LogValue(refundAttempt.TxnRef)} amount={refundAttempt.Amount:0.00}");
+        LogRecoveryResult(settings, refundAttempt, null, CardPaymentRecoveryOutcome.Unknown, "refund-requires-reconciliation");
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.Unknown,
+            T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile the terminal and the original sale."),
+            DialogDetails: BuildDialogDetails(refundAttempt),
+            RefundDetails: BuildRefundDetails(refundAttempt, CardProcessorKind.Linkly));
+    }
+
+    private async Task<CardPaymentRecoveryResult> RecoverSaleAttemptAsync(
+        PosCartService cart,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        LinklyConnectionMode mode,
+        LocalCardPaymentAttempt attempt,
+        CancellationToken cancellationToken)
+    {
         if (IsSupervisorResolvedPayment(attempt))
         {
             return await FinalizeSupervisorPaymentAsync(
@@ -622,6 +680,162 @@ public sealed class CardPaymentRecoveryService(
             DialogDetails: BuildDialogDetails(attempt, status),
             PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
     }
+
+    public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        if (settings.Processor != CardProcessorKind.Linkly)
+        {
+            return [];
+        }
+
+        var attempts = await RunLocalStoreAsync(
+            () => attemptRepository.GetOpenAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                settings.Environment.ToString(),
+                cancellationToken),
+            cancellationToken);
+        return attempts
+            .Select(attempt => new CardRecoveryQueueItem(
+                CardProcessorKind.Linkly,
+                attempt.AttemptGuid,
+                attempt.OperationKind,
+                attempt.Amount,
+                attempt.StoreCode,
+                attempt.DeviceCode,
+                attempt.CashierId,
+                attempt.Environment,
+                attempt.Status.ToString(),
+                attempt.CreatedAt,
+                attempt.UpdatedAt))
+            .ToArray();
+    }
+
+    public async Task<CardPaymentRecoveryResult> RecoverAttemptAsync(
+        Guid attemptGuid,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+        if (settings.Processor != CardProcessorKind.Linkly)
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
+        var attempt = await RunLocalStoreAsync(
+            () => attemptRepository.GetAttemptAsync(attemptGuid, cancellationToken),
+            cancellationToken);
+        if (attempt is null ||
+            !string.Equals(attempt.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(attempt.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(attempt.Environment, settings.Environment.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
+        if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
+        {
+            return await RecoverRefundAttemptAsync(cart, session, settings, attempt, cancellationToken);
+        }
+
+        if (string.Equals(attempt.OperationKind, "ActiveSession", StringComparison.OrdinalIgnoreCase))
+        {
+            return await RecoverActiveSessionAsync(cart, session, cancellationToken);
+        }
+
+        LogRecoveryScan(settings, session, attempt);
+        return await RecoverSaleAttemptAsync(cart, session, settings, mode, attempt, cancellationToken);
+    }
+
+    public async Task<CardRecoveryResolutionResult> ResolveAttemptAsync(
+        Guid attemptGuid,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        if (settings.Processor != CardProcessorKind.Linkly)
+        {
+            return new CardRecoveryResolutionResult(false, "The selected attempt does not belong to Linkly.");
+        }
+
+        var attempt = await RunLocalStoreAsync(
+            () => attemptRepository.GetAttemptAsync(attemptGuid, cancellationToken),
+            cancellationToken);
+        if (attempt is null ||
+            !string.Equals(attempt.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(attempt.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(attempt.Environment, settings.Environment.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return new CardRecoveryResolutionResult(
+                false,
+                "The unresolved attempt no longer matches this terminal and cannot be changed.");
+        }
+
+        if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
+        {
+            var refundResult = await ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Linkly,
+                    MapRefundDecision(decision),
+                    reason,
+                    evidence,
+                    reference),
+                cart,
+                session,
+                cancellationToken);
+            return new CardRecoveryResolutionResult(
+                refundResult.Succeeded,
+                refundResult.Message,
+                refundResult.RecoveryResult,
+                refundResult.RetryAllowed,
+                refundResult.LockRetained);
+        }
+
+        var paymentResult = await ResolvePaymentAsync(
+            new CardPaymentSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                MapPaymentDecision(decision),
+                reason,
+                session.CashierSession?.CashierId ?? session.CashierId,
+                session.CashierSession?.UserGuid,
+                session.CashierName,
+                evidence,
+                reference),
+            cart,
+            session,
+            cancellationToken);
+        return new CardRecoveryResolutionResult(
+            paymentResult.Succeeded,
+            paymentResult.Message,
+            paymentResult.RecoveryResult,
+            LockRetained: paymentResult.LockRetained);
+    }
+
+    private static CardRefundSupervisorDecision MapRefundDecision(CardRecoverySupervisorDecision decision) => decision switch
+    {
+        CardRecoverySupervisorDecision.ConfirmProcessed => CardRefundSupervisorDecision.ConfirmRefunded,
+        CardRecoverySupervisorDecision.ConfirmNotProcessed => CardRefundSupervisorDecision.ConfirmNotRefunded,
+        _ => CardRefundSupervisorDecision.ContinueWaiting
+    };
+
+    private static CardPaymentSupervisorDecision MapPaymentDecision(CardRecoverySupervisorDecision decision) => decision switch
+    {
+        CardRecoverySupervisorDecision.ConfirmProcessed => CardPaymentSupervisorDecision.ConfirmPaid,
+        CardRecoverySupervisorDecision.ConfirmNotProcessed => CardPaymentSupervisorDecision.ConfirmNotPaid,
+        _ => CardPaymentSupervisorDecision.ContinueWaiting
+    };
 
     private async Task<CardPaymentRecoveryResult> RecoverLatestLocalIpAsync(
         PosCartService cart,

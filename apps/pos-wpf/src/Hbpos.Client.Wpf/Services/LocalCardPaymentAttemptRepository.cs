@@ -225,6 +225,13 @@ public interface ILocalCardPaymentAttemptRepository
         string environment,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<LocalCardPaymentAttempt>> GetOpenAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>([]);
+
     Task<bool> ResolveRefundAsync(
         CardRefundAttemptResolution resolution,
         CancellationToken cancellationToken = default) =>
@@ -1254,6 +1261,88 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
         command.Parameters.AddWithValue("$Environment", environment);
         command.Parameters.AddWithValue("$OperationKind", "Refund");
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
+
+        var attempts = new List<LocalCardPaymentAttempt>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            attempts.Add(ReadAttempt(reader));
+        }
+
+        return attempts;
+    }
+
+    public async Task<IReadOnlyList<LocalCardPaymentAttempt>> GetOpenAttemptsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        // 异常中心队列按同一终端/环境跨收银员列出全部未结 Sale、Refund 与 ActiveSession。
+        // 每种操作类型的“未结”语义与既有 latest-only 查询保持一致，避免队列漏掉可恢复记录。
+        command.CommandText = """
+            SELECT
+                AttemptGuid,
+                SessionId,
+                TxnRef,
+                Processor,
+                Environment,
+                ConnectionMode,
+                TxnType,
+                Amount,
+                Status,
+                OrderDraftJson,
+                StoreCode,
+                DeviceCode,
+                CashierId,
+                ResponseCode,
+                ResponseText,
+                PaymentReference,
+                CreatedAt,
+                UpdatedAt,
+                CompletedAt,
+                AcknowledgedAt,
+                OperationKind,
+                OperationGuid,
+                SubmissionToken,
+                RefundBusinessKey
+            FROM LocalCardPaymentAttempts
+            WHERE StoreCode = $StoreCode
+              AND DeviceCode = $DeviceCode
+              AND Environment = $Environment
+              AND OperationKind IN ('Sale', 'Refund', 'ActiveSession')
+              AND (
+                    (OperationKind = 'ActiveSession' AND AcknowledgedAt IS NULL)
+                    OR (
+                        OperationKind = 'Refund'
+                        AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+                    )
+                    OR (
+                        OperationKind = 'Sale'
+                        AND (
+                            Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+                            OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL)
+                            OR (
+                                ResponseCode IN ($SupervisorPaidCode, $SupervisorNotPaidCode)
+                                AND AcknowledgedAt IS NULL
+                            )
+                        )
+                    )
+                  )
+            ORDER BY UpdatedAt DESC, CreatedAt DESC;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", storeCode);
+        command.Parameters.AddWithValue("$DeviceCode", deviceCode);
+        command.Parameters.AddWithValue("$Environment", environment);
+        command.Parameters.AddWithValue("$OrderCompletedStatus", LocalCardPaymentAttemptStatus.OrderCompleted.ToString());
+        command.Parameters.AddWithValue("$SupervisorPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$SupervisorNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
         for (var i = 0; i < TerminalStatuses.Length; i++)
         {
             command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
