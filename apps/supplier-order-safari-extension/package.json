@@ -1,0 +1,14 @@
+{
+  "name": "hb-supplier-order-safari-extension",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "HB Supplier Order Safari Web Extension iPhone and iPad host project",
+  "scripts": {
+    "pretest": "npm run build:resources",
+    "test": "node --test",
+    "build:resources": "npm --prefix ../supplier-order-extension run build && node sync-resources.mjs",
+    "build": "npm run build:resources",
+    "build:xcode": "npm run build:resources && xcodebuild -project \"xcode/HB Supplier Order Safari/HB Supplier Order Safari.xcodeproj\" -scheme \"HB Supplier Order Safari\" -configuration Debug -destination \"generic/platform=iOS Simulator\" -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build"
+  }
+}

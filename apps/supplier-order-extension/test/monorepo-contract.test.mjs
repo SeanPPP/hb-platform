@@ -78,6 +78,24 @@ test('构建分别配置 HB Web 与 API 源，/shop 桥接不依赖 API 同源',
   assert.ok(manifest.includes('__API_ORIGIN__/*'));
 });
 
+test('Safari 构建使用 16.4+ 兼容 manifest 且不声明 Chrome Side Panel', () => {
+  const build = read('build.mjs');
+  const manifest = read('src/manifest.safari.template.json');
+
+  assert.ok(build.includes("'safari'"));
+  assert.ok(build.includes('safari16.4'));
+  assert.ok(manifest.includes('"strict_min_version": "16.4"'));
+  assert.ok(build.includes("join('content', 'list.js')"));
+  assert.ok(build.includes("join('content', 'shop-bridge.js')"));
+  assert.ok(manifest.includes('"options_ui"'));
+  assert.ok(manifest.includes('"page": "sidepanel/sidepanel.html"'));
+  assert.ok(!manifest.includes('"sidePanel"'));
+  assert.ok(!manifest.includes('"side_panel"'));
+  assert.ok(!manifest.includes('"type": "module"'));
+  assert.ok(!manifest.includes('"minimum_chrome_version"'));
+  assert.ok(!manifest.includes('"web_accessible_resources"'));
+});
+
 test('供应商目录请求携带扩展版本，旧客户端可由后端安全降级', () => {
   const worker = read('src/background/service-worker.js');
   assert.ok(worker.includes("'X-HB-Extension-Version': EXTENSION_VERSION"));

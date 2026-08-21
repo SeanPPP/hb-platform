@@ -37,6 +37,7 @@ import { changeStoreAfterDurableLeave, runAfterDurableLeave, usePreorderLeave } 
 
 const { Search } = Input
 const PREORDER_GATE_TIMEOUT_MS = 8_000
+const SHOP_MOBILE_LAYOUT_QUERY = '(max-width: 768px)'
 
 function supportsHover() {
   if (typeof window !== 'undefined' && window.matchMedia) {
@@ -46,12 +47,37 @@ function supportsHover() {
   return true
 }
 
+function useShopMobileLayout() {
+  const [isMobileShopLayout, setIsMobileShopLayout] = useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) {
+      return false
+    }
+    return window.matchMedia(SHOP_MOBILE_LAYOUT_QUERY).matches
+  })
+
+  useEffect(() => {
+    if (!window.matchMedia) {
+      return undefined
+    }
+
+    // 必须与商城 CSS 使用同一个断点，确保任一视口只挂载一个扩展握手实例。
+    const mediaQuery = window.matchMedia(SHOP_MOBILE_LAYOUT_QUERY)
+    const update = () => setIsMobileShopLayout(mediaQuery.matches)
+    mediaQuery.addEventListener('change', update)
+    update()
+    return () => mediaQuery.removeEventListener('change', update)
+  }, [])
+
+  return isMobileShopLayout
+}
+
 export default function ShopLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { currentUser, access, logout } = useAuthStore()
   const { requestPreorderDurableLeave } = usePreorderLeave()
   const { t, i18n } = useTranslation()
+  const isMobileShopLayout = useShopMobileLayout()
   const isShopHomePage = location.pathname === '/shop'
   const isPreorderPage = location.pathname.startsWith('/shop/preorders/')
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
@@ -406,7 +432,9 @@ export default function ShopLayout() {
             {t('shop.localSupplierInvoices')}
           </Link>
           <span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>
-          {isShopHomePage ? <SupplierOrderingExtensionEntry /> : null}
+          {isShopHomePage && !isMobileShopLayout
+            ? <SupplierOrderingExtensionEntry presentation="desktop" />
+            : null}
           <LanguageSwitch className="shop-top-language-switch" size="small" />
         </div>
       </div>
@@ -535,6 +563,9 @@ export default function ShopLayout() {
             <FileTextOutlined className="icon" />
             <span>{t('shop.localSupplierInvoices', '本地进货单')}</span>
           </Link>
+          {isShopHomePage && isMobileShopLayout
+            ? <SupplierOrderingExtensionEntry presentation="mobile-nav" />
+            : null}
           <div className="shop-mobile-grid-item" onClick={() => void handleLogout()}>
             <UserOutlined className="icon" />
             <span>{t('layout.logout', 'Logout')}</span>

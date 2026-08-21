@@ -1,6 +1,6 @@
 # HB Supplier Order 扩展
 
-Chrome / Edge Manifest V3 扩展，在已配置的供应商列表页为每个商品注入“上次订货日期/数量、至今销量”按钮，点击在侧栏查看该商品 12 个月内最多 6 次采购周期（订货/销售混排）。
+Chrome / Edge / macOS Safari Manifest V3 扩展，在已配置的供应商列表页为每个商品注入“上次订货日期/数量、至今销量”按钮，点击后在 Chrome/Edge 侧栏或 Safari 浮动助手窗口查看该商品 12 个月内最多 6 次采购周期（订货/销售混排）。
 
 ## 目录
 
@@ -11,18 +11,20 @@ Chrome / Edge Manifest V3 扩展，在已配置的供应商列表页为每个商
 - `src/content/list.js`：供应商列表页注入
 - `src/sidepanel/`：侧栏 UI
 - `test/`：Node 原生测试
-- `build.mjs`：零依赖构建脚本
-- `dist/chrome`、`dist/edge`：构建产物（同版本双包）
+- `build.mjs`：三浏览器构建脚本；Safari 后台由 esbuild 打成 classic service worker
+- `dist/chrome`、`dist/edge`、`dist/safari`：同版本构建产物
+- `../supplier-order-safari-extension/`：Safari Web Extension 的 Xcode 宿主项目
 
 ## 环境要求
 
-- Node.js 20+（构建与测试使用原生 `node:test`，无第三方依赖）
+- Node.js 20+（测试使用原生 `node:test`，构建仅依赖 esbuild）
 
 ## 本地加载
 
 先构建：
 
 ```bash
+npm ci
 npm test
 npm run build
 ```
@@ -38,6 +40,10 @@ npm run build
 1. 打开 `edge://extensions`。
 2. 打开左下角“开发人员模式”。
 3. 点击“加载解压缩的扩展”，选择 `dist/edge`。
+
+### Safari
+
+Safari 使用相邻的独立 Xcode 宿主项目，构建、签名和启用步骤见 `../supplier-order-safari-extension/README.md`。Safari 16.4+ 没有 Chrome Side Panel API，因此会打开并复用一个 440×800 的浮动助手窗口，其余业务功能和权限流程保持一致。
 
 加载后：
 
@@ -61,26 +67,27 @@ npm run build
 - 配置只解释声明式 selector / attribute / text，以及内置固定 transform（包括 GFA 的下划线转斜线、TXK 的固定 SKU 前缀提取）；绝不 `eval` / `Function` / 后台任意正则 / 远程 JS。
 - access token 存 `chrome.storage.session`，refresh token 存 `chrome.storage.local`，不保存密码。
 
-## 构建与双包
+## 三浏览器构建
 
-`build.mjs` 生成 `dist/chrome` 与 `dist/edge`，两者 manifest `version` 相同（当前 1.2.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
+`build.mjs` 生成 `dist/chrome`、`dist/edge` 与 `dist/safari`，三个 manifest 的 `version` 相同（当前 1.2.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
 
 ```bash
 HB_API_ORIGIN=https://staging.example.com npm run build
 HB_WEB_ORIGIN=https://staff.example.com HB_API_ORIGIN=https://api.example.com npm run build
 ```
 
-构建会做 manifest JSON 语法校验，并在最后校验双包版本一致。
+构建会做 manifest JSON 语法校验，并在最后校验三个包版本一致；Safari manifest 额外锁定最低 Safari 16.4。
 
 ## HB 后端配置
 
-参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、两个隐藏商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
+参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、三个浏览器商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
 
 ```bash
 BrowserExtension__LatestVersion=1.2.0
 BrowserExtension__MinimumVersion=1.1.0
 BrowserExtension__ChromeStoreUrl=https://chromewebstore.google.com/detail/...
 BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail/...
+BrowserExtension__SafariStoreUrl=https://apps.apple.com/app/...
 ```
 
 紧急停用内置 DATS 时将 `UseBuiltInDatsProfile` 设为 `false`；停用其余内置供应商时将 `UseBuiltInSupplierProfiles` 设为 `false`。单个供应商也可在 `SupplierProfiles` 中用相同 `SupplierCode` 配置 `Enabled: false` 覆盖。每次变更后递增 `ConfigVersion`，扩展下一次同步配置后会移除对应域名脚本，无需发新版。
@@ -100,18 +107,22 @@ BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail
 2. 在 Microsoft Partner Center 的扩展页面上传包。
 3. 可见性选择“隐藏（Hidden）”，按需配置组织内分发或隐藏链接。
 
-正式图标源稿位于 `assets/icon-master.svg`，浏览器所需的 16/32/48/128px PNG 位于 `src/icons/`，构建时会原样复制到两个商店包；本仓库不包含任何凭据或商店密钥。
+### Safari
+
+使用 `../supplier-order-safari-extension` 的 Xcode 工程配置 Apple 开发团队并归档。Safari 16.4–18.3 通过 Mac App Store 分发；Developer ID 签名并公证的扩展要求 Safari 18.4+。正式链接生成前，后端 `SafariStoreUrl` 保持空值。
+
+正式图标源稿位于 `assets/icon-master.svg`，浏览器所需的 16/32/48/128px PNG 位于 `src/icons/`，构建时会复制到三个浏览器产物；本仓库不包含任何凭据或商店密钥。
 
 ## 版本与更新策略
 
 - 普通供应商（仅新增 `supplierCode/displayName/origins/选择器` 等声明式配置）通过服务端 `GET /api/react/v1/browser-extension/supplier-profiles` 下发，**无需发布新版**；当前后端默认目录包含 DATS、Brazco、Malmar、Meteor Party、Yatsal、Windragon、MNB、PJ SAS、Jemark、GFA、TXK 和 Boom Up，扩展离线回退仍只保留 DATS。
 - 需要新增特殊逻辑（新的解析行为、交互或 API 契约变化）时，才需要修改扩展代码并发布新版。
-- 双包始终保持同一版本号（`build.mjs` 会校验）。
+- 三个浏览器包始终保持同一版本号（`build.mjs` 会校验）。
 
 ## 自动更新与补丁回滚
 
 - 商店安装版由 Chrome Web Store / Edge Add-ons 自动推送更新，无需用户操作。
-- 补丁流程：修改代码 → `npm test` 全绿 → `npm run build` 重新生成双包 → 递增 `package.json` 版本（同时更新 manifest 模板占位由构建替换）→ 上传商店审核。
+- 补丁流程：修改代码 → `npm test` 全绿 → `npm run build` 重新生成三包 → Safari 项目同步 Resources → 递增 `package.json` 版本 → 上传对应商店审核。
 - 商店版不能降低版本号。回滚流程是恢复上一版本代码，递增一个更高的补丁版本，重新测试、构建并提交审核；本地加载版可直接重新加载旧构建目录。
 
 ## 测试

@@ -21,6 +21,7 @@ public sealed class BrowserExtensionReleaseDto
     public string MinimumVersion { get; set; } = string.Empty;
     public string ChromeStoreUrl { get; set; } = string.Empty;
     public string EdgeStoreUrl { get; set; } = string.Empty;
+    public string SafariStoreUrl { get; set; } = string.Empty;
     public BrowserExtensionReleaseNotesDto ReleaseNotes { get; set; } = new();
 }
 

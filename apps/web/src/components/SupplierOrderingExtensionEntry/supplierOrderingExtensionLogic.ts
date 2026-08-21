@@ -9,13 +9,22 @@ export const OPEN_MESSAGE_TYPE = 'HB_SUPPLIER_ASSISTANT_OPEN'
 export const OPEN_RESULT_MESSAGE_TYPE = 'HB_SUPPLIER_ASSISTANT_OPEN_RESULT'
 
 export type ExtensionVersionStatus = 'forced' | 'optional' | 'current'
-export type DetectedBrowser = 'edge' | 'chrome' | 'other'
+export type DetectedBrowser = 'edge' | 'chrome' | 'safari' | 'other'
+export type ExtensionInstallExperience =
+  | 'desktop-edge'
+  | 'desktop-chrome'
+  | 'desktop-safari-unsupported'
+  | 'desktop-unsupported'
+  | 'ios-safari'
+  | 'ios-unsupported'
+  | 'android-unsupported'
 
 export interface BrowserExtensionRelease {
   latestVersion: string
   minimumVersion: string
   chromeStoreUrl: string
   edgeStoreUrl: string
+  safariStoreUrl: string
   releaseNotes: {
     zh: string
     en: string
@@ -160,8 +169,15 @@ export function detectBrowser(userAgent: string): DetectedBrowser {
   if (ua.includes('edg/')) {
     return 'edge'
   }
+  // 已知的其他 Chromium 浏览器不得误用 Chrome 的受支持安装入口。
+  if (/opr\/|opera\/|vivaldi\/|yabrowser\/|samsungbrowser\//.test(ua)) {
+    return 'other'
+  }
   if (ua.includes('chrome/')) {
     return 'chrome'
+  }
+  if (ua.includes('version/') && ua.includes('safari/')) {
+    return 'safari'
   }
   return 'other'
 }
@@ -178,6 +194,40 @@ export function isMobileBrowser(
 
   // iPadOS 桌面模式会报告 Macintosh/MacIntel，只能结合触点数量识别。
   return platform === 'MacIntel' && maxTouchPoints > 1
+}
+
+export function resolveExtensionInstallExperience(
+  userAgent: string,
+  maxTouchPoints = 0,
+  platform = '',
+): ExtensionInstallExperience {
+  const ua = String(userAgent ?? '')
+  const isAppleMobile = /iPhone|iPad|iPod/i.test(ua)
+    || (platform === 'MacIntel' && maxTouchPoints > 1)
+
+  // iPadOS 桌面模式会伪装成 Macintosh，因此必须先于桌面 Safari 判断。
+  if (isAppleMobile) {
+    // UA 可被伪装；这里仅用于安装体验分流，不作为权限或安全边界。
+    const isAlternateIosBrowser = /CriOS\/|EdgiOS\/|FxiOS\/|OPiOS\/|DuckDuckGo\/|Ddg\/|GSA\/|FBAN\/|FBAV\/|Instagram\/|Line\/|MicroMessenger\/|YaBrowser\/|Coast\//i.test(ua)
+    const isSafari = /Version\//i.test(ua) && /Safari\//i.test(ua) && !isAlternateIosBrowser
+    return isSafari ? 'ios-safari' : 'ios-unsupported'
+  }
+
+  if (/Android|Mobile/i.test(ua)) {
+    return 'android-unsupported'
+  }
+
+  const browser = detectBrowser(ua)
+  if (browser === 'edge') {
+    return 'desktop-edge'
+  }
+  if (browser === 'chrome') {
+    return 'desktop-chrome'
+  }
+  if (browser === 'safari') {
+    return 'desktop-safari-unsupported'
+  }
+  return 'desktop-unsupported'
 }
 
 export type ExtensionStatusMessageReason =
@@ -235,7 +285,11 @@ export function validateExtensionStatusMessage(
   if (
     typeof candidate.version !== 'string'
     || candidate.version === ''
-    || (candidate.browser !== 'chrome' && candidate.browser !== 'edge')
+    || (
+      candidate.browser !== 'chrome'
+      && candidate.browser !== 'edge'
+      && candidate.browser !== 'safari'
+    )
   ) {
     return { ok: false, reason: 'fields' }
   }

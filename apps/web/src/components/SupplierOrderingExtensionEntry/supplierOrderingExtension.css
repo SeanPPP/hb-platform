@@ -30,6 +30,52 @@
   outline-offset: 2px;
 }
 
+.soe-entry--mobile-nav {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.soe-entry--mobile-nav .soe-entry-trigger.ant-btn {
+  width: 100%;
+  min-height: 44px;
+  height: auto;
+  padding: 12px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.2;
+}
+
+.soe-entry--mobile-nav .soe-entry-trigger.ant-btn:hover,
+.soe-entry--mobile-nav .soe-entry-trigger.ant-btn:focus-visible {
+  border-color: transparent;
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+}
+
+.soe-entry--mobile-nav .soe-entry-trigger.ant-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -3px;
+}
+
+.soe-entry--mobile-nav .soe-entry-dot {
+  display: none;
+}
+
+.soe-entry-mobile-icon {
+  font-size: 24px;
+}
+
+.soe-entry--mobile-nav .soe-entry-trigger-label {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: normal;
+}
+
 .soe-entry-trigger-label,
 .shop-top-bar .shop-shell .soe-entry-trigger-label:hover {
   color: inherit;
@@ -108,6 +154,39 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 .soe-mobile-hint,
 .soe-unavailable { margin: 0 0 14px; color: #6b7280; }
 
+.soe-unsupported-hint {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-left: 3px solid #d97706;
+  background: #fffbeb;
+  color: #78350f;
+  line-height: 1.55;
+}
+
+.soe-safari-guide {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #374151;
+}
+
+.soe-safari-guide-title {
+  margin-bottom: 6px;
+  color: #111827;
+  font-weight: 600;
+}
+
+.soe-safari-guide ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.soe-safari-guide li + li {
+  margin-top: 5px;
+}
+
 .soe-notes {
   border-top: 1px solid #f0f0f0;
   padding-top: 12px;
@@ -126,4 +205,20 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .soe-entry-dot { animation: none !important; }
+}
+
+@media (max-width: 576px) {
+  .soe-dialog {
+    max-width: calc(100vw - 24px);
+    margin: 12px auto;
+  }
+
+  .soe-dialog-status {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .soe-dialog-version {
+    margin-left: 0;
+  }
 }

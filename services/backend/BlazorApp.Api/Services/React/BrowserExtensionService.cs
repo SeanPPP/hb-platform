@@ -574,6 +574,7 @@ public static partial class BrowserExtensionProfileCatalog
             MinimumVersion = NormalizeVersion(options.MinimumVersion, "1.0.0"),
             ChromeStoreUrl = NormalizeHttpsUrl(options.ChromeStoreUrl),
             EdgeStoreUrl = NormalizeHttpsUrl(options.EdgeStoreUrl),
+            SafariStoreUrl = NormalizeHttpsUrl(options.SafariStoreUrl),
             ReleaseNotes = new BrowserExtensionReleaseNotesDto
             {
                 Zh = options.ReleaseNotesZh?.Trim() ?? string.Empty,

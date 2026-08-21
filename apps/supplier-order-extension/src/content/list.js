@@ -1,13 +1,22 @@
 // 供应商列表页注入：MutationObserver + IntersectionObserver + WeakMap + generation guard，
 // 微批请求商品摘要并注入 shadow DOM 按钮，点击定位到侧栏采购周期。
 (async () => {
-  const [profilesMod, batchMod, transformsMod, stateMod, i18nMod, recoveryMod] = await Promise.all([
+  const [
+    profilesMod,
+    batchMod,
+    transformsMod,
+    stateMod,
+    i18nMod,
+    recoveryMod,
+    storageCompatMod,
+  ] = await Promise.all([
     import(chrome.runtime.getURL('lib/profiles.js')),
     import(chrome.runtime.getURL('lib/batch.js')),
     import(chrome.runtime.getURL('lib/transforms.js')),
     import(chrome.runtime.getURL('lib/dats-state.js')),
     import(chrome.runtime.getURL('lib/i18n.js')),
     import(chrome.runtime.getURL('lib/list-recovery.js')),
+    import(chrome.runtime.getURL('lib/storage-compat.js')),
   ]);
   const { matchProfile } = profilesMod;
   const { createBatchQueue } = batchMod;
@@ -26,6 +35,7 @@
     resetSummaryRetry,
     shouldRequestVisibleSummary,
   } = recoveryMod;
+  const { matchesStorageArea } = storageCompatMod;
 
   const origin = location.origin;
 
@@ -413,7 +423,7 @@
   }
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== 'local' || !active) return;
+    if (!matchesStorageArea(areaName, 'local') || !active) return;
     if (changes.selectedStoreCode) {
       refreshForStore(changes.selectedStoreCode.newValue);
     }

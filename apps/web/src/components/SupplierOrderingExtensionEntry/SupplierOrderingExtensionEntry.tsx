@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button, Modal } from 'antd'
+import { ApiOutlined } from '@ant-design/icons'
 import type { ApiResponse } from '../../types/api'
 import request, { unwrapApiData } from '../../utils/request'
 import {
   createNonce,
-  detectBrowser,
-  isMobileBrowser,
   OPEN_MESSAGE_TYPE,
   PING_MESSAGE_TYPE,
   PLATFORM_MESSAGE_SOURCE,
+  resolveExtensionInstallExperience,
   resolveExtensionVersionStatus,
   validateExtensionOpenResultMessage,
   validateExtensionStatusMessage,
   type BrowserExtensionRelease,
-  type DetectedBrowser,
 } from './supplierOrderingExtensionLogic'
 import './supplierOrderingExtension.css'
 
@@ -22,16 +21,31 @@ const RELEASE_API_PATH = '/api/react/v1/browser-extension/release'
 const HANDSHAKE_TIMEOUT_MS = 1200
 
 type EntryTone = 'checking' | 'missing' | 'ok' | 'optional' | 'forced'
+type EntryPresentation = 'desktop' | 'mobile-nav'
 
-export default function SupplierOrderingExtensionEntry() {
+interface SupplierOrderingExtensionEntryProps {
+  presentation?: EntryPresentation
+}
+
+export default function SupplierOrderingExtensionEntry({
+  presentation = 'desktop',
+}: SupplierOrderingExtensionEntryProps) {
   const { t, i18n } = useTranslation()
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  const experience = typeof navigator !== 'undefined'
+    ? resolveExtensionInstallExperience(userAgent, navigator.maxTouchPoints, navigator.platform)
+    : 'desktop-unsupported'
+  const supportsExtension = experience === 'desktop-edge'
+    || experience === 'desktop-chrome'
+    || experience === 'ios-safari'
+  const isUnsupportedExperience = !supportsExtension
 
   const [release, setRelease] = useState<BrowserExtensionRelease | null>(null)
   const [releaseFailed, setReleaseFailed] = useState(false)
   const [installed, setInstalled] = useState(false)
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [installedBrowser, setInstalledBrowser] = useState<string | null>(null)
-  const [checking, setChecking] = useState(true)
+  const [checking, setChecking] = useState(supportsExtension)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
 
@@ -47,6 +61,15 @@ export default function SupplierOrderingExtensionEntry() {
   }, [])
 
   const runHandshake = useCallback(() => {
+    if (!supportsExtension) {
+      clearHandshakeTimeout()
+      setInstalled(false)
+      setInstalledVersion(null)
+      setInstalledBrowser(null)
+      setChecking(false)
+      return
+    }
+
     const nonce = createNonce()
     nonceRef.current = nonce
     clearHandshakeTimeout()
@@ -68,9 +91,13 @@ export default function SupplierOrderingExtensionEntry() {
         setChecking(false)
       }
     }, HANDSHAKE_TIMEOUT_MS)
-  }, [clearHandshakeTimeout])
+  }, [clearHandshakeTimeout, supportsExtension])
 
   useEffect(() => {
+    if (!supportsExtension) {
+      return undefined
+    }
+
     let cancelled = false
 
     const loadRelease = async () => {
@@ -92,7 +119,7 @@ export default function SupplierOrderingExtensionEntry() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [supportsExtension])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -173,26 +200,28 @@ export default function SupplierOrderingExtensionEntry() {
     tone = 'ok'
   }
 
-  const statusLabel = checking
-    ? t('supplierOrderingExtension.checking')
-    : !installed
-      ? t('supplierOrderingExtension.statusNotInstalled')
-      : isForced
-        ? t('supplierOrderingExtension.statusForcedUpdate')
-        : isOptional
-          ? t('supplierOrderingExtension.statusOptionalUpdate', { version: release?.latestVersion })
-          : t('supplierOrderingExtension.statusInstalled', { version: installedVersion })
-  const triggerLabel = !checking && !installed
-    ? t('supplierOrderingExtension.installAssistant')
-    : statusLabel
+  const statusLabel = isUnsupportedExperience
+    ? t('supplierOrderingExtension.unsupportedShort')
+    : checking
+      ? t('supplierOrderingExtension.checking')
+      : !installed
+        ? t('supplierOrderingExtension.statusNotInstalled')
+        : isForced
+          ? t('supplierOrderingExtension.statusForcedUpdate')
+          : isOptional
+            ? t('supplierOrderingExtension.statusOptionalUpdate', { version: release?.latestVersion })
+            : t('supplierOrderingExtension.statusInstalled', { version: installedVersion })
+  const triggerLabel = presentation === 'mobile-nav'
+    ? isUnsupportedExperience
+      ? t('supplierOrderingExtension.unsupportedShort')
+      : t('supplierOrderingExtension.name')
+    : !checking && !installed
+      ? isUnsupportedExperience
+        ? t('supplierOrderingExtension.unsupportedShort')
+        : t('supplierOrderingExtension.installAssistant')
+      : statusLabel
 
   const noteLang = i18n.language?.startsWith('zh') ? 'zh' : 'en'
-  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''
-  const detectedBrowser: DetectedBrowser =
-    typeof navigator !== 'undefined' ? detectBrowser(userAgent) : 'other'
-  const isMobile = typeof navigator !== 'undefined'
-    ? isMobileBrowser(userAgent, navigator.maxTouchPoints, navigator.platform)
-    : false
 
   const handleOpenAssistant = () => {
     // 打开扩展助手时只发送随机 nonce，绝不传递 token / account / sales。
@@ -205,12 +234,20 @@ export default function SupplierOrderingExtensionEntry() {
     )
   }
 
-  const renderInstallLink = (browser: 'edge' | 'chrome') => {
-    const url = browser === 'edge' ? release?.edgeStoreUrl : release?.chromeStoreUrl
+  const renderInstallLink = (browser: 'edge' | 'chrome' | 'safari') => {
+    const url = browser === 'edge'
+      ? release?.edgeStoreUrl
+      : browser === 'safari'
+        ? release?.safariStoreUrl
+        : release?.chromeStoreUrl
     const label = browser === 'edge'
       ? t('supplierOrderingExtension.installEdge')
-      : t('supplierOrderingExtension.installChrome')
-    const isPrimary = detectedBrowser === browser
+      : browser === 'safari'
+        ? t('supplierOrderingExtension.installSafari')
+        : t('supplierOrderingExtension.installChrome')
+    const isPrimary = (experience === 'desktop-edge' && browser === 'edge')
+      || (experience === 'desktop-chrome' && browser === 'chrome')
+      || (experience === 'ios-safari' && browser === 'safari')
 
     if (!url) {
       return (
@@ -220,7 +257,11 @@ export default function SupplierOrderingExtensionEntry() {
           aria-disabled="true"
         >
           <span className="soe-install-link-label">{label}</span>
-          <span className="soe-install-link-state">{t('supplierOrderingExtension.notPublished')}</span>
+          <span className="soe-install-link-state">
+            {browser === 'safari'
+              ? t('supplierOrderingExtension.safariNotPublished')
+              : t('supplierOrderingExtension.notPublished')}
+          </span>
         </span>
       )
     }
@@ -239,11 +280,38 @@ export default function SupplierOrderingExtensionEntry() {
     )
   }
 
+  const unsupportedMessage = experience === 'desktop-safari-unsupported'
+    ? t('supplierOrderingExtension.desktopSafariUnsupported')
+    : experience === 'ios-unsupported'
+      ? t('supplierOrderingExtension.iosBrowserUnsupported')
+      : experience === 'android-unsupported'
+        ? t('supplierOrderingExtension.androidUnsupported')
+        : experience === 'desktop-unsupported'
+          ? t('supplierOrderingExtension.desktopBrowserUnsupported')
+          : null
+
+  const renderSupportedInstallContent = () => {
+    if (releaseFailed) {
+      return <p className="soe-unavailable">{t('supplierOrderingExtension.releaseUnavailable')}</p>
+    }
+    if (!release) {
+      return <p className="soe-unavailable">{t('supplierOrderingExtension.checking')}</p>
+    }
+
+    return (
+      <div className="soe-install-list">
+        {experience === 'desktop-edge' ? renderInstallLink('edge') : null}
+        {experience === 'desktop-chrome' ? renderInstallLink('chrome') : null}
+        {experience === 'ios-safari' ? renderInstallLink('safari') : null}
+      </div>
+    )
+  }
+
   return (
-    <div className={`soe-entry soe-entry--${tone}`}>
+    <div className={`soe-entry soe-entry--${tone} soe-entry--${presentation}`}>
       <Button
         size="small"
-        className="soe-entry-trigger"
+        className={`soe-entry-trigger soe-entry-trigger--${presentation}`}
         onClick={() => {
           setOpenError(null)
           setDialogOpen(true)
@@ -252,6 +320,7 @@ export default function SupplierOrderingExtensionEntry() {
         aria-expanded={dialogOpen}
       >
         <span className="soe-entry-dot" aria-hidden="true" />
+        {presentation === 'mobile-nav' ? <ApiOutlined className="soe-entry-mobile-icon" aria-hidden="true" /> : null}
         <span className="soe-entry-trigger-label">{triggerLabel}</span>
       </Button>
 
@@ -273,25 +342,29 @@ export default function SupplierOrderingExtensionEntry() {
           {installedBrowser ? (
             <span className="soe-dialog-browser">{installedBrowser}</span>
           ) : null}
-          <Button size="small" className="soe-dialog-recheck" onClick={runHandshake}>
-            {t('supplierOrderingExtension.recheck')}
-          </Button>
+          {supportsExtension ? (
+            <Button size="small" className="soe-dialog-recheck" onClick={runHandshake}>
+              {t('supplierOrderingExtension.recheck')}
+            </Button>
+          ) : null}
         </div>
 
-        {isMobile ? (
-          <p className="soe-mobile-hint">{t('supplierOrderingExtension.mobileHint')}</p>
-        ) : releaseFailed ? (
-          <p className="soe-unavailable">{t('supplierOrderingExtension.releaseUnavailable')}</p>
-        ) : !release ? (
-          <p className="soe-unavailable">{t('supplierOrderingExtension.checking')}</p>
-        ) : (
-          <div className="soe-install-list">
-            {renderInstallLink('edge')}
-            {renderInstallLink('chrome')}
-          </div>
-        )}
+        {unsupportedMessage ? (
+          <p className="soe-unsupported-hint" role="status">{unsupportedMessage}</p>
+        ) : renderSupportedInstallContent()}
 
-        {release?.releaseNotes?.[noteLang] ? (
+        {experience === 'ios-safari' && release?.safariStoreUrl ? (
+          <div className="soe-safari-guide">
+            <div className="soe-safari-guide-title">{t('supplierOrderingExtension.safariInstallIntro')}</div>
+            <ol>
+              <li>{t('supplierOrderingExtension.safariInstallStepStore')}</li>
+              <li>{t('supplierOrderingExtension.safariInstallStepEnable')}</li>
+              <li>{t('supplierOrderingExtension.safariInstallStepWebsite')}</li>
+            </ol>
+          </div>
+        ) : null}
+
+        {supportsExtension && release?.releaseNotes?.[noteLang] ? (
           <div className="soe-notes">
             <div className="soe-notes-title">{t('supplierOrderingExtension.releaseNotes')}</div>
             <p>{release.releaseNotes[noteLang]}</p>

@@ -32,7 +32,11 @@ test('generateNonce 生成合法且不重复 nonce', () => {
 test('detectBrowser UA 识别', () => {
   assert.equal(detectBrowser('Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120.0 Edg/120.0'), 'edge');
   assert.equal(detectBrowser('Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120.0 Safari/537.36'), 'chrome');
-  assert.equal(detectBrowser('Mozilla/5.0 (Macintosh) Safari/537.36'), 'unknown');
+  assert.equal(
+    detectBrowser('Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/18.5 Safari/605.1.15'),
+    'safari',
+  );
+  assert.equal(detectBrowser('Mozilla/5.0 Firefox/120.0'), 'unknown');
 });
 
 test('bridge 消息校验', () => {

@@ -11,13 +11,16 @@ import { resolveGrantedProfileOrigins } from '../lib/origin-registration.js';
 import { DEFAULT_PROFILES } from '../lib/profiles-default.js';
 import { migrateProfileConfig } from '../lib/profile-cache.js';
 import { matchProfile, validateProfiles } from '../lib/profiles.js';
-import { API_BASE, EXTENSION_VERSION } from '../config.js';
+import { createAssistantPanelController } from '../lib/assistant-panel.js';
+import { API_BASE, BUILD_TARGET, EXTENSION_VERSION } from '../config.js';
 
 const ACCESS_KEY = 'accessToken';
 const REFRESH_KEY = 'refreshToken';
 const PROFILES_KEY = 'supplierProfiles';
 const GRANTED_KEY = 'grantedOrigins';
 const API_ORIGIN_KEY = 'apiOrigin';
+const assistantPanel = createAssistantPanelController({ browserApi: chrome, buildTarget: BUILD_TARGET });
+assistantPanel.registerListeners();
 
 const getSession = (keys) => chrome.storage.session.get(keys);
 const setSession = (obj) => chrome.storage.session.set(obj);
@@ -264,7 +267,7 @@ async function handleSupplierTopSales({ supplierCode, days }) {
 async function handleActiveSupplier() {
   let tabs = [];
   try {
-    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tabs = await assistantPanel.queryActiveTabs();
   } catch {
     return { ok: true, supplier: null };
   }
@@ -357,7 +360,7 @@ function openSidePanel(sender, pendingLocate) {
   const tabId = sender && sender.tab && sender.tab.id;
   if (tabId == null) return Promise.resolve({ ok: false, error: '缺少标签页' });
   // 先同步调用 open 保留用户手势，再异步返回状态
-  const openPromise = chrome.sidePanel.open({ tabId });
+  const openPromise = assistantPanel.open({ tabId });
   const locatePromise = pendingLocate
     ? chrome.storage.session.set({ pendingLocate })
     : Promise.resolve();
@@ -368,7 +371,7 @@ function openSidePanel(sender, pendingLocate) {
 
 chrome.runtime.onInstalled.addListener(async () => {
   try {
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    await assistantPanel.configureAction();
   } catch {
     // 某些环境不支持，忽略
   }

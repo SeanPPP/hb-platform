@@ -2,5 +2,5 @@
 export const EXTENSION_VERSION = "__VERSION__";
 export const HB_API_ORIGIN = "__HB_API_ORIGIN__";
 export const HB_WEB_ORIGIN = "__HB_WEB_ORIGIN__";
-export const BUILD_TARGET = "__BUILD_TARGET__"; // chrome | edge
+export const BUILD_TARGET = "__BUILD_TARGET__"; // chrome | edge | safari
 export const API_BASE = HB_API_ORIGIN;

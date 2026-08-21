@@ -6,6 +6,7 @@ const readJson = (path: string) => JSON.parse(read(path)) as Record<string, unkn
 
 const layout = read('src/layout/ShopLayout.tsx')
 const entry = read('src/components/SupplierOrderingExtensionEntry/SupplierOrderingExtensionEntry.tsx')
+const entryCss = read('src/components/SupplierOrderingExtensionEntry/supplierOrderingExtension.css')
 const zh = readJson('src/i18n/locales/zh.json')
 const en = readJson('src/i18n/locales/en.json')
 
@@ -18,12 +19,13 @@ assert.ok(
   'isShopHomePage 必须保持精确等于 /shop',
 )
 assert.ok(
-  layout.includes('{isShopHomePage ? <SupplierOrderingExtensionEntry /> : null}'),
-  '入口必须以 exact /shop 条件挂载',
+  layout.includes('isShopHomePage && !isMobileShopLayout')
+    && layout.includes('<SupplierOrderingExtensionEntry presentation="desktop" />'),
+  '宽屏入口必须以 exact /shop 和桌面布局条件挂载',
 )
 
 const preorderGateIndex = layout.indexOf('showPreorderGateAlert ? (')
-const entryIndex = layout.indexOf('<SupplierOrderingExtensionEntry />')
+const entryIndex = layout.indexOf('<SupplierOrderingExtensionEntry presentation="desktop" />')
 const outletIndex = layout.indexOf('<Outlet />')
 const desktopLogoutIndex = layout.indexOf("<span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>")
 const desktopLanguageIndex = layout.indexOf('<LanguageSwitch className="shop-top-language-switch"')
@@ -49,12 +51,23 @@ const requiredI18nKeys = [
   'notPublished',
   'installEdge',
   'installChrome',
+  'installSafari',
   'openAssistant',
   'openFailed',
   'mobileHint',
   'releaseUnavailable',
   'releaseNotes',
   'recommended',
+  'unsupportedShort',
+  'desktopSafariUnsupported',
+  'desktopBrowserUnsupported',
+  'iosBrowserUnsupported',
+  'androidUnsupported',
+  'safariNotPublished',
+  'safariInstallIntro',
+  'safariInstallStepStore',
+  'safariInstallStepEnable',
+  'safariInstallStepWebsite',
 ]
 
 assert.ok(
@@ -71,5 +84,47 @@ for (const key of requiredI18nKeys) {
   assert.equal(typeof zhEntry?.[key], 'string', `zh.supplierOrderingExtension.${key} 必须为字符串`)
   assert.equal(typeof enEntry?.[key], 'string', `en.supplierOrderingExtension.${key} 必须为字符串`)
 }
+
+assert.ok(
+  layout.includes("const SHOP_MOBILE_LAYOUT_QUERY = '(max-width: 768px)'")
+    && layout.includes('window.matchMedia(SHOP_MOBILE_LAYOUT_QUERY)'),
+  '商城入口布局判断必须与 CSS 的 768px 断点一致',
+)
+assert.ok(
+  layout.includes('isShopHomePage && isMobileShopLayout')
+    && layout.includes('<SupplierOrderingExtensionEntry presentation="mobile-nav" />'),
+  '窄屏 /shop 必须在移动导航挂载单一订货助手入口',
+)
+assert.ok(
+  entry.includes('resolveExtensionInstallExperience')
+    && entry.includes("experience === 'desktop-edge'")
+    && entry.includes("experience === 'desktop-chrome'")
+    && entry.includes("experience === 'ios-safari'"),
+  '安装弹窗必须按统一安装体验分类渲染对应入口',
+)
+assert.ok(
+  entry.includes("t('supplierOrderingExtension.desktopSafariUnsupported')")
+    && entry.includes("t('supplierOrderingExtension.desktopBrowserUnsupported')")
+    && entry.includes("t('supplierOrderingExtension.iosBrowserUnsupported')")
+    && entry.includes("t('supplierOrderingExtension.androidUnsupported')"),
+  '所有不支持环境必须显示对应文案',
+)
+assert.ok(
+  entry.includes('soe-safari-guide')
+    && entry.includes("experience === 'ios-safari' && release?.safariStoreUrl")
+    && entry.includes("t('supplierOrderingExtension.safariInstallStepEnable')")
+    && entry.includes("t('supplierOrderingExtension.safariInstallStepWebsite')"),
+  'iOS Safari 仅在已配置商店地址时显示安装、启用和网站权限引导',
+)
+assert.ok(
+  entry.includes('supportsExtension ? (')
+    && entry.includes("t('supplierOrderingExtension.recheck')"),
+  '只有受支持环境可以显示重新检测按钮',
+)
+assert.match(
+  entryCss,
+  /\.soe-entry--mobile-nav[\s\S]*?\.soe-entry-trigger\.ant-btn[\s\S]*?min-height:\s*44px/,
+  '移动导航入口必须提供至少 44px 的触摸高度',
+)
 
 console.log('supplierOrderingExtensionEntryContract.test: ok')

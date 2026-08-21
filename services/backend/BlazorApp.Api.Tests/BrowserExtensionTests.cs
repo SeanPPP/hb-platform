@@ -637,6 +637,7 @@ public sealed class BrowserExtensionProfileCatalogTests
         Assert.Equal("1.2.0", release.LatestVersion);
         Assert.Equal("1.1.0", release.MinimumVersion);
         Assert.Empty(release.ChromeStoreUrl);
+        Assert.Empty(release.SafariStoreUrl);
         Assert.Equal(
             "https://microsoftedge.microsoft.com/addons/detail/eeggjfaljfdkoanlaonfiodmljkmpfhn",
             release.EdgeStoreUrl
@@ -653,11 +654,13 @@ public sealed class BrowserExtensionProfileCatalogTests
                 MinimumVersion = "1.0.0",
                 ChromeStoreUrl = "javascript:alert(1)",
                 EdgeStoreUrl = "https://microsoftedge.microsoft.com/addons/detail/example",
+                SafariStoreUrl = "javascript:alert(2)",
             }
         );
 
         Assert.Equal("1.0.0", release.LatestVersion);
         Assert.Empty(release.ChromeStoreUrl);
+        Assert.Empty(release.SafariStoreUrl);
         Assert.StartsWith("https://", release.EdgeStoreUrl, StringComparison.Ordinal);
     }
 }

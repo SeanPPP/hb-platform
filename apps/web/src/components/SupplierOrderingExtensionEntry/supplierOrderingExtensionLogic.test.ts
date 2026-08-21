@@ -8,6 +8,7 @@ import {
   PING_MESSAGE_TYPE,
   PLATFORM_MESSAGE_SOURCE,
   isMobileBrowser,
+  resolveExtensionInstallExperience,
   resolveExtensionVersionStatus,
   shouldShowSupplierOrderingEntry,
   STATUS_MESSAGE_TYPE,
@@ -59,11 +60,45 @@ assert.equal(resolveExtensionVersionStatus('1.3.0', '1.1.0', '1.2.0'), 'current'
 // 浏览器识别：Edge 的 UA 同时含 Chrome，必须先识别 Edg/。
 assert.equal(detectBrowser('Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36 Edg/120'), 'edge')
 assert.equal(detectBrowser('Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36'), 'chrome')
-assert.equal(detectBrowser('Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/17 Safari/605.1.15'), 'other')
+assert.equal(detectBrowser('Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/17 Safari/605.1.15'), 'safari')
 assert.equal(isMobileBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)'), true)
 assert.equal(isMobileBrowser('Mozilla/5.0 (Linux; Android 15; Pixel 9) Mobile'), true)
 assert.equal(isMobileBrowser('Mozilla/5.0 (Macintosh) Chrome/120', 0, 'MacIntel'), false)
 assert.equal(isMobileBrowser('Mozilla/5.0 (Macintosh) Version/18 Safari/605.1.15', 5, 'MacIntel'), true)
+
+// 安装体验必须先按设备分类，避免 iPadOS“请求桌面网站”被误判为 macOS Safari。
+const desktopEdgeUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36 Edg/120'
+const desktopChromeUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+const desktopSafariUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15'
+const desktopFirefoxUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:121.0) Gecko/20100101 Firefox/121.0'
+const iphoneSafariUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'
+const ipadSafariUa = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'
+const iosChromeUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 CriOS/120.0.0.0 Mobile/15E148 Safari/604.1'
+const iosEdgeUa = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 EdgiOS/120.0 Mobile/15E148 Safari/605.1.15'
+const iosFirefoxUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 FxiOS/121.0 Mobile/15E148 Safari/605.1.15'
+const iosDuckDuckGoUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1 DuckDuckGo/7'
+const iosGoogleAppUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1 GSA/350.0'
+const androidUa = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36'
+const operaUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36 OPR/106.0'
+
+assert.equal(resolveExtensionInstallExperience(desktopEdgeUa), 'desktop-edge')
+assert.equal(resolveExtensionInstallExperience(desktopChromeUa), 'desktop-chrome')
+assert.equal(resolveExtensionInstallExperience(desktopSafariUa, 0, 'MacIntel'), 'desktop-safari-unsupported')
+assert.equal(resolveExtensionInstallExperience(desktopFirefoxUa), 'desktop-unsupported')
+assert.equal(resolveExtensionInstallExperience(operaUa), 'desktop-unsupported')
+assert.equal(resolveExtensionInstallExperience(iphoneSafariUa), 'ios-safari')
+assert.equal(resolveExtensionInstallExperience(ipadSafariUa), 'ios-safari')
+assert.equal(
+  resolveExtensionInstallExperience(desktopSafariUa, 5, 'MacIntel'),
+  'ios-safari',
+  'iPadOS 桌面模式 Safari 必须保持 iOS 安装体验',
+)
+assert.equal(resolveExtensionInstallExperience(iosChromeUa), 'ios-unsupported')
+assert.equal(resolveExtensionInstallExperience(iosEdgeUa), 'ios-unsupported')
+assert.equal(resolveExtensionInstallExperience(iosFirefoxUa), 'ios-unsupported')
+assert.equal(resolveExtensionInstallExperience(iosDuckDuckGoUa), 'ios-unsupported')
+assert.equal(resolveExtensionInstallExperience(iosGoogleAppUa), 'ios-unsupported')
+assert.equal(resolveExtensionInstallExperience(androidUa), 'android-unsupported')
 
 const validMessage = {
   source: EXTENSION_MESSAGE_SOURCE,
@@ -86,6 +121,11 @@ assert.deepEqual(
   validateExtensionStatusMessage(validMessage, validContext),
   { ok: true, version: '1.2.3', browser: 'chrome' },
   '合法 STATUS 必须通过校验',
+)
+assert.deepEqual(
+  validateExtensionStatusMessage({ ...validMessage, browser: 'safari' }, validContext),
+  { ok: true, version: '1.2.3', browser: 'safari' },
+  'Safari STATUS 必须通过校验',
 )
 
 // 来源非当前 window。

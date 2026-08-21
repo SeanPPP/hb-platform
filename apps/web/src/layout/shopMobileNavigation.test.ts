@@ -63,6 +63,10 @@ assert.ok(
   layout.includes("window.open('/dashboard', '_blank')"),
   '现有 dashboard 入口必须继续在新窗口打开 /dashboard',
 )
+assert.ok(
+  mobileGrid.includes('<SupplierOrderingExtensionEntry presentation="mobile-nav" />'),
+  '商城首页窄屏导航宫格必须包含订货助手入口',
+)
 
 assert.equal(zhShop?.categories, '分类', '中文 shop.categories 必须为“分类”')
 assert.equal(enShop?.categories, 'Categories', '英文 shop.categories 必须为“Categories”')

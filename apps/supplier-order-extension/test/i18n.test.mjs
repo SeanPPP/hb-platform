@@ -1,12 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeLocale, t } from '../src/lib/i18n.js';
+import { normalizeLocale, resolveInitialLocale, t } from '../src/lib/i18n.js';
 
 test('normalizeLocale', () => {
   assert.equal(normalizeLocale('en'), 'en');
   assert.equal(normalizeLocale('zh'), 'zh');
   assert.equal(normalizeLocale('fr'), 'zh');
   assert.equal(normalizeLocale(null), 'zh');
+});
+
+test('首次打开按系统语言选择中文或英文', () => {
+  for (const systemLocale of ['zh', 'zh-CN', 'zh-TW', 'zh-Hans', 'zh-Hant']) {
+    assert.equal(resolveInitialLocale(null, [systemLocale]), 'zh', systemLocale);
+  }
+
+  assert.equal(resolveInitialLocale(undefined, ['en-AU']), 'en');
+  assert.equal(resolveInitialLocale(undefined, ['fr-FR']), 'en');
+  assert.equal(resolveInitialLocale(undefined, []), 'en');
+});
+
+test('已保存语言优先，非法保存值回退系统语言', () => {
+  assert.equal(resolveInitialLocale('zh', ['en-AU']), 'zh');
+  assert.equal(resolveInitialLocale('en', ['zh-CN']), 'en');
+  assert.equal(resolveInitialLocale('fr', ['zh-TW']), 'zh');
+  assert.equal(resolveInitialLocale('fr', ['de-DE']), 'en');
 });
 
 test('t 语言区分与回退', () => {
