@@ -67,12 +67,37 @@
   line-height: 1.25;
 }
 
+/* 固定列必须保持不透明，避免横向滚动内容从虚拟表格单元格下方透出。 */
+.container-detail-table .ant-table-cell-fix-left {
+  background: #fff;
+}
+
+.container-detail-table .ant-table-thead .ant-table-cell-fix-left {
+  background: #fafafa;
+}
+
 .container-detail-table .container-detail-row-striped:not(.ant-table-row-selected) > td {
+  background: #fafafa;
+}
+
+.container-detail-table .container-detail-row-striped:not(.ant-table-row-selected) > .ant-table-cell-fix-left {
   background: #fafafa;
 }
 
 .container-detail-table .container-detail-row-striped:not(.ant-table-row-selected):hover > td {
   background: #f5faff;
+}
+
+.container-detail-table .ant-table-row:not(.ant-table-row-selected):hover > .ant-table-cell-fix-left {
+  background: #f5faff;
+}
+
+.container-detail-table .ant-table-row-selected > .ant-table-cell-fix-left {
+  background: #e6f4ff;
+}
+
+.container-detail-table .ant-table-row-selected:hover > .ant-table-cell-fix-left {
+  background: #bae0ff;
 }
 
 .container-detail-table .ant-table-tbody > tr > td .ant-space {
@@ -89,6 +114,12 @@
 /* 虚拟表格使用 flex 行；居中不同高度的文本和输入框，确保文字落在同一水平轴线上。 */
 .container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row {
   align-items: center;
+}
+
+/* 固定单元格需覆盖完整虚拟行高度，避免上下空隙透出横向滚动内容。 */
+.container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row > .ant-table-cell-fix-left {
+  align-self: stretch;
+  align-content: center;
 }
 
 .container-detail-table .ant-table-tbody > tr > td .ant-image {

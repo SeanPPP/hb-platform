@@ -3879,9 +3879,12 @@ assertEqual(
   pageStyleSource.includes(
     '.container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row {\n  align-items: center;\n}',
   ) &&
+  pageStyleSource.includes(
+    '.container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row > .ant-table-cell-fix-left {\n  align-self: stretch;\n  align-content: center;\n}',
+  ) &&
   !pageStyleSource.includes('.ant-table-tbody > tr > td .ant-input-number-input'),
   true,
-  '虚拟表格行应垂直居中所有单元格，使数字输入文字与普通文本同轴对齐',
+  '虚拟表格行应垂直居中单元格，且固定列必须拉伸到完整行高以遮挡横向滚动内容',
 )
 assertEqual(
   pageSource.includes('handleWarehouseStatusChange'),
