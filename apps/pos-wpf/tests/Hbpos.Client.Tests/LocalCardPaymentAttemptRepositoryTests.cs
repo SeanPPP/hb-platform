@@ -1121,8 +1121,8 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
 
             var second = await repository.TryTerminalizeNotPaidAsync(
                 attempt.AttemptGuid,
-                attempt.Status,
-                attempt.UpdatedAt,
+                saved.Status,
+                saved.UpdatedAt,
                 resolvedAt.AddMinutes(1));
             Assert.False(second);
         }

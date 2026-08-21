@@ -825,6 +825,35 @@ public sealed class CardRecoveryCenterTests
         Assert.Equal(1, repository.TerminalizeNotPaidCount);
     }
 
+    [Fact]
+    public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_invalid_snapshot_leaves_cart_empty()
+    {
+        var attempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000069"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00"),
+            draftJson: SerializeDraftWithInvalidSecondLine());
+        var repository = new FakeSquareAttemptRepository(attempt);
+        var service = CreateSquareService(repository);
+        var cart = new PosCartService();
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmNotProcessed,
+            "not paid",
+            "bank none",
+            reference: null,
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+    }
+
     private static CardPaymentRecoveryService CreateLinklyService(
         FakeLinklyAttemptRepository repository,
         ILinklyBackendTerminalClient? backend = null,
@@ -946,6 +975,52 @@ public sealed class CardRecoveryCenterTests
             snapshot,
             [],
             10m,
+            10m,
+            "P",
+            null,
+            DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
+        return JsonSerializer.Serialize(draft, JsonOptions);
+    }
+
+    private static string SerializeDraftWithInvalidSecondLine()
+    {
+        var snapshot = new PosCartSnapshot(
+        [
+            new PosCartLineSnapshot(
+                "S001",
+                "SKU-10",
+                null,
+                "Item A",
+                "930010",
+                "ITEM-10",
+                null,
+                1m,
+                10m,
+                0m,
+                null,
+                PriceSourceKind.StoreRetailPrice,
+                "Store price"),
+            new PosCartLineSnapshot(
+                "S001",
+                "SKU-BAD",
+                null,
+                "Item B",
+                "930011",
+                "ITEM-11",
+                null,
+                0m,
+                5m,
+                0m,
+                null,
+                PriceSourceKind.StoreRetailPrice,
+                "Store price")
+        ]);
+        var draft = new CardPaymentOrderDraft(
+            Guid.NewGuid(),
+            Session,
+            snapshot,
+            [],
+            15m,
             10m,
             "P",
             null,

@@ -406,7 +406,23 @@ public sealed class SquarePaymentRecoveryService(
                 T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."));
         }
 
-        // 先安全恢复购物车，恢复完成后才 CAS 终态；恢复失败保持记录开放，避免 attempt 已消失但订单未恢复。
+        // 先在临时购物车完整验证快照，避免逐行恢复污染真实购物车；临时购物车无外部订阅者，不触发外部副作用。
+        var validationCart = new PosCartService();
+        try
+        {
+            validationCart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"not-paid draft snapshot invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidRestoreFailed", "The previous Square payment could not be restored. Run recovery again."));
+        }
+
+        // 验证通过后恢复到真实购物车；事件 handler 异常同样不得让 attempt 提前终态。
         try
         {
             cart.RestoreSnapshot(draft.CartSnapshot);

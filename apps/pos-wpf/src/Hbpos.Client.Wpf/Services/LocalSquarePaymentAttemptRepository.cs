@@ -818,7 +818,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND OperationKind = 'Sale'
               AND Status = $ExpectedStatus
               AND UpdatedAt = $ExpectedUpdatedAt
-              AND ResponseCode = $ConfirmedNotPaidCode;
+              AND ResponseCode = $ConfirmedNotPaidCode
+              AND Status IN ($PendingStatus, $RecoveringStatus);
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
@@ -826,6 +827,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ConfirmedNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
 
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
