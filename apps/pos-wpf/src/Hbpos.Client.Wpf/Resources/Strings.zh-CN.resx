@@ -2620,6 +2620,7 @@
   <data name="cardRecovery.linkly.activeSessionManuallyCleared" xml:space="preserve"><value>上一笔 Linkly 交易已人工检查并清理。请继续当前订单。</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearFailed" xml:space="preserve"><value>POS 未能清理上一笔 Linkly 交易。请再次恢复，或检查 Linkly 后再收款。</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearMissing" xml:space="preserve"><value>缺少 session id，无法清理上一笔 Linkly 交易。</value></data>
+  <data name="cardRecovery.linkly.supervisorNotPaidFinalizeFailed" xml:space="preserve"><value>POS 无法安全恢复或清除上一笔 Linkly 结果，因此该结果仍未解决。请先再次执行恢复，再进行扣款。</value></data>
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>检测到上一笔 Square 刷卡结果需要处理，但当前购物车已有商品。请先完成或清空当前购物车后再恢复上一笔订单。</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>无法确认上一笔 Square 刷卡结果。请联系主管确认 Square 后台状态后再继续。</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>检测到上次程序关闭前有一笔 {0:C2} Square 刷卡交易正在处理，正在查询刷卡机状态。</value></data>
@@ -2633,6 +2634,7 @@
   <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>无法恢复上一笔 Square 付款订单，请再次执行恢复。</value></data>
   <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>无法结束上一笔 Square 付款记录，请再次执行恢复。</value></data>
   <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>银行已确认未发生扣款。原订单已可使用同一操作重新付款。</value></data>
+  <data name="cardRecovery.square.stateChanged" xml:space="preserve"><value>核对银行结果时 Square 付款状态已发生变化。请再次执行恢复。</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>软件更新</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>检查 WPF 收银端安装包更新，不中断当前收银主流程。</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>通道</value></data>
@@ -2711,8 +2713,12 @@
   <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>退款决定保存失败。再次退款前请重新运行恢复。</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>退款仍保持锁定。取得银行结果后请再次运行恢复。</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>银行已确认未发生退款。原退货已恢复，可使用同一操作重试。</value></data>
+  <data name="cardRecovery.refund.retryDraftInvalid" xml:space="preserve"><value>银行已确认未退款，但 POS 无法重建原退货单。在支持人员检查此记录前请勿重试。</value></data>
+  <data name="cardRecovery.refund.retryRestoreFailed" xml:space="preserve"><value>原退货单无法恢复到当前购物车。请再次执行恢复。</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>已记录确认退款，并恢复原退货。</value></data>
   <data name="cardRecovery.refund.confirmedDraftInvalid" xml:space="preserve"><value>退款已确认，但 POS 无法重建原退货。请勿再次退款，并联系支持人员。</value></data>
+  <data name="cardRecovery.refund.confirmedOrderSaveFailed" xml:space="preserve"><value>退款已确认，但 POS 无法保存恢复的退货单。请勿再次退款；请在本地存储恢复可用后再次执行恢复。</value></data>
+  <data name="cardRecovery.refund.confirmedRestoreFailed" xml:space="preserve"><value>已确认的退款无法恢复到当前购物车。请再次执行恢复。</value></data>
   <data name="cardRecovery.refund.confirmedTenderRestored" xml:space="preserve"><value>已恢复确认的银行卡退款。请完成其余退款方式，不要再次退这笔银行卡款。</value></data>
   <data name="cardRecovery.refund.confirmedCompleted" xml:space="preserve"><value>已恢复确认的银行卡退款并保存退货单。</value></data>
   <data name="cardRecovery.payment.section.title" xml:space="preserve"><value>主管付款核对</value></data>

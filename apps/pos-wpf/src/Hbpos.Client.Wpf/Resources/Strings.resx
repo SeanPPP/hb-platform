@@ -970,6 +970,7 @@
   <data name="cardRecovery.linkly.activeSessionManuallyCleared" xml:space="preserve"><value>The previous Linkly session was manually checked and cleared. Continue the current order.</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearFailed" xml:space="preserve"><value>POS could not clear the previous Linkly session. Try recovery again or check Linkly before charging again.</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearMissing" xml:space="preserve"><value>Cannot clear the previous Linkly session because the session id is missing.</value></data>
+  <data name="cardRecovery.linkly.supervisorNotPaidFinalizeFailed" xml:space="preserve"><value>The previous Linkly result remains unresolved because POS could not restore or clear it safely. Run recovery again before charging.</value></data>
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>The previous Square card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order.</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>The previous Square card result cannot be confirmed. Ask a supervisor to confirm the Square backend status before continuing.</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>A previous Square card transaction for {0:C2} was in progress before the POS closed. Checking the card terminal status.</value></data>
@@ -983,6 +984,7 @@
   <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>The previous Square payment could not be restored. Run recovery again.</value></data>
   <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>The previous Square payment could not be finalized. Run recovery again.</value></data>
   <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>The bank confirmed that no payment was processed. The original order is ready to retry with the same operation.</value></data>
+  <data name="cardRecovery.square.stateChanged" xml:space="preserve"><value>The Square payment state changed while the bank result was being checked. Run recovery again.</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>Software update</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>Check for a new WPF POS installer without interrupting the current checkout flow.</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>Channel</value></data>
@@ -1061,8 +1063,12 @@
   <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>The refund decision could not be saved. Run recovery again before attempting another refund.</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>The refund remains locked. Run recovery again after the bank result is available.</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>The bank confirmed that no refund was processed. The original return is ready to retry with the same operation.</value></data>
+  <data name="cardRecovery.refund.retryDraftInvalid" xml:space="preserve"><value>The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt.</value></data>
+  <data name="cardRecovery.refund.retryRestoreFailed" xml:space="preserve"><value>The original return could not be restored to the current cart. Run recovery again.</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>The confirmed refund was recorded and the original return was recovered.</value></data>
   <data name="cardRecovery.refund.confirmedDraftInvalid" xml:space="preserve"><value>The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support.</value></data>
+  <data name="cardRecovery.refund.confirmedOrderSaveFailed" xml:space="preserve"><value>The refund is confirmed, but POS could not save the recovered return. Do not refund again; run recovery after the local store is available.</value></data>
+  <data name="cardRecovery.refund.confirmedRestoreFailed" xml:space="preserve"><value>The confirmed refund could not be restored to the current cart. Run recovery again.</value></data>
   <data name="cardRecovery.refund.confirmedTenderRestored" xml:space="preserve"><value>The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again.</value></data>
   <data name="cardRecovery.refund.confirmedCompleted" xml:space="preserve"><value>The confirmed card refund was recovered and the return was saved.</value></data>
   <data name="cardRecovery.payment.section.title" xml:space="preserve"><value>Supervisor payment reconciliation</value></data>
