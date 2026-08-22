@@ -4936,6 +4936,142 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_closed_pending_handoff_overlay_ignores_late_candidate()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-QUAL-CLOSE-CANDIDATE", "Closed Candidate Tea", "930QUALCLOSECANDIDATE", PriceSourceKind.StoreRetailPrice, 10m));
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 2m);
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000174");
+        var orderGuid = Guid.Parse("20000000-0000-0000-0000-000000000174");
+        var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
+        var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            prepareCardPaymentHandoffAsync: _ =>
+            {
+                qualificationStarted.TrySetResult(true);
+                return qualificationResult.Task;
+            },
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true),
+            openCardRecoveryCenter: () => { });
+        viewModel.PaymentTenders.Add(existingTender);
+        var cardSession = Assert.IsType<CardPaymentSession>(typeof(PaymentViewModel)
+            .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(viewModel));
+        var handlingTask = cardSession.TryHandleFailedResultAsync(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "Closed candidate qualification is pending.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: recoveryKey,
+            RecoveryOrderGuid: orderGuid));
+        await qualificationStarted.Task;
+        var overlay = Assert.IsType<CardPaymentErrorOverlayViewModel>(viewModel.CardPaymentErrorOverlay);
+        var originalStatus = viewModel.StatusMessage;
+
+        viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+
+        Assert.False(overlay.IsOpen);
+        Assert.Equal(originalStatus, viewModel.StatusMessage);
+        Assert.True(cardSession.HasUnknownResult);
+        Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
+        Assert.Equal(orderGuid, cardSession.RecoveryOrderGuid);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(cart.Lines);
+        Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
+
+        qualificationResult.SetResult(new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid));
+        await handlingTask;
+
+        Assert.False(overlay.IsOpen);
+        Assert.False(overlay.HasPrimaryAction);
+        Assert.Equal("payment.card.error.overlay.activeSession.openRecoveryCenter", overlay.PrimaryButtonTextKey);
+        Assert.Equal(originalStatus, viewModel.StatusMessage);
+        Assert.True(cardSession.HasUnknownResult);
+        Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
+        Assert.Equal(orderGuid, cardSession.RecoveryOrderGuid);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(cart.Lines);
+        Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
+        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_closed_pending_handoff_overlay_ignores_late_qualification_exception()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-QUAL-CLOSE-ERROR", "Closed Error Tea", "930QUALCLOSEERROR", PriceSourceKind.StoreRetailPrice, 10m));
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 3m);
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000175");
+        var orderGuid = Guid.Parse("20000000-0000-0000-0000-000000000175");
+        var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
+        var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            prepareCardPaymentHandoffAsync: _ =>
+            {
+                qualificationStarted.TrySetResult(true);
+                return qualificationResult.Task;
+            },
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true),
+            openCardRecoveryCenter: () => { });
+        viewModel.PaymentTenders.Add(existingTender);
+        var cardSession = Assert.IsType<CardPaymentSession>(typeof(PaymentViewModel)
+            .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(viewModel));
+        var handlingTask = cardSession.TryHandleFailedResultAsync(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "Closed error qualification is pending.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: recoveryKey,
+            RecoveryOrderGuid: orderGuid));
+        await qualificationStarted.Task;
+        var overlay = Assert.IsType<CardPaymentErrorOverlayViewModel>(viewModel.CardPaymentErrorOverlay);
+        var originalStatus = viewModel.StatusMessage;
+
+        viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+
+        Assert.False(overlay.IsOpen);
+        Assert.Equal(originalStatus, viewModel.StatusMessage);
+        Assert.True(cardSession.HasUnknownResult);
+        Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
+        Assert.Equal(orderGuid, cardSession.RecoveryOrderGuid);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(cart.Lines);
+        Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
+
+        viewModel.SetStatus("payment.status.ready", "Status changed after the overlay closed.");
+        var statusAfterClose = viewModel.StatusMessage;
+        qualificationResult.SetException(new IOException("simulated late qualification failure"));
+        await handlingTask;
+
+        Assert.False(overlay.IsOpen);
+        Assert.False(overlay.HasPrimaryAction);
+        Assert.Equal("payment.card.error.overlay.activeSession.openRecoveryCenter", overlay.PrimaryButtonTextKey);
+        Assert.Equal(statusAfterClose, viewModel.StatusMessage);
+        Assert.True(cardSession.HasUnknownResult);
+        Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
+        Assert.Equal(orderGuid, cardSession.RecoveryOrderGuid);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(cart.Lines);
+        Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
+        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Payment_page_late_handoff_qualification_does_not_revive_cleared_unknown_state()
     {
         var cart = new PosCartService();

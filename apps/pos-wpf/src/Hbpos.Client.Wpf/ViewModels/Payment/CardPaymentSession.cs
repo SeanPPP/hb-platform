@@ -389,9 +389,16 @@ internal sealed class CardPaymentSession
     public void CloseErrorOverlay()
     {
         CompletePendingLinklyFallbackPrompt(confirmed: false);
-        if (_vm.CardPaymentErrorOverlay is not null)
+        if (_vm.CardPaymentErrorOverlay is { } overlay)
         {
-            _vm.CardPaymentErrorOverlay.IsOpen = false;
+            if (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+            {
+                Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
+                _cardPaymentHandoffQualificationPending = false;
+                _cardPaymentHandoffCandidate = null;
+            }
+
+            overlay.IsOpen = false;
         }
 
         ReleaseFallbackPromptLockIfIdle();
