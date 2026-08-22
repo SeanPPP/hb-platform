@@ -22,6 +22,8 @@ import {
   Switch,
   Tag,
   Table,
+  theme,
+  Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -47,6 +49,16 @@ import {
   normalizeCreateCount,
 } from './batchCreateRules'
 import type { BatchAddMode, DraftPreviewItem, DraftProductItem, DraftSetSubItem } from './batchCreateRules'
+import {
+  applyParentColumnPaste,
+  applySubItemColumnPaste,
+  getNextBatchCreateEditableCell,
+} from './batchCreateGridRules'
+import type {
+  BatchCreateEditableField,
+  BatchCreateNavigationDirection,
+  BatchCreatePasteField,
+} from './batchCreateGridRules'
 import PrefixCodeManageModal from './PrefixCodeManageModal'
 import { applySetTemplateDraft, buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
 
@@ -63,6 +75,40 @@ interface SetTemplateFormValues {
 
 const PRODUCT_TABLE_SCROLL_X = 1080
 const PREVIEW_TABLE_SCROLL_X = 760
+const PARENT_GRID_SCOPE = 'parent'
+const PARENT_COMMON_EDITABLE_FIELDS = ['productName', 'privateLabelPrice'] as const
+const PARENT_SET_EDITABLE_FIELDS = ['productName', 'privateLabelPrice', 'createCount', 'setQuantity', 'setPrice'] as const
+const SUB_ITEM_EDITABLE_FIELDS = ['productName', 'privateLabelPrice'] as const
+const NAVIGATION_DIRECTION_BY_KEY: Partial<Record<string, BatchCreateNavigationDirection>> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
+
+type BatchCreatePasteTarget =
+  | { scope: 'parent'; field: BatchCreatePasteField }
+  | { scope: 'subItem'; setKey: string; field: BatchCreatePasteField }
+
+type BatchCreateFocusableCell = {
+  focus: () => void
+  select?: () => void
+  input?: HTMLInputElement | null
+  nativeElement?: HTMLElement | null
+}
+
+function isSamePasteTarget(left: BatchCreatePasteTarget | null, right: BatchCreatePasteTarget) {
+  if (!left || left.scope !== right.scope || left.field !== right.field) return false
+  return left.scope === 'parent' || (right.scope === 'subItem' && left.setKey === right.setKey)
+}
+
+function getSubItemGridScope(setKey: string) {
+  return `subItem:${setKey}`
+}
+
+function buildEditableCellKey(scope: string, rowKey: string, field: BatchCreateEditableField) {
+  return `${scope}:${rowKey}:${field}`
+}
 
 function getSetTemplateErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback
@@ -76,6 +122,7 @@ interface BatchCreateModalProps {
 
 export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchCreateModalProps) {
   const { t } = useTranslation()
+  const { token } = theme.useToken()
   const [form] = Form.useForm()
   const [setTemplateForm] = Form.useForm<SetTemplateFormValues>()
   const [saveTemplateForm] = Form.useForm<{ templateName: string }>()
@@ -94,7 +141,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [batchAddVisible, setBatchAddVisible] = useState(false)
   const [batchAddCount, setBatchAddCount] = useState(5)
   const [batchAddPrice, setBatchAddPrice] = useState<number | null>(null)
-  const [batchAddMode, setBatchAddMode] = useState<BatchAddMode>('overwrite')
+  const [batchAddMode, setBatchAddMode] = useState<BatchAddMode>('append')
   const [batchAddType, setBatchAddType] = useState<ProductCreationType>(ProductCreationType.NORMAL)
   const [batchEditNameVisible, setBatchEditNameVisible] = useState(false)
   const [batchEditNameMode, setBatchEditNameMode] = useState<'replace' | 'prefix' | 'suffix'>('replace')
@@ -110,6 +157,8 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
   const [setTemplateSaving, setSetTemplateSaving] = useState(false)
   const [saveTemplateVisible, setSaveTemplateVisible] = useState(false)
   const [templateSourceProductKey, setTemplateSourceProductKey] = useState<string | null>(null)
+  const [selectedPasteTarget, setSelectedPasteTarget] = useState<BatchCreatePasteTarget | null>(null)
+  const editableCellRefs = useRef(new Map<string, BatchCreateFocusableCell>())
   const watchedPrefixCode = Form.useWatch('prefixCode', form) || ''
 
   const createEmptyProduct = useCallback(
@@ -142,7 +191,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setBatchAddVisible(false)
     setBatchAddCount(5)
     setBatchAddPrice(null)
-    setBatchAddMode('overwrite')
+    setBatchAddMode('append')
     setBatchAddType(ProductCreationType.NORMAL)
     setBatchEditNameVisible(false)
     setBatchEditNameMode('replace')
@@ -157,6 +206,8 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     setSetTemplateSaving(false)
     setSaveTemplateVisible(false)
     setTemplateSourceProductKey(null)
+    setSelectedPasteTarget(null)
+    editableCellRefs.current.clear()
     setTemplateForm.resetFields()
     saveTemplateForm.resetFields()
   }, [createEmptyProduct, form, saveTemplateForm, setTemplateForm])
@@ -408,6 +459,14 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     }))
   }, [])
 
+  const handleOpenBatchAdd = useCallback(() => {
+    setBatchAddType(ProductCreationType.NORMAL)
+    setBatchAddMode('append')
+    setBatchAddCount(5)
+    setBatchAddPrice(null)
+    setBatchAddVisible(true)
+  }, [])
+
   const handleBatchAdd = useCallback(
     (type: ProductCreationType, count: number, price?: number | null, mode: BatchAddMode = 'append') => {
       const nextState = applyBatchAddProducts({
@@ -423,6 +482,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       setProducts(nextState.products)
       setSelectedRowKeys(nextState.selectedRowKeys)
       setExpandedRowKeys(nextState.expandedRowKeys)
+      setSelectedPasteTarget(null)
       setBatchAddVisible(false)
     },
     [createEmptyProduct, expandedRowKeys, products, selectedRowKeys],
@@ -437,6 +497,9 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       setProducts(products.filter((item) => item.key !== key))
       setSelectedRowKeys((keys) => keys.filter((selectedKey) => selectedKey !== key))
       setExpandedRowKeys((keys) => keys.filter((expandedKey) => expandedKey !== key))
+      setSelectedPasteTarget((target) => (
+        target?.scope === 'subItem' && target.setKey === key ? null : target
+      ))
     },
     [products],
   )
@@ -464,62 +527,171 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
     )))
   }, [])
 
-  const parsePasteRows = useCallback((text: string) => text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.split('\t').map((cell) => cell.trim())), [])
-
-  const parsePrice = useCallback((value?: string) => {
-    if (!value) return undefined
-    const normalized = value.replace(/[$,\s]/g, '')
-    if (!normalized || Number.isNaN(Number(normalized))) return undefined
-    return Number(normalized)
+  const setEditableCellRef = useCallback((
+    rowKey: string,
+    field: BatchCreateEditableField,
+    cell: BatchCreateFocusableCell | null,
+    setKey?: string,
+  ) => {
+    const scope = setKey ? getSubItemGridScope(setKey) : PARENT_GRID_SCOPE
+    const cellKey = buildEditableCellKey(scope, rowKey, field)
+    if (cell) editableCellRefs.current.set(cellKey, cell)
+    else editableCellRefs.current.delete(cellKey)
   }, [])
 
-  const handleProductPaste = useCallback((event: React.ClipboardEvent<HTMLElement>, startKey: string) => {
-    const rows = parsePasteRows(event.clipboardData.getData('text'))
-    if (rows.length <= 1 && (rows[0]?.length || 0) <= 1) return
-    event.preventDefault()
-    const startIndex = products.findIndex((item) => item.key === startKey)
-    if (startIndex < 0) return
+  const focusEditableCell = useCallback((
+    scope: string,
+    rowKey: string,
+    field: BatchCreateEditableField,
+  ) => {
+    window.requestAnimationFrame(() => {
+      const cell = editableCellRefs.current.get(buildEditableCellKey(scope, rowKey, field))
+      if (!cell) return
 
-    setProducts((current) => current.map((item, index) => {
-      const row = rows[index - startIndex]
-      if (!row) return item
-      const isSinglePriceColumn = row.length === 1 && parsePrice(row[0]) !== undefined
-      return {
-        ...item,
-        // Excel 单列数字按零售价粘贴，多列按名称 + 零售价粘贴。
-        productName: isSinglePriceColumn ? item.productName : row[0] || item.productName,
-        privateLabelPrice: isSinglePriceColumn ? parsePrice(row[0]) : parsePrice(row[1]) ?? item.privateLabelPrice,
-      }
-    }))
-  }, [parsePasteRows, parsePrice, products])
+      const inputElement = cell.input
+        ?? (cell.nativeElement instanceof HTMLInputElement
+          ? cell.nativeElement
+          : cell.nativeElement?.querySelector<HTMLInputElement>('input'))
+      const scrollTarget = inputElement ?? cell.nativeElement
+      scrollTarget?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      cell.focus()
+      window.requestAnimationFrame(() => {
+        cell.select?.()
+        inputElement?.select()
+      })
+    })
+  }, [])
 
-  const handleSubItemPaste = useCallback((event: React.ClipboardEvent<HTMLElement>, setKey: string, startSubKey: string) => {
-    const rows = parsePasteRows(event.clipboardData.getData('text'))
-    if (rows.length <= 1 && (rows[0]?.length || 0) <= 1) return
+  const handleEditableCellKeyDown = useCallback((
+    event: React.KeyboardEvent<HTMLElement>,
+    rowKey: string,
+    field: BatchCreateEditableField,
+    setKey?: string,
+  ) => {
+    const direction = NAVIGATION_DIRECTION_BY_KEY[event.key]
+    if (!direction || event.nativeEvent.isComposing) return
+
+    // 方向键在录入表格中专用于切换单元格，边界处也保持当前输入框焦点。
     event.preventDefault()
-    setProducts((current) => current.map((item) => {
-      if (item.key !== setKey) return item
-      const startIndex = (item.subItems || []).findIndex((subItem) => subItem.key === startSubKey)
-      if (startIndex < 0) return item
-      return {
-        ...item,
-        subItems: (item.subItems || []).map((subItem, index) => {
-          const row = rows[index - startIndex]
-          if (!row) return subItem
-          const isSinglePriceColumn = row.length === 1 && parsePrice(row[0]) !== undefined
-          return {
-            ...subItem,
-            productName: isSinglePriceColumn ? subItem.productName : row[0] || subItem.productName,
-            privateLabelPrice: isSinglePriceColumn ? parsePrice(row[0]) : parsePrice(row[1]) ?? subItem.privateLabelPrice,
-          }
-        }),
-      }
-    }))
-  }, [parsePasteRows, parsePrice])
+    event.stopPropagation()
+
+    const navigationRows = setKey
+      ? (products.find((product) => product.key === setKey)?.subItems || []).map((subItem) => ({
+        rowKey: subItem.key,
+        fields: SUB_ITEM_EDITABLE_FIELDS,
+      }))
+      : products.map((product) => ({
+        rowKey: product.key,
+        fields: product.productType === ProductCreationType.SET
+          ? PARENT_SET_EDITABLE_FIELDS
+          : PARENT_COMMON_EDITABLE_FIELDS,
+      }))
+    const nextCell = getNextBatchCreateEditableCell({
+      rows: navigationRows,
+      current: { rowKey, field },
+      direction,
+    })
+    if (!nextCell) return
+
+    focusEditableCell(
+      setKey ? getSubItemGridScope(setKey) : PARENT_GRID_SCOPE,
+      nextCell.rowKey,
+      nextCell.field,
+    )
+  }, [focusEditableCell, products])
+
+  const reportPasteResult = useCallback((result: ReturnType<typeof applyParentColumnPaste>) => {
+    if (result.error === 'multiple_columns') {
+      message.warning(t('productCreation.pasteMultipleColumns', '一次只能粘贴一列 Excel 数据'))
+      return false
+    }
+    if (result.error === 'missing_target') {
+      setSelectedPasteTarget(null)
+      message.warning(t('productCreation.pasteTargetMissing', '粘贴目标已失效，请重新选择列'))
+      return false
+    }
+
+    setProducts(result.products)
+    if (result.appliedCount + result.clearedCount + result.addedCount > 0) {
+      message.success(t('productCreation.pasteResult', {
+        applied: result.appliedCount,
+        cleared: result.clearedCount,
+        added: result.addedCount,
+      }))
+    }
+    if (result.invalidCount > 0) {
+      message.warning(t('productCreation.pasteInvalidPrices', {
+        count: result.invalidCount,
+      }))
+    }
+    return true
+  }, [t])
+
+  const handleColumnPaste = useCallback((
+    event: React.ClipboardEvent<HTMLElement>,
+    target: BatchCreatePasteTarget,
+    startRowKey?: string,
+  ) => {
+    const clipboardText = event.clipboardData.getData('text')
+    if (!clipboardText) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedPasteTarget(target)
+    const result = target.scope === 'parent'
+      ? applyParentColumnPaste({
+        products,
+        startProductKey: startRowKey,
+        field: target.field,
+        clipboardText,
+        createProduct: createEmptyProduct,
+      })
+      : applySubItemColumnPaste({
+        products,
+        setKey: target.setKey,
+        startSubItemKey: startRowKey,
+        field: target.field,
+        clipboardText,
+      })
+    reportPasteResult(result)
+  }, [createEmptyProduct, products, reportPasteResult])
+
+  const renderPasteableColumnTitle = useCallback((
+    label: string,
+    target: BatchCreatePasteTarget,
+  ) => {
+    const selected = isSamePasteTarget(selectedPasteTarget, target)
+    const accessibleLabel = selected
+      ? t('productCreation.deselectPasteColumn', '取消选择“{{column}}”列', { column: label })
+      : t('productCreation.selectPasteColumn', '选择“{{column}}”列进行粘贴', { column: label })
+    return (
+      <button
+        type="button"
+        aria-label={accessibleLabel}
+        aria-pressed={selected}
+        title={accessibleLabel}
+        onClick={(event) => {
+          event.stopPropagation()
+          setSelectedPasteTarget((current) => (isSamePasteTarget(current, target) ? null : target))
+        }}
+        onPaste={(event) => handleColumnPaste(event, target)}
+        style={{
+          appearance: 'none',
+          border: `1px solid ${selected ? token.colorPrimaryBorder : 'transparent'}`,
+          borderRadius: token.borderRadiusSM,
+          background: selected ? token.colorPrimaryBg : 'transparent',
+          color: 'inherit',
+          cursor: 'copy',
+          font: 'inherit',
+          lineHeight: 'inherit',
+          margin: '-2px -6px',
+          padding: '2px 6px',
+        }}
+      >
+        {label}
+      </button>
+    )
+  }, [handleColumnPaste, selectedPasteTarget, t, token.borderRadiusSM, token.colorPrimaryBg, token.colorPrimaryBorder])
 
   const handleBatchEditName = useCallback(() => {
     if (!batchEditNameValue.trim()) {
@@ -654,25 +826,63 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       },
     },
     {
-      title: t('domesticProducts.productName', '商品名称'),
+      title: renderPasteableColumnTitle(
+        t('domesticProducts.productName', '商品名称'),
+        { scope: 'parent', field: 'productName' },
+      ),
       dataIndex: 'productName',
       key: 'productName',
       width: 280,
       render: (text, record) => (
         <Input
+          ref={(cell) => setEditableCellRef(record.key, 'productName', cell)}
           value={text}
           onChange={(e) => handleUpdateProduct(record.key, 'productName', e.target.value)}
-          onPaste={(event) => handleProductPaste(event, record.key)}
+          onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'productName')}
+          onPaste={(event) => handleColumnPaste(
+            event,
+            { scope: 'parent', field: 'productName' },
+            record.key,
+          )}
           placeholder={t('domesticProducts.productName', '商品名称')}
+          style={{
+            backgroundColor: isSamePasteTarget(selectedPasteTarget, { scope: 'parent', field: 'productName' })
+              ? token.colorPrimaryBg
+              : undefined,
+          }}
         />
       ),
     },
     {
-      title: t('productCreation.privateLabelPrice', '零售价'),
+      title: renderPasteableColumnTitle(
+        t('productCreation.privateLabelPrice', '零售价'),
+        { scope: 'parent', field: 'privateLabelPrice' },
+      ),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 130,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} onPaste={(event) => handleProductPaste(event, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => (
+        <InputNumber
+          ref={(cell) => setEditableCellRef(record.key, 'privateLabelPrice', cell)}
+          value={text}
+          onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)}
+          onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'privateLabelPrice')}
+          onPaste={(event) => handleColumnPaste(
+            event,
+            { scope: 'parent', field: 'privateLabelPrice' },
+            record.key,
+          )}
+          placeholder={t('productCreation.privateLabelPrice', '零售价')}
+          style={{
+            width: '100%',
+            backgroundColor: isSamePasteTarget(selectedPasteTarget, { scope: 'parent', field: 'privateLabelPrice' })
+              ? token.colorPrimaryBg
+              : undefined,
+          }}
+          min={0}
+          precision={2}
+        />
+      ),
     },
     {
       title: t('productCreation.createCount', '创建套数'),
@@ -680,7 +890,17 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       key: 'createCount',
       width: 120,
       render: (text, record) =>
-        record.productType === ProductCreationType.SET ? <InputNumber value={text ?? 1} onChange={(value) => handleUpdateProduct(record.key, 'createCount', normalizeCreateCount(value))} style={{ width: '100%' }} min={1} precision={0} /> : '-',
+        record.productType === ProductCreationType.SET ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(record.key, 'createCount', cell)}
+            value={text ?? 1}
+            onChange={(value) => handleUpdateProduct(record.key, 'createCount', normalizeCreateCount(value))}
+            onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'createCount')}
+            style={{ width: '100%' }}
+            min={1}
+            precision={0}
+          />
+        ) : '-',
     },
     {
       title: t('productCreation.setQuantity', '套装数量'),
@@ -688,7 +908,16 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       key: 'setQuantity',
       width: 110,
       render: (text, record) =>
-        record.productType === ProductCreationType.SET ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setQuantity', value)} style={{ width: '100%' }} min={1} /> : '-',
+        record.productType === ProductCreationType.SET ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(record.key, 'setQuantity', cell)}
+            value={text}
+            onChange={(value) => handleUpdateProduct(record.key, 'setQuantity', value)}
+            onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'setQuantity')}
+            style={{ width: '100%' }}
+            min={1}
+          />
+        ) : '-',
     },
     {
       title: t('productCreation.setPrice', '套装价格'),
@@ -696,7 +925,17 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       key: 'setPrice',
       width: 120,
       render: (text, record) =>
-        record.productType === ProductCreationType.SET ? <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'setPrice', value)} style={{ width: '100%' }} min={0} precision={2} /> : '-',
+        record.productType === ProductCreationType.SET ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(record.key, 'setPrice', cell)}
+            value={text}
+            onChange={(value) => handleUpdateProduct(record.key, 'setPrice', value)}
+            onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'setPrice')}
+            style={{ width: '100%' }}
+            min={0}
+            precision={2}
+          />
+        ) : '-',
     },
     {
       title: t('common.action', '操作'),
@@ -722,24 +961,62 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       render: (_, __, index) => index + 1,
     },
     {
-      title: t('domesticProducts.productName', '商品名称'),
+      title: renderPasteableColumnTitle(
+        t('domesticProducts.productName', '商品名称'),
+        { scope: 'subItem', setKey, field: 'productName' },
+      ),
       dataIndex: 'productName',
       key: 'productName',
       render: (text, record) => (
         <Input
+          ref={(cell) => setEditableCellRef(record.key, 'productName', cell, setKey)}
           value={text}
           onChange={(e) => handleUpdateSubItem(setKey, record.key, 'productName', e.target.value)}
-          onPaste={(event) => handleSubItemPaste(event, setKey, record.key)}
+          onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'productName', setKey)}
+          onPaste={(event) => handleColumnPaste(
+            event,
+            { scope: 'subItem', setKey, field: 'productName' },
+            record.key,
+          )}
           placeholder={t('domesticProducts.productName', '商品名称')}
+          style={{
+            backgroundColor: isSamePasteTarget(selectedPasteTarget, { scope: 'subItem', setKey, field: 'productName' })
+              ? token.colorPrimaryBg
+              : undefined,
+          }}
         />
       ),
     },
     {
-      title: t('productCreation.privateLabelPrice', '零售价'),
+      title: renderPasteableColumnTitle(
+        t('productCreation.privateLabelPrice', '零售价'),
+        { scope: 'subItem', setKey, field: 'privateLabelPrice' },
+      ),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 140,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateSubItem(setKey, record.key, 'privateLabelPrice', value)} onPaste={(event) => handleSubItemPaste(event, setKey, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => (
+        <InputNumber
+          ref={(cell) => setEditableCellRef(record.key, 'privateLabelPrice', cell, setKey)}
+          value={text}
+          onChange={(value) => handleUpdateSubItem(setKey, record.key, 'privateLabelPrice', value)}
+          onKeyDown={(event) => handleEditableCellKeyDown(event, record.key, 'privateLabelPrice', setKey)}
+          onPaste={(event) => handleColumnPaste(
+            event,
+            { scope: 'subItem', setKey, field: 'privateLabelPrice' },
+            record.key,
+          )}
+          placeholder={t('productCreation.privateLabelPrice', '零售价')}
+          style={{
+            width: '100%',
+            backgroundColor: isSamePasteTarget(selectedPasteTarget, { scope: 'subItem', setKey, field: 'privateLabelPrice' })
+              ? token.colorPrimaryBg
+              : undefined,
+          }}
+          min={0}
+          precision={2}
+        />
+      ),
     },
     {
       title: t('common.action', '操作'),
@@ -847,7 +1124,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                   }))}
               />
               <Button type="dashed" icon={<SettingOutlined />} onClick={handleOpenSetTemplateManager}>{t('productCreation.manageSetTemplates', '管理模板')}</Button>
-              <Button type="dashed" onClick={() => setBatchAddVisible(true)}>{t('productCreation.batchAdd', '批量添加')}</Button>
+              <Button type="dashed" onClick={handleOpenBatchAdd}>{t('productCreation.batchAdd', '批量添加')}</Button>
               <Button type="dashed" icon={<EditOutlined />} onClick={() => setBatchEditNameVisible(true)}>{t('productCreation.batchName', '批量命名')}</Button>
             </Space>
             <Modal title={t('productCreation.batchAdd', '批量添加')} open={batchAddVisible} onOk={() => { handleBatchAdd(batchAddType, batchAddCount, batchAddPrice, batchAddMode); setBatchAddVisible(false) }} onCancel={() => setBatchAddVisible(false)} okText={t('common.confirm', '确定')} cancelText={t('common.cancel', '取消')}>
@@ -862,7 +1139,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 </div>
                 <div>
                   {t('productCreation.uniformPrice', '统一零售价')}:
-                  <InputNumber min={0} precision={2} placeholder={t('productCreation.optional', '可选')} style={{ marginLeft: 8, width: 160 }} onChange={(v) => setBatchAddPrice(v)} />
+                  <InputNumber value={batchAddPrice} min={0} precision={2} placeholder={t('productCreation.optional', '可选')} style={{ marginLeft: 8, width: 160 }} onChange={(v) => setBatchAddPrice(v)} />
                 </div>
               </Space>
             </Modal>
@@ -900,6 +1177,15 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 </Form.Item>
               </Form>
             </Modal>
+            <Typography.Text
+              type="secondary"
+              style={{ display: 'block', marginBottom: 8, fontSize: 12 }}
+            >
+              {t(
+                'productCreation.pasteNavigationHint',
+                '点击“商品名称”或“零售价”列头后，可粘贴 Excel 单列；方向键可切换输入框',
+              )}
+            </Typography.Text>
             <Table
               columns={productColumns}
               dataSource={products}
@@ -909,7 +1195,16 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
               rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) }}
               expandable={{
                 expandedRowKeys,
-                onExpandedRowsChange: (keys) => setExpandedRowKeys([...keys]),
+                onExpandedRowsChange: (keys) => {
+                  const nextExpandedRowKeys = [...keys]
+                  setExpandedRowKeys(nextExpandedRowKeys)
+                  setSelectedPasteTarget((target) => (
+                    target?.scope === 'subItem'
+                    && !nextExpandedRowKeys.some((key) => String(key) === target.setKey)
+                      ? null
+                      : target
+                  ))
+                },
                 rowExpandable: (record) => record.productType === ProductCreationType.SET,
                 expandedRowRender: (record) => (
                   <Table

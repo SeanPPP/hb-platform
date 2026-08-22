@@ -9,6 +9,12 @@ import {
   normalizeCreateCount,
 } from './batchCreateRules'
 import type { DraftProductItem } from './batchCreateRules'
+import {
+  applyParentColumnPaste,
+  applySubItemColumnPaste,
+  getNextBatchCreateEditableCell,
+  parseBatchCreateClipboardColumn,
+} from './batchCreateGridRules'
 
 let keyIndex = 0
 const nextKey = (prefix: string) => `${prefix}-${keyIndex++}`
@@ -103,3 +109,177 @@ const previewItems = buildPreviewItems([
 assert.deepEqual(previewItems.map((item) => item.itemNumber), ['HB0001', 'HB0002', 'HB0003', 'HB0004', 'HB0005', 'HB0006'])
 assert.equal(previewItems[1].productName, '子项')
 assert.equal(previewItems[2].productName, '')
+
+const parsedColumn = parseBatchCreateClipboardColumn('第一行\r\n\r\n第三行\r\n')
+assert.deepEqual(parsedColumn, {
+  ok: true,
+  values: ['第一行', '', '第三行'],
+})
+assert.deepEqual(parseBatchCreateClipboardColumn('A\tB\nC\tD'), {
+  ok: false,
+  reason: 'multiple_columns',
+})
+
+const mixedParentProducts: DraftProductItem[] = [
+  {
+    key: 'normal-paste',
+    productName: '旧普通',
+    productType: ProductCreationType.NORMAL,
+    privateLabelPrice: 1,
+  },
+  {
+    key: 'set-paste',
+    productName: '旧套装',
+    productType: ProductCreationType.SET,
+    privateLabelPrice: 2,
+    createCount: 1,
+    setQuantity: 1,
+    subItems: [{ key: 'set-paste-sub', productName: '旧子项' }],
+  },
+]
+
+let pastedProductIndex = 0
+const parentNamePaste = applyParentColumnPaste({
+  products: mixedParentProducts,
+  field: 'productName',
+  clipboardText: '新普通\n新套装\n\n新增普通\n',
+  createProduct: (type, index) => createDraftProduct(type, index, undefined, (prefix) => `${prefix}-paste-${pastedProductIndex++}`),
+})
+
+assert.deepEqual(parentNamePaste.products.map((item) => item.productName), ['新普通', '新套装', '', '新增普通'])
+assert.deepEqual(parentNamePaste.products.map((item) => item.productType), [
+  ProductCreationType.NORMAL,
+  ProductCreationType.SET,
+  ProductCreationType.NORMAL,
+  ProductCreationType.NORMAL,
+])
+assert.equal(parentNamePaste.appliedCount, 3)
+assert.equal(parentNamePaste.clearedCount, 1)
+assert.equal(parentNamePaste.addedCount, 2)
+assert.equal(parentNamePaste.invalidCount, 0)
+
+const parentPricePaste = applyParentColumnPaste({
+  products: parentNamePaste.products,
+  startProductKey: 'set-paste',
+  field: 'privateLabelPrice',
+  clipboardText: '$1,234.50\n\n0\nabc\n-2',
+  createProduct: (type, index) => createDraftProduct(type, index, undefined, (prefix) => `${prefix}-price-${pastedProductIndex++}`),
+})
+
+assert.equal(parentPricePaste.products[1].privateLabelPrice, 1234.5)
+assert.equal(parentPricePaste.products[2].privateLabelPrice, undefined)
+assert.equal(parentPricePaste.products[3].privateLabelPrice, 0)
+assert.equal(parentPricePaste.products[4].privateLabelPrice, undefined)
+assert.equal(parentPricePaste.products[5].privateLabelPrice, undefined)
+assert.equal(parentPricePaste.appliedCount, 2)
+assert.equal(parentPricePaste.clearedCount, 1)
+assert.equal(parentPricePaste.addedCount, 2)
+assert.equal(parentPricePaste.invalidCount, 2)
+
+const invalidExistingPricePaste = applyParentColumnPaste({
+  products: [{
+    key: 'existing-price',
+    productType: ProductCreationType.NORMAL,
+    privateLabelPrice: 9.9,
+  }],
+  startProductKey: 'existing-price',
+  field: 'privateLabelPrice',
+  clipboardText: 'invalid',
+})
+assert.equal(invalidExistingPricePaste.products[0].privateLabelPrice, 9.9)
+assert.equal(invalidExistingPricePaste.invalidCount, 1)
+assert.equal(applyParentColumnPaste({
+  products: mixedParentProducts,
+  startProductKey: 'missing-product',
+  field: 'productName',
+  clipboardText: '不会写入',
+}).error, 'missing_target')
+
+const isolatedSets: DraftProductItem[] = [
+  {
+    key: 'set-a',
+    productType: ProductCreationType.SET,
+    setQuantity: 2,
+    subItems: [
+      { key: 'set-a-1', productName: 'A1' },
+      { key: 'set-a-2', productName: 'A2' },
+    ],
+  },
+  {
+    key: 'set-b',
+    productType: ProductCreationType.SET,
+    setQuantity: 1,
+    subItems: [{ key: 'set-b-1', productName: 'B1' }],
+  },
+]
+
+let pastedSubItemIndex = 0
+const subItemPaste = applySubItemColumnPaste({
+  products: isolatedSets,
+  setKey: 'set-a',
+  startSubItemKey: 'set-a-2',
+  field: 'productName',
+  clipboardText: '新A2\n\n新A4\n',
+  createSubItem: () => ({ key: `new-sub-${pastedSubItemIndex++}`, productName: '' }),
+})
+
+assert.deepEqual(subItemPaste.products[0].subItems?.map((item) => item.productName), ['A1', '新A2', '', '新A4'])
+assert.equal(subItemPaste.products[0].setQuantity, 4)
+assert.deepEqual(subItemPaste.products[1], isolatedSets[1])
+assert.equal(subItemPaste.appliedCount, 2)
+assert.equal(subItemPaste.clearedCount, 1)
+assert.equal(subItemPaste.addedCount, 2)
+assert.equal(subItemPaste.invalidCount, 0)
+
+const parentNavigationRows = [
+  { rowKey: 'normal-a', fields: ['productName', 'privateLabelPrice'] as const },
+  { rowKey: 'set-a', fields: ['productName', 'privateLabelPrice', 'createCount', 'setQuantity', 'setPrice'] as const },
+  { rowKey: 'normal-b', fields: ['productName', 'privateLabelPrice'] as const },
+  { rowKey: 'set-b', fields: ['productName', 'privateLabelPrice', 'createCount', 'setQuantity', 'setPrice'] as const },
+]
+
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'normal-a', field: 'productName' },
+  direction: 'right',
+}), { rowKey: 'normal-a', field: 'privateLabelPrice' })
+assert.equal(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'normal-a', field: 'privateLabelPrice' },
+  direction: 'right',
+}), undefined)
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'set-a', field: 'privateLabelPrice' },
+  direction: 'right',
+}), { rowKey: 'set-a', field: 'createCount' })
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'set-a', field: 'createCount' },
+  direction: 'down',
+}), { rowKey: 'set-b', field: 'createCount' })
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'set-b', field: 'setPrice' },
+  direction: 'up',
+}), { rowKey: 'set-a', field: 'setPrice' })
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: parentNavigationRows,
+  current: { rowKey: 'normal-a', field: 'privateLabelPrice' },
+  direction: 'down',
+}), { rowKey: 'set-a', field: 'privateLabelPrice' })
+
+const subItemNavigationRows = [
+  { rowKey: 'set-a-1', fields: ['productName', 'privateLabelPrice'] as const },
+  { rowKey: 'set-a-2', fields: ['productName', 'privateLabelPrice'] as const },
+]
+assert.deepEqual(getNextBatchCreateEditableCell({
+  rows: subItemNavigationRows,
+  current: { rowKey: 'set-a-1', field: 'privateLabelPrice' },
+  direction: 'down',
+}), { rowKey: 'set-a-2', field: 'privateLabelPrice' })
+assert.equal(getNextBatchCreateEditableCell({
+  rows: subItemNavigationRows,
+  current: { rowKey: 'set-a-2', field: 'privateLabelPrice' },
+  direction: 'down',
+}), undefined)

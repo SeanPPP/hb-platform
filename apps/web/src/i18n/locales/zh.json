@@ -5428,7 +5428,14 @@
     "updatePrefixFailed": "更新前缀失败",
     "deletePrefixSuccess": "删除前缀成功",
     "deletePrefixFailed": "删除前缀失败",
-    "viewRelatedProducts": "查看关联商品"
+    "viewRelatedProducts": "查看关联商品",
+    "pasteNavigationHint": "点击“商品名称”或“零售价”列头后，可粘贴 Excel 单列；方向键可切换输入框",
+    "pasteResult": "已粘贴 {{applied}} 个值，清空 {{cleared}} 格，自动新增 {{added}} 行",
+    "pasteInvalidPrices": "已跳过 {{count}} 个无效零售价，原值保持不变",
+    "pasteMultipleColumns": "一次只能粘贴一列 Excel 数据",
+    "pasteTargetMissing": "粘贴目标已失效，请重新选择列",
+    "selectPasteColumn": "选择“{{column}}”列进行粘贴",
+    "deselectPasteColumn": "取消选择“{{column}}”列"
   },
   "shopLocalSupplierInvoices": {
     "eyebrow": "澳洲本地采购",

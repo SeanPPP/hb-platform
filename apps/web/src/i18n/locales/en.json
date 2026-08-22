@@ -5428,7 +5428,14 @@
     "updatePrefixFailed": "更新前缀失败",
     "deletePrefixSuccess": "删除前缀成功",
     "deletePrefixFailed": "删除前缀失败",
-    "viewRelatedProducts": "查看关联商品"
+    "viewRelatedProducts": "查看关联商品",
+    "pasteNavigationHint": "Select the Product Name or RRP column header to paste one Excel column; use the arrow keys to move between inputs.",
+    "pasteResult": "Pasted {{applied}} values, cleared {{cleared}} cells, and added {{added}} rows.",
+    "pasteInvalidPrices": "Skipped {{count}} invalid RRP values; existing values were kept.",
+    "pasteMultipleColumns": "Paste one Excel column at a time.",
+    "pasteTargetMissing": "The paste target is no longer available. Select the column again.",
+    "selectPasteColumn": "Select the {{column}} column for pasting.",
+    "deselectPasteColumn": "Deselect the {{column}} column."
   },
   "shopLocalSupplierInvoices": {
     "eyebrow": "Australian Local Purchasing",
