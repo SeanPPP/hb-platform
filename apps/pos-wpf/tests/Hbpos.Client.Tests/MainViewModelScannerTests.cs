@@ -4787,7 +4787,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_when_queue_refresh_fails()
+    public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_when_pending_sync_refresh_fails()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-COMPLETED", "930UNKNOWNCOMPLETED"));
@@ -4862,11 +4862,16 @@ public sealed class MainViewModelScannerTests
         var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
         Assert.Equal(currentKey, center.SelectedAttempt?.Key);
 
+        syncQueue.ThrowOnRead = true;
         await center.RecoverCommand.ExecuteAsync(null);
 
         Assert.Equal(3, listCallCount);
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Same(payment, viewModel.CashPayment);
+        Assert.Equal(
+            "Payment completed. Do not take payment again; a follow-up action needs attention.",
+            viewModel.StatusMessage);
+        Assert.DoesNotContain("Could not check the selected transaction.", center.StatusMessage);
         Assert.False(cardSession.HasUnknownResult);
         Assert.Null(payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
         Assert.False(payment.IsPaymentInteractionLocked);
@@ -4877,7 +4882,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_recovery_center_order_completed_for_different_key_keeps_current_unknown_payment_locked()
+    public async Task Card_recovery_center_order_completed_for_different_key_keeps_current_unknown_payment_locked_when_pending_sync_refresh_fails()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-DIFFERENT", "930UNKNOWNDIFFERENT"));
@@ -4953,9 +4958,14 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(historicalKey, center.SelectedAttempt?.Key);
         center.ResolutionReason = "Bank settlement confirmed";
 
+        syncQueue.ThrowOnRead = true;
         await center.ConfirmPaidCommand.ExecuteAsync(null);
 
         Assert.Same(center, viewModel.CurrentScreen);
+        Assert.Equal(
+            "Payment completed. Do not take payment again; a follow-up action needs attention.",
+            viewModel.StatusMessage);
+        Assert.Equal("Historical payment confirmed.", center.StatusMessage);
         Assert.True(cardSession.HasUnknownResult);
         Assert.Equal(currentKey, payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
         Assert.True(payment.IsPaymentInteractionLocked);

@@ -2415,7 +2415,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             PosTerminal?.RefreshCart();
             CashPayment?.RefreshCart();
-            await RefreshPendingSyncAsync();
+            try
+            {
+                await RefreshPendingSyncAsync();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 金融操作已成功；同步队列刷新只是收尾，失败时必须保留完成警告而不能回写中心失败状态。
+                SetPaymentCompletedWarning();
+                try
+                {
+                    ConsoleLog.WriteError(
+                        "CardRecovery",
+                        "card recovery post-commit pending-sync refresh failed",
+                        null,
+                        ex);
+                }
+                catch (Exception logException) when (
+                    logException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    // 日志同步订阅失败不能再次把已完成的金融结果抛回异常中心。
+                }
+            }
             return;
         }
 
