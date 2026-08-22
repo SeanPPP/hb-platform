@@ -1747,7 +1747,8 @@ public sealed class CashPaymentWorkflowService(
             null,
             null,
             isRefund ? "Refund" : "Sale",
-            isRefund ? draft.OrderGuid : null,
+            // 销售同样固化订单身份；恢复时不能只信任可被损坏的 draft JSON。
+            draft.OrderGuid,
             SubmissionToken: saleSubmissionToken,
             RefundBusinessKey: refundBusinessKey);
 

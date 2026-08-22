@@ -1,4 +1,7 @@
 ﻿using System.IO;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
@@ -339,14 +342,6 @@ public sealed class SquarePaymentRecoveryService(
         evidence = normalized.Evidence;
         reference = normalized.PaymentReference;
 
-        if (decision == CardRecoverySupervisorDecision.ConfirmProcessed && draft is null)
-        {
-            return new CardRecoveryResolutionResult(
-                false,
-                "The Square payment draft is incomplete and cannot be completed.",
-                LockRetained: true);
-        }
-
         if (decision == CardRecoverySupervisorDecision.ConfirmNotProcessed)
         {
             if (draft is null)
@@ -354,6 +349,22 @@ public sealed class SquarePaymentRecoveryService(
                 return new CardRecoveryResolutionResult(
                     false,
                     "The Square payment draft is invalid and cannot be restored.",
+                    LockRetained: true);
+            }
+
+            try
+            {
+                // “未付款”会重新开放原 attempt，必须在写主管决定前验证完整权威草稿。
+                _ = ValidateAndMaterializeDraft(attempt, draft);
+            }
+            catch (Exception ex) when (IsInvalidDraftException(ex))
+            {
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"not-paid authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardRecoveryResolutionResult(
+                    false,
+                    T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."),
                     LockRetained: true);
             }
 
@@ -427,9 +438,21 @@ public sealed class SquarePaymentRecoveryService(
         }
 
         // ConfirmProcessed：用持久化完整 draft 独立完成订单，绝不触碰当前活动新购物车。
+        if (draft is null)
+        {
+            var invalidDraft = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.notPaidDraftInvalid", "The Square payment draft is invalid and cannot be restored."));
+            return new CardRecoveryResolutionResult(
+                false,
+                invalidDraft.Message,
+                invalidDraft,
+                LockRetained: true);
+        }
+
         var completed = await CompleteVerifiedAttemptAsync(
             updatedAttempt,
-            draft!,
+            draft,
             updatedAttempt.PaymentId ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
             updatedAttempt.PaymentStatus ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
             cardBrand: null,
@@ -479,7 +502,7 @@ public sealed class SquarePaymentRecoveryService(
         try
         {
             // 在触碰活动购物车前物化并验证全部必需嵌套字段、快照和 tender 计算。
-            validatedDraft = ValidateAndMaterializeDraft(deserializedDraft);
+            validatedDraft = ValidateAndMaterializeDraft(attempt, deserializedDraft);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -935,7 +958,7 @@ public sealed class SquarePaymentRecoveryService(
 
             try
             {
-                draft = ValidateAndMaterializeDraft(draft).Draft;
+                draft = ValidateAndMaterializeDraft(attempt, draft).Draft;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1451,6 +1474,26 @@ public sealed class SquarePaymentRecoveryService(
                 "The unresolved Square refund no longer matches this terminal and cannot be changed.");
         }
 
+        if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
+        {
+            try
+            {
+                // 该决定会重新开放同一退款 attempt；草稿无效时不得先写决定或释放重试入口。
+                _ = ValidateAndMaterializeDraft(attempt, DeserializeDraft(attempt));
+            }
+            catch (Exception ex) when (IsInvalidDraftException(ex))
+            {
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"not-refunded authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardRefundSupervisorResolutionResult(
+                    false,
+                    T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                    RetryAllowed: false,
+                    LockRetained: true);
+            }
+        }
+
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildRefundSupervisorJournal(attempt, normalized, session, resolvedAt);
         var applied = await RunLocalStoreAsync(
@@ -1530,7 +1573,7 @@ public sealed class SquarePaymentRecoveryService(
         CardPaymentOrderDraft draft;
         try
         {
-            draft = ValidateAndMaterializeDraft(DeserializeDraft(attempt)).Draft;
+            draft = ValidateAndMaterializeDraft(attempt, DeserializeDraft(attempt)).Draft;
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
@@ -1721,7 +1764,7 @@ public sealed class SquarePaymentRecoveryService(
         ValidatedSquareRecoveryDraft validatedDraft;
         try
         {
-            validatedDraft = ValidateAndMaterializeDraft(DeserializeDraft(attempt));
+            validatedDraft = ValidateAndMaterializeDraft(attempt, DeserializeDraft(attempt));
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
@@ -1825,7 +1868,131 @@ public sealed class SquarePaymentRecoveryService(
         var validationCart = new PosCartService();
         validationCart.RestoreSnapshot(materializedDraft.CartSnapshot);
         var currentTenderTotal = currentTenders.Sum(tender => tender.Amount);
-        return new ValidatedSquareRecoveryDraft(materializedDraft, currentTenderTotal);
+        return new ValidatedSquareRecoveryDraft(
+            materializedDraft,
+            currentTenderTotal,
+            validationCart.ActualAmount);
+    }
+
+    private static ValidatedSquareRecoveryDraft ValidateAndMaterializeDraft(
+        LocalSquarePaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
+    {
+        var validated = ValidateAndMaterializeDraft(draft);
+        draft = validated.Draft;
+        var isRefund = string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase);
+        var isSale = string.Equals(attempt.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase);
+        if (!isRefund && !isSale)
+        {
+            throw new InvalidOperationException("Square attempt operation kind is invalid.");
+        }
+
+        var expectedTxnType = isRefund ? "R" : "P";
+        if (draft.OrderGuid == Guid.Empty ||
+            !MatchesIdentity(draft.Session.StoreCode, attempt.StoreCode) ||
+            !MatchesIdentity(draft.Session.DeviceCode, attempt.DeviceCode) ||
+            !MatchesIdentity(draft.Session.CashierId, attempt.CashierId) ||
+            !MatchesIdentity(draft.TxnType, expectedTxnType))
+        {
+            throw new InvalidOperationException("Square payment draft identity does not match its attempt.");
+        }
+
+        // 新记录都有 OperationGuid；旧销售记录允许为空，但一旦存在就必须与 draft 订单键一致。
+        if ((attempt.OperationGuid is not null && attempt.OperationGuid != draft.OrderGuid) ||
+            (isRefund && attempt.OperationGuid is null))
+        {
+            throw new InvalidOperationException("Square payment draft order identity does not match its attempt.");
+        }
+
+        var attemptAmount = RoundCurrency(attempt.Amount);
+        var cardAmount = RoundCurrency(draft.CardAmount);
+        var actualAmount = RoundCurrency(draft.ActualAmount);
+        var cartActualAmount = RoundCurrency(validated.CartActualAmount);
+        var expectedAmountCents = checked(decimal.ToInt64(decimal.Round(
+            attemptAmount * 100m,
+            0,
+            MidpointRounding.AwayFromZero)));
+        if (attemptAmount <= 0m ||
+            cardAmount != attemptAmount ||
+            attempt.AmountCents != expectedAmountCents ||
+            actualAmount != cartActualAmount)
+        {
+            throw new InvalidOperationException("Square payment draft amount does not match its attempt or cart snapshot.");
+        }
+
+        var currentTenders = draft.CurrentTenders;
+        var currentTenderTotal = RoundCurrency(validated.CurrentTenderTotal);
+        if (isSale)
+        {
+            if (actualAmount <= 0m || currentTenders.Any(tender => tender.Amount <= 0m))
+            {
+                throw new InvalidOperationException("Square sale draft contains invalid tender signs.");
+            }
+
+            var nonCashTotal = RoundCurrency(currentTenders
+                .Where(tender => tender.Method != PaymentMethodKind.Cash)
+                .Sum(tender => tender.Amount));
+            if (RoundCurrency(nonCashTotal + cardAmount) > actualAmount ||
+                RoundCurrency(currentTenderTotal + cardAmount) < actualAmount)
+            {
+                throw new InvalidOperationException("Square sale draft tender totals are inconsistent.");
+            }
+
+            return validated;
+        }
+
+        if (actualAmount >= 0m ||
+            string.IsNullOrWhiteSpace(draft.OriginalReference) ||
+            currentTenders.Any(tender => tender.Amount >= 0m) ||
+            RoundCurrency(currentTenderTotal - cardAmount) < actualAmount)
+        {
+            throw new InvalidOperationException("Square refund draft contains invalid amount or tender semantics.");
+        }
+
+        var nonCashRefundTotal = Math.Abs(RoundCurrency(currentTenders
+            .Where(tender => tender.Method != PaymentMethodKind.Cash)
+            .Sum(tender => tender.Amount)));
+        if (RoundCurrency(nonCashRefundTotal + cardAmount) > Math.Abs(actualAmount))
+        {
+            throw new InvalidOperationException("Square refund draft non-cash tenders exceed the return amount.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(attempt.RefundBusinessKey))
+        {
+            var expectedRefundBusinessKey = BuildRefundBusinessKey(attempt, draft);
+            if (!string.Equals(
+                    attempt.RefundBusinessKey.Trim(),
+                    expectedRefundBusinessKey,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Square refund business identity does not match its draft.");
+            }
+        }
+
+        return validated;
+    }
+
+    private static bool MatchesIdentity(string? left, string? right) =>
+        string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static decimal RoundCurrency(decimal amount) =>
+        decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+
+    private static string BuildRefundBusinessKey(
+        LocalSquarePaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "SQUARE",
+            attempt.Environment.Trim().ToUpperInvariant(),
+            attempt.StoreCode.Trim().ToUpperInvariant(),
+            attempt.DeviceCode.Trim().ToUpperInvariant(),
+            draft.OriginalReference!.Trim().ToUpperInvariant(),
+            attempt.AmountCents.ToString(CultureInfo.InvariantCulture),
+            attempt.Currency.Trim().ToUpperInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
     private static bool IsInvalidDraftException(Exception exception) =>
@@ -1837,7 +2004,8 @@ public sealed class SquarePaymentRecoveryService(
 
     private sealed record ValidatedSquareRecoveryDraft(
         CardPaymentOrderDraft Draft,
-        decimal CurrentTenderTotal);
+        decimal CurrentTenderTotal,
+        decimal CartActualAmount);
 
     private static bool IsApprovedTenderPartial(
         CardPaymentOrderDraft draft,
@@ -1864,7 +2032,7 @@ public sealed class SquarePaymentRecoveryService(
         PaymentCheckoutResult checkoutResult;
         try
         {
-            draft = ValidateAndMaterializeDraft(draft).Draft;
+            draft = ValidateAndMaterializeDraft(attempt, draft).Draft;
             var recoveryCart = new PosCartService();
             recoveryCart.RestoreSnapshot(draft.CartSnapshot);
             var cardTender = new PaymentTender(

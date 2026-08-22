@@ -1511,6 +1511,40 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("CURRENT-SKU", Assert.Single(currentCart.Lines).ProductCode);
     }
 
+    [Fact]
+    public async Task RecoverAttemptAsync_square_authoritative_draft_mismatch_for_verified_refund_keeps_fact_and_rejects_order()
+    {
+        const string refundId = "REFUND-VERIFIED-AUTHORITY-MISMATCH";
+        var mismatch = CreateMismatchedSquareRefundDraft("OperationGuid");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: refundId,
+            paymentStatus: "COMPLETED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = mismatch.OperationGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-AUTHORITY-MISMATCH",
+            RefundBusinessKey = mismatch.RefundBusinessKey,
+            OrderDraftJson = JsonSerializer.Serialize(mismatch.Draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal(refundId, attempts.PaymentId);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.True(cart.IsEmpty);
+    }
+
     [Theory]
     [InlineData(null, "COMPLETED")]
     [InlineData("REFUND-VERIFIED-MISSING-EVIDENCE", null)]
@@ -1891,6 +1925,106 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("****1111", transaction.MaskedCardNumber);
         Assert.Equal("68aLBM", transaction.AuthCode);
         Assert.Equal("COMPLETED", transaction.ResponseText);
+    }
+
+    [Theory]
+    [InlineData("CardAmount")]
+    [InlineData("OrderGuid")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    public async Task RecoverLatestAsync_square_authoritative_draft_mismatch_after_automatic_verification_keeps_fact_and_rejects_order(
+        string mismatch)
+    {
+        var draft = CreateMismatchedSquareSaleDraft(mismatch);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-AUTHORITY-AUTO") with
+        {
+            OperationGuid = CreateOrderGuid(),
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-AUTHORITY-AUTO",
+                "COMPLETED",
+                1000,
+                "AUD",
+                ["PAYMENT-AUTHORITY-AUTO"],
+                null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-AUTHORITY-AUTO",
+                "COMPLETED",
+                1000,
+                "AUD")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal("PAYMENT-AUTHORITY-AUTO", attempts.PaymentId);
+        Assert.Equal("COMPLETED", attempts.PaymentStatus);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Theory]
+    [InlineData("CardAmount")]
+    [InlineData("OrderGuid")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    public async Task ResolveAttemptAsync_square_authoritative_draft_mismatch_after_confirm_processed_keeps_fact_and_rejects_order(
+        string mismatch)
+    {
+        var draft = CreateMismatchedSquareSaleDraft(mismatch);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-AUTHORITY-SUPERVISOR") with
+        {
+            OperationGuid = CreateOrderGuid(),
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(
+            attempts,
+            orders,
+            new FakeSquareTerminalPaymentClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmProcessed,
+            "Matched Square settlement",
+            "Square payment details were reconciled",
+            "PAYMENT-AUTHORITY-SUPERVISOR",
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(1, attempts.ResolvePaymentCount);
+        Assert.Equal(CardRecoverySupervisorDecision.ConfirmProcessed, attempts.LastPaymentResolution?.Decision);
+        Assert.NotNull(attempts.LastPaymentJournal);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal("PAYMENT-AUTHORITY-SUPERVISOR", attempts.PaymentId);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, attempts.ResponseCode);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
     }
 
     [Fact]
@@ -4534,6 +4668,123 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
     }
 
+    [Theory]
+    [InlineData("OrderGuid")]
+    [InlineData("OperationGuid")]
+    [InlineData("OperationGuidNull")]
+    [InlineData("CardAmount")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    [InlineData("RefundBusinessKey")]
+    [InlineData("PositiveTender")]
+    [InlineData("CashOverRefund")]
+    [InlineData("ActualAmount")]
+    public async Task ResolveRefundAsync_square_authoritative_draft_mismatch_for_confirm_not_refunded_fails_before_decision(
+        string mismatchKind)
+    {
+        var mismatch = CreateMismatchedSquareRefundDraft(mismatchKind);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND-AUTHORITY-NOT-REFUNDED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = mismatch.OperationGuid,
+            RefundBusinessKey = mismatch.RefundBusinessKey,
+            OrderDraftJson = JsonSerializer.Serialize(mismatch.Draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(
+            attempts,
+            orders,
+            new FakeSquareTerminalPaymentClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Square,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked Square settlement",
+                Evidence: "No matching refund exists"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Null(result.RecoveryResult);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.Null(attempts.LastRefundResolution);
+        Assert.Null(attempts.LastRefundJournal);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, attempts.Status);
+        Assert.Equal("CHECKOUT-REFUND-AUTHORITY-NOT-REFUNDED", attempts.CheckoutId);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Theory]
+    [InlineData("OrderGuid")]
+    [InlineData("OperationGuid")]
+    [InlineData("OperationGuidNull")]
+    [InlineData("CardAmount")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    [InlineData("RefundBusinessKey")]
+    [InlineData("PositiveTender")]
+    [InlineData("CashOverRefund")]
+    [InlineData("ActualAmount")]
+    public async Task ResolveRefundAsync_square_authoritative_draft_mismatch_for_confirm_refunded_keeps_decision_and_rejects_recovery(
+        string mismatchKind)
+    {
+        var mismatch = CreateMismatchedSquareRefundDraft(mismatchKind);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND-AUTHORITY-REFUNDED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = mismatch.OperationGuid,
+            RefundBusinessKey = mismatch.RefundBusinessKey,
+            OrderDraftJson = JsonSerializer.Serialize(mismatch.Draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(
+            attempts,
+            orders,
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Square,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched Square settlement",
+                RefundReference: "SQ-REFUND-AUTHORITY-CONFIRMED"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Contains("Do not refund again", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, attempts.ResolveRefundCount);
+        Assert.Equal(CardRefundSupervisorDecision.ConfirmRefunded, attempts.LastRefundResolution?.Decision);
+        Assert.NotNull(attempts.LastRefundJournal);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, attempts.ResponseCode);
+        Assert.Equal("SQ-REFUND-AUTHORITY-CONFIRMED", attempts.PaymentId);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+    }
+
     [Fact]
     public async Task ResolveRefundAsync_square_partial_refund_does_not_replace_nonempty_current_cart()
     {
@@ -4544,6 +4795,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var attempts = new FakeSquarePaymentAttemptRepository(attempt);
@@ -4582,6 +4835,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var attempts = new FakeSquarePaymentAttemptRepository(attempt);
@@ -4609,6 +4864,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(result!.Succeeded);
         Assert.True(result.LockRetained);
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(1, attempts.ResolveRefundCount);
         Assert.True(cart.IsEmpty);
     }
 
@@ -4622,6 +4878,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var attempts = new FakeSquarePaymentAttemptRepository(attempt);
@@ -4650,6 +4908,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(result!.Succeeded);
         Assert.True(result.LockRetained);
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(1, attempts.ResolveRefundCount);
         Assert.True(cart.IsEmpty);
     }
 
@@ -4666,6 +4925,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var service = CreateSquareService(
@@ -4714,6 +4975,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var service = CreateSquareService(
@@ -4754,6 +5017,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
+            Amount = 5m,
+            AmountCents = 500,
             OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
         };
         var attempts = new FakeSquarePaymentAttemptRepository(attempt);
@@ -4898,7 +5163,8 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(result!.Succeeded);
         Assert.False(result.RetryAllowed);
         Assert.True(result.LockRetained);
-        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Null(result.RecoveryResult);
+        Assert.Equal(0, attempts.ResolveRefundCount);
         Assert.True(cart.IsEmpty);
     }
 
@@ -5036,7 +5302,8 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(result!.Succeeded);
         Assert.False(result.RetryAllowed);
         Assert.True(result.LockRetained);
-        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Null(result.RecoveryResult);
+        Assert.Equal(0, attempts.ResolveRefundCount);
         Assert.True(cart.IsEmpty);
     }
 
@@ -5360,6 +5627,21 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
     }
 
+    private static CardPaymentOrderDraft CreateMismatchedSquareSaleDraft(string mismatchKind)
+    {
+        var draft = CreateDraft();
+        return mismatchKind switch
+        {
+            "CardAmount" => CreateDraft(actualAmount: 9m, cardAmount: 9m),
+            "OrderGuid" => draft with { OrderGuid = Guid.Parse("88888888-7777-6666-5555-444444444444") },
+            "StoreCode" => draft with { Session = draft.Session with { StoreCode = "S999" } },
+            "DeviceCode" => draft with { Session = draft.Session with { DeviceCode = "POS-99" } },
+            "CashierId" => draft with { Session = draft.Session with { CashierId = "C999" } },
+            "TxnType" => draft with { TxnType = "R" },
+            _ => throw new ArgumentOutOfRangeException(nameof(mismatchKind), mismatchKind, null)
+        };
+    }
+
     private static CardPaymentOrderDraft CreateSemanticallyInvalidDraft()
     {
         var draft = CreateDraft();
@@ -5431,6 +5713,82 @@ public sealed class CardPaymentRecoveryServiceTests
             "R",
             originalReference,
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
+    }
+
+    private static (CardPaymentOrderDraft Draft, Guid? OperationGuid, string RefundBusinessKey)
+        CreateMismatchedSquareRefundDraft(string mismatchKind)
+    {
+        var authoritativeDraft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var draft = authoritativeDraft;
+        Guid? operationGuid = authoritativeDraft.OrderGuid;
+        var refundBusinessKey = BuildSquareRefundBusinessKey(authoritativeDraft);
+
+        switch (mismatchKind)
+        {
+            case "OrderGuid":
+                draft = draft with { OrderGuid = Guid.Parse("99999999-8888-7777-6666-555555555555") };
+                break;
+            case "OperationGuid":
+                operationGuid = Guid.Parse("aaaaaaaa-9999-8888-7777-666666666666");
+                break;
+            case "OperationGuidNull":
+                operationGuid = null;
+                break;
+            case "CardAmount":
+                draft = draft with { CardAmount = 9m };
+                break;
+            case "StoreCode":
+                draft = draft with { Session = draft.Session with { StoreCode = "S999" } };
+                break;
+            case "DeviceCode":
+                draft = draft with { Session = draft.Session with { DeviceCode = "POS-99" } };
+                break;
+            case "CashierId":
+                draft = draft with { Session = draft.Session with { CashierId = "C999" } };
+                break;
+            case "TxnType":
+                draft = draft with { TxnType = "P" };
+                break;
+            case "RefundBusinessKey":
+                refundBusinessKey = "MISMATCHED-SQUARE-REFUND-BUSINESS-KEY";
+                break;
+            case "PositiveTender":
+                draft = draft with
+                {
+                    CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, 1m)]
+                };
+                break;
+            case "CashOverRefund":
+                draft = draft with
+                {
+                    CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, -1m)]
+                };
+                break;
+            case "ActualAmount":
+                draft = draft with { ActualAmount = -9m };
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mismatchKind), mismatchKind, null);
+        }
+
+        return (draft, operationGuid, refundBusinessKey);
+    }
+
+    private static string BuildSquareRefundBusinessKey(CardPaymentOrderDraft draft)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "SQUARE",
+            "SANDBOX",
+            draft.Session.StoreCode.Trim().ToUpperInvariant(),
+            draft.Session.DeviceCode.Trim().ToUpperInvariant(),
+            draft.OriginalReference!.Trim().ToUpperInvariant(),
+            decimal.ToInt64(decimal.Round(draft.CardAmount * 100m, 0, MidpointRounding.AwayFromZero))
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "AUD");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
     }
 
     private static string BuildLinklyRefundBusinessKey(
@@ -6009,6 +6367,18 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public int TryTerminalizeNotPaidCount { get; private set; }
 
+        public int ResolvePaymentCount { get; private set; }
+
+        public SquarePaymentResolution? LastPaymentResolution { get; private set; }
+
+        public LocalFinancialSupervisorResolution? LastPaymentJournal { get; private set; }
+
+        public int ResolveRefundCount { get; private set; }
+
+        public CardRefundAttemptResolution? LastRefundResolution { get; private set; }
+
+        public LocalFinancialSupervisorResolution? LastRefundJournal { get; private set; }
+
         public ManualResetEventSlim? GetLatestEntered { get; init; }
 
         public ManualResetEventSlim? GetLatestRelease { get; init; }
@@ -6260,6 +6630,64 @@ public sealed class CardPaymentRecoveryServiceTests
             return Task.FromResult(current);
         }
 
+        public Task<bool> ResolvePaymentWithJournalAsync(
+            SquarePaymentResolution resolution,
+            LocalFinancialSupervisorResolution journal,
+            CancellationToken cancellationToken = default)
+        {
+            ResolvePaymentCount++;
+            LastPaymentResolution = resolution;
+            LastPaymentJournal = journal;
+            if (_attempt is null ||
+                _attempt.OperationKind != "Sale" ||
+                _attempt.Status != resolution.ExpectedStatus ||
+                _attempt.UpdatedAt != resolution.ExpectedUpdatedAt ||
+                _attempt.ResponseCode is ActiveSessionSupervisorResolutionCodes.ConfirmedPaid or
+                    ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid)
+            {
+                return Task.FromResult(false);
+            }
+
+            _attempt = resolution.Decision switch
+            {
+                CardRecoverySupervisorDecision.ConfirmProcessed => _attempt with
+                {
+                    Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+                    PaymentId = resolution.PaymentReference ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                    PaymentStatus = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                    ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                    ResponseText = resolution.Reason,
+                    CompletedAt = resolution.ResolvedAt,
+                    ResolvedAt = resolution.ResolvedAt,
+                    UpdatedAt = resolution.ResolvedAt
+                },
+                CardRecoverySupervisorDecision.ConfirmNotProcessed => _attempt with
+                {
+                    Status = LocalSquarePaymentAttemptStatus.Pending,
+                    CheckoutId = null,
+                    CheckoutStatus = null,
+                    CancelReason = null,
+                    PaymentId = null,
+                    PaymentStatus = null,
+                    ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                    ResponseText = resolution.Reason,
+                    CompletedAt = null,
+                    OrderCompletedAt = null,
+                    ResolvedAt = null,
+                    UpdatedAt = resolution.ResolvedAt
+                },
+                _ => _attempt with
+                {
+                    Status = LocalSquarePaymentAttemptStatus.Recovering,
+                    ResponseCode = ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+                    ResponseText = resolution.Reason,
+                    UpdatedAt = resolution.ResolvedAt
+                }
+            };
+            Status = _attempt.Status;
+            return Task.FromResult(true);
+        }
+
         public Task<bool> TryTerminalizeNotPaidAsync(
             Guid attemptGuid,
             LocalSquarePaymentAttemptStatus expectedStatus,
@@ -6330,6 +6758,8 @@ public sealed class CardPaymentRecoveryServiceTests
             CardRefundAttemptResolution resolution,
             CancellationToken cancellationToken = default)
         {
+            ResolveRefundCount++;
+            LastRefundResolution = resolution;
             if (_attempt is null ||
                 _attempt.OperationKind != "Refund" ||
                 _attempt.ResponseCode is CardRefundSupervisorResolutionCodes.ConfirmedRefunded or
@@ -6376,6 +6806,15 @@ public sealed class CardPaymentRecoveryServiceTests
             };
             Status = _attempt.Status;
             return Task.FromResult(true);
+        }
+
+        public Task<bool> ResolveRefundWithJournalAsync(
+            CardRefundAttemptResolution resolution,
+            LocalFinancialSupervisorResolution journal,
+            CancellationToken cancellationToken = default)
+        {
+            LastRefundJournal = journal;
+            return ResolveRefundAsync(resolution, cancellationToken);
         }
     }
 

@@ -1689,7 +1689,8 @@ public sealed class CashPaymentWorkflowServiceTests
         var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(
             savedAttempt.OrderDraftJson,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        Assert.Equal(draft!.OrderGuid, completion.Order.OrderGuid);
+        Assert.Equal(draft!.OrderGuid, savedAttempt.OperationGuid);
+        Assert.Equal(draft.OrderGuid, completion.Order.OrderGuid);
         Assert.Equal("SQ:payment-1", completion.Order.Payments.Single().Reference);
     }
 
