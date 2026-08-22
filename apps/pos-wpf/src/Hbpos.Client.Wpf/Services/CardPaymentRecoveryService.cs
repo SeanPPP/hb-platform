@@ -1561,41 +1561,74 @@ public sealed class CardPaymentRecoveryService(
             CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode));
         if (confirmedNotPaid)
         {
-            var restoredDraft = false;
-            if (draft is not null)
+            var restoreStarted = false;
+            try
             {
-                if (!cart.IsEmpty)
+                if (draft is not null)
                 {
-                    return BuildUnresolvedActiveSessionResult(
-                        attempt,
-                        T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."));
+                    if (!cart.IsEmpty)
+                    {
+                        return BuildUnresolvedActiveSessionResult(
+                            attempt,
+                            T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."));
+                    }
+
+                    // RestoreSnapshot 会先写入内部行再通知订阅者，必须在调用前取得回滚所有权。
+                    restoreStarted = true;
+                    cart.RestoreSnapshot(draft.CartSnapshot);
                 }
 
-                cart.RestoreSnapshot(draft.CartSnapshot);
-                restoredDraft = true;
-            }
+                if (!await CompleteSupervisorAcknowledgeAsync(settings, attempt, mode, cancellationToken))
+                {
+                    if (restoreStarted)
+                    {
+                        try
+                        {
+                            // acknowledge 或本地标记失败时，只撤销本次从空购物车恢复的旧快照。
+                            cart.Clear();
+                        }
+                        catch (Exception ex)
+                        {
+                            // Clear 先清内部状态再通知订阅者；通知异常不能遮蔽异常记录仍开放的结果。
+                            ConsoleLog.Write(
+                                "CardRecovery",
+                                $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                        }
+                    }
 
-            if (!await CompleteSupervisorAcknowledgeAsync(settings, attempt, mode, cancellationToken))
+                    return BuildUnresolvedActiveSessionResult(
+                        attempt,
+                        T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."));
+                }
+            }
+            catch (Exception ex)
             {
-                if (restoredDraft)
+                if (restoreStarted)
                 {
                     try
                     {
-                        // acknowledge 或本地标记失败时，只撤销本次从空购物车恢复的旧快照。
+                        // 恢复通知或 acknowledge 抛异常时也必须撤销本次旧快照。
                         cart.Clear();
                     }
-                    catch (Exception ex)
+                    catch (Exception rollbackException)
                     {
-                        // Clear 先清内部状态再通知订阅者；通知异常不能遮蔽异常记录仍开放的结果。
                         ConsoleLog.Write(
                             "CardRecovery",
-                            $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                            $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
                     }
                 }
 
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                ConsoleLog.Write(
+                    "CardRecovery",
+                    $"supervisor not-paid finalize failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return BuildUnresolvedActiveSessionResult(
                     attempt,
-                    T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."));
+                    T("cardRecovery.linkly.supervisorNotPaidFinalizeFailed", "The previous Linkly result remains unresolved because POS could not restore or clear it safely. Run recovery again before charging."));
             }
 
             return new CardPaymentRecoveryResult(
@@ -1791,7 +1824,38 @@ public sealed class CardPaymentRecoveryService(
                     DialogDetails: dialogDetails);
             }
 
-            cart.RestoreSnapshot(draft.CartSnapshot);
+            try
+            {
+                cart.RestoreSnapshot(draft.CartSnapshot);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    cart.Clear();
+                }
+                catch (Exception rollbackException)
+                {
+                    // Clear 先清内部状态再通知订阅者，二次通知异常不能留下可重复退款的行。
+                    ConsoleLog.Write(
+                        "CardRecovery",
+                        $"confirmed partial refund cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
+                }
+
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                ConsoleLog.Write(
+                    "CardRecovery",
+                    $"confirmed partial refund cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.refund.confirmedRestoreFailed", "The confirmed refund could not be restored to the current cart. Run recovery again."),
+                    DialogDetails: dialogDetails);
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
@@ -1881,7 +1945,33 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var draft = DeserializeDraft(attempt);
-        cart.RestoreSnapshot(draft.CartSnapshot);
+        try
+        {
+            cart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                cart.Clear();
+            }
+            catch (Exception rollbackException)
+            {
+                // Clear 先清内部状态再通知订阅者，二次通知异常不能留下可重复退款的行。
+                ConsoleLog.Write(
+                    "CardRecovery",
+                    $"not-refunded retry cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
+            }
+
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"not-refunded retry cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.retryRestoreFailed", "The original return could not be restored to the current cart. Run recovery again."),
+                DialogDetails: BuildDialogDetails(attempt));
+        }
+
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),
@@ -2665,6 +2755,7 @@ public sealed class CardPaymentRecoveryService(
 
     private static bool IsSupervisorResolvedPayment(LocalCardPaymentAttempt? attempt) =>
         attempt is not null &&
+        attempt.AcknowledgedAt is null &&
         (string.Equals(
              attempt.ResponseCode,
              ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
