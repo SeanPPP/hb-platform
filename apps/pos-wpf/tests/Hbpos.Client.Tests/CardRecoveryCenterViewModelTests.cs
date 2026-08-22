@@ -206,6 +206,130 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public async Task RecoverCommand_reports_result_when_refresh_status_notification_throws()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000011"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Recovered order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            RecoverResult = completed
+        };
+        var callbackCount = 0;
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (_, result) =>
+            {
+                callbackCount++;
+                Assert.Same(completed, result);
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        recovery.ListException = new InvalidOperationException("queue unavailable");
+        var throwOnce = true;
+        void ThrowFromStatusMessage(object? _, PropertyChangedEventArgs e)
+        {
+            if (throwOnce && e.PropertyName == nameof(CardRecoveryCenterViewModel.StatusMessage))
+            {
+                throwOnce = false;
+                throw new InvalidOperationException("status subscriber failed");
+            }
+        }
+
+        viewModel.PropertyChanged += ThrowFromStatusMessage;
+        try
+        {
+            var commandException = await Record.ExceptionAsync(
+                () => viewModel.RecoverCommand.ExecuteAsync(null));
+
+            Assert.Null(commandException);
+        }
+        finally
+        {
+            viewModel.PropertyChanged -= ThrowFromStatusMessage;
+        }
+
+        Assert.Equal(1, callbackCount);
+        Assert.Equal(1, recovery.RecoverCallCount);
+        Assert.Equal(2, recovery.ListOpenCallCount);
+        Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+        Assert.DoesNotContain("Could not check the selected transaction.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task ResolveCommand_reports_result_when_refresh_status_notification_throws()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("42000000-0000-0000-0000-000000000012"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Resolved order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            ResolveResult = new CardRecoveryResolutionResult(
+                true,
+                "Resolution saved",
+                completed)
+        };
+        var callbackCount = 0;
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (_, result) =>
+            {
+                callbackCount++;
+                Assert.Same(completed, result);
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        viewModel.ResolutionReason = "settlement checked";
+        recovery.ListException = new InvalidOperationException("queue unavailable");
+        var throwOnce = true;
+        void ThrowFromStatusMessage(object? _, PropertyChangedEventArgs e)
+        {
+            if (throwOnce && e.PropertyName == nameof(CardRecoveryCenterViewModel.StatusMessage))
+            {
+                throwOnce = false;
+                throw new InvalidOperationException("status subscriber failed");
+            }
+        }
+
+        viewModel.PropertyChanged += ThrowFromStatusMessage;
+        try
+        {
+            var commandException = await Record.ExceptionAsync(
+                () => viewModel.ConfirmPaidCommand.ExecuteAsync(null));
+
+            Assert.Null(commandException);
+        }
+        finally
+        {
+            viewModel.PropertyChanged -= ThrowFromStatusMessage;
+        }
+
+        Assert.Equal(1, callbackCount);
+        Assert.Equal(1, recovery.ResolveCallCount);
+        Assert.Equal(2, recovery.ListOpenCallCount);
+        Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+        Assert.DoesNotContain("Could not save the supervisor decision.", viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task RecoverCommand_reports_result_when_refresh_failure_logging_subscriber_throws()
     {
         var selected = CreateQueueItem(

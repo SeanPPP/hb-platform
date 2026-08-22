@@ -504,10 +504,9 @@ public sealed class SquarePaymentRecoveryService(
             // 在触碰活动购物车前物化并验证全部必需嵌套字段、快照和 tender 计算。
             validatedDraft = ValidateAndMaterializeDraft(attempt, deserializedDraft);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"not-paid draft snapshot invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -521,7 +520,7 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
             RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
@@ -529,8 +528,7 @@ public sealed class SquarePaymentRecoveryService(
                 throw;
             }
 
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"not-paid restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -549,10 +547,9 @@ public sealed class SquarePaymentRecoveryService(
                     CancellationToken.None),
                 CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"not-paid terminalize failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             terminated = false;
         }
@@ -579,11 +576,10 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.Clear();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
             // Clear 会先清空内部状态再通知订阅者；回滚通知即使抛 OCE 也不能遮蔽已完成的内部清空。
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"not-paid cart rollback notification failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
         }
     }
@@ -960,10 +956,9 @@ public sealed class SquarePaymentRecoveryService(
             {
                 draft = ValidateAndMaterializeDraft(attempt, draft).Draft;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
             {
-                ConsoleLog.Write(
-                    "SquareRecovery",
+                TryWriteRecoveryLog(
                     $"canceled checkout draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
@@ -986,10 +981,9 @@ public sealed class SquarePaymentRecoveryService(
                             CancellationToken.None),
                         CancellationToken.None);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
                 {
-                    ConsoleLog.Write(
-                        "SquareRecovery",
+                    TryWriteRecoveryLog(
                         $"canceled checkout claim failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                     return new CardPaymentRecoveryResult(
                         CardPaymentRecoveryOutcome.Unknown,
@@ -1022,7 +1016,7 @@ public sealed class SquarePaymentRecoveryService(
             {
                 cart.RestoreSnapshot(draft.CartSnapshot);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (IsNonFatalRecoveryException(ex))
             {
                 // claim 始终保持开放；真实购物车通知失败时只撤销本次快照，下一次恢复可重试。
                 RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
@@ -1031,8 +1025,7 @@ public sealed class SquarePaymentRecoveryService(
                     throw;
                 }
 
-                ConsoleLog.Write(
-                    "SquareRecovery",
+                TryWriteRecoveryLog(
                     $"canceled checkout cart restore failed with open claim attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
@@ -1051,11 +1044,10 @@ public sealed class SquarePaymentRecoveryService(
                         CancellationToken.None),
                     CancellationToken.None);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
             {
                 RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
-                ConsoleLog.Write(
-                    "SquareRecovery",
+                TryWriteRecoveryLog(
                     $"canceled checkout finalization failed with open claim attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
@@ -1633,7 +1625,7 @@ public sealed class SquarePaymentRecoveryService(
             {
                 cart.RestoreSnapshot(draft.CartSnapshot);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (IsNonFatalRecoveryException(ex))
             {
                 RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
                 if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
@@ -1641,8 +1633,7 @@ public sealed class SquarePaymentRecoveryService(
                     throw;
                 }
 
-                ConsoleLog.Write(
-                    "SquareRecovery",
+                TryWriteRecoveryLog(
                     $"confirmed partial refund cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
@@ -1708,10 +1699,9 @@ public sealed class SquarePaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"confirmed refund order save failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -1729,11 +1719,10 @@ public sealed class SquarePaymentRecoveryService(
                     CancellationToken.None),
                 CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
             hasPostCommitWarning = true;
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"confirmed refund order saved but attempt finalization failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
         }
 
@@ -1782,7 +1771,7 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
             RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
@@ -1790,8 +1779,7 @@ public sealed class SquarePaymentRecoveryService(
                 throw;
             }
 
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"not-refunded retry cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -2002,6 +1990,21 @@ public sealed class SquarePaymentRecoveryService(
             NullReferenceException or
             ArithmeticException;
 
+    private static bool IsNonFatalRecoveryException(Exception exception) =>
+        exception is not OutOfMemoryException and not StackOverflowException;
+
+    private static void TryWriteRecoveryLog(string message)
+    {
+        try
+        {
+            ConsoleLog.Write("SquareRecovery", message);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            // 诊断订阅者失败不能覆盖已经确定的金融恢复结果。
+        }
+    }
+
     private sealed record ValidatedSquareRecoveryDraft(
         CardPaymentOrderDraft Draft,
         decimal CurrentTenderTotal,
@@ -2063,10 +2066,9 @@ public sealed class SquarePaymentRecoveryService(
                 .Sum(tender => tender.Amount);
             checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"verified payment order rebuild failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -2100,10 +2102,9 @@ public sealed class SquarePaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"verified payment order save failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -2117,11 +2118,10 @@ public sealed class SquarePaymentRecoveryService(
                 () => attemptRepository.MarkOrderCompletedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, CancellationToken.None),
                 CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException && IsNonFatalRecoveryException(ex))
         {
             hasPostCommitWarning = true;
-            ConsoleLog.Write(
-                "SquareRecovery",
+            TryWriteRecoveryLog(
                 $"verified payment order saved but attempt finalization failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
         }
 

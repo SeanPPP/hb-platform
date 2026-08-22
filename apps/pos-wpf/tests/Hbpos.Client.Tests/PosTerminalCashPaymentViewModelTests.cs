@@ -20,6 +20,39 @@ namespace Hbpos.Client.Tests;
 public sealed class PosTerminalCashPaymentViewModelTests
 {
     [Fact]
+    public void Restoring_recovered_tenders_continues_after_collection_changed_subscriber_throws()
+    {
+        var viewModel = new PaymentViewModel(
+            new PosCartService(),
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            Session);
+        var tenders = new[]
+        {
+            new PaymentTender(PaymentMethodKind.Card, 5m, "ANZ:RECOVERED-1", IdempotencyKey: "CARD_ATTEMPT:RECOVERED-1"),
+            new PaymentTender(PaymentMethodKind.Cash, 2m, IdempotencyKey: "CASH_ATTEMPT:RECOVERED-2")
+        };
+
+        void ThrowFromCollectionChanged(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs __) =>
+            throw new InvalidOperationException("collection subscriber failed");
+
+        viewModel.PaymentTenders.CollectionChanged += ThrowFromCollectionChanged;
+        try
+        {
+            var exception = Record.Exception(() =>
+                viewModel.RestoreRecoveredPaymentTenders(tenders, "Recovered tenders."));
+
+            Assert.Null(exception);
+            Assert.Equal(tenders, viewModel.PaymentTenders);
+        }
+        finally
+        {
+            viewModel.PaymentTenders.CollectionChanged -= ThrowFromCollectionChanged;
+        }
+    }
+
+    [Fact]
     public async Task Pos_terminal_card_recovery_status_opens_center_and_displays_queue_count()
     {
         var opened = false;

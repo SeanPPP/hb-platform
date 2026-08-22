@@ -8,6 +8,7 @@ using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ConsoleLogGlobalStateTestCollection.Name)]
 public sealed class CardPaymentRecoveryServiceTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -445,7 +446,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var result = await service.RecoverLatestAsync(cart, Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
-        Assert.Equal(LocalCardPaymentAttemptStatus.RequiresReview, attempts.Status);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
         Assert.Equal(0, orders.SaveCount);
         Assert.Equal(0, backend.AcknowledgeCallCount);
         Assert.Empty(cart.Lines);
@@ -477,11 +478,96 @@ public sealed class CardPaymentRecoveryServiceTests
         var result = await service.RecoverLatestAsync(cart, Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
-        Assert.Equal(LocalCardPaymentAttemptStatus.RequiresReview, attempts.Status);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
         Assert.Single(cart.Lines);
         Assert.Equal("CURRENT-SKU", cart.Lines[0].ProductCode);
         Assert.Equal(1, orders.SaveCount);
         Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_semantically_invalid_snapshot_persists_approved_before_rebuild_and_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-BAD-SNAP",
+            txnRef: "TXN-BAD-SNAP",
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-BAD-SNAP",
+                txnRef: "TXN-BAD-SNAP",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = CreateCurrentCart();
+        var service = CreateService(attempts, orders, backend);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(cart.Lines).ProductCode);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_semantically_invalid_snapshot_persists_approved_before_rebuild_and_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "LOCAL-BAD-SNAP",
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:LOCAL-BAD-SNAP",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction("LOCAL-BAD-SNAP", "00", "APPROVED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "LOCAL-BAD-SNAP",
+            "00",
+            "APPROVED"));
+        var cart = CreateCurrentCart();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(cart.Lines).ProductCode);
     }
 
     [Fact]
@@ -512,6 +598,83 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
         Assert.Equal(0, orders.SaveCount);
         Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_persistence_and_log_failure_still_returns_unknown()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PERSIST-LOG-FAIL",
+            txnRef: "TXN-PERSIST-LOG-FAIL");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            UpdateOutcomeException = new InvalidOperationException("database unavailable")
+        };
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PERSIST-LOG-FAIL",
+                txnRef: "TXN-PERSIST-LOG-FAIL",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+        void ThrowFromPersistenceLog(string line)
+        {
+            if (line.Contains("approved outcome persistence failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromPersistenceLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverLatestAsync(new PosCartService(), Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromPersistenceLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_persistence_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PERSIST-OOM",
+            txnRef: "TXN-PERSIST-OOM");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            UpdateOutcomeException = new OutOfMemoryException("fatal persistence failure")
+        };
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PERSIST-OOM",
+                txnRef: "TXN-PERSIST-OOM",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(new PosCartService(), Session));
     }
 
     [Fact]
@@ -733,12 +896,230 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_null_txn_type_persists_approved_before_draft_materialization()
+    {
+        var draft = CreateDraft() with { TxnType = null! };
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "LOCAL-NULL-TXN-TYPE",
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft,
+            amount: 10m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:LOCAL-NULL-TXN-TYPE",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction("LOCAL-NULL-TXN-TYPE", "00", "APPROVED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "LOCAL-NULL-TXN-TYPE",
+            "TOP-LEVEL-CODE",
+            "TOP-LEVEL-TEXT"));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            new FakeLinklyBackendTerminalClient(),
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal("00", attempts.ResponseCode);
+        Assert.Equal("APPROVED", attempts.ResponseText);
+        Assert.Equal("ANZ:LOCAL-NULL-TXN-TYPE", attempts.PaymentReference);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_invalid_second_line_leaves_real_cart_empty()
+    {
+        var draft = CreateSemanticallyInvalidDraft() with { CardAmount = 5m };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-BAD-SNAPSHOT",
+            txnRef: "TXN-PARTIAL-BAD-SNAPSHOT",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-BAD-SNAPSHOT",
+                txnRef: "TXN-PARTIAL-BAD-SNAPSHOT",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_cart_changed_failure_keeps_complete_cart_and_tenders()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var firstLine = Assert.Single(draft.CartSnapshot.Lines);
+        draft = draft with
+        {
+            CartSnapshot = new PosCartSnapshot(
+            [
+                firstLine,
+                firstLine with { ProductCode = "SKU-SECOND", LookupCode = "930020", ItemNumber = "ITEM-20" }
+            ])
+        };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-NOTIFY",
+            txnRef: "TXN-PARTIAL-NOTIFY",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-NOTIFY",
+                txnRef: "TXN-PARTIAL-NOTIFY",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
+        var service = CreateService(attempts, orders, backend);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.Equal(2, cart.Lines.Count);
+        Assert.Contains(cart.Lines, line => line.ProductCode == "SKU-10");
+        Assert.Contains(cart.Lines, line => line.ProductCode == "SKU-SECOND");
+        var restoredTender = Assert.Single(result.RestoredTenders!);
+        Assert.Equal(PaymentMethodKind.Card, restoredTender.Method);
+        Assert.Equal(5m, restoredTender.Amount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_rebuild_log_subscriber_failure_still_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REBUILD-LOG-FAIL",
+            txnRef: "TXN-REBUILD-LOG-FAIL",
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-REBUILD-LOG-FAIL",
+                txnRef: "TXN-REBUILD-LOG-FAIL",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+        void ThrowFromApprovedRebuildLog(string line)
+        {
+            if (line.Contains("recover approved draft rebuild failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromApprovedRebuildLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverLatestAsync(new PosCartService(), Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromApprovedRebuildLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_cart_changed_out_of_memory_is_rethrown()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-OOM",
+            txnRef: "TXN-PARTIAL-OOM",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-OOM",
+                txnRef: "TXN-PARTIAL-OOM",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(() => service.RecoverLatestAsync(cart, Session));
+
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_local_ip_get_last_declined_restores_draft_without_backend_acknowledgement()
     {
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 2m);
+        var draft = CreateDraft(cardAmount: 8m, currentTenders: [existingTender]);
         var attempt = CreateAttempt(
             sessionId: null,
             txnRef: "LOCAL-TXN-DECLINED",
-            connectionMode: LinklyConnectionMode.LocalIp);
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft,
+            amount: 8m);
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient();
@@ -746,7 +1127,7 @@ public sealed class CardPaymentRecoveryServiceTests
             false,
             "ANZ:LOCAL-TXN-DECLINED",
             "DECLINED",
-            10m,
+            8m,
             [CreateLocalCardTransaction("LOCAL-TXN-DECLINED", "05", "DECLINED")],
             "ANZ",
             "Sandbox",
@@ -775,6 +1156,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("LOCAL-TXN-DECLINED", localTerminal.LastTxnRef);
         Assert.Equal(0, orders.SaveCount);
         Assert.Single(cart.Lines);
+        Assert.Equal(existingTender, Assert.Single(result.RestoredTenders!));
     }
 
     [Fact]
@@ -1203,7 +1585,13 @@ public sealed class CardPaymentRecoveryServiceTests
     [Fact]
     public async Task RecoverLatestAsync_pending_resumable_resumes_to_final_and_restores_draft_after_decline()
     {
-        var attempt = CreateAttempt(sessionId: null, txnRef: "TXN-PENDING");
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 2m);
+        var draft = CreateDraft(cardAmount: 8m, currentTenders: [existingTender]);
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "TXN-PENDING",
+            draft: draft,
+            amount: 8m);
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
@@ -1226,6 +1614,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(LocalCardPaymentAttemptStatus.Declined, attempts.Status);
         Assert.Equal(1, backend.AcknowledgeCallCount);
         Assert.Equal("SESSION-PENDING", backend.AcknowledgedSessionId);
+        Assert.Equal(existingTender, Assert.Single(result.RestoredTenders!));
     }
 
     [Fact]
@@ -1885,8 +2274,24 @@ public sealed class CardPaymentRecoveryServiceTests
             attempts,
             orders,
             new FakeSquareTerminalPaymentClient());
+        void ThrowFromFinalizeLog(string line)
+        {
+            if (line.Contains("verified payment order saved but attempt finalization failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
 
-        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        CardPaymentRecoveryResult result;
+        ConsoleLog.LineWritten += ThrowFromFinalizeLog;
+        try
+        {
+            result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromFinalizeLog;
+        }
 
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
         Assert.True(result.HasPostCommitWarning);
@@ -2187,6 +2592,58 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_restore_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-OOM") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var service = CreateSquareService(
+            new FakeSquarePaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(cart, Session));
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_rollback_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-ROLLBACK-OOM") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var service = CreateSquareService(
+            new FakeSquarePaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) =>
+        {
+            notificationCount++;
+            if (notificationCount == 1)
+            {
+                throw new InvalidOperationException("restore subscriber failed");
+            }
+
+            throw new OutOfMemoryException("fatal rollback subscriber failure");
+        };
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(cart, Session));
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_square_supervisor_not_paid_real_caller_cancellation_is_rethrown_after_cart_rollback()
     {
         var attempt = CreateSquareAttempt(
@@ -2445,6 +2902,32 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
         Assert.True(attempts.IsAutomaticCancelClaimOpen);
         Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_canceled_finalize_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-CANCELED-FINALIZE-OOM");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt)
+        {
+            AutomaticCancelFinalizeException = new OutOfMemoryException("fatal finalize failure")
+        };
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CANCELED-FINALIZE-OOM",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        var service = CreateSquareService(attempts, new FakeLocalOrderRepository(), terminal);
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(new PosCartService(), Session));
     }
 
     [Fact]
@@ -2919,6 +3402,73 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Null(attempts.AcknowledgedAt);
         Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
         Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_restore_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RESTORE-OOM",
+            "TXN-SUPERVISOR-RESTORE-OOM",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session));
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_rollback_log_failure_still_returns_unknown()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-ROLLBACK-LOG",
+            "TXN-SUPERVISOR-ROLLBACK-LOG",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("cart subscriber failed");
+        void ThrowFromRollbackLog(string line)
+        {
+            if (line.Contains("supervisor not-paid cart rollback notification failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromRollbackLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromRollbackLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.True(cart.IsEmpty);
     }
 
     [Theory]
@@ -3719,6 +4269,38 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task ResolveRefundAsync_linkly_partial_confirmed_refund_restore_out_of_memory_is_rethrown()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-PARTIAL-OOM") with { CardAmount = 4m };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-PARTIAL-OOM",
+            txnRef: "TXN-REFUND-PARTIAL-OOM",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(() => service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched bank settlement",
+                RefundReference: "LINKLY-REFUND-PARTIAL-OOM"),
+            cart,
+            Session));
+    }
+
+    [Fact]
     public async Task ResolveRefundAsync_linkly_confirm_not_refunded_does_not_enable_retry_for_nonempty_current_cart()
     {
         var draft = CreateRefundDraft("ANZ:ORIGINAL-NOT-REFUNDED-CURRENT-CART");
@@ -3755,6 +4337,38 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
         var currentLine = Assert.Single(cart.Lines);
         Assert.Equal("CURRENT-SKU", currentLine.ProductCode);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_confirm_not_refunded_restore_out_of_memory_is_rethrown()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-NOT-REFUNDED-OOM");
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-NOT-REFUNDED-OOM",
+            txnRef: "TXN-REFUND-NOT-REFUNDED-OOM",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(() => service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked settlement report",
+                Evidence: "No refund entry"),
+            cart,
+            Session));
     }
 
     [Fact]
@@ -4613,20 +5227,36 @@ public sealed class CardPaymentRecoveryServiceTests
         };
         var orders = new FakeLocalOrderRepository();
         var service = CreateSquareService(attempts, orders, new FakeSquareTerminalPaymentClient());
+        void ThrowFromFinalizeLog(string line)
+        {
+            if (line.Contains("confirmed refund order saved but attempt finalization failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
 
         CardRefundSupervisorResolutionResult? result = null;
-        var exception = await Record.ExceptionAsync(async () =>
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromFinalizeLog;
+        try
         {
-            result = await service.ResolveRefundAsync(
-                new CardRefundSupervisorResolution(
-                    attempt.AttemptGuid,
-                    CardProcessorKind.Square,
-                    CardRefundSupervisorDecision.ConfirmRefunded,
-                    Reason: "Matched Square settlement",
-                    RefundReference: "SQ-REFUND-FINALIZE-FAIL"),
-                new PosCartService(),
-                Session);
-        });
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.ResolveRefundAsync(
+                    new CardRefundSupervisorResolution(
+                        attempt.AttemptGuid,
+                        CardProcessorKind.Square,
+                        CardRefundSupervisorDecision.ConfirmRefunded,
+                        Reason: "Matched Square settlement",
+                        RefundReference: "SQ-REFUND-FINALIZE-FAIL"),
+                    new PosCartService(),
+                    Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromFinalizeLog;
+        }
 
         Assert.Null(exception);
         Assert.True(result!.Succeeded);

@@ -636,23 +636,40 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
     }
 
-    internal void RestoreRecoveredPaymentTenders(IReadOnlyList<PaymentTender> tenders, string? statusMessage)
+    internal bool RestoreRecoveredPaymentTenders(IReadOnlyList<PaymentTender> tenders, string? statusMessage)
     {
-        PaymentTenders.Clear();
+        // 中文注释：ObservableCollection 的变更已经提交后才通知订阅者；单个订阅者失败不能阻断后续 tender 写入。
+        TryRestoreRecoveredPaymentStage(PaymentTenders.Clear);
         foreach (var tender in tenders)
         {
-            PaymentTenders.Add(tender);
+            TryRestoreRecoveredPaymentStage(() => PaymentTenders.Add(tender));
         }
 
-        TenderAmountText = string.Empty;
-        VoucherCodeText = string.Empty;
-        VoucherEntryText = string.Empty;
-        IsVoucherEntryDialogOpen = false;
+        TryRestoreRecoveredPaymentStage(() => TenderAmountText = string.Empty);
+        TryRestoreRecoveredPaymentStage(() => VoucherCodeText = string.Empty);
+        TryRestoreRecoveredPaymentStage(() => VoucherEntryText = string.Empty);
+        TryRestoreRecoveredPaymentStage(() => IsVoucherEntryDialogOpen = false);
 
         // 中文注释：恢复已批准卡 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
-        RefreshCart();
-        SetStatus("payment.status.cardTenderAdded", statusMessage);
-        NotifyPaymentCommandStates();
+        TryRestoreRecoveredPaymentStage(RefreshCart);
+        TryRestoreRecoveredPaymentStage(() => SetStatus("payment.status.cardTenderAdded", statusMessage));
+        TryRestoreRecoveredPaymentStage(NotifyPaymentCommandStates);
+
+        return PaymentTenders.Count == tenders.Count && PaymentTenders.SequenceEqual(tenders);
+    }
+
+    private static bool TryRestoreRecoveredPaymentStage(Action action)
+    {
+        try
+        {
+            action();
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：恢复已提交的金融状态时只隔离普通 UI/通知异常，保留致命异常的原始传播语义。
+            return false;
+        }
     }
 
     internal void CompleteCardPaymentHandoff()

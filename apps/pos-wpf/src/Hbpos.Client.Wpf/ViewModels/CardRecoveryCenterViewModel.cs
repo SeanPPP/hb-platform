@@ -376,10 +376,19 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             // 金融操作结果已经取得，队列刷新失败不得阻断结果回调或被误报为操作失败。
-            SetStatusResource(
-                "cardRecovery.center.status.refreshFailed",
-                "Could not refresh card transactions. {0}",
-                ex.Message);
+            try
+            {
+                SetStatusResource(
+                    "cardRecovery.center.status.refreshFailed",
+                    "Could not refresh card transactions. {0}",
+                    ex.Message);
+            }
+            catch (Exception statusException) when (
+                statusException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 刷新失败提示属于 UI 收尾；显示状态异常不能阻断已取得的金融结果回调。
+            }
+
             try
             {
                 ConsoleLog.WriteError(

@@ -4881,6 +4881,342 @@ public sealed class MainViewModelScannerTests
         Assert.Empty(cart.Lines);
     }
 
+    [Theory]
+    [InlineData(nameof(MainViewModel.Session))]
+    [InlineData(nameof(MainViewModel.StatusMessage))]
+    public async Task Card_recovery_center_order_completed_continues_when_initial_main_notification_throws(
+        string propertyName)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-NOTIFICATION", "930UNKNOWNNOTIFICATION"));
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var currentKey = new CardRecoveryAttemptKey(
+            CardProcessorKind.Linkly,
+            Guid.Parse("40000000-0000-0000-0000-000000000123"));
+        var queueItem = new CardRecoveryQueueItem(
+            currentKey.Processor,
+            currentKey.AttemptGuid,
+            "Sale",
+            45.67m,
+            "1042",
+            "POS-01",
+            "CASHIER-1",
+            "Sandbox",
+            "Recovering",
+            DateTimeOffset.UtcNow.AddMinutes(-2),
+            DateTimeOffset.UtcNow.AddMinutes(-1));
+        var listCallCount = 0;
+        var recovery = new FakeCardPaymentRecoveryService
+        {
+            ListOpenHandler = (_, _) => ++listCallCount switch
+            {
+                2 => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([queueItem]),
+                _ => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([])
+            },
+            TargetedRecoverResult = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.OrderCompleted,
+                "Recovered current payment completed.",
+                UpdatedSession: new PosSessionState(
+                    "HB POS",
+                    "1042",
+                    "Main Branch",
+                    "POS-01",
+                    "CASHIER-1",
+                    "Alice",
+                    true,
+                    0,
+                    CreateCashierSession(
+                        Permissions.PosTerminal.Payment.TakeCard,
+                        Permissions.PosTerminal.Payment.View)))
+        };
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(
+            cart,
+            checkout,
+            orderRepository,
+            syncQueue,
+            new UnknownCardTerminalClient(),
+            recovery);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.Session = viewModel.Session with
+        {
+            CashierSession = CreateCashierSession(
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.View)
+        };
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+        var cardSession = GetCardPaymentSession(payment);
+        payment.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Cash, 1m));
+
+        await cardSession.TryHandleFailedResultAsync(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "Current card result is unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: currentKey,
+            RecoveryOrderGuid: Guid.Parse("40000000-0000-0000-0000-000000000124")));
+        var overlay = Assert.IsType<CardPaymentErrorOverlayViewModel>(payment.CardPaymentErrorOverlay);
+
+        await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+        await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
+        var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+        Assert.Equal(currentKey, center.SelectedAttempt?.Key);
+        syncQueue.Overview = new SyncQueueOverview(4, 0, 0, null);
+        var syncReadCountBeforeRecovery = syncQueue.ReadCount;
+        var throwOnce = true;
+        void ThrowFromPropertyChanged(object? _, PropertyChangedEventArgs e)
+        {
+            if (throwOnce && e.PropertyName == propertyName)
+            {
+                throwOnce = false;
+                throw new InvalidOperationException($"{propertyName} subscriber failed");
+            }
+        }
+
+        viewModel.PropertyChanged += ThrowFromPropertyChanged;
+        try
+        {
+            var commandException = await Record.ExceptionAsync(
+                () => center.RecoverCommand.ExecuteAsync(null));
+
+            Assert.Null(commandException);
+        }
+        finally
+        {
+            viewModel.PropertyChanged -= ThrowFromPropertyChanged;
+        }
+
+        Assert.Equal(3, listCallCount);
+        Assert.Equal(1, recovery.TargetedRecoverCallCount);
+        Assert.False(cardSession.HasUnknownResult);
+        Assert.Null(payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
+        Assert.False(payment.IsPaymentInteractionLocked);
+        Assert.False(overlay.IsOpen);
+        Assert.Null(payment.CardPaymentErrorOverlay);
+        Assert.Empty(payment.PaymentTenders);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(viewModel.PosTerminal!.CartLines);
+        Assert.Empty(payment.CartLines);
+        Assert.True(syncQueue.ReadCount > syncReadCountBeforeRecovery);
+        Assert.Equal(4, viewModel.Session.PendingSyncCount);
+    }
+
+    [Theory]
+    [InlineData(nameof(MainViewModel.Session))]
+    [InlineData(nameof(MainViewModel.StatusMessage))]
+    [InlineData(nameof(MainViewModel.CurrentScreen))]
+    public async Task Card_recovery_center_draft_restored_initial_notification_failure_continues_without_completed_warning(
+        string propertyName)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-RECOVER-DRAFT-NOTIFICATION", "930RECOVERDRAFTNOTIFICATION"));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var restoredTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            5m,
+            "ANZ:RECOVERED-DRAFT",
+            IdempotencyKey: "CARD_ATTEMPT:bbbbbbbbccccddddeeeeffffffffffff");
+        var result = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "Recovered draft for payment.",
+            UpdatedSession: viewModel.Session with { PendingSyncCount = 3 },
+            RestoredTenders: [restoredTender]);
+        var selectedKey = new CardRecoveryAttemptKey(
+            CardProcessorKind.Linkly,
+            Guid.Parse("40000000-0000-0000-0000-000000000127"));
+        var throwOnce = true;
+        void ThrowFromPropertyChanged(object? _, PropertyChangedEventArgs e)
+        {
+            if (throwOnce && e.PropertyName == propertyName)
+            {
+                throwOnce = false;
+                throw new InvalidOperationException($"{propertyName} subscriber failed");
+            }
+        }
+
+        viewModel.PropertyChanged += ThrowFromPropertyChanged;
+        try
+        {
+            var callbackException = await Record.ExceptionAsync(
+                () => InvokeHandleCardRecoveryCenterResultAsync(viewModel, selectedKey, result));
+
+            Assert.Null(callbackException);
+        }
+        finally
+        {
+            viewModel.PropertyChanged -= ThrowFromPropertyChanged;
+        }
+
+        Assert.Same(viewModel.CashPayment, viewModel.CurrentScreen);
+        Assert.True(viewModel.IsCashPaymentScreenActive);
+        var tender = Assert.Single(viewModel.CashPayment!.PaymentTenders);
+        Assert.Equal(PaymentMethodKind.Card, tender.Method);
+        Assert.Equal(5m, tender.Amount);
+        Assert.Equal("CARD_ATTEMPT:bbbbbbbbccccddddeeeeffffffffffff", tender.IdempotencyKey);
+        Assert.Equal("Recovered draft for payment.", viewModel.StatusMessage);
+        Assert.False(viewModel.PaymentSuccess.HasPostCommitWarning);
+        Assert.DoesNotContain("Payment completed. Do not take payment again", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Card_recovery_center_unpaid_draft_without_tenders_keeps_restored_cart_and_opens_payment()
+    {
+        var cart = new PosCartService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        cart.AddItem(CreateItem("1042", "SKU-RECOVERED-UNPAID", "930RECOVEREDUNPAID"));
+        var result = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "The unpaid order was restored.");
+        var selectedKey = new CardRecoveryAttemptKey(
+            CardProcessorKind.Linkly,
+            Guid.Parse("40000000-0000-0000-0000-000000000128"));
+
+        await InvokeHandleCardRecoveryCenterResultAsync(viewModel, selectedKey, result);
+
+        Assert.Same(viewModel.CashPayment, viewModel.CurrentScreen);
+        Assert.True(viewModel.IsCashPaymentScreenActive);
+        Assert.Equal("SKU-RECOVERED-UNPAID", Assert.Single(cart.Lines).ProductCode);
+        Assert.Empty(viewModel.CashPayment!.PaymentTenders);
+    }
+
+    [Fact]
+    public async Task Card_recovery_center_order_completed_continues_when_warning_notification_throws()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-WARNING", "930UNKNOWNWARNING"));
+        var throwOnCartChanged = false;
+        void ThrowFromCartChanged(object? _, EventArgs __)
+        {
+            if (throwOnCartChanged)
+            {
+                throw new InvalidOperationException("cart changed subscriber failed");
+            }
+        }
+
+        cart.CartChanged += ThrowFromCartChanged;
+        try
+        {
+            var checkout = new CashCheckoutService();
+            var orderRepository = new FakeLocalOrderRepository();
+            var syncQueue = new FakeSyncQueueRepository();
+            var currentKey = new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("40000000-0000-0000-0000-000000000125"));
+            var queueItem = new CardRecoveryQueueItem(
+                currentKey.Processor,
+                currentKey.AttemptGuid,
+                "Sale",
+                56.78m,
+                "1042",
+                "POS-01",
+                "CASHIER-1",
+                "Sandbox",
+                "Recovering",
+                DateTimeOffset.UtcNow.AddMinutes(-2),
+                DateTimeOffset.UtcNow.AddMinutes(-1));
+            var listCallCount = 0;
+            var recovery = new FakeCardPaymentRecoveryService
+            {
+                ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
+                    ++listCallCount == 2 ? [queueItem] : []),
+                TargetedRecoverResult = new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.OrderCompleted,
+                    "Recovered current payment completed.")
+            };
+            var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(
+                cart,
+                checkout,
+                orderRepository,
+                syncQueue,
+                new UnknownCardTerminalClient(),
+                recovery);
+
+            await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+            viewModel.Session = viewModel.Session with
+            {
+                CashierSession = CreateCashierSession(
+                    Permissions.PosTerminal.Payment.TakeCard,
+                    Permissions.PosTerminal.Payment.View)
+            };
+            viewModel.ShowCashPaymentCommand.Execute(null);
+            var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+            var cardSession = GetCardPaymentSession(payment);
+            payment.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Cash, 1m));
+
+            await cardSession.TryHandleFailedResultAsync(new PaymentTenderAttemptResult(
+                false,
+                "payment.card.resultUnknown",
+                StatusMessage: "Current card result is unknown.",
+                CardResult: new CardPaymentResultDisposition(
+                    CardPaymentTerminalOutcome.ResultUnknown,
+                    CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                    PreserveStatus: true),
+                RecoveryAttemptKey: currentKey,
+                RecoveryOrderGuid: Guid.Parse("40000000-0000-0000-0000-000000000126")));
+            var overlay = Assert.IsType<CardPaymentErrorOverlayViewModel>(payment.CardPaymentErrorOverlay);
+
+            await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+            await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
+            var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+            Assert.Equal(currentKey, center.SelectedAttempt?.Key);
+            syncQueue.Overview = new SyncQueueOverview(4, 0, 0, null);
+            var syncReadCountBeforeRecovery = syncQueue.ReadCount;
+            void ThrowFromWarningNotification(object? _, PropertyChangedEventArgs e)
+            {
+                if (e.PropertyName == nameof(MainViewModel.StatusMessage) &&
+                    viewModel.StatusMessage ==
+                    "Payment completed. Do not take payment again; a follow-up action needs attention.")
+                {
+                    throw new InvalidOperationException("warning subscriber failed");
+                }
+            }
+
+            viewModel.PropertyChanged += ThrowFromWarningNotification;
+            throwOnCartChanged = true;
+            try
+            {
+                var commandException = await Record.ExceptionAsync(
+                    () => center.RecoverCommand.ExecuteAsync(null));
+
+                Assert.Null(commandException);
+            }
+            finally
+            {
+                viewModel.PropertyChanged -= ThrowFromWarningNotification;
+            }
+
+            Assert.Equal(3, listCallCount);
+            Assert.Equal(1, recovery.TargetedRecoverCallCount);
+            Assert.False(cardSession.HasUnknownResult);
+            Assert.Null(payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
+            Assert.False(payment.IsPaymentInteractionLocked);
+            Assert.False(overlay.IsOpen);
+            Assert.Null(payment.CardPaymentErrorOverlay);
+            Assert.Empty(payment.PaymentTenders);
+            Assert.Empty(cart.Lines);
+            Assert.Empty(viewModel.PosTerminal!.CartLines);
+            Assert.Empty(payment.CartLines);
+            Assert.True(syncQueue.ReadCount > syncReadCountBeforeRecovery);
+            Assert.Equal(4, viewModel.Session.PendingSyncCount);
+        }
+        finally
+        {
+            cart.CartChanged -= ThrowFromCartChanged;
+        }
+    }
+
     [Fact]
     public async Task Card_recovery_center_order_completed_keeps_result_when_cart_changed_handler_throws()
     {
@@ -5896,6 +6232,19 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(method);
         var task = (Task<bool>)method!.Invoke(viewModel, [navigateToPaymentOnDraft])!;
         return await task;
+    }
+
+    private static async Task InvokeHandleCardRecoveryCenterResultAsync(
+        MainViewModel viewModel,
+        CardRecoveryAttemptKey selectedKey,
+        CardPaymentRecoveryResult result)
+    {
+        var method = typeof(MainViewModel).GetMethod(
+            "HandleCardRecoveryCenterResultAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var task = (Task)method!.Invoke(viewModel, [selectedKey, result])!;
+        await task;
     }
 
     private sealed class RecordingOperationAuditLogger : IOperationAuditLogger

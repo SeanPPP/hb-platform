@@ -2392,10 +2392,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (result.UpdatedSession is not null)
         {
-            Session = result.UpdatedSession;
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "apply-updated-session",
+                () =>
+                {
+                    Session = result.UpdatedSession;
+                    return Task.CompletedTask;
+                },
+                allowPaymentCompletedWarning: result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted);
         }
 
-        StatusMessage = result.Message;
+        await ExecuteCardRecoveryPostResultStepAsync(
+            "set-result-status",
+            () =>
+            {
+                StatusMessage = result.Message;
+                return Task.CompletedTask;
+            },
+            allowPaymentCompletedWarning: result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted);
         if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted)
         {
             if (result.Order is not null)
@@ -2450,22 +2464,86 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // 未付款旧单只会在当前购物车为空时由恢复服务还原；回到支付页继续，不触碰其他活动订单。
-        _screenNavigator.PrepareCachedCashPaymentScreen();
-        CashPayment?.PrepareForEntry(Session);
-        if (result.RestoredTenders is { Count: > 0 })
+        // 未付款旧单只会在当前购物车为空时由恢复服务还原；各 UI 收尾阶段互相隔离，不触碰其他活动订单。
+        await ExecuteCardRecoveryPostResultStepAsync(
+            "draft-prepare-cached-payment",
+            () =>
+            {
+                _screenNavigator.PrepareCachedCashPaymentScreen();
+                return Task.CompletedTask;
+            },
+            allowPaymentCompletedWarning: false);
+        await ExecuteCardRecoveryPostResultStepAsync(
+            "draft-prepare-payment-entry",
+            () =>
+            {
+                CashPayment?.PrepareForEntry(Session);
+                return Task.CompletedTask;
+            },
+            allowPaymentCompletedWarning: false);
+
+        var hasRestoredTenders = result.RestoredTenders is { Count: > 0 };
+        var paymentStateReady = CashPayment is not null;
+        if (hasRestoredTenders)
         {
-            CashPayment?.RestoreRecoveredPaymentTenders(result.RestoredTenders, result.Message);
+            paymentStateReady = false;
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "draft-restore-payment-tenders",
+                () =>
+                {
+                    paymentStateReady = CashPayment is not null &&
+                        CashPayment.RestoreRecoveredPaymentTenders(result.RestoredTenders!, result.Message);
+                    return Task.CompletedTask;
+                },
+                allowPaymentCompletedWarning: false);
         }
         else
         {
-            CashPayment?.RefreshCart();
+            // 明确未付款/未退款的恢复没有金融 tender；即使 UI 刷新通知失败也必须保留已恢复的购物车。
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "draft-refresh-payment-cart",
+                () =>
+                {
+                    CashPayment?.RefreshCart();
+                    return Task.CompletedTask;
+                },
+                allowPaymentCompletedWarning: false);
         }
 
-        CurrentScreen = CashPayment;
+        if (!paymentStateReady)
+        {
+            if (hasRestoredTenders)
+            {
+                // 中文注释：未能确认完整的已批准 tender 时只做可恢复的购物车清理，留在异常中心等待重试。
+                await ExecuteCardRecoveryPostResultStepAsync(
+                    "draft-restore-cart-rollback",
+                    () =>
+                    {
+                        _cart.Clear();
+                        PosTerminal?.RefreshCart();
+                        CashPayment?.RefreshCart();
+                        return Task.CompletedTask;
+                    },
+                    allowPaymentCompletedWarning: false);
+            }
+
+            return;
+        }
+
+        await ExecuteCardRecoveryPostResultStepAsync(
+            "draft-navigate-to-payment",
+            () =>
+            {
+                CurrentScreen = CashPayment;
+                return Task.CompletedTask;
+            },
+            allowPaymentCompletedWarning: false);
     }
 
-    private async Task ExecuteCardRecoveryPostResultStepAsync(string stage, Func<Task> action)
+    private async Task ExecuteCardRecoveryPostResultStepAsync(
+        string stage,
+        Func<Task> action,
+        bool allowPaymentCompletedWarning = true)
     {
         try
         {
@@ -2473,8 +2551,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            // 金融结果已落库，各 UI/同步收尾阶段互相隔离；任一步失败都继续后续步骤并阻止重复收款。
-            SetPaymentCompletedWarning();
+            // 金融结果已落库，各 UI/同步收尾阶段互相隔离；只有付款已完成结果才提示不得重复收款。
+            if (allowPaymentCompletedWarning)
+            {
+                try
+                {
+                    SetPaymentCompletedWarning();
+                }
+                catch (Exception warningException) when (
+                    warningException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    // 警告本身属于 UI 收尾；本地化或通知异常不能阻断日志和后续阶段。
+                }
+            }
+
             try
             {
                 ConsoleLog.WriteError(

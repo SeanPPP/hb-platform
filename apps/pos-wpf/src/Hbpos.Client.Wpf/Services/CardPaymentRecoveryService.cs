@@ -667,7 +667,8 @@ public sealed class CardPaymentRecoveryService(
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 Format("cardRecovery.linkly.failed", "The previous card payment failed: {0}. The order has been restored. Select a payment method again.", reason),
-                DialogDetails: BuildDialogDetails(attempt, status));
+                DialogDetails: BuildDialogDetails(attempt, status),
+                RestoredTenders: draft.CurrentTenders);
         }
 
         LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "unhandled-final-status");
@@ -1109,7 +1110,8 @@ public sealed class CardPaymentRecoveryService(
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 Format("cardRecovery.linkly.failed", "The previous card payment failed: {0}. The order has been restored. Select a payment method again.", reason),
-                DialogDetails: BuildDialogDetails(attempt, authorization));
+                DialogDetails: BuildDialogDetails(attempt, authorization),
+                RestoredTenders: draft.CurrentTenders);
         }
 
         LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "local-result-unknown");
@@ -1610,11 +1612,10 @@ public sealed class CardPaymentRecoveryService(
                             // acknowledge 或本地标记失败时，只撤销本次从空购物车恢复的旧快照。
                             cart.Clear();
                         }
-                        catch (Exception ex)
+                        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
                         {
                             // Clear 先清内部状态再通知订阅者；通知异常不能遮蔽异常记录仍开放的结果。
-                            ConsoleLog.Write(
-                                "CardRecovery",
+                            TryWriteCardRecoveryLog(
                                 $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                         }
                     }
@@ -1630,7 +1631,7 @@ public sealed class CardPaymentRecoveryService(
                         T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."));
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (IsNonFatalRecoveryException(ex))
             {
                 if (restoreStarted)
                 {
@@ -1639,10 +1640,9 @@ public sealed class CardPaymentRecoveryService(
                         // 恢复通知或 acknowledge 抛异常时也必须撤销本次旧快照。
                         cart.Clear();
                     }
-                    catch (Exception rollbackException)
+                    catch (Exception rollbackException) when (IsNonFatalRecoveryException(rollbackException))
                     {
-                        ConsoleLog.Write(
-                            "CardRecovery",
+                        TryWriteCardRecoveryLog(
                             $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
                     }
                 }
@@ -1652,8 +1652,7 @@ public sealed class CardPaymentRecoveryService(
                     throw;
                 }
 
-                ConsoleLog.Write(
-                    "CardRecovery",
+                TryWriteCardRecoveryLog(
                     $"supervisor not-paid finalize failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return BuildUnresolvedActiveSessionResult(
                     attempt,
@@ -1867,17 +1866,16 @@ public sealed class CardPaymentRecoveryService(
             {
                 cart.RestoreSnapshot(draft.CartSnapshot);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (IsNonFatalRecoveryException(ex))
             {
                 try
                 {
                     cart.Clear();
                 }
-                catch (Exception rollbackException)
+                catch (Exception rollbackException) when (IsNonFatalRecoveryException(rollbackException))
                 {
                     // Clear 先清内部状态再通知订阅者，二次通知异常不能留下可重复退款的行。
-                    ConsoleLog.Write(
-                        "CardRecovery",
+                    TryWriteCardRecoveryLog(
                         $"confirmed partial refund cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
                 }
 
@@ -1886,8 +1884,7 @@ public sealed class CardPaymentRecoveryService(
                     throw;
                 }
 
-                ConsoleLog.Write(
-                    "CardRecovery",
+                TryWriteCardRecoveryLog(
                     $"confirmed partial refund cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
@@ -2043,22 +2040,20 @@ public sealed class CardPaymentRecoveryService(
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
             try
             {
                 cart.Clear();
             }
-            catch (Exception rollbackException)
+            catch (Exception rollbackException) when (IsNonFatalRecoveryException(rollbackException))
             {
                 // Clear 先清内部状态再通知订阅者，二次通知异常不能留下可重复退款的行。
-                ConsoleLog.Write(
-                    "CardRecovery",
+                TryWriteCardRecoveryLog(
                     $"not-refunded retry cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={rollbackException.GetType().Name}");
             }
 
-            ConsoleLog.Write(
-                "CardRecovery",
+            TryWriteCardRecoveryLog(
                 $"not-refunded retry cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
@@ -2249,63 +2244,72 @@ public sealed class CardPaymentRecoveryService(
         LinklyCloudBackendSessionResponse status,
         CancellationToken cancellationToken)
     {
-        var recoveryCart = new PosCartService();
-        recoveryCart.RestoreSnapshot(draft.CartSnapshot);
-        var tenderAmount = draft.TxnType.Equals("R", StringComparison.OrdinalIgnoreCase)
-            ? -Math.Abs(draft.CardAmount)
-            : Math.Abs(draft.CardAmount);
-        var cardTender = new PaymentTender(
-            PaymentMethodKind.Card,
-            tenderAmount,
-            BuildPaymentReference(attempt, status),
-            CardTransactions: [BuildCardTransaction(attempt, status, tenderAmount)],
-            IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
-        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
-        var cashTenderedAmount = tenders
-            .Where(tender => tender.Method == PaymentMethodKind.Cash)
-            .Sum(tender => tender.Amount);
-        if (IsApprovedTenderPartial(draft, tenders))
-        {
-            return await RestoreApprovedTenderAsync(
-                cart,
-                draft,
-                attempt,
-                status.ResponseCode,
-                status.ResponseText,
-                cardTender.Reference,
-                tenders,
-                BuildDialogDetails(attempt, status),
-                cancellationToken);
-        }
+        var responseCode = status.ResponseCode;
+        var responseText = status.ResponseText;
+        var paymentReference = BuildPaymentReference(attempt, status);
+        var dialogDetails = BuildDialogDetails(attempt, status);
 
+        // 关键时序：先持久化已确认的 Approved 事实，再尝试任何可能因草稿/快照/tender 异常而失败的重建。
         if (!await TryPersistApprovedOutcomeAsync(
                 attempt,
-                status.ResponseCode,
-                status.ResponseText,
-                cardTender.Reference))
+                responseCode,
+                responseText,
+                paymentReference))
         {
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("payment.card.resultUnknown", "The card result is unknown. Do not collect payment again until recovery is completed."),
-                DialogDetails: BuildDialogDetails(attempt, status),
+                DialogDetails: dialogDetails,
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
+        }
+
+        PaymentTender cardTender;
+        List<PaymentTender> tenders;
+        decimal cashTenderedAmount;
+        try
+        {
+            var tenderAmount = draft.TxnType.Equals("R", StringComparison.OrdinalIgnoreCase)
+                ? -Math.Abs(draft.CardAmount)
+                : Math.Abs(draft.CardAmount);
+            cardTender = new PaymentTender(
+                PaymentMethodKind.Card,
+                tenderAmount,
+                paymentReference,
+                CardTransactions: [BuildCardTransaction(attempt, status, tenderAmount)],
+                IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
+            tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
+            cashTenderedAmount = tenders
+                .Where(tender => tender.Method == PaymentMethodKind.Cash)
+                .Sum(tender => tender.Amount);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            return ApprovedRebuildFailed(attempt, dialogDetails, ex);
+        }
+
+        if (IsApprovedTenderPartial(draft, tenders))
+        {
+            return RestoreApprovedTenderAsync(
+                cart,
+                draft,
+                attempt,
+                tenders,
+                dialogDetails);
         }
 
         PaymentCheckoutResult checkoutResult;
         try
         {
+            var recoveryCart = new PosCartService();
+            recoveryCart.RestoreSnapshot(draft.CartSnapshot);
             checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
-            return await MarkApprovedRecoveryRequiresReviewAsync(
+            return ApprovedRebuildFailed(
                 attempt,
-                status.ResponseCode,
-                status.ResponseText,
-                cardTender.Reference,
-                BuildDialogDetails(attempt, status),
-                ex,
-                cancellationToken);
+                dialogDetails,
+                ex);
         }
 
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
@@ -2335,16 +2339,12 @@ public sealed class CardPaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
-            return await MarkApprovedRecoveryRequiresReviewAsync(
+            return ApprovedRebuildFailed(
                 attempt,
-                status.ResponseCode,
-                status.ResponseText,
-                cardTender.Reference,
-                BuildDialogDetails(attempt, status),
-                ex,
-                cancellationToken);
+                dialogDetails,
+                ex);
         }
 
         var hasPostCommitWarning = false;
@@ -2384,7 +2384,7 @@ public sealed class CardPaymentRecoveryService(
             tenders.Sum(tender => tender.Amount),
             checkoutResult.ChangeAmount,
             currentSession with { PendingSyncCount = pendingSyncCount },
-            BuildDialogDetails(attempt, status),
+            dialogDetails,
             HasPostCommitWarning: hasPostCommitWarning);
     }
 
@@ -2396,65 +2396,74 @@ public sealed class CardPaymentRecoveryService(
         PaymentAuthorizationResult authorization,
         CancellationToken cancellationToken)
     {
-        var recoveryCart = new PosCartService();
-        recoveryCart.RestoreSnapshot(draft.CartSnapshot);
-        var tenderAmount = draft.TxnType.Equals("R", StringComparison.OrdinalIgnoreCase)
-            ? -Math.Abs(draft.CardAmount)
-            : Math.Abs(draft.CardAmount);
-        var cardTransactions = BuildLocalCardTransactions(attempt, authorization, tenderAmount);
-        var firstTransaction = cardTransactions.FirstOrDefault();
-        var cardTender = new PaymentTender(
-            PaymentMethodKind.Card,
-            tenderAmount,
-            BuildLocalPaymentReference(attempt, authorization),
-            CardTransactions: cardTransactions,
-            IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
-        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
-        var cashTenderedAmount = tenders
-            .Where(tender => tender.Method == PaymentMethodKind.Cash)
-            .Sum(tender => tender.Amount);
-        if (IsApprovedTenderPartial(draft, tenders))
-        {
-            return await RestoreApprovedTenderAsync(
-                cart,
-                draft,
-                attempt,
-                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
-                firstTransaction?.ResponseText ?? authorization.ResponseText,
-                cardTender.Reference,
-                tenders,
-                BuildDialogDetails(attempt, authorization),
-                cancellationToken);
-        }
+        var firstTransaction = authorization.CardTransactions?.FirstOrDefault();
+        var responseCode = firstTransaction?.ResponseCode ?? authorization.ResponseCode;
+        var responseText = firstTransaction?.ResponseText ?? authorization.ResponseText ?? authorization.Message;
+        var paymentReference = BuildLocalPaymentReference(attempt, authorization);
+        var dialogDetails = BuildDialogDetails(attempt, authorization);
 
+        // 关键时序：先持久化已确认的 Approved 事实，再尝试任何可能因草稿/快照/tender 异常而失败的重建。
         if (!await TryPersistApprovedOutcomeAsync(
                 attempt,
-                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
-                firstTransaction?.ResponseText ?? authorization.ResponseText,
-                cardTender.Reference))
+                responseCode,
+                responseText,
+                paymentReference))
         {
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("payment.card.resultUnknown", "The card result is unknown. Do not collect payment again until recovery is completed."),
-                DialogDetails: BuildDialogDetails(attempt, authorization),
+                DialogDetails: dialogDetails,
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
+        }
+
+        PaymentTender cardTender;
+        List<PaymentTender> tenders;
+        decimal cashTenderedAmount;
+        try
+        {
+            var tenderAmount = draft.TxnType.Equals("R", StringComparison.OrdinalIgnoreCase)
+                ? -Math.Abs(draft.CardAmount)
+                : Math.Abs(draft.CardAmount);
+            var cardTransactions = BuildLocalCardTransactions(attempt, authorization, tenderAmount);
+            cardTender = new PaymentTender(
+                PaymentMethodKind.Card,
+                tenderAmount,
+                paymentReference,
+                CardTransactions: cardTransactions,
+                IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
+            tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
+            cashTenderedAmount = tenders
+                .Where(tender => tender.Method == PaymentMethodKind.Cash)
+                .Sum(tender => tender.Amount);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            return ApprovedRebuildFailed(attempt, dialogDetails, ex);
+        }
+
+        if (IsApprovedTenderPartial(draft, tenders))
+        {
+            return RestoreApprovedTenderAsync(
+                cart,
+                draft,
+                attempt,
+                tenders,
+                dialogDetails);
         }
 
         PaymentCheckoutResult checkoutResult;
         try
         {
+            var recoveryCart = new PosCartService();
+            recoveryCart.RestoreSnapshot(draft.CartSnapshot);
             checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
-            return await MarkApprovedRecoveryRequiresReviewAsync(
+            return ApprovedRebuildFailed(
                 attempt,
-                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
-                firstTransaction?.ResponseText ?? authorization.ResponseText,
-                cardTender.Reference,
-                BuildDialogDetails(attempt, authorization),
-                ex,
-                cancellationToken);
+                dialogDetails,
+                ex);
         }
 
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
@@ -2484,16 +2493,12 @@ public sealed class CardPaymentRecoveryService(
                 order = existingOrder;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
-            return await MarkApprovedRecoveryRequiresReviewAsync(
+            return ApprovedRebuildFailed(
                 attempt,
-                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
-                firstTransaction?.ResponseText ?? authorization.ResponseText,
-                cardTender.Reference,
-                BuildDialogDetails(attempt, authorization),
-                ex,
-                cancellationToken);
+                dialogDetails,
+                ex);
         }
 
         var hasPostCommitWarning = false;
@@ -2532,7 +2537,7 @@ public sealed class CardPaymentRecoveryService(
             tenders.Sum(tender => tender.Amount),
             checkoutResult.ChangeAmount,
             currentSession with { PendingSyncCount = pendingSyncCount },
-            BuildDialogDetails(attempt, authorization),
+            dialogDetails,
             HasPostCommitWarning: hasPostCommitWarning);
     }
 
@@ -2561,42 +2566,21 @@ public sealed class CardPaymentRecoveryService(
                 CancellationToken.None);
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
         {
-            ConsoleLog.Write(
-                "CardRecovery",
+            TryWriteApprovedRecoveryLog(
                 $"approved outcome persistence failed before order save attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return false;
         }
     }
 
-    private async Task<CardPaymentRecoveryResult> RestoreApprovedTenderAsync(
+    private CardPaymentRecoveryResult RestoreApprovedTenderAsync(
         PosCartService cart,
         CardPaymentOrderDraft draft,
         LocalCardPaymentAttempt attempt,
-        string? responseCode,
-        string? responseText,
-        string? paymentReference,
         IReadOnlyList<PaymentTender> tenders,
-        CardPaymentRecoveryDialogDetails dialogDetails,
-        CancellationToken cancellationToken)
+        CardPaymentRecoveryDialogDetails dialogDetails)
     {
-        if (!IsSupervisorResolvedPayment(attempt))
-        {
-            if (!await TryPersistApprovedOutcomeAsync(
-                    attempt,
-                    responseCode,
-                    responseText,
-                    paymentReference))
-            {
-                return new CardPaymentRecoveryResult(
-                    CardPaymentRecoveryOutcome.Unknown,
-                    T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
-                    DialogDetails: dialogDetails,
-                    PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-            }
-        }
-
         if (!cart.IsEmpty)
         {
             return new CardPaymentRecoveryResult(
@@ -2605,8 +2589,29 @@ public sealed class CardPaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        // 中文注释：终端已批准但未覆盖整单时，只恢复购物车和 tender，让收银员在付款页补齐差额。
-        cart.RestoreSnapshot(draft.CartSnapshot);
+        try
+        {
+            // 先在隔离购物车完整验证，避免无效后续行把真实购物车留在半恢复状态。
+            var validationCart = new PosCartService();
+            validationCart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            return ApprovedRebuildFailed(attempt, dialogDetails, ex);
+        }
+
+        try
+        {
+            // 中文注释：终端已批准但未覆盖整单时，只恢复购物车和 tender，让收银员在付款页补齐差额。
+            cart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            // 隔离验证已通过，此时真实购物车已完整提交；末尾通知异常只能降级为 best-effort 日志。
+            TryWriteApprovedRecoveryLog(
+                $"approved partial cart restored but notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+        }
+
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.linkly.approvedTenderRestored", "The previous card payment was approved and restored as a tender. Complete the remaining payment amount before finishing the order."),
@@ -2615,44 +2620,39 @@ public sealed class CardPaymentRecoveryService(
             RestoredTenders: tenders);
     }
 
-    private async Task<CardPaymentRecoveryResult> MarkApprovedRecoveryRequiresReviewAsync(
+    private CardPaymentRecoveryResult ApprovedRebuildFailed(
         LocalCardPaymentAttempt attempt,
-        string? responseCode,
-        string? responseText,
-        string? paymentReference,
         CardPaymentRecoveryDialogDetails dialogDetails,
-        Exception exception,
-        CancellationToken cancellationToken)
+        Exception exception)
     {
-        ConsoleLog.Write(
-            "CardRecovery",
-            $"recover approved draft invalid attemptGuid={attempt.AttemptGuid} error={exception.GetType().Name} message={exception.Message}");
-
-        try
-        {
-            await RunLocalStoreAsync(
-                () => attemptRepository.UpdateOutcomeAsync(
-                    attempt.AttemptGuid,
-                    LocalCardPaymentAttemptStatus.RequiresReview,
-                    responseCode,
-                    responseText ?? exception.Message,
-                    paymentReference,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None),
-                CancellationToken.None);
-        }
-        catch (Exception stateException)
-        {
-            ConsoleLog.Write(
-                "CardRecovery",
-                $"approved recovery review state save failed attemptGuid={attempt.AttemptGuid} error={stateException.GetType().Name}");
-        }
+        TryWriteApprovedRecoveryLog(
+            $"recover approved draft rebuild failed after persistence attemptGuid={attempt.AttemptGuid} error={exception.GetType().Name} message={exception.Message}");
 
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.Unknown,
             T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
             DialogDetails: dialogDetails);
     }
+
+    private static void TryWriteApprovedRecoveryLog(string message)
+    {
+        TryWriteCardRecoveryLog(message);
+    }
+
+    private static void TryWriteCardRecoveryLog(string message)
+    {
+        try
+        {
+            ConsoleLog.Write("CardRecovery", message);
+        }
+        catch (Exception ex) when (IsNonFatalRecoveryException(ex))
+        {
+            // 日志订阅者失败不能覆盖已经确定的金融恢复结果。
+        }
+    }
+
+    private static bool IsNonFatalRecoveryException(Exception exception) =>
+        exception is not OutOfMemoryException and not StackOverflowException;
 
     private static bool IsApprovedTenderPartial(CardPaymentOrderDraft draft, IReadOnlyList<PaymentTender> tenders)
     {
