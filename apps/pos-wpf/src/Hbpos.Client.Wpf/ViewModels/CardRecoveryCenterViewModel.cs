@@ -272,12 +272,9 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 ? T("cardRecovery.center.status.recoverNoResult", "The selected transaction is no longer open.")
                 : result.Message;
             await TryRefreshListAfterOperationAsync(actionMessage, "recover");
-            if (_recoveryResultHandledAsync is not null)
-            {
-                await _recoveryResultHandledAsync(selectedKey, result);
-            }
+            await TryHandleRecoveryResultAsync(selectedKey, result, "recover");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             SetStatusResource(
                 "cardRecovery.center.status.recoverFailed",
@@ -348,12 +345,12 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 ? T("cardRecovery.center.status.resolveNoResult", "The resolution returned no message.")
                 : result.Message;
             await TryRefreshListAfterOperationAsync(actionMessage, action);
-            if (result.RecoveryResult is not null && _recoveryResultHandledAsync is not null)
+            if (result.RecoveryResult is not null)
             {
-                await _recoveryResultHandledAsync(selectedKey, result.RecoveryResult);
+                await TryHandleRecoveryResultAsync(selectedKey, result.RecoveryResult, action);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             SetStatusResource(
                 "cardRecovery.center.status.resolveFailed",
@@ -376,7 +373,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         {
             await RefreshListCoreAsync(actionMessage);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             // 金融操作结果已经取得，队列刷新失败不得阻断结果回调或被误报为操作失败。
             SetStatusResource(
@@ -390,9 +387,42 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                     $"refresh failed action={action} error={ex.GetType().Name}",
                     exception: ex);
             }
-            catch (Exception)
+            catch (Exception logException) when (
+                logException is not OutOfMemoryException and not StackOverflowException)
             {
                 // 日志基础设施失败不能再次阻断已经取得的金融结果回调。
+            }
+        }
+    }
+
+    private async Task TryHandleRecoveryResultAsync(
+        CardRecoveryAttemptKey selectedKey,
+        CardPaymentRecoveryResult result,
+        string action)
+    {
+        if (_recoveryResultHandledAsync is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // 金融操作及队列状态均已确定；UI 收尾失败只能记录，不能改写操作结果或再次调用金融服务。
+            await _recoveryResultHandledAsync(selectedKey, result);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            try
+            {
+                ConsoleLog.WriteError(
+                    "CardRecoveryCenter",
+                    $"post-result callback failed action={action} processor={selectedKey.Processor} attempt={selectedKey.AttemptGuid:D} error={ex.GetType().Name}",
+                    exception: ex);
+            }
+            catch (Exception logException) when (
+                logException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 日志订阅者也属于 UI 外围，失败时仍需保留已经完成的金融结果。
             }
         }
     }

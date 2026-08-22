@@ -2409,34 +2409,39 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 cachedCashPayment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey == selectedKey)
             {
                 // RecoveryAttemptKey 只在当前付款结果未知期间保留；同 key 结案后先清锁，再清当前订单投影并返回 POS。
-                cachedCashPayment.SetCurrentCardRecoveryRequired(false);
-                cachedCashPayment.CompleteCardPaymentHandoff();
+                await ExecuteCardRecoveryPostResultStepAsync(
+                    "clear-current-recovery-required",
+                    () =>
+                    {
+                        cachedCashPayment.SetCurrentCardRecoveryRequired(false);
+                        return Task.CompletedTask;
+                    });
+                await ExecuteCardRecoveryPostResultStepAsync(
+                    "complete-payment-handoff",
+                    () =>
+                    {
+                        cachedCashPayment.CompleteCardPaymentHandoff();
+                        return Task.CompletedTask;
+                    });
             }
 
-            PosTerminal?.RefreshCart();
-            CashPayment?.RefreshCart();
-            try
-            {
-                await RefreshPendingSyncAsync();
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
-            {
-                // 金融操作已成功；同步队列刷新只是收尾，失败时必须保留完成警告而不能回写中心失败状态。
-                SetPaymentCompletedWarning();
-                try
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "pos-cart-refresh",
+                () =>
                 {
-                    ConsoleLog.WriteError(
-                        "CardRecovery",
-                        "card recovery post-commit pending-sync refresh failed",
-                        null,
-                        ex);
-                }
-                catch (Exception logException) when (
-                    logException is not OutOfMemoryException and not StackOverflowException)
+                    PosTerminal?.RefreshCart();
+                    return Task.CompletedTask;
+                });
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "cash-payment-cart-refresh",
+                () =>
                 {
-                    // 日志同步订阅失败不能再次把已完成的金融结果抛回异常中心。
-                }
-            }
+                    CashPayment?.RefreshCart();
+                    return Task.CompletedTask;
+                });
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "pending-sync-refresh",
+                RefreshPendingSyncAsync);
             return;
         }
 
@@ -2458,6 +2463,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         CurrentScreen = CashPayment;
+    }
+
+    private async Task ExecuteCardRecoveryPostResultStepAsync(string stage, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 金融结果已落库，各 UI/同步收尾阶段互相隔离；任一步失败都继续后续步骤并阻止重复收款。
+            SetPaymentCompletedWarning();
+            try
+            {
+                ConsoleLog.WriteError(
+                    "CardRecovery",
+                    $"card recovery post-result step failed stage={stage}",
+                    null,
+                    ex);
+            }
+            catch (Exception logException) when (
+                logException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 日志订阅者失败不能中断后续收尾，也不能把已完成结果重新抛回异常中心。
+            }
+        }
     }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;

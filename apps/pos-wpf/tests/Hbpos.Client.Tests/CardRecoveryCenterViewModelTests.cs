@@ -254,6 +254,90 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.False(viewModel.IsBusy);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverCommand_keeps_completed_result_when_post_result_callback_and_logging_throw(
+        bool refreshFails)
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000009"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Recovered order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            RecoverResult = completed
+        };
+        var reportedCounts = new List<int>();
+        var callbackCount = 0;
+        CardRecoveryAttemptKey? callbackKey = null;
+        CardPaymentRecoveryResult? callbackResult = null;
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            openCountChanged: reportedCounts.Add,
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                callbackCount++;
+                callbackKey = key;
+                callbackResult = result;
+                throw new InvalidOperationException("result callback failed");
+            });
+        await viewModel.LoadAsync();
+        if (refreshFails)
+        {
+            recovery.ListException = new InvalidOperationException("queue unavailable");
+        }
+        else
+        {
+            recovery.OpenItems = [];
+        }
+
+        void ThrowFromLog(string _) => throw new InvalidOperationException("log subscriber failed");
+
+        Exception? commandException;
+        ConsoleLog.LineWritten += ThrowFromLog;
+        try
+        {
+            commandException = await Record.ExceptionAsync(
+                () => viewModel.RecoverCommand.ExecuteAsync(null));
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromLog;
+        }
+
+        Assert.Null(commandException);
+        Assert.Equal(1, recovery.RecoverCallCount);
+        Assert.Equal(selected.Key, recovery.RecoveredKey);
+        Assert.Equal(1, callbackCount);
+        Assert.Equal(selected.Key, callbackKey);
+        Assert.Same(completed, callbackResult);
+        Assert.DoesNotContain("Could not check the selected transaction.", viewModel.StatusMessage);
+        Assert.False(viewModel.IsBusy);
+        if (refreshFails)
+        {
+            Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+            Assert.Equal(selected.Key, viewModel.SelectedAttempt?.Key);
+            Assert.Equal([selected.Key], viewModel.OpenAttempts.Select(item => item.Key));
+            Assert.Equal([1], reportedCounts);
+        }
+        else
+        {
+            Assert.Equal("Recovered order completed", viewModel.StatusMessage);
+            Assert.Null(viewModel.SelectedAttempt);
+            Assert.Empty(viewModel.OpenAttempts);
+            Assert.Equal([1, 0], reportedCounts);
+        }
+    }
+
     [Fact]
     public async Task ResolveCommand_reports_operation_start_key_when_queue_refresh_changes_selection()
     {
@@ -347,6 +431,61 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Same(completed, callback.Result);
         Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
         Assert.Equal(selected.Key, viewModel.SelectedAttempt?.Key);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task ResolveCommand_keeps_completed_result_when_post_result_callback_throws()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000010"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Confirmed payment completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            ResolveResult = new CardRecoveryResolutionResult(
+                true,
+                "Resolution saved",
+                completed)
+        };
+        var callbackCount = 0;
+        CardRecoveryAttemptKey? callbackKey = null;
+        CardPaymentRecoveryResult? callbackResult = null;
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                callbackCount++;
+                callbackKey = key;
+                callbackResult = result;
+                throw new InvalidOperationException("result callback failed");
+            });
+        await viewModel.LoadAsync();
+        viewModel.ResolutionReason = "Settlement checked";
+        recovery.OpenItems = [];
+
+        var commandException = await Record.ExceptionAsync(
+            () => viewModel.ConfirmPaidCommand.ExecuteAsync(null));
+
+        Assert.Null(commandException);
+        Assert.Equal(1, recovery.ResolveCallCount);
+        Assert.Equal(selected.Key, recovery.ResolvedKey);
+        Assert.Equal(CardRecoverySupervisorDecision.ConfirmProcessed, recovery.ResolvedDecision);
+        Assert.Equal(1, callbackCount);
+        Assert.Equal(selected.Key, callbackKey);
+        Assert.Same(completed, callbackResult);
+        Assert.Equal("Resolution saved", viewModel.StatusMessage);
+        Assert.DoesNotContain("Could not save the supervisor decision.", viewModel.StatusMessage);
+        Assert.Null(viewModel.SelectedAttempt);
+        Assert.Empty(viewModel.OpenAttempts);
         Assert.False(viewModel.IsBusy);
     }
 
@@ -1092,6 +1231,8 @@ public sealed class CardRecoveryCenterViewModelTests
         public string? ResolvedReference { get; private set; }
         public string? AuthorizingCashierIdDuringResolve { get; private set; }
         public int ListOpenCallCount { get; private set; }
+        public int RecoverCallCount { get; private set; }
+        public int ResolveCallCount { get; private set; }
 
         public Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
             PosSessionState session,
@@ -1127,6 +1268,7 @@ public sealed class CardRecoveryCenterViewModelTests
             PosSessionState session,
             CancellationToken cancellationToken = default)
         {
+            RecoverCallCount++;
             RecoveredKey = key;
             RecoveredCart = cart;
             CartWasEmptyWhenRecoverCalled = cart.IsEmpty;
@@ -1143,6 +1285,7 @@ public sealed class CardRecoveryCenterViewModelTests
             PosSessionState session,
             CancellationToken cancellationToken = default)
         {
+            ResolveCallCount++;
             ResolvedKey = key;
             ResolvedDecision = decision;
             ResolvedReason = reason;
