@@ -1152,9 +1152,24 @@ public sealed class CardPaymentRecoveryService(
                 "The unresolved Linkly refund no longer matches this terminal and cannot be changed.");
         }
 
-        var retryTxnRef = normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded
-            ? BuildSupervisorRetryTxnRef(DeserializeDraft(attempt).OriginalReference)
-            : null;
+        string? retryTxnRef = null;
+        if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
+        {
+            try
+            {
+                retryTxnRef = BuildSupervisorRetryTxnRef(DeserializeDraft(attempt).OriginalReference);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                ConsoleLog.Write(
+                    "CardRecovery",
+                    $"not-refunded retry draft invalid before resolution attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardRefundSupervisorResolutionResult(
+                    false,
+                    T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                    LockRetained: true);
+            }
+        }
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildRefundSupervisorJournal(
             attempt,
@@ -1900,41 +1915,78 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
-        var existingOrder = await RunLocalStoreAsync(
-            () => orderRepository.GetOrderAsync(draft.OrderGuid, CancellationToken.None),
-            CancellationToken.None);
-        if (existingOrder is null)
+        try
         {
-            // 仅新建订单时解析取单来源（与 LocalOrder 同一事务写入来源/完成 claim）；
-            // 订单已存在（订单已保存、attempt 未收尾）时直接走既有订单幂等收尾，
-            // 不再解析已经 Completed/bound 的 held claim。
-            var heldOrder = await TryResolveHeldOrderAsync(
-                draft.Session,
-                draft.CartSnapshot,
+            var existingOrder = await RunLocalStoreAsync(
+                () => orderRepository.GetOrderAsync(draft.OrderGuid, CancellationToken.None),
                 CancellationToken.None);
-            await RunLocalStoreAsync(
-                () => heldOrder is null
-                    ? orderRepository.SavePendingOrderAsync(order, CancellationToken.None)
-                    : orderRepository.SavePendingOrderWithHeldSourceAsync(
-                        order,
-                        heldOrder,
-                        CancellationToken.None),
-                CancellationToken.None);
+            if (existingOrder is null)
+            {
+                // 仅新建订单时解析取单来源（与 LocalOrder 同一事务写入来源/完成 claim）；
+                // 订单已存在（订单已保存、attempt 未收尾）时直接走既有订单幂等收尾，
+                // 不再解析已经 Completed/bound 的 held claim。
+                var heldOrder = await TryResolveHeldOrderAsync(
+                    draft.Session,
+                    draft.CartSnapshot,
+                    CancellationToken.None);
+                await RunLocalStoreAsync(
+                    () => heldOrder is null
+                        ? orderRepository.SavePendingOrderAsync(order, CancellationToken.None)
+                        : orderRepository.SavePendingOrderWithHeldSourceAsync(
+                            order,
+                            heldOrder,
+                            CancellationToken.None),
+                    CancellationToken.None);
+            }
+            else
+            {
+                order = existingOrder;
+            }
         }
-        else
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            order = existingOrder;
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"confirmed refund order save failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.confirmedOrderSaveFailed", "The refund is confirmed, but POS could not save the recovered return. Do not refund again; run recovery after the local store is available."),
+                DialogDetails: dialogDetails);
         }
 
-        await RunLocalStoreAsync(
-            () => attemptRepository.MarkOrderCompletedAsync(
-                attempt.AttemptGuid,
-                DateTimeOffset.UtcNow,
-                CancellationToken.None),
-            CancellationToken.None);
-        var pendingSyncCount = await RunLocalStoreAsync(
-            () => syncQueueRepository.CountPendingAsync(CancellationToken.None),
-            CancellationToken.None);
+        var hasPostCommitWarning = false;
+        try
+        {
+            await RunLocalStoreAsync(
+                () => attemptRepository.MarkOrderCompletedAsync(
+                    attempt.AttemptGuid,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            hasPostCommitWarning = true;
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"confirmed refund order saved but attempt finalization failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+        }
+
+        var pendingSyncCount = currentSession.PendingSyncCount;
+        try
+        {
+            pendingSyncCount = await RunLocalStoreAsync(
+                () => syncQueueRepository.CountPendingAsync(CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            hasPostCommitWarning = true;
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"confirmed refund order saved but pending sync refresh failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+        }
+
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.OrderCompleted,
             T("cardRecovery.refund.confirmedCompleted", "The confirmed card refund was recovered and the return was saved."),
@@ -1942,7 +1994,8 @@ public sealed class CardPaymentRecoveryService(
             tenders.Sum(tender => tender.Amount),
             checkoutResult.ChangeAmount,
             currentSession with { PendingSyncCount = pendingSyncCount },
-            dialogDetails);
+            dialogDetails,
+            HasPostCommitWarning: hasPostCommitWarning);
     }
 
     private CardPaymentRecoveryResult RestoreSupervisorApprovedRetry(
@@ -1957,7 +2010,22 @@ public sealed class CardPaymentRecoveryService(
                 DialogDetails: BuildDialogDetails(attempt));
         }
 
-        var draft = DeserializeDraft(attempt);
+        CardPaymentOrderDraft draft;
+        try
+        {
+            draft = DeserializeDraft(attempt);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"not-refunded retry draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                DialogDetails: BuildDialogDetails(attempt));
+        }
+
         try
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
