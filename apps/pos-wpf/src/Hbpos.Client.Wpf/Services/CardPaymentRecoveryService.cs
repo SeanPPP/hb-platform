@@ -735,6 +735,13 @@ public sealed class CardPaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
+        if (attempt.Status == LocalCardPaymentAttemptStatus.OrderCompleted &&
+            attempt.AcknowledgedAt is not null)
+        {
+            // 已完成且已 acknowledge 的定点 key 仅供历史展示，不能再次触发终端或订单恢复。
+            return CardPaymentRecoveryResult.None;
+        }
+
         // 定点选择可能来自陈旧列表；终态只能展示历史，绝不能重新进入恢复状态机。
         if (!IsSupervisorResolvedPayment(attempt) &&
             attempt.Status is LocalCardPaymentAttemptStatus.Declined or
@@ -1594,6 +1601,12 @@ public sealed class CardPaymentRecoveryService(
                                 "CardRecovery",
                                 $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                         }
+                    }
+
+                    if (mode == LinklyConnectionMode.LocalIp)
+                    {
+                        // 本地 marker 未提交时，必须先撤销本次恢复，再恢复真实 caller cancellation。
+                        cancellationToken.ThrowIfCancellationRequested();
                     }
 
                     return BuildUnresolvedActiveSessionResult(
