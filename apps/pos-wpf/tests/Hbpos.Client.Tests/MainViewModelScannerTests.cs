@@ -4709,13 +4709,22 @@ public sealed class MainViewModelScannerTests
         await viewModel.PosTerminal!.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
 
         var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
-        Assert.Equal([item], center.OpenAttempts);
+        var displayedAttempt = Assert.Single(center.OpenAttempts);
+        Assert.Equal(item.Processor, displayedAttempt.Processor);
+        Assert.Equal(item.AttemptGuid, displayedAttempt.AttemptGuid);
+        Assert.Equal(item.Key, displayedAttempt.Key);
+        Assert.Equal(item.Amount, displayedAttempt.Amount);
+        Assert.Equal("Card sale", displayedAttempt.OperationKind);
+        Assert.Equal("Checking result", displayedAttempt.Status);
+        Assert.Equal(item.Key, center.SelectedAttempt?.Key);
         Assert.Equal(1, viewModel.PosTerminal.CardRecoveryOpenCount);
         Assert.Single(cart.Lines);
         Assert.Equal("SKU-CURRENT-RECOVERY", cart.Lines[0].ProductCode);
         Assert.Contains(
             authorization.Requests,
-            request => request.PermissionCode == Permissions.PosTerminal.Payment.View);
+            request => request.PermissionCode == Permissions.PosTerminal.Payment.View &&
+                       request.Screen == "card-recovery-center" &&
+                       request.Action == "view");
     }
 
     [Fact]

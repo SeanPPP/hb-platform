@@ -23,6 +23,7 @@ internal sealed class CardPaymentSession
     private bool _discardLateCardResultAfterManualCancel;
     private bool _cardPaymentResultUnknownRequiresRecovery;
     private CardPaymentHandoffCandidate? _cardPaymentHandoffCandidate;
+    private bool _cardPaymentHandoffQualificationPending;
     private CardRecoveryAttemptKey? _recoveryAttemptKey;
     private Guid? _recoveryOrderGuid;
     private string? _unknownResultStatusKey;
@@ -54,11 +55,18 @@ internal sealed class CardPaymentSession
         _cardPaymentResultUnknownRequiresRecovery = value;
         if (!value)
         {
+            _cardPaymentHandoffQualificationPending = false;
             _cardPaymentHandoffCandidate = null;
             _recoveryAttemptKey = null;
             _recoveryOrderGuid = null;
             _unknownResultStatusKey = null;
             _unknownResultStatusMessage = null;
+            if (_vm.CardPaymentErrorOverlay is { PrimaryActionKind:
+                    CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious } overlay)
+            {
+                overlay.IsOpen = false;
+                _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 
@@ -69,6 +77,7 @@ internal sealed class CardPaymentSession
     public CancellationTokenSource BeginCardPayment()
     {
         _cardPaymentHandoffCandidate = null;
+        _cardPaymentHandoffQualificationPending = false;
         _recoveryAttemptKey = null;
         _recoveryOrderGuid = null;
         _cardPaymentCancellationRequested = false;
@@ -292,11 +301,15 @@ internal sealed class CardPaymentSession
                 : null;
             _unknownResultStatusKey = result.StatusKey;
             _unknownResultStatusMessage = result.StatusMessage;
+            _cardPaymentHandoffQualificationPending =
+                _recoveryAttemptKey is not null &&
+                _recoveryOrderGuid is not null &&
+                _vm.NavigationActions.PrepareCardPaymentHandoffAsync is not null;
             _vm.IsPaymentInteractionLocked = true;
             RestoreUnknownResultStatus();
             ResetManualCancellationState();
             ShowOverlayIfTerminalError(result);
-            if (_recoveryAttemptKey is not null && _recoveryOrderGuid is not null)
+            if (_cardPaymentHandoffQualificationPending)
             {
                 await PrepareCardPaymentHandoffAsync();
             }
@@ -368,6 +381,7 @@ internal sealed class CardPaymentSession
             CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => true,
             CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
                 _cardPaymentResultUnknownRequiresRecovery &&
+                !_cardPaymentHandoffQualificationPending &&
                 !_vm.IsShuttingDown &&
                 (_cardPaymentHandoffCandidate is not null
                     ? _vm.NavigationActions.HandoffCardPaymentAsync is not null
@@ -399,6 +413,7 @@ internal sealed class CardPaymentSession
             RestoreUnknownResultStatus();
         }
 
+        _cardPaymentHandoffQualificationPending = false;
         if (_vm.CardPaymentErrorOverlay is { PrimaryActionKind:
                 CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious } overlay)
         {
@@ -581,6 +596,7 @@ internal sealed class CardPaymentSession
         overlay.PrimaryButtonTextKey =
             "payment.card.error.overlay.activeSession.openRecoveryCenter";
         overlay.HasPrimaryAction =
+            !_cardPaymentHandoffQualificationPending &&
             _cardPaymentResultUnknownRequiresRecovery &&
             _vm.OpenCardRecoveryCenterCommand.CanExecute(null);
     }
