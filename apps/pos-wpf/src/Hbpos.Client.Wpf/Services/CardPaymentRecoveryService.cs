@@ -1157,9 +1157,10 @@ public sealed class CardPaymentRecoveryService(
         {
             try
             {
-                retryTxnRef = BuildSupervisorRetryTxnRef(DeserializeDraft(attempt).OriginalReference);
+                var validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
+                retryTxnRef = BuildSupervisorRetryTxnRef(validatedDraft.Draft.OriginalReference);
             }
-            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            catch (Exception ex) when (IsInvalidDraftException(ex))
             {
                 ConsoleLog.Write(
                     "CardRecovery",
@@ -1811,12 +1812,12 @@ public sealed class CardPaymentRecoveryService(
         CancellationToken cancellationToken)
     {
         var dialogDetails = BuildDialogDetails(attempt);
-        CardPaymentOrderDraft draft;
+        ValidatedCardRecoveryDraft validatedDraft;
         try
         {
-            draft = DeserializeDraft(attempt);
+            validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        catch (Exception ex) when (IsInvalidDraftException(ex))
         {
             ConsoleLog.Write(
                 "CardRecovery",
@@ -1827,21 +1828,31 @@ public sealed class CardPaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        if (string.IsNullOrWhiteSpace(draft.OriginalReference))
+        var draft = validatedDraft.Draft;
+        IReadOnlyList<PaymentTender> tenders;
+        decimal tenderedAmount;
+        try
         {
+            var tenderReference = CardRefundReference.Format(attempt.PaymentReference, draft.OriginalReference!);
+            var cardTender = new PaymentTender(
+                PaymentMethodKind.Card,
+                -Math.Abs(draft.CardAmount),
+                tenderReference,
+                IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
+            tenders = draft.CurrentTenders.Concat([cardTender]).ToArray();
+            tenderedAmount = validatedDraft.CurrentTenderTotal + cardTender.Amount;
+        }
+        catch (Exception ex) when (IsInvalidDraftException(ex))
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"confirmed refund tender invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
                 DialogDetails: dialogDetails);
         }
 
-        var tenderReference = CardRefundReference.Format(attempt.PaymentReference, draft.OriginalReference);
-        var cardTender = new PaymentTender(
-            PaymentMethodKind.Card,
-            -Math.Abs(draft.CardAmount),
-            tenderReference,
-            IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
-        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
         if (IsApprovedTenderPartial(draft, tenders))
         {
             if (!cart.IsEmpty)
@@ -1887,7 +1898,7 @@ public sealed class CardPaymentRecoveryService(
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
-                TenderedAmount: tenders.Sum(tender => tender.Amount),
+                TenderedAmount: tenderedAmount,
                 DialogDetails: dialogDetails,
                 RestoredTenders: tenders);
         }
@@ -1991,7 +2002,7 @@ public sealed class CardPaymentRecoveryService(
             CardPaymentRecoveryOutcome.OrderCompleted,
             T("cardRecovery.refund.confirmedCompleted", "The confirmed card refund was recovered and the return was saved."),
             order,
-            tenders.Sum(tender => tender.Amount),
+            tenderedAmount,
             checkoutResult.ChangeAmount,
             currentSession with { PendingSyncCount = pendingSyncCount },
             dialogDetails,
@@ -2002,20 +2013,12 @@ public sealed class CardPaymentRecoveryService(
         PosCartService cart,
         LocalCardPaymentAttempt attempt)
     {
-        if (!cart.IsEmpty)
-        {
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.linkly.currentCartNotEmpty", "The bank confirmed that no refund was processed, but the current cart is not empty. Complete or clear it, then run recovery again."),
-                DialogDetails: BuildDialogDetails(attempt));
-        }
-
-        CardPaymentOrderDraft draft;
+        ValidatedCardRecoveryDraft validatedDraft;
         try
         {
-            draft = DeserializeDraft(attempt);
+            validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        catch (Exception ex) when (IsInvalidDraftException(ex))
         {
             ConsoleLog.Write(
                 "CardRecovery",
@@ -2023,6 +2026,15 @@ public sealed class CardPaymentRecoveryService(
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                DialogDetails: BuildDialogDetails(attempt));
+        }
+
+        var draft = validatedDraft.Draft;
+        if (!cart.IsEmpty)
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.currentCartNotEmpty", "The bank confirmed that no refund was processed, but the current cart is not empty. Complete or clear it, then run recovery again."),
                 DialogDetails: BuildDialogDetails(attempt));
         }
 
@@ -2056,10 +2068,60 @@ public sealed class CardPaymentRecoveryService(
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),
-            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+            TenderedAmount: validatedDraft.CurrentTenderTotal,
             DialogDetails: BuildDialogDetails(attempt),
             RestoredTenders: draft.CurrentTenders);
     }
+
+    private static ValidatedCardRecoveryDraft ValidateAndMaterializeRefundDraft(CardPaymentOrderDraft draft)
+    {
+        if (draft.OrderGuid == Guid.Empty ||
+            draft.Session is null ||
+            draft.CartSnapshot is null ||
+            draft.CartSnapshot.Lines is null ||
+            draft.CurrentTenders is null ||
+            draft.CreatedAt == default ||
+            string.IsNullOrWhiteSpace(draft.TxnType) ||
+            string.IsNullOrWhiteSpace(draft.OriginalReference))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft is missing required data.");
+        }
+
+        var lines = draft.CartSnapshot.Lines.ToArray();
+        if (lines.Length == 0 || lines.Any(line => line is null))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft contains an invalid cart line.");
+        }
+
+        var currentTenders = draft.CurrentTenders.ToArray();
+        if (currentTenders.Any(tender => tender is null))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft contains an invalid tender.");
+        }
+
+        var materializedDraft = draft with
+        {
+            CartSnapshot = draft.CartSnapshot with { Lines = lines },
+            CurrentTenders = currentTenders
+        };
+
+        // 临时购物车没有外部订阅者；必须先完成快照语义校验和 tender 求和，再写主管决定或活动购物车。
+        var validationCart = new PosCartService();
+        validationCart.RestoreSnapshot(materializedDraft.CartSnapshot);
+        var currentTenderTotal = currentTenders.Sum(tender => tender.Amount);
+        return new ValidatedCardRecoveryDraft(materializedDraft, currentTenderTotal);
+    }
+
+    private static bool IsInvalidDraftException(Exception exception) =>
+        exception is JsonException or
+            InvalidOperationException or
+            ArgumentException or
+            NullReferenceException or
+            ArithmeticException;
+
+    private sealed record ValidatedCardRecoveryDraft(
+        CardPaymentOrderDraft Draft,
+        decimal CurrentTenderTotal);
 
     private static CardRefundRecoveryDetails BuildRefundDetails(
         LocalCardPaymentAttempt attempt,
