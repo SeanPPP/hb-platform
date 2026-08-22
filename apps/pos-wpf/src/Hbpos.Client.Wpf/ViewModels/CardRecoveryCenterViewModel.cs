@@ -383,10 +383,17 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 "cardRecovery.center.status.refreshFailed",
                 "Could not refresh card transactions. {0}",
                 ex.Message);
-            ConsoleLog.WriteError(
-                "CardRecoveryCenter",
-                $"refresh failed action={action} error={ex.GetType().Name}",
-                exception: ex);
+            try
+            {
+                ConsoleLog.WriteError(
+                    "CardRecoveryCenter",
+                    $"refresh failed action={action} error={ex.GetType().Name}",
+                    exception: ex);
+            }
+            catch (Exception)
+            {
+                // 日志基础设施失败不能再次阻断已经取得的金融结果回调。
+            }
         }
     }
 

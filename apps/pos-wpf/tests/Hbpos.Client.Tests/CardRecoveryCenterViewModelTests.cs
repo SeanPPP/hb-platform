@@ -13,6 +13,7 @@ using Hbpos.Contracts.Cashiers;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ConsoleLogGlobalStateTestCollection.Name)]
 public sealed class CardRecoveryCenterViewModelTests
 {
     private static readonly DateTimeOffset Now =
@@ -195,6 +196,55 @@ public sealed class CardRecoveryCenterViewModelTests
         recovery.ListException = new InvalidOperationException("queue unavailable");
 
         await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        var callback = Assert.Single(handled);
+        Assert.Equal(selected.Key, callback.Key);
+        Assert.Same(completed, callback.Result);
+        Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+        Assert.Equal(selected.Key, viewModel.SelectedAttempt?.Key);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task RecoverCommand_reports_result_when_refresh_failure_logging_subscriber_throws()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000008"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Recovered order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            RecoverResult = completed
+        };
+        var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                handled.Add((key, result));
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        recovery.ListException = new InvalidOperationException("queue unavailable");
+        void ThrowFromLog(string _) => throw new InvalidOperationException("log subscriber failed");
+
+        ConsoleLog.LineWritten += ThrowFromLog;
+        try
+        {
+            await viewModel.RecoverCommand.ExecuteAsync(null);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromLog;
+        }
 
         var callback = Assert.Single(handled);
         Assert.Equal(selected.Key, callback.Key);
