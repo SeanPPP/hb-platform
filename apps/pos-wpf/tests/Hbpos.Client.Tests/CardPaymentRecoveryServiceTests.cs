@@ -3902,7 +3902,7 @@ public sealed class CardPaymentRecoveryServiceTests
     [Theory]
     [InlineData(10)]
     [InlineData(4)]
-    public async Task ResolveRefundAsync_linkly_confirm_refunded_structurally_invalid_draft_returns_confirmed_draft_invalid_before_cart_write(
+    public async Task ResolveRefundAsync_linkly_confirm_refunded_structurally_invalid_draft_persists_decision_before_failed_recovery(
         decimal cardAmount)
     {
         var draft = CreateRefundDraft("ANZ:ORIGINAL-CONFIRMED-INVALID") with
@@ -3946,8 +3946,10 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
         Assert.Contains("Do not refund again", result.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, orders.SaveCount);
-        Assert.Equal(0, attempts.ResolveRefundCount);
-        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(1, attempts.ResolveRefundCount);
+        Assert.Equal(CardRefundSupervisorDecision.ConfirmRefunded, attempts.LastRefundResolution?.Decision);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, attempts.ResponseCode);
         AssertCartUnchanged(cart, originalCart);
     }
 
@@ -4042,7 +4044,7 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
-    public async Task ResolveRefundAsync_linkly_confirm_refunded_attempt_amount_mismatch_fails_closed_before_order_or_cart_write()
+    public async Task ResolveRefundAsync_linkly_confirm_refunded_attempt_amount_mismatch_persists_decision_before_failed_recovery()
     {
         var draft = CreateRefundDraft("ANZ:ORIGINAL-CONFIRMED-AMOUNT") with { CardAmount = 4m };
         var attempt = CreateAttempt(
@@ -4076,8 +4078,10 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.True(result.LockRetained);
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
         Assert.Contains("Do not refund again", result.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(0, attempts.ResolveRefundCount);
-        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(1, attempts.ResolveRefundCount);
+        Assert.Equal(CardRefundSupervisorDecision.ConfirmRefunded, attempts.LastRefundResolution?.Decision);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, attempts.ResponseCode);
         Assert.Equal(0, orders.SaveCount);
         AssertCartUnchanged(cart, originalCart);
     }

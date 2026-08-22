@@ -1152,44 +1152,25 @@ public sealed class CardPaymentRecoveryService(
                 "The unresolved Linkly refund no longer matches this terminal and cannot be changed.");
         }
 
-        ValidatedCardRecoveryDraft? validatedDraft = null;
-        if (normalized.Decision is
-            CardRefundSupervisorDecision.ConfirmRefunded or
-            CardRefundSupervisorDecision.ConfirmNotRefunded)
+        string? retryTxnRef = null;
+        if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
         {
             try
             {
-                validatedDraft = ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
+                var validatedDraft = ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
+                retryTxnRef = BuildSupervisorRetryTxnRef(validatedDraft.Draft.OriginalReference);
             }
             catch (Exception ex) when (IsInvalidDraftException(ex))
             {
-                var isRetry = normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded;
                 ConsoleLog.Write(
                     "CardRecovery",
-                    $"{(isRetry ? "not-refunded retry" : "confirmed refund")} draft invalid before resolution attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
-                if (isRetry)
-                {
-                    return new CardRefundSupervisorResolutionResult(
-                        false,
-                        T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
-                        LockRetained: true);
-                }
-
-                var invalidRecovery = new CardPaymentRecoveryResult(
-                    CardPaymentRecoveryOutcome.Unknown,
-                    T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
-                    DialogDetails: BuildDialogDetails(attempt));
+                    $"not-refunded retry draft invalid before resolution attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
                 return new CardRefundSupervisorResolutionResult(
                     false,
-                    invalidRecovery.Message,
-                    invalidRecovery,
+                    T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
                     LockRetained: true);
             }
         }
-
-        var retryTxnRef = normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded
-            ? BuildSupervisorRetryTxnRef(validatedDraft!.Draft.OriginalReference)
-            : null;
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildRefundSupervisorJournal(
             attempt,
@@ -1253,8 +1234,7 @@ public sealed class CardPaymentRecoveryService(
             cart,
             session,
             updatedAttempt,
-            CancellationToken.None,
-            validatedDraft);
+            CancellationToken.None);
         var recoveryCompleted = completed.Outcome is
             CardPaymentRecoveryOutcome.OrderCompleted or
             CardPaymentRecoveryOutcome.DraftRestored;
@@ -1829,15 +1809,13 @@ public sealed class CardPaymentRecoveryService(
         PosCartService cart,
         PosSessionState currentSession,
         LocalCardPaymentAttempt attempt,
-        CancellationToken cancellationToken,
-        ValidatedCardRecoveryDraft? prevalidatedDraft = null)
+        CancellationToken cancellationToken)
     {
         var dialogDetails = BuildDialogDetails(attempt);
         ValidatedCardRecoveryDraft validatedDraft;
         try
         {
-            validatedDraft = prevalidatedDraft ??
-                ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
+            validatedDraft = ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
