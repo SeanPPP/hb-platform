@@ -4725,6 +4725,65 @@ public sealed class MainViewModelScannerTests
             request => request.PermissionCode == Permissions.PosTerminal.Payment.View &&
                        request.Screen == "card-recovery-center" &&
                        request.Action == "view");
+
+        center.BackCommand.Execute(null);
+
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+    }
+
+    [Fact]
+    public async Task Card_recovery_center_back_from_unknown_payment_restores_same_locked_payment()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-BACK", "930UNKNOWNBACK"));
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var recovery = new FakeCardPaymentRecoveryService { OpenItems = [] };
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(
+            cart,
+            checkout,
+            orderRepository,
+            syncQueue,
+            new UnknownCardTerminalClient(),
+            recovery);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.Session = viewModel.Session with
+        {
+            CashierSession = CreateCashierSession(
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.View)
+        };
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+
+        await payment.SelectCardCommand.ExecuteAsync(null);
+
+        var overlay = Assert.IsType<CardPaymentErrorOverlayViewModel>(payment.CardPaymentErrorOverlay);
+        var unknownStatus = payment.StatusMessage;
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 1m);
+        payment.PaymentTenders.Add(existingTender);
+        Assert.True(overlay.IsOpen);
+        Assert.True(payment.IsPaymentInteractionLocked);
+        Assert.False(payment.SelectCardCommand.CanExecute(null));
+        Assert.True(payment.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+
+        await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+        await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
+        var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+
+        center.BackCommand.Execute(null);
+
+        Assert.Same(payment, viewModel.CurrentScreen);
+        Assert.Same(payment, viewModel.CashPayment);
+        Assert.True(overlay.IsOpen);
+        Assert.True(payment.IsPaymentInteractionLocked);
+        Assert.False(payment.SelectCardCommand.CanExecute(null));
+        Assert.Equal(unknownStatus, payment.StatusMessage);
+        Assert.Equal(existingTender, Assert.Single(payment.PaymentTenders));
+        Assert.Single(cart.Lines);
+        Assert.Equal("SKU-UNKNOWN-BACK", cart.Lines[0].ProductCode);
     }
 
     [Fact]
@@ -5598,7 +5657,8 @@ public sealed class MainViewModelScannerTests
         CashCheckoutService checkout,
         ILocalOrderRepository orderRepository,
         ISyncQueueRepository syncQueue,
-        ICardTerminalClient cardTerminalClient)
+        ICardTerminalClient cardTerminalClient,
+        ICardPaymentRecoveryService? cardPaymentRecoveryService = null)
     {
         var priceIndex = new LocalSellableItemIndex();
         var catalogRepository = new FakeCatalogRepository();
@@ -5612,7 +5672,7 @@ public sealed class MainViewModelScannerTests
         return new MainViewModel(
             new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
             new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
-            new PaymentTerminalFacade(null, cardTerminalClient, null, null, null, null, null),
+            new PaymentTerminalFacade(null, cardTerminalClient, null, null, cardPaymentRecoveryService, null, null),
             new PrintFacade(null, null, null),
             new ShellCultureService(localization, new FakeSettingsRepository()),
             new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
@@ -5638,7 +5698,10 @@ public sealed class MainViewModelScannerTests
                 priceIndex,
                 cart,
                 remoteLookupRefreshAsync,
-                reloadCatalogAsync));
+                reloadCatalogAsync),
+            operationAuthorizationService: cardPaymentRecoveryService is null
+                ? null
+                : new GrantingOperationAuthorizationService());
     }
 
     private static MainViewModel CreateAuthorizedMainViewModelWithSettings(
@@ -6314,6 +6377,29 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new PaymentAuthorizationResult(true, $"REFUND:{originalReference}", AuthorizedAmount: amount));
+        }
+    }
+
+    private sealed class UnknownCardTerminalClient : ICardTerminalClient
+    {
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new PaymentAuthorizationResult(
+                false,
+                Message: "Card result is unknown.",
+                ResultUnknown: true));
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default)
+        {
+            return AuthorizeAsync(amount, session, cancellationToken);
         }
     }
 
