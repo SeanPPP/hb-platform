@@ -1327,6 +1327,144 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Square_automatic_writes_from_stale_worker_cannot_downgrade_verified_or_completed_sale()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var winner = new LocalSquarePaymentAttemptRepository(store);
+            var staleWorker = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("50000000-0000-0000-0000-000000000004"),
+                status: LocalSquarePaymentAttemptStatus.CheckoutCreated,
+                operationKind: "Sale");
+
+            await schema.InitializeAsync();
+            await winner.CreateAsync(attempt);
+            await winner.MarkPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                "PAYMENT-WINNER",
+                "COMPLETED",
+                responseCode: null,
+                responseText: "verified by winner",
+                attempt.UpdatedAt.AddMinutes(1));
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => staleWorker.UpdateCheckoutStatusAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Recovering,
+                "PENDING",
+                null,
+                attempt.UpdatedAt.AddMinutes(2)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => staleWorker.MarkFailedAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                "FAILED",
+                null,
+                null,
+                "stale failure",
+                attempt.UpdatedAt.AddMinutes(2)));
+
+            var verified = await winner.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, verified!.Status);
+            Assert.Equal("PAYMENT-WINNER", verified.PaymentId);
+            Assert.Equal("COMPLETED", verified.PaymentStatus);
+
+            await winner.MarkOrderCompletedAsync(attempt.AttemptGuid, attempt.UpdatedAt.AddMinutes(3));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => staleWorker.MarkCheckoutCreatedAsync(
+                attempt.AttemptGuid,
+                "CHECKOUT-STALE",
+                "PENDING",
+                attempt.UpdatedAt.AddMinutes(4)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => staleWorker.MarkPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                "PAYMENT-STALE",
+                "COMPLETED",
+                null,
+                "stale verified write",
+                attempt.UpdatedAt.AddMinutes(4)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => staleWorker.MarkFailedAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                "FAILED",
+                null,
+                null,
+                "stale failure",
+                attempt.UpdatedAt.AddMinutes(4)));
+
+            var completed = await winner.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, completed!.Status);
+            Assert.Equal("PAYMENT-WINNER", completed.PaymentId);
+            Assert.Equal("COMPLETED", completed.PaymentStatus);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Square_refund_submission_writes_cannot_downgrade_payment_verified_attempt()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            const string submissionToken = "refund-worker-token";
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.Parse("50000000-0000-0000-0000-000000000005"),
+                status: LocalSquarePaymentAttemptStatus.Pending,
+                operationKind: "Refund");
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+            Assert.True(await repository.TryBeginRefundSubmissionAsync(
+                attempt.AttemptGuid,
+                attempt.UpdatedAt,
+                submissionToken,
+                attempt.UpdatedAt.AddMinutes(1)));
+            Assert.True(await repository.TryMarkRefundPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                submissionToken,
+                "REFUND-WINNER",
+                "COMPLETED",
+                null,
+                "verified by winner",
+                attempt.UpdatedAt.AddMinutes(2)));
+
+            Assert.False(await repository.TryMarkRefundCheckoutCreatedAsync(
+                attempt.AttemptGuid,
+                submissionToken,
+                "REFUND-CHECKOUT-STALE",
+                "PENDING",
+                attempt.UpdatedAt.AddMinutes(3)));
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                submissionToken,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                "FAILED",
+                null,
+                null,
+                "stale refund failure",
+                attempt.UpdatedAt.AddMinutes(3)));
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, saved!.Status);
+            Assert.Equal("REFUND-WINNER", saved.PaymentId);
+            Assert.Equal("COMPLETED", saved.PaymentStatus);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Square_TryTerminalizeNotPaid_rejects_already_terminal_attempt()
     {
         var databasePath = CreateTempDatabasePath();

@@ -551,9 +551,9 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.Clear();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
-            // Clear 会先清空内部状态再通知订阅者；即使订阅者失败，也保留已完成的精确回滚。
+            // Clear 会先清空内部状态再通知订阅者；回滚通知即使抛 OCE 也不能遮蔽已完成的内部清空。
             ConsoleLog.Write(
                 "SquareRecovery",
                 $"not-paid cart rollback notification failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
@@ -668,7 +668,7 @@ public sealed class SquarePaymentRecoveryService(
                 CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
                 StringComparison.Ordinal))
         {
-            return RestoreSupervisorApprovedRetry(cart, refundAttempt);
+            return RestoreSupervisorApprovedRetry(cart, refundAttempt, cancellationToken);
         }
 
         if (!string.IsNullOrWhiteSpace(refundAttempt.PaymentId) &&
@@ -764,10 +764,12 @@ public sealed class SquarePaymentRecoveryService(
                 () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
                 cancellationToken);
             if (concurrentAttempt is null ||
+                concurrentAttempt.Status != LocalSquarePaymentAttemptStatus.PaymentVerified &&
                 !IsSupervisorPaidSale(concurrentAttempt) &&
-                !IsSupervisorNotPaidSale(concurrentAttempt))
+                !IsSupervisorNotPaidSale(concurrentAttempt) &&
+                !IsTerminalSquareStatus(concurrentAttempt.Status))
             {
-                // 只把仓储 guarded update 的主管结案竞态降级为重读；其他状态错误保持原异常。
+                // 只把真实 guarded update 竞态降级为重读；参数或存储错误保持原异常。
                 throw;
             }
 
@@ -800,6 +802,13 @@ public sealed class SquarePaymentRecoveryService(
         if (IsSupervisorNotPaidSale(attempt))
         {
             return await RecoverSupervisorNotPaidSaleAsync(cart, attempt, cancellationToken);
+        }
+
+        if (IsTerminalSquareStatus(attempt.Status))
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.square.stateChanged", "The Square payment state changed while the bank result was being checked. Run recovery again."));
         }
 
         var checkingMessage = Format("cardRecovery.square.checking", "A previous Square card transaction for {0:C2} was in progress before the POS closed. Checking the card terminal status.", attempt.Amount);
@@ -1235,10 +1244,14 @@ public sealed class SquarePaymentRecoveryService(
                 cancellationToken);
         }
 
-        if (string.Equals(
-                current.ResponseCode,
-                ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
-                StringComparison.Ordinal) ||
+        if ((string.Equals(
+                 current.ResponseCode,
+                 ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+                 StringComparison.Ordinal) &&
+             !string.Equals(
+                 queriedAttempt.ResponseCode,
+                 ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+                 StringComparison.Ordinal)) ||
             IsTerminalSquareStatus(current.Status))
         {
             return new CardPaymentRecoveryResult(
@@ -1373,7 +1386,7 @@ public sealed class SquarePaymentRecoveryService(
             cart,
             session,
             verifiedAttempt,
-            CancellationToken.None);
+            cancellationToken);
     }
 
     public async Task<CardRefundSupervisorResolutionResult> ResolveRefundAsync(
@@ -1451,7 +1464,7 @@ public sealed class SquarePaymentRecoveryService(
 
         if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
         {
-            var recovery = RestoreSupervisorApprovedRetry(cart, updatedAttempt);
+            var recovery = RestoreSupervisorApprovedRetry(cart, updatedAttempt, cancellationToken);
             var retryAllowed = recovery.Outcome == CardPaymentRecoveryOutcome.DraftRestored;
             return new CardRefundSupervisorResolutionResult(
                 retryAllowed,
@@ -1465,7 +1478,7 @@ public sealed class SquarePaymentRecoveryService(
             cart,
             session,
             updatedAttempt,
-            CancellationToken.None);
+            cancellationToken);
         var recoveryCompleted = completed.Outcome is
             CardPaymentRecoveryOutcome.OrderCompleted or
             CardPaymentRecoveryOutcome.DraftRestored;
@@ -1546,9 +1559,14 @@ public sealed class SquarePaymentRecoveryService(
             {
                 cart.RestoreSnapshot(draft.CartSnapshot);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 ConsoleLog.Write(
                     "SquareRecovery",
                     $"confirmed partial refund cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
@@ -1658,7 +1676,8 @@ public sealed class SquarePaymentRecoveryService(
 
     private CardPaymentRecoveryResult RestoreSupervisorApprovedRetry(
         PosCartService cart,
-        LocalSquarePaymentAttempt attempt)
+        LocalSquarePaymentAttempt attempt,
+        CancellationToken cancellationToken)
     {
         if (!cart.IsEmpty)
         {
@@ -1689,9 +1708,14 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
             ConsoleLog.Write(
                 "SquareRecovery",
                 $"not-refunded retry cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");

@@ -459,6 +459,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
+              AND Status IN ($RecoveringStatus, $CheckoutCreatedStatus)
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -468,6 +469,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$CheckoutId", checkoutId);
                 command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
                 command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+                command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+                command.Parameters.AddWithValue("$CheckoutCreatedStatus", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
                 command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
             },
             cancellationToken);
@@ -531,6 +534,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
+              AND Status IN ($PendingStatus, $CheckoutCreatedStatus, $RecoveringStatus, $CheckoutCompletedStatus, $UnknownStatus)
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -543,6 +547,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
                 command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+                AddAutomaticOpenStatusParameters(command);
             },
             cancellationToken);
     }
@@ -573,6 +578,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
+              AND Status IN ($PendingStatus, $CheckoutCreatedStatus, $RecoveringStatus, $CheckoutCompletedStatus, $UnknownStatus)
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -586,6 +592,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
+                AddAutomaticOpenStatusParameters(command);
             },
             cancellationToken);
     }
@@ -605,6 +612,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
@@ -650,6 +659,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Sale'
               AND SubmissionToken = $SubmissionToken
               AND Status IN ($PendingStatus, $RecoveringStatus, $CheckoutCreatedStatus);
             """,
@@ -833,12 +843,12 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                     ELSE $RecoveringStatus
                 END,
                 CheckoutStatus = CASE
-                    WHEN COALESCE(ResponseCode, '') = '' THEN $CanceledCheckoutStatus
+                    WHEN COALESCE(ResponseCode, '') = '' OR ResponseCode = $ContinueWaitingCode THEN $CanceledCheckoutStatus
                     ELSE CheckoutStatus
                 END,
                 ResponseCode = CASE
                     WHEN ResponseCode = $AutomaticCanceledClaimCode THEN NULL
-                    WHEN COALESCE(ResponseCode, '') = '' THEN $AutomaticCanceledClaimCode
+                    WHEN COALESCE(ResponseCode, '') = '' OR ResponseCode = $ContinueWaitingCode THEN $AutomaticCanceledClaimCode
                     ELSE ResponseCode
                 END,
                 ResolvedAt = CASE
@@ -853,6 +863,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND (
                     ResponseCode = $ConfirmedNotPaidCode
                     OR ResponseCode = $AutomaticCanceledClaimCode
+                    OR ResponseCode = $ContinueWaitingCode
                     OR COALESCE(ResponseCode, '') = ''
                   )
               AND Status IN ($PendingStatus, $RecoveringStatus);
@@ -865,6 +876,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ConfirmedNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$ContinueWaitingCode", ActiveSessionSupervisorResolutionCodes.ContinueWaiting);
         command.Parameters.AddWithValue("$AutomaticCanceledClaimCode", AutomaticCanceledClaimCode);
         command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
         command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
@@ -1004,6 +1016,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CancelReason = COALESCE($CancelReason, CancelReason),
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
@@ -1042,6 +1056,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CompletedAt = $CompletedAt,
                 UpdatedAt = $CompletedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
@@ -1085,6 +1101,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResolvedAt = $ResolvedAt,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
@@ -1284,6 +1302,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             {
                 configure(command);
                 AddSupervisorResolvedCodeParameters(command);
+                AddAutomaticWriteGuardParameters(command);
             },
             cancellationToken);
         if (affected != 1)
@@ -1329,6 +1348,26 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ResolvedCode2", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
         command.Parameters.AddWithValue("$PaymentResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
         command.Parameters.AddWithValue("$PaymentResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+    }
+
+    private static void AddAutomaticWriteGuardParameters(SqliteCommand command)
+    {
+        command.Parameters.AddWithValue("$AutomaticOperationKind1", "Sale");
+        command.Parameters.AddWithValue("$AutomaticOperationKind2", "Refund");
+        command.Parameters.AddWithValue("$AutomaticOpenStatus1", LocalSquarePaymentAttemptStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$AutomaticOpenStatus2", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+        command.Parameters.AddWithValue("$AutomaticOpenStatus3", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$AutomaticOpenStatus4", LocalSquarePaymentAttemptStatus.CheckoutCompleted.ToString());
+        command.Parameters.AddWithValue("$AutomaticOpenStatus5", LocalSquarePaymentAttemptStatus.Unknown.ToString());
+    }
+
+    private static void AddAutomaticOpenStatusParameters(SqliteCommand command)
+    {
+        command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$CheckoutCreatedStatus", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
+        command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$CheckoutCompletedStatus", LocalSquarePaymentAttemptStatus.CheckoutCompleted.ToString());
+        command.Parameters.AddWithValue("$UnknownStatus", LocalSquarePaymentAttemptStatus.Unknown.ToString());
     }
 
     private static void AddAttemptParameters(SqliteCommand command, LocalSquarePaymentAttempt attempt)
