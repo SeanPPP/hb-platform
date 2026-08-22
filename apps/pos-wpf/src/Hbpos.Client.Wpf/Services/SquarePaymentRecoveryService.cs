@@ -54,6 +54,8 @@ public sealed class SquarePaymentRecoveryService(
     FinancialSupervisorAuditReplayService? supervisorAuditReplay = null,
     ISharedHeldOrderRepository? sharedHeldOrderRepository = null) : ISquarePaymentRecoveryService
 {
+    private const string AutomaticCanceledClaimCode = "SQUARE_AUTO_CANCELED_CART_RESTORE";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly ISharedHeldOrderPaymentSourceResolver? _heldOrderPaymentSourceResolver =
@@ -745,12 +747,16 @@ public sealed class SquarePaymentRecoveryService(
 
         try
         {
-            await RunLocalStoreAsync(
-                () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
-                cancellationToken);
-            attempt = await RunLocalStoreAsync(
-                () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
-                cancellationToken) ?? attempt;
+            // 自动取消 claim 已经是开放态 Recovering；重启接管时保留其版本，避免在恢复 cart 前丢失 CAS 所有权。
+            if (!IsAutomaticCanceledClaim(attempt))
+            {
+                await RunLocalStoreAsync(
+                    () => attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken),
+                    cancellationToken);
+                attempt = await RunLocalStoreAsync(
+                    () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, cancellationToken),
+                    cancellationToken) ?? attempt;
+            }
         }
         catch (InvalidOperationException)
         {
@@ -865,7 +871,10 @@ public sealed class SquarePaymentRecoveryService(
 
         if (IsSquarePendingStatus(checkoutStatus.Status))
         {
-            await RunLocalStoreAsync(
+            var guardedOutcome = await TryExecuteGuardedSaleWriteAsync(
+                cart,
+                attempt,
+                draft,
                 () => attemptRepository.UpdateCheckoutStatusAsync(
                     attempt.AttemptGuid,
                     LocalSquarePaymentAttemptStatus.Recovering,
@@ -874,6 +883,11 @@ public sealed class SquarePaymentRecoveryService(
                     DateTimeOffset.UtcNow,
                     cancellationToken),
                 cancellationToken);
+            if (guardedOutcome is not null)
+            {
+                return guardedOutcome;
+            }
+
             return new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.Checking, checkingMessage);
         }
 
@@ -898,16 +912,96 @@ public sealed class SquarePaymentRecoveryService(
                     UnknownResultMessage());
             }
 
-            var terminalized = await RunLocalStoreAsync(
-                () => attemptRepository.TryTerminalizeNotPaidAsync(
-                    attempt.AttemptGuid,
-                    attempt.Status,
-                    attempt.UpdatedAt,
-                    DateTimeOffset.UtcNow,
-                    cancellationToken),
-                cancellationToken);
+            var claimedAttempt = attempt;
+            if (!IsAutomaticCanceledClaim(claimedAttempt))
+            {
+                var claimedAt = DateTimeOffset.UtcNow;
+                bool claimed;
+                try
+                {
+                    claimed = await RunLocalStoreAsync(
+                        () => attemptRepository.TryTerminalizeNotPaidAsync(
+                            attempt.AttemptGuid,
+                            attempt.Status,
+                            attempt.UpdatedAt,
+                            claimedAt,
+                            CancellationToken.None),
+                        CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ConsoleLog.Write(
+                        "SquareRecovery",
+                        $"canceled checkout claim failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                    return new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        UnknownResultMessage());
+                }
+
+                if (!claimed)
+                {
+                    var latestOutcome = await TryHandleSupervisorResolvedSaleAfterLookupAsync(
+                        cart,
+                        attempt,
+                        draft,
+                        CancellationToken.None);
+                    return latestOutcome ?? new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        T("cardRecovery.square.stateChanged", "The Square payment state changed while the bank result was being checked. Run recovery again."));
+                }
+
+                claimedAttempt = attempt with
+                {
+                    Status = LocalSquarePaymentAttemptStatus.Recovering,
+                    CheckoutStatus = "CANCELED",
+                    ResponseCode = AutomaticCanceledClaimCode,
+                    ResolvedAt = null,
+                    UpdatedAt = claimedAt
+                };
+            }
+
+            try
+            {
+                cart.RestoreSnapshot(draft.CartSnapshot);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // claim 始终保持开放；真实购物车通知失败时只撤销本次快照，下一次恢复可重试。
+                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"canceled checkout cart restore failed with open claim attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage());
+            }
+
+            bool terminalized;
+            try
+            {
+                terminalized = await RunLocalStoreAsync(
+                    () => attemptRepository.TryTerminalizeNotPaidAsync(
+                        claimedAttempt.AttemptGuid,
+                        claimedAttempt.Status,
+                        claimedAttempt.UpdatedAt,
+                        DateTimeOffset.UtcNow,
+                        CancellationToken.None),
+                    CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"canceled checkout finalization failed with open claim attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage());
+            }
+
             if (!terminalized)
             {
+                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
                 var latestOutcome = await TryHandleSupervisorResolvedSaleAfterLookupAsync(
                     cart,
                     attempt,
@@ -918,53 +1012,6 @@ public sealed class SquarePaymentRecoveryService(
                     T("cardRecovery.square.stateChanged", "The Square payment state changed while the bank result was being checked. Run recovery again."));
             }
 
-            try
-            {
-                cart.RestoreSnapshot(draft.CartSnapshot);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // CAS 已阻断主管竞态；真实购物车通知失败时精确撤销本次快照，并用受主管结案保护的
-                // 仓储写入把 attempt 从 Canceled 重开为 Unknown，保留后续恢复/对账入口。
-                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
-                try
-                {
-                    await RunLocalStoreAsync(
-                        () => attemptRepository.MarkFailedAsync(
-                            attempt.AttemptGuid,
-                            LocalSquarePaymentAttemptStatus.Unknown,
-                            checkoutStatus.Status,
-                            attempt.PaymentStatus,
-                            responseCode: null,
-                            responseText: "Canceled checkout cart restore failed.",
-                            resolvedAt: DateTimeOffset.UtcNow,
-                            cancellationToken: CancellationToken.None,
-                            cancelReason: checkoutStatus.CancelReason),
-                        CancellationToken.None);
-                }
-                catch (InvalidOperationException)
-                {
-                    var latestOutcome = await TryHandleSupervisorResolvedSaleAfterLookupAsync(
-                        cart,
-                        attempt,
-                        draft,
-                        CancellationToken.None);
-                    if (latestOutcome is not null)
-                    {
-                        return latestOutcome;
-                    }
-
-                    throw;
-                }
-
-                ConsoleLog.Write(
-                    "SquareRecovery",
-                    $"canceled checkout cart restore failed and attempt reopened attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
-                return new CardPaymentRecoveryResult(
-                    CardPaymentRecoveryOutcome.Unknown,
-                    UnknownResultMessage());
-            }
-
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 Format("cardRecovery.square.cancelled", "The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.", checkoutStatus.CancelReason ?? "CANCELED"));
@@ -972,7 +1019,10 @@ public sealed class SquarePaymentRecoveryService(
 
         if (!string.Equals(checkoutStatus.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
         {
-            await RunLocalStoreAsync(
+            var guardedOutcome = await TryExecuteGuardedSaleWriteAsync(
+                cart,
+                attempt,
+                draft,
                 () => attemptRepository.MarkFailedAsync(
                     attempt.AttemptGuid,
                     LocalSquarePaymentAttemptStatus.Unknown,
@@ -983,6 +1033,11 @@ public sealed class SquarePaymentRecoveryService(
                     DateTimeOffset.UtcNow,
                     cancellationToken),
                 cancellationToken);
+            if (guardedOutcome is not null)
+            {
+                return guardedOutcome;
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 UnknownResultMessage());
@@ -991,7 +1046,10 @@ public sealed class SquarePaymentRecoveryService(
         var paymentId = checkoutStatus.PaymentIds.FirstOrDefault();
         if (string.IsNullOrWhiteSpace(paymentId))
         {
-            await RunLocalStoreAsync(
+            var guardedOutcome = await TryExecuteGuardedSaleWriteAsync(
+                cart,
+                attempt,
+                draft,
                 () => attemptRepository.MarkFailedAsync(
                     attempt.AttemptGuid,
                     LocalSquarePaymentAttemptStatus.Unknown,
@@ -1002,6 +1060,11 @@ public sealed class SquarePaymentRecoveryService(
                     DateTimeOffset.UtcNow,
                     cancellationToken),
                 cancellationToken);
+            if (guardedOutcome is not null)
+            {
+                return guardedOutcome;
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 UnknownResultMessage());
@@ -1038,7 +1101,10 @@ public sealed class SquarePaymentRecoveryService(
             attempt.Currency);
         if (!verification.Verified)
         {
-            await RunLocalStoreAsync(
+            var guardedOutcome = await TryExecuteGuardedSaleWriteAsync(
+                cart,
+                attempt,
+                draft,
                 () => attemptRepository.MarkFailedAsync(
                     attempt.AttemptGuid,
                     LocalSquarePaymentAttemptStatus.Unknown,
@@ -1049,6 +1115,11 @@ public sealed class SquarePaymentRecoveryService(
                     DateTimeOffset.UtcNow,
                     cancellationToken),
                 cancellationToken);
+            if (guardedOutcome is not null)
+            {
+                return guardedOutcome;
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 verification.Failure == SquarePaymentVerificationFailure.Amount
@@ -1056,7 +1127,10 @@ public sealed class SquarePaymentRecoveryService(
                     : UnknownResultMessage());
         }
 
-        await RunLocalStoreAsync(
+        var paymentWriteOutcome = await TryExecuteGuardedSaleWriteAsync(
+            cart,
+            attempt,
+            draft,
             () => attemptRepository.MarkPaymentVerifiedAsync(
                 attempt.AttemptGuid,
                 payment.PaymentId,
@@ -1066,6 +1140,11 @@ public sealed class SquarePaymentRecoveryService(
                 DateTimeOffset.UtcNow,
                 CancellationToken.None),
             CancellationToken.None);
+        if (paymentWriteOutcome is not null)
+        {
+            return paymentWriteOutcome;
+        }
+
         return await CompleteVerifiedAttemptAsync(
             attempt,
             draft,
@@ -1080,6 +1159,39 @@ public sealed class SquarePaymentRecoveryService(
     private static bool IsSupervisorPaidSale(LocalSquarePaymentAttempt attempt) =>
         string.Equals(attempt.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, StringComparison.Ordinal);
+
+    private static bool IsAutomaticCanceledClaim(LocalSquarePaymentAttempt attempt) =>
+        attempt.Status == LocalSquarePaymentAttemptStatus.Recovering &&
+        string.Equals(attempt.ResponseCode, AutomaticCanceledClaimCode, StringComparison.Ordinal);
+
+    private async Task<CardPaymentRecoveryResult?> TryExecuteGuardedSaleWriteAsync(
+        PosCartService cart,
+        LocalSquarePaymentAttempt queriedAttempt,
+        CardPaymentOrderDraft draft,
+        Func<Task> write,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RunLocalStoreAsync(write, cancellationToken);
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            var latestOutcome = await TryHandleSupervisorResolvedSaleAfterLookupAsync(
+                cart,
+                queriedAttempt,
+                draft,
+                CancellationToken.None);
+            if (latestOutcome is not null)
+            {
+                return latestOutcome;
+            }
+
+            // 重读仍是原自动恢复状态时，异常不是主管并发拒写，保留真实仓储错误。
+            throw;
+        }
+    }
 
     private async Task<CardPaymentRecoveryResult?> TryHandleSupervisorResolvedSaleAfterLookupAsync(
         PosCartService cart,
@@ -1430,7 +1542,22 @@ public sealed class SquarePaymentRecoveryService(
             }
 
             // ValidateAndMaterializeDraft 已在活动购物车写入前完成快照和 tender 全量验证。
-            cart.RestoreSnapshot(draft.CartSnapshot);
+            try
+            {
+                cart.RestoreSnapshot(draft.CartSnapshot);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                ConsoleLog.Write(
+                    "SquareRecovery",
+                    $"confirmed partial refund cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.refund.confirmedRestoreFailed", "The confirmed refund could not be restored to the current cart. Run recovery again."),
+                    DialogDetails: dialogDetails);
+            }
+
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
@@ -1558,7 +1685,22 @@ public sealed class SquarePaymentRecoveryService(
         }
 
         var draft = validatedDraft.Draft;
-        cart.RestoreSnapshot(draft.CartSnapshot);
+        try
+        {
+            cart.RestoreSnapshot(draft.CartSnapshot);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"not-refunded retry cart restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.retryRestoreFailed", "The original return could not be restored to the current cart. Run recovery again."),
+                DialogDetails: BuildRefundDialogDetails(attempt));
+        }
+
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),

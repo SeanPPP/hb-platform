@@ -1262,7 +1262,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
-    public async Task Square_TryTerminalizeNotPaid_uses_version_cas_for_automatic_canceled_checkout()
+    public async Task Square_TryTerminalizeNotPaid_claims_open_before_automatic_canceled_checkout_is_terminalized()
     {
         var databasePath = CreateTempDatabasePath();
 
@@ -1284,16 +1284,41 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 attempt.Status,
                 attempt.UpdatedAt.AddSeconds(-1),
                 attempt.UpdatedAt.AddMinutes(1));
-            var applied = await repository.TryTerminalizeNotPaidAsync(
+            var claimed = await repository.TryTerminalizeNotPaidAsync(
                 attempt.AttemptGuid,
                 attempt.Status,
                 attempt.UpdatedAt,
                 attempt.UpdatedAt.AddMinutes(1));
+            var claimedAttempt = await repository.GetAttemptAsync(attempt.AttemptGuid);
+
+            var supervisorApplied = await repository.ResolvePaymentWithJournalAsync(
+                new SquarePaymentResolution(
+                    attempt.AttemptGuid,
+                    CardRecoverySupervisorDecision.ConfirmProcessed,
+                    "Late supervisor decision",
+                    "Bank matched",
+                    "PAYMENT-LATE",
+                    claimedAttempt!.Status,
+                    claimedAttempt.UpdatedAt,
+                    attempt.UpdatedAt.AddMinutes(2)),
+                CreateSquareSaleJournal(attempt.AttemptGuid, "ConfirmProcessed", "Late supervisor decision"));
+
+            var terminalized = await repository.TryTerminalizeNotPaidAsync(
+                attempt.AttemptGuid,
+                claimedAttempt.Status,
+                claimedAttempt.UpdatedAt,
+                attempt.UpdatedAt.AddMinutes(3));
             var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
 
             Assert.False(stale);
-            Assert.True(applied);
+            Assert.True(claimed);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, claimedAttempt.Status);
+            Assert.Null(claimedAttempt.ResolvedAt);
+            Assert.False(string.IsNullOrWhiteSpace(claimedAttempt.ResponseCode));
+            Assert.False(supervisorApplied);
+            Assert.True(terminalized);
             Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, saved!.Status);
+            Assert.Null(saved.ResponseCode);
         }
         finally
         {

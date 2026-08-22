@@ -306,6 +306,8 @@ public interface ILocalSquarePaymentAttemptRepository
 
 public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) : ILocalSquarePaymentAttemptRepository
 {
+    private const string AutomaticCanceledClaimCode = "SQUARE_AUTO_CANCELED_CART_RESTORE";
+
     private static readonly string[] TerminalStatuses =
     [
         LocalSquarePaymentAttemptStatus.Canceled.ToString(),
@@ -715,7 +717,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                   AND Status = $ExpectedStatus
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
-                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND COALESCE(ResponseCode, '') <> $AutomaticCanceledClaimCode;
                 """,
             CardRecoverySupervisorDecision.ConfirmNotProcessed => """
                 UPDATE LocalSquarePaymentAttempts
@@ -736,7 +739,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                   AND Status = $ExpectedStatus
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
-                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND COALESCE(ResponseCode, '') <> $AutomaticCanceledClaimCode;
                 """,
             _ => """
                 UPDATE LocalSquarePaymentAttempts
@@ -749,7 +753,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                   AND Status = $ExpectedStatus
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3, $ReviewStatus4, $ReviewStatus5)
                   AND UpdatedAt = $ExpectedUpdatedAt
-                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+                  AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+                  AND COALESCE(ResponseCode, '') <> $AutomaticCanceledClaimCode;
                 """
         };
 
@@ -787,6 +792,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", resolution.ExpectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
         command.Parameters.AddWithValue("$ResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$AutomaticCanceledClaimCode", AutomaticCanceledClaimCode);
         command.Parameters.AddWithValue("$ReviewStatus1", LocalSquarePaymentAttemptStatus.Pending.ToString());
         command.Parameters.AddWithValue("$ReviewStatus2", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
         command.Parameters.AddWithValue("$ReviewStatus3", LocalSquarePaymentAttemptStatus.Recovering.ToString());
@@ -817,19 +823,28 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        // 同一个版本 CAS 同时服务主管确认未付款与 Square 自动取消：主管结案转 Abandoned，
-        // 无主管响应的自动取消转 Canceled；任何主管已付款/等待响应都会使 CAS 失败。
+        // 同一个版本 CAS 同时服务主管确认未付款与 Square 自动取消：主管结案直接转 Abandoned；
+        // 自动取消第一次仅写开放态 claim，真实购物车恢复成功后第二次 CAS 才转 Canceled。
         command.CommandText = """
             UPDATE LocalSquarePaymentAttempts
             SET Status = CASE
                     WHEN ResponseCode = $ConfirmedNotPaidCode THEN $AbandonedStatus
-                    ELSE $CanceledStatus
+                    WHEN ResponseCode = $AutomaticCanceledClaimCode THEN $CanceledStatus
+                    ELSE $RecoveringStatus
                 END,
                 CheckoutStatus = CASE
                     WHEN COALESCE(ResponseCode, '') = '' THEN $CanceledCheckoutStatus
                     ELSE CheckoutStatus
                 END,
-                ResolvedAt = $ResolvedAt,
+                ResponseCode = CASE
+                    WHEN ResponseCode = $AutomaticCanceledClaimCode THEN NULL
+                    WHEN COALESCE(ResponseCode, '') = '' THEN $AutomaticCanceledClaimCode
+                    ELSE ResponseCode
+                END,
+                ResolvedAt = CASE
+                    WHEN ResponseCode IN ($ConfirmedNotPaidCode, $AutomaticCanceledClaimCode) THEN $ResolvedAt
+                    ELSE NULL
+                END,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Sale'
@@ -837,6 +852,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND UpdatedAt = $ExpectedUpdatedAt
               AND (
                     ResponseCode = $ConfirmedNotPaidCode
+                    OR ResponseCode = $AutomaticCanceledClaimCode
                     OR COALESCE(ResponseCode, '') = ''
                   )
               AND Status IN ($PendingStatus, $RecoveringStatus);
@@ -849,6 +865,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ConfirmedNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$AutomaticCanceledClaimCode", AutomaticCanceledClaimCode);
         command.Parameters.AddWithValue("$PendingStatus", LocalSquarePaymentAttemptStatus.Pending.ToString());
         command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
 
