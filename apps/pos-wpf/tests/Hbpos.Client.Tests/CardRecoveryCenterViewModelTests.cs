@@ -165,6 +165,46 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public async Task RecoverCommand_reports_result_when_post_operation_refresh_fails()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000006"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Recovered order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            RecoverResult = completed
+        };
+        var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                handled.Add((key, result));
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        recovery.ListException = new InvalidOperationException("queue unavailable");
+
+        await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        var callback = Assert.Single(handled);
+        Assert.Equal(selected.Key, callback.Key);
+        Assert.Same(completed, callback.Result);
+        Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+        Assert.Equal(selected.Key, viewModel.SelectedAttempt?.Key);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
     public async Task ResolveCommand_reports_operation_start_key_when_queue_refresh_changes_selection()
     {
         var selected = CreateQueueItem(
@@ -214,6 +254,50 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Same(completed, callback.Result);
         Assert.Equal(replacement.Key, callback.SelectedKeyAtCallback);
         Assert.Equal(replacement.Key, viewModel.SelectedAttempt?.Key);
+    }
+
+    [Fact]
+    public async Task ResolveCommand_reports_result_when_post_operation_refresh_fails()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000007"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Confirmed payment completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            ResolveResult = new CardRecoveryResolutionResult(
+                true,
+                "Resolution saved",
+                completed)
+        };
+        var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                handled.Add((key, result));
+                return Task.CompletedTask;
+            });
+        await viewModel.LoadAsync();
+        viewModel.ResolutionReason = "Settlement checked";
+        recovery.ListException = new InvalidOperationException("queue unavailable");
+
+        await viewModel.ConfirmPaidCommand.ExecuteAsync(null);
+
+        var callback = Assert.Single(handled);
+        Assert.Equal(selected.Key, callback.Key);
+        Assert.Same(completed, callback.Result);
+        Assert.Equal("Could not refresh card transactions. queue unavailable", viewModel.StatusMessage);
+        Assert.Equal(selected.Key, viewModel.SelectedAttempt?.Key);
+        Assert.False(viewModel.IsBusy);
     }
 
     [Theory]

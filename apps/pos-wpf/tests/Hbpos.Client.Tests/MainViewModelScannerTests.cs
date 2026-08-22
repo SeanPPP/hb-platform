@@ -4787,7 +4787,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_and_returns_to_pos()
+    public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_when_queue_refresh_fails()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("1042", "SKU-UNKNOWN-COMPLETED", "930UNKNOWNCOMPLETED"));
@@ -4812,8 +4812,13 @@ public sealed class MainViewModelScannerTests
         var listCallCount = 0;
         var recovery = new FakeCardPaymentRecoveryService
         {
-            ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
-                ++listCallCount == 2 ? [queueItem] : []),
+            ListOpenHandler = (_, _) => ++listCallCount switch
+            {
+                2 => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([queueItem]),
+                3 => Task.FromException<IReadOnlyList<CardRecoveryQueueItem>>(
+                    new InvalidOperationException("queue unavailable")),
+                _ => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([])
+            },
             TargetedRecoverResult = new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.OrderCompleted,
                 "Recovered current payment completed.")
@@ -4859,6 +4864,7 @@ public sealed class MainViewModelScannerTests
 
         await center.RecoverCommand.ExecuteAsync(null);
 
+        Assert.Equal(3, listCallCount);
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Same(payment, viewModel.CashPayment);
         Assert.False(cardSession.HasUnknownResult);

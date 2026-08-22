@@ -271,7 +271,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
                 ? T("cardRecovery.center.status.recoverNoResult", "The selected transaction is no longer open.")
                 : result.Message;
-            await RefreshListCoreAsync(actionMessage);
+            await TryRefreshListAfterOperationAsync(actionMessage, "recover");
             if (_recoveryResultHandledAsync is not null)
             {
                 await _recoveryResultHandledAsync(selectedKey, result);
@@ -347,7 +347,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
                 ? T("cardRecovery.center.status.resolveNoResult", "The resolution returned no message.")
                 : result.Message;
-            await RefreshListCoreAsync(actionMessage);
+            await TryRefreshListAfterOperationAsync(actionMessage, action);
             if (result.RecoveryResult is not null && _recoveryResultHandledAsync is not null)
             {
                 await _recoveryResultHandledAsync(selectedKey, result.RecoveryResult);
@@ -367,6 +367,26 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    private async Task TryRefreshListAfterOperationAsync(string actionMessage, string action)
+    {
+        try
+        {
+            await RefreshListCoreAsync(actionMessage);
+        }
+        catch (Exception ex)
+        {
+            // 金融操作结果已经取得，队列刷新失败不得阻断结果回调或被误报为操作失败。
+            SetStatusResource(
+                "cardRecovery.center.status.refreshFailed",
+                "Could not refresh card transactions. {0}",
+                ex.Message);
+            ConsoleLog.WriteError(
+                "CardRecoveryCenter",
+                $"refresh failed action={action} error={ex.GetType().Name}",
+                exception: ex);
         }
     }
 
