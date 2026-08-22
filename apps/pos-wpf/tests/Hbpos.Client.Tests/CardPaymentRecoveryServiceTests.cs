@@ -3132,7 +3132,8 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             OperationKind = "Refund",
             OperationGuid = draft.OrderGuid,
-            TxnType = "R"
+            TxnType = "R",
+            RefundBusinessKey = BuildLinklyRefundBusinessKey(draft, draft.OriginalReference!)
         };
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var service = CreateService(
@@ -3945,7 +3946,248 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
         Assert.Contains("Do not refund again", result.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, orders.SaveCount);
-        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Theory]
+    [InlineData("OperationGuidMismatch")]
+    [InlineData("OperationGuidNull")]
+    [InlineData("DraftTxnType")]
+    [InlineData("AttemptTxnType")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("RefundBusinessKey")]
+    public async Task ResolveRefundAsync_linkly_confirm_not_refunded_authoritative_draft_mismatch_fails_closed_before_saving_decision(
+        string mismatch)
+    {
+        const string originalReference = "ANZ:ORIGINAL-AUTHORITATIVE";
+        var draft = CreateRefundDraft(originalReference);
+        Guid? operationGuid = draft.OrderGuid;
+        var attemptTxnType = "R";
+        string? refundBusinessKey = null;
+
+        switch (mismatch)
+        {
+            case "OperationGuidMismatch":
+                operationGuid = Guid.Parse("99999999-8888-7777-6666-555555555555");
+                break;
+            case "OperationGuidNull":
+                operationGuid = null;
+                break;
+            case "DraftTxnType":
+                draft = draft with { TxnType = "P" };
+                break;
+            case "AttemptTxnType":
+                attemptTxnType = "P";
+                break;
+            case "StoreCode":
+                draft = draft with { Session = draft.Session with { StoreCode = "S999" } };
+                break;
+            case "DeviceCode":
+                draft = draft with { Session = draft.Session with { DeviceCode = "POS-99" } };
+                break;
+            case "CashierId":
+                draft = draft with { Session = draft.Session with { CashierId = "C999" } };
+                break;
+            case "RefundBusinessKey":
+                refundBusinessKey = BuildLinklyRefundBusinessKey(draft, originalReference);
+                draft = draft with { OriginalReference = "ANZ:REPLACED-REFERENCE" };
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mismatch), mismatch, null);
+        }
+
+        var attempt = CreateAttempt(
+            sessionId: $"SESSION-REFUND-AUTH-{mismatch}",
+            txnRef: $"TXN-REFUND-AUTH-{mismatch}",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            amount: draft.CardAmount,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = operationGuid,
+            TxnType = attemptTxnType,
+            RefundBusinessKey = refundBusinessKey
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked settlement report",
+                Evidence: "No refund entry for this reference"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Null(result.RecoveryResult);
+        Assert.Contains("Do not retry", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Null(attempts.ResponseCode);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_confirm_refunded_attempt_amount_mismatch_fails_closed_before_order_or_cart_write()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-CONFIRMED-AMOUNT") with { CardAmount = 4m };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-CONFIRMED-AMOUNT",
+            txnRef: "TXN-REFUND-CONFIRMED-AMOUNT",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            amount: 10m,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateService(attempts, orders, new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched bank settlement",
+                RefundReference: "LINKLY-REFUND-AMOUNT-MISMATCH"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Contains("Do not refund again", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Theory]
+    [InlineData("ActualAmountMismatch")]
+    [InlineData("ActualAmountNotRefund")]
+    [InlineData("CardAmountNotPositive")]
+    [InlineData("PositiveCurrentTender")]
+    [InlineData("OverRefunded")]
+    [InlineData("MixedTenderSigns")]
+    public async Task ResolveRefundAsync_linkly_confirm_not_refunded_invalid_refund_amounts_fail_closed_before_saving_decision(
+        string invalidPart)
+    {
+        var draft = CreateRefundDraft($"ANZ:ORIGINAL-INVALID-{invalidPart}") with { CardAmount = 4m };
+        draft = invalidPart switch
+        {
+            "ActualAmountMismatch" => draft with { ActualAmount = -9m },
+            "ActualAmountNotRefund" => draft with { ActualAmount = 10m },
+            "CardAmountNotPositive" => draft with { CardAmount = 0m },
+            "PositiveCurrentTender" => draft with
+            {
+                CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, 1m)]
+            },
+            "OverRefunded" => draft with
+            {
+                CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, -7m)]
+            },
+            "MixedTenderSigns" => draft with
+            {
+                CurrentTenders =
+                [
+                    new PaymentTender(PaymentMethodKind.Cash, -2m),
+                    new PaymentTender(PaymentMethodKind.Voucher, 2m, "VOUCHER-INVALID")
+                ]
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(invalidPart), invalidPart, null)
+        };
+        var attempt = CreateAttempt(
+            sessionId: $"SESSION-REFUND-INVALID-{invalidPart}",
+            txnRef: $"TXN-REFUND-INVALID-{invalidPart}",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            amount: draft.CardAmount,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked settlement report",
+                Evidence: "No refund entry for this reference"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Null(result.RecoveryResult);
+        Assert.Contains("Do not retry", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Null(attempts.ResponseCode);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_linkly_confirm_not_refunded_amount_mismatch_retains_attempt_and_cart()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-RECOVERY-AMOUNT") with { CardAmount = 4m };
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "TXN-REFUND-RECOVERY-AMOUNT",
+            status: LocalCardPaymentAttemptStatus.Pending,
+            amount: 10m,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R",
+            ResponseCode = CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            ResponseText = "No refund entry for this reference"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("Do not retry", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, attempts.ResponseCode);
+        Assert.Null(attempts.AcknowledgedAt);
         AssertCartUnchanged(cart, originalCart);
     }
 
@@ -5185,6 +5427,25 @@ public sealed class CardPaymentRecoveryServiceTests
             "R",
             originalReference,
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
+    }
+
+    private static string BuildLinklyRefundBusinessKey(
+        CardPaymentOrderDraft draft,
+        string originalReference)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "LINKLY",
+            "SANDBOX",
+            draft.Session.StoreCode.Trim().ToUpperInvariant(),
+            draft.Session.DeviceCode.Trim().ToUpperInvariant(),
+            originalReference.Trim().ToUpperInvariant(),
+            decimal.ToInt64(decimal.Round(draft.CardAmount * 100m, 0, MidpointRounding.AwayFromZero))
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "AUD");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
     }
 
     private static CardPaymentOrderDraft CreateSemanticallyInvalidRefundDraft(string originalReference)

@@ -1152,25 +1152,44 @@ public sealed class CardPaymentRecoveryService(
                 "The unresolved Linkly refund no longer matches this terminal and cannot be changed.");
         }
 
-        string? retryTxnRef = null;
-        if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
+        ValidatedCardRecoveryDraft? validatedDraft = null;
+        if (normalized.Decision is
+            CardRefundSupervisorDecision.ConfirmRefunded or
+            CardRefundSupervisorDecision.ConfirmNotRefunded)
         {
             try
             {
-                var validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
-                retryTxnRef = BuildSupervisorRetryTxnRef(validatedDraft.Draft.OriginalReference);
+                validatedDraft = ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
             }
             catch (Exception ex) when (IsInvalidDraftException(ex))
             {
+                var isRetry = normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded;
                 ConsoleLog.Write(
                     "CardRecovery",
-                    $"not-refunded retry draft invalid before resolution attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                    $"{(isRetry ? "not-refunded retry" : "confirmed refund")} draft invalid before resolution attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                if (isRetry)
+                {
+                    return new CardRefundSupervisorResolutionResult(
+                        false,
+                        T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                        LockRetained: true);
+                }
+
+                var invalidRecovery = new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
+                    DialogDetails: BuildDialogDetails(attempt));
                 return new CardRefundSupervisorResolutionResult(
                     false,
-                    T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                    invalidRecovery.Message,
+                    invalidRecovery,
                     LockRetained: true);
             }
         }
+
+        var retryTxnRef = normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded
+            ? BuildSupervisorRetryTxnRef(validatedDraft!.Draft.OriginalReference)
+            : null;
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildRefundSupervisorJournal(
             attempt,
@@ -1234,7 +1253,8 @@ public sealed class CardPaymentRecoveryService(
             cart,
             session,
             updatedAttempt,
-            CancellationToken.None);
+            CancellationToken.None,
+            validatedDraft);
         var recoveryCompleted = completed.Outcome is
             CardPaymentRecoveryOutcome.OrderCompleted or
             CardPaymentRecoveryOutcome.DraftRestored;
@@ -1809,13 +1829,15 @@ public sealed class CardPaymentRecoveryService(
         PosCartService cart,
         PosSessionState currentSession,
         LocalCardPaymentAttempt attempt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ValidatedCardRecoveryDraft? prevalidatedDraft = null)
     {
         var dialogDetails = BuildDialogDetails(attempt);
         ValidatedCardRecoveryDraft validatedDraft;
         try
         {
-            validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
+            validatedDraft = prevalidatedDraft ??
+                ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
@@ -1836,11 +1858,11 @@ public sealed class CardPaymentRecoveryService(
             var tenderReference = CardRefundReference.Format(attempt.PaymentReference, draft.OriginalReference!);
             var cardTender = new PaymentTender(
                 PaymentMethodKind.Card,
-                -Math.Abs(draft.CardAmount),
+                validatedDraft.CardTenderAmount,
                 tenderReference,
                 IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
             tenders = draft.CurrentTenders.Concat([cardTender]).ToArray();
-            tenderedAmount = validatedDraft.CurrentTenderTotal + cardTender.Amount;
+            tenderedAmount = validatedDraft.TenderedAmount;
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
@@ -1853,7 +1875,7 @@ public sealed class CardPaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        if (IsApprovedTenderPartial(draft, tenders))
+        if (validatedDraft.IsPartial)
         {
             if (!cart.IsEmpty)
             {
@@ -1909,12 +1931,13 @@ public sealed class CardPaymentRecoveryService(
             // 完整退款在独立购物车中重建并落单，不读取或清理收银员当前的新购物车。
             var recoveryCart = new PosCartService();
             recoveryCart.RestoreSnapshot(draft.CartSnapshot);
-            var cashTenderedAmount = tenders
-                .Where(tender => tender.Method == PaymentMethodKind.Cash)
-                .Sum(tender => tender.Amount);
-            checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
+            checkoutResult = checkout.CreatePaymentOrder(
+                recoveryCart,
+                draft.Session,
+                tenders,
+                validatedDraft.CashTenderedAmount);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (IsInvalidDraftException(ex))
         {
             ConsoleLog.Write(
                 "CardRecovery",
@@ -2016,7 +2039,7 @@ public sealed class CardPaymentRecoveryService(
         ValidatedCardRecoveryDraft validatedDraft;
         try
         {
-            validatedDraft = ValidateAndMaterializeRefundDraft(DeserializeDraft(attempt));
+            validatedDraft = ValidateAndMaterializeRefundDraft(attempt, DeserializeDraft(attempt));
         }
         catch (Exception ex) when (IsInvalidDraftException(ex))
         {
@@ -2073,7 +2096,9 @@ public sealed class CardPaymentRecoveryService(
             RestoredTenders: draft.CurrentTenders);
     }
 
-    private static ValidatedCardRecoveryDraft ValidateAndMaterializeRefundDraft(CardPaymentOrderDraft draft)
+    private static ValidatedCardRecoveryDraft ValidateAndMaterializeRefundDraft(
+        LocalCardPaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
     {
         if (draft.OrderGuid == Guid.Empty ||
             draft.Session is null ||
@@ -2085,6 +2110,33 @@ public sealed class CardPaymentRecoveryService(
             string.IsNullOrWhiteSpace(draft.OriginalReference))
         {
             throw new InvalidOperationException("Linkly refund recovery draft is missing required data.");
+        }
+
+        if (attempt.OperationGuid is null ||
+            attempt.OperationGuid.Value != draft.OrderGuid ||
+            !TextEquals(attempt.TxnType, "R") ||
+            !TextEquals(draft.TxnType, "R") ||
+            !TextEquals(attempt.StoreCode, draft.Session.StoreCode) ||
+            !TextEquals(attempt.DeviceCode, draft.Session.DeviceCode) ||
+            !TextEquals(attempt.CashierId, draft.Session.CashierId))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft does not match its attempt identity.");
+        }
+
+        var attemptAmount = RoundCurrency(attempt.Amount);
+        var cardAmount = RoundCurrency(draft.CardAmount);
+        if (attemptAmount <= 0m || cardAmount <= 0m || attemptAmount != cardAmount)
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft does not match its attempt amount.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(attempt.RefundBusinessKey))
+        {
+            var expectedBusinessKey = BuildLinklyRefundBusinessKey(attempt, draft);
+            if (!TextEquals(attempt.RefundBusinessKey, expectedBusinessKey))
+            {
+                throw new InvalidOperationException("Linkly refund recovery draft does not match its refund business key.");
+            }
         }
 
         var lines = draft.CartSnapshot.Lines.ToArray();
@@ -2108,9 +2160,57 @@ public sealed class CardPaymentRecoveryService(
         // 临时购物车没有外部订阅者；必须先完成快照语义校验和 tender 求和，再写主管决定或活动购物车。
         var validationCart = new PosCartService();
         validationCart.RestoreSnapshot(materializedDraft.CartSnapshot);
-        var currentTenderTotal = currentTenders.Sum(tender => tender.Amount);
-        return new ValidatedCardRecoveryDraft(materializedDraft, currentTenderTotal);
+        var actualAmount = RoundCurrency(materializedDraft.ActualAmount);
+        if (actualAmount >= 0m || actualAmount != RoundCurrency(validationCart.ActualAmount))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft has an invalid refund total.");
+        }
+
+        if (currentTenders.Any(tender => RoundCurrency(tender.Amount) >= 0m))
+        {
+            throw new InvalidOperationException("Linkly refund recovery draft contains a non-refund tender.");
+        }
+
+        var currentTenderTotal = RoundCurrency(currentTenders.Sum(tender => tender.Amount));
+        var cashTenderedAmount = RoundCurrency(currentTenders
+            .Where(tender => tender.Method == PaymentMethodKind.Cash)
+            .Sum(tender => tender.Amount));
+        var cardTenderAmount = -cardAmount;
+        var tenderedAmount = RoundCurrency(currentTenderTotal + cardTenderAmount);
+        if (tenderedAmount >= 0m || tenderedAmount < actualAmount)
+        {
+            throw new InvalidOperationException("Linkly refund recovery tenders exceed the original return total.");
+        }
+
+        return new ValidatedCardRecoveryDraft(
+            materializedDraft,
+            currentTenderTotal,
+            cardTenderAmount,
+            tenderedAmount,
+            cashTenderedAmount,
+            IsPartial: tenderedAmount > actualAmount);
     }
+
+    private static string BuildLinklyRefundBusinessKey(
+        LocalCardPaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            CardProcessorKind.Linkly.ToString().ToUpperInvariant(),
+            attempt.Environment.Trim().ToUpperInvariant(),
+            attempt.StoreCode.Trim().ToUpperInvariant(),
+            attempt.DeviceCode.Trim().ToUpperInvariant(),
+            draft.OriginalReference!.Trim().ToUpperInvariant(),
+            ToMinorUnits(draft.CardAmount).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "AUD");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static long ToMinorUnits(decimal amount) =>
+        decimal.ToInt64(decimal.Round(amount * 100m, 0, MidpointRounding.AwayFromZero));
 
     private static bool IsInvalidDraftException(Exception exception) =>
         exception is JsonException or
@@ -2121,7 +2221,11 @@ public sealed class CardPaymentRecoveryService(
 
     private sealed record ValidatedCardRecoveryDraft(
         CardPaymentOrderDraft Draft,
-        decimal CurrentTenderTotal);
+        decimal CurrentTenderTotal,
+        decimal CardTenderAmount,
+        decimal TenderedAmount,
+        decimal CashTenderedAmount,
+        bool IsPartial);
 
     private static CardRefundRecoveryDetails BuildRefundDetails(
         LocalCardPaymentAttempt attempt,
