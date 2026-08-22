@@ -1779,6 +1779,81 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_subscriber_cancellation_without_caller_cancel_rolls_back_and_keeps_attempt_open(
+        bool taskCanceled)
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-SUBSCRIBER-CANCELED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) =>
+        {
+            if (taskCanceled)
+            {
+                throw new TaskCanceledException("subscriber canceled");
+            }
+
+            throw new OperationCanceledException("subscriber canceled");
+        };
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, attempts.TryTerminalizeNotPaidCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_real_caller_cancellation_is_rethrown_after_cart_rollback()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-CALLER-CANCELED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        using var cancellation = new CancellationTokenSource();
+        cart.CartChanged += (_, _) =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException("caller canceled", cancellation.Token);
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            service.RecoverLatestAsync(cart, Session, cancellation.Token));
+
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, attempts.TryTerminalizeNotPaidCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
     [Fact]
     public async Task RecoverLatestAsync_square_canceled_cart_subscriber_failure_keeps_claim_open_and_rolls_back_cart()
     {
@@ -1811,6 +1886,87 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.True(cart.IsEmpty);
         Assert.Equal(1, attempts.TryTerminalizeNotPaidCount);
         Assert.Equal(0, attempts.MarkFailedCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.True(attempts.IsAutomaticCancelClaimOpen);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverLatestAsync_square_canceled_subscriber_cancellation_without_caller_cancel_rolls_back_and_keeps_claim_open(
+        bool taskCanceled)
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-CANCELED-SUBSCRIBER-CANCELED");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CANCELED-SUBSCRIBER-CANCELED",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        var service = CreateSquareService(attempts, new FakeLocalOrderRepository(), terminal);
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) =>
+        {
+            if (taskCanceled)
+            {
+                throw new TaskCanceledException("subscriber canceled");
+            }
+
+            throw new OperationCanceledException("subscriber canceled");
+        };
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(1, attempts.TryTerminalizeNotPaidCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.True(attempts.IsAutomaticCancelClaimOpen);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_canceled_real_caller_cancellation_is_rethrown_after_cart_rollback()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-CANCELED-CALLER-CANCELED");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CANCELED-CALLER-CANCELED",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        var service = CreateSquareService(attempts, new FakeLocalOrderRepository(), terminal);
+        var cart = new PosCartService();
+        using var cancellation = new CancellationTokenSource();
+        cart.CartChanged += (_, _) =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException("caller canceled", cancellation.Token);
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            service.RecoverLatestAsync(cart, Session, cancellation.Token));
+
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(1, attempts.TryTerminalizeNotPaidCount);
         Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
         Assert.True(attempts.IsAutomaticCancelClaimOpen);
     }

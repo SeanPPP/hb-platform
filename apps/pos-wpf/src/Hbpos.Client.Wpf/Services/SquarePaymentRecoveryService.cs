@@ -498,12 +498,17 @@ public sealed class SquarePaymentRecoveryService(
         {
             cart.RestoreSnapshot(draft.CartSnapshot);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
             ConsoleLog.Write(
                 "SquareRecovery",
                 $"not-paid restore failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
-            RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.square.notPaidRestoreFailed", "The previous Square payment could not be restored. Run recovery again."));
@@ -973,10 +978,15 @@ public sealed class SquarePaymentRecoveryService(
             {
                 cart.RestoreSnapshot(draft.CartSnapshot);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 // claim 始终保持开放；真实购物车通知失败时只撤销本次快照，下一次恢复可重试。
                 RollbackSupervisorNotPaidCart(cart, attempt.AttemptGuid);
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 ConsoleLog.Write(
                     "SquareRecovery",
                     $"canceled checkout cart restore failed with open claim attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");

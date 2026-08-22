@@ -1405,6 +1405,174 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData("Create")]
+    [InlineData("Repayment")]
+    public async Task Square_installment_operation_kinds_persist_guarded_automatic_transitions(string operationKind)
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var verifiedAttempt = CreateSquareAttempt(
+                attemptGuid: Guid.NewGuid(),
+                operationKind: operationKind);
+            var failedAttempt = CreateSquareAttempt(
+                attemptGuid: Guid.NewGuid(),
+                operationKind: operationKind);
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(verifiedAttempt);
+            await repository.CreateAsync(failedAttempt);
+
+            await repository.MarkCheckoutCreatedAsync(
+                verifiedAttempt.AttemptGuid,
+                $"CHECKOUT-{operationKind}",
+                "PENDING",
+                verifiedAttempt.UpdatedAt.AddMinutes(1));
+            await repository.MarkPaymentVerifiedAsync(
+                verifiedAttempt.AttemptGuid,
+                $"PAYMENT-{operationKind}",
+                "COMPLETED",
+                responseCode: null,
+                responseText: "installment payment verified",
+                verifiedAttempt.UpdatedAt.AddMinutes(2));
+            await repository.MarkFailedAsync(
+                failedAttempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: null,
+                responseCode: "DECLINED",
+                responseText: "installment payment declined",
+                failedAttempt.UpdatedAt.AddMinutes(1));
+
+            var verified = await repository.GetAttemptAsync(verifiedAttempt.AttemptGuid);
+            Assert.Equal(operationKind, verified!.OperationKind);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, verified.Status);
+            Assert.Equal($"CHECKOUT-{operationKind}", verified.CheckoutId);
+            Assert.Equal($"PAYMENT-{operationKind}", verified.PaymentId);
+            Assert.Equal("COMPLETED", verified.PaymentStatus);
+
+            var failed = await repository.GetAttemptAsync(failedAttempt.AttemptGuid);
+            Assert.Equal(operationKind, failed!.OperationKind);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Failed, failed.Status);
+            Assert.Equal("DECLINED", failed.ResponseCode);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData("Create", LocalSquarePaymentAttemptStatus.PaymentVerified)]
+    [InlineData("Create", LocalSquarePaymentAttemptStatus.OrderCompleted)]
+    [InlineData("Repayment", LocalSquarePaymentAttemptStatus.PaymentVerified)]
+    [InlineData("Repayment", LocalSquarePaymentAttemptStatus.OrderCompleted)]
+    public async Task Square_installment_operation_kinds_keep_verified_and_completed_stale_worker_guard(
+        string operationKind,
+        LocalSquarePaymentAttemptStatus status)
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.NewGuid(),
+                status: status,
+                operationKind: operationKind);
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            await AssertSquareAutomaticWritesRejectedAsync(repository, attempt);
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(status, saved!.Status);
+            Assert.Equal(operationKind, saved.OperationKind);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData("Create", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid)]
+    [InlineData("Create", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid)]
+    [InlineData("Repayment", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid)]
+    [InlineData("Repayment", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid)]
+    public async Task Square_installment_operation_kinds_keep_supervisor_terminal_guard(
+        string operationKind,
+        string supervisorResolutionCode)
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.NewGuid(),
+                operationKind: operationKind) with
+            {
+                ResponseCode = supervisorResolutionCode,
+                ResponseText = "supervisor terminal decision"
+            };
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            await AssertSquareAutomaticWritesRejectedAsync(repository, attempt);
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, saved!.Status);
+            Assert.Equal(supervisorResolutionCode, saved.ResponseCode);
+            Assert.Equal("supervisor terminal decision", saved.ResponseText);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Square_unknown_operation_kind_rejects_all_guarded_automatic_writes()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt(
+                attemptGuid: Guid.NewGuid(),
+                operationKind: "UnexpectedInstallmentKind");
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+
+            await AssertSquareAutomaticWritesRejectedAsync(repository, attempt);
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, saved!.Status);
+            Assert.Null(saved.CheckoutId);
+            Assert.Null(saved.PaymentId);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task Square_refund_submission_writes_cannot_downgrade_payment_verified_attempt()
     {
@@ -1588,6 +1756,33 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             null,
             null,
             operationKind);
+    }
+
+    private static async Task AssertSquareAutomaticWritesRejectedAsync(
+        LocalSquarePaymentAttemptRepository repository,
+        LocalSquarePaymentAttempt attempt)
+    {
+        var attemptedAt = attempt.UpdatedAt.AddMinutes(1);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.MarkCheckoutCreatedAsync(
+            attempt.AttemptGuid,
+            "CHECKOUT-STALE",
+            "PENDING",
+            attemptedAt));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.MarkPaymentVerifiedAsync(
+            attempt.AttemptGuid,
+            "PAYMENT-STALE",
+            "COMPLETED",
+            responseCode: null,
+            responseText: "stale verified write",
+            attemptedAt));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.MarkFailedAsync(
+            attempt.AttemptGuid,
+            LocalSquarePaymentAttemptStatus.Failed,
+            checkoutStatus: "FAILED",
+            paymentStatus: null,
+            responseCode: null,
+            responseText: "stale failed write",
+            attemptedAt));
     }
 
     private static LocalFinancialSupervisorResolution CreateSquareSaleJournal(

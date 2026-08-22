@@ -612,7 +612,12 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND OperationKind IN (
+                    $AutomaticOperationKind1,
+                    $AutomaticOperationKind2,
+                    $AutomaticOperationKind3,
+                    $AutomaticOperationKind4
+                  )
               AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
@@ -1016,7 +1021,12 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CancelReason = COALESCE($CancelReason, CancelReason),
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND OperationKind IN (
+                    $AutomaticOperationKind1,
+                    $AutomaticOperationKind2,
+                    $AutomaticOperationKind3,
+                    $AutomaticOperationKind4
+                  )
               AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
@@ -1056,7 +1066,12 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 CompletedAt = $CompletedAt,
                 UpdatedAt = $CompletedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND OperationKind IN (
+                    $AutomaticOperationKind1,
+                    $AutomaticOperationKind2,
+                    $AutomaticOperationKind3,
+                    $AutomaticOperationKind4
+                  )
               AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
@@ -1101,7 +1116,12 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResolvedAt = $ResolvedAt,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND OperationKind IN ($AutomaticOperationKind1, $AutomaticOperationKind2)
+              AND OperationKind IN (
+                    $AutomaticOperationKind1,
+                    $AutomaticOperationKind2,
+                    $AutomaticOperationKind3,
+                    $AutomaticOperationKind4
+                  )
               AND Status IN ($AutomaticOpenStatus1, $AutomaticOpenStatus2, $AutomaticOpenStatus3, $AutomaticOpenStatus4, $AutomaticOpenStatus5)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
@@ -1352,8 +1372,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
 
     private static void AddAutomaticWriteGuardParameters(SqliteCommand command)
     {
+        // 分期 Create/Repayment 与普通 Sale/Refund 共用 Square 终端回调，仅显式允许这四种生产 kind。
         command.Parameters.AddWithValue("$AutomaticOperationKind1", "Sale");
         command.Parameters.AddWithValue("$AutomaticOperationKind2", "Refund");
+        command.Parameters.AddWithValue("$AutomaticOperationKind3", LocalInstallmentOperationKind.Create.ToString());
+        command.Parameters.AddWithValue("$AutomaticOperationKind4", LocalInstallmentOperationKind.Repayment.ToString());
         command.Parameters.AddWithValue("$AutomaticOpenStatus1", LocalSquarePaymentAttemptStatus.Pending.ToString());
         command.Parameters.AddWithValue("$AutomaticOpenStatus2", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
         command.Parameters.AddWithValue("$AutomaticOpenStatus3", LocalSquarePaymentAttemptStatus.Recovering.ToString());
