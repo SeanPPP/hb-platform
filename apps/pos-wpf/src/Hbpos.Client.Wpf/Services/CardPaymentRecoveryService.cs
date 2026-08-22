@@ -735,6 +735,17 @@ public sealed class CardPaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
+        // 定点选择可能来自陈旧列表；终态只能展示历史，绝不能重新进入恢复状态机。
+        if (!IsSupervisorResolvedPayment(attempt) &&
+            attempt.Status is LocalCardPaymentAttemptStatus.Declined or
+                LocalCardPaymentAttemptStatus.Failed or
+                LocalCardPaymentAttemptStatus.Cancelled or
+                LocalCardPaymentAttemptStatus.TimedOut or
+                LocalCardPaymentAttemptStatus.Abandoned)
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
         if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
         {
             return await RecoverRefundAttemptAsync(cart, session, settings, attempt, cancellationToken);
@@ -1187,11 +1198,13 @@ public sealed class CardPaymentRecoveryService(
         if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
         {
             var recovery = RestoreSupervisorApprovedRetry(cart, updatedAttempt);
+            var retryAllowed = recovery.Outcome == CardPaymentRecoveryOutcome.DraftRestored;
             return new CardRefundSupervisorResolutionResult(
-                true,
-                T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),
+                retryAllowed,
+                recovery.Message,
                 recovery,
-                RetryAllowed: true);
+                RetryAllowed: retryAllowed,
+                LockRetained: !retryAllowed);
         }
 
         var completed = await CompleteSupervisorConfirmedRefundAsync(
@@ -1199,10 +1212,14 @@ public sealed class CardPaymentRecoveryService(
             session,
             updatedAttempt,
             CancellationToken.None);
+        var recoveryCompleted = completed.Outcome is
+            CardPaymentRecoveryOutcome.OrderCompleted or
+            CardPaymentRecoveryOutcome.DraftRestored;
         return new CardRefundSupervisorResolutionResult(
-            true,
-            T("cardRecovery.refund.confirmedSaved", "The confirmed refund was recorded and the original return was recovered."),
-            completed);
+            recoveryCompleted,
+            completed.Message,
+            completed,
+            LockRetained: !recoveryCompleted || completed.HasPostCommitWarning);
     }
 
     public async Task<CardPaymentSupervisorResolutionResult> ResolvePaymentAsync(
@@ -1544,6 +1561,7 @@ public sealed class CardPaymentRecoveryService(
             CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode));
         if (confirmedNotPaid)
         {
+            var restoredDraft = false;
             if (draft is not null)
             {
                 if (!cart.IsEmpty)
@@ -1554,10 +1572,27 @@ public sealed class CardPaymentRecoveryService(
                 }
 
                 cart.RestoreSnapshot(draft.CartSnapshot);
+                restoredDraft = true;
             }
 
             if (!await CompleteSupervisorAcknowledgeAsync(settings, attempt, mode, cancellationToken))
             {
+                if (restoredDraft)
+                {
+                    try
+                    {
+                        // acknowledge 或本地标记失败时，只撤销本次从空购物车恢复的旧快照。
+                        cart.Clear();
+                    }
+                    catch (Exception ex)
+                    {
+                        // Clear 先清内部状态再通知订阅者；通知异常不能遮蔽异常记录仍开放的结果。
+                        ConsoleLog.Write(
+                            "CardRecovery",
+                            $"supervisor not-paid cart rollback notification failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                    }
+                }
+
                 return BuildUnresolvedActiveSessionResult(
                     attempt,
                     T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."));
@@ -1715,14 +1750,6 @@ public sealed class CardPaymentRecoveryService(
         CancellationToken cancellationToken)
     {
         var dialogDetails = BuildDialogDetails(attempt);
-        if (!cart.IsEmpty)
-        {
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.linkly.currentCartNotEmpty", "The confirmed refund is saved, but the current cart is not empty. Complete or clear it, then run recovery again."),
-                DialogDetails: dialogDetails);
-        }
-
         CardPaymentOrderDraft draft;
         try
         {
@@ -1747,7 +1774,6 @@ public sealed class CardPaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        cart.RestoreSnapshot(draft.CartSnapshot);
         var tenderReference = CardRefundReference.Format(attempt.PaymentReference, draft.OriginalReference);
         var cardTender = new PaymentTender(
             PaymentMethodKind.Card,
@@ -1757,6 +1783,15 @@ public sealed class CardPaymentRecoveryService(
         var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
         if (IsApprovedTenderPartial(draft, tenders))
         {
+            if (!cart.IsEmpty)
+            {
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.linkly.currentCartNotEmpty", "The confirmed refund is saved, but the current cart is not empty. Complete or clear it, then run recovery again."),
+                    DialogDetails: dialogDetails);
+            }
+
+            cart.RestoreSnapshot(draft.CartSnapshot);
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.DraftRestored,
                 T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
@@ -1768,22 +1803,23 @@ public sealed class CardPaymentRecoveryService(
         PaymentCheckoutResult checkoutResult;
         try
         {
+            // 完整退款在独立购物车中重建并落单，不读取或清理收银员当前的新购物车。
+            var recoveryCart = new PosCartService();
+            recoveryCart.RestoreSnapshot(draft.CartSnapshot);
             var cashTenderedAmount = tenders
                 .Where(tender => tender.Method == PaymentMethodKind.Cash)
                 .Sum(tender => tender.Amount);
-            checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+            checkoutResult = checkout.CreatePaymentOrder(recoveryCart, draft.Session, tenders, cashTenderedAmount);
         }
         catch (InvalidOperationException ex)
         {
             ConsoleLog.Write(
                 "CardRecovery",
-                $"confirmed refund checkout restore deferred attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                $"confirmed refund order rebuild failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
             return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.DraftRestored,
-                T("cardRecovery.refund.confirmedTenderRestored", "The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again."),
-                TenderedAmount: tenders.Sum(tender => tender.Amount),
-                DialogDetails: dialogDetails,
-                RestoredTenders: tenders);
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
+                DialogDetails: dialogDetails);
         }
 
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
@@ -1819,7 +1855,6 @@ public sealed class CardPaymentRecoveryService(
                 DateTimeOffset.UtcNow,
                 CancellationToken.None),
             CancellationToken.None);
-        cart.Clear();
         var pendingSyncCount = await RunLocalStoreAsync(
             () => syncQueueRepository.CountPendingAsync(CancellationToken.None),
             CancellationToken.None);

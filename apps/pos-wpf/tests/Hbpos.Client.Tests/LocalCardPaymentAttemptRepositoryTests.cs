@@ -496,6 +496,84 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData(LocalCardPaymentAttemptStatus.Declined)]
+    [InlineData(LocalCardPaymentAttemptStatus.Failed)]
+    [InlineData(LocalCardPaymentAttemptStatus.Cancelled)]
+    [InlineData(LocalCardPaymentAttemptStatus.TimedOut)]
+    [InlineData(LocalCardPaymentAttemptStatus.Abandoned)]
+    public async Task MarkRecoveringAsync_rejects_terminal_attempt_and_does_not_change_other_key(
+        LocalCardPaymentAttemptStatus terminalStatus)
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var terminalAttempt = CreateAttempt(
+                attemptGuid: Guid.Parse("70000000-0000-0000-0000-000000000001"),
+                status: terminalStatus);
+            var otherOpenAttempt = CreateAttempt(
+                attemptGuid: Guid.Parse("70000000-0000-0000-0000-000000000002"),
+                status: LocalCardPaymentAttemptStatus.Pending);
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(terminalAttempt);
+            await repository.CreateAsync(otherOpenAttempt);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                repository.MarkRecoveringAsync(
+                    terminalAttempt.AttemptGuid,
+                    terminalAttempt.UpdatedAt.AddMinutes(1)));
+
+            var savedTerminal = await repository.GetAttemptAsync(terminalAttempt.AttemptGuid);
+            var savedOther = await repository.GetAttemptAsync(otherOpenAttempt.AttemptGuid);
+            Assert.Equal(terminalStatus, savedTerminal!.Status);
+            Assert.Equal(terminalAttempt.UpdatedAt, savedTerminal.UpdatedAt);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Pending, savedOther!.Status);
+            Assert.Equal(otherOpenAttempt.UpdatedAt, savedOther.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData(LocalCardPaymentAttemptStatus.Pending, LocalCardPaymentAttemptStatus.Recovering)]
+    [InlineData(LocalCardPaymentAttemptStatus.SessionStarted, LocalCardPaymentAttemptStatus.Recovering)]
+    [InlineData(LocalCardPaymentAttemptStatus.Recovering, LocalCardPaymentAttemptStatus.Recovering)]
+    [InlineData(LocalCardPaymentAttemptStatus.Approved, LocalCardPaymentAttemptStatus.Approved)]
+    public async Task MarkRecoveringAsync_accepts_open_source_without_downgrading_approved_evidence(
+        LocalCardPaymentAttemptStatus sourceStatus,
+        LocalCardPaymentAttemptStatus expectedStatus)
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt(status: sourceStatus);
+            var recoveringAt = attempt.UpdatedAt.AddMinutes(1);
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+            await repository.MarkRecoveringAsync(attempt.AttemptGuid, recoveringAt);
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(expectedStatus, saved!.Status);
+            Assert.Equal(recoveringAt, saved.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task GetLatestOpenAttemptAsync_filters_scope_and_ignores_terminal_statuses()
     {

@@ -13,6 +13,61 @@ public sealed class CardPaymentRecoveryServiceTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main Branch", "POS-01", "C001", "Alice", true, 0);
 
+    [Theory]
+    [InlineData(LocalCardPaymentAttemptStatus.Declined)]
+    [InlineData(LocalCardPaymentAttemptStatus.Failed)]
+    [InlineData(LocalCardPaymentAttemptStatus.Cancelled)]
+    [InlineData(LocalCardPaymentAttemptStatus.TimedOut)]
+    [InlineData(LocalCardPaymentAttemptStatus.Abandoned)]
+    public async Task RecoverAttemptAsync_terminal_linkly_attempt_is_not_reopened(
+        LocalCardPaymentAttemptStatus terminalStatus)
+    {
+        var attempt = CreateAttempt("SESSION-TERMINAL", "TXN-TERMINAL", terminalStatus);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                "SESSION-TERMINAL",
+                "TXN-TERMINAL",
+                "05",
+                "DECLINED",
+                transactionSuccess: false)
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.None, result.Outcome);
+        Assert.Equal(terminalStatus, attempts.Status);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_open_record_retries_acknowledge_and_restore()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RETRY",
+            "TXN-SUPERVISOR-RETRY",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+    }
+
     [Fact]
     public async Task RecoverLatestAsync_approved_matching_session_completes_order_and_acknowledges_once()
     {
@@ -2475,6 +2530,50 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(JsonValueKind.Null, properties.GetProperty("financialReference").ValueKind);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResolvePaymentAsync_confirm_not_paid_acknowledge_failure_rolls_back_restored_cart(
+        bool terminalAcknowledgeFails)
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-ACK-FAIL",
+            "TXN-SUPERVISOR-ACK-FAIL",
+            LocalCardPaymentAttemptStatus.Recovering);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            MarkAcknowledgedException = terminalAcknowledgeFails
+                ? null
+                : new InvalidOperationException("local acknowledge failed")
+        };
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AcknowledgeException = terminalAcknowledgeFails
+                ? new HttpRequestException("terminal acknowledge failed")
+                : null
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        var result = await service.ResolvePaymentAsync(
+            new CardPaymentSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardPaymentSupervisorDecision.ConfirmNotPaid,
+                string.Empty,
+                "MANAGER-01",
+                Evidence: "Bank case confirms no charge"),
+            cart,
+            Session);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
     [Fact]
     public async Task ResolvePaymentAsync_confirm_paid_accepts_reference_with_empty_note()
     {
@@ -2768,6 +2867,149 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.True(CardRefundReference.TryGetOriginalReference(payment.Reference, out var savedOriginalReference));
         Assert.Equal(originalReference, savedOriginalReference);
         Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_confirm_refunded_unknown_recovery_is_not_reported_as_success()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-INVALID",
+            txnRef: "TXN-REFUND-INVALID",
+            status: LocalCardPaymentAttemptStatus.Recovering) with
+        {
+            OperationKind = "Refund",
+            TxnType = "R",
+            OrderDraftJson = "{invalid-json"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched bank settlement",
+                RefundReference: "LINKLY-REFUND-INVALID"),
+            new PosCartService(),
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_full_confirmed_refund_preserves_nonempty_current_cart()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-FULL");
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-FULL",
+            txnRef: "TXN-REFUND-FULL",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateService(attempts, orders, new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched bank settlement",
+                RefundReference: "LINKLY-REFUND-FULL"),
+            cart,
+            Session);
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.RecoveryResult?.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        var currentLine = Assert.Single(cart.Lines);
+        Assert.Equal("CURRENT-SKU", currentLine.ProductCode);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_partial_confirmed_refund_does_not_replace_nonempty_current_cart()
+    {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-PARTIAL") with { CardAmount = 4m };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-PARTIAL",
+            txnRef: "TXN-REFUND-PARTIAL",
+            status: LocalCardPaymentAttemptStatus.Recovering,
+            draft: draft) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            TxnType = "R"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateService(attempts, orders, new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmRefunded,
+                Reason: "Matched bank settlement",
+                RefundReference: "LINKLY-REFUND-PARTIAL"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        var currentLine = Assert.Single(cart.Lines);
+        Assert.Equal("CURRENT-SKU", currentLine.ProductCode);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_linkly_confirm_not_refunded_does_not_enable_retry_for_nonempty_current_cart()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REFUND-NOT-REFUNDED",
+            txnRef: "TXN-REFUND-NOT-REFUNDED",
+            status: LocalCardPaymentAttemptStatus.Recovering) with
+        {
+            OperationKind = "Refund",
+            TxnType = "R"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = CreateCurrentCart();
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked settlement report",
+                Evidence: "No refund entry for this reference"),
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        var currentLine = Assert.Single(cart.Lines);
+        Assert.Equal("CURRENT-SKU", currentLine.ProductCode);
     }
 
     [Fact]
@@ -4018,6 +4260,10 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Exception? UpdateOutcomeException { get; init; }
 
+        public Exception? MarkAcknowledgedException { get; init; }
+
+        public int MarkRecoveringCallCount { get; private set; }
+
         public int ResolveRefundCount { get; private set; }
 
         public CardRefundAttemptResolution? LastRefundResolution { get; private set; }
@@ -4101,6 +4347,11 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkAcknowledgedAsync(Guid attemptGuid, DateTimeOffset acknowledgedAt, CancellationToken cancellationToken = default)
         {
+            if (MarkAcknowledgedException is not null)
+            {
+                throw MarkAcknowledgedException;
+            }
+
             _attempt = _attempt! with
             {
                 AcknowledgedAt = acknowledgedAt,
@@ -4111,6 +4362,7 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
         {
+            MarkRecoveringCallCount++;
             _attempt = _attempt! with
             {
                 Status = LocalCardPaymentAttemptStatus.Recovering,
