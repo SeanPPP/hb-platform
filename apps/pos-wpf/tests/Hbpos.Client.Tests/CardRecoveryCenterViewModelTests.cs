@@ -124,7 +124,7 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
-    public async Task RecoverCommand_reports_completed_result_to_shell_after_queue_refresh()
+    public async Task RecoverCommand_reports_operation_start_key_after_queue_refresh_clears_selection()
     {
         var selected = CreateQueueItem(
             CardProcessorKind.Linkly,
@@ -138,7 +138,7 @@ public sealed class CardRecoveryCenterViewModelTests
             OpenItems = [selected],
             RecoverResult = completed
         };
-        var handled = new List<(CardPaymentRecoveryResult Result, int RemainingCount)>();
+        var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result, int RemainingCount)>();
         var remainingCount = -1;
         using var viewModel = new CardRecoveryCenterViewModel(
             recovery,
@@ -147,9 +147,9 @@ public sealed class CardRecoveryCenterViewModelTests
             new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
             CreateLocalization(),
             openCountChanged: count => remainingCount = count,
-            recoveryResultHandledAsync: result =>
+            recoveryResultHandledAsync: (key, result) =>
             {
-                handled.Add((result, remainingCount));
+                handled.Add((key, result, remainingCount));
                 return Task.CompletedTask;
             });
         await viewModel.LoadAsync();
@@ -158,8 +158,62 @@ public sealed class CardRecoveryCenterViewModelTests
         await viewModel.RecoverCommand.ExecuteAsync(null);
 
         var callback = Assert.Single(handled);
+        Assert.Equal(selected.Key, callback.Key);
         Assert.Same(completed, callback.Result);
         Assert.Equal(0, callback.RemainingCount);
+        Assert.Null(viewModel.SelectedAttempt);
+    }
+
+    [Fact]
+    public async Task ResolveCommand_reports_operation_start_key_when_queue_refresh_changes_selection()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000004"),
+            updatedAt: Now);
+        var replacement = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("42000000-0000-0000-0000-000000000005"),
+            updatedAt: Now.AddMinutes(1));
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Confirmed payment completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            ResolveResult = new CardRecoveryResolutionResult(
+                true,
+                "Resolution saved",
+                completed)
+        };
+        var handled = new List<(
+            CardRecoveryAttemptKey Key,
+            CardPaymentRecoveryResult Result,
+            CardRecoveryAttemptKey? SelectedKeyAtCallback)>();
+        CardRecoveryCenterViewModel? callbackOwner = null;
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: (key, result) =>
+            {
+                handled.Add((key, result, callbackOwner?.SelectedAttempt?.Key));
+                return Task.CompletedTask;
+            });
+        callbackOwner = viewModel;
+        await viewModel.LoadAsync();
+        viewModel.ResolutionReason = "Settlement checked";
+        recovery.OpenItems = [replacement];
+
+        await viewModel.ConfirmPaidCommand.ExecuteAsync(null);
+
+        var callback = Assert.Single(handled);
+        Assert.Equal(selected.Key, callback.Key);
+        Assert.Same(completed, callback.Result);
+        Assert.Equal(replacement.Key, callback.SelectedKeyAtCallback);
+        Assert.Equal(replacement.Key, viewModel.SelectedAttempt?.Key);
     }
 
     [Theory]

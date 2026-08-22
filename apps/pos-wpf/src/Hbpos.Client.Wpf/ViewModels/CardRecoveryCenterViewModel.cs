@@ -22,7 +22,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private readonly ILocalizationService? _localization;
     private readonly Action? _back;
     private readonly Action<int>? _openCountChanged;
-    private readonly Func<CardPaymentRecoveryResult, Task>? _recoveryResultHandledAsync;
+    private readonly Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? _recoveryResultHandledAsync;
     private Task? _initialLoadTask;
     private CardRecoveryQueueItem? _selectedAttempt;
     private bool _isBusy;
@@ -41,7 +41,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         ILocalizationService? localization = null,
         Action? back = null,
         Action<int>? openCountChanged = null,
-        Func<CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
     {
         ArgumentNullException.ThrowIfNull(recoveryService);
         ArgumentNullException.ThrowIfNull(cart);
@@ -238,6 +238,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var selectedKey = selected.Key;
         IsBusy = true;
         try
         {
@@ -255,7 +256,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             using var activation = authorization.Activate();
-            if (SelectedAttempt?.Key != selected.Key)
+            if (SelectedAttempt?.Key != selectedKey)
             {
                 SetStatusResource(
                     "cardRecovery.center.status.selectionChanged",
@@ -264,7 +265,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             var result = await _recoveryService.RecoverAsync(
-                selected.Key,
+                selectedKey,
                 _cart,
                 _session);
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
@@ -273,7 +274,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             await RefreshListCoreAsync(actionMessage);
             if (_recoveryResultHandledAsync is not null)
             {
-                await _recoveryResultHandledAsync(result);
+                await _recoveryResultHandledAsync(selectedKey, result);
             }
         }
         catch (Exception ex)
@@ -305,6 +306,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var selectedKey = selected.Key;
         var reason = Normalize(ResolutionReason) ?? string.Empty;
         var evidence = Normalize(ResolutionEvidence);
         var reference = Normalize(ResolutionReference);
@@ -326,7 +328,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
             using var activation = authorization.Activate();
             // 主管扫码期间列表选择可能变化，旧授权不得落到另一笔金融交易。
-            if (SelectedAttempt?.Key != selected.Key)
+            if (SelectedAttempt?.Key != selectedKey)
             {
                 SetStatusResource(
                     "cardRecovery.center.status.selectionChanged",
@@ -335,7 +337,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             var result = await _recoveryService.ResolveAsync(
-                selected.Key,
+                selectedKey,
                 decision,
                 reason,
                 evidence,
@@ -348,7 +350,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             await RefreshListCoreAsync(actionMessage);
             if (result.RecoveryResult is not null && _recoveryResultHandledAsync is not null)
             {
-                await _recoveryResultHandledAsync(result.RecoveryResult);
+                await _recoveryResultHandledAsync(selectedKey, result.RecoveryResult);
             }
         }
         catch (Exception ex)

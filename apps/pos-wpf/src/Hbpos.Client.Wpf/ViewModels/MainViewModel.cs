@@ -2386,7 +2386,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task HandleCardRecoveryCenterResultAsync(CardPaymentRecoveryResult result)
+    private async Task HandleCardRecoveryCenterResultAsync(
+        CardRecoveryAttemptKey selectedKey,
+        CardPaymentRecoveryResult result)
     {
         if (result.UpdatedSession is not null)
         {
@@ -2396,10 +2398,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         StatusMessage = result.Message;
         if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted)
         {
-            // 旧单由持久化快照独立完成；这里只刷新壳层状态，绝不跳成功页或清理正在进行的新购物车。
             if (result.Order is not null)
             {
                 _lastCompletedOrder = result.Order;
+            }
+
+            var cachedCashPayment = _screenNavigator.CachedCashPaymentScreen;
+            if (cachedCashPayment is not null &&
+                ReferenceEquals(cachedCashPayment, CashPayment) &&
+                cachedCashPayment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey == selectedKey)
+            {
+                // RecoveryAttemptKey 只在当前付款结果未知期间保留；同 key 结案后先清锁，再清当前订单投影并返回 POS。
+                cachedCashPayment.SetCurrentCardRecoveryRequired(false);
+                cachedCashPayment.CompleteCardPaymentHandoff();
             }
 
             PosTerminal?.RefreshCart();

@@ -231,7 +231,7 @@ internal sealed class MainChildViewModelFactory
         PosSessionState session,
         Action onBack,
         Action<int> onOpenCountChanged,
-        Func<CardPaymentRecoveryResult, Task> onRecoveryResultHandledAsync)
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task> onRecoveryResultHandledAsync)
     {
         if (_operationAuthorizationService is null)
         {
