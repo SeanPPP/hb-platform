@@ -4946,6 +4946,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
         var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var openCenterCalls = 0;
+        var handoffCalls = 0;
         var viewModel = new PaymentViewModel(
             cart,
             new FakeCashPaymentWorkflowService(),
@@ -4955,8 +4957,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 qualificationStarted.TrySetResult(true);
                 return qualificationResult.Task;
             },
-            handoffCardPaymentAsync: (_, _) => Task.FromResult(true),
-            openCardRecoveryCenter: () => { });
+            handoffCardPaymentAsync: (_, _) =>
+            {
+                handoffCalls++;
+                return Task.FromResult(true);
+            },
+            openCardRecoveryCenter: () => openCenterCalls++);
         viewModel.PaymentTenders.Add(existingTender);
         var cardSession = Assert.IsType<CardPaymentSession>(typeof(PaymentViewModel)
             .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -4978,6 +4984,15 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
 
         Assert.False(overlay.IsOpen);
+        Assert.True(overlay.HasPrimaryAction);
+        Assert.Equal(
+            "payment.card.error.overlay.activeSession.openRecoveryCenter",
+            overlay.PrimaryButtonTextKey);
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, openCenterCalls);
+        Assert.Equal(0, handoffCalls);
         Assert.Equal(originalStatus, viewModel.StatusMessage);
         Assert.True(cardSession.HasUnknownResult);
         Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
@@ -4990,7 +5005,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await handlingTask;
 
         Assert.False(overlay.IsOpen);
-        Assert.False(overlay.HasPrimaryAction);
+        Assert.True(overlay.HasPrimaryAction);
         Assert.Equal("payment.card.error.overlay.activeSession.openRecoveryCenter", overlay.PrimaryButtonTextKey);
         Assert.Equal(originalStatus, viewModel.StatusMessage);
         Assert.True(cardSession.HasUnknownResult);
@@ -4999,7 +5014,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsPaymentInteractionLocked);
         Assert.Single(cart.Lines);
         Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
-        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.Equal(1, openCenterCalls);
+        Assert.Equal(0, handoffCalls);
     }
 
     [Fact]
@@ -5013,6 +5030,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
         var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var openCenterCalls = 0;
+        var handoffCalls = 0;
         var viewModel = new PaymentViewModel(
             cart,
             new FakeCashPaymentWorkflowService(),
@@ -5022,8 +5041,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 qualificationStarted.TrySetResult(true);
                 return qualificationResult.Task;
             },
-            handoffCardPaymentAsync: (_, _) => Task.FromResult(true),
-            openCardRecoveryCenter: () => { });
+            handoffCardPaymentAsync: (_, _) =>
+            {
+                handoffCalls++;
+                return Task.FromResult(true);
+            },
+            openCardRecoveryCenter: () => openCenterCalls++);
         viewModel.PaymentTenders.Add(existingTender);
         var cardSession = Assert.IsType<CardPaymentSession>(typeof(PaymentViewModel)
             .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -5045,6 +5068,15 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
 
         Assert.False(overlay.IsOpen);
+        Assert.True(overlay.HasPrimaryAction);
+        Assert.Equal(
+            "payment.card.error.overlay.activeSession.openRecoveryCenter",
+            overlay.PrimaryButtonTextKey);
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, openCenterCalls);
+        Assert.Equal(0, handoffCalls);
         Assert.Equal(originalStatus, viewModel.StatusMessage);
         Assert.True(cardSession.HasUnknownResult);
         Assert.Equal(recoveryKey, cardSession.RecoveryAttemptKey);
@@ -5059,7 +5091,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await handlingTask;
 
         Assert.False(overlay.IsOpen);
-        Assert.False(overlay.HasPrimaryAction);
+        Assert.True(overlay.HasPrimaryAction);
         Assert.Equal("payment.card.error.overlay.activeSession.openRecoveryCenter", overlay.PrimaryButtonTextKey);
         Assert.Equal(statusAfterClose, viewModel.StatusMessage);
         Assert.True(cardSession.HasUnknownResult);
@@ -5068,7 +5100,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsPaymentInteractionLocked);
         Assert.Single(cart.Lines);
         Assert.Equal(existingTender, Assert.Single(viewModel.PaymentTenders));
-        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.Equal(1, openCenterCalls);
+        Assert.Equal(0, handoffCalls);
     }
 
     [Fact]

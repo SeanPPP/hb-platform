@@ -396,6 +396,8 @@ internal sealed class CardPaymentSession
                 Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
                 _cardPaymentHandoffQualificationPending = false;
                 _cardPaymentHandoffCandidate = null;
+                // 关闭前转为“打开异常中心”动作，保证当前锁定订单关闭后仍可继续恢复。
+                ConfigureRecoveryCenterPrimaryAction(overlay);
             }
 
             overlay.IsOpen = false;
@@ -407,14 +409,14 @@ internal sealed class CardPaymentSession
 
     public bool CanExecuteErrorPrimaryAction()
     {
-        if (_vm.CardPaymentErrorOverlay is not { HasPrimaryAction: true, IsOpen: true } overlay)
+        if (_vm.CardPaymentErrorOverlay is not { HasPrimaryAction: true } overlay)
         {
             return false;
         }
 
         return overlay.PrimaryActionKind switch
         {
-            CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => true,
+            CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => overlay.IsOpen,
             CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
                 _cardPaymentResultUnknownRequiresRecovery &&
                 !_cardPaymentHandoffQualificationPending &&
