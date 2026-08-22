@@ -1472,6 +1472,84 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverAttemptAsync_square_refund_payment_verified_reuses_existing_return_and_preserves_current_cart_without_remote_lookup()
+    {
+        const string refundId = "REFUND-VERIFIED-RESTART";
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: refundId,
+            paymentStatus: "COMPLETED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-RESTART",
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var existingOrder = CreateExistingRefundOrder(draft, refundId);
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository(existingOrder);
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var currentCart = CreateCurrentCart();
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            currentCart,
+            Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Same(existingOrder, result.Order);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(1, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, attempts.MarkRecoveringCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.Equal(0, terminal.GetCheckoutCallCount);
+        Assert.Equal(0, terminal.GetPaymentCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Theory]
+    [InlineData(null, "COMPLETED")]
+    [InlineData("REFUND-VERIFIED-MISSING-EVIDENCE", null)]
+    public async Task RecoverAttemptAsync_square_refund_payment_verified_with_missing_evidence_fails_closed_without_remote_lookup(
+        string? paymentId,
+        string? paymentStatus)
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: paymentId,
+            paymentStatus: paymentStatus) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-MISSING-EVIDENCE",
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var currentCart = CreateCurrentCart();
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            currentCart,
+            Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_square_verified_with_non_empty_current_cart_completes_old_order_without_overwriting_cart()
     {
         var attempt = CreateSquareAttempt(
@@ -4676,6 +4754,28 @@ public sealed class CardPaymentRecoveryServiceTests
             []);
     }
 
+    private static LocalOrder CreateExistingRefundOrder(
+        CardPaymentOrderDraft draft,
+        string refundId)
+    {
+        var cart = new PosCartService();
+        cart.RestoreSnapshot(draft.CartSnapshot);
+        var checkoutResult = new CashCheckoutService().CreatePaymentOrder(
+            cart,
+            draft.Session,
+            [
+                new PaymentTender(
+                    PaymentMethodKind.Card,
+                    -Math.Abs(draft.CardAmount),
+                    CardRefundReference.Format(
+                        refundId,
+                        draft.OriginalReference ?? throw new InvalidOperationException("Refund draft reference is missing.")),
+                    IdempotencyKey: "SQUARE_ATTEMPT:bbbbbbbbccccddddeeeeffffffffffff")
+            ],
+            cashTenderedAmount: 0m);
+        return checkoutResult.Order with { OrderGuid = draft.OrderGuid };
+    }
+
     private static LinklyCloudBackendSessionResponse CreateStatus(
         string status,
         string sessionId,
@@ -5504,6 +5604,8 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public int GetPaymentCallCount { get; private set; }
 
+        public int GetRefundCallCount { get; private set; }
+
         public Task<SquareCheckoutStatusResult> GetCheckoutAsync(
             CardTerminalSettings settings,
             string checkoutId,
@@ -5529,6 +5631,7 @@ public sealed class CardPaymentRecoveryServiceTests
             string refundId,
             CancellationToken cancellationToken = default)
         {
+            GetRefundCallCount++;
             return Task.FromResult(Refund);
         }
     }

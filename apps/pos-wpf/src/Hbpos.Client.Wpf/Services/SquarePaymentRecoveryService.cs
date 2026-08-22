@@ -667,6 +667,27 @@ public sealed class SquarePaymentRecoveryService(
                 cancellationToken);
         }
 
+        if (refundAttempt.Status == LocalSquarePaymentAttemptStatus.PaymentVerified)
+        {
+            if (string.IsNullOrWhiteSpace(refundAttempt.PaymentId) ||
+                string.IsNullOrWhiteSpace(refundAttempt.PaymentStatus))
+            {
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                    DialogDetails: BuildRefundDialogDetails(refundAttempt),
+                    RefundDetails: BuildRefundDetails(refundAttempt));
+            }
+
+            // 已落库的 PaymentVerified 是权威退款证据；必须先于远程查询幂等收尾，
+            // 避免旧恢复任务再次写开放态 CAS 或降级这份证据。
+            return await CompleteSupervisorConfirmedRefundAsync(
+                cart,
+                session,
+                refundAttempt,
+                cancellationToken);
+        }
+
         if (refundAttempt.Status == LocalSquarePaymentAttemptStatus.Pending &&
             string.Equals(
                 refundAttempt.ResponseCode,
