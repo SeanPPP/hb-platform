@@ -358,19 +358,20 @@ internal sealed class CardPaymentSession
 
     public bool CanExecuteErrorPrimaryAction()
     {
-        if (_vm.CardPaymentErrorOverlay is not { HasPrimaryAction: true } overlay)
+        if (_vm.CardPaymentErrorOverlay is not { HasPrimaryAction: true, IsOpen: true } overlay)
         {
             return false;
         }
 
         return overlay.PrimaryActionKind switch
         {
-            CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => overlay.IsOpen,
+            CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => true,
             CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
                 _cardPaymentResultUnknownRequiresRecovery &&
-                _cardPaymentHandoffCandidate is not null &&
                 !_vm.IsShuttingDown &&
-                _vm.NavigationActions.HandoffCardPaymentAsync is not null,
+                (_cardPaymentHandoffCandidate is not null
+                    ? _vm.NavigationActions.HandoffCardPaymentAsync is not null
+                    : _vm.OpenCardRecoveryCenterCommand.CanExecute(null)),
             _ => false
         };
     }
@@ -398,13 +399,17 @@ internal sealed class CardPaymentSession
             RestoreUnknownResultStatus();
         }
 
-        if (_cardPaymentHandoffCandidate is not null &&
-            _vm.CardPaymentErrorOverlay?.PrimaryActionKind ==
-            CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        if (_vm.CardPaymentErrorOverlay is { PrimaryActionKind:
+                CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious } overlay)
         {
-            _vm.CardPaymentErrorOverlay.HasPrimaryAction = true;
-            _vm.CardPaymentErrorOverlay.PrimaryButtonTextKey =
-                "payment.card.error.overlay.activeSession.handoff";
+            if (_cardPaymentHandoffCandidate is not null)
+            {
+                ConfigureHandoffPrimaryAction(overlay);
+            }
+            else
+            {
+                ConfigureRecoveryCenterPrimaryAction(overlay);
+            }
         }
 
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
@@ -427,8 +432,15 @@ internal sealed class CardPaymentSession
         }
 
         var candidate = _cardPaymentHandoffCandidate;
+        if (candidate is null)
+        {
+            _vm.OpenCardRecoveryCenterCommand.Execute(null);
+            _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
         var handoff = _vm.NavigationActions.HandoffCardPaymentAsync;
-        if (candidate is null || handoff is null)
+        if (handoff is null)
         {
             return;
         }
@@ -555,14 +567,37 @@ internal sealed class CardPaymentSession
             return;
 
         overlay.IsOpen = true;
+        if (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        {
+            ConfigureRecoveryCenterPrimaryAction(overlay);
+        }
+
         _vm.CardPaymentErrorOverlay = overlay;
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ConfigureRecoveryCenterPrimaryAction(CardPaymentErrorOverlayViewModel overlay)
+    {
+        overlay.PrimaryButtonTextKey =
+            "payment.card.error.overlay.activeSession.openRecoveryCenter";
+        overlay.HasPrimaryAction =
+            _cardPaymentResultUnknownRequiresRecovery &&
+            _vm.OpenCardRecoveryCenterCommand.CanExecute(null);
+    }
+
+    private void ConfigureHandoffPrimaryAction(CardPaymentErrorOverlayViewModel overlay)
+    {
+        overlay.PrimaryButtonTextKey =
+            "payment.card.error.overlay.activeSession.handoff";
+        overlay.HasPrimaryAction =
+            !_vm.IsShuttingDown &&
+            _vm.NavigationActions.HandoffCardPaymentAsync is not null;
     }
 
     private static CardPaymentErrorOverlayViewModel CreateUnqualifiedRecoveryOverlay()
     {
         var overlay = CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery();
-        // 持久化 attempt 与完整草稿尚未核验前，只允许关闭提示，不暴露失效的恢复按钮。
+        // 创建时先收起旧“恢复上一笔”入口；调用方核验现有导航后再一次性填充动作状态。
         overlay.HasPrimaryAction = false;
         return overlay;
     }

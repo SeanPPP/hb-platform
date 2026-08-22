@@ -87,7 +87,7 @@ public sealed class PaymentViewLayoutTests
     }
 
     [Fact]
-    public void Unknown_card_result_keeps_recovery_action_visible_after_dialog_closes()
+    public void Unknown_card_result_action_is_visible_only_for_an_open_actionable_overlay()
     {
         var document = XDocument.Load(Path.Combine(
             FindRepoRoot(),
@@ -115,6 +115,12 @@ public sealed class PaymentViewLayoutTests
             (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.PrimaryActionKind}" &&
             (string?)condition.Attribute("Value") ==
             "{x:Static vm:CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious}");
+        Assert.Contains(conditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.IsOpen}" &&
+            (string?)condition.Attribute("Value") == "True");
+        Assert.Contains(conditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.HasPrimaryAction}" &&
+            (string?)condition.Attribute("Value") == "True");
         Assert.True(HasSetter(trigger, "Visibility", "Visible"));
     }
 

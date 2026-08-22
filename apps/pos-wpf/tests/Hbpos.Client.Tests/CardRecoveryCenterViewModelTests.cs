@@ -46,8 +46,10 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal(Permissions.PosTerminal.Payment.View, request.PermissionCode);
         Assert.Equal("card-recovery-center", request.Screen);
         Assert.Equal("view", request.Action);
-        Assert.Equal([first, second], viewModel.OpenAttempts);
-        Assert.Same(first, viewModel.SelectedAttempt);
+        Assert.Equal([first.Key, second.Key], viewModel.OpenAttempts.Select(item => item.Key));
+        Assert.Equal("Card sale", viewModel.OpenAttempts[0].OperationKind);
+        Assert.Equal("Needs supervisor review", viewModel.OpenAttempts[0].Status);
+        Assert.Equal(first.Key, viewModel.SelectedAttempt?.Key);
         Assert.Equal([2], reportedCounts);
         Assert.Equal("2 card transactions need attention", viewModel.OpenCountText);
     }
@@ -109,8 +111,8 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Same(cart, recovery.RecoveredCart);
         Assert.False(recovery.CartWasEmptyWhenRecoverCalled);
         Assert.False(cart.IsEmpty);
-        Assert.Equal([first], viewModel.OpenAttempts);
-        Assert.Same(first, viewModel.SelectedAttempt);
+        Assert.Equal([first.Key], viewModel.OpenAttempts.Select(item => item.Key));
+        Assert.Equal(first.Key, viewModel.SelectedAttempt?.Key);
         Assert.Equal([2, 1], reportedCounts);
         Assert.Equal("Still checking", viewModel.StatusMessage);
         Assert.Equal(
@@ -256,9 +258,130 @@ public sealed class CardRecoveryCenterViewModelTests
         var request = Assert.Single(authorization.Requests);
         Assert.Equal(Permissions.PosTerminal.Payment.View, request.PermissionCode);
         Assert.Equal("refresh", request.Action);
-        Assert.Same(refreshedSelected, viewModel.SelectedAttempt);
+        Assert.Equal(refreshedSelected.Key, viewModel.SelectedAttempt?.Key);
+        Assert.Equal("Pending", viewModel.SelectedAttempt?.Status);
         Assert.Equal([2, 2], counts);
         Assert.Equal("Loaded 2 open card transactions.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Culture_change_reprojects_open_attempts_and_preserves_selection_without_service_call()
+    {
+        var sale = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("44000000-0000-0000-0000-000000000011"),
+            updatedAt: Now,
+            operationKind: "Sale",
+            status: "RequiresReview");
+        var refund = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("44000000-0000-0000-0000-000000000012"),
+            updatedAt: Now.AddMinutes(-1),
+            operationKind: "Refund",
+            status: "Unknown");
+        var activeSession = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("44000000-0000-0000-0000-000000000013"),
+            updatedAt: Now.AddMinutes(-2),
+            operationKind: "ActiveSession",
+            status: "Recovering");
+        var recovery = new RecordingRecoveryService { OpenItems = [sale, refund, activeSession] };
+        var localization = CreateLocalization();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            localization);
+        await viewModel.LoadAsync();
+        viewModel.SelectedAttempt = viewModel.OpenAttempts[1];
+        var selectedKey = viewModel.SelectedAttempt.Key;
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(1, recovery.ListOpenCallCount);
+        Assert.Equal(selectedKey, viewModel.SelectedAttempt?.Key);
+        Assert.Equal(["卡收款", "卡退款", "活动终端会话"], viewModel.OpenAttempts.Select(item => item.OperationKind));
+        Assert.Equal(["需要主管核对", "结果未知", "正在核对结果"], viewModel.OpenAttempts.Select(item => item.Status));
+        Assert.Equal("卡退款", viewModel.SelectedTypeText);
+        Assert.Equal("Square", viewModel.SelectedChannelText);
+        Assert.Equal("结果未知", viewModel.SelectedStatusText);
+        Assert.Equal("3 笔卡交易待处理", viewModel.OpenCountText);
+    }
+
+    [Fact]
+    public async Task Unknown_recovery_values_use_safe_localized_fallbacks()
+    {
+        var unknown = CreateQueueItem(
+            (CardProcessorKind)999,
+            Guid.Parse("44000000-0000-0000-0000-000000000014"),
+            updatedAt: Now,
+            operationKind: "FutureOperation",
+            status: "FutureStatus");
+        var recovery = new RecordingRecoveryService { OpenItems = [unknown] };
+        var localization = CreateLocalization();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            localization);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal("Unknown", viewModel.OpenAttempts[0].OperationKind);
+        Assert.Equal("Unknown", viewModel.OpenAttempts[0].Status);
+        Assert.Equal("Unknown", viewModel.SelectedTypeText);
+        Assert.Equal("Unknown", viewModel.SelectedChannelText);
+        Assert.Equal("Unknown", viewModel.SelectedStatusText);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(1, recovery.ListOpenCallCount);
+        Assert.Equal("未知", viewModel.OpenAttempts[0].OperationKind);
+        Assert.Equal("未知", viewModel.OpenAttempts[0].Status);
+        Assert.Equal("未知", viewModel.SelectedTypeText);
+        Assert.Equal("未知", viewModel.SelectedChannelText);
+        Assert.Equal("未知", viewModel.SelectedStatusText);
+    }
+
+    [Theory]
+    [InlineData("Declined", "Declined", "已拒绝")]
+    [InlineData("TimedOut", "Timed out", "已超时")]
+    [InlineData("Cancelled", "Cancelled", "已取消")]
+    [InlineData("Canceled", "Cancelled", "已取消")]
+    [InlineData("Failed", "Failed", "失败")]
+    [InlineData("Abandoned", "Abandoned", "已放弃")]
+    public async Task Known_open_recovery_status_is_bilingual(
+        string rawStatus,
+        string englishText,
+        string chineseText)
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.NewGuid(),
+            updatedAt: Now,
+            operationKind: "ActiveSession",
+            status: rawStatus);
+        var recovery = new RecordingRecoveryService { OpenItems = [item] };
+        var localization = CreateLocalization();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            localization);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(englishText, viewModel.OpenAttempts[0].Status);
+        Assert.Equal(englishText, viewModel.SelectedStatusText);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(1, recovery.ListOpenCallCount);
+        Assert.Equal(chineseText, viewModel.OpenAttempts[0].Status);
+        Assert.Equal(chineseText, viewModel.SelectedStatusText);
     }
 
     [Fact]
@@ -335,8 +458,9 @@ public sealed class CardRecoveryCenterViewModelTests
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.HasSelection);
-        Assert.Equal("Sale", viewModel.SelectedTypeText);
+        Assert.Equal("Card sale", viewModel.SelectedTypeText);
         Assert.Equal("Square", viewModel.SelectedChannelText);
+        Assert.Equal("Needs supervisor review", viewModel.SelectedStatusText);
         Assert.Equal("$12.34", viewModel.SelectedAmountText);
         Assert.Equal("CASHIER-1", viewModel.SelectedCashierText);
         Assert.Equal(Now.ToString("g", CultureInfo.GetCultureInfo("en-US")), viewModel.SelectedTimeText);
@@ -386,6 +510,13 @@ public sealed class CardRecoveryCenterViewModelTests
             .Where(element => element.Attribute(x + "Name")?.Value == "OpenAttemptsList"));
         Assert.Equal("{Binding OpenAttempts}", list.Attribute("ItemsSource")?.Value);
         Assert.Equal("{Binding SelectedAttempt, Mode=TwoWay}", list.Attribute("SelectedItem")?.Value);
+        var listBindingValues = list.DescendantsAndSelf()
+            .Attributes()
+            .Select(attribute => attribute.Value)
+            .ToArray();
+        Assert.Contains("{Binding OperationKind}", listBindingValues);
+        Assert.Contains("{Binding Processor}", listBindingValues);
+        Assert.Contains("{Binding Status}", listBindingValues);
         var rowHeight = document.Descendants(presentation + "Setter")
             .Where(setter => setter.Attribute("Property")?.Value == "MinHeight")
             .Select(setter => setter.Attribute("Value")?.Value)
@@ -504,7 +635,35 @@ public sealed class CardRecoveryCenterViewModelTests
             "cardRecovery.center.status.recoverFailed",
             "cardRecovery.center.status.resolveFailed",
             "cardRecovery.center.status.unexpected",
-            "cardRecovery.center.value.none"
+            "cardRecovery.center.value.none",
+            "cardRecovery.center.value.unknown",
+            "cardRecovery.center.type.sale",
+            "cardRecovery.center.type.refund",
+            "cardRecovery.center.type.activeSession",
+            "cardRecovery.center.channel.linkly",
+            "cardRecovery.center.channel.square",
+            "cardRecovery.center.transactionStatus.pending",
+            "cardRecovery.center.transactionStatus.sessionStarted",
+            "cardRecovery.center.transactionStatus.recovering",
+            "cardRecovery.center.transactionStatus.approved",
+            "cardRecovery.center.transactionStatus.requiresReview",
+            "cardRecovery.center.transactionStatus.orderCompleted",
+            "cardRecovery.center.transactionStatus.checkoutCreated",
+            "cardRecovery.center.transactionStatus.checkoutCompleted",
+            "cardRecovery.center.transactionStatus.paymentVerified",
+            "cardRecovery.center.transactionStatus.unknown",
+            "cardRecovery.center.transactionStatus.declined",
+            "cardRecovery.center.transactionStatus.timedOut",
+            "cardRecovery.center.transactionStatus.cancelled",
+            "cardRecovery.center.transactionStatus.failed",
+            "cardRecovery.center.transactionStatus.abandoned",
+            "cardRecovery.square.supervisorWaiting",
+            "cardRecovery.square.notPaidCartNotEmpty",
+            "cardRecovery.square.notPaidDraftInvalid",
+            "cardRecovery.square.notPaidRestoreFailed",
+            "cardRecovery.square.notPaidTerminalizeFailed",
+            "cardRecovery.square.notPaidRetryAllowed",
+            "payment.card.error.overlay.activeSession.openRecoveryCenter"
         };
 
         foreach (var key in requiredKeys)
@@ -521,6 +680,11 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.True(chinese.ContainsKey("cardRecovery.center.title"));
         Assert.True(english.ContainsKey("shell.page.cardRecovery"));
         Assert.True(chinese.ContainsKey("shell.page.cardRecovery"));
+        Assert.Equal(
+            english.Keys.Order(StringComparer.Ordinal),
+            chinese.Keys.Order(StringComparer.Ordinal));
+        Assert.DoesNotContain(english, pair => string.IsNullOrWhiteSpace(pair.Value));
+        Assert.DoesNotContain(chinese, pair => string.IsNullOrWhiteSpace(pair.Value));
     }
 
     [Fact]
@@ -543,8 +707,8 @@ public sealed class CardRecoveryCenterViewModelTests
         await viewModel.RefreshCommand.ExecuteAsync(null);
 
         Assert.False(viewModel.IsBusy);
-        Assert.Equal([item], viewModel.OpenAttempts);
-        Assert.Same(item, viewModel.SelectedAttempt);
+        Assert.Equal([item.Key], viewModel.OpenAttempts.Select(openItem => openItem.Key));
+        Assert.Equal(item.Key, viewModel.SelectedAttempt?.Key);
         Assert.Equal("Could not refresh card transactions. terminal offline", viewModel.StatusMessage);
     }
 
@@ -582,6 +746,7 @@ public sealed class CardRecoveryCenterViewModelTests
         Guid attemptGuid,
         DateTimeOffset updatedAt,
         string operationKind = "Sale",
+        string status = "RequiresReview",
         string? orderDraftJson = null) =>
         new(
             processor,
@@ -592,7 +757,7 @@ public sealed class CardRecoveryCenterViewModelTests
             "POS-1",
             "CASHIER-1",
             "Sandbox",
-            "RequiresReview",
+            status,
             updatedAt.AddMinutes(-1),
             updatedAt,
             OrderDraftJson: orderDraftJson,
@@ -653,20 +818,68 @@ public sealed class CardRecoveryCenterViewModelTests
             AuthorizationExpiresAtUtc: Now.AddYears(1));
 
     private static DictionaryLocalizationService CreateLocalization() =>
-        new(new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["cardRecovery.center.openCount"] = "{0} card transactions need attention",
-            ["cardRecovery.center.status.ready"] = "Review an open card transaction.",
-            ["cardRecovery.center.status.loaded"] = "Loaded {0} open card transactions.",
-            ["cardRecovery.center.status.empty"] = "No card transactions need attention.",
-            ["cardRecovery.center.status.authorizationRequired"] = "Authorization is required.",
-            ["cardRecovery.center.status.selectionChanged"] = "The selected transaction changed. Select it again before continuing.",
-            ["cardRecovery.center.status.recoverNoResult"] = "The selected transaction is no longer open.",
-            ["cardRecovery.center.status.refreshFailed"] = "Could not refresh card transactions. {0}",
-            ["cardRecovery.center.status.recoverFailed"] = "Could not check the selected transaction. {0}",
-            ["cardRecovery.center.status.resolveFailed"] = "Could not save the supervisor decision. {0}",
-            ["cardRecovery.center.value.none"] = "-"
-        });
+        new(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["cardRecovery.center.openCount"] = "{0} card transactions need attention",
+                ["cardRecovery.center.status.ready"] = "Review an open card transaction.",
+                ["cardRecovery.center.status.loaded"] = "Loaded {0} open card transactions.",
+                ["cardRecovery.center.status.empty"] = "No card transactions need attention.",
+                ["cardRecovery.center.status.authorizationRequired"] = "Authorization is required.",
+                ["cardRecovery.center.status.selectionChanged"] = "The selected transaction changed. Select it again before continuing.",
+                ["cardRecovery.center.status.recoverNoResult"] = "The selected transaction is no longer open.",
+                ["cardRecovery.center.status.refreshFailed"] = "Could not refresh card transactions. {0}",
+                ["cardRecovery.center.status.recoverFailed"] = "Could not check the selected transaction. {0}",
+                ["cardRecovery.center.status.resolveFailed"] = "Could not save the supervisor decision. {0}",
+                ["cardRecovery.center.value.none"] = "-",
+                ["cardRecovery.center.value.unknown"] = "Unknown",
+                ["cardRecovery.center.type.sale"] = "Card sale",
+                ["cardRecovery.center.type.refund"] = "Card refund",
+                ["cardRecovery.center.type.activeSession"] = "Active terminal session",
+                ["cardRecovery.center.channel.linkly"] = "Linkly",
+                ["cardRecovery.center.channel.square"] = "Square",
+                ["cardRecovery.center.transactionStatus.pending"] = "Pending",
+                ["cardRecovery.center.transactionStatus.sessionStarted"] = "Session started",
+                ["cardRecovery.center.transactionStatus.recovering"] = "Checking result",
+                ["cardRecovery.center.transactionStatus.approved"] = "Payment approved",
+                ["cardRecovery.center.transactionStatus.requiresReview"] = "Needs supervisor review",
+                ["cardRecovery.center.transactionStatus.orderCompleted"] = "Order completed",
+                ["cardRecovery.center.transactionStatus.checkoutCreated"] = "Checkout created",
+                ["cardRecovery.center.transactionStatus.checkoutCompleted"] = "Checkout completed",
+                ["cardRecovery.center.transactionStatus.paymentVerified"] = "Payment verified",
+                ["cardRecovery.center.transactionStatus.unknown"] = "Result unknown",
+                ["cardRecovery.center.transactionStatus.declined"] = "Declined",
+                ["cardRecovery.center.transactionStatus.timedOut"] = "Timed out",
+                ["cardRecovery.center.transactionStatus.cancelled"] = "Cancelled",
+                ["cardRecovery.center.transactionStatus.failed"] = "Failed",
+                ["cardRecovery.center.transactionStatus.abandoned"] = "Abandoned"
+            },
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["cardRecovery.center.openCount"] = "{0} 笔卡交易待处理",
+                ["cardRecovery.center.value.none"] = "-",
+                ["cardRecovery.center.value.unknown"] = "未知",
+                ["cardRecovery.center.type.sale"] = "卡收款",
+                ["cardRecovery.center.type.refund"] = "卡退款",
+                ["cardRecovery.center.type.activeSession"] = "活动终端会话",
+                ["cardRecovery.center.channel.linkly"] = "Linkly",
+                ["cardRecovery.center.channel.square"] = "Square",
+                ["cardRecovery.center.transactionStatus.pending"] = "等待处理",
+                ["cardRecovery.center.transactionStatus.sessionStarted"] = "会话已开始",
+                ["cardRecovery.center.transactionStatus.recovering"] = "正在核对结果",
+                ["cardRecovery.center.transactionStatus.approved"] = "付款已批准",
+                ["cardRecovery.center.transactionStatus.requiresReview"] = "需要主管核对",
+                ["cardRecovery.center.transactionStatus.orderCompleted"] = "订单已完成",
+                ["cardRecovery.center.transactionStatus.checkoutCreated"] = "结账已创建",
+                ["cardRecovery.center.transactionStatus.checkoutCompleted"] = "结账已完成",
+                ["cardRecovery.center.transactionStatus.paymentVerified"] = "付款已核实",
+                ["cardRecovery.center.transactionStatus.unknown"] = "结果未知",
+                ["cardRecovery.center.transactionStatus.declined"] = "已拒绝",
+                ["cardRecovery.center.transactionStatus.timedOut"] = "已超时",
+                ["cardRecovery.center.transactionStatus.cancelled"] = "已取消",
+                ["cardRecovery.center.transactionStatus.failed"] = "失败",
+                ["cardRecovery.center.transactionStatus.abandoned"] = "已放弃"
+            });
 
     private sealed class RecordingRecoveryService : ICardPaymentRecoveryService
     {
@@ -807,7 +1020,9 @@ public sealed class CardRecoveryCenterViewModelTests
 
     private sealed record AuthorizationRequest(string PermissionCode, string Screen, string Action);
 
-    private sealed class DictionaryLocalizationService(IReadOnlyDictionary<string, string> values)
+    private sealed class DictionaryLocalizationService(
+        IReadOnlyDictionary<string, string> englishValues,
+        IReadOnlyDictionary<string, string> chineseValues)
         : ILocalizationService
     {
         public event PropertyChangedEventHandler? PropertyChanged
@@ -819,7 +1034,7 @@ public sealed class CardRecoveryCenterViewModelTests
         public event EventHandler? CultureChanged;
 
         public IReadOnlyList<CultureInfo> AvailableCultures { get; } =
-            [CultureInfo.GetCultureInfo("en-US")];
+            [CultureInfo.GetCultureInfo("en-US"), CultureInfo.GetCultureInfo("zh-CN")];
 
         public CultureInfo CurrentCulture { get; private set; } =
             CultureInfo.GetCultureInfo("en-US");
@@ -839,6 +1054,10 @@ public sealed class CardRecoveryCenterViewModelTests
             return Task.CompletedTask;
         }
 
-        public string T(string key) => values.TryGetValue(key, out var value) ? value : $"[[{key}]]";
+        public string T(string key)
+        {
+            var values = CurrentCulture.Name == "zh-CN" ? chineseValues : englishValues;
+            return values.TryGetValue(key, out var value) ? value : $"[[{key}]]";
+        }
     }
 }

@@ -278,6 +278,7 @@
   <data name="payment.card.error.overlay.activeSession.close" xml:space="preserve"><value>Close</value></data>
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve"><value>Recovering previous Linkly transaction...</value></data>
   <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve"><value>Move to recovery center and start a new sale</value></data>
+  <data name="payment.card.error.overlay.activeSession.openRecoveryCenter" xml:space="preserve"><value>Open card transaction recovery</value></data>
   <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve"><value>Moving the card transaction to the recovery center...</value></data>
   <data name="payment.card.error.overlay.fallback.title" xml:space="preserve"><value>Use Backup Card Payment?</value></data>
   <data name="payment.card.error.overlay.fallback.message" xml:space="preserve"><value>The selected Linkly mode is unavailable and no transaction was submitted. Switch to {0}?</value></data>
@@ -976,6 +977,12 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>The payment amount returned by Square does not match the order amount. The order was not saved automatically. Ask a supervisor to confirm.</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>The previous Square card payment was successful. The order has been recovered and saved automatically.</value></data>
+  <data name="cardRecovery.square.supervisorWaiting" xml:space="preserve"><value>The Square payment remains locked. Run recovery again after the bank result is available.</value></data>
+  <data name="cardRecovery.square.notPaidCartNotEmpty" xml:space="preserve"><value>The previous Square payment was confirmed not paid, but the current cart is not empty. Clear the current cart before restoring the original order.</value></data>
+  <data name="cardRecovery.square.notPaidDraftInvalid" xml:space="preserve"><value>The Square payment draft is invalid and cannot be restored.</value></data>
+  <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>The previous Square payment could not be restored. Run recovery again.</value></data>
+  <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>The previous Square payment could not be finalized. Run recovery again.</value></data>
+  <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>The bank confirmed that no payment was processed. The original order is ready to retry with the same operation.</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>Software update</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>Check for a new WPF POS installer without interrupting the current checkout flow.</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>Channel</value></data>
@@ -1118,4 +1125,25 @@
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>Could not save the supervisor decision. {0}</value></data>
   <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>The card transaction center encountered an unexpected error. {0}</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
+  <data name="cardRecovery.center.value.unknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="cardRecovery.center.type.sale" xml:space="preserve"><value>Card sale</value></data>
+  <data name="cardRecovery.center.type.refund" xml:space="preserve"><value>Card refund</value></data>
+  <data name="cardRecovery.center.type.activeSession" xml:space="preserve"><value>Active terminal session</value></data>
+  <data name="cardRecovery.center.channel.linkly" xml:space="preserve"><value>Linkly</value></data>
+  <data name="cardRecovery.center.channel.square" xml:space="preserve"><value>Square</value></data>
+  <data name="cardRecovery.center.transactionStatus.pending" xml:space="preserve"><value>Pending</value></data>
+  <data name="cardRecovery.center.transactionStatus.sessionStarted" xml:space="preserve"><value>Session started</value></data>
+  <data name="cardRecovery.center.transactionStatus.recovering" xml:space="preserve"><value>Checking result</value></data>
+  <data name="cardRecovery.center.transactionStatus.approved" xml:space="preserve"><value>Payment approved</value></data>
+  <data name="cardRecovery.center.transactionStatus.requiresReview" xml:space="preserve"><value>Needs supervisor review</value></data>
+  <data name="cardRecovery.center.transactionStatus.orderCompleted" xml:space="preserve"><value>Order completed</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCreated" xml:space="preserve"><value>Checkout created</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCompleted" xml:space="preserve"><value>Checkout completed</value></data>
+  <data name="cardRecovery.center.transactionStatus.paymentVerified" xml:space="preserve"><value>Payment verified</value></data>
+  <data name="cardRecovery.center.transactionStatus.unknown" xml:space="preserve"><value>Result unknown</value></data>
+  <data name="cardRecovery.center.transactionStatus.declined" xml:space="preserve"><value>Declined</value></data>
+  <data name="cardRecovery.center.transactionStatus.timedOut" xml:space="preserve"><value>Timed out</value></data>
+  <data name="cardRecovery.center.transactionStatus.cancelled" xml:space="preserve"><value>Cancelled</value></data>
+  <data name="cardRecovery.center.transactionStatus.failed" xml:space="preserve"><value>Failed</value></data>
+  <data name="cardRecovery.center.transactionStatus.abandoned" xml:space="preserve"><value>Abandoned</value></data>
 </root>

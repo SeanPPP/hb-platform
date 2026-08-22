@@ -30,6 +30,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private string _resolutionEvidence = string.Empty;
     private string _resolutionReference = string.Empty;
     private string _statusMessage = string.Empty;
+    private IReadOnlyList<CardRecoveryQueueItem> _sourceAttempts = [];
     private IReadOnlyList<PosCartLineSnapshot> _selectedProductLines = [];
 
     public CardRecoveryCenterViewModel(
@@ -149,8 +150,12 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     public bool HasProductSnapshot => SelectedProductLines.Count > 0;
     public bool HasNoProductSnapshot => !HasProductSnapshot;
     public IReadOnlyList<PosCartLineSnapshot> SelectedProductLines => _selectedProductLines;
-    public string SelectedTypeText => ValueOrNone(SelectedAttempt?.OperationKind);
-    public string SelectedChannelText => SelectedAttempt?.Processor.ToString() ?? NoneText;
+    public string SelectedTypeText => SelectedSourceAttempt is { } selected
+        ? FormatOperationKind(selected.OperationKind)
+        : NoneText;
+    public string SelectedChannelText => SelectedSourceAttempt is { } selected
+        ? FormatProcessor(selected.Processor)
+        : NoneText;
     public string SelectedAmountText => SelectedAttempt is null
         ? NoneText
         : SelectedAttempt.Amount.ToString("C2", GetCulture());
@@ -164,7 +169,9 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         Normalize(SelectedAttempt?.TxnRef) ?? Normalize(SelectedAttempt?.PaymentId));
     public string SelectedResponseCodeText => ValueOrNone(SelectedAttempt?.ResponseCode);
     public string SelectedResponseText => ValueOrNone(SelectedAttempt?.ResponseText);
-    public string SelectedStatusText => ValueOrNone(SelectedAttempt?.Status);
+    public string SelectedStatusText => SelectedSourceAttempt is { } selected
+        ? FormatAttemptStatus(selected.Status)
+        : NoneText;
     public string SelectedAttemptText => SelectedAttempt?.AttemptGuid.ToString("D") ?? NoneText;
     public string SelectedEnvironmentText => ValueOrNone(SelectedAttempt?.Environment);
     public string SelectedReferenceText => ValueOrNone(
@@ -422,16 +429,8 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     {
         var selectedKey = SelectedAttempt?.Key;
         var items = await _recoveryService.ListOpenAsync(_session);
-        OpenAttempts.Clear();
-        foreach (var item in items)
-        {
-            OpenAttempts.Add(item);
-        }
-
-        SelectedAttempt = selectedKey is null
-            ? OpenAttempts.FirstOrDefault()
-            : OpenAttempts.FirstOrDefault(item => item.Key == selectedKey.Value) ??
-              OpenAttempts.FirstOrDefault();
+        _sourceAttempts = items;
+        RefreshLocalizedOpenAttempts(selectedKey);
         OnPropertyChanged(nameof(OpenCountText));
         OnPropertyChanged(nameof(HasOpenAttempts));
         OnPropertyChanged(nameof(HasNoOpenAttempts));
@@ -483,8 +482,71 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
     private string ValueOrNone(string? value) => Normalize(value) ?? NoneText;
 
+    private string UnknownText => T("cardRecovery.center.value.unknown", "Unknown");
+
+    private CardRecoveryQueueItem? SelectedSourceAttempt => SelectedAttempt is null
+        ? null
+        : _sourceAttempts.FirstOrDefault(item => item.Key == SelectedAttempt.Key) ?? SelectedAttempt;
+
+    private void RefreshLocalizedOpenAttempts(CardRecoveryAttemptKey? selectedKey)
+    {
+        OpenAttempts.Clear();
+        foreach (var item in _sourceAttempts)
+        {
+            OpenAttempts.Add(item with
+            {
+                OperationKind = FormatOperationKind(item.OperationKind),
+                Status = FormatAttemptStatus(item.Status)
+            });
+        }
+
+        SelectedAttempt = selectedKey is null
+            ? OpenAttempts.FirstOrDefault()
+            : OpenAttempts.FirstOrDefault(item => item.Key == selectedKey.Value) ??
+              OpenAttempts.FirstOrDefault();
+    }
+
+    private string FormatOperationKind(string? operationKind) =>
+        Normalize(operationKind)?.ToUpperInvariant() switch
+        {
+            "SALE" => T("cardRecovery.center.type.sale", "Card sale"),
+            "REFUND" => T("cardRecovery.center.type.refund", "Card refund"),
+            "ACTIVESESSION" => T("cardRecovery.center.type.activeSession", "Active terminal session"),
+            _ => UnknownText
+        };
+
+    private string FormatProcessor(CardProcessorKind processor) => processor switch
+    {
+        CardProcessorKind.Linkly => T("cardRecovery.center.channel.linkly", "Linkly"),
+        CardProcessorKind.Square => T("cardRecovery.center.channel.square", "Square"),
+        _ => UnknownText
+    };
+
+    private string FormatAttemptStatus(string? status) =>
+        Normalize(status)?.ToUpperInvariant() switch
+        {
+            "PENDING" => T("cardRecovery.center.transactionStatus.pending", "Pending"),
+            "SESSIONSTARTED" => T("cardRecovery.center.transactionStatus.sessionStarted", "Session started"),
+            "RECOVERING" => T("cardRecovery.center.transactionStatus.recovering", "Checking result"),
+            "APPROVED" => T("cardRecovery.center.transactionStatus.approved", "Payment approved"),
+            "REQUIRESREVIEW" => T("cardRecovery.center.transactionStatus.requiresReview", "Needs supervisor review"),
+            "ORDERCOMPLETED" => T("cardRecovery.center.transactionStatus.orderCompleted", "Order completed"),
+            "CHECKOUTCREATED" => T("cardRecovery.center.transactionStatus.checkoutCreated", "Checkout created"),
+            "CHECKOUTCOMPLETED" => T("cardRecovery.center.transactionStatus.checkoutCompleted", "Checkout completed"),
+            "PAYMENTVERIFIED" => T("cardRecovery.center.transactionStatus.paymentVerified", "Payment verified"),
+            "UNKNOWN" => T("cardRecovery.center.transactionStatus.unknown", "Result unknown"),
+            "DECLINED" => T("cardRecovery.center.transactionStatus.declined", "Declined"),
+            "TIMEDOUT" => T("cardRecovery.center.transactionStatus.timedOut", "Timed out"),
+            "CANCELLED" or "CANCELED" => T("cardRecovery.center.transactionStatus.cancelled", "Cancelled"),
+            "FAILED" => T("cardRecovery.center.transactionStatus.failed", "Failed"),
+            "ABANDONED" => T("cardRecovery.center.transactionStatus.abandoned", "Abandoned"),
+            _ => UnknownText
+        };
+
     private void OnCultureChanged(object? sender, EventArgs e)
     {
+        var selectedKey = SelectedAttempt?.Key;
+        RefreshLocalizedOpenAttempts(selectedKey);
         OnPropertyChanged(nameof(OpenCountText));
         NotifySelectedAttemptProperties();
     }

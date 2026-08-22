@@ -768,6 +768,9 @@
   <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve">
     <value>移至异常中心并开始新单</value>
   </data>
+  <data name="payment.card.error.overlay.activeSession.openRecoveryCenter" xml:space="preserve">
+    <value>打开卡交易异常中心</value>
+  </data>
   <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve">
     <value>正在将银行卡交易移至异常中心...</value>
   </data>
@@ -2624,6 +2627,12 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>上一笔 Square 刷卡未完成：{0}。订单已恢复，请重新选择付款方式。</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>Square 返回的付款金额与订单金额不一致。订单未自动保存，请联系主管确认。</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>上一笔 Square 刷卡已成功，订单已自动恢复并保存。</value></data>
+  <data name="cardRecovery.square.supervisorWaiting" xml:space="preserve"><value>这笔 Square 付款仍保持锁定。银行结果可用后请再次执行恢复。</value></data>
+  <data name="cardRecovery.square.notPaidCartNotEmpty" xml:space="preserve"><value>已确认上一笔 Square 付款未扣款，但当前购物车不为空。请先清空当前购物车，再恢复原订单。</value></data>
+  <data name="cardRecovery.square.notPaidDraftInvalid" xml:space="preserve"><value>Square 付款草稿无效，无法恢复原订单。</value></data>
+  <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>无法恢复上一笔 Square 付款订单，请再次执行恢复。</value></data>
+  <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>无法结束上一笔 Square 付款记录，请再次执行恢复。</value></data>
+  <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>银行已确认未发生扣款。原订单已可使用同一操作重新付款。</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>软件更新</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>检查 WPF 收银端安装包更新，不中断当前收银主流程。</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>通道</value></data>
@@ -2766,4 +2775,25 @@
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>保存主管决定失败。{0}</value></data>
   <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>卡交易异常中心发生意外错误。{0}</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
+  <data name="cardRecovery.center.value.unknown" xml:space="preserve"><value>未知</value></data>
+  <data name="cardRecovery.center.type.sale" xml:space="preserve"><value>卡收款</value></data>
+  <data name="cardRecovery.center.type.refund" xml:space="preserve"><value>卡退款</value></data>
+  <data name="cardRecovery.center.type.activeSession" xml:space="preserve"><value>活动终端会话</value></data>
+  <data name="cardRecovery.center.channel.linkly" xml:space="preserve"><value>Linkly</value></data>
+  <data name="cardRecovery.center.channel.square" xml:space="preserve"><value>Square</value></data>
+  <data name="cardRecovery.center.transactionStatus.pending" xml:space="preserve"><value>等待处理</value></data>
+  <data name="cardRecovery.center.transactionStatus.sessionStarted" xml:space="preserve"><value>会话已开始</value></data>
+  <data name="cardRecovery.center.transactionStatus.recovering" xml:space="preserve"><value>正在核对结果</value></data>
+  <data name="cardRecovery.center.transactionStatus.approved" xml:space="preserve"><value>付款已批准</value></data>
+  <data name="cardRecovery.center.transactionStatus.requiresReview" xml:space="preserve"><value>需要主管核对</value></data>
+  <data name="cardRecovery.center.transactionStatus.orderCompleted" xml:space="preserve"><value>订单已完成</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCreated" xml:space="preserve"><value>结账已创建</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCompleted" xml:space="preserve"><value>结账已完成</value></data>
+  <data name="cardRecovery.center.transactionStatus.paymentVerified" xml:space="preserve"><value>付款已核实</value></data>
+  <data name="cardRecovery.center.transactionStatus.unknown" xml:space="preserve"><value>结果未知</value></data>
+  <data name="cardRecovery.center.transactionStatus.declined" xml:space="preserve"><value>已拒绝</value></data>
+  <data name="cardRecovery.center.transactionStatus.timedOut" xml:space="preserve"><value>已超时</value></data>
+  <data name="cardRecovery.center.transactionStatus.cancelled" xml:space="preserve"><value>已取消</value></data>
+  <data name="cardRecovery.center.transactionStatus.failed" xml:space="preserve"><value>失败</value></data>
+  <data name="cardRecovery.center.transactionStatus.abandoned" xml:space="preserve"><value>已放弃</value></data>
 </root>
