@@ -2695,6 +2695,9 @@
   <data name="cardRecovery.refund.field.refundReference" xml:space="preserve"><value>退款参考号（如有）</value></data>
   <data name="cardRecovery.refund.field.evidence" xml:space="preserve"><value>银行证据（确认未退款时必填）</value></data>
   <data name="cardRecovery.refund.field.note" xml:space="preserve"><value>主管备注（继续等待时必填；确认已退款需参考号或备注）</value></data>
+  <data name="cardRecovery.refund.section.squareInstructions" xml:space="preserve"><value>选择结果前，请先核对 Square 退款记录。确认已退款必须填写真实的 Square 退款参考号；确认未退款必须填写银行证据；继续等待必须填写主管备注。</value></data>
+  <data name="cardRecovery.refund.field.squareRefundReference" xml:space="preserve"><value>Square 退款参考号（确认已退款时必填）</value></data>
+  <data name="cardRecovery.refund.field.squareNote" xml:space="preserve"><value>主管备注（继续等待时必填）</value></data>
   <data name="cardRecovery.refund.action.confirmRefunded" xml:space="preserve"><value>确认已退款</value></data>
   <data name="cardRecovery.refund.action.confirmNotRefunded" xml:space="preserve"><value>确认未退款</value></data>
   <data name="cardRecovery.refund.action.continueWaiting" xml:space="preserve"><value>继续等待</value></data>

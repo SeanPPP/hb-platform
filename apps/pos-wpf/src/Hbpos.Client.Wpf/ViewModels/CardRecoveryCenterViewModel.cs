@@ -149,6 +149,64 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     public bool HasProductSnapshot => SelectedProductLines.Count > 0;
     public bool HasNoProductSnapshot => !HasProductSnapshot;
     public IReadOnlyList<PosCartLineSnapshot> SelectedProductLines => _selectedProductLines;
+    private bool IsRefundSelection => string.Equals(
+        SelectedAttempt?.OperationKind,
+        "Refund",
+        StringComparison.OrdinalIgnoreCase);
+    private bool IsPaymentSelection =>
+        string.Equals(SelectedAttempt?.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(SelectedAttempt?.OperationKind, "ActiveSession", StringComparison.OrdinalIgnoreCase);
+    private bool IsSquareRefundSelection =>
+        IsRefundSelection && SelectedAttempt?.Processor == CardProcessorKind.Square;
+    public string ResolutionSectionTitleText => IsRefundSelection
+        ? T("cardRecovery.refund.section.title", "Supervisor refund reconciliation")
+        : IsPaymentSelection
+            ? T("cardRecovery.payment.section.title", "Supervisor payment reconciliation")
+            : T("cardRecovery.center.resolution.title", "Supervisor resolution");
+    public string ResolutionInstructionsText => IsSquareRefundSelection
+        ? T(
+            "cardRecovery.refund.section.squareInstructions",
+            "Check the Square refund record before choosing an outcome. Confirm refunded requires a real Square refund reference; confirm not refunded requires bank evidence; continue waiting requires a supervisor note.")
+        : IsRefundSelection
+            ? T(
+                "cardRecovery.refund.section.instructions",
+                "Check the bank or terminal record before choosing one outcome. The refund remains locked until a supervisor decision is saved.")
+            : IsPaymentSelection
+                ? T(
+                    "cardRecovery.payment.section.instructions",
+                    "Check the bank result before unlocking this payment. Confirming paid requires a reference or evidence; confirming not paid requires evidence. A supervisor note is optional.")
+                : T(
+                    "cardRecovery.center.resolution.instructions",
+                    "Confirm the bank or terminal evidence for this selected transaction. Each manual decision requires one-time supervisor authorization.");
+    public string ResolutionReasonLabelText => IsSquareRefundSelection
+        ? T(
+            "cardRecovery.refund.field.squareNote",
+            "Supervisor note (required when continuing to wait)")
+        : IsRefundSelection
+            ? T(
+                "cardRecovery.refund.field.note",
+                "Supervisor note (required when waiting; reference or note required when refunded)")
+            : IsPaymentSelection
+                ? T("cardRecovery.payment.field.note", "Supervisor note (optional)")
+                : T("cardRecovery.center.input.reason", "Supervisor reason or note");
+    public string ResolutionEvidenceLabelText => IsRefundSelection
+        ? T(
+            "cardRecovery.refund.field.evidence",
+            "Bank evidence (required when no refund was processed)")
+        : IsPaymentSelection
+            ? T(
+                "cardRecovery.payment.field.evidence",
+                "Bank evidence (required when confirming not paid)")
+            : T("cardRecovery.center.input.evidence", "Bank or terminal evidence");
+    public string ResolutionReferenceLabelText => IsSquareRefundSelection
+        ? T(
+            "cardRecovery.refund.field.squareRefundReference",
+            "Square refund reference (required when confirming refunded)")
+        : IsRefundSelection
+            ? T("cardRecovery.refund.field.refundReference", "Refund reference (when available)")
+            : IsPaymentSelection
+                ? T("cardRecovery.payment.field.paymentReference", "Payment reference (when available)")
+                : T("cardRecovery.center.input.reference", "Payment or settlement reference");
     public string SelectedTypeText => ValueOrNone(SelectedAttempt?.OperationKind);
     public string SelectedChannelText => SelectedAttempt?.Processor.ToString() ?? NoneText;
     public string SelectedAmountText => SelectedAttempt is null
@@ -416,6 +474,11 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedAttemptText));
         OnPropertyChanged(nameof(SelectedEnvironmentText));
         OnPropertyChanged(nameof(SelectedReferenceText));
+        OnPropertyChanged(nameof(ResolutionSectionTitleText));
+        OnPropertyChanged(nameof(ResolutionInstructionsText));
+        OnPropertyChanged(nameof(ResolutionReasonLabelText));
+        OnPropertyChanged(nameof(ResolutionEvidenceLabelText));
+        OnPropertyChanged(nameof(ResolutionReferenceLabelText));
     }
 
     private async Task RefreshListCoreAsync(string? actionMessage = null)

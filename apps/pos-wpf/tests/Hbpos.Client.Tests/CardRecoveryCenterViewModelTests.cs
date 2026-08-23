@@ -261,6 +261,131 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal("Loaded 2 open card transactions.", viewModel.StatusMessage);
     }
 
+    [Theory]
+    [InlineData(
+        CardProcessorKind.Linkly,
+        "Sale",
+        "Supervisor payment reconciliation",
+        "Check the bank result before unlocking this payment. Confirming paid requires a reference or evidence; confirming not paid requires evidence. A supervisor note is optional.",
+        "Supervisor note (optional)",
+        "Bank evidence (required when confirming not paid)",
+        "Payment reference (when available)")]
+    [InlineData(
+        CardProcessorKind.Linkly,
+        "ActiveSession",
+        "Supervisor payment reconciliation",
+        "Check the bank result before unlocking this payment. Confirming paid requires a reference or evidence; confirming not paid requires evidence. A supervisor note is optional.",
+        "Supervisor note (optional)",
+        "Bank evidence (required when confirming not paid)",
+        "Payment reference (when available)")]
+    [InlineData(
+        CardProcessorKind.Linkly,
+        "Refund",
+        "Supervisor refund reconciliation",
+        "Check the bank or terminal record before choosing one outcome. The refund remains locked until a supervisor decision is saved.",
+        "Supervisor note (required when waiting; reference or note required when refunded)",
+        "Bank evidence (required when no refund was processed)",
+        "Refund reference (when available)")]
+    [InlineData(
+        CardProcessorKind.Square,
+        "Refund",
+        "Supervisor refund reconciliation",
+        "Check the Square refund record before choosing an outcome. Confirm refunded requires a real Square refund reference; confirm not refunded requires bank evidence; continue waiting requires a supervisor note.",
+        "Supervisor note (required when continuing to wait)",
+        "Bank evidence (required when no refund was processed)",
+        "Square refund reference (required when confirming refunded)")]
+    [InlineData(
+        CardProcessorKind.Linkly,
+        "Unexpected",
+        "Supervisor resolution",
+        "Confirm the bank or terminal evidence for this selected transaction. Each manual decision requires one-time supervisor authorization.",
+        "Supervisor reason or note",
+        "Bank or terminal evidence",
+        "Payment or settlement reference")]
+    public async Task Resolution_guidance_matches_selected_operation(
+        CardProcessorKind processor,
+        string operationKind,
+        string expectedTitle,
+        string expectedInstructions,
+        string expectedReasonLabel,
+        string expectedEvidenceLabel,
+        string expectedReferenceLabel)
+    {
+        var selected = CreateQueueItem(
+            processor,
+            Guid.NewGuid(),
+            updatedAt: Now,
+            operationKind: operationKind);
+        var recovery = new RecordingRecoveryService { OpenItems = [selected] };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization());
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(expectedTitle, GetStringProperty(viewModel, "ResolutionSectionTitleText"));
+        Assert.Equal(expectedInstructions, GetStringProperty(viewModel, "ResolutionInstructionsText"));
+        Assert.Equal(expectedReasonLabel, GetStringProperty(viewModel, "ResolutionReasonLabelText"));
+        Assert.Equal(expectedEvidenceLabel, GetStringProperty(viewModel, "ResolutionEvidenceLabelText"));
+        Assert.Equal(expectedReferenceLabel, GetStringProperty(viewModel, "ResolutionReferenceLabelText"));
+    }
+
+    [Fact]
+    public async Task Resolution_guidance_notifies_all_labels_when_culture_changes()
+    {
+        var localization = new ResolutionLocalizationService();
+        var selected = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.NewGuid(),
+            updatedAt: Now,
+            operationKind: "Refund");
+        var recovery = new RecordingRecoveryService { OpenItems = [selected] };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            localization);
+        await viewModel.LoadAsync();
+        var changedProperties = new HashSet<string>(StringComparer.Ordinal);
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is not null)
+            {
+                changedProperties.Add(args.PropertyName);
+            }
+        };
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("主管退款核对", GetStringProperty(viewModel, "ResolutionSectionTitleText"));
+        Assert.Equal(
+            "选择结果前，请先核对 Square 退款记录。确认已退款必须填写真实的 Square 退款参考号；确认未退款必须填写银行证据；继续等待必须填写主管备注。",
+            GetStringProperty(viewModel, "ResolutionInstructionsText"));
+        Assert.Equal(
+            "主管备注（继续等待时必填）",
+            GetStringProperty(viewModel, "ResolutionReasonLabelText"));
+        Assert.Equal(
+            "银行证据（确认未退款时必填）",
+            GetStringProperty(viewModel, "ResolutionEvidenceLabelText"));
+        Assert.Equal(
+            "Square 退款参考号（确认已退款时必填）",
+            GetStringProperty(viewModel, "ResolutionReferenceLabelText"));
+        Assert.All(
+            new[]
+            {
+                "ResolutionSectionTitleText",
+                "ResolutionInstructionsText",
+                "ResolutionReasonLabelText",
+                "ResolutionEvidenceLabelText",
+                "ResolutionReferenceLabelText"
+            },
+            propertyName => Assert.Contains(propertyName, changedProperties));
+    }
+
     [Fact]
     public void BackCommand_invokes_callback_without_authorization_or_recovery_calls()
     {
@@ -441,6 +566,57 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public void Supervisor_resolution_inputs_render_persistent_labels()
+    {
+        var viewPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "CardRecoveryCenterView.xaml");
+        var document = XDocument.Load(viewPath);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        foreach (var (inputProperty, labelProperty) in new[]
+                 {
+                     ("ResolutionReason", "ResolutionReasonLabelText"),
+                     ("ResolutionEvidence", "ResolutionEvidenceLabelText"),
+                     ("ResolutionReference", "ResolutionReferenceLabelText")
+                 })
+        {
+            var input = Assert.Single(document.Descendants(presentation + "TextBox")
+                .Where(element =>
+                    element.Attribute("Text")?.Value.Contains(
+                        $"Binding {inputProperty}",
+                        StringComparison.Ordinal) == true));
+            Assert.Equal(
+                $"{{Binding {labelProperty}}}",
+                input.Attribute("AutomationProperties.Name")?.Value);
+            Assert.DoesNotContain(
+                input.Attributes(),
+                attribute => attribute.Name.LocalName == "HintAssist.Hint");
+
+            var container = Assert.IsType<XElement>(input.Parent);
+            var label = Assert.Single(container.Elements(presentation + "TextBlock")
+                .Where(element =>
+                    element.Attribute("Text")?.Value == $"{{Binding {labelProperty}}}"));
+            var children = container.Elements().ToArray();
+            Assert.True(
+                Array.IndexOf(children, label) < Array.IndexOf(children, input),
+                $"{inputProperty} must keep its visible label above the input.");
+        }
+
+        Assert.Contains(
+            document.Descendants(presentation + "TextBlock"),
+            element => element.Attribute("Text")?.Value == "{Binding ResolutionSectionTitleText}");
+        Assert.Contains(
+            document.Descendants(presentation + "TextBlock"),
+            element => element.Attribute("Text")?.Value == "{Binding ResolutionInstructionsText}");
+    }
+
+    [Fact]
     public void Center_resources_are_bilingual_complete_and_keep_parallel_wiring_keys_stable()
     {
         var resourceRoot = Path.Combine(
@@ -504,7 +680,10 @@ public sealed class CardRecoveryCenterViewModelTests
             "cardRecovery.center.status.recoverFailed",
             "cardRecovery.center.status.resolveFailed",
             "cardRecovery.center.status.unexpected",
-            "cardRecovery.center.value.none"
+            "cardRecovery.center.value.none",
+            "cardRecovery.refund.section.squareInstructions",
+            "cardRecovery.refund.field.squareRefundReference",
+            "cardRecovery.refund.field.squareNote"
         };
 
         foreach (var key in requiredKeys)
@@ -575,6 +754,13 @@ public sealed class CardRecoveryCenterViewModelTests
         }
 
         throw new DirectoryNotFoundException("Could not locate the repository root.");
+    }
+
+    private static string GetStringProperty(CardRecoveryCenterViewModel viewModel, string propertyName)
+    {
+        var property = typeof(CardRecoveryCenterViewModel).GetProperty(propertyName);
+        Assert.NotNull(property);
+        return Assert.IsType<string>(property.GetValue(viewModel));
     }
 
     private static CardRecoveryQueueItem CreateQueueItem(
@@ -655,6 +841,24 @@ public sealed class CardRecoveryCenterViewModelTests
     private static DictionaryLocalizationService CreateLocalization() =>
         new(new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["cardRecovery.center.resolution.title"] = "Supervisor resolution",
+            ["cardRecovery.center.resolution.instructions"] = "Confirm the bank or terminal evidence for this selected transaction. Each manual decision requires one-time supervisor authorization.",
+            ["cardRecovery.center.input.reason"] = "Supervisor reason or note",
+            ["cardRecovery.center.input.evidence"] = "Bank or terminal evidence",
+            ["cardRecovery.center.input.reference"] = "Payment or settlement reference",
+            ["cardRecovery.payment.section.title"] = "Supervisor payment reconciliation",
+            ["cardRecovery.payment.section.instructions"] = "Check the bank result before unlocking this payment. Confirming paid requires a reference or evidence; confirming not paid requires evidence. A supervisor note is optional.",
+            ["cardRecovery.payment.field.paymentReference"] = "Payment reference (when available)",
+            ["cardRecovery.payment.field.evidence"] = "Bank evidence (required when confirming not paid)",
+            ["cardRecovery.payment.field.note"] = "Supervisor note (optional)",
+            ["cardRecovery.refund.section.title"] = "Supervisor refund reconciliation",
+            ["cardRecovery.refund.section.instructions"] = "Check the bank or terminal record before choosing one outcome. The refund remains locked until a supervisor decision is saved.",
+            ["cardRecovery.refund.field.refundReference"] = "Refund reference (when available)",
+            ["cardRecovery.refund.field.evidence"] = "Bank evidence (required when no refund was processed)",
+            ["cardRecovery.refund.field.note"] = "Supervisor note (required when waiting; reference or note required when refunded)",
+            ["cardRecovery.refund.section.squareInstructions"] = "Check the Square refund record before choosing an outcome. Confirm refunded requires a real Square refund reference; confirm not refunded requires bank evidence; continue waiting requires a supervisor note.",
+            ["cardRecovery.refund.field.squareRefundReference"] = "Square refund reference (required when confirming refunded)",
+            ["cardRecovery.refund.field.squareNote"] = "Supervisor note (required when continuing to wait)",
             ["cardRecovery.center.openCount"] = "{0} card transactions need attention",
             ["cardRecovery.center.status.ready"] = "Review an open card transaction.",
             ["cardRecovery.center.status.loaded"] = "Loaded {0} open card transactions.",
@@ -806,6 +1010,68 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     private sealed record AuthorizationRequest(string PermissionCode, string Screen, string Action);
+
+    private sealed class ResolutionLocalizationService : ILocalizationService
+    {
+        private static readonly IReadOnlyDictionary<string, string> English =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["cardRecovery.center.openCount"] = "{0} card transactions need attention",
+                ["cardRecovery.refund.section.title"] = "Supervisor refund reconciliation",
+                ["cardRecovery.refund.section.squareInstructions"] = "Check the Square refund record before choosing an outcome. Confirm refunded requires a real Square refund reference; confirm not refunded requires bank evidence; continue waiting requires a supervisor note.",
+                ["cardRecovery.refund.field.squareNote"] = "Supervisor note (required when continuing to wait)",
+                ["cardRecovery.refund.field.evidence"] = "Bank evidence (required when no refund was processed)",
+                ["cardRecovery.refund.field.squareRefundReference"] = "Square refund reference (required when confirming refunded)"
+            };
+
+        private static readonly IReadOnlyDictionary<string, string> Chinese =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["cardRecovery.center.openCount"] = "{0} 笔卡交易待处理",
+                ["cardRecovery.refund.section.title"] = "主管退款核对",
+                ["cardRecovery.refund.section.squareInstructions"] = "选择结果前，请先核对 Square 退款记录。确认已退款必须填写真实的 Square 退款参考号；确认未退款必须填写银行证据；继续等待必须填写主管备注。",
+                ["cardRecovery.refund.field.squareNote"] = "主管备注（继续等待时必填）",
+                ["cardRecovery.refund.field.evidence"] = "银行证据（确认未退款时必填）",
+                ["cardRecovery.refund.field.squareRefundReference"] = "Square 退款参考号（确认已退款时必填）"
+            };
+
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler? CultureChanged;
+
+        public IReadOnlyList<CultureInfo> AvailableCultures { get; } =
+            [CultureInfo.GetCultureInfo("en-US"), CultureInfo.GetCultureInfo("zh-CN")];
+
+        public CultureInfo CurrentCulture { get; private set; } =
+            CultureInfo.GetCultureInfo("en-US");
+
+        public void SetCulture(string cultureName) => SetCulture(CultureInfo.GetCultureInfo(cultureName));
+
+        public void SetCulture(CultureInfo culture)
+        {
+            CurrentCulture = culture;
+            CultureChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public Task SetCultureAsync(string cultureName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SetCulture(cultureName);
+            return Task.CompletedTask;
+        }
+
+        public string T(string key)
+        {
+            var values = CurrentCulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                ? Chinese
+                : English;
+            return values.TryGetValue(key, out var value) ? value : $"[[{key}]]";
+        }
+    }
 
     private sealed class DictionaryLocalizationService(IReadOnlyDictionary<string, string> values)
         : ILocalizationService

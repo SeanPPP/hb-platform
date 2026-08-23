@@ -364,36 +364,48 @@
                                     BorderThickness="1"
                                     CornerRadius="6">
                                 <StackPanel>
-                                    <TextBlock Text="{loc:Loc cardRecovery.center.resolution.title}"
+                                    <TextBlock Text="{Binding ResolutionSectionTitleText}"
                                                FontSize="14"
                                                FontWeight="SemiBold"
                                                Foreground="{StaticResource PosTextBrush}" />
-                                    <TextBlock Text="{loc:Loc cardRecovery.center.resolution.instructions}"
+                                    <TextBlock Text="{Binding ResolutionInstructionsText}"
                                                Margin="0,4,0,0"
                                                FontSize="11"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextWrapping="Wrap" />
-                                    <TextBox Text="{Binding ResolutionReason, UpdateSourceTrigger=PropertyChanged}"
-                                             materialDesign:HintAssist.Hint="{loc:Loc cardRecovery.center.input.reason}"
-                                             Margin="0,12,0,0"
-                                             MinHeight="44"
-                                             ScrollViewer.PanningMode="None"
-                                             Style="{StaticResource PosSearchTextBoxStyle}" />
-                                    <TextBox Text="{Binding ResolutionEvidence, UpdateSourceTrigger=PropertyChanged}"
-                                             materialDesign:HintAssist.Hint="{loc:Loc cardRecovery.center.input.evidence}"
-                                             Margin="0,10,0,0"
-                                             MinHeight="68"
-                                             AcceptsReturn="True"
-                                             TextWrapping="Wrap"
-                                             VerticalScrollBarVisibility="Auto"
-                                             ScrollViewer.PanningMode="VerticalFirst"
-                                             Style="{StaticResource PosSearchTextBoxStyle}" />
-                                    <TextBox Text="{Binding ResolutionReference, UpdateSourceTrigger=PropertyChanged}"
-                                             materialDesign:HintAssist.Hint="{loc:Loc cardRecovery.center.input.reference}"
-                                             Margin="0,10,0,0"
-                                             MinHeight="44"
-                                             ScrollViewer.PanningMode="None"
-                                             Style="{StaticResource PosSearchTextBoxStyle}" />
+                                    <StackPanel Margin="0,12,0,0">
+                                        <TextBlock Text="{Binding ResolutionReasonLabelText}"
+                                                   Style="{StaticResource RecoveryFieldLabelStyle}" />
+                                        <TextBox Text="{Binding ResolutionReason, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="{Binding ResolutionReasonLabelText}"
+                                                 Margin="0,6,0,0"
+                                                 MinHeight="44"
+                                                 ScrollViewer.PanningMode="None"
+                                                 Style="{StaticResource PosSearchTextBoxStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,10,0,0">
+                                        <TextBlock Text="{Binding ResolutionEvidenceLabelText}"
+                                                   Style="{StaticResource RecoveryFieldLabelStyle}" />
+                                        <TextBox Text="{Binding ResolutionEvidence, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="{Binding ResolutionEvidenceLabelText}"
+                                                 Margin="0,6,0,0"
+                                                 MinHeight="68"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 ScrollViewer.PanningMode="VerticalFirst"
+                                                 Style="{StaticResource PosSearchTextBoxStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,10,0,0">
+                                        <TextBlock Text="{Binding ResolutionReferenceLabelText}"
+                                                   Style="{StaticResource RecoveryFieldLabelStyle}" />
+                                        <TextBox Text="{Binding ResolutionReference, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="{Binding ResolutionReferenceLabelText}"
+                                                 Margin="0,6,0,0"
+                                                 MinHeight="44"
+                                                 ScrollViewer.PanningMode="None"
+                                                 Style="{StaticResource PosSearchTextBoxStyle}" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
 

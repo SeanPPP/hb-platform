@@ -1047,6 +1047,9 @@
   <data name="cardRecovery.refund.field.refundReference" xml:space="preserve"><value>Refund reference (when available)</value></data>
   <data name="cardRecovery.refund.field.evidence" xml:space="preserve"><value>Bank evidence (required when no refund was processed)</value></data>
   <data name="cardRecovery.refund.field.note" xml:space="preserve"><value>Supervisor note (required when waiting; reference or note required when refunded)</value></data>
+  <data name="cardRecovery.refund.section.squareInstructions" xml:space="preserve"><value>Check the Square refund record before choosing an outcome. Confirm refunded requires a real Square refund reference; confirm not refunded requires bank evidence; continue waiting requires a supervisor note.</value></data>
+  <data name="cardRecovery.refund.field.squareRefundReference" xml:space="preserve"><value>Square refund reference (required when confirming refunded)</value></data>
+  <data name="cardRecovery.refund.field.squareNote" xml:space="preserve"><value>Supervisor note (required when continuing to wait)</value></data>
   <data name="cardRecovery.refund.action.confirmRefunded" xml:space="preserve"><value>Confirmed refunded</value></data>
   <data name="cardRecovery.refund.action.confirmNotRefunded" xml:space="preserve"><value>Confirmed not refunded</value></data>
   <data name="cardRecovery.refund.action.continueWaiting" xml:space="preserve"><value>Continue waiting</value></data>
